@@ -16,6 +16,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
+	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
 )
 
 func newLaunchTestStore(t *testing.T) config.SettingsStore {
@@ -26,6 +27,17 @@ func newLaunchTestStore(t *testing.T) config.SettingsStore {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 	return store
+}
+
+// newLaunchTestLedger gives each test its own on-disk ledger, matching how
+// AuthorizeLaunch and a real relay both use one ledger per ConfigDir.
+func newLaunchTestLedger(t *testing.T) *ledger.Ledger {
+	t.Helper()
+	l, err := ledger.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	return l
 }
 
 // addLaunchTestProject creates a project rooted at a real temp directory
@@ -68,8 +80,9 @@ func frontendIdentityCaller(name string) LaunchCaller {
 
 func TestAuthorizeLaunch_NoExecuteClassRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassRead), Kind: KindPTY, TemplateID: "shell"}
-	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal == nil {
 		t.Fatal("bearer holding only read was allowed to launch")
 	}
@@ -83,8 +96,9 @@ func TestAuthorizeLaunch_NoExecuteClassRefuses(t *testing.T) {
 
 func TestAuthorizeLaunch_ProxyOnlyBearerRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassProxy), Kind: KindPTY, TemplateID: "shell"}
-	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal == nil {
 		t.Fatal("bearer holding only proxy was allowed to launch")
 	}
@@ -95,22 +109,25 @@ func TestAuthorizeLaunch_ProxyOnlyBearerRefuses(t *testing.T) {
 
 func TestAuthorizeLaunch_EmptyClassesRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	req := LaunchRequest{Caller: bearerCaller(), Kind: KindPTY, TemplateID: "shell"}
-	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req); refusal == nil {
+	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal == nil {
 		t.Fatal("bearer with no classes at all was allowed to launch")
 	}
 }
 
 func TestAuthorizeLaunch_NoCallerAtAllRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	req := LaunchRequest{Kind: KindPTY, TemplateID: "shell"}
-	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req); refusal == nil {
+	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal == nil {
 		t.Fatal("a request naming neither an identity nor a credential was allowed to launch")
 	}
 }
 
 func TestAuthorizeLaunch_NonFrontendIdentityRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	// A service identity that never claimed the frontend capability (e.g. a
 	// manifest-only service) must not be treated as eve.
 	caller := LaunchCaller{Identity: &service.Identity{
@@ -118,15 +135,16 @@ func TestAuthorizeLaunch_NonFrontendIdentityRefuses(t *testing.T) {
 		Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest},
 	}}
 	req := LaunchRequest{Caller: caller, Kind: KindPTY, TemplateID: "shell"}
-	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req); refusal == nil {
+	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal == nil {
 		t.Fatal("a manifest-only identity was allowed to launch")
 	}
 }
 
 func TestAuthorizeLaunch_ExecuteBearerAdHocPtySucceeds(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), Kind: KindPTY, TemplateID: "shell"}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("valid ad-hoc pty launch refused: %+v", refusal)
 	}
@@ -137,8 +155,9 @@ func TestAuthorizeLaunch_ExecuteBearerAdHocPtySucceeds(t *testing.T) {
 
 func TestAuthorizeLaunch_FrontendIdentitySucceeds(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	req := LaunchRequest{Caller: frontendIdentityCaller("eve"), Kind: KindPTY, TemplateID: "shell"}
-	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req); refusal != nil {
+	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal != nil {
 		t.Fatalf("eve's own frontend identity was refused: %+v", refusal)
 	}
 }
@@ -149,6 +168,7 @@ func TestAuthorizeLaunch_FrontendIdentitySucceeds(t *testing.T) {
 
 func TestAuthorizeLaunch_RemoteProjectRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	if err := store.With(func(s *config.Settings) {
 		s.Projects = append(s.Projects, config.Project{
 			ID: "remote-1", Name: "Remote", Kind: config.ProjectKindRemote,
@@ -158,7 +178,7 @@ func TestAuthorizeLaunch_RemoteProjectRefuses(t *testing.T) {
 		t.Fatalf("store.With: %v", err)
 	}
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: "remote-1", Kind: KindPTY, TemplateID: "shell"}
-	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal == nil {
 		t.Fatal("a remote project was allowed to host a session launch")
 	}
@@ -169,8 +189,9 @@ func TestAuthorizeLaunch_RemoteProjectRefuses(t *testing.T) {
 
 func TestAuthorizeLaunch_UnknownProjectRefusesIdenticallyToRemote(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: "does-not-exist", Kind: KindPTY, TemplateID: "shell"}
-	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal == nil {
 		t.Fatal("an unknown project id was allowed to launch")
 	}
@@ -185,6 +206,7 @@ func TestAuthorizeLaunch_UnknownProjectRefusesIdenticallyToRemote(t *testing.T) 
 
 func TestAuthorizeLaunch_DirectoryOutsideProjectRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 	outside := t.TempDir()
 
@@ -192,7 +214,7 @@ func TestAuthorizeLaunch_DirectoryOutsideProjectRefuses(t *testing.T) {
 		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID,
 		Kind: KindPTY, TemplateID: "shell", Directory: outside,
 	}
-	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal == nil {
 		t.Fatal("a directory outside the project was accepted")
 	}
@@ -203,6 +225,7 @@ func TestAuthorizeLaunch_DirectoryOutsideProjectRefuses(t *testing.T) {
 
 func TestAuthorizeLaunch_SymlinkEscapeRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 	outside := t.TempDir()
 
@@ -215,7 +238,7 @@ func TestAuthorizeLaunch_SymlinkEscapeRefuses(t *testing.T) {
 		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID,
 		Kind: KindPTY, TemplateID: "shell", Directory: escape,
 	}
-	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal == nil {
 		t.Fatal("a symlink escaping the project directory was accepted")
 	}
@@ -226,9 +249,10 @@ func TestAuthorizeLaunch_SymlinkEscapeRefuses(t *testing.T) {
 
 func TestAuthorizeLaunch_EmptyDirectoryDefaultsToProjectPath(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell"}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("refused: %+v", refusal)
 	}
@@ -244,9 +268,10 @@ func TestAuthorizeLaunch_EmptyDirectoryDefaultsToProjectPath(t *testing.T) {
 
 func TestAuthorizeLaunch_UnknownTemplateRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "no-such-template"}
-	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal == nil {
 		t.Fatal("an unknown template id was accepted")
 	}
@@ -257,6 +282,7 @@ func TestAuthorizeLaunch_UnknownTemplateRefuses(t *testing.T) {
 
 func TestAuthorizeLaunch_ProjectScopedTemplateNotVisibleToOtherProject(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	addLaunchTestProject(t, store, func(p *config.Project) {
 		p.ID = "owner"
 		p.ShellTemplates = []config.ShellTemplate{{ID: "private-shell", Name: "Private", Command: "zsh"}}
@@ -264,7 +290,7 @@ func TestAuthorizeLaunch_ProjectScopedTemplateNotVisibleToOtherProject(t *testin
 	other := addLaunchTestProject(t, store, func(p *config.Project) { p.ID = "other" })
 
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: other.ID, Kind: KindPTY, TemplateID: "private-shell"}
-	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal == nil {
 		t.Fatal("a template scoped to another project was accepted")
 	}
@@ -272,9 +298,10 @@ func TestAuthorizeLaunch_ProjectScopedTemplateNotVisibleToOtherProject(t *testin
 
 func TestAuthorizeLaunch_BuiltinTemplateSucceeds(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "claude-code"}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("refused: %+v", refusal)
 	}
@@ -292,11 +319,12 @@ func TestAuthorizeLaunch_BuiltinTemplateSucceeds(t *testing.T) {
 
 func TestAuthorizeLaunch_DisallowedModelRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, func(p *config.Project) {
 		p.AllowedModels = []string{"claude-sonnet-4.5"}
 	})
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude, Model: "gpt-5"}
-	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal == nil {
 		t.Fatal("a disallowed model was accepted")
 	}
@@ -307,11 +335,12 @@ func TestAuthorizeLaunch_DisallowedModelRefuses(t *testing.T) {
 
 func TestAuthorizeLaunch_AllowedModelSucceeds(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, func(p *config.Project) {
 		p.AllowedModels = []string{"claude-sonnet-4.5"}
 	})
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude, Model: "claude-sonnet-4.5"}
-	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req); refusal != nil {
+	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal != nil {
 		t.Fatalf("an allowed model was refused: %+v", refusal)
 	}
 }
@@ -417,6 +446,7 @@ func TestMergePermissionSettings_NoProjectPolicyPassesClientSettingsThroughUncha
 
 func TestAuthorizeLaunch_ClientCannotWidenPolicyEndToEnd(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	policy := &config.PermissionPolicy{DefaultMode: "plan", AllowedTools: []string{"Read"}, DeniedTools: []string{"Bash:rm *"}}
 	proj := addLaunchTestProject(t, store, func(p *config.Project) { p.PermissionPolicy = policy })
 
@@ -427,7 +457,7 @@ func TestAuthorizeLaunch_ClientCannotWidenPolicyEndToEnd(t *testing.T) {
 		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindChat,
 		Model: "gpt-5", ClientSettings: clientSettings,
 	}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("refused: %+v", refusal)
 	}
@@ -453,16 +483,22 @@ func TestAuthorizeLaunch_ClientCannotWidenPolicyEndToEnd(t *testing.T) {
 
 func TestAuthorizeLaunch_PtyLaunchSpecGolden(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 	t.Setenv("SHELL", "")
 
 	req := LaunchRequest{
-		Caller: bearerCaller(control.ClassExecute), SessionID: "11111111-1111-1111-1111-111111111111",
+		// A fresh launch never names its own session id (F1) — the golden
+		// value below is what AuthorizeLaunch itself minted, not an input.
+		Caller:    bearerCaller(control.ClassExecute),
 		ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell", Name: "term 1", Cols: 100, Rows: 30,
 	}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("refused: %+v", refusal)
+	}
+	if result.SessionID == "" {
+		t.Fatal("AuthorizeLaunch did not mint a session id for a fresh launch")
 	}
 
 	wantDir, _ := filepath.EvalSymlinks(proj.Path)
@@ -473,7 +509,7 @@ func TestAuthorizeLaunch_PtyLaunchSpecGolden(t *testing.T) {
 	}{proj.ID, proj.Name, proj.Path})
 
 	want := hostapi.LaunchRequest{
-		V: 1, SessionID: "11111111-1111-1111-1111-111111111111", Kind: KindPTY, Resume: false,
+		V: 1, SessionID: result.SessionID, Kind: KindPTY, Resume: false,
 		Project: projJSON, Directory: wantDir, Name: "term 1", TemplateID: "shell",
 		Argv: []string{"/bin/zsh"}, IdleTimeoutSec: 1440 * 60,
 		PTY: &hostapi.PTYSpec{Cols: 100, Rows: 30},
@@ -488,15 +524,21 @@ func TestAuthorizeLaunch_PtyLaunchSpecGolden(t *testing.T) {
 
 func TestAuthorizeLaunch_ClaudeLaunchSpecGolden(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 
 	req := LaunchRequest{
-		Caller: bearerCaller(control.ClassExecute), SessionID: "22222222-2222-2222-2222-222222222222",
+		// A fresh launch never names its own session id (F1); AuthorizeLaunch
+		// mints one and it's asserted against below via result.SessionID.
+		Caller:    bearerCaller(control.ClassExecute),
 		ProjectID: proj.ID, Kind: KindClaude, Model: "claude-sonnet-4.5", Name: "my session",
 	}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("refused: %+v", refusal)
+	}
+	if result.SessionID == "" {
+		t.Fatal("AuthorizeLaunch did not mint a session id for a fresh launch")
 	}
 
 	if result.Spec.ModelKey != "" {
@@ -535,9 +577,10 @@ func TestAuthorizeLaunch_ClaudeLaunchSpecGolden(t *testing.T) {
 
 func TestAuthorizeLaunch_PiSessionMintsModelKey(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPi, Model: "gpt-5"}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("refused: %+v", refusal)
 	}
@@ -554,9 +597,10 @@ func TestAuthorizeLaunch_PiSessionMintsModelKey(t *testing.T) {
 
 func TestAuthorizeLaunch_ChatSessionMintsModelKey(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindChat, Model: "gpt-5"}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("refused: %+v", refusal)
 	}
@@ -567,9 +611,10 @@ func TestAuthorizeLaunch_ChatSessionMintsModelKey(t *testing.T) {
 
 func TestAuthorizeLaunch_PtyTemplateWithModelKeyMintsOne(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "pi"}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("refused: %+v", refusal)
 	}
@@ -583,9 +628,10 @@ func TestAuthorizeLaunch_PtyTemplateWithModelKeyMintsOne(t *testing.T) {
 
 func TestAuthorizeLaunch_PtyTemplateWithoutModelKeyMintsNone(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	proj := addLaunchTestProject(t, store, nil)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell"}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("refused: %+v", refusal)
 	}
@@ -600,6 +646,7 @@ func TestAuthorizeLaunch_PtyTemplateWithoutModelKeyMintsNone(t *testing.T) {
 
 func TestAuthorizeLaunch_HostedProjectGetsHostSpecAndNoIdentity(t *testing.T) {
 	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
 	if err := store.With(func(s *config.Settings) {
 		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example"})
 	}); err != nil {
@@ -611,7 +658,7 @@ func TestAuthorizeLaunch_HostedProjectGetsHostSpecAndNoIdentity(t *testing.T) {
 	})
 
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell"}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), req)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
 	if refusal != nil {
 		t.Fatalf("refused: %+v", refusal)
 	}
@@ -620,5 +667,235 @@ func TestAuthorizeLaunch_HostedProjectGetsHostSpecAndNoIdentity(t *testing.T) {
 	}
 	if result.Spec.Identity != nil {
 		t.Fatal("SH §3.1: identity must be null for an SSH-hosted session")
+	}
+}
+
+func TestAuthorizeLaunch_HostedProjectDirectoryIsLexicalNotLocalRealpath(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	if err := store.With(func(s *config.Settings) {
+		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example"})
+	}); err != nil {
+		t.Fatalf("store.With hosts: %v", err)
+	}
+	// /tmp is a real local symlink to /private/tmp on macOS; a hosted
+	// project's directory must never be resolved against relay's own
+	// filesystem, so the result must be the lexically-cleaned "/tmp", never
+	// realpath's local rewrite "/private/tmp".
+	proj := addLaunchTestProject(t, store, func(p *config.Project) {
+		p.HostID = "h1"
+		p.Path = "/tmp"
+	})
+
+	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell"}
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal != nil {
+		t.Fatalf("refused: %+v", refusal)
+	}
+	if result.Spec.Directory != "/tmp" {
+		t.Fatalf("directory = %q, want the lexically-cleaned \"/tmp\" (a local realpath rewrite leaked relay's own filesystem into a remote path)", result.Spec.Directory)
+	}
+}
+
+func TestAuthorizeLaunch_HostedProjectDirectoryOutsideProjectRefusesLexically(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	if err := store.With(func(s *config.Settings) {
+		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example"})
+	}); err != nil {
+		t.Fatalf("store.With hosts: %v", err)
+	}
+	proj := addLaunchTestProject(t, store, func(p *config.Project) {
+		p.HostID = "h1"
+		p.Path = "/home/remote/project"
+	})
+
+	req := LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell",
+		Directory: "/home/remote/other",
+	}
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal == nil {
+		t.Fatal("a hosted directory outside the project was accepted")
+	}
+	if refusal.Code != "directory_outside_project" {
+		t.Fatalf("code = %q, want directory_outside_project", refusal.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ad-hoc scope (F2): SH §3.1 sanctions no-project launches for terminals
+// only, never claude/pi/chat.
+// ---------------------------------------------------------------------------
+
+func TestAuthorizeLaunch_AdHocClaudeRefuses(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), Kind: KindClaude, Model: "claude-sonnet-4.5"}
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal == nil {
+		t.Fatal("an ad-hoc (no-project) claude launch was accepted")
+	}
+	if refusal.Code != "project_required" {
+		t.Fatalf("code = %q, want project_required", refusal.Code)
+	}
+	if refusal.Status != 403 {
+		t.Fatalf("status = %d, want 403", refusal.Status)
+	}
+}
+
+func TestAuthorizeLaunch_AdHocPiAndChatRefuse(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	for _, kind := range []string{KindPi, KindChat} {
+		req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), Kind: kind, Model: "gpt-5"}
+		_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+		if refusal == nil {
+			t.Fatalf("an ad-hoc (no-project) %s launch was accepted", kind)
+		}
+	}
+}
+
+func TestAuthorizeLaunch_AdHocPtyStillSucceeds(t *testing.T) {
+	// F2 narrows the ad-hoc exemption to terminals; this confirms it still
+	// applies there, alongside TestAuthorizeLaunch_ExecuteBearerAdHocPtySucceeds.
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), Kind: KindPTY, TemplateID: "shell"}
+	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal != nil {
+		t.Fatalf("an ad-hoc pty launch was refused: %+v", refusal)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Session id / resume (F1)
+// ---------------------------------------------------------------------------
+
+func TestAuthorizeLaunch_FreshLaunchNamingExistingLiveSessionIDRefuses(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	proj := addLaunchTestProject(t, store, nil)
+
+	// The attack: a fresh launch reuses a live session id, so
+	// ModelKeyTable.Revoke(projectID, "session:<id>") later deletes both
+	// the squatter's and the victim's key, since Revoke keys on the label
+	// alone.
+	victim := ledger.Record{SessionID: "victim-session", Kind: KindChat, ProjectID: proj.ID, State: ledger.StateLive}
+	if err := sessions.Put(victim); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+
+	req := LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), SessionID: "victim-session", Resume: false,
+		ProjectID: proj.ID, Kind: KindChat, Model: "gpt-5",
+	}
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal == nil {
+		t.Fatal("a fresh (non-resume) launch reusing a live session id was accepted")
+	}
+	if refusal.Code != "session_id_not_allowed" {
+		t.Fatalf("code = %q, want session_id_not_allowed", refusal.Code)
+	}
+}
+
+func TestAuthorizeLaunch_FreshLaunchNamingAnySessionIDRefusesEvenIfUnused(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	proj := addLaunchTestProject(t, store, nil)
+
+	req := LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), SessionID: "caller-picked-id", Resume: false,
+		ProjectID: proj.ID, Kind: KindChat, Model: "gpt-5",
+	}
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal == nil {
+		t.Fatal("a fresh launch naming its own session id was accepted")
+	}
+}
+
+func TestAuthorizeLaunch_ResumeNamingDifferentProjectThanOwnerRefuses(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	owner := addLaunchTestProject(t, store, func(p *config.Project) { p.ID = "owner-project" })
+	attacker := addLaunchTestProject(t, store, func(p *config.Project) { p.ID = "attacker-project" })
+
+	// The attack: Resume:true names project A's session id, but the
+	// request's own ProjectID claims project B.
+	rec := ledger.Record{SessionID: "s1", Kind: KindChat, ProjectID: owner.ID, State: ledger.StateDormant}
+	if err := sessions.Put(rec); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+
+	req := LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), SessionID: "s1", Resume: true,
+		ProjectID: attacker.ID, Kind: KindChat, Model: "gpt-5",
+	}
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal == nil {
+		t.Fatal("resuming project A's session under project B's id was accepted")
+	}
+	if refusal.Code != "session_not_resumable" {
+		t.Fatalf("code = %q, want session_not_resumable", refusal.Code)
+	}
+}
+
+func TestAuthorizeLaunch_ResumeLiveSessionRefuses(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	proj := addLaunchTestProject(t, store, nil)
+
+	rec := ledger.Record{SessionID: "s1", Kind: KindChat, ProjectID: proj.ID, State: ledger.StateLive}
+	if err := sessions.Put(rec); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+
+	req := LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), SessionID: "s1", Resume: true,
+		ProjectID: proj.ID, Kind: KindChat, Model: "gpt-5",
+	}
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal == nil {
+		t.Fatal("resuming an already-live session through AuthorizeLaunch was accepted")
+	}
+}
+
+func TestAuthorizeLaunch_ResumeUnknownSessionRefuses(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	proj := addLaunchTestProject(t, store, nil)
+
+	req := LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), SessionID: "does-not-exist", Resume: true,
+		ProjectID: proj.ID, Kind: KindChat, Model: "gpt-5",
+	}
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal == nil {
+		t.Fatal("resuming an unknown session id was accepted")
+	}
+}
+
+func TestAuthorizeLaunch_ResumeDormantSameProjectSucceeds(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	proj := addLaunchTestProject(t, store, nil)
+
+	rec := ledger.Record{SessionID: "s1", Kind: KindChat, ProjectID: proj.ID, State: ledger.StateDormant}
+	if err := sessions.Put(rec); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+
+	req := LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), SessionID: "s1", Resume: true,
+		ProjectID: proj.ID, Kind: KindChat, Model: "gpt-5",
+	}
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal != nil {
+		t.Fatalf("a legitimate resume of a dormant session in its own project was refused: %+v", refusal)
+	}
+	if result.SessionID != "s1" {
+		t.Fatalf("SessionID = %q, want the resumed id s1 unchanged", result.SessionID)
+	}
+	if !result.Spec.Resume {
+		t.Fatal("Spec.Resume was not carried through for a resume request")
 	}
 }

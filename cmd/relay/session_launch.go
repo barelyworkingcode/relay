@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
@@ -33,8 +34,9 @@ import (
 // prose (`pty` | `claude` | `pi` | `chat_tools`) — neither hostapi nor any
 // landed unit fixes the string yet (internal/sessions/hostapi/launch_test.go
 // only ever uses "pty"), so this picks C5's own wire-contract sample as
-// ground truth over a parenthetical aside in the flow-diagram prose. A
-// reviewer who disagrees changes one constant.
+// ground truth over a parenthetical aside in the flow-diagram prose. The
+// wire string lives in this one named constant, not inlined at each call
+// site, so resolving that document conflict later stays a one-line edit.
 const (
 	KindPTY    = "pty"
 	KindClaude = "claude"
@@ -105,16 +107,21 @@ func callerAuditActor(c LaunchCaller) audit.AuditActor {
 // Cols, Rows) or its POST /api/sessions body (Kind == KindClaude/KindPi/
 // KindChat: Model, ClientSettings, SystemPrompt, AppendClaudeMd) —
 // session-messages.js's handleCreateSession is the wire shape for the
-// latter. ProjectID == "" is a legitimate ad-hoc request (SH §3.1: "project:
-// null for ad-hoc terminals"); every project-scoped check is skipped for
-// one, matching EffectiveTerminalTemplatesForProject's own proj-may-be-nil
-// contract.
+// latter. ProjectID == "" is a legitimate ad-hoc request only for
+// Kind == KindPTY (SH §3.1: "project: null for ad-hoc terminals" — the rule
+// names terminals specifically, not every kind); AuthorizeLaunch refuses an
+// ad-hoc claude/pi/chat request outright, since those kinds mint a model key
+// scoped to a project and carry a permission policy that only a real project
+// has. EffectiveTerminalTemplatesForProject's own proj-may-be-nil contract
+// is what the ad-hoc pty path relies on.
 type LaunchRequest struct {
 	Caller LaunchCaller
 
 	// SessionID is empty for a fresh launch (AuthorizeLaunch mints a UUIDv4)
 	// and the existing session's id for a resume (SH §3.4): the id never
-	// changes across a resume, only the secret and model key do.
+	// changes across a resume, only the secret and model key do. A caller
+	// that sets SessionID without Resume is refused outright — only
+	// AuthorizeLaunch itself names a session id for a fresh launch.
 	SessionID string
 	Resume    bool
 
@@ -245,7 +252,14 @@ type LaunchResult struct {
 // (frontend_model_guard.go, reused rather than reimplemented) takes a
 // config.SettingsStore, and a caller with only a store is the shape R-S4b
 // actually has.
-func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, req LaunchRequest) (*LaunchResult, *LaunchRefusal) {
+//
+// sessions is consulted only for req.Resume: a resumed session id must name
+// an existing, dormant record whose own project_id matches req.ProjectID —
+// otherwise a caller could squat a live session id (minting a second model
+// key under the label ModelKeyTable.Revoke keys on, so revoking the
+// squatter's key also revokes the victim's) or resume one project's session
+// under another project's name.
+func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessions *ledger.Ledger, req LaunchRequest) (*LaunchResult, *LaunchRefusal) {
 	settings := config.FreshSettings(store)
 
 	baseFields := sessionLaunchAuditFields{Actor: callerAuditActor(req.Caller), ProjectID: req.ProjectID, Kind: req.Kind}
@@ -256,6 +270,27 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, req L
 
 	if !validKind(req.Kind) {
 		return nil, invalidRequest("invalid_kind", fmt.Sprintf("unknown session kind %q", req.Kind), baseFields)
+	}
+
+	// Only AuthorizeLaunch mints a session id for a fresh launch (below); a
+	// caller naming one itself without Resume could squat an id that is
+	// already live under another caller's session.
+	if req.SessionID != "" && !req.Resume {
+		return nil, forbidden("session_id_not_allowed", "a fresh launch may not name a session id", baseFields)
+	}
+
+	if req.Resume {
+		rec, ok := sessions.Get(req.SessionID)
+		if !ok || rec.State != ledger.StateDormant || rec.ProjectID != req.ProjectID {
+			return nil, forbidden("session_not_resumable", "session is not a dormant session of this project", baseFields)
+		}
+	}
+
+	// SH §3.1 sanctions ad-hoc (no-project) launches for terminals only —
+	// claude/pi/chat mint a project-scoped model key and carry a project's
+	// permission policy, neither of which exists without a real project.
+	if req.ProjectID == "" && req.Kind != KindPTY {
+		return nil, forbidden("project_required", fmt.Sprintf("%s sessions require a project", req.Kind), baseFields)
 	}
 
 	var proj *config.Project
@@ -337,18 +372,15 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, req L
 			return nil, invalidRequest("internal", fmt.Sprintf("encode host: %v", err), baseFields)
 		}
 		spec.Host = hostJSON
-		// SH §3.1: identity is null for ad-hoc AND SSH sessions — a host
-		// project's target process never dials relay's bridge socket the
-		// way a project_session shim does.
-	} else if proj != nil {
-		// Left nil deliberately: minting the launch-identity secret needs
-		// the live service.Launches table (Launches.Begin), which is wired
-		// in main/trayapp, not passed to this package. R-S4b calls
-		// Launches.Begin right before it POSTs to relay-sessions and sets
-		// Spec.Identity itself; this field staying nil through this
-		// function is the extension point, not an oversight.
-		spec.Identity = nil
 	}
+	// Spec.Identity stays nil out of this function for every project shape.
+	// SH §3.1 requires null outright for ad-hoc and SSH sessions — a host
+	// project's target process never dials relay's bridge socket the way a
+	// project_session shim does. For a local project, minting the secret
+	// needs the live service.Launches table (Launches.Begin), which is
+	// wired in main/trayapp, not passed to this package: R-S4b calls
+	// Launches.Begin right before it POSTs to relay-sessions and sets
+	// Spec.Identity itself.
 
 	if req.Kind == KindPTY {
 		spec.Argv = resolveArgv(*tmpl, projectPathOrEmpty(proj), req.ProjectID)
@@ -399,11 +431,17 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, req L
 	}, nil
 }
 
-// resolveDirectory applies SH §3.2's directory rule: realpath within the
+// resolveDirectory applies SH §3.2's directory rule: confined within the
 // project path, defaulting to the project path itself. proj == nil (ad-hoc)
 // skips the confinement check entirely — there is no project path to
 // confine against, the same "nothing to contain" reasoning DirWithin's own
 // empty-dir case documents, extended one level up.
+//
+// A hosted (SSH) project's directory lives on the remote target, not
+// relay's own disk, so it is confined lexically instead — see
+// lexicalDirWithin. A local project's directory is confined by
+// project.DirWithin, which resolves symlinks against relay's own
+// filesystem.
 func resolveDirectory(proj *config.Project, requested string, fields sessionLaunchAuditFields) (string, *LaunchRefusal) {
 	dir := requested
 	if proj != nil && dir == "" {
@@ -412,14 +450,23 @@ func resolveDirectory(proj *config.Project, requested string, fields sessionLaun
 	if dir == "" {
 		return "", nil
 	}
+
+	if proj != nil && proj.IsHosted() {
+		cleaned := filepath.Clean(dir)
+		if !lexicalDirWithin(cleaned, filepath.Clean(proj.Path)) {
+			return "", forbidden("directory_outside_project", "requested directory is outside the project", fields)
+		}
+		return cleaned, nil
+	}
+
 	// Resolved before the containment check, not after: DirWithin's own
 	// identity fast path stats through a symlink to decide identity but
-	// then climbs the UNRESOLVED literal path's parent chain, so passing
-	// it an unresolved symlink leaf is exactly the shape that already
-	// caused one real escape (fixed in internal/project/project.go, see
-	// dirWithinProjectByIdentity's own comment) — resolving here first
-	// means DirWithin only ever sees a path with no symlink left to be
-	// confused by, independent of whether that internal fix holds.
+	// climbs the UNRESOLVED literal path's parent chain, so an unresolved
+	// symlink leaf could stat outside projectPath and then climb straight
+	// back into the project through its own literal parent. Resolving here
+	// first means DirWithin only ever sees a path with no symlink left to
+	// be confused by, independent of dirWithinProjectByIdentity's own
+	// internal resolution.
 	resolved := realpath(dir)
 	if proj != nil && !project.DirWithin(resolved, proj.Path) {
 		return "", forbidden("directory_outside_project", "requested directory is outside the project", fields)
@@ -428,9 +475,11 @@ func resolveDirectory(proj *config.Project, requested string, fields sessionLaun
 }
 
 // realpath resolves symlinks for the value AuthorizeLaunch writes into the
-// LaunchSpec / ledger record. The security decision itself is
-// project.DirWithin's, which does its own resolution internally — this is
-// only about what string ends up on the wire and on disk.
+// LaunchSpec / ledger record for a local project or an ad-hoc (local)
+// launch. The security decision itself is project.DirWithin's, which does
+// its own resolution internally — this is only about what string ends up on
+// the wire and on disk. Never called for a hosted project: see
+// lexicalDirWithin.
 func realpath(p string) string {
 	if p == "" {
 		return p
@@ -439,6 +488,27 @@ func realpath(p string) string {
 		return resolved
 	}
 	return filepath.Clean(p)
+}
+
+// lexicalDirWithin reports whether dir is projectPath or nested under it,
+// comparing cleaned path text only — never the local filesystem. This is
+// deliberate: a hosted project's path exists on the SSH target, not on
+// relay's own disk, so calling realpath/EvalSymlinks/Stat against it here
+// would resolve symlinks or volume aliases that only exist locally,
+// answering a containment question about the wrong machine. Both arguments
+// must already be filepath.Clean'd by the caller.
+func lexicalDirWithin(dir, projectPath string) bool {
+	if dir == projectPath {
+		return true
+	}
+	rel, err := filepath.Rel(projectPath, dir)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
 }
 
 func findTemplate(settings *config.Settings, proj *config.Project, id string) (config.TerminalTemplate, bool) {
