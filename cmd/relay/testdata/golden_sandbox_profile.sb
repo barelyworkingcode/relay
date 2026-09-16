@@ -16,12 +16,12 @@
 (deny file-read* file-write*
   (subpath "<RELAY_DIR>")
   (subpath "<HOME>/Library/Application Support/relayLLM")
-  (subpath "<HOME>/Library/Application Support/eve")
+  (subpath "<EVE_DATA>")
   (subpath "<OTHER_PROJECT>"))
 (deny network-outbound
   (remote unix-socket (path-regex #"^<RELAY_DIR>/"))
   (remote unix-socket (path-regex #"^<HOME>/Library/Application Support/relayLLM/"))
-  (remote unix-socket (path-regex #"^<HOME>/Library/Application Support/eve/")))
+  (remote unix-socket (path-regex #"^<EVE_DATA>/")))
 (allow network-outbound
   (remote unix-socket (path-literal "<RELAY_DIR>/relay.sock"))
   (remote unix-socket (path-literal "<RELAY_DIR>/model.sock"))
