@@ -268,10 +268,15 @@ func (r *Registry) startLocked(cfg *config.ServiceConfig, sup *serviceSupervisor
 
 	// Defers run LIFO. Textual order below is (last to run first):
 	// superviseExit -> OnProcessExit -> close(done) -> logFile.Close ->
-	// removePidFile -> launch.End -> Enhanced.Forget. superviseExit is
-	// registered FIRST so it runs LAST: any restart it schedules begins
-	// after the launch identity is cleared, the pidfile removed and the log
-	// closed, i.e. after a completely fresh launch has become possible.
+	// removePidFile -> endSessionsUnderParent -> launch.End -> Enhanced.Forget.
+	// superviseExit is registered FIRST so it runs LAST: any restart it
+	// schedules begins after the launch identity is cleared, the pidfile
+	// removed and the log closed, i.e. after a completely fresh launch has
+	// become possible. endSessionsUnderParent is registered BEFORE launch.End
+	// so it runs AFTER it: relaysessions' own launch identity is gone from
+	// Launches before its children are swept, narrowing the window in which
+	// a new project_session could register with this now-dead launch as its
+	// parent and never get cleaned up.
 	serviceID := cfg.ID
 	go func() {
 		var exitCode int
@@ -287,7 +292,6 @@ func (r *Registry) startLocked(cfg *config.ServiceConfig, sup *serviceSupervisor
 		defer close(proc.done)
 		defer func() { _ = logFile.Close() }()
 		defer removePidFile(serviceID)
-		defer proc.launch.End()
 		if serviceID == config.RelaySessionsServiceID {
 			// SH §4.4, §6: every project_session identity relaysessions
 			// parented dies with it, on ANY exit of this process -- a
@@ -297,6 +301,7 @@ func (r *Registry) startLocked(cfg *config.ServiceConfig, sup *serviceSupervisor
 			// signals the process groups those sessions' shims led.
 			defer r.endSessionsUnderParent(serviceID)
 		}
+		defer proc.launch.End()
 		if r.Enhanced != nil {
 			defer r.Enhanced.Forget(serviceID)
 		}
@@ -350,22 +355,29 @@ func (r *Registry) beginLaunch(cfg *config.ServiceConfig) (*Launch, *os.File, er
 // shim and target processes those launches named have no way to learn
 // that on their own -- SIGKILL to each root's process group is what stops
 // them from running on, orphaned, believed-dead by relay (spec-session-
-// host.md §4.4, §6). Reads the root pids before ending the identities:
-// EndByParent's own doc comment is explicit that Launches keeps no
-// process-group bookkeeping, so this registry is where that pairing
-// happens.
+// host.md §4.4, §6). EndByParent's own doc comment is explicit that
+// Launches keeps no process-group bookkeeping, so this registry is where
+// that pairing happens, and where each root is re-validated against the
+// live process table immediately before it is signalled -- the launch's
+// exit watch is gone the moment its identity ends, so nothing else stops
+// its pid from being recycled onto an unrelated process group in the
+// meantime.
 func (r *Registry) endSessionsUnderParent(name string) {
 	if r.Launches == nil {
 		return
 	}
-	pids := r.Launches.RootPIDsByParent(name)
-	ended := r.Launches.EndByParent(name)
+	ended, roots := r.Launches.EndByParent(name)
 	if ended > 0 {
 		slog.Info("relaysessions launch ended; ending its project sessions and killing their process groups",
-			"parent", name, "sessions", ended, "roots", len(pids))
+			"parent", name, "sessions", ended, "roots", len(roots))
 	}
-	for _, pid := range pids {
-		KillProcessGroupPID(pid)
+	for _, root := range roots {
+		if !r.Launches.RootStillAlive(root.PID, root.StartSec, root.StartUsec) {
+			slog.Warn("relaysessions root pid no longer matches its bound start time; skipping kill to avoid signalling a recycled pid",
+				"parent", name, "pid", root.PID)
+			continue
+		}
+		KillProcessGroupPID(root.PID)
 	}
 }
 

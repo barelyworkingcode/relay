@@ -688,6 +688,16 @@ func (o *ServiceOps) SetAutostart(id string, on bool) error {
 }
 
 func (o *ServiceOps) Start(id string) error {
+	if id == config.RelaySessionsServiceID {
+		// The stored record for this id is deliberately bare (no Command --
+		// see EnsureBuiltinRelaySessionsRecord), so a bare pass-through to
+		// Registry.Start would reach cfg.Validate() and fail with "service
+		// command is required," a correct but opaque answer for a caller who
+		// has no way to know this record is special. StartAllAutostart is
+		// the only path that starts it, using its own fully-populated
+		// synthesis (EnsureBuiltinRelaySessionsService), never this one.
+		return invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be started manually", id))
+	}
 	svc, _ := config.FindServiceByID(o.Store.Get(), id)
 	if svc == nil {
 		return fmt.Errorf("%w: %s", errServiceNotFound, id)

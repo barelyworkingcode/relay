@@ -42,11 +42,9 @@ func BuiltinRelaySessionsService(relayBin, configDir string, autostart bool) con
 // relaysessions record synthesized in place of whatever settings.json held
 // for that id. Autostart is the only value a stored record contributes; a
 // settings.json with no relaysessions record yet gets one with autostart
-// true, the same "an install that has never decided turns the feature on"
-// default ensureDefaultModelEndpoint applies to the model broker's TCP
-// listener -- both ride in on the same build. Does not mutate services;
-// safe to call on a clone of the live settings before StartAllAutostart /
-// ReclaimOrphans see it.
+// true -- an install that has never decided turns the built-in session host
+// on by default. Does not mutate services; safe to call on a clone of the
+// live settings before StartAllAutostart / ReclaimOrphans see it.
 func EnsureBuiltinRelaySessionsService(services []config.ServiceConfig, relayBin, configDir string) []config.ServiceConfig {
 	autostart := true
 	out := make([]config.ServiceConfig, 0, len(services)+1)
@@ -58,4 +56,27 @@ func EnsureBuiltinRelaySessionsService(services []config.ServiceConfig, relayBin
 		out = append(out, svc)
 	}
 	return append(out, BuiltinRelaySessionsService(relayBin, configDir, autostart))
+}
+
+// EnsureBuiltinRelaySessionsRecord adds a relaysessions record to s.Services
+// iff none exists yet, carrying DisplayName, Autostart and Capabilities but
+// never Command or Args -- sanitizeIfBuiltin strips those from a stored
+// record on every load regardless, so writing them here would be dead
+// weight, not a shortcut. Without a stored record at all, ServiceOps.List
+// and SetAutostart (cmd/relay/service_ops.go, which read settings.json
+// directly rather than through EnsureBuiltinRelaySessionsService's
+// in-memory synthesis) have nothing to act on: `relay service list` never
+// shows the session host, and there is no way to turn its autostart back
+// off. Idempotent and safe to call every start: an existing record, of any
+// Autostart value, is left untouched.
+func EnsureBuiltinRelaySessionsRecord(s *config.Settings) {
+	if svc, _ := config.FindServiceByID(s, config.RelaySessionsServiceID); svc != nil {
+		return
+	}
+	s.AddService(config.ServiceConfig{
+		ID:           config.RelaySessionsServiceID,
+		DisplayName:  "Session Host",
+		Autostart:    true,
+		Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilitySessions},
+	})
 }

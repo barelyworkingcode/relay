@@ -18,10 +18,10 @@ import (
 // "dev" rather than failing or lying about a release it isn't.
 var buildVersion = "dev"
 
-// HelperCDHash and HelperTeam are set by build.sh via -ldflags -X, in the
-// order SP3 verified: build+sign Contents/Helpers/relay-sessions, read its
-// CDHash, then build relay with that hash embedded (`R/build.sh`'s helper
-// step, before the existing `go build -o relay` line). HelperTeam is the
+// HelperCDHash and HelperTeam are set by build.sh via -ldflags -X. build.sh
+// must build and sign Contents/Helpers/relay-sessions and read its CDHash
+// before it builds relay, since relay's own binary embeds that hash to
+// verify the helper at launch. HelperTeam is the
 // Developer ID team OU string; empty on an ad-hoc build, where SP3's
 // ad-hoc note applies (gate on cdhash alone, skip the team requirement
 // entirely -- it cannot be satisfied without a certificate). A plain
