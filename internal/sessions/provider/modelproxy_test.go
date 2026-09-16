@@ -92,6 +92,65 @@ func TestStartModelProxy_HeaderlessRequestNeverReachesBroker(t *testing.T) {
 	}
 }
 
+// TestStartModelProxy_ConnectionHeaderCannotStripCredential is the
+// regression test for the gap in requireAPIKeyHeader's fix: a client can
+// name Authorization (or X-Api-Key) in its own Connection header to get
+// net/http's stock hop-by-hop stripping to remove it from the outbound
+// request after requireAPIKeyHeader has already let the request through.
+// The broker must still see the real credential.
+func TestStartModelProxy_ConnectionHeaderCannotStripCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		headerName string
+		headerVal  string
+	}{
+		{"Authorization", "Authorization", "Bearer sneaky"},
+		{"X-Api-Key", "X-Api-Key", "sneaky2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := shortTempDir(t)
+			sock := filepath.Join(dir, "model.sock")
+
+			var brokerSawAuth, brokerSawKey string
+			fakeBroker(t, sock, func(w http.ResponseWriter, r *http.Request) {
+				brokerSawAuth = r.Header.Get("Authorization")
+				brokerSawKey = r.Header.Get("X-Api-Key")
+				w.WriteHeader(http.StatusOK)
+			})
+
+			baseURL, proxy, err := startModelProxy(sock)
+			if err != nil {
+				t.Fatalf("startModelProxy: %v", err)
+			}
+			defer proxy.Close()
+
+			req, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/models", strings.NewReader("ping"))
+			req.Header.Set(tc.headerName, tc.headerVal)
+			req.Header.Set("Connection", tc.headerName)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+
+			switch tc.headerName {
+			case "Authorization":
+				if brokerSawAuth != tc.headerVal {
+					t.Errorf("brokerSawAuth = %q, want %q", brokerSawAuth, tc.headerVal)
+				}
+			case "X-Api-Key":
+				if brokerSawKey != tc.headerVal {
+					t.Errorf("brokerSawKey = %q, want %q", brokerSawKey, tc.headerVal)
+				}
+			}
+		})
+	}
+}
+
 // TestStartModelProxy_XAPIKeyHeaderAloneIsAccepted confirms the alternate
 // accepted header is actually honored, not just Authorization.
 func TestStartModelProxy_XAPIKeyHeaderAloneIsAccepted(t *testing.T) {
