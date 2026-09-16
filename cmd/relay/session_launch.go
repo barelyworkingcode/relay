@@ -241,6 +241,13 @@ type LaunchResult struct {
 	AuditFields sessionLaunchAuditFields
 }
 
+// mintModelKey is an indirection, not a call: Mint fails only when the
+// kernel refuses entropy, which no test can provoke, and the refusal it
+// produces is the one that must not leave a session's artifacts behind.
+var mintModelKey = func(t *ModelKeyTable, projectID, label string) (string, error) {
+	return t.Mint(projectID, label)
+}
+
 // AuthorizeLaunch runs every SH §3.2 check in order — caller, project,
 // directory, template/model, permission policy — and, only once every one
 // has passed, mints the session id (unless req.Resume supplies one already)
@@ -353,14 +360,6 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		SessionRequest: sessionRequest,
 	}
 
-	if sandbox {
-		profilePath, err := writeSessionSandboxProfile(settings, proj, directory, sessionID)
-		if err != nil {
-			return nil, invalidRequest("sandbox_unavailable", err.Error(), baseFields)
-		}
-		spec.Sandbox = &hostapi.SandboxSpec{ProfilePath: profilePath}
-	}
-
 	if proj != nil {
 		projJSON, err := json.Marshal(struct {
 			ID   string `json:"id"`
@@ -412,12 +411,24 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	var modelKeyLabel string
 	if wantsModelKey(req.Kind, tmpl) {
 		label := "session:" + sessionID
-		key, err := modelKeys.Mint(req.ProjectID, label)
+		key, err := mintModelKey(modelKeys, req.ProjectID, label)
 		if err != nil {
 			return nil, invalidRequest("model_key_mint_failed", err.Error(), baseFields)
 		}
 		spec.ModelKey = key
 		modelKeyLabel = label
+	}
+
+	// Last, after every refusal above: writing the profile creates a file on
+	// disk that only a launch or a session end sweeps away, so a refusal
+	// reached after this point would leave one behind with no session to
+	// own it.
+	if sandbox {
+		profilePath, err := writeSessionSandboxProfile(settings, proj, directory, sessionID)
+		if err != nil {
+			return nil, invalidRequest("sandbox_unavailable", err.Error(), baseFields)
+		}
+		spec.Sandbox = &hostapi.SandboxSpec{ProfilePath: profilePath}
 	}
 
 	var ledgerRecord *ledger.Record

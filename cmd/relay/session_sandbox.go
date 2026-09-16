@@ -24,10 +24,20 @@ import (
 )
 
 // C7's two fixed loopback denials: eve's dev server and relayLLM's status
-// listener. The model endpoint's port is not a constant here — it is read
-// from settings, so an operator who moved it does not silently lose the one
-// loopback port a session is meant to reach.
+// listener. Relay's own API port joins them at build time (SH §5.2) because
+// it is bound only when RELAY_API_LISTEN asks for it. The model endpoint's
+// port is not a constant here either — it is read from settings, so an
+// operator who moved it does not silently lose the one loopback port a
+// session is meant to reach.
 var sandboxDeniedLoopbackPorts = []int{3000, 8181}
+
+// eveServiceID is the id eve registers under (`relay service register --id
+// eve`, eve/docs/setup.md). Eve's auth material lives in its own data
+// directory rather than anywhere relay owns, so the deny below is derived
+// from that registered record and nothing else: a machine where eve is not
+// registered, or is registered under some other id, gets no eve rule at all
+// rather than one naming a path eve never writes.
+const eveServiceID = "eve"
 
 // sessionProfilesDir is C5's host data dir plus C7's "profiles/": relay
 // writes the profile, relay-sessions' shim reads it by absolute path.
@@ -77,7 +87,13 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	// not end up denying a directory it never created.
 	relayDir := bridge.ConfigDir()
 	relayLLMDir := filepath.Join(appSupport, "relayLLM")
-	eveDir := filepath.Join(appSupport, "eve")
+
+	readDeny := []string{relayDir, relayLLMDir}
+	unixConnectDeny := []string{relayDir, relayLLMDir}
+	if eveData := eveDataDir(settings); eveData != "" {
+		readDeny = append(readDeny, eveData)
+		unixConnectDeny = append(unixConnectDeny, eveData)
+	}
 
 	workDir := directory
 	if proj != nil && proj.Path != "" {
@@ -109,24 +125,92 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 		WriteAllowFiles: []string{filepath.Join(home, ".claude.json")},
 		// C7's "<other sessions' data dirs>" needs no entry of its own: the
 		// host keeps them under relay's own directory, which is denied whole.
-		ReadDeny: append([]string{relayDir, relayLLMDir, eveDir}, otherProjectPaths(settings, proj, workDir)...),
+		ReadDeny: append(readDeny, otherProjectPaths(settings, proj, workDir)...),
 		// Directory prefixes, not just the four named sockets C7 lists: a
 		// literal-only denylist leaves any socket that appears in one of
 		// these directories later reachable under (allow default) — SP2 row
 		// 6 measured exactly that.
-		UnixConnectDenyDirs: []string{relayDir, relayLLMDir, eveDir},
+		UnixConnectDenyDirs: unixConnectDeny,
 		UnixConnectAllow: []string{
 			bridge.SocketPath(),
 			bridge.ModelSocketPath(),
 			service.RelaySessionsHookSocketPath(relayDir),
 		},
-		TCPLoopbackDeny: sandboxDeniedLoopbackPorts,
+		TCPLoopbackDeny: deniedLoopbackPorts(),
 		DenySetIDExec:   true,
 	}
 	if port, ok := modelEndpointLoopbackPort(settings); ok {
 		spec.TCPLoopbackAllow = []int{port}
 	}
 	return spec, nil
+}
+
+// eveDataDir is where eve keeps auth.json and sessions.json, resolved from
+// eve's own registered service record rather than guessed: eve reads
+// `--data <path>` from its argv and otherwise writes beside its checkout
+// (`eve/server.js` parseDataDir). A relative `--data` resolves against the
+// working directory relay launches the service in, which is what eve's
+// process.cwd() is.
+//
+// An empty answer — eve unregistered, or registered with no working
+// directory to anchor the default against — means no eve rule is emitted.
+// That is deliberate: a subtree rule naming a directory nothing writes
+// reads as enforcement and denies nothing.
+func eveDataDir(settings *config.Settings) string {
+	if settings == nil {
+		return ""
+	}
+	svc, _ := config.FindServiceByID(settings, eveServiceID)
+	if svc == nil {
+		return ""
+	}
+	for i, arg := range svc.Args {
+		if arg != "--data" || i+1 >= len(svc.Args) {
+			continue
+		}
+		data := svc.Args[i+1]
+		if filepath.IsAbs(data) {
+			return filepath.Clean(data)
+		}
+		if svc.WorkingDir == "" {
+			return ""
+		}
+		return filepath.Join(svc.WorkingDir, data)
+	}
+	if svc.WorkingDir == "" {
+		return ""
+	}
+	return filepath.Join(svc.WorkingDir, "data")
+}
+
+// deniedLoopbackPorts is SH §5.2's TCP row: the two fixed ports plus relay's
+// own API listener when an operator bound one.
+func deniedLoopbackPorts() []int {
+	ports := append([]int(nil), sandboxDeniedLoopbackPorts...)
+	if port, ok := apiListenLoopbackPort(); ok {
+		ports = append(ports, port)
+	}
+	return ports
+}
+
+// apiListenLoopbackPort is the port RELAY_API_LISTEN names, read from the
+// environment because that is the only place relay itself reads it
+// (trayapp's ListenLoopback call). Unset is the default and contributes
+// nothing — there is no listener to deny.
+func apiListenLoopbackPort() (int, bool) {
+	addr := os.Getenv(EnvAPIListen)
+	if addr == "" {
+		return 0, false
+	}
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 {
+		return 0, false
+	}
+	return port, true
 }
 
 // ensureToolchainDirs returns C7's agent-state and toolchain write

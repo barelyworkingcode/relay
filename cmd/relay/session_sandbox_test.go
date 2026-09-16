@@ -5,6 +5,7 @@ package main
 // not sandboxed.
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,12 +20,13 @@ import (
 // normalizeSandboxProfile replaces every machine-specific path in a
 // generated profile with a stable placeholder. Order matters: a directory
 // that contains another must be replaced after it, or it eats the prefix.
-func normalizeSandboxProfile(t *testing.T, body, projectA, projectB, home string) string {
+func normalizeSandboxProfile(t *testing.T, body, projectA, projectB, home, eveData string) string {
 	t.Helper()
 	type sub struct{ from, to string }
 	subs := []sub{
 		{sandboxRealPath(t, projectA), "<PROJECT>"},
 		{sandboxRealPath(t, projectB), "<OTHER_PROJECT>"},
+		{sandboxRealPath(t, eveData), "<EVE_DATA>"},
 		{sandboxRealPath(t, home), "<HOME>"},
 		{sandboxRealPath(t, bridge.ConfigDir()), "<RELAY_DIR>"},
 		{sandboxRealPath(t, os.TempDir()), "<DARWIN_TMP>"},
@@ -45,6 +47,29 @@ func setModelEndpoint(t *testing.T, store config.SettingsStore) {
 	}); err != nil {
 		t.Fatalf("store.With: %v", err)
 	}
+}
+
+// addEveTestService registers eve the way eve's own setup does — a working
+// directory holding the checkout, no --data flag — and returns the data
+// directory relay must derive from that record.
+func addEveTestService(t *testing.T, store config.SettingsStore) string {
+	t.Helper()
+	checkout := t.TempDir()
+	data := filepath.Join(checkout, "data")
+	if err := os.MkdirAll(data, 0o700); err != nil {
+		t.Fatalf("mkdir eve data: %v", err)
+	}
+	if err := store.With(func(s *config.Settings) {
+		s.AddService(config.ServiceConfig{
+			ID:         eveServiceID,
+			Command:    "node",
+			Args:       []string{"--env-file=.env", "server.js"},
+			WorkingDir: checkout,
+		})
+	}); err != nil {
+		t.Fatalf("store.With: %v", err)
+	}
+	return data
 }
 
 func sandboxRealPath(t *testing.T, p string) string {
@@ -97,6 +122,7 @@ func TestAuthorizeLaunch_SandboxProfileGoldenPerKind(t *testing.T) {
 			store := newLaunchTestStore(t)
 			proj := addLaunchTestProject(t, store, nil)
 			other := addLaunchTestProject(t, store, func(p *config.Project) { p.ID = "p2"; p.Name = "Other" })
+			eveData := addEveTestService(t, store)
 			setModelEndpoint(t, store)
 			home := t.TempDir()
 			t.Setenv("HOME", home)
@@ -106,7 +132,7 @@ func TestAuthorizeLaunch_SandboxProfileGoldenPerKind(t *testing.T) {
 			req.ProjectID = proj.ID
 			_, body := launchWithSandbox(t, req, store)
 
-			got := normalizeSandboxProfile(t, body, proj.Path, other.Path, home)
+			got := normalizeSandboxProfile(t, body, proj.Path, other.Path, home, eveData)
 			if got != string(golden) {
 				t.Fatalf("profile drifted from the golden file.\ngot:\n%s\nwant:\n%s", got, golden)
 			}
@@ -238,6 +264,123 @@ func TestOtherProjectPaths_SkipsWhatCannotBeDenied(t *testing.T) {
 	got := otherProjectPaths(settings, &self, self.Path)
 	if len(got) != 1 || got[0] != "/private/tmp/peer" {
 		t.Fatalf("otherProjectPaths = %v, want only the peer project", got)
+	}
+}
+
+// TestEveDataDir_ComesFromEvesRegisteredRecord covers every shape of eve's
+// service record, including the two that yield nothing: a path relay cannot
+// derive must produce no rule at all, because a subpath deny on a directory
+// eve never writes reads as enforcement and is not.
+func TestEveDataDir_ComesFromEvesRegisteredRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		svc  *config.ServiceConfig
+		want string
+	}{
+		{"default beside the checkout", &config.ServiceConfig{ID: eveServiceID, WorkingDir: "/private/tmp/eve"}, "/private/tmp/eve/data"},
+		{"absolute --data", &config.ServiceConfig{ID: eveServiceID, WorkingDir: "/private/tmp/eve", Args: []string{"server.js", "--data", "/private/tmp/evedata"}}, "/private/tmp/evedata"},
+		{"relative --data resolves against the working dir", &config.ServiceConfig{ID: eveServiceID, WorkingDir: "/private/tmp/eve", Args: []string{"--data", "state"}}, "/private/tmp/eve/state"},
+		{"no working dir to anchor the default", &config.ServiceConfig{ID: eveServiceID}, ""},
+		{"--data with no value", &config.ServiceConfig{ID: eveServiceID, Args: []string{"--data"}}, ""},
+		{"eve not registered", nil, ""},
+		{"another service is not eve", &config.ServiceConfig{ID: "relay-llm", WorkingDir: "/private/tmp/relayllm"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := &config.Settings{}
+			if tc.svc != nil {
+				settings.Services = []config.ServiceConfig{*tc.svc}
+			}
+			if got := eveDataDir(settings); got != tc.want {
+				t.Fatalf("eveDataDir = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAuthorizeLaunch_EveDenyNamesARealDirectory is the assertion a deny
+// rule has to pass to be worth emitting: the directory it names exists, and
+// it is the one eve's own registered record puts its auth material in.
+func TestAuthorizeLaunch_EveDenyNamesARealDirectory(t *testing.T) {
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+	eveData := addEveTestService(t, store)
+
+	_, body := launchWithSandbox(t, LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude,
+	}, store)
+
+	for _, want := range []string{
+		`(subpath "` + sandboxRealPath(t, eveData) + `")`,
+		`(remote unix-socket (path-regex #"^` + sandboxRealPath(t, eveData) + `/"))`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("profile is missing %s\ngot:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, filepath.Join("Application Support", "eve")) {
+		t.Errorf("profile names an Application Support directory eve does not use:\n%s", body)
+	}
+
+	t.Run("no record, no rule", func(t *testing.T) {
+		store := newLaunchTestStore(t)
+		proj := addLaunchTestProject(t, store, nil)
+		_, body := launchWithSandbox(t, LaunchRequest{
+			Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude,
+		}, store)
+		if strings.Contains(body, "eve") {
+			t.Errorf("a machine with no eve registered got an eve rule:\n%s", body)
+		}
+	})
+}
+
+// TestAuthorizeLaunch_DeniesRelayAPIListenerPort covers SH §5.2's third TCP
+// denial, the one whose port exists only when an operator binds it.
+func TestAuthorizeLaunch_DeniesRelayAPIListenerPort(t *testing.T) {
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+	t.Setenv(EnvAPIListen, "127.0.0.1:8791")
+
+	_, body := launchWithSandbox(t, LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude,
+	}, store)
+
+	want := "(deny network-outbound\n" +
+		"  (remote ip \"localhost:3000\")\n" +
+		"  (remote ip \"localhost:8181\")\n" +
+		"  (remote ip \"localhost:8791\"))\n"
+	if !strings.Contains(body, want) {
+		t.Fatalf("profile does not deny relay's own API port.\nwant:\n%s\ngot:\n%s", want, body)
+	}
+}
+
+// TestAuthorizeLaunch_MintFailureLeavesNoProfile pins the ordering that
+// makes the profile the last thing a launch creates: a refusal after it was
+// written would leave a file no session owns and no cleanup path visits.
+func TestAuthorizeLaunch_MintFailureLeavesNoProfile(t *testing.T) {
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+
+	original := mintModelKey
+	t.Cleanup(func() { mintModelKey = original })
+	mintModelKey = func(*ModelKeyTable, string, string) (string, error) {
+		return "", errors.New("no entropy")
+	}
+
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), newLaunchTestLedger(t), LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPi,
+	})
+	if result != nil || refusal == nil {
+		t.Fatalf("launch was authorized despite a failed mint: %+v", result)
+	}
+	if refusal.Code != "model_key_mint_failed" {
+		t.Fatalf("refusal code = %q, want model_key_mint_failed", refusal.Code)
+	}
+	entries, err := os.ReadDir(sessionProfilesDir())
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read profiles dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a refused launch left %d profile(s) behind", len(entries))
 	}
 }
 
