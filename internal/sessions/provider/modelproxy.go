@@ -77,6 +77,26 @@ func startModelProxy(socketPath string) (string, *modelProxy, error) {
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
 			r.Out.Host = r.In.Host
+
+			// This is subtle: httputil.ReverseProxy strips hop-by-hop
+			// headers from r.Out before Rewrite ever runs, and per RFC
+			// 7230 §6.1 a client names a header as hop-by-hop simply by
+			// listing it in its own Connection header — so a request with
+			// "Connection: Authorization" gets Authorization stripped
+			// regardless of requireAPIKeyHeader having already seen it on
+			// r.In. Re-assert both credential headers from r.In last, so
+			// nothing later in this func can re-trigger the strip. Map
+			// assignment, not .Set(): resolveBearerHeaders on the far side
+			// treats a multi-value header as present-but-invalid and must
+			// see every value the client actually sent, not one collapsed
+			// by .Set().
+			for _, h := range []string{"Authorization", "X-Api-Key"} {
+				if v, ok := r.In.Header[h]; ok {
+					r.Out.Header[h] = v
+				} else {
+					r.Out.Header.Del(h)
+				}
+			}
 		},
 		Transport: transport,
 	}
