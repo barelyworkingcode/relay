@@ -107,9 +107,15 @@ to prompt turns that into an immediate, reportable error whose remedy is
 `internal/sessions` (the `relay-sessions` binary described in
 [`docs/session-host.md`](session-host.md)) is the newer launch path for
 `pty`/`claude`/`pi`/`chat` sessions and applies its own confinement (C7
-SBPL sandbox profiles) to a **console** project's session. A host project's
-session is refused that confinement outright, not merely skipped by
-omission: `cmd/relay/session_launch.go`'s `AuthorizeLaunch` computes
+SBPL sandbox profiles) to a **console** project's session. Today that
+confinement is real for a `pty` launch and for a `chat` session's optional
+relay-MCP tool child, but not for `claude`/`pi`, which run with no sandbox
+and no launch identity despite relay believing otherwise — an existing,
+documented gap, not something this document's own claim below is exempt
+from: see [`docs/session-host.md`](session-host.md#what-is-not-built-yet)
+(gap 1) and `internal/sessions/hostapi/types.go`'s own package doc. A host
+project's session is refused that confinement outright, not merely skipped
+by omission: `cmd/relay/session_launch.go`'s `AuthorizeLaunch` computes
 `sandbox := wantsSandbox(req.Kind, tmpl) && !(proj != nil &&
 proj.IsHosted())` — the whole point of the sandbox is confining a *local*
 process, and a host project's actual target runs on the far end of `ssh`,

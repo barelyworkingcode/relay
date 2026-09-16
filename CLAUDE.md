@@ -510,9 +510,14 @@ service record (`internal/service/builtin_sessions.go`, capabilities
 talking to relay over a peer-verified internal API (`POST /launch`, `POST
 /terminate`) rather than the manifest dispatcher's proxied surface. Sessions
 launch under `relay-sessions exec`, a shim whose own pid is the session's
-root — what relay's launch identity binds to, and what C3's process-ancestry
-membership walk (`internal/membership`) treats as the root a caller must
-descend from to be admitted tokenlessly. A `project_session`-kind launch
+root — true for a `pty` launch and for a `chat` session's optional
+relay-MCP tool child; a `claude`/`pi` launch, and a `chat` session's own
+provider process, run with no shim at all today, a known gap (see
+[`docs/session-host.md`](docs/session-host.md#what-is-not-built-yet), gap
+1). Where the shim is in play, its pid is what relay's launch identity
+binds to, and what C3's process-ancestry membership walk
+(`internal/membership`) treats as the root a caller must descend from to be
+admitted tokenlessly. A `project_session`-kind launch
 identity ([`docs/launch-identity.md`](docs/launch-identity.md#project_session-the-session-host-identity-kind))
 is the session-host root's own credential; it and C3 membership together are
 what replaced the retired `allow_cwd_auth` directory-auth fallback.

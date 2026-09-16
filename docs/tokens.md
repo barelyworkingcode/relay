@@ -771,18 +771,27 @@ for the mechanism.
 
 ## What determines a caller's authority now
 
-Summarizing the state this document's history led to, in the order
-`resolveAuth` (`cmd/relay/router.go`) actually checks them — every one of
+Summarizing the state this document's history led to. This is **not** one
+ordered list with a fallthrough: a caller acting as a project's grant is
+authorized by `resolveAuth` (`cmd/relay/router.go`), and a caller acting as
+a fixed service-kind capability is authorized by the entirely separate
+`requireServiceIdentity`/`identityAllowed` path (`cmd/relay/router.go`,
+[`docs/session-host.md`](session-host.md#the-sessionexited-bridge-notification)
+has a worked example) — the second never consults `resolveAuth` at all.
+Within `resolveAuth`, in the order it actually checks them — every one of
 these is real and reachable today, not aspirational:
 
 1. **A project token** (`RELAY_PROJECT_TOKEN`), if presented, resolves to
    its project's grant. Present-but-invalid is a hard refusal; it never
    falls through to a later step.
-2. **A bound launch identity** on the peer's own kernel-attested connection
-   — either a `service`-kind identity's fixed capability set
-   ([`docs/launch-identity.md`](launch-identity.md#identity-kinds-and-capabilities)),
-   or a `project_session`-kind identity (the session-host root process
-   itself) acting under its named project's own live grant.
+2. **A bound `project_session`-kind launch identity** on the peer's own
+   kernel-attested connection (the session-host root process itself) acting
+   under its named project's own live grant. `resolveAuth` refuses outright
+   a bound identity of any *other* kind here — it checks `id.Kind !=
+   service.IdentityKindProjectSession` and returns unauthorized rather than
+   trying step 3 — so a `service`-kind identity never falls through to C3
+   membership; it is authorized on the separate path named above instead
+   ([`docs/launch-identity.md`](launch-identity.md#identity-kinds-and-capabilities)).
 3. **C3 membership**: no token, no bound identity of the peer's own, but the
    peer is a kernel-verified process-tree descendant of a live
    `project_session`'s root — the mechanism directly above.
