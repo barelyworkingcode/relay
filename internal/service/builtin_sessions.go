@@ -15,6 +15,22 @@ func RelaySessionsHelperPath(relayBin string) string {
 	return filepath.Join(filepath.Dir(relayBin), "..", "Helpers", "relay-sessions")
 }
 
+// RelaySessionsInternalSocketPath and RelaySessionsHookSocketPath are the
+// two socket paths the built-in record passes on relay-sessions' command
+// line. They are functions rather than inline strings because relay's
+// session sandbox generator (C7) has to name the hook socket as the one
+// socket in relay's own directory a session may connect to: a rename that
+// reached only one of the two would leave the sandbox denying the socket the
+// host actually serves, which reads as Claude Code's permission hook timing
+// out rather than as a path mismatch.
+func RelaySessionsInternalSocketPath(configDir string) string {
+	return filepath.Join(configDir, "relaysessions-internal.sock")
+}
+
+func RelaySessionsHookSocketPath(configDir string) string {
+	return filepath.Join(configDir, "relaysessions-hook.sock")
+}
+
 // BuiltinRelaySessionsService returns the synthesized service record for
 // relay-sessions (SH §2.1): built in, never user-registered. Command, Args,
 // DisplayName and Capabilities are always exactly these values, resolved
@@ -30,8 +46,8 @@ func BuiltinRelaySessionsService(relayBin, configDir string, autostart bool) con
 		Command:     RelaySessionsHelperPath(relayBin),
 		Args: []string{
 			"service",
-			"-internal-socket", filepath.Join(configDir, "relaysessions-internal.sock"),
-			"-hook-socket", filepath.Join(configDir, "relaysessions-hook.sock"),
+			"-internal-socket", RelaySessionsInternalSocketPath(configDir),
+			"-hook-socket", RelaySessionsHookSocketPath(configDir),
 		},
 		Autostart:    autostart,
 		Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilitySessions},
