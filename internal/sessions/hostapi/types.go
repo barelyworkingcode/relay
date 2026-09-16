@@ -6,12 +6,34 @@
 //   - the hook socket, dialed by `relay-sessions hook` processes (running
 //     as a Claude Code PreToolUse hook), carrying POST /permission.
 //
-// This package is a skeleton in the sense the plan's R-S5 row describes: it
-// holds enough of a session table to make /launch and /terminate meaningful
-// — spawning a real internal/sessions/shim child, tracking its root pid and
-// start time, answering /permission's membership question against that
-// table — but no real terminal, Claude, or pi hosting sits behind it yet.
-// That lands in R-S6/R-S7b/R-S7c on top of this package's Launcher.
+// handleLaunch/handleTerminate are a thin dispatcher, not a spawner: a "pty"
+// launch routes to internal/sessions/terminal.Manager and a "claude"/"pi"/
+// "chat" launch routes to internal/sessions/session.Manager, each of which
+// owns its own shim-spawn (or direct-spawn) mechanics end to end, including
+// the identity Hello wait. This package's own sessionTable now exists only
+// to answer /permission's C3 membership walk for pty sessions — the shim is
+// that launch's process root, the same way it always was — and to recall a
+// terminal session's root pid at exit time for the SessionExited report;
+// provider-hosted (claude/pi/chat) sessions never populate it, since Claude
+// Code's own PreToolUse hook against those authenticates with a per-session
+// hook token (internal/sessions/permission.PermissionManager), not process
+// ancestry, and the underlying provider.Provider interface exposes no pid
+// for this package to key a membership root on even if it wanted to.
+//
+// Wiring /permission's actual policy decision to a live PermissionManager —
+// today every admitted call still gets a fixed "deny" — and mounting the
+// eve-facing manifest HTTP/WS surface (internal/sessions/api's Hub/handlers)
+// are both left to a later unit; neither is this package's job yet.
+//
+// A "claude"/"pi" launch dispatched through this package runs without the
+// sandbox profile or launch identity relay believes it minted for it:
+// provider.ClaudeConfig/PiConfig carry no Sandbox/Identity fields at all
+// (unlike ChatConfig, which does), and both providers spawn via a bare
+// exec.Command — no shim, no sandbox-exec, no identity presented anywhere.
+// relay's own launch-authorization path writes a real sandbox profile file
+// and mints a real launch secret for every claude/pi launch regardless, and
+// this package answers 201 as if both were applied. Wiring sandboxing and
+// identity into ClaudeConfig/PiConfig is out of scope here.
 package hostapi
 
 import "encoding/json"
@@ -86,6 +108,30 @@ const (
 type TerminateRequest struct {
 	SessionID string `json:"session_id"`
 	Reason    string `json:"reason"`
+}
+
+// projectRef mirrors LaunchRequest's non-null "project" object shape
+// (cmd/relay/session_launch.go's own inline anonymous struct) — duplicated
+// rather than imported for the same reason permissionRequestBody is: cmd
+// depends on this package, never the reverse.
+type projectRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// sessionRequestBody mirrors cmd/relay/session_launch.go's
+// eveSessionRequestBody — C5's "session_request: claude/pi/chat: eve's POST
+// /api/sessions body after relay's policy merge" — duplicated rather than
+// imported for the same reason permissionRequestBody is.
+type sessionRequestBody struct {
+	ProjectID      string          `json:"projectId"`
+	Directory      string          `json:"directory"`
+	Name           string          `json:"name"`
+	Model          string          `json:"model"`
+	Settings       json.RawMessage `json:"settings,omitempty"`
+	SystemPrompt   string          `json:"systemPrompt,omitempty"`
+	AppendClaudeMd bool            `json:"appendClaudeMd,omitempty"`
 }
 
 // permissionRequestBody mirrors internal/sessions/hook's wire shape for

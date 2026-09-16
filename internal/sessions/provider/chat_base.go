@@ -468,8 +468,20 @@ func (p *ChatProvider) Kill() {
 	if p.mcpManager != nil {
 		p.mcpManager.Close()
 	}
-	p.started.Store(false)
+	wasAlive := p.started.CompareAndSwap(true, false)
 	slog.Info("chat provider killed", "session", p.session.ID)
+
+	// A chat session has no OS process and therefore no waitForExit
+	// goroutine of its own — claude.go/pi.go emit process_exited from
+	// theirs. Firing it here, exactly once per live-to-dead transition, is
+	// what makes the manager's exit handler (and, through it, relay's own
+	// SessionExited-driven identity/model-key/sandbox-profile cleanup) run
+	// for a chat session at all; without it, ending one this way leaks its
+	// credentials for the life of the host process.
+	if wasAlive {
+		data, _ := json.Marshal(map[string]any{"exitCode": 0})
+		p.handler("process_exited", data)
+	}
 }
 
 func (p *ChatProvider) DeleteSession() error           { return nil }

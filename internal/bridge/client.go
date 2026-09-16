@@ -20,8 +20,17 @@ type Client struct {
 // relies entirely on C3 membership, which the bridge resolves from the
 // connection's own peer credentials, not from anything this client says.
 func NewClient(token string) *Client {
+	return NewClientAt(SocketPath(), token)
+}
+
+// NewClientAt is NewClient with an explicit socket path, for a caller that
+// must not re-derive SocketPath()'s default — a process launched as a
+// separate binary (relay-sessions) never inherits relay's own ConfigDir
+// override across the exec boundary, so it has to reuse whatever socket
+// path it was actually launched with instead.
+func NewClientAt(sockPath, token string) *Client {
 	return &Client{
-		sockPath: SocketPath(),
+		sockPath: sockPath,
 		token:    token,
 	}
 }
@@ -105,6 +114,27 @@ func (c *Client) RegisterManifest(req RegisterManifestRequest) error {
 	})
 	if err != nil {
 		return fmt.Errorf("register manifest: %w", err)
+	}
+	return checkError(resp)
+}
+
+// SessionExited sends C5's advisory, tokenless SessionExited report: this
+// client's own token travels as-is (empty for relay-sessions' real caller,
+// which relies entirely on C3 membership over the connection's own peer
+// credentials, not on anything this request asserts — see NewClient's own
+// doc comment).
+func (c *Client) SessionExited(req SessionExitedRequest) error {
+	args, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal session exited: %w", err)
+	}
+	resp, err := c.send(BridgeRequest{
+		Type:      ReqSessionExited,
+		Arguments: args,
+		Token:     c.token,
+	})
+	if err != nil {
+		return fmt.Errorf("session exited: %w", err)
 	}
 	return checkError(resp)
 }
