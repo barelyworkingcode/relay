@@ -40,6 +40,9 @@ type terminalLogger struct {
 }
 
 func newTerminalLogger(dir, id string) (*terminalLogger, error) {
+	if !isValidTerminalID(id) {
+		return nil, fmt.Errorf("invalid terminal id")
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("mkdir log dir: %w", err)
 	}

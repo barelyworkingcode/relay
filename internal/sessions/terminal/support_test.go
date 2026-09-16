@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Binaries are built once per test run into a short /tmp dir (macOS caps
@@ -80,7 +81,17 @@ type fakeBridgeMode int
 const (
 	fakeBridgeOK fakeBridgeMode = iota
 	fakeBridgeRefuse
+	// fakeBridgeSlowOK answers OK like fakeBridgeOK but only after a delay,
+	// giving a test a deterministic window in which a Create's spawn is
+	// underway (the shim has said Hello and is waiting) but not yet
+	// reported "started" back to startSession.
+	fakeBridgeSlowOK
 )
+
+// fakeBridgeSlowOKDelay is how long fakeBridgeSlowOK waits before answering
+// OK — long enough for a racing goroutine to reliably land inside the
+// window, short enough to stay well under helloWait.
+const fakeBridgeSlowOKDelay = 800 * time.Millisecond
 
 type capturedHello struct {
 	Type  string `json:"type"`
@@ -127,7 +138,10 @@ func serveFakeBridgeConn(conn net.Conn, mode fakeBridgeMode, received chan captu
 	received <- req
 
 	var resp map[string]any
-	if mode == fakeBridgeOK {
+	if mode == fakeBridgeSlowOK {
+		time.Sleep(fakeBridgeSlowOKDelay)
+	}
+	if mode == fakeBridgeOK || mode == fakeBridgeSlowOK {
 		resp = map[string]any{
 			"type": "OK",
 			"data": map[string]any{

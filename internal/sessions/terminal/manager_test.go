@@ -3,7 +3,9 @@ package terminal
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -271,5 +273,302 @@ func TestSession_CreatedBody_MatchesGoldenTerminalCreatedFrame(t *testing.T) {
 		if gv, ok := got[k]; !ok || gv != want {
 			t.Errorf("field %q = %v, want %v", k, gv, want)
 		}
+	}
+}
+
+// TestSession_Close_DoesNotDeadlock_RawModeFullQueue reproduces F1: a target
+// that puts its tty into raw mode and then never reads stdin (a wedged TUI,
+// a Ctrl-Z'd process) lets the pty's input queue fill from a Write, which
+// then blocks inside the write syscall. Close must still be able to tear
+// the session down — closing the pty fd is what wakes the parked Write —
+// rather than deadlocking on a mutex the blocked Write is holding.
+func TestSession_Close_DoesNotDeadlock_RawModeFullQueue(t *testing.T) {
+	cfg := testConfig(t)
+	mgr := NewManager(cfg)
+
+	sess, err := mgr.Create(CreateSpec{
+		SessionID: "11111111-2222-3333-4444-555555555577",
+		Directory: t.TempDir(),
+		// stty raw disables canonical mode so the kernel queues bytes
+		// instead of discarding them; the target then never reads stdin at
+		// all, so nothing ever drains that queue.
+		Argv: []string{"/bin/sh", "-c", "stty raw -echo; sleep 60"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer mgr.Close(sess.ID)
+
+	time.Sleep(200 * time.Millisecond) // let stty actually take effect
+
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		chunk := bytes.Repeat([]byte{'x'}, 4096)
+		for i := 0; i < 256; i++ {
+			if sess.Write(chunk) != nil {
+				return
+			}
+		}
+	}()
+
+	// Give the writer time to actually fill the queue and block inside the
+	// pty write syscall before Close races it.
+	time.Sleep(300 * time.Millisecond)
+
+	closeDone := make(chan struct{})
+	go func() {
+		sess.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close deadlocked against a raw-mode pty with a full write queue")
+	}
+
+	select {
+	case <-writeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the blocked Write call never returned after Close")
+	}
+}
+
+// TestManager_Create_ConcurrentDuplicateID_NoOrphan reproduces F2: two
+// concurrent Creates for the same session id must not both spawn a live
+// process. The existence check and the table reservation happen under the
+// same lock acquisition, so exactly one of the two racing calls must ever
+// see the id as free.
+func TestManager_Create_ConcurrentDuplicateID_NoOrphan(t *testing.T) {
+	cfg := testConfig(t)
+	mgr := NewManager(cfg)
+
+	spec := CreateSpec{
+		SessionID: "sess-race-dup",
+		Directory: t.TempDir(),
+		Argv:      []string{"/bin/sh", "-c", "sleep 5"},
+	}
+
+	const n = 6
+	var wg sync.WaitGroup
+	results := make([]error, n)
+	sessions := make([]*Session, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			s, err := mgr.Create(spec)
+			results[i] = err
+			sessions[i] = s
+		}()
+	}
+	wg.Wait()
+
+	var succeeded, refused int
+	for i, err := range results {
+		switch {
+		case err == nil:
+			succeeded++
+			if sessions[i] == nil {
+				t.Error("nil error but nil session")
+			}
+		case errors.Is(err, ErrSessionExists):
+			refused++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("succeeded = %d, want exactly 1 (results=%v)", succeeded, results)
+	}
+	if refused != n-1 {
+		t.Fatalf("refused = %d, want %d", refused, n-1)
+	}
+
+	live := mgr.ListSummary()
+	if len(live) != 1 {
+		t.Fatalf("manager table has %d live entries, want 1: %+v", len(live), live)
+	}
+
+	for _, s := range sessions {
+		if s != nil {
+			mgr.Close(s.ID)
+		}
+	}
+}
+
+// TestManager_StopAll_DuringLaunch_LeavesNoOrphan covers the second half of
+// F2: a StopAll landing while a Create is still in the Hello-wait window
+// (spawned but not yet published to the table) must still end up closing
+// that process, not merely ignore it because it wasn't "fully created" yet.
+func TestManager_StopAll_DuringLaunch_LeavesNoOrphan(t *testing.T) {
+	bridgeSock, _ := startFakeBridge(t, fakeBridgeSlowOK)
+	relaySessionsBin, _ := buildBinaries(t)
+	cfg := Config{ShimBinary: relaySessionsBin, LogDir: t.TempDir(), BridgeSocket: bridgeSock}
+	mgr := NewManager(cfg)
+
+	secret := strings.Repeat("c", 64)
+	createErrCh := make(chan error, 1)
+	createSessCh := make(chan *Session, 1)
+	go func() {
+		s, err := mgr.Create(CreateSpec{
+			SessionID: "sess-stopall-race",
+			Directory: t.TempDir(),
+			Argv:      []string{"/bin/sh", "-c", "sleep 5"},
+			Identity:  &IdentitySpec{Secret: secret},
+		})
+		createErrCh <- err
+		createSessCh <- s
+	}()
+
+	// Land inside the fake bridge's artificial delay, i.e. while the slot is
+	// still marked launching and there is no *Session in the table yet.
+	time.Sleep(100 * time.Millisecond)
+	mgr.StopAll()
+
+	var err error
+	select {
+	case err = <-createErrCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Create never returned after racing StopAll")
+	}
+	sess := <-createSessCh
+
+	if err == nil {
+		if _, ok := mgr.Get(sess.ID); ok {
+			t.Fatal("a session created during StopAll must not remain live in the table")
+		}
+		testutil.WaitFor(t, 5*time.Second, func() bool { return !sess.Alive() })
+	}
+
+	if got := mgr.ListSummary(); len(got) != 0 {
+		t.Fatalf("table not empty after StopAll raced a launch: %+v", got)
+	}
+}
+
+// TestManager_Create_IdentityWithoutBridgeSocket_Refused covers F3's second
+// half: an identity-bearing launch with no host-configured bridge socket has
+// nothing legitimate for the shim to Hello against, so Create must refuse it
+// outright rather than let whatever ends up in RELAY_BRIDGE_SOCKET decide.
+func TestManager_Create_IdentityWithoutBridgeSocket_Refused(t *testing.T) {
+	relaySessionsBin, _ := buildBinaries(t)
+	mgr := NewManager(Config{ShimBinary: relaySessionsBin})
+
+	_, err := mgr.Create(CreateSpec{
+		SessionID: "sess-no-bridge",
+		Directory: t.TempDir(),
+		Argv:      []string{"/bin/sh", "-c", "sleep 5"},
+		Identity:  &IdentitySpec{Secret: strings.Repeat("d", 64)},
+	})
+	if !errors.Is(err, ErrNoBridgeSocket) {
+		t.Fatalf("err = %v, want ErrNoBridgeSocket", err)
+	}
+	if _, ok := mgr.Get("sess-no-bridge"); ok {
+		t.Fatal("a refused create must not leave a session in the manager's table")
+	}
+}
+
+// TestBuildShimEnv_HostSocketsAlwaysWin covers F3's first half: a caller
+// naming RELAY_BRIDGE_SOCKET/RELAY_MODEL_SOCKET/RELAY_SESSION_ID in Env must
+// never survive the merge, even when cfg has real values to override them
+// with — the host's own values must win unconditionally, not merely because
+// the caller's value happened to lose a key collision.
+func TestBuildShimEnv_HostSocketsAlwaysWin(t *testing.T) {
+	spec := CreateSpec{
+		SessionID: "sess-x",
+		Env: map[string]string{
+			"RELAY_BRIDGE_SOCKET": "/evil/bridge.sock",
+			"RELAY_MODEL_SOCKET":  "/evil/model.sock",
+			"RELAY_SESSION_ID":    "spoofed-id",
+			"RELAY_ANYTHING_ELSE": "leak",
+			"TERM":                "xterm-256color",
+		},
+	}
+	cfg := Config{BridgeSocket: "/real/bridge.sock", ModelSocket: "/real/model.sock"}
+
+	env := envMap(t, buildShimEnv(spec, cfg))
+	if env["RELAY_BRIDGE_SOCKET"] != "/real/bridge.sock" {
+		t.Errorf("RELAY_BRIDGE_SOCKET = %q, want the host's value", env["RELAY_BRIDGE_SOCKET"])
+	}
+	if env["RELAY_MODEL_SOCKET"] != "/real/model.sock" {
+		t.Errorf("RELAY_MODEL_SOCKET = %q, want the host's value", env["RELAY_MODEL_SOCKET"])
+	}
+	if env["RELAY_SESSION_ID"] != "sess-x" {
+		t.Errorf("RELAY_SESSION_ID = %q, want spec.SessionID", env["RELAY_SESSION_ID"])
+	}
+	if _, leaked := env["RELAY_ANYTHING_ELSE"]; leaked {
+		t.Error("a caller-supplied RELAY_-prefixed key the host never sets must still be stripped")
+	}
+	if env["TERM"] != "xterm-256color" {
+		t.Error("a non-RELAY_ key must still pass through")
+	}
+}
+
+// TestBuildShimEnv_HostSocketsWin_EvenWhenHostHasNoValue is the omission
+// case F3 calls out explicitly: an empty cfg (nothing for the host to
+// override with) must not let a caller-supplied RELAY_BRIDGE_SOCKET/
+// RELAY_MODEL_SOCKET survive by default.
+func TestBuildShimEnv_HostSocketsWin_EvenWhenHostHasNoValue(t *testing.T) {
+	spec := CreateSpec{
+		SessionID: "sess-y",
+		Env: map[string]string{
+			"RELAY_BRIDGE_SOCKET": "/evil/bridge.sock",
+			"RELAY_MODEL_SOCKET":  "/evil/model.sock",
+		},
+	}
+	env := envMap(t, buildShimEnv(spec, Config{}))
+	if _, ok := env["RELAY_BRIDGE_SOCKET"]; ok {
+		t.Errorf("RELAY_BRIDGE_SOCKET leaked a caller value with no host override: %q", env["RELAY_BRIDGE_SOCKET"])
+	}
+	if _, ok := env["RELAY_MODEL_SOCKET"]; ok {
+		t.Errorf("RELAY_MODEL_SOCKET leaked a caller value with no host override: %q", env["RELAY_MODEL_SOCKET"])
+	}
+}
+
+func envMap(t *testing.T, env []string) map[string]string {
+	t.Helper()
+	out := make(map[string]string, len(env))
+	for _, kv := range env {
+		for i := 0; i < len(kv); i++ {
+			if kv[i] == '=' {
+				out[kv[:i]] = kv[i+1:]
+				break
+			}
+		}
+	}
+	return out
+}
+
+// TestCreateSpec_Validate_RejectsSandboxWithEmptyProfilePath covers F4: a
+// Sandbox requested with an empty ProfilePath must be a hard refusal, not a
+// silent no-op that runs the target unconfined.
+func TestCreateSpec_Validate_RejectsSandboxWithEmptyProfilePath(t *testing.T) {
+	spec := CreateSpec{
+		SessionID: "sess-sandbox",
+		Argv:      []string{"/bin/sh"},
+		Sandbox:   &SandboxSpec{ProfilePath: ""},
+	}
+	if err := spec.validate(); err == nil {
+		t.Fatal("want an error for a Sandbox with an empty ProfilePath")
+	}
+}
+
+func TestManager_Create_RejectsSandboxWithEmptyProfilePath(t *testing.T) {
+	relaySessionsBin, _ := buildBinaries(t)
+	mgr := NewManager(Config{ShimBinary: relaySessionsBin})
+
+	_, err := mgr.Create(CreateSpec{
+		SessionID: "sess-sandbox-2",
+		Directory: t.TempDir(),
+		Argv:      []string{"/bin/sh", "-c", "sleep 1"},
+		Sandbox:   &SandboxSpec{ProfilePath: ""},
+	})
+	if err == nil {
+		t.Fatal("want an error for a Sandbox with an empty ProfilePath")
+	}
+	if _, ok := mgr.Get("sess-sandbox-2"); ok {
+		t.Fatal("a refused create must not leave a session in the manager's table")
 	}
 }
