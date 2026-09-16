@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,8 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sessions/testutil"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
+
+const wsTestSessionID = "11111111-1111-1111-1111-111111111111"
 
 // wsFakeProvider is this file's own minimal sessionstypes.Provider double —
 // duplicated rather than shared with internal/sessions/session's own
@@ -65,7 +68,7 @@ func TestJoinSession_LiveFieldReflectsProviderState(t *testing.T) {
 	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
 		return fp, nil
 	})
-	sess, err := mgr.Create(session.CreateSpec{SessionID: "s1", ProjectID: "proj-1", Kind: session.KindClaude})
+	sess, err := mgr.Create(session.CreateSpec{SessionID: wsTestSessionID, ProjectID: "proj-1", Kind: session.KindClaude})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -104,7 +107,7 @@ func TestSendMessage_ProjectSessionDeadProvider_SendsResumeRequiredFrame(t *test
 	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
 		return fp, nil
 	})
-	sess, err := mgr.Create(session.CreateSpec{SessionID: "s1", ProjectID: "proj-1", Kind: session.KindClaude})
+	sess, err := mgr.Create(session.CreateSpec{SessionID: wsTestSessionID, ProjectID: "proj-1", Kind: session.KindClaude})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -136,7 +139,7 @@ func TestSendMessage_AdHocDeadProvider_RespawnsAndDelivers(t *testing.T) {
 		atomic.AddInt32(&built, 1)
 		return &wsFakeProvider{}, nil
 	})
-	sess, err := mgr.Create(session.CreateSpec{SessionID: "s1", ProjectID: "", Kind: session.KindClaude})
+	sess, err := mgr.Create(session.CreateSpec{SessionID: wsTestSessionID, ProjectID: "", Kind: session.KindClaude})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -154,7 +157,7 @@ func TestDeleteSession_BroadcastsSessionEnded(t *testing.T) {
 	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
 		return &wsFakeProvider{}, nil
 	})
-	sess, err := mgr.Create(session.CreateSpec{SessionID: "s1", ProjectID: "proj-1", Kind: session.KindClaude})
+	sess, err := mgr.Create(session.CreateSpec{SessionID: wsTestSessionID, ProjectID: "proj-1", Kind: session.KindClaude})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -170,4 +173,45 @@ func TestDeleteSession_BroadcastsSessionEnded(t *testing.T) {
 	if _, ok := mgr.Get(sess.ID); ok {
 		t.Fatal("delete_session must remove the session")
 	}
+}
+
+// TestJoinSession_ConcurrentRenameSession_NoRace asserts handleJoinSession's
+// snapshot of ProviderState/Name/Folder/Directory/Model/Headless is race-free
+// against RenameSession's concurrent write to Name. Run with -race; a
+// join_session loop racing a concurrent RenameSession must come back clean.
+func TestJoinSession_ConcurrentRenameSession_NoRace(t *testing.T) {
+	hub, mgr, _ := newTestSessionSetup(t)
+	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+		return &wsFakeProvider{}, nil
+	})
+	sess, err := mgr.Create(session.CreateSpec{SessionID: wsTestSessionID, ProjectID: "proj-1", Kind: session.KindClaude})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = mgr.RenameSession(sess.ID, fmt.Sprintf("name-%d", i))
+		}
+	}()
+
+	conn := dialHub(t, hub)
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if err := conn.WriteJSON(map[string]any{"type": "join_session", "sessionId": sess.ID}); err != nil {
+			t.Fatalf("write join: %v", err)
+		}
+		readJSONWithTimeout(t, conn, 2*time.Second)
+	}
+	close(stop)
+	wg.Wait()
 }

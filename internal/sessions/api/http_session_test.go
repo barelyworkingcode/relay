@@ -12,6 +12,8 @@ import (
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
+const httpTestSessionID = "11111111-1111-1111-1111-111111111111"
+
 func newHTTPTestManager(t *testing.T) *session.Manager {
 	t.Helper()
 	store := session.NewStore(t.TempDir())
@@ -23,7 +25,7 @@ func TestHandleListSessions(t *testing.T) {
 	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
 		return &wsFakeProvider{}, nil
 	})
-	if _, err := mgr.Create(session.CreateSpec{SessionID: "s1", ProjectID: "proj-1", Kind: session.KindClaude, Name: "one"}); err != nil {
+	if _, err := mgr.Create(session.CreateSpec{SessionID: httpTestSessionID, ProjectID: "proj-1", Kind: session.KindClaude, Name: "one"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -40,7 +42,7 @@ func TestHandleListSessions(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(body.Sessions) != 1 || body.Sessions[0].ID != "s1" {
+	if len(body.Sessions) != 1 || body.Sessions[0].ID != httpTestSessionID {
 		t.Fatalf("sessions = %+v", body.Sessions)
 	}
 	if !body.Sessions[0].Live {
@@ -63,12 +65,12 @@ func TestHandleDeleteSession(t *testing.T) {
 	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
 		return &wsFakeProvider{}, nil
 	})
-	sess, err := mgr.Create(session.CreateSpec{SessionID: "s1", ProjectID: "proj-1", Kind: session.KindClaude})
+	sess, err := mgr.Create(session.CreateSpec{SessionID: httpTestSessionID, ProjectID: "proj-1", Kind: session.KindClaude})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/s1", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+httpTestSessionID, nil)
 	w := httptest.NewRecorder()
 	HandleDeleteSession(mgr, sess.ID, w, req)
 	if w.Code != http.StatusNoContent {
@@ -84,14 +86,14 @@ func TestHandleSessionMessageSync_ResumeRequired(t *testing.T) {
 	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
 		return &wsFakeProvider{}, nil
 	})
-	sess, err := mgr.Create(session.CreateSpec{SessionID: "s1", ProjectID: "proj-1", Kind: session.KindClaude})
+	sess, err := mgr.Create(session.CreateSpec{SessionID: httpTestSessionID, ProjectID: "proj-1", Kind: session.KindClaude})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	sess.Provider().(*wsFakeProvider).Kill()
 
 	body, _ := json.Marshal(map[string]any{"text": "hi"})
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/s1/message", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+httpTestSessionID+"/message", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	HandleSessionMessageSync(mgr, sess.ID, w, req)
 
@@ -132,13 +134,13 @@ func TestHandleSessionMessageSync_HappyPath(t *testing.T) {
 		fp.ScriptResult("end_turn", sessionstypes.SessionStats{OutputTokens: 3})
 		return fp, nil
 	})
-	sess, err := mgr.Create(session.CreateSpec{SessionID: "s1", ProjectID: "proj-1", Kind: session.KindClaude})
+	sess, err := mgr.Create(session.CreateSpec{SessionID: httpTestSessionID, ProjectID: "proj-1", Kind: session.KindClaude})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
 	body, _ := json.Marshal(map[string]any{"text": "hi"})
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/s1/message", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+httpTestSessionID+"/message", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	HandleSessionMessageSync(mgr, sess.ID, w, req)
 
