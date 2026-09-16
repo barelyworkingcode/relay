@@ -46,6 +46,35 @@ func TestDirWithin_CaseInsensitiveVolume(t *testing.T) {
 	}
 }
 
+// TestDirWithin_RejectsSymlinkLeafEscape guards the identity fast path
+// (dirWithinProjectByIdentity) specifically: a directory whose own leaf
+// component is a symlink pointing outside the project must not be read as
+// contained just because its literal (unresolved) parent happens to be the
+// project path.
+func TestDirWithin_RejectsSymlinkLeafEscape(t *testing.T) {
+	proj := t.TempDir()
+	outside := t.TempDir()
+	escape := filepath.Join(proj, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if DirWithin(escape, proj) {
+		t.Errorf("symlink leaf %q (-> %q) inside project %q was accepted as contained", escape, outside, proj)
+	}
+	// A symlink leaf pointing INSIDE the project must still be accepted.
+	inside := filepath.Join(proj, "real-sub")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	link := filepath.Join(proj, "link-to-inside")
+	if err := os.Symlink(inside, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if !DirWithin(link, proj) {
+		t.Errorf("symlink leaf %q (-> %q) genuinely inside project %q was wrongly rejected", link, inside, proj)
+	}
+}
+
 func TestDirWithin_RejectsOutsiders(t *testing.T) {
 	proj := t.TempDir()
 	other := t.TempDir()
