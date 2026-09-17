@@ -33,11 +33,11 @@ func (p *wsFakeProvider) SendMessage(text string, _ []sessionstypes.FileAttachme
 	p.sent = append(p.sent, text)
 	return nil
 }
-func (p *wsFakeProvider) StopGeneration()      {}
-func (p *wsFakeProvider) Kill()                { p.mu.Lock(); p.alive = false; p.mu.Unlock() }
-func (p *wsFakeProvider) DeleteSession() error { return nil }
-func (p *wsFakeProvider) Alive() bool          { p.mu.Lock(); defer p.mu.Unlock(); return p.alive }
-func (p *wsFakeProvider) GetState() json.RawMessage { return nil }
+func (p *wsFakeProvider) StopGeneration()              {}
+func (p *wsFakeProvider) Kill()                        { p.mu.Lock(); p.alive = false; p.mu.Unlock() }
+func (p *wsFakeProvider) DeleteSession() error         { return nil }
+func (p *wsFakeProvider) Alive() bool                  { p.mu.Lock(); defer p.mu.Unlock(); return p.alive }
+func (p *wsFakeProvider) GetState() json.RawMessage    { return nil }
 func (p *wsFakeProvider) RestoreState(json.RawMessage) {}
 
 func newTestSessionSetup(t *testing.T) (*Hub, *session.Manager, *SessionHandlers) {
