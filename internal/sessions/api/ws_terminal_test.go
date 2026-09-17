@@ -31,6 +31,29 @@ func TestTerminalCreate_AlwaysErrors(t *testing.T) {
 	}
 }
 
+// TestTerminalTemplates_AlwaysErrors mirrors TestTerminalCreate_AlwaysErrors:
+// terminal_templates is retired the same way (the catalog moved to relay's
+// own GET /api/terminal/templates), and must answer an explicit refusal
+// rather than being silently dropped — the exact hang eve's Shell Launcher
+// "New" tab used to see when nothing ever answered this frame at all.
+func TestTerminalTemplates_AlwaysErrors(t *testing.T) {
+	hub := NewHub()
+	mgr := terminal.NewManager(terminal.Config{ShimBinary: buildRelaySessionsBin(t)})
+	NewTerminalHandlers(hub, mgr)
+
+	conn := dialHub(t, hub)
+	if err := conn.WriteJSON(map[string]any{"type": "terminal_templates"}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := readJSONWithTimeout(t, conn, 2*time.Second)
+	if got["type"] != "error" {
+		t.Fatalf("response type = %v, want error", got["type"])
+	}
+	if _, ok := got["message"].(string); !ok {
+		t.Fatalf("response has no message: %+v", got)
+	}
+}
+
 func TestJoinTerminal_UnknownID_SendsError(t *testing.T) {
 	hub := NewHub()
 	mgr := terminal.NewManager(terminal.Config{ShimBinary: buildRelaySessionsBin(t)})

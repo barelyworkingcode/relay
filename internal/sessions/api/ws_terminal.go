@@ -41,6 +41,14 @@ func NewTerminalHandlers(hub *Hub, mgr *terminal.Manager) *TerminalHandlers {
 	// a silently dropped message, is what tells an old or buggy client its
 	// request went nowhere.
 	hub.RegisterHandler(events.WSMsgTerminalCreate, th.handleTerminalCreateRetired)
+	// terminal_templates is retired the same way terminal_create is: the
+	// template catalog moved to relay itself (GET /api/terminal/templates,
+	// cmd/relay/template_routes.go), reachable over HTTP, not this Hub.
+	// Registering an explicit refusal rather than leaving this type
+	// unregistered is what turns "the Shell Launcher's New tab hangs on
+	// Loading forever" into a loud, visible error for any client that still
+	// sends this frame.
+	hub.RegisterHandler(events.WSMsgTerminalTemplates, th.handleTerminalTemplatesRetired)
 	hub.RegisterHandler(events.WSMsgJoinTerminal, th.handleJoinTerminal)
 	hub.RegisterHandler(events.WSMsgLeaveTerminal, th.handleLeaveTerminal)
 	hub.RegisterHandler(events.WSMsgTerminalInput, th.handleTerminalInput)
@@ -53,6 +61,10 @@ func NewTerminalHandlers(hub *Hub, mgr *terminal.Manager) *TerminalHandlers {
 
 func (th *TerminalHandlers) handleTerminalCreateRetired(c *Conn, _ []byte) {
 	sendWSError(c, "terminal_create over WebSocket is retired; POST /api/terminals instead")
+}
+
+func (th *TerminalHandlers) handleTerminalTemplatesRetired(c *Conn, _ []byte) {
+	sendWSError(c, "terminal_templates over WebSocket is retired; GET /api/terminal/templates instead")
 }
 
 func (th *TerminalHandlers) handleJoinTerminal(c *Conn, raw []byte) {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	"github.com/barelyworkingcode/relay/internal/sessions/testutil"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
@@ -32,11 +33,11 @@ func (p *wsFakeProvider) SendMessage(text string, _ []sessionstypes.FileAttachme
 	p.sent = append(p.sent, text)
 	return nil
 }
-func (p *wsFakeProvider) StopGeneration()      {}
-func (p *wsFakeProvider) Kill()                { p.mu.Lock(); p.alive = false; p.mu.Unlock() }
-func (p *wsFakeProvider) DeleteSession() error { return nil }
-func (p *wsFakeProvider) Alive() bool          { p.mu.Lock(); defer p.mu.Unlock(); return p.alive }
-func (p *wsFakeProvider) GetState() json.RawMessage { return nil }
+func (p *wsFakeProvider) StopGeneration()              {}
+func (p *wsFakeProvider) Kill()                        { p.mu.Lock(); p.alive = false; p.mu.Unlock() }
+func (p *wsFakeProvider) DeleteSession() error         { return nil }
+func (p *wsFakeProvider) Alive() bool                  { p.mu.Lock(); defer p.mu.Unlock(); return p.alive }
+func (p *wsFakeProvider) GetState() json.RawMessage    { return nil }
 func (p *wsFakeProvider) RestoreState(json.RawMessage) {}
 
 func newTestSessionSetup(t *testing.T) (*Hub, *session.Manager, *SessionHandlers) {
@@ -214,4 +215,87 @@ func TestJoinSession_ConcurrentRenameSession_NoRace(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// TestPermissionResponse_UnjoinedConnection_Refused pins the join-scoping
+// check handlePermissionResponse now runs before Resolve: the first
+// tool-approval authority in the system must not be resolvable by a
+// connection that never joined the session the pending request belongs to.
+// Relay's frontend socket is a single trust domain (any frontend-capable
+// caller reaches every session's WS traffic), so without this check any
+// connection that merely guesses or observes a permissionId could allow or
+// deny a tool call for a session it was never shown.
+func TestPermissionResponse_UnjoinedConnection_Refused(t *testing.T) {
+	hub := NewHub()
+	store := session.NewStore(t.TempDir())
+	mgr := session.NewManager(session.Config{}, store, nil)
+	perms := permission.NewPermissionManager()
+	sh := NewSessionHandlers(hub, mgr, perms)
+	mgr.SetEventSink(sh)
+
+	req, ch := perms.CreateRequest(wsTestSessionID, "Bash", `{"command":"ls"}`, "tu-1")
+
+	conn := dialHub(t, hub)
+	// Deliberately no join_session for wsTestSessionID.
+	if err := conn.WriteJSON(map[string]any{
+		"type": "permission_response", "permissionId": req.ID, "approved": true,
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := readJSONWithTimeout(t, conn, 2*time.Second)
+	if got["type"] != "error" {
+		t.Fatalf("type = %v, want error (an unjoined connection must be refused)", got["type"])
+	}
+
+	select {
+	case d := <-ch:
+		t.Fatalf("decision must not have been delivered to an unresolved request, got %+v", d)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if perms.PendingCount() != 1 {
+		t.Fatalf("PendingCount = %d, want 1 (the request must remain pending after a refused resolve attempt)", perms.PendingCount())
+	}
+}
+
+// TestPermissionResponse_JoinedConnection_Resolves is the positive half: a
+// connection that DID join_session first is exactly what this scoping check
+// must still allow through, unchanged from before this fix.
+func TestPermissionResponse_JoinedConnection_Resolves(t *testing.T) {
+	hub := NewHub()
+	store := session.NewStore(t.TempDir())
+	mgr := session.NewManager(session.Config{}, store, nil)
+	perms := permission.NewPermissionManager()
+	sh := NewSessionHandlers(hub, mgr, perms)
+	mgr.SetEventSink(sh)
+
+	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+		return &wsFakeProvider{}, nil
+	})
+	sess, err := mgr.Create(session.CreateSpec{SessionID: wsTestSessionID, ProjectID: "proj-1", Kind: session.KindClaude})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	req, ch := perms.CreateRequest(sess.ID, "Bash", `{"command":"ls"}`, "tu-1")
+
+	conn := dialHub(t, hub)
+	if err := conn.WriteJSON(map[string]any{"type": "join_session", "sessionId": sess.ID}); err != nil {
+		t.Fatalf("write join: %v", err)
+	}
+	readJSONWithTimeout(t, conn, 2*time.Second) // session_joined
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "permission_response", "permissionId": req.ID, "approved": true, "reason": "ok",
+	}); err != nil {
+		t.Fatalf("write permission_response: %v", err)
+	}
+
+	select {
+	case d := <-ch:
+		if d.Decision != "allow" {
+			t.Fatalf("decision = %+v, want allow", d)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the decision to be delivered")
+	}
 }

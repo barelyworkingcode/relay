@@ -116,6 +116,7 @@ func runService(args []string) int {
 		ModelSocket:  cfg.modelSocket,
 	})
 	store := session.NewStore(filepath.Join(cfg.dataDir, "sessions"))
+	perms := permission.NewPermissionManager()
 	sessions := session.NewManager(session.Config{
 		Claude: provider.ClaudeConfig{
 			HookSocket:      cfg.hookSocket,
@@ -133,7 +134,7 @@ func runService(args []string) int {
 			ShimBinary:   shimBinary,
 			BridgeSocket: bridgeSock,
 		},
-	}, store, permission.NewPermissionManager())
+	}, store, perms)
 
 	// The internal bearer must never be an argv value — any same-uid
 	// process, including a sandboxed session target, can read another
@@ -150,6 +151,9 @@ func runService(args []string) int {
 		InternalBearer: internalBearer,
 		RelayPID:       relayPID,
 		HookSocket:     cfg.hookSocket,
+		Permissions:    perms,
+		PiBinary:       "",
+		ModelSocket:    cfg.modelSocket,
 	}, terminals, sessions)
 	srv.SetExitHandler(func(id string, rootPID, exitCode int, reason string) {
 		reportSessionExited(bridgeSock, id, rootPID, exitCode, reason)
@@ -179,17 +183,15 @@ func runService(args []string) int {
 	// capability a real launch identity carries, which only a real Hello
 	// binds.
 	//
-	// /api/sessions/ and /api/terminals/ are the two prefixes relay's own
-	// route-conflict check (cmd/relay's EnhancedServiceRegistry) reserves
-	// specifically for this service's manifest even though it also serves
-	// POST /api/sessions and POST /api/terminals itself — relay's own
-	// handlers own the create/resume/list surface, this manifest owns
-	// everything nested under a session's own id. This is deliberate: the
-	// eve-facing handlers for that nested surface are not mounted yet
-	// (package doc), so declaring these routes now advertises reachability,
-	// not working endpoints — a request that lands here today gets whatever
-	// this process's internal mux answers (404, since only /launch and
-	// /terminate exist), never a silently wrong result.
+	// /api/sessions/, /api/terminals/, /api/models and /ws are the four
+	// prefixes relay's own route-conflict check (cmd/relay's
+	// EnhancedServiceRegistry) reserves specifically for this service's
+	// manifest even though it also serves POST /api/sessions and POST
+	// /api/terminals itself — relay's own handlers own the create/resume/
+	// list surface, this manifest owns everything nested under a session's
+	// own id plus the model catalog and the live WS stream. hostapi.New
+	// mounts real handlers for all four on this same internal socket, guarded
+	// by the same peer+bearer check /launch and /terminate use.
 	if launched {
 		if err := bridge.NewClientAt(bridgeSock, "").RegisterManifest(bridge.RegisterManifestRequest{
 			ServiceID:      cfg.serviceName,
