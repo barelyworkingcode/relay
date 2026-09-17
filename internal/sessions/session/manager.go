@@ -566,6 +566,20 @@ func (m *Manager) Get(id string) (*sessionstypes.Session, bool) {
 	}
 }
 
+// Exists reports whether id has a live in-memory slot — live, still
+// launching, or ended-but-not-yet-stopped — exactly the existence test
+// Create's own duplicate check uses. Unlike Get, this never lazy-loads from
+// disk: a caller outside this package (hostapi's cross-manager launch
+// dispatcher) needs to know whether *this process* already considers id
+// claimed, not whether a same-named session was ever persisted by an
+// earlier, possibly unrelated run.
+func (m *Manager) Exists(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.slots[id]
+	return ok
+}
+
 // stopSlot removes id from the live table and returns the session to tear
 // down, waiting out an in-flight launch first if necessary (mirrors
 // internal/sessions/terminal.Manager.Close). Returns nil if id names nothing
