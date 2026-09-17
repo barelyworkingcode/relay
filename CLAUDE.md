@@ -526,22 +526,25 @@ what replaced the retired `allow_cwd_auth` directory-auth fallback.
 
 ```
 internal/sessions/
-  hostapi/     the internal API server: /launch, /terminate, /permission
+  hostapi/     the internal API server: /launch, /terminate, /permission, and
+               (mounted alongside them, guarded by the same peer+bearer check)
+               the eve-facing HTTP/WS surface below
   shim/        `relay-sessions exec` (C6)
   hook/        `relay-sessions hook`, Claude Code's PreToolUse client
   terminal/    pty session lifecycle
   session/     claude/pi/chat session lifecycle, resume-on-user-action (SH-6)
   provider/    the Claude Code and pi CLI process adapters
   sandbox/     C7 SBPL profile rendering
-  api/         eve-facing HTTP/WS handlers — built, not yet mounted (a real gap)
+  api/         eve-facing HTTP/WS handlers, mounted by hostapi.New/ListenInternal
   ledger/      the claude/pi/chat session record relay itself persists
 ```
 
-Full design, the internal API's mutual peer verification, the shim's exact
-behavior, the host data directory layout, and the honest list of what is
-built but not yet wired together (unsandboxed claude/pi launches, the
-unmounted eve-facing surface, the unemitted `session_bound` audit event):
-[`docs/session-host.md`](docs/session-host.md).
+Full design, the internal API's mutual peer verification (including the
+single-trust-domain property that mount runs under — any frontend-capable
+caller reaches every session on the host, not just their own), the shim's
+exact behavior, the host data directory layout, and the honest list of what
+is built but not yet wired together (unsandboxed claude/pi launches, the
+unemitted `session_bound` audit event): [`docs/session-host.md`](docs/session-host.md).
 
 ## Security
 

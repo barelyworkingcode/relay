@@ -621,3 +621,81 @@ func TestManager_Create_RejectsSandboxWithEmptyProfilePath(t *testing.T) {
 		t.Fatal("a refused create must not leave a session in the manager's table")
 	}
 }
+
+// TestManager_SetOutputHandler_ReceivesRealPTYOutput proves the onOutput
+// seam startSession/Manager.Create wire through actually fires: a real
+// shim, a real pty, a real `echo hi` — the same shape
+// TestManager_LocalPTY_ExitAndLog uses for onExit, but for the output
+// callback that api.TerminalHandlers.BroadcastOutput is meant to be wired
+// as. SetOutputHandler is called before Create, per its own doc comment.
+func TestManager_SetOutputHandler_ReceivesRealPTYOutput(t *testing.T) {
+	cfg := testConfig(t)
+	mgr := NewManager(cfg)
+
+	outputCh := make(chan []byte, 16)
+	mgr.SetOutputHandler(func(id string, data []byte) {
+		if id != "11111111-2222-3333-4444-555555555556" {
+			t.Errorf("onOutput id = %q, want the session's own id", id)
+		}
+		cp := append([]byte(nil), data...)
+		outputCh <- cp
+	})
+
+	sess, err := mgr.Create(CreateSpec{
+		SessionID: "11111111-2222-3333-4444-555555555556",
+		Name:      "test-output",
+		Directory: t.TempDir(),
+		Argv:      []string{"/bin/sh", "-c", "echo hi; sleep 1"},
+		Cols:      80,
+		Rows:      24,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { mgr.Close(sess.ID) })
+
+	deadline := time.After(5 * time.Second)
+	var got []byte
+	for {
+		select {
+		case chunk := <-outputCh:
+			got = append(got, chunk...)
+			if bytes.Contains(got, []byte("hi")) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for onOutput to see %q, got %q", "hi", got)
+		}
+	}
+}
+
+// TestManager_NoOutputHandler_RunsToCompletion is the nil-safety half of the
+// same seam: a Manager that never calls SetOutputHandler must still run a
+// session to completion without panicking — readLoop's own
+// `if s.onOutput != nil` guard is what this pins.
+func TestManager_NoOutputHandler_RunsToCompletion(t *testing.T) {
+	cfg := testConfig(t)
+	mgr := NewManager(cfg)
+
+	exitCh := make(chan int, 1)
+	mgr.SetExitHandler(func(_ string, code int) { exitCh <- code })
+
+	sess, err := mgr.Create(CreateSpec{
+		SessionID: "11111111-2222-3333-4444-555555555557",
+		Name:      "test-no-output-handler",
+		Directory: t.TempDir(),
+		Argv:      []string{"/bin/sh", "-c", "echo hi; exit 0"},
+		Cols:      80,
+		Rows:      24,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { mgr.Close(sess.ID) })
+
+	select {
+	case <-exitCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for exit")
+	}
+}

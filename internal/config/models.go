@@ -270,13 +270,13 @@ var ServiceCapabilities = []ServiceCapability{
 // nothing else may ever be granted the capability.
 const RelaySessionsServiceID = "relaysessions"
 
-// RelaySessionsManifestRoutes are the two path prefixes relay-sessions
-// registers in its own manifest (cmd/relaysessions) and the only prefixes
-// cmd/relay's route-conflict check exempts for RelaySessionsServiceID
-// (sessionHostSharedPrefixes). One slice backing both sides means the
-// exception and the registration can never drift apart the way two
-// independently maintained literals could.
-var RelaySessionsManifestRoutes = []string{"/api/terminals/", "/api/sessions/"}
+// RelaySessionsManifestRoutes are the routes relay-sessions registers in its
+// own manifest (cmd/relaysessions): two path prefixes shared with relay's own
+// routes (sessionHostSharedPrefixes in cmd/relay/enhanced_services.go, kept
+// as its own literal rather than derived from this slice, deliberately —
+// see that variable's own doc comment) plus two bare paths, /api/models and
+// /ws, that relay never serves itself and so need no such exemption.
+var RelaySessionsManifestRoutes = []string{"/api/terminals/", "/api/sessions/", "/api/models", "/ws"}
 
 // HasCapability reports whether the record grants want.
 func (c *ServiceConfig) HasCapability(want ServiceCapability) bool {

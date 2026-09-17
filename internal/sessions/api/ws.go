@@ -17,6 +17,13 @@ import (
 	clk "github.com/barelyworkingcode/relay/internal/sessions/clock"
 )
 
+// CheckOrigin is blanket-true deliberately, not an oversight: this hub is
+// reachable only via hostapi's /ws, which gates every request through
+// checkInternalPeer (kernel-attested peer pid + bearer) before Upgrade is
+// ever called. A same-origin check here would add nothing — the peer check
+// already rejects every caller that isn't relay's own front-door dispatcher
+// dialing over a 0600 Unix socket — so do not "fix" this without removing
+// that gate too.
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }

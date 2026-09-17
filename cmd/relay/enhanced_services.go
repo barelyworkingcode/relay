@@ -262,13 +262,18 @@ func (r *EnhancedServiceRegistry) collidingRelayRouteLocked(route string) string
 // claims cannot actually collide at request time, only in this
 // defense-in-depth check, which is why only the one service the split
 // names may claim them.
-var sessionHostSharedPrefixes = func() map[string]struct{} {
-	m := make(map[string]struct{}, len(config.RelaySessionsManifestRoutes))
-	for _, route := range config.RelaySessionsManifestRoutes {
-		m[route] = struct{}{}
-	}
-	return m
-}()
+//
+// Deliberately its own literal, not derived from
+// config.RelaySessionsManifestRoutes: that slice also carries /api/models
+// and /ws, which relay does not serve itself and so must never be exempted
+// here — collidingRelayRouteLocked would have nothing to exempt them from
+// anyway, but a future addition to RelaySessionsManifestRoutes that relay
+// DOES also serve must fail this check loudly, not silently widen this set
+// along with it.
+var sessionHostSharedPrefixes = map[string]struct{}{
+	"/api/terminals/": {},
+	"/api/sessions/":  {},
+}
 
 // checkRouteConflictsLocked flags any duplicate route string between two
 // distinct serviceIDs, and refuses relay's own routes outright.

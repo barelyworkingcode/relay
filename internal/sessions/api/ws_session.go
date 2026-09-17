@@ -324,7 +324,16 @@ func (sh *SessionHandlers) handleSetPermissionMode(c *Conn, raw []byte) {
 	sh.SendToSession(req.SessionID, map[string]any{"type": events.WSMsgModeChanged, "sessionId": req.SessionID, "mode": mode})
 }
 
-func (sh *SessionHandlers) handlePermissionResponse(_ *Conn, raw []byte) {
+// handlePermissionResponse resolves a pending Claude Code tool-approval
+// prompt. Before doing that, it checks that c has itself joined the pending
+// request's own session (join_session, tracked in sh.bound the same way
+// every other per-session action here is scoped) — otherwise any connection
+// on relay's single frontend trust domain could resolve, sight unseen, a
+// tool-approval prompt for a session it never joined. This is the one
+// scoping check this in-band control_request/control_response path has;
+// broader per-caller session ownership is out of scope (see the guarded
+// wrapper's own comment in hostapi/server.go for why).
+func (sh *SessionHandlers) handlePermissionResponse(c *Conn, raw []byte) {
 	if sh.perms == nil {
 		return
 	}
@@ -334,6 +343,22 @@ func (sh *SessionHandlers) handlePermissionResponse(_ *Conn, raw []byte) {
 		Reason       string `json:"reason"`
 	}
 	_ = json.Unmarshal(raw, &req)
+
+	sessionID, ok := sh.perms.PendingSessionID(req.PermissionID)
+	if !ok {
+		// Already resolved, timed out, or never existed: Resolve's own
+		// lookup would report this exact same no-op, so there is nothing
+		// left to do.
+		return
+	}
+	sh.mu.Lock()
+	joined := sh.bound[c.ID][sessionID]
+	sh.mu.Unlock()
+	if !joined {
+		sendWSError(c, "permission response refused: this connection has not joined session "+sessionID)
+		return
+	}
+
 	decision := "deny"
 	if req.Approved {
 		decision = "allow"

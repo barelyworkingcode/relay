@@ -237,14 +237,18 @@ This is the same split C5 describes as "relay's own routes (create, resume,
 the bare list proxies) and relay-sessions' own manifest (every other
 per-session operation underneath them)".
 
-**The manifest declares reachability, not a working endpoint yet.**
-`relaysessions`' internal mux today only serves `/launch` and `/terminate`
-(hostapi's own two handlers); a request that lands on it via the shared
-prefix gets whatever that mux answers — a 404 — never a silently wrong
-result, but also never the real per-session HTTP/WS surface
-(`internal/sessions/api`) that exists in this tree but is not yet mounted.
-See [`docs/session-host.md`](session-host.md#what-is-not-built-yet) for the
-full list of what that surface would cover once mounted.
+**The manifest also declares two bare paths relay never serves itself:**
+`/api/models` and `/ws`. Unlike the two shared prefixes above, these need no
+`sessionHostSharedPrefixes` exemption — relay registers nothing under either
+path, so `collidingRelayRouteLocked` never finds anything to collide with.
+
+`relaysessions`' internal mux serves the real per-session HTTP/WS surface
+(`internal/sessions/api`) alongside `/launch` and `/terminate`, all guarded
+by the same peer+bearer check (`hostapi.Server.guarded`) — a request that
+reaches it via any of the four manifest routes gets a real handler, not a
+placeholder 404. See
+[`docs/session-host.md`](session-host.md#what-is-not-built-yet) gap 2 for
+the mount itself and the single-trust-domain property it runs under.
 
 ## Restart supervision
 
