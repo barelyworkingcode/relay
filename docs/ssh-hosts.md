@@ -108,9 +108,12 @@ to prompt turns that into an immediate, reportable error whose remedy is
 [`docs/session-host.md`](session-host.md)) is the newer launch path for
 `pty`/`claude`/`pi`/`chat` sessions and applies its own confinement (C7
 SBPL sandbox profiles) to a **console** project's session. Today that
-confinement is real for a `pty` launch and for a `chat` session's optional
-relay-MCP tool child, but not for `claude`/`pi`, which run with no sandbox
-and no launch identity despite relay believing otherwise — an existing,
+confinement is real for a `pty` launch only. Not for `claude`/`pi`, which
+run with no sandbox and no launch identity despite relay believing
+otherwise, nor for a `chat` session's own provider process or its optional
+relay-MCP tool child — the shim-based path for that tool child exists in
+code, but `RelayMCPCommand` is never set in production, only in tests, so
+it never actually spawns through it. All of this is an existing,
 documented gap, not something this document's own claim below is exempt
 from: see [`docs/session-host.md`](session-host.md#what-is-not-built-yet)
 (gap 1) and `internal/sessions/hostapi/types.go`'s own package doc. A host
