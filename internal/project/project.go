@@ -37,7 +37,7 @@ func CreateWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path
 	if models == nil {
 		models = []string{}
 	}
-	// GenerateSkill/AllowCwdAuth/ShellTemplates aren't parameters here — they
+	// GenerateSkill/ShellTemplates aren't parameters here — they
 	// are applied by later mutators in ApplyCreate — so this candidate
 	// only carries what this function actually knows about; a direct caller
 	// relying solely on this function (as every pre-remote test does) still
@@ -105,7 +105,7 @@ func validateProjectPath(path string) error {
 }
 
 // ValidateShape is the single point that decides whether a given
-// combination of Kind, Path, AllowCwdAuth, GenerateSkill, ShellTemplates,
+// combination of Kind, Path, GenerateSkill, ShellTemplates,
 // AllowedMcpIDs and AllowedModels is coherent — called from both the create
 // and update paths so a project can never reach settings.json in a
 // self-contradictory shape.
@@ -143,12 +143,6 @@ func ValidateShape(proj *config.Project) error {
 	}
 	if proj.Path != "" {
 		return fmt.Errorf("remote project must not have a path: %q", proj.Path)
-	}
-	// A remote caller's cwd is on a different machine; relay cannot compare
-	// it against a host path, and a collision would grant a remote client
-	// the tool surface of an unrelated local project via a directory guess.
-	if proj.AllowCwdAuth {
-		return fmt.Errorf("remote project must not enable allow_cwd_auth: directory auth compares a caller's cwd against Path, which a remote project doesn't have")
 	}
 	// regenProjectSkills silently skips pathless projects, so leaving this
 	// flag on would make it an inert toggle that lies about what it does.
@@ -371,46 +365,14 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// AuthenticateByPath returns nil when dir is empty, matches nothing,
-// or matches only projects that have NOT opted into AllowCwdAuth — every
-// failure mode is "no access", never "all access". The scope granted is
-// identical to the project's token: opting in changes how a caller is
-// *identified*, never what the project is allowed to reach.
+// DirWithin reports whether dir is equal to or nested under projectPath,
+// seeing through symlinks and case-insensitive volumes.
 //
-// Nested projects resolve to the most specific match (longest project path
-// containing dir), so a project nested inside another wins for its own
-// subtree.
-func AuthenticateByPath(s *config.Settings, dir string) *config.StoredToken {
-	if dir == "" {
-		return nil
-	}
-	var best *config.Project
-	bestLen := -1
-	for i := range s.Projects {
-		p := &s.Projects[i]
-		// Check the opt-in first: a project that hasn't enabled directory
-		// auth must not even participate in the longest-match race, or it
-		// could shadow an opted-in parent and turn a valid grant into a
-		// denial.
-		if !p.AllowCwdAuth || p.Path == "" {
-			continue
-		}
-		if !DirWithin(dir, p.Path) {
-			continue
-		}
-		if n := len(realpathBestEffort(p.Path)); n > bestLen {
-			best, bestLen = p, n
-		}
-	}
-	if best == nil {
-		return nil
-	}
-	return config.StoredTokenForProject(s, best, best.TokenHash)
-}
-
-// DirWithin reports whether dir is equal to or nested under
-// projectPath. An empty dir means "no directory to validate" and returns
-// true -- the LLM-provider path may send a project id with no cwd.
+// This is subtle, and it fails OPEN: an empty dir means "no directory to
+// validate" and returns TRUE. A caller that might not have a directory must
+// decide what an absent one means BEFORE asking — this function answers a
+// containment question, and "nothing to contain" is not a refusal it can
+// make on the caller's behalf.
 func DirWithin(dir, projectPath string) bool {
 	if dir == "" {
 		return true
@@ -454,7 +416,18 @@ func dirWithinProjectByIdentity(dir, projectPath string) (within, decided bool) 
 	if err != nil || !projInfo.IsDir() {
 		return false, false
 	}
-	cur := filepath.Clean(dir)
+	// This is subtle: dir is resolved through realpathBestEffort BEFORE the
+	// walk starts, not just stat'd as it climbs. os.Stat below follows a
+	// symlink to decide identity at each step, but filepath.Dir climbs the
+	// UNRESOLVED literal path — so a dir whose own leaf component is a
+	// symlink pointing outside projectPath would stat to somewhere else
+	// (correctly not projInfo), then climb via its literal parent straight
+	// back into projectPath's own ancestry on the next iteration, and read
+	// as contained. Resolving dir first means every stat in the walk below
+	// already reflects where symlinks actually point, so the climb can
+	// never re-enter the project through a leaf that only pointed there
+	// syntactically.
+	cur := realpathBestEffort(dir)
 	for {
 		info, err := os.Stat(cur)
 		if err == nil {

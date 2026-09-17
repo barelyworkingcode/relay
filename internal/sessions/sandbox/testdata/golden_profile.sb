@@ -1,0 +1,25 @@
+(version 1)
+(allow default)
+(deny file-write*)
+(allow file-write*
+  (subpath "/private/tmp/relay-sandbox-golden/projects/widget")
+  (subpath "/private/tmp/relay-sandbox-golden/home/.cache")
+  (subpath "/private/tmp/relay-sandbox-golden/home/go/pkg")
+  (subpath "/private/tmp/cc-socks")
+  (subpath "/dev")
+  (regex #"^/private/tmp/relay-sandbox-golden/home/\.claude\.json(\.lock|\.tmp\.[^/]*|\.backup)?$"))
+(deny file-read* file-write*
+  (subpath "/private/tmp/relay-sandbox-golden/relay")
+  (subpath "/private/tmp/relay-sandbox-golden/projects/other"))
+(deny network-outbound
+  (remote unix-socket (path-literal "/private/tmp/relay-sandbox-golden/relayllm/router.sock"))
+  (remote unix-socket (path-regex #"^/private/tmp/relay-sandbox-golden/relay/")))
+(allow network-outbound
+  (remote unix-socket (path-literal "/private/tmp/relay-sandbox-golden/relay/relay.sock"))
+  (remote unix-socket (path-literal "/private/tmp/relay-sandbox-golden/relay/model.sock")))
+(deny network-outbound
+  (remote ip "localhost:3000")
+  (remote ip "localhost:8181"))
+(allow network-outbound
+  (remote ip "localhost:8180"))
+(deny process-exec* (require-any (file-mode #o4000) (file-mode #o2000)))

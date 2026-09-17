@@ -100,6 +100,14 @@ type Settings struct {
 	// later report (decisions 9 and 12). omitempty, for the same reason as
 	// EvePasskeys.
 	EvePasskeyRevocations []EvePasskeyRevocation `json:"eve_passkey_revocations,omitempty"`
+
+	// TerminalTemplates holds only a user's added or customized terminal
+	// launch templates (templates.go); the five built-ins are seeded in
+	// code by BuiltinTerminalTemplates and never appear here unless an
+	// entry overrides one by id. omitempty, like Enrolments and Passkeys:
+	// an install that never customizes a template keeps settings.json
+	// byte-identical to one written before this feature existed.
+	TerminalTemplates []TerminalTemplate `json:"terminal_templates,omitempty"`
 }
 
 func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
@@ -498,14 +506,6 @@ func (s *Settings) SetProjectHostID(id string, hostID string) {
 	proj.HostID = hostID
 }
 
-func (s *Settings) SetProjectAllowCwdAuth(id string, allow bool) {
-	proj, _ := s.findProjectByID(id)
-	if proj == nil {
-		return
-	}
-	proj.AllowCwdAuth = allow
-}
-
 func (s *Settings) findHostByID(id string) (*Host, int) {
 	for i := range s.Hosts {
 		if s.Hosts[i].ID == id {
@@ -703,15 +703,6 @@ func (s *Settings) AuthenticateProjectByHash(hash string) *StoredToken {
 	return s.storedTokenForProject(proj, hash)
 }
 
-// AuthenticateProjectByPath returns nil when dir is empty, matches nothing,
-// or matches only projects that have NOT opted into AllowCwdAuth — every
-// failure mode is "no access", never "all access". The scope granted is
-// identical to the project's token: opting in changes how a caller is
-// *identified*, never what the project is allowed to reach.
-//
-// Nested projects resolve to the most specific match (longest project path
-// containing dir), so a project nested inside another wins for its own
-// subtree.
 // storedTokenForProject is shared by every authentication path so a
 // project's scope cannot drift depending on how the caller was identified.
 func (s *Settings) storedTokenForProject(proj *Project, hash string) *StoredToken {

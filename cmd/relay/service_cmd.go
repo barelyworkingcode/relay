@@ -38,7 +38,7 @@ func serviceRegister(args []string) {
 	url := fs.String("url", "", "service URL")
 	autostart := fs.Bool("autostart", false, "start automatically")
 	var capabilityFlags stringSlice
-	fs.Var(&capabilityFlags, "capability", "grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy), manifest (RegisterManifest), projects (ResolvePtyEnv, ResolveProjectTemplate, ListProjects, GetProject, service ListTools/CallTool), models (model-endpoint calls, limited by --allowed-model), model_host (RegisterModelHost); none given means none held")
+	fs.Var(&capabilityFlags, "capability", "grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy+execute), manifest (RegisterManifest), models (model-endpoint calls, limited by --allowed-model), model_host (RegisterModelHost); sessions (SessionExited, the unfiltered model list) is refused on any service but the built-in relaysessions one; none given means none held")
 	var allowedModelFlags stringSlice
 	fs.Var(&allowedModelFlags, "allowed-model", "grant the models capability access to this model id, repeatable; omitted or none given means no models; pass \"*\" for every model")
 	fs.Parse(args)
@@ -134,7 +134,7 @@ func serviceRegister(args []string) {
 	fmt.Printf("registered service %q (%s)\n", view.DisplayName, view.ID)
 	fmt.Printf("  capabilities: %s\n", capabilitiesColumn(view.Capabilities))
 	if len(view.Capabilities) == 0 {
-		fmt.Println("  note: no capabilities: this service can start and say Hello, and can do nothing else through relay; pass --capability frontend|manifest|projects to grant one")
+		fmt.Println("  note: no capabilities: this service can start and say Hello, and can do nothing else through relay; pass --capability frontend|manifest|models|model_host to grant one")
 	}
 	if slices.Contains(view.Capabilities, config.ServiceCapabilityModels) {
 		if len(view.AllowedModels) == 0 {

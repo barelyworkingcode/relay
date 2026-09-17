@@ -1,0 +1,34 @@
+(version 1)
+(allow default)
+(deny file-write*)
+(allow file-write*
+  (subpath "<PROJECT>")
+  (subpath "<HOME>/.cache")
+  (subpath "<HOME>/go/pkg")
+  (subpath "<HOME>/.npm")
+  (subpath "<HOME>/Library/Caches")
+  (subpath "<HOME>/.claude")
+  (subpath "<HOME>/.pi")
+  (subpath "/private/tmp/cc-socks")
+  (subpath "<DARWIN_TMP>")
+  (subpath "/dev")
+  (regex #"^<HOME>/\.claude\.json(\.lock|\.tmp\.[^/]*|\.backup)?$"))
+(deny file-read* file-write*
+  (subpath "<RELAY_DIR>")
+  (subpath "<HOME>/Library/Application Support/relayLLM")
+  (subpath "<EVE_DATA>")
+  (subpath "<OTHER_PROJECT>"))
+(deny network-outbound
+  (remote unix-socket (path-regex #"^<RELAY_DIR>/"))
+  (remote unix-socket (path-regex #"^<HOME>/Library/Application Support/relayLLM/"))
+  (remote unix-socket (path-regex #"^<EVE_DATA>/")))
+(allow network-outbound
+  (remote unix-socket (path-literal "<RELAY_DIR>/relay.sock"))
+  (remote unix-socket (path-literal "<RELAY_DIR>/model.sock"))
+  (remote unix-socket (path-literal "<RELAY_DIR>/relaysessions-hook.sock")))
+(deny network-outbound
+  (remote ip "localhost:3000")
+  (remote ip "localhost:8181"))
+(allow network-outbound
+  (remote ip "localhost:8180"))
+(deny process-exec* (require-any (file-mode #o4000) (file-mode #o2000)))

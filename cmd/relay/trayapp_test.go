@@ -171,6 +171,66 @@ func TestUpdateMenuWithSettings_BuildsServiceItemsAndMapping(t *testing.T) {
 	}
 }
 
+// TestUpdateMenuWithSettings_BuiltinSessionHostIsStatusOnly pins R-S9's
+// tray-toggle fix: the built-in relaysessions record gets a status line, not
+// a toggle, and never enters svcMenuMap -- so there is no click that can
+// reach Registry.Start with its bare (Command-less) record.
+func TestUpdateMenuWithSettings_BuiltinSessionHostIsStatusOnly(t *testing.T) {
+	rp := &recordingPlatform{}
+	reg := &trayRegistry{running: map[string]bool{config.RelaySessionsServiceID: true}}
+	app := &App{platform: rp, registry: reg}
+
+	s := &config.Settings{Services: []config.ServiceConfig{
+		{ID: config.RelaySessionsServiceID, DisplayName: "Session Host"},
+		{ID: "svc-a", DisplayName: "Service A"},
+	}}
+	app.updateMenuWithSettings(s)
+
+	for menuID, svcID := range app.svcMenuMap {
+		if svcID == config.RelaySessionsServiceID {
+			t.Fatalf("built-in session host must not be toggleable, but svcMenuMap[%d] = %q", menuID, svcID)
+		}
+	}
+
+	items := parseMenu(t, rp.lastMenu())
+	found := false
+	for _, it := range items {
+		if strings.Contains(it.Title, "Session Host") {
+			found = true
+			if !strings.Contains(it.Title, "running") {
+				t.Errorf("built-in status line = %q, want it to say running", it.Title)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("menu is missing a status line for the built-in session host")
+	}
+}
+
+// TestToggleService_RefusesBuiltinSessionHost is the backstop: even if
+// svcMenuMap were ever made to hold the reserved id (it is not, today —
+// see TestUpdateMenuWithSettings_BuiltinSessionHostIsStatusOnly), toggling
+// it must never reach Registry.Start or Registry.Stop.
+func TestToggleService_RefusesBuiltinSessionHost(t *testing.T) {
+	reg := &trayRegistry{}
+	s := &config.Settings{Services: []config.ServiceConfig{
+		{ID: config.RelaySessionsServiceID, DisplayName: "Session Host"},
+	}}
+	app := &App{
+		platform:   &recordingPlatform{},
+		registry:   reg,
+		store:      fixedStore{s: s},
+		svcMenuMap: map[int]string{menuIDSvcBase: config.RelaySessionsServiceID},
+	}
+
+	app.toggleService(menuIDSvcBase)
+	app.wg.Wait()
+
+	if len(reg.started) != 0 || len(reg.stopped) != 0 {
+		t.Fatalf("expected no lifecycle calls for the built-in session host, got started=%v stopped=%v", reg.started, reg.stopped)
+	}
+}
+
 func TestUpdateMenuWithSettings_SuppressesNoOpUpdate(t *testing.T) {
 	rp := &recordingPlatform{}
 	app := &App{platform: rp, registry: &trayRegistry{}}

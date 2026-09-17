@@ -167,6 +167,85 @@ Lifecycle:
 - **Socket cleanup** is the service's job: remove a stale socket on startup,
   `os.Remove` on shutdown. Relay never touches the file.
 
+### `/launch` and `/terminate`: reserved outside every manifest
+
+Two routes are refused to **every** manifest, unconditionally, by
+`Manifest.Validate` (`internal/bridge/manifest.go`) itself — not by the
+route-conflict check above, and not overridable by any service, including
+`relaysessions`: `/launch`, `/terminate`, and anything nested under either
+(`/launch/…`, `/terminate/…`). These are `relay-sessions`' own internal
+API (C5 §3.3): a second, peer-verified Unix socket relay dials directly,
+mutually authenticated by the connecting pid matching relay's own pid (as
+recorded at that host's Hello) and a bearer the host generated for itself
+and told relay via `RegisterManifest` — never routed through the manifest
+dispatcher's `/` catch-all, and never proxied to anyone. Refusing the two
+path strings at the manifest-registration layer means relay-sessions cannot
+accidentally (or any other service, maliciously) advertise either name in
+its own *public* manifest and expose that peer-verification-free socket to
+an ordinary frontend caller through the unverified reverse proxy. Full
+design: [`docs/session-host.md`](session-host.md#the-internal-api-launch-and-terminate).
+
+### The `sessions` capability and the shared-prefix exception
+
+`relaysessions` — the built-in session-host service (`internal/service/builtin_sessions.go`,
+synthesized fresh on every start, never a user-registered record) — is the
+only service allowed to hold `config.ServiceCapabilitySessions` ("sessions"):
+`internal/config/models.go`'s `validateCapabilities` refuses that capability
+name on any other record's `capabilities` list outright, so nothing else can
+ever be granted the `SessionExited` bridge op or the unfiltered model list
+that capability also grants
+([`docs/launch-identity.md`](launch-identity.md#identity-kinds-and-capabilities)).
+
+Separately, `relaysessions`' manifest declares two path **prefixes**,
+`/api/terminals/` and `/api/sessions/` (`config.RelaySessionsManifestRoutes`)
+— and relay itself already registers several routes under those same two
+paths directly, ahead of the manifest dispatcher: the bare creates
+(`POST /api/terminals`, `POST /api/sessions`), the bare lists (`GET`), and
+three of relay's own wildcard patterns, `POST /api/sessions/{$}`,
+`POST /api/sessions/{id}/resume` and `POST /api/terminals/{$}`.
+`relayRoutePath` (`cmd/relay/enhanced_services.go`) truncates each
+registered pattern at its first `{`, so those wildcards reserve relay's own
+subtree as `/api/sessions/` and `/api/terminals/` — the identical two
+prefixes `relaysessions`' manifest declares. Ordinarily a manifest route
+that overlaps a path relay itself serves is refused (the relay-route-conflict
+rule above); `relaysessions` is the one, named exception
+(`sessionHostSharedPrefixes` in `cmd/relay/enhanced_services.go`), keyed on
+the *colliding relay route* being one of those two reserved prefixes — not
+on the manifest route itself matching one of them exactly — so `relaysessions`
+is exempt across that entire subtree and could legally declare something
+like `/api/sessions/foo`, not only the two literal prefix strings.
+
+The exemption largely holds in practice: for a (method, path) pair both
+relay and `http.ServeMux` route to relay's own pattern, relay's more
+specific registration wins over the manifest dispatcher's `/` catch-all, so
+the create route and the manifest's identically-shaped route do not fight
+over the same request. That precedence is narrower than "the two claims
+cannot collide," though: it is scoped to the exact (method, path) pairs
+relay itself registers — `GET /api/sessions/{id}` matches no relay pattern
+at all and falls through to the manifest dispatcher genuinely, not just in
+this check — and it holds only while relay's session routes are registered
+in the first place. `RegisterSessionRoutes` runs only
+`if deps.sessionHost.ready()` (`cmd/relay/frontend_server.go`); when that's
+false, relay registers and reserves nothing under `/api/sessions/` or
+`/api/terminals/`, so there is no "relay wins" precedence to fall back on
+in that state — a request there reaches whatever the manifest dispatcher
+resolves, unguarded by `AuthorizeLaunch`. This is exactly why the check
+above is defense-in-depth rather than provably redundant. Concretely: `POST
+/api/sessions` (create) is relay's; `GET /api/sessions/{id}` (once that
+handler exists — see the gap below) is `relaysessions`' own manifest route.
+This is the same split C5 describes as "relay's own routes (create, resume,
+the bare list proxies) and relay-sessions' own manifest (every other
+per-session operation underneath them)".
+
+**The manifest declares reachability, not a working endpoint yet.**
+`relaysessions`' internal mux today only serves `/launch` and `/terminate`
+(hostapi's own two handlers); a request that lands on it via the shared
+prefix gets whatever that mux answers — a 404 — never a silently wrong
+result, but also never the real per-session HTTP/WS surface
+(`internal/sessions/api`) that exists in this tree but is not yet mounted.
+See [`docs/session-host.md`](session-host.md#what-is-not-built-yet) for the
+full list of what that surface would cover once mounted.
+
 ## Restart supervision
 
 Relay only ever started a service at tray launch (autostart) or on an

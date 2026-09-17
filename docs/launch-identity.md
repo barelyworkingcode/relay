@@ -118,8 +118,10 @@ predecessor's identity is gone before it exists.
 - `RELAY_LAUNCH_FD` unset: the process was not launched by relay and runs its
   own standalone mode.
 - A tokenless bridge request from a peer whose identity does not hold the
-  operation's capability is not a service: it falls to directory auth (`allow_cwd_auth`), which can only ever
-  yield a project, and never reaches a service operation.
+  operation's capability is not a service: it falls to membership auth
+  (plan-broker-and-sessions.md §2 C3), which can only ever yield a project's
+  scope via a live session's verified process ancestry, and never reaches a
+  service operation.
 - A peer whose audit token cannot be read matches no identity.
 
 ## Environment
@@ -153,41 +155,51 @@ record's `capabilities` — a set, fixed when the launch begins:
 
 | capability | operations it grants |
 |---|---|
-| `frontend` | The frontend socket, with no `Authorization` header, holding exactly `read`, `configure` and `proxy` (never `grant` or `execute`). Attributed in `control_decision` records as `launch:service:<id>`. Relay sets `RELAY_FRONTEND_SOCKET` exactly when this capability is held. |
+| `frontend` | The frontend socket, with no `Authorization` header, holding `read`, `configure`, `proxy` and `execute` (never `grant`). Attributed in `control_decision` records as `launch:service:<id>`. Relay sets `RELAY_FRONTEND_SOCKET` exactly when this capability is held. `execute` was added by the approved F1/SP8 decision (plan-broker-and-sessions.md), once every other `execute`-class route on this socket was presence-gated or scoped to a launch — it is what lets eve reach the session-host launch routes (`POST /api/terminals`, `POST /api/sessions`, `POST /api/sessions/{id}/resume`). |
 | `manifest` | `RegisterManifest`, only for a `serviceId` equal to the launch name. |
-| `projects` | `ResolvePtyEnv`, `ResolveProjectTemplate`, `ListProjects`, `GetProject`, and tokenless `ListTools`/`CallTool` across every MCP. |
 | `models` | Model-endpoint calls on `model.sock` with no header, limited by the service record's own `allowed_models` (empty means none, `["*"]` means every model — the opposite of a project's own default), and `GET /v1/models`. See [`docs/model-endpoint.md`](model-endpoint.md). |
 | `model_host` | `RegisterModelHost`: registering this service's router socket as the model endpoint's one upstream, under its own id only. See [`docs/model-endpoint.md`](model-endpoint.md). |
+| `sessions` | `SessionExited`, and `GET /v1/models` unfiltered (never a model call). Only the built-in `relaysessions` service record may hold this — any other record naming it fails validation. |
 
 `Hello` needs no capability: every launched service may say it. A service
 with an empty set can start and say `Hello` and can do nothing else through
 relay. The set grants the union of its capabilities' operations and nothing
 else, and a capability name relay does not know grants nothing.
 
+The retired `projects` capability (`ResolvePtyEnv`, `ResolveProjectTemplate`,
+`ListProjects`, `GetProject`, and tokenless `ListTools`/`CallTool` across
+every MCP) no longer exists: those operations were deleted outright
+(plan-broker-and-sessions.md §2 C1) in favor of the `project_session` kind
+below. A stored record naming `projects` is not refused — the name is
+silently dropped on load, logged at info, and persists without it on the
+next write, so an existing install keeps starting across the upgrade.
+
 | service | capabilities |
 |---|---|
 | eve, relaySTT | `frontend` |
-| relayLLM | `manifest`, `projects` |
-| relayTTS | `manifest` (a migrated record starts with `manifest`, `projects`; narrow it with `relay service register --capability manifest`) |
+| relayLLM | `manifest`, `model_host` |
+| relayTTS | `manifest`, `models` |
 | relayScheduler | `frontend`, `manifest` |
 
 ### The service record
 
 ```json
-{"id": "relayllm", "command": "…", "capabilities": ["manifest", "projects"]}
+{"id": "relayllm", "command": "…", "capabilities": ["manifest", "model_host"]}
 ```
 
 Every record relay writes carries `capabilities`, an empty set as `[]`. A
 record whose `capabilities` names anything other than `frontend`, `manifest`,
-`projects`, `models` or `model_host` fails validation: relay logs it on load,
-keeps it in `settings.json` untouched, and refuses to start it.
+`models`, `model_host` or `sessions` fails validation: relay logs it on load,
+keeps it in `settings.json` untouched, and refuses to start it. `sessions` is
+additionally refused on any record but the built-in `relaysessions` one.
 
 A record written before capabilities existed has no `capabilities` key
 (`null` reads the same) and may carry `frontend_consumer`. It is migrated once,
 in memory, on load — `frontend_consumer` unset or `true` becomes
-`["frontend"]`, `false` becomes `["manifest", "projects"]` — and the next write
+`["frontend"]`, `false` becomes `["manifest"]` — and the next write
 persists `capabilities` and drops `frontend_consumer`. A record that already
-has `capabilities` keeps them and its `frontend_consumer` is discarded.
+has `capabilities` keeps them (minus a retired `projects` entry, dropped the
+same way) and its `frontend_consumer` is discarded.
 
 `relay service register --capability NAME` (repeatable) sets the set; a
 register with no `--capability` sets the empty set and says so. An HTTP or
@@ -195,10 +207,13 @@ Settings-window update that omits `capabilities` keeps the stored set.
 
 ### Editing capabilities from the Settings window
 
-The service create/edit dialog carries a checkbox per known capability
-(`frontend`, `manifest`, `projects`); an unknown name is refused server-side
-before anything is written (`config.ServiceConfig.validateCapabilities`),
-the same check a CLI `--capability` typo hits.
+The service create/edit dialog carries a checkbox per known capability a
+user may register for their own service (`frontend`, `manifest`, `models`,
+`model_host`; `sessions` is deliberately not offered here, since only the
+built-in `relaysessions` record may ever hold it); an unknown name is
+refused server-side before anything is written
+(`config.ServiceConfig.validateCapabilities`), the same check a CLI
+`--capability` typo hits.
 
 `command`, `args`, `working_dir`, `url` and `autostart` have no narrower
 reading, so any actual change to one of those gates, and a resend that
@@ -225,12 +240,65 @@ set, but a save that sends it, however it's spelled, names every capability
 the service holds after that save — there is no partial "add one, leave the
 rest" shape on the wire.
 
-### Later kinds
+### `project_session`: the session-host identity kind
 
-A project session, whose capability is one project's grant, is a new `kind`
-value and a new table in `service.Allowed`, bound by this same launch fd,
-Hello and audit-token check. `RELAY_PROJECT_TOKEN` is still injected into
-project shells today; it is not governed by this document yet.
+`project_session` is the second `kind` value, bound by this same launch fd,
+Hello and audit-token check — a session-host root process (a
+`relay-sessions exec` shim, per C2 and C6) rather than a registered service.
+Unlike `service`, its authority is not a fixed capability set but the named
+project's own live grant: `service.Allowed(IdentityKindProjectSession, nil,
+op)` grants a fixed operation set — `Hello`, `ListTools`/`CallTool`
+(`OpProjectTools`), `DescribeProject`, `ListSkillBuckets`, and model-endpoint
+calls/listing (`OpModelCall`/`OpModelList`) — scoped at call time by the
+project itself, never by a capability list on the identity. `BindKind`
+additionally pins the root process's exact kernel start time
+(`RootStartSec`/`RootStartUsec`) and registers an ancestry-exit watch
+(`internal/membership.WatchExit`) so the identity ends the moment its root
+process does, not only when the service registry notices a launch end.
+
+**Root-vs-descendant membership is implemented and live**: a tokenless
+caller reaching a `project_session`'s grant by being a real, kernel-verified
+process-tree descendant of its root — never by presenting a secret of its
+own — is `resolveAuth`'s C3 step (`cmd/relay/router.go`), consulted only
+once a token is absent and the peer holds no bound launch identity of its
+own. `internal/membership.Resolve` walks the caller's ancestry via
+`proc_pidinfo`, matching a candidate root by pid **and** its exact process
+start time (a pid number alone is reused too often to trust), up to a
+`relay-sessions exec` shim or relay's own host pid, whichever it meets
+first. A caller admitted this way authenticates as `AuditAuthSession`
+(`internal/audit/audit.go`) with `AuditActorProjectSession`, carrying the
+session id that vouched for it — this is what replaced the retired
+`allow_cwd_auth` mechanism (see [`docs/tokens.md`](tokens.md#directory-auth-allow_cwd_auth-retired)).
+
+The session's root process itself — the shim that said Hello — is
+authenticated as the bound `project_session` identity directly, the same
+peer-audit-token match every launch identity uses; C3's ancestry walk is
+only consulted for its *descendants* (the target the shim spawned, and
+anything that target spawns in turn).
+
+`RELAY_PROJECT_TOKEN` is unaffected by this kind's existence: a project
+shell or agent CLI spawned outside the session-host path still gets one
+injected as before. A session-host-launched `pty` instead relies on its
+bound `project_session` identity, or C3 membership if it is a descendant
+rather than the root — no project token is injected into a session-host
+child's environment at all.
+
+**This does not hold for a `claude`/`pi` launch.** Neither
+`provider.ClaudeConfig` nor `provider.PiConfig` (`internal/sessions/provider`)
+carries an `Identity` field, so neither process — nor anything it spawns —
+ever says Hello, and there is no bound `project_session` identity for it at
+all. Nor does C3 membership cover it: `(*service.Launches).RootByPID` only
+recognizes a pid as a membership root when it is bound in the launch table
+under `IdentityKindProjectSession`, so an unbound `claude`/`pi` launch is
+nobody's root — there is nothing for a descendant to authenticate against
+either. A `claude`/`pi` launch authenticates by neither mechanism today; see
+[`docs/session-host.md`](session-host.md#what-is-not-built-yet) gap 1 and
+[`docs/ssh-hosts.md`](ssh-hosts.md#the-session-host-never-sandboxes-a-host-projects-session),
+which already state this gap honestly.
+
+Full design of the binary that launches these identities, the internal API
+that authorizes a launch, and the shim that presents the secret:
+[`docs/session-host.md`](session-host.md).
 
 Code: `internal/service/launch_identity.go` (the table and `Identity`),
 `internal/peertoken` (the audit token), `internal/bridge/launch.go` (the Go

@@ -639,6 +639,7 @@ func aiNewLoginServer(t *testing.T, rec *audit.AuditRecorder) *lrServer {
 		nil,
 		nil,
 		NewCredentialAuthorizer(store), auditor, nil,
+		sessionRouteDeps{},
 	)
 	assertNoErr(t, err, "NewFrontendServer")
 	assertNoErr(t, srv.ListenLoopback("127.0.0.1:0"), "ListenLoopback")

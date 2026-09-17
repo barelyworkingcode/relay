@@ -77,6 +77,21 @@ func (t *ModelKeyTable) Revoke(projectID, label string) {
 	}
 }
 
+// RevokeKey removes exactly the key minted for plaintext, never any other
+// key sharing its (project, label) pair. A launch rollback that only knows
+// the exact value it itself minted -- not merely its label -- uses this
+// instead of Revoke, so undoing one failed attempt can never reach a
+// concurrent, successful one that happens to share the same label. Safe to
+// call for a plaintext that was never minted or already revoked.
+func (t *ModelKeyTable) RevokeKey(plaintext string) {
+	if plaintext == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.byID, hashModelKey(plaintext))
+}
+
 // Lookup reports the project a presented rmk_ bearer is scoped to, and its
 // label for audit. ok is false for a key that was never minted or was
 // revoked. A direct map lookup by hash, not a scan: the hash itself is not

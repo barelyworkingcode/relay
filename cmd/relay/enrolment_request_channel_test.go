@@ -227,7 +227,7 @@ func TestEnrolment_AC3_RequestHandlersExactlyTwo(t *testing.T) {
 	f := newEnrolFixture(t, enrolFixtureOpts{})
 	for _, other := range []string{
 		bridge.ReqListTools, bridge.ReqCallTool, bridge.ReqDescribeGrant, bridge.ReqNarrowGrant,
-		bridge.ReqAdminOp, bridge.ReqRegisterManifest, bridge.ReqListProjects, "SomethingMadeUp",
+		bridge.ReqAdminOp, bridge.ReqRegisterManifest, bridge.ReqRegisterModelHost, "SomethingMadeUp",
 	} {
 		c := f.dialClient()
 		resp := c.roundTrip(fmt.Sprintf(`{"type":%q}`, other))

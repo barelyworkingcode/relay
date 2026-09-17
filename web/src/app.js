@@ -14,6 +14,10 @@ const PROJECTS_INIT = window.__RELAY_INIT__.projects;
 // (docs/ssh-hosts.md). Seeded like projects: the list is small, and both the
 // Hosts tab and the project form's Where control need it on the first paint.
 const HOSTS_INIT = window.__RELAY_INIT__.hosts || [];
+// Terminal launch templates (internal/config/templates.go). Seeded like
+// Hosts: the list is small (five built-ins plus any override) and this tab
+// is read-only, so there is no form to protect from a push-sourced repaint.
+const TEMPLATES_INIT = window.__RELAY_INIT__.templates || [];
 const MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
 // What each MCP declares as narrowable: its scope: "restrict" fields, already
 // projected by Go (ScopeFieldView) so the rule that an absent `source` means
@@ -149,6 +153,9 @@ let state = {
     hostProbePending: {},     // id -> true while a probe/create/re-probe is in flight ('new' for the add form)
     hostError: null,
 
+    // Templates tab: read-only, no form/error state to track.
+    templates: TEMPLATES_INIT,
+
     // The enumeration picker (ADR-011 decision 6). Enumeration is a LIVE call
     // into another process, so none of this is populated by a paint: a list is
     // fetched when an operator opens the control and cached for the life of
@@ -232,7 +239,7 @@ function showPage(page) {
     state.page = page;
     // Positional against the sidebar items in web/shell.html — adding one
     // there without adding it here highlights the wrong row.
-    const pages = ['overview', 'services', 'mcps', 'projects', 'hosts', 'remote', 'passkeys', 'inspector', 'audit'];
+    const pages = ['overview', 'services', 'mcps', 'projects', 'hosts', 'templates', 'remote', 'passkeys', 'inspector', 'audit'];
     document.querySelectorAll('.sidebar-item').forEach((el, i) => {
         const selected = pages[i] === page;
         el.classList.toggle('active', selected);
@@ -248,7 +255,15 @@ function showPage(page) {
     // network peer can change the table while the operator is on another tab.
     // The Overview tab's "Needs attention" list counts them too.
     if (page === 'remote' || page === 'overview') listEnrolmentRequests();
+    // Templates has no mutation route to push a fresh list after (read-only
+    // in this unit), so the tab re-fetches on every visit instead — cheap,
+    // and it picks up a hand-edited settings.json without a restart.
+    if (page === 'templates') listTemplates();
     render();
+}
+
+function listTemplates() {
+    ipc(JSON.stringify({ type: 'list_templates' }));
 }
 
 const JSON_PLACEHOLDER = JSON.stringify({"my-server": {"command": "npx", "args": ["-y", "@example/server"], "env": {"API_KEY": "..."}}}, null, 2);
@@ -299,6 +314,9 @@ function render(source) {
         if (fromPush && state.editingHostId) return;
         state._actBind = [];
         el.innerHTML = renderHosts();
+    } else if (state.page === 'templates') {
+        state._actBind = [];
+        el.innerHTML = renderTemplates();
     } else if (state.page === 'remote') {
         // Skip a push-sourced repaint while the create form is open or the
         // listener block has uncommitted edits, for the same reason the
@@ -1162,7 +1180,7 @@ function renderServiceForm() {
 // protocol change, so it is hand-kept in sync with that list rather than
 // fetched, the same way the CLI's own --capability flag help text names
 // them by hand too.
-const serviceCapabilityNames = ['frontend', 'manifest', 'projects', 'models', 'model_host'];
+const serviceCapabilityNames = ['frontend', 'manifest', 'models', 'model_host'];
 
 // renderServiceEnvRows renders state.svcEnvDraft, the edit session's own env
 // draft (seeded by editService/newService, never derived from `editing`
@@ -1982,9 +2000,6 @@ function renderProjects() {
                 html += '<span>Skill: <strong>' + esc(skillState) + '</strong></span>';
             }
             html += '<span>Policy: <strong>' + esc(policy) + '</strong></span>';
-            // Only shown when on: directory auth is the exception, and a row of
-            // "off" labels would bury the projects where it's actually enabled.
-            if (p.allow_cwd_auth) html += '<span>Dir auth: <strong>on</strong></span>';
             html += '</div>';
             if (regen) {
                 const cls = regen.ok ? 'proj-ok' : 'proj-error';
@@ -2034,7 +2049,6 @@ function blankProjectForm() {
         chat_templates: [],
         permission_policy: { default_mode: '', allowed_tools: [], denied_tools: [] },
         generate_skill: false,
-        allow_cwd_auth: false,                   // token-less auth by working directory
         disabled_tools: {},                      // mcpID -> [toolName, ...]
         // The ADR-011 permission set. access and allowed_tools are what relay
         // enforces at its own chokepoint; context is what it injects and
@@ -2082,7 +2096,6 @@ function projectFormFromExisting(p) {
             denied_tools: (policy.denied_tools || []).slice(),
         },
         generate_skill: !!p.generate_skill,
-        allow_cwd_auth: !!p.allow_cwd_auth,
         disabled_tools: JSON.parse(JSON.stringify(p.disabled_tools || {})),
         access: JSON.parse(JSON.stringify(p.access || {})),
         allowed_tools: JSON.parse(JSON.stringify(p.allowed_tools || {})),
@@ -2173,8 +2186,7 @@ function copyToClipboard(text) {
 //
 // A remote-kind record is an ACCESS PROFILE (ADR-011 decision 1): a capability
 // grant to an agent on another machine, not a host directory. It carries no
-// path, can't use allow_cwd_auth or generate_skill (both are
-// directory-flavored), can't use
+// path, can't use generate_skill (directory-flavored), can't use
 // the "*" MCP wildcard (a remote grant must be an explicit enumeration —
 // see validateProjectShape in project_apply.go), and always sends an empty
 // allowed_models. Kind is chosen at create time only; the edit form shows it
@@ -2208,7 +2220,6 @@ function setProjWhere(hostId) {
     if (f.host_id) {
         f.allowed_mcp_ids = [];
         f.generate_skill = false;
-        f.allow_cwd_auth = false;
     }
     render();
 }
@@ -3176,7 +3187,7 @@ function renderProjectForm() {
             ? 'Absolute path on ' + esc(hostNameFor(f.host_id)) + '. Relay never checks whether it exists — the host does that when a session or terminal opens it.'
             : 'Absolute path. Filesystem MCPs are auto-scoped to this directory.') + '</p>';
     } else {
-        html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply — what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
+        html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, skills, shell templates and models do not apply — what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
     }
     html += '</div>';
 
@@ -3345,10 +3356,10 @@ function renderProjectForm() {
     }
 
     // ---- Permission policy ----
-    // Absent for an access profile, for the same reason the skill toggle and
-    // directory auth are: the model refuses it now, so a control here would be
-    // one whose only outcome is a refusal on Save. A profile that still
-    // carries a policy is told, because saving clears it.
+    // Absent for an access profile, for the same reason the skill toggle is:
+    // the model refuses it now, so a control here would be one whose only
+    // outcome is a refusal on Save. A profile that still carries a policy is
+    // told, because saving clears it.
     const pol = f.permission_policy;
     if (isRemote) {
         if (!isPolicyEmpty(pol)) {
@@ -3395,20 +3406,6 @@ function renderProjectForm() {
                 html += '<div class="' + cls + '">' + (regen.ok ? '✓ Regenerated: ' : '✗ Regen failed: ') + esc(regen.message) + '</div>';
             }
         }
-        html += '</div>';
-    }
-
-    // ---- Directory auth ----
-    // Compares a caller's cwd against Path; a remote project has no Path, so
-    // the toggle is absent rather than disabled (see validateProjectShape).
-    if (!isRemote && !isHostedForm(f)) {
-        html += '<div class="proj-section">';
-        html += '<div class="proj-section-title">Directory Auth</div>';
-        html += '<p class="proj-section-help">Lets <code>relay mcp</code> / <code>relay mcp call</code> run with no token when the working directory is inside this project\'s path, granting exactly this project\'s tools. <strong>Any process running as you</strong> gets them by being in the directory — including agents you started for something else. Leave off unless you want that trade.</p>';
-        html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
-        html += '<span>Allow token-less access from this project\'s directory</span>';
-        html += '<label class="switch"><input type="checkbox" aria-label="Allow token-less access from this project\'s directory" ' + (f.allow_cwd_auth ? 'checked' : '') + ' onchange="state.projectForm.allow_cwd_auth = this.checked" /><span class="slider"></span></label>';
-        html += '</div>';
         html += '</div>';
     }
 
@@ -3542,11 +3539,10 @@ function harvestProjectForm() {
         allowed_mcp_ids: hosted ? [] : f.allowed_mcp_ids,
         allowed_models: allowedModels,
         permission_policy: policy,
-        // Both are directory-flavored and meaningless without a console
-        // path; force them off for remote AND for a hosted project
-        // regardless of stale form state.
+        // Directory-flavored and meaningless without a console path; force
+        // it off for remote AND for a hosted project regardless of stale
+        // form state.
         generate_skill: (isRemote || hosted) ? false : f.generate_skill,
-        allow_cwd_auth: (isRemote || hosted) ? false : f.allow_cwd_auth,
         disabled_tools: f.disabled_tools,
         // Local-project mounts must not be sent even if a stray row survived
         // a kind switch on a still-open new-project form — ValidateMounts
@@ -3947,6 +3943,49 @@ function renderHostProbeSummary(h) {
         : '<span class="pill muted">claude missing</span>';
     return html;
 }
+
+// ---------------------------------------------------------------------------
+// Templates tab (internal/config/templates.go)
+// ---------------------------------------------------------------------------
+//
+// Read-only: built-ins are seeded in Go, and the only override points
+// (Settings.TerminalTemplates, a project's ShellTemplates) have no editor
+// yet, so there is nothing here to create, edit or remove.
+
+function templateCommandLine(t) {
+    const parts = [t.command || '(default shell)'].concat(t.args || []);
+    return parts.map(esc).join(' ');
+}
+
+function renderTemplates() {
+    let html = '<div class="page-header"><h2>Templates</h2></div>';
+    html += '<p class="page-intro">Launch configs for project terminals: argv, env passthrough and the sandbox/model-key defaults a session inherits unless a project\'s own Shell Templates override them.</p>';
+
+    if ((state.templates || []).length === 0) {
+        html += '<div class="empty-state">No templates.</div>';
+        return html;
+    }
+
+    for (const t of state.templates) {
+        html += '<div class="proj-card">';
+        html += '<div class="proj-card-header">';
+        html += '<div style="display:flex;align-items:center;gap:8px">';
+        html += '<span class="proj-card-name">' + esc(t.name) + '</span>';
+        if (t.builtIn) html += '<span class="pill muted">built-in</span>';
+        if (t.sandbox) html += '<span class="pill ok">sandboxed</span>';
+        if (t.model_key) html += '<span class="pill ok">model key</span>';
+        html += '</div></div>';
+        html += '<div class="proj-card-path">' + templateCommandLine(t) + '</div>';
+        if (t.description) html += '<div class="proj-card-meta"><span>' + esc(t.description) + '</span></div>';
+        html += '</div>';
+    }
+    return html;
+}
+
+window.onTemplatesListed = function(templates) {
+    state.templates = templates || [];
+    render('push');
+};
 
 function blankHostForm() {
     return { id: null, name: '', target: '', port: '', identity_file: '' };

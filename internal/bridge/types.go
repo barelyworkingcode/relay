@@ -15,16 +15,12 @@ import (
 const MaxMessageSize = 10 * 1024 * 1024
 
 const (
-	ReqListTools              = "ListTools"
-	ReqCallTool               = "CallTool"
-	ReqReconcileExternalMcps  = "ReconcileExternalMcps"
-	ReqReloadExternalMcp      = "ReloadExternalMcp"
-	ReqReloadService          = "ReloadService"
-	ReqListProjects           = "ListProjects"
-	ReqGetProject             = "GetProject"
-	ReqResolvePtyEnv          = "ResolvePtyEnv"
-	ReqResolveProjectTemplate = "ResolveProjectTemplate"
-	ReqRegisterManifest       = "RegisterManifest"
+	ReqListTools             = "ListTools"
+	ReqCallTool              = "CallTool"
+	ReqReconcileExternalMcps = "ReconcileExternalMcps"
+	ReqReloadExternalMcp     = "ReloadExternalMcp"
+	ReqReloadService         = "ReloadService"
+	ReqRegisterManifest      = "RegisterManifest"
 
 	// ReqRegisterModelHost registers a service's router socket as the model
 	// endpoint's upstream (docs/model-endpoint.md). Tokenless: authenticated
@@ -55,6 +51,12 @@ const (
 	ReqDescribeGrant = "DescribeGrant"
 	ReqNarrowGrant   = "NarrowGrant"
 
+	// ReqSessionExited is relay-sessions' advisory, tokenless report that one
+	// of its sessions is gone (plan-broker-and-sessions.md §2 C5). Requires
+	// the caller's launch identity to hold the sessions capability, which
+	// config restricts to the built-in relay-sessions service.
+	ReqSessionExited = "SessionExited"
+
 	// ReqMountAttach is the mount plane's one request type: the single
 	// preamble line a relay-9p/1 connection sends before the 9P stream
 	// begins. It is deliberately absent from BOTH of remote_server.go's
@@ -68,15 +70,11 @@ const (
 )
 
 const (
-	RespTools           = "Tools"
-	RespResult          = "Result"
-	RespError           = "Error"
-	RespOK              = "OK"
-	RespProjects        = "Projects"
-	RespProject         = "Project"
-	RespPtyEnv          = "PtyEnv"
-	RespProjectTemplate = "ProjectTemplate"
-	RespProgress        = "Progress"
+	RespTools    = "Tools"
+	RespResult   = "Result"
+	RespError    = "Error"
+	RespOK       = "OK"
+	RespProgress = "Progress"
 
 	RespProjectDescription = "ProjectDescription"
 )
@@ -122,62 +120,9 @@ type HelloResult struct {
 	Kind      string `json:"kind"`
 	ServiceID string `json:"service_id"`
 	RelayPID  int    `json:"relay_pid"`
-}
-
-// PtyEnvRequest resolves a project-scoped token + working dir. A bridge
-// service identity is required. ProjectID is authoritative; when Directory is
-// also set, relay validates it lies within the project's path so a service
-// can't bind an arbitrary cwd to another project's token.
-type PtyEnvRequest struct {
+	// ProjectID is set only for a project_session identity
+	// (plan-broker-and-sessions.md §2 C2); absent for every other kind.
 	ProjectID string `json:"project_id,omitempty"`
-	Project   string `json:"project,omitempty"`
-	Directory string `json:"directory,omitempty"`
-}
-
-// PtyEnvResponse.RelayToken is plaintext — env-var only, never argv or files.
-type PtyEnvResponse struct {
-	RelayToken string `json:"relay_token"`
-	WorkingDir string `json:"working_dir"`
-	// Host is set only for a project whose directory lives on another
-	// machine (docs/ssh-hosts.md): RelayToken is then always "" (decision 6
-	// — no relay-brokered tools on a host in v1) and WorkingDir names the
-	// directory on the HOST, not the console.
-	Host *HostSpec `json:"host,omitempty"`
-}
-
-// HostSpec is what a caller needs to launch a process on a host: the ssh
-// argv prefix (internal/sshhost.SSHArgv) plus the absolute tool paths and
-// shell a probe already discovered. It never carries a credential — ssh
-// authenticates with the operator's own identity (key/agent), not a bearer
-// relay hands out.
-type HostSpec struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	SSHArgv    []string `json:"ssh_argv"`
-	NodePath   string   `json:"node_path"`
-	ClaudePath string   `json:"claude_path"`
-	Shell      string   `json:"shell"`
-	OS         string   `json:"os"`
-}
-
-// ShellTemplateRequest resolves a project-scoped shell launch template by
-// (ProjectID, TemplateID), so relayLLM can spawn a private shell whose
-// command lives in relay's project record rather than its own global pty map.
-type ShellTemplateRequest struct {
-	ProjectID  string `json:"project_id"`
-	TemplateID string `json:"template_id"`
-}
-
-// ShellTemplateResponse carries NO credential — keeping ResolvePtyEnv the
-// single plaintext-token egress over the bridge (ADR-007).
-type ShellTemplateResponse struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Command     string            `json:"command,omitempty"`
-	Args        []string          `json:"args,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Icon        string            `json:"icon,omitempty"`
 }
 
 // RegisterModelHostRequest is the Arguments payload for a
@@ -205,6 +150,25 @@ func (r *RegisterModelHostRequest) Validate() error {
 	}
 	if !filepath.IsAbs(r.RouterSocket) {
 		return fmt.Errorf("register_model_host: router_socket must be an absolute path")
+	}
+	return nil
+}
+
+// SessionExitedRequest is the Arguments payload for a ReqSessionExited
+// report: C5's exact wire shape (session_id, root_pid, exit_status, reason).
+// It carries no project id — the caller (relay itself, cmd/relay's
+// router_sessions.go) resolves that from its own launch/ledger bookkeeping,
+// never from anything the host asserts.
+type SessionExitedRequest struct {
+	SessionID  string `json:"session_id"`
+	RootPID    int    `json:"root_pid"`
+	ExitStatus int    `json:"exit_status"`
+	Reason     string `json:"reason"`
+}
+
+func (r *SessionExitedRequest) Validate() error {
+	if r.SessionID == "" {
+		return fmt.Errorf("session_exited: session_id is empty")
 	}
 	return nil
 }
@@ -240,10 +204,20 @@ type BridgeRequest struct {
 	Token     string          `json:"token,omitempty"`
 	ProjectID string          `json:"project_id,omitempty"`
 
-	// Cwd is sent ONLY when no token is set, and ignored whenever a token is
-	// present, so it can never widen an authenticated call's scope. Advisory,
-	// not attested — anything able to lie here can already read every token
-	// out of the 0600 settings.json.
+	// Kind is Hello-only and optional: the IdentityKind the caller expects to
+	// bind (plan-broker-and-sessions.md §2 C2). Absent means "don't care" —
+	// every Hello sender that predates this field keeps working unchanged.
+	// Present and wrong refuses the Hello before the secret is spent, the
+	// same as a wrong secret.
+	Kind string `json:"kind,omitempty"`
+
+	// Cwd is accepted on the wire and ignored entirely. Directory auth is
+	// retired (plan-broker-and-sessions.md §2 C3): a working directory is
+	// asserted by the caller, not attested by the kernel, and relay now
+	// identifies a tokenless caller by its audit token and process ancestry
+	// instead. The field remains only so a request from a client built
+	// before the retirement still decodes; nothing server-side authenticates
+	// on it, whether or not a caller sends one.
 	Cwd string `json:"cwd,omitempty"`
 }
 
@@ -295,22 +269,6 @@ func ProgressFromContext(ctx context.Context) ProgressFunc {
 	return fn
 }
 
-type callerCwdCtxKey struct{}
-
-// WithCallerCwd carries BridgeRequest.Cwd in context rather than a
-// ToolRouter parameter, so the cross-repo interface stays unchanged.
-func WithCallerCwd(ctx context.Context, dir string) context.Context {
-	if dir == "" {
-		return ctx
-	}
-	return context.WithValue(ctx, callerCwdCtxKey{}, dir)
-}
-
-func CallerCwdFromContext(ctx context.Context) string {
-	dir, _ := ctx.Value(callerCwdCtxKey{}).(string)
-	return dir
-}
-
 type callerPIDCtxKey struct{}
 
 // WithCallerPID carries the peer pid (see PeerPID) for the same
@@ -354,15 +312,11 @@ type ToolRouter interface {
 	ReconcileExternalMcps(ctx context.Context)
 	ReloadExternalMcp(ctx context.Context, id string) error
 	ReloadService(id string) error
-	// Hello binds a launch secret to the caller's peer audit token.
-	Hello(ctx context.Context, name, secret string) (HelloResult, error)
-	ListProjects(ctx context.Context, token string) (json.RawMessage, error)
-	GetProject(ctx context.Context, id string, token string) (json.RawMessage, error)
+	// Hello binds a launch secret to the caller's peer audit token. kind is
+	// BridgeRequest.Kind verbatim — empty when the caller doesn't assert one.
+	Hello(ctx context.Context, name, secret, kind string) (HelloResult, error)
 	// Project token only; answers for that token's own project.
 	DescribeProject(ctx context.Context, token string) (ProjectDescription, error)
-	ResolvePtyEnv(ctx context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error)
-	// Never returns the project token.
-	ResolveProjectTemplate(ctx context.Context, req ShellTemplateRequest, token string) (ShellTemplateResponse, error)
 	// Re-registration with the same ServiceID replaces the prior record.
 	RegisterManifest(ctx context.Context, req RegisterManifestRequest, token string) error
 	// RegisterModelHost registers a service's router socket as the model
@@ -373,6 +327,10 @@ type ToolRouter interface {
 	// are opaque to the transport; the implementation resolves name against
 	// its own inner table and decides whether it exists at all.
 	AdminOp(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
+	// SessionExited handles relay-sessions' advisory SessionExited report.
+	// Requires a launch identity holding the sessions capability; token is
+	// always empty on this wire (tokenless, like RegisterModelHost).
+	SessionExited(ctx context.Context, req SessionExitedRequest, token string) error
 }
 
 func NewScanner(r io.Reader) *bufio.Scanner {

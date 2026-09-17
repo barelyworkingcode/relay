@@ -50,14 +50,6 @@ func TestValidateShape_HostProject(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses allow_cwd_auth", func(t *testing.T) {
-		p := base()
-		p.AllowCwdAuth = true
-		if err := ValidateShape(&p); err == nil {
-			t.Fatal("expected an error")
-		}
-	})
-
 	t.Run("refuses generate_skill", func(t *testing.T) {
 		p := base()
 		p.GenerateSkill = true

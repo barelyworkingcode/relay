@@ -169,35 +169,73 @@ func TestAudit_RecordsUnknownTool(t *testing.T) {
 	}
 }
 
-func TestAudit_RecordsDirectoryAuth(t *testing.T) {
-	dir := t.TempDir()
-
-	// The store hands out settings by value, so the project must be opted
-	// into directory auth before the router is built from it.
+// A session member's call is attributed to the session that vouched for it,
+// not to the project's bearer (plan-broker-and-sessions.md §2 C3/C4). This
+// is the positive half of the retired directory-auth record: same project
+// fields, an honest kind and auth, and the session id that makes the row
+// traceable back to one launch.
+func TestAudit_RecordsSessionMemberAuth(t *testing.T) {
 	settings := makeSettings(map[string]config.Permission{"fsmcp": config.PermOn}, nil, nil)
-	settings.Projects[0].Path = dir
-	settings.Projects[0].AllowCwdAuth = true
-
 	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, "fsmcp", newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{}`)))
-	r := newTestRouter(t, settings, mgr)
+	fx := newSessionFixture(t, settings, mgr)
 	rec := newTestAudit(t, nil)
-	r.audit = rec
+	fx.r.audit = rec
 
-	ctx := bridge.WithCallerCwd(context.Background(), dir)
-	if _, err := r.CallTool(ctx, "read_file", json.RawMessage(`{}`), ""); err != nil {
-		t.Fatalf("CallTool with directory auth: %v", err)
+	rootPID, _ := fx.startSession(t, "sess-audit", "test-project")
+	ctx := fx.conn(fx.spawn(rootPID, 20))
+	if _, err := fx.r.CallTool(ctx, "read_file", json.RawMessage(`{}`), ""); err != nil {
+		t.Fatalf("CallTool as a session member: %v", err)
 	}
 
 	ev := onlyEvent(t, readLoggedEvents(t, rec))
-	if ev.Actor.Auth != audit.AuditAuthCwd {
-		t.Errorf("actor auth = %q, want cwd", ev.Actor.Auth)
+	if ev.Actor.Kind != audit.AuditActorProjectSession {
+		t.Errorf("actor kind = %q, want %q", ev.Actor.Kind, audit.AuditActorProjectSession)
 	}
-	if ev.Actor.Cwd != dir {
-		t.Errorf("actor cwd = %q, want %q", ev.Actor.Cwd, dir)
+	if ev.Actor.Auth != audit.AuditAuthSession {
+		t.Errorf("actor auth = %q, want %q", ev.Actor.Auth, audit.AuditAuthSession)
 	}
-	if ev.Actor.ProjectID != "test-project" {
-		t.Errorf("actor project = %q, want test-project", ev.Actor.ProjectID)
+	if ev.Actor.SessionID != "sess-audit" {
+		t.Errorf("actor session_id = %q, want sess-audit", ev.Actor.SessionID)
+	}
+	if ev.Actor.ProjectID != "test-project" || ev.Actor.ProjectName != "test" {
+		t.Errorf("actor project = %q/%q, want test-project/test", ev.Actor.ProjectID, ev.Actor.ProjectName)
+	}
+	if ev.Actor.Cwd != "" {
+		t.Errorf("actor cwd = %q; a working directory is never recorded now that nothing reads one", ev.Actor.Cwd)
+	}
+	if ev.Outcome != audit.AuditOutcomeOK {
+		t.Errorf("outcome = %q, want ok", ev.Outcome)
+	}
+}
+
+// The negative half: a tokenless caller that is nobody's descendant is
+// refused and recorded as unauthenticated — never attributed to a project,
+// whatever directory it claims to be sitting in.
+func TestAudit_TokenlessNonMemberIsUnauthorized(t *testing.T) {
+	settings := makeSettings(map[string]config.Permission{"fsmcp": config.PermOn}, nil, nil)
+	settings.Projects[0].Path = t.TempDir()
+
+	mgr := mcpbroker.NewManager(nil)
+	addMockConn(mgr, "fsmcp", newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{}`)))
+	fx := newSessionFixture(t, settings, mgr)
+	rec := newTestAudit(t, nil)
+	fx.r.audit = rec
+
+	ctx := fx.conn(fx.spawn(fixtureHostPID, 20))
+	if _, err := fx.r.CallTool(ctx, "read_file", json.RawMessage(`{}`), ""); err == nil {
+		t.Fatal("expected a tokenless non-member to be refused")
+	}
+
+	ev := onlyEvent(t, readLoggedEvents(t, rec))
+	if ev.Outcome != audit.AuditOutcomeUnauthorized {
+		t.Errorf("outcome = %q, want unauthorized", ev.Outcome)
+	}
+	if ev.Actor.Kind != audit.AuditActorUnknown || ev.Actor.Auth != audit.AuditAuthNone {
+		t.Errorf("actor = %q/%q, want unknown/none", ev.Actor.Kind, ev.Actor.Auth)
+	}
+	if ev.Actor.ProjectID != "" || ev.Actor.SessionID != "" {
+		t.Errorf("a refused caller was attributed to project %q session %q", ev.Actor.ProjectID, ev.Actor.SessionID)
 	}
 }
 

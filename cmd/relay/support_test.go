@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
@@ -485,6 +487,17 @@ func substituteHomePlaceholder(t *testing.T, path, home string) {
 			t.Fatalf("substituteHomePlaceholder: %v", err)
 		}
 	}
+}
+
+// codeOf extracts a jsonrpc.CodedError's RPCCode, or 0 for any other error
+// (including nil) — shared by every test that asserts on a router refusal's
+// specific code rather than merely that it refused.
+func codeOf(err error) int {
+	var ce *jsonrpc.CodedError
+	if errors.As(err, &ce) {
+		return ce.RPCCode
+	}
+	return 0
 }
 
 func assertNoErr(t *testing.T, err error, format string, args ...any) {

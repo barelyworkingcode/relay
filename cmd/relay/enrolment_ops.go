@@ -617,8 +617,7 @@ func (o *EnrolmentOps) PendingRequests() []enrolmentRequestView {
 }
 
 // enrolmentUpdateReason names the actual act (§6.5.2), special-casing
-// cli-admin the way projectGrantUpdateReason special-cases allow_cwd_auth:
-// both carry outsized blast radius for a single boolean, and turning either
+// cli-admin: a single boolean carries outsized blast radius, and turning it
 // off is still gated — the human is being told what changed, not asked to
 // approve only the direction that widens.
 func enrolmentUpdateReason(req enrolment.UpdateRequest) string {

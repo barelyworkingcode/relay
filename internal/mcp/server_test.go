@@ -58,30 +58,23 @@ func (s *stubRouter) CallTool(ctx context.Context, name string, args json.RawMes
 	}
 	return resp, err
 }
-func (s *stubRouter) ValidateAdmin(string) error                                    { return nil }
-func (s *stubRouter) ReconcileExternalMcps(context.Context)                         {}
-func (s *stubRouter) ReloadExternalMcp(context.Context, string) error               { return nil }
-func (s *stubRouter) ReloadService(string) error                                    { return nil }
-func (s *stubRouter) ListProjects(context.Context, string) (json.RawMessage, error) { return nil, nil }
-func (s *stubRouter) GetProject(context.Context, string, string) (json.RawMessage, error) {
-	return nil, nil
-}
-func (s *stubRouter) Hello(context.Context, string, string) (bridge.HelloResult, error) {
+func (s *stubRouter) ValidateAdmin(string) error                      { return nil }
+func (s *stubRouter) ReconcileExternalMcps(context.Context)           {}
+func (s *stubRouter) ReloadExternalMcp(context.Context, string) error { return nil }
+func (s *stubRouter) ReloadService(string) error                      { return nil }
+func (s *stubRouter) Hello(context.Context, string, string, string) (bridge.HelloResult, error) {
 	return bridge.HelloResult{}, nil
 }
 func (s *stubRouter) DescribeProject(context.Context, string) (bridge.ProjectDescription, error) {
 	return bridge.ProjectDescription{}, nil
 }
-func (s *stubRouter) ResolvePtyEnv(context.Context, bridge.PtyEnvRequest, string) (bridge.PtyEnvResponse, error) {
-	return bridge.PtyEnvResponse{}, nil
-}
-func (s *stubRouter) ResolveProjectTemplate(context.Context, bridge.ShellTemplateRequest, string) (bridge.ShellTemplateResponse, error) {
-	return bridge.ShellTemplateResponse{}, nil
-}
 func (s *stubRouter) RegisterManifest(context.Context, bridge.RegisterManifestRequest, string) error {
 	return nil
 }
 func (s *stubRouter) RegisterModelHost(context.Context, bridge.RegisterModelHostRequest, string) error {
+	return nil
+}
+func (s *stubRouter) SessionExited(context.Context, bridge.SessionExitedRequest, string) error {
 	return nil
 }
 func (s *stubRouter) AdminOp(context.Context, string, json.RawMessage) (json.RawMessage, error) {

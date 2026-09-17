@@ -1023,7 +1023,7 @@ and how to reach it.
 relay service register --name NAME [--id ID] --command CMD [--args ARG...]
                         [--env K=V...] [--workdir DIR] [--url URL]
                         [--autostart[=true|false]]
-                        [--capability frontend|manifest|projects ...]
+                        [--capability frontend|manifest|models|model_host ...]
 relay service unregister --id ID | --name NAME
 relay service restart --id ID | --name NAME
 relay service list
@@ -1039,7 +1039,7 @@ Usage of service register:
   -autostart
     	start automatically
   -capability value
-    	grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy), manifest (RegisterManifest), projects (ResolvePtyEnv, ResolveProjectTemplate, ListProjects, GetProject, service ListTools/CallTool); none given means none held
+    	grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy+execute), manifest (RegisterManifest), models (model-endpoint calls, limited by --allowed-model), model_host (RegisterModelHost); sessions (SessionExited, the unfiltered model list) is refused on any service but the built-in relaysessions one; none given means none held
   -command string
     	command to run (required)
   -env value
@@ -1077,10 +1077,12 @@ never be redeemed for the other.
 
 **`--capability` sets what the service's launch identity may do, and every
 register restates the whole set.** Repeat it once per capability — `frontend`
-(the frontend socket as `read`+`configure`+`proxy`, and `RELAY_FRONTEND_SOCKET`
-in the service's environment), `manifest` (`RegisterManifest` under the
-service's own id), `projects` (`ResolvePtyEnv`, `ResolveProjectTemplate`,
-`ListProjects`, `GetProject`, service-scope `ListTools`/`CallTool`); see
+(the frontend socket as `read`+`configure`+`proxy`+`execute`, and
+`RELAY_FRONTEND_SOCKET` in the service's environment), `manifest`
+(`RegisterManifest` under the service's own id), `models` (model-endpoint
+calls, limited by `--allowed-model`), `model_host` (`RegisterModelHost`);
+`sessions` (`SessionExited`, the unfiltered model list, no calls) is refused
+on any service but the built-in `relaysessions` one; see
 [`docs/launch-identity.md`](launch-identity.md#identity-kinds-and-capabilities).
 An unknown name is refused before anything reaches the tray. Unlike
 `--workdir`, `--url` and `--autostart`, capabilities are not absent-aware: a
@@ -1167,18 +1169,21 @@ spelling.
 
 | Flag | Meaning |
 |---|---|
-| `--token` | Project token. Prefer setting `RELAY_PROJECT_TOKEN` in the environment instead (the legacy name `RELAY_TOKEN` is still accepted, for one release). |
+| `--token` | Project token. Prefer setting `RELAY_PROJECT_TOKEN` in the environment instead (the legacy `RELAY_TOKEN` name is no longer accepted). |
 | `--list` | List available tools. |
 | `--schema` | With `--list`, emit full JSON including each tool's input schema — what a SKILL.md generator consumes. |
 | `--tool` | Tool name to call. |
 | `--args` | Tool arguments as a JSON string. |
 | `--args-file` | Read arguments JSON from a file, or `-` for stdin — the shell-quoting-safe path for arguments containing quotes, apostrophes, or parentheses. |
 
-An empty token is not automatically fatal: relay falls back to directory
-auth (`allow_cwd_auth`) for any project that opted in from the calling
-directory. Needs service: yes (it dials the bridge socket). Prompts: no —
-this is an ordinary, unfiltered tool call inside a grant that already
-exists, not an act that widens one. Works over SSH: yes.
+An empty token is not automatically fatal: relay falls back to membership
+auth (plan-broker-and-sessions.md §2 C3) when the calling process is a
+verified descendant of a live project session's root — never to an
+asserted working directory, which is never authenticated. Needs service:
+yes (it dials the bridge socket). Prompts: no — this is an ordinary,
+unfiltered tool call inside a grant that already exists, not an act that
+widens one. Works over SSH: yes, when the SSH session is itself a member of
+a live project session; otherwise it needs `--token`/`RELAY_PROJECT_TOKEN`.
 
 Illustrative output, shaped like this machine's Hermes Files v3 profile
 (`fs_*` tools) — a live project token is required and none was retrieved to
