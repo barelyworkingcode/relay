@@ -2,9 +2,11 @@ package hostapi_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -473,9 +475,11 @@ func TestLaunch_CrossManagerSessionIDCollision_Refused(t *testing.T) {
 		t.Fatalf("the original pty session must survive the rejected collision, unaffected")
 	}
 
-	// The reservation must not have been leaked by the rejected attempt: the
-	// same id must still be terminable and, after that, launchable again
-	// under either kind.
+	// The reservation must not have been leaked by the rejected attempt:
+	// terminate must actually reach the (only) live session under this id,
+	// and the id must be launchable again afterward under the *other* kind
+	// too — proving reserveLaunch's own map entry was released, not just
+	// that the manager-level table was cleared.
 	tresp := postJSON(t, client, "http://h/terminate", bearer, map[string]any{"session_id": sharedID, "reason": "test"})
 	tresp.Body.Close()
 	if tresp.StatusCode != http.StatusNoContent {
@@ -483,6 +487,205 @@ func TestLaunch_CrossManagerSessionIDCollision_Refused(t *testing.T) {
 	}
 	if _, ok := terminals.Get(sharedID); ok {
 		t.Fatalf("terminate did not reach the pty session")
+	}
+
+	relaunchResp := postJSON(t, client, "http://h/launch", bearer, map[string]any{
+		"v":          1,
+		"session_id": sharedID,
+		"kind":       "claude",
+		"session_request": map[string]any{
+			"projectId": "proj-1",
+			"directory": "/tmp/proj",
+		},
+	})
+	defer relaunchResp.Body.Close()
+	if relaunchResp.StatusCode != http.StatusCreated {
+		t.Fatalf("relaunch under claude after terminate status = %d, want 201 (reserveLaunch's own map entry must have been released, not just the manager's table)", relaunchResp.StatusCode)
+	}
+}
+
+// TestLaunch_ConcurrentCrossManagerCollision_ExactlyOneWins is
+// TestLaunch_CrossManagerSessionIDCollision_Refused's concurrent sibling,
+// and the one that actually exercises reserveLaunch's own reason for
+// existing. The sequential test above only proves Exists() catches an
+// *already-completed* collision — a check with no reservation-holding at
+// all would pass it too. Each round below fires a "pty" launch and a
+// "claude" launch for the *same*, round-specific session_id from two
+// goroutines at once, so the only thing standing between them and a
+// collision is reserveLaunch's reservation being held for the *entire*
+// dispatch, not just its initial check (its own doc comment).
+//
+// The race this probes is a handful of Go statements wide (the gap between
+// hostapi's own check and the target manager's own internal reservation a
+// few calls deeper), not bounded by either request's own I/O — so a single
+// round only wins that race under a broken build a fraction of the time.
+// rounds repeats the same tight, two-goroutine race sequentially rather than
+// firing every round's goroutines at once: firing them all at once was tried
+// first and made detection *worse*, not better — enough concurrent real
+// process spawns (one per pty launch) contend for CPU that the Go scheduler
+// preempts each pair's own two goroutines less often mid-dispatch, which
+// narrows the very window this test is trying to widen. One clean pair of
+// goroutines at a time, repeated, is what actually raises the odds of
+// landing in that window across the whole test, while the shipped-correct
+// code stays deterministically green every round regardless.
+//
+// Verified by reproduction (standing rule 3): with handleLaunch's
+// `defer release()` changed to a non-deferred, immediate `release()`, this
+// test reliably goes red within its rounds; restored, confirmed green
+// across repeated full runs.
+func TestLaunch_ConcurrentCrossManagerCollision_ExactlyOneWins(t *testing.T) {
+	_, target := buildBinaries(t)
+	terminals, sessions := buildManagers(t)
+	sessions.SetProviderFactory(func(sess *sessionstypes.Session, spec session.CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+		return testutil.NewFakeProvider(handler), nil
+	})
+	_, internalSock, _, bearer := startServerWithManagers(t, os.Getpid(), terminals, sessions)
+	client := unixClient(internalSock)
+
+	const rounds = 40
+	for round := 0; round < rounds; round++ {
+		// UUID-shaped, not a readable label: session.Store.Save validates
+		// the id shape before it ever reaches filepath.Join (store.go's own
+		// isValidSessionID), and a non-UUID id here would make every
+		// round's own EndSession/persist log a spurious "invalid session
+		// id" error instead of exercising the race this test is for.
+		id := fmt.Sprintf("66666666-6666-6666-6666-%012d", round)
+		// A short real -sleep gives the pty launch's own dispatch (a real
+		// spawned process, blocked in terminal.Manager.Create until the
+		// shim's Hello completes) some wall-clock width for the claude
+		// launch's dispatch to land inside it if the reservation were not
+		// held for the whole call.
+		ptyBody := launchBody(id, []string{target, "-sleep", "50ms", "-exit-code", "0"})
+		claudeBody := map[string]any{
+			"v":          1,
+			"session_id": id,
+			"kind":       "claude",
+			"session_request": map[string]any{
+				"projectId": "proj-1",
+				"directory": "/tmp/proj",
+			},
+		}
+
+		var wg sync.WaitGroup
+		var ptyStatus, claudeStatus int
+		var ptyErr, claudeErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			ptyStatus, ptyErr = concurrentPostStatus(client, "http://h/launch", bearer, ptyBody)
+		}()
+		go func() {
+			defer wg.Done()
+			claudeStatus, claudeErr = concurrentPostStatus(client, "http://h/launch", bearer, claudeBody)
+		}()
+		wg.Wait()
+
+		if ptyErr != nil {
+			t.Fatalf("round %d (%s): pty request: %v", round, id, ptyErr)
+		}
+		if claudeErr != nil {
+			t.Fatalf("round %d (%s): claude request: %v", round, id, claudeErr)
+		}
+
+		created := 0
+		for _, code := range []int{ptyStatus, claudeStatus} {
+			switch code {
+			case http.StatusCreated:
+				created++
+			case http.StatusConflict:
+			default:
+				t.Errorf("round %d (%s): unexpected status pty=%d claude=%d", round, id, ptyStatus, claudeStatus)
+			}
+		}
+		if created != 1 {
+			t.Fatalf("round %d (%s): created = %d, want exactly 1 (pty=%d, claude=%d): the reservation must be held across the whole dispatch, not just the initial check", round, id, created, ptyStatus, claudeStatus)
+		}
+
+		_, inTerm := terminals.Get(id)
+		_, inSess := sessions.Get(id)
+		if inTerm && inSess {
+			t.Fatalf("round %d (%s): COLLISION: both managers hold this id (pty=%d, claude=%d)", round, id, ptyStatus, claudeStatus)
+		}
+		if !inTerm && !inSess {
+			t.Fatalf("round %d (%s): neither manager holds this id even though one launch reported 201 (pty=%d, claude=%d)", round, id, ptyStatus, claudeStatus)
+		}
+	}
+}
+
+// TestLaunch_ResumeRacesInFlightLaunch_Refused covers reserveLaunch's own
+// doc comment on the launching-map gate being resume-agnostic: a
+// Resume:true launch arriving while a *fresh* launch for the same id is
+// still in flight must be refused by hostapi's own reservation (409
+// session_exists), never allowed to reach session.Manager.Create's own
+// in-flight check (which would otherwise answer 500 spawn_failed). Uses a
+// provider factory that blocks until this test says go, so the fresh
+// launch's dispatch is deterministically still in flight — not racing on
+// timing — when the resume attempt is sent.
+func TestLaunch_ResumeRacesInFlightLaunch_Refused(t *testing.T) {
+	terminals, sessions := buildManagers(t)
+
+	factoryEntered := make(chan struct{})
+	releaseFactory := make(chan struct{})
+	sessions.SetProviderFactory(func(sess *sessionstypes.Session, spec session.CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+		close(factoryEntered)
+		<-releaseFactory
+		return testutil.NewFakeProvider(handler), nil
+	})
+	_, internalSock, _, bearer := startServerWithManagers(t, os.Getpid(), terminals, sessions)
+	client := unixClient(internalSock)
+
+	const id = "55555555-5555-5555-5555-555555555555"
+	freshBody := map[string]any{
+		"v":          1,
+		"session_id": id,
+		"kind":       "claude",
+		"session_request": map[string]any{
+			"projectId": "proj-1",
+			"directory": "/tmp/proj",
+		},
+	}
+
+	var wg sync.WaitGroup
+	var freshStatus int
+	var freshErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		freshStatus, freshErr = concurrentPostStatus(client, "http://h/launch", bearer, freshBody)
+	}()
+
+	<-factoryEntered // the fresh launch's Create is now blocked inside startProvider
+
+	resumeBody := map[string]any{
+		"v":          1,
+		"session_id": id,
+		"kind":       "claude",
+		"resume":     true,
+		"session_request": map[string]any{
+			"projectId": "proj-1",
+			"directory": "/tmp/proj",
+		},
+	}
+	resumeResp := postJSON(t, client, "http://h/launch", bearer, resumeBody)
+	defer resumeResp.Body.Close()
+	if resumeResp.StatusCode != http.StatusConflict {
+		t.Fatalf("resume-racing-in-flight-launch status = %d, want 409 (hostapi's own reservation must refuse this before it ever reaches session.Manager.Create)", resumeResp.StatusCode)
+	}
+	var errBody hostapi.ErrorResponse
+	if err := json.NewDecoder(resumeResp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Error != hostapi.ErrSessionExists {
+		t.Fatalf("error = %q, want %q", errBody.Error, hostapi.ErrSessionExists)
+	}
+
+	close(releaseFactory)
+	wg.Wait()
+	if freshErr != nil {
+		t.Fatalf("fresh launch: %v", freshErr)
+	}
+	if freshStatus != http.StatusCreated {
+		t.Fatalf("fresh launch status = %d, want 201", freshStatus)
 	}
 }
 

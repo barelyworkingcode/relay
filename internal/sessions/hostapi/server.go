@@ -303,16 +303,31 @@ func writeErr(w http.ResponseWriter, code int, errCode, message string) {
 
 // reserveLaunch admits req.SessionID for dispatch iff no other /launch
 // dispatch is currently in flight for it (this host's own launching map)
-// and it is not already known to the *other* manager — the one same-
-// manager duplicates and resumes are not this function's job to referee,
-// since terminal.Manager.Create and session.Manager.Create each already do
-// that correctly for their own table. The check is deliberately asymmetric
-// by kind rather than "exists in either manager": a provider-kind launch
-// with Resume:true legitimately expects to find its own id already in
-// session.Manager (that is what makes it a resume, not a fresh launch), so
-// this function must never treat that as a collision — it only ever
-// refuses a session_id session.Manager doesn't own reaching into
-// terminal.Manager's namespace, or vice versa.
+// and it is not already known to the *other* manager. The two checks guard
+// against different things and must not be conflated:
+//
+//   - The cross-manager Exists() check is deliberately asymmetric by kind
+//     rather than "exists in either manager": a provider-kind launch with
+//     Resume:true legitimately expects to find its own id already in
+//     session.Manager (that is what makes it a resume, not a fresh
+//     launch), so this half must never treat that as a collision — it
+//     only ever refuses a session_id session.Manager doesn't own reaching
+//     into terminal.Manager's namespace, or vice versa. Same-manager
+//     duplicates and resumes that reach the target manager are still
+//     terminal.Manager.Create's/session.Manager.Create's own to decide,
+//     unchanged.
+//   - The launching map is kind-agnostic AND resume-agnostic: it refuses
+//     *any* dispatch — fresh launch or resume alike — for an id that
+//     already has another /launch in flight through this function, full
+//     stop. A resume racing an in-flight launch (or another resume) of the
+//     same id is therefore refused here, with 409 session_exists, before
+//     it ever reaches session.Manager.Create's own in-flight check (which
+//     would otherwise answer "launch already in flight" as 500
+//     spawn_failed). That status-code change is a side effect of which
+//     layer now catches the race, not a claim that a resume with no other
+//     dispatch in flight for its id is somehow no longer a legitimate
+//     resume — once it is the only /launch in flight for its id, it
+//     reaches session.Manager.Create exactly as before this fix.
 //
 // The reservation this returns must be held for the entire target
 // manager's Create call, not just this check: releasing it any earlier
@@ -371,10 +386,11 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cross-manager session_id uniqueness: checked and reserved before
-	// dispatch, held for the whole dispatch (reserveLaunch's own doc
-	// comment). Same-manager duplicates/resumes are still terminal.Manager's/
-	// session.Manager's own Create to decide, unchanged.
+	// Cross-manager session_id uniqueness, checked and reserved before
+	// dispatch and held for the whole dispatch — including the
+	// resume-racing-an-in-flight-launch case, which this gate also refuses.
+	// See reserveLaunch's own doc comment for exactly what is, and is not,
+	// still terminal.Manager's/session.Manager's own Create to decide.
 	release, ok := s.reserveLaunch(req.Kind, req.SessionID)
 	if !ok {
 		writeErr(w, http.StatusConflict, ErrSessionExists, fmt.Sprintf("session_id %q already in use", req.SessionID))
@@ -492,11 +508,23 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 		// Both managers are always asked — never "else if" — even though
 		// reserveLaunch now makes a live id straddling both impossible going
 		// forward: this is the defensive half of that fix, not a substitute
-		// for it. It costs nothing in the ordinary case (a miss is one map
-		// lookup) and it means a collision that predates this fix, if one is
-		// still live in an already-running host process, is fully
-		// terminated by the next /terminate for its id rather than only
-		// ever reaching whichever manager happened to be checked first.
+		// for it. A pty-only terminate now always pays for a
+		// session.Manager.Get miss too, which is not free the way a plain
+		// map lookup would be: Get lazy-loads from disk on a miss
+		// (session.Manager's own doc comment) and, if it happens to find a
+		// same-named persisted-but-not-live session, materializes a slot
+		// for it in memory as a side effect of merely checking — bounded
+		// harm (id validation gates what Load will even attempt, and a
+		// stray slot is inert until something else acts on it) but a real
+		// per-terminate cost, not a hypothetical one. In the
+		// should-be-impossible-post-fix case where both managers really do
+		// hold the same id, this is a known degenerate-case limitation, not
+		// a guarantee of a fully clean teardown: the two branches below
+		// contend for one `terminating[id]` key (markTerminatingIfAlive),
+		// so at most one of the two exits gets reported "closed" and the
+		// other is misreported as an unexpected "exit" — acceptable for a
+		// state this fix makes unreachable going forward, not something to
+		// build further logic on.
 		if term, ok := s.terminals.Get(req.SessionID); ok {
 			// The aliveness check and the mark it gates run under one exitMu
 			// critical section (markTerminatingIfAlive), the same lock
