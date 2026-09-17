@@ -416,6 +416,76 @@ func TestLaunch_SessionKind_SandboxEmptyProfilePath_Refused(t *testing.T) {
 	}
 }
 
+// TestLaunch_CrossManagerSessionIDCollision_Refused reproduces the R-S11
+// follow-up finding: "pty" launches route to terminal.Manager and
+// "claude"/"pi"/"chat" launches route to session.Manager, each keyed by
+// session_id in its own independent table with no shared uniqueness check
+// between them. Before reserveLaunch existed, a "pty" launch and a
+// "claude" launch could both be given the same session_id and both
+// succeed, one per manager — this proves the second one is now refused
+// with a clean 409 instead.
+func TestLaunch_CrossManagerSessionIDCollision_Refused(t *testing.T) {
+	_, target := buildBinaries(t)
+	terminals, sessions := buildManagers(t)
+	var captured *testutil.FakeProvider
+	sessions.SetProviderFactory(func(sess *sessionstypes.Session, spec session.CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+		captured = testutil.NewFakeProvider(handler)
+		return captured, nil
+	})
+	_, internalSock, _, bearer := startServerWithManagers(t, os.Getpid(), terminals, sessions)
+	client := unixClient(internalSock)
+
+	const sharedID = "22222222-2222-2222-2222-222222222222"
+
+	ptyResp := postJSON(t, client, "http://h/launch", bearer, launchBody(sharedID, []string{target}))
+	ptyResp.Body.Close()
+	if ptyResp.StatusCode != http.StatusCreated {
+		t.Fatalf("pty launch status = %d, want 201", ptyResp.StatusCode)
+	}
+
+	claudeResp := postJSON(t, client, "http://h/launch", bearer, map[string]any{
+		"v":          1,
+		"session_id": sharedID,
+		"kind":       "claude",
+		"session_request": map[string]any{
+			"projectId": "proj-1",
+			"directory": "/tmp/proj",
+		},
+	})
+	defer claudeResp.Body.Close()
+	if claudeResp.StatusCode != http.StatusConflict {
+		t.Fatalf("claude launch status = %d, want 409 (a session_id already live in terminal.Manager must be refused, not accepted by session.Manager too)", claudeResp.StatusCode)
+	}
+	var errBody hostapi.ErrorResponse
+	if err := json.NewDecoder(claudeResp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Error != hostapi.ErrSessionExists {
+		t.Fatalf("error = %q, want %q", errBody.Error, hostapi.ErrSessionExists)
+	}
+	if captured != nil {
+		t.Fatalf("session.Manager.Create must never spawn a provider for a colliding id")
+	}
+	if _, ok := sessions.Get(sharedID); ok {
+		t.Fatalf("session.Manager must not hold a slot for a rejected colliding launch")
+	}
+	if _, ok := terminals.Get(sharedID); !ok {
+		t.Fatalf("the original pty session must survive the rejected collision, unaffected")
+	}
+
+	// The reservation must not have been leaked by the rejected attempt: the
+	// same id must still be terminable and, after that, launchable again
+	// under either kind.
+	tresp := postJSON(t, client, "http://h/terminate", bearer, map[string]any{"session_id": sharedID, "reason": "test"})
+	tresp.Body.Close()
+	if tresp.StatusCode != http.StatusNoContent {
+		t.Fatalf("terminate status = %d, want 204", tresp.StatusCode)
+	}
+	if _, ok := terminals.Get(sharedID); ok {
+		t.Fatalf("terminate did not reach the pty session")
+	}
+}
+
 func waitForFile(t *testing.T, path string, timeoutSeconds int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)

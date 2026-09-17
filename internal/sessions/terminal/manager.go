@@ -176,6 +176,20 @@ func (m *Manager) Get(id string) (*Session, bool) {
 	return slot.session, true
 }
 
+// Exists reports whether id has any entry in this manager's table at all —
+// live, still launching, or exited-but-not-yet-Closed — exactly the
+// existence test Create's own duplicate check uses. Unlike Get, a launching
+// entry counts as existing: this is what a caller outside this package
+// (hostapi's cross-manager launch dispatcher) needs to enforce a single
+// session_id namespace shared with another manager's table, which this
+// manager cannot see into itself.
+func (m *Manager) Exists(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.sessions[id]
+	return ok
+}
+
 // ListSummary returns one Summary per fully-launched session, sorted by ID
 // for stable iteration. A session still launching has no Summary yet.
 func (m *Manager) ListSummary() []Summary {

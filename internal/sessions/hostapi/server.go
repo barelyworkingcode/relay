@@ -42,6 +42,19 @@ type Server struct {
 	terminals *terminal.Manager
 	sessions  *session.Manager
 
+	// launchMu/launching give session_id one namespace shared by both
+	// managers, closing the gap neither manager's own per-table uniqueness
+	// check can see across: reserveLaunch's existence check against the
+	// *other* manager and this host's own reservation of the id happen
+	// under the same lock, and the reservation is held for the whole
+	// dispatch — not just the check — so a second /launch racing in for the
+	// same id against the other manager can never land in the gap between
+	// "checked" and "that manager's own table saw it". See reserveLaunch's
+	// own doc comment for why the check is asymmetric (pty vs. provider
+	// kind) rather than a blanket refusal.
+	launchMu  sync.Mutex
+	launching map[string]bool
+
 	exitMu      sync.Mutex
 	exitHandler func(id string, rootPID, exitCode int, reason string)
 	terminating map[string]bool // session ids this host's own /terminate is closing; read/cleared by the exit callback to tell "closed" apart from an unrelated "exit"
@@ -61,6 +74,7 @@ func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Se
 		table:       newSessionTable(),
 		terminals:   terminals,
 		sessions:    sessions,
+		launching:   make(map[string]bool),
 		terminating: make(map[string]bool),
 	}
 	terminals.SetExitHandler(s.onTerminalExit)
@@ -287,6 +301,48 @@ func writeErr(w http.ResponseWriter, code int, errCode, message string) {
 	_ = json.NewEncoder(w).Encode(ErrorResponse{Error: errCode, Message: message})
 }
 
+// reserveLaunch admits req.SessionID for dispatch iff no other /launch
+// dispatch is currently in flight for it (this host's own launching map)
+// and it is not already known to the *other* manager — the one same-
+// manager duplicates and resumes are not this function's job to referee,
+// since terminal.Manager.Create and session.Manager.Create each already do
+// that correctly for their own table. The check is deliberately asymmetric
+// by kind rather than "exists in either manager": a provider-kind launch
+// with Resume:true legitimately expects to find its own id already in
+// session.Manager (that is what makes it a resume, not a fresh launch), so
+// this function must never treat that as a collision — it only ever
+// refuses a session_id session.Manager doesn't own reaching into
+// terminal.Manager's namespace, or vice versa.
+//
+// The reservation this returns must be held for the entire target
+// manager's Create call, not just this check: releasing it any earlier
+// reopens exactly the gap this exists to close, between "checked the other
+// manager" and "the target manager's own table has taken ownership of the
+// id" — a concurrent /launch for the same id naming the other kind could
+// land in that gap and collide anyway. release is idempotent-safe to call
+// exactly once, from a defer in handleLaunch, regardless of how the
+// dispatch below turns out.
+func (s *Server) reserveLaunch(kind, id string) (release func(), ok bool) {
+	s.launchMu.Lock()
+	defer s.launchMu.Unlock()
+	if s.launching[id] {
+		return nil, false
+	}
+	if kind == kindPTY {
+		if s.sessions.Exists(id) {
+			return nil, false
+		}
+	} else if s.terminals.Exists(id) {
+		return nil, false
+	}
+	s.launching[id] = true
+	return func() {
+		s.launchMu.Lock()
+		delete(s.launching, id)
+		s.launchMu.Unlock()
+	}, true
+}
+
 // handleLaunch implements C5's POST /launch: peer-check, decode, route by
 // kind to terminal.Manager or session.Manager, translate whichever Session
 // comes back into C5's 201 body. Neither manager is spawned by this method —
@@ -314,6 +370,17 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "v, session_id and kind are required")
 		return
 	}
+
+	// Cross-manager session_id uniqueness: checked and reserved before
+	// dispatch, held for the whole dispatch (reserveLaunch's own doc
+	// comment). Same-manager duplicates/resumes are still terminal.Manager's/
+	// session.Manager's own Create to decide, unchanged.
+	release, ok := s.reserveLaunch(req.Kind, req.SessionID)
+	if !ok {
+		writeErr(w, http.StatusConflict, ErrSessionExists, fmt.Sprintf("session_id %q already in use", req.SessionID))
+		return
+	}
+	defer release()
 
 	switch {
 	case req.Kind == kindPTY:
@@ -421,6 +488,15 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 		// and an id landing in neither (unknown, or still in its own
 		// Create's launching window) is the same no-op /terminate always
 		// was for an unrecognized id.
+		//
+		// Both managers are always asked — never "else if" — even though
+		// reserveLaunch now makes a live id straddling both impossible going
+		// forward: this is the defensive half of that fix, not a substitute
+		// for it. It costs nothing in the ordinary case (a miss is one map
+		// lookup) and it means a collision that predates this fix, if one is
+		// still live in an already-running host process, is fully
+		// terminated by the next /terminate for its id rather than only
+		// ever reaching whichever manager happened to be checked first.
 		if term, ok := s.terminals.Get(req.SessionID); ok {
 			// The aliveness check and the mark it gates run under one exitMu
 			// critical section (markTerminatingIfAlive), the same lock
@@ -433,7 +509,8 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 			// the check and the write for a racing onTerminalExit to land in.
 			s.markTerminatingIfAlive(req.SessionID, term.Alive)
 			s.terminals.Close(req.SessionID)
-		} else if sess, ok := s.sessions.Get(req.SessionID); ok {
+		}
+		if sess, ok := s.sessions.Get(req.SessionID); ok {
 			s.markTerminatingIfAlive(req.SessionID, func() bool {
 				p := sess.Provider()
 				return p != nil && p.Alive()
