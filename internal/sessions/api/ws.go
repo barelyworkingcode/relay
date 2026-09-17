@@ -62,11 +62,22 @@ func newConn(conn *websocket.Conn, remoteAddr string, clock clk.Clock) *Conn {
 	return c
 }
 
+// writeWait bounds how long a single frame write may block a caller.
+// BroadcastOutput calls Write synchronously from a pty's own readLoop
+// goroutine (see terminal package) — a viewer that stops reading (a
+// backgrounded tab, a suspended laptop) would otherwise fill the socket
+// buffer and block that write indefinitely, which in turn stalls the pty
+// read loop and the real shell behind it. Matches frontend_dispatcher.go's
+// wsWriteWait so a stalled viewer times out on the same schedule relay's own
+// ping/pong teardown already uses.
+const writeWait = 10 * time.Second
+
 // Write sends a raw text frame to this connection. The single funnel every
 // outbound message goes through, so activity tracking can never drift from
 // what actually went out on the wire.
 func (c *Conn) Write(data []byte) error {
 	c.mu.Lock()
+	_ = c.conn.SetWriteDeadline(c.clock.Now().Add(writeWait))
 	err := c.conn.WriteMessage(websocket.TextMessage, data)
 	c.mu.Unlock()
 	if err == nil {
