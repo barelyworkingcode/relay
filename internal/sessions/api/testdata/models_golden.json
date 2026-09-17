@@ -1,0 +1,66 @@
+{
+  "models": [
+    {
+      "label": "Claude Haiku",
+      "value": "haiku",
+      "group": "Claude",
+      "provider": "claude",
+      "supportsPermissions": true,
+      "supportsAttachments": true
+    },
+    {
+      "label": "Claude Sonnet",
+      "value": "sonnet",
+      "group": "Claude",
+      "provider": "claude",
+      "supportsPermissions": true,
+      "supportsAttachments": true
+    },
+    {
+      "label": "Claude Opus",
+      "value": "opus",
+      "group": "Claude",
+      "provider": "claude",
+      "supportsPermissions": true,
+      "supportsAttachments": true
+    },
+    {
+      "label": "a",
+      "value": "a",
+      "group": "Model Broker",
+      "provider": "chat",
+      "supportsPermissions": false,
+      "supportsAttachments": true
+    }
+  ],
+  "providerSettings": {
+    "chat": [
+      {
+        "key": "useRelayTools",
+        "label": "Use Relay Tools",
+        "type": "boolean",
+        "default": false,
+        "hint": "Let this chat session call relay's own tools (email, calendar, ...)."
+      }
+    ],
+    "claude": [],
+    "pi": [
+      {
+        "key": "thinkingLevel",
+        "label": "Thinking Level",
+        "type": "select",
+        "default": "medium",
+        "options": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "hint": "Reasoning depth for models that support it. xhigh is OpenAI codex-max only."
+      }
+    ]
+  }
+}
+

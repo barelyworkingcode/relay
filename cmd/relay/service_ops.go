@@ -469,6 +469,15 @@ func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID st
 	if id == "" {
 		return config.ServiceConfig{}, invalidService("display name is required")
 	}
+	if id == config.RelaySessionsServiceID {
+		// SH §2.1: relay-sessions is built in, synthesized at every start,
+		// never user-registered. Refusing this id here is what actually
+		// closes the loophole validateCapabilities alone leaves open --
+		// capability sessions is refused for every OTHER id already, so the
+		// only way a register call could ever hold it is by also claiming
+		// this reserved one.
+		return config.ServiceConfig{}, invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be registered", id))
+	}
 	if f.Command == "" {
 		return config.ServiceConfig{}, invalidService("command is required")
 	}
@@ -513,6 +522,9 @@ func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID st
 // stopped service as a side effect of editing it would surprise a caller who
 // asked only for an edit.
 func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via, credID string) (config.ServiceConfig, error) {
+	if id == config.RelaySessionsServiceID {
+		return config.ServiceConfig{}, invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be edited", id))
+	}
 	if f.Command == "" {
 		return config.ServiceConfig{}, invalidService("command is required")
 	}
@@ -676,6 +688,16 @@ func (o *ServiceOps) SetAutostart(id string, on bool) error {
 }
 
 func (o *ServiceOps) Start(id string) error {
+	if id == config.RelaySessionsServiceID {
+		// The stored record for this id is deliberately bare (no Command --
+		// see EnsureBuiltinRelaySessionsRecord), so a bare pass-through to
+		// Registry.Start would reach cfg.Validate() and fail with "service
+		// command is required," a correct but opaque answer for a caller who
+		// has no way to know this record is special. StartAllAutostart is
+		// the only path that starts it, using its own fully-populated
+		// synthesis (EnsureBuiltinRelaySessionsService), never this one.
+		return invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be started manually", id))
+	}
 	svc, _ := config.FindServiceByID(o.Store.Get(), id)
 	if svc == nil {
 		return fmt.Errorf("%w: %s", errServiceNotFound, id)

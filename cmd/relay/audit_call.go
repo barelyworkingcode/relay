@@ -101,10 +101,19 @@ func (a *auditCall) setMcp(id string) {
 	a.ev.McpID = id
 }
 
-// token is the credential the caller presented, used only to distinguish a
-// token hand-off from directory auth — the value itself is never recorded.
-func (a *auditCall) setActor(ctx context.Context, stored *config.StoredToken, settings *config.Settings, token string) {
-	if a == nil || stored == nil {
+// setActor labels the caller from what auth resolution actually found, never
+// from what it presented: auth.sessionID is set only by a step that a
+// kernel-attested fact satisfied (a bound launch identity, or C3's ancestry
+// walk), so it is the honest discriminator between the two ways a project
+// grant can be reached.
+//
+// This is deliberate: there is no branch here for a tokenless caller that is
+// not a session. resolveAuth has no such successful outcome — directory auth
+// is retired (plan-broker-and-sessions.md §2 C3) — and one left standing
+// "just in case" would stamp a wrong, unfalsifiable label on whatever new
+// path someday reached it.
+func (a *auditCall) setActor(auth callerAuth) {
+	if a == nil || auth.stored == nil {
 		return
 	}
 	// A remote caller's kind and auth come from the connection, not from what
@@ -112,22 +121,18 @@ func (a *auditCall) setActor(ctx context.Context, stored *config.StoredToken, se
 	// fields below are still filled in: the caller is remote *and* acting as
 	// a project grant.
 	if a.remote {
-		a.setProject(stored, settings)
+		a.setProject(auth.stored, auth.settings)
 		return
 	}
-	switch {
-	case stored.Name == serviceIdentityName:
-		a.ev.Actor.Kind = audit.AuditActorService
-		a.ev.Actor.Auth = audit.AuditAuthService
-	case token == "":
-		a.ev.Actor.Kind = audit.AuditActorProject
-		a.ev.Actor.Auth = audit.AuditAuthCwd
-		a.ev.Actor.Cwd = bridge.CallerCwdFromContext(ctx)
-	default:
+	if auth.sessionID != "" {
+		a.ev.Actor.Kind = audit.AuditActorProjectSession
+		a.ev.Actor.Auth = audit.AuditAuthSession
+		a.ev.Actor.SessionID = auth.sessionID
+	} else {
 		a.ev.Actor.Kind = audit.AuditActorProject
 		a.ev.Actor.Auth = audit.AuditAuthToken
 	}
-	a.setProject(stored, settings)
+	a.setProject(auth.stored, auth.settings)
 }
 
 // Shared by every actor kind: whichever way a caller was identified, the
@@ -137,7 +142,11 @@ func (a *auditCall) setProject(stored *config.StoredToken, settings *config.Sett
 	a.ev.Actor.ProjectName = projectNameFor(stored, settings)
 }
 
-func (a *auditCall) setUnauthenticated(ctx context.Context, token string) {
+// The refused caller is still described by the pid, process name and parent
+// beginAudit already resolved from the connection's peer — kernel-attested,
+// and the only attribution a refusal has now that a self-asserted working
+// directory is no longer recorded.
+func (a *auditCall) setUnauthenticated(token string) {
 	if a == nil {
 		return
 	}
@@ -150,7 +159,6 @@ func (a *auditCall) setUnauthenticated(ctx context.Context, token string) {
 	a.ev.Actor.Kind = audit.AuditActorUnknown
 	if token == "" {
 		a.ev.Actor.Auth = audit.AuditAuthNone
-		a.ev.Actor.Cwd = bridge.CallerCwdFromContext(ctx)
 	} else {
 		a.ev.Actor.Auth = audit.AuditAuthToken
 	}

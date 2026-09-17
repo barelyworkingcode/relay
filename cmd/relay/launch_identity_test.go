@@ -183,14 +183,14 @@ func serviceOperationRequests(t *testing.T, serviceID string) map[string]bridge.
 		Manifest:       bridge.Manifest{Routes: []string{"/api/" + serviceID}},
 	})
 	assertNoErr(t, err, "marshal manifest")
-	pty, _ := json.Marshal(bridge.PtyEnvRequest{ProjectID: "no-such-project"})
-	tpl, _ := json.Marshal(bridge.ShellTemplateRequest{ProjectID: "no-such-project", TemplateID: "t"})
+	modelHost, err := json.Marshal(bridge.RegisterModelHostRequest{
+		ServiceID:    serviceID,
+		RouterSocket: "/tmp/launch-identity-test-router.sock",
+	})
+	assertNoErr(t, err, "marshal model host")
 	return map[string]bridge.BridgeRequest{
-		bridge.ReqRegisterManifest:       {Type: bridge.ReqRegisterManifest, Arguments: manifest},
-		bridge.ReqResolvePtyEnv:          {Type: bridge.ReqResolvePtyEnv, Arguments: pty},
-		bridge.ReqResolveProjectTemplate: {Type: bridge.ReqResolveProjectTemplate, Arguments: tpl},
-		bridge.ReqListProjects:           {Type: bridge.ReqListProjects},
-		bridge.ReqGetProject:             {Type: bridge.ReqGetProject, ProjectID: "no-such-project"},
+		bridge.ReqRegisterManifest:  {Type: bridge.ReqRegisterManifest, Arguments: manifest},
+		bridge.ReqRegisterModelHost: {Type: bridge.ReqRegisterModelHost, Arguments: modelHost},
 	}
 }
 
@@ -240,8 +240,9 @@ func TestHello_AForgedSecretIsRefusedAndBindsNothing(t *testing.T) {
 	if _, ok := b.launches.Lookup(selfPeerToken(t)); ok {
 		t.Fatal("a forged Hello bound an identity")
 	}
-	resp, _ = b.send(t, bridge.BridgeRequest{Type: bridge.ReqListProjects})
-	assertBridgeUnauthorized(t, resp, "ListProjects after a forged Hello")
+	reqs := serviceOperationRequests(t, "svc-forged")
+	resp, _ = b.send(t, reqs[bridge.ReqRegisterManifest])
+	assertBridgeUnauthorized(t, resp, "RegisterManifest after a forged Hello")
 
 	resp, _ = b.hello(t, "no-such-launch", secret)
 	assertBridgeUnauthorized(t, resp, "Hello naming a launch that does not exist")
@@ -276,10 +277,13 @@ func TestBridge_ATokenlessRequestFromAnUnboundPeerIsNotAService(t *testing.T) {
 		t.Fatal("an unbound peer registered a manifest")
 	}
 
-	resp, _ := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListTools, Cwd: t.TempDir()})
+	// A tokenless caller that is neither a bound identity nor a session
+	// member is refused outright. The Cwd is sent deliberately: it must buy
+	// nothing, and must not appear in the refusal either.
+	resp, line := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListTools, Cwd: t.TempDir()})
 	assertBridgeUnauthorized(t, resp, "tokenless ListTools")
-	if !strings.Contains(resp.Message, "working directory") {
-		t.Fatalf("a tokenless unbound caller must fall to directory auth; got %q", resp.Message)
+	if strings.Contains(resp.Message, "working directory") || strings.Contains(line, "cwd") {
+		t.Fatalf("the refusal still reasons about a caller-asserted directory: %q", line)
 	}
 }
 
@@ -306,19 +310,18 @@ func TestBridge_ABridgeServiceIdentityAuthenticatesLaterTokenlessConnections(t *
 		t.Fatalf("Hello: %s", line)
 	}
 
-	if resp, line := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListProjects}); resp.Type != bridge.RespProjects {
-		t.Fatalf("ListProjects by identity on a new connection: %s", line)
-	}
 	reqs := serviceOperationRequests(t, "llm-like")
 	if resp, line := b.send(t, reqs[bridge.ReqRegisterManifest]); resp.Type != bridge.RespOK {
-		t.Fatalf("RegisterManifest by identity: %s", line)
+		t.Fatalf("RegisterManifest by identity on a new connection: %s", line)
 	}
 	if b.enhanced.Get("llm-like") == nil {
 		t.Fatal("the manifest never reached the registry")
 	}
 
-	resp, _ := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListProjects, Token: "not-an-identity"})
-	assertBridgeUnauthorized(t, resp, "ListProjects presenting a token")
+	withToken := reqs[bridge.ReqRegisterManifest]
+	withToken.Token = "not-an-identity"
+	resp, _ := b.send(t, withToken)
+	assertBridgeUnauthorized(t, resp, "RegisterManifest presenting a token")
 
 	someoneElse := serviceOperationRequests(t, "someone-else")[bridge.ReqRegisterManifest]
 	resp, _ = b.send(t, someoneElse)
@@ -334,29 +337,34 @@ func TestBridge_TheIdentityIsClearedWhenTheLaunchEnds(t *testing.T) {
 	if resp, line := b.hello(t, "svc-ends", secret); resp.Type != bridge.RespOK {
 		t.Fatalf("Hello: %s", line)
 	}
-	if resp, line := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListProjects}); resp.Type != bridge.RespProjects {
-		t.Fatalf("ListProjects while live: %s", line)
+	reqs := serviceOperationRequests(t, "svc-ends")
+	if resp, line := b.send(t, reqs[bridge.ReqRegisterManifest]); resp.Type != bridge.RespOK {
+		t.Fatalf("RegisterManifest while live: %s", line)
 	}
 	launch.End()
-	resp, _ := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListProjects})
-	assertBridgeUnauthorized(t, resp, "ListProjects after the launch ended")
+	resp, _ := b.send(t, reqs[bridge.ReqRegisterManifest])
+	assertBridgeUnauthorized(t, resp, "RegisterManifest after the launch ended")
 }
 
+// TestResolveAuth_BridgeServiceIdentity pins the C1 deletion directly: a
+// service's launch identity no longer resolves to a tool-calling actor over
+// the bridge at all (OpServiceTools is gone). C3's step 2 refuses it by name
+// — a service identity is a known principal holding no project authority,
+// and it never continues to the membership step beside it.
 func TestResolveAuth_BridgeServiceIdentity(t *testing.T) {
 	r := newTestRouter(t, makeSettings(nil, nil, nil), mcpbroker.NewManager(nil))
 
 	svcCtx := bindTestServiceIdentity(t, r)
-	stored, _, err := r.resolveAuth(svcCtx, "")
-	if err != nil || stored.Name != serviceIdentityName {
-		t.Fatalf("a bound manifest+projects service resolved to %+v, %v", stored, err)
+	if auth, err := r.resolveAuth(svcCtx, "", service.OpProjectTools); err == nil {
+		t.Fatalf("a bound service identity reached tokenless tool auth as %+v; that path was retired with OpServiceTools", auth.stored)
 	}
-	if _, _, err := r.resolveAuth(svcCtx, "not-a-project-token"); err == nil {
+	if _, err := r.resolveAuth(svcCtx, "not-a-project-token", service.OpProjectTools); err == nil {
 		t.Fatal("a token beside a bound identity must be judged as a token")
 	}
 
 	feCtx := bindTestIdentity(t, r, "eve-like", capsFrontend)
-	if stored, _, err := r.resolveAuth(feCtx, ""); err == nil {
-		t.Fatalf("a frontend-only service authenticated on the bridge as %q", stored.Name)
+	if auth, err := r.resolveAuth(feCtx, "", service.OpProjectTools); err == nil {
+		t.Fatalf("a frontend-only service authenticated on the bridge as %q", auth.stored.Name)
 	}
 }
 
@@ -371,7 +379,7 @@ func startIdentityFrontend(t *testing.T, enhanced *EnhancedServiceRegistry) (*Fr
 	sock := filepath.Join(mkShortTempDir(t, "fe-id-"), "frontend.sock")
 	srv, err := NewFrontendServer(store, extMgr, extMgr, extMgr, Endpoint{Socket: sock}, enhanced,
 		nil, nil, &ServiceOps{Store: store, Registry: &svcRecorder{}}, nil, nil, nil, nil, nil, nil, nil,
-		NewCredentialAuthorizer(store), nil, launches)
+		NewCredentialAuthorizer(store), nil, launches, sessionRouteDeps{})
 	assertNoErr(t, err, "NewFrontendServer")
 	go func() { _ = srv.Serve() }()
 	t.Cleanup(func() {
@@ -470,15 +478,21 @@ func TestFrontend_AConsumerIdentityReachesTheProxiedSurfaceOverTheSocketOnly(t *
 	}
 }
 
-func TestFrontendCapability_HoldsExactlyReadConfigureAndProxy(t *testing.T) {
+// TestFrontendCapability_HoldsExactlyReadConfigureProxyAndExecute pins the
+// approved F1/SP8 decision (plan-broker-and-sessions.md, "Decisions on this
+// plan"): a frontend launch identity now holds control.ClassExecute too, so
+// eve can reach the session-host launch routes once R-S4b registers them.
+// control.ClassGrant remains refused — nothing on the frontend socket ever
+// grants that to a launch identity, only to a bearer credential naming it.
+func TestFrontendCapability_HoldsExactlyReadConfigureProxyAndExecute(t *testing.T) {
 	authz := NewCredentialAuthorizer(newCLISandboxStore(t))
 	id := service.Identity{Kind: service.IdentityKindService, Name: "eve-like", Capabilities: capsFrontend}
 	for class, want := range map[control.CapabilityClass]error{
 		control.ClassRead:      nil,
 		control.ClassConfigure: nil,
 		control.ClassProxy:     nil,
+		control.ClassExecute:   nil,
 		control.ClassGrant:     control.ErrClassNotGranted,
-		control.ClassExecute:   control.ErrClassNotGranted,
 	} {
 		r := httptest.NewRequest("GET", "/x", nil)
 		r = r.WithContext(withFrontendIdentity(r.Context(), id))

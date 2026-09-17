@@ -465,14 +465,6 @@ func TestRemoteNarrowFields_HasNoAllowCwdAuthField(t *testing.T) {
 	}
 }
 
-func TestValidateProjectShape_StillRefusesAllowCwdAuthOnRemote(t *testing.T) {
-	proj := &config.Project{Kind: config.ProjectKindRemote, AllowCwdAuth: true}
-	err := project.ValidateShape(proj)
-	if err == nil || !strings.Contains(err.Error(), "allow_cwd_auth") {
-		t.Fatalf("project.ValidateShape(remote, allow_cwd_auth=true) = %v, want a refusal naming allow_cwd_auth", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // AC-15: flipping the bit off denies the NEXT request, not the connection
 // ---------------------------------------------------------------------------

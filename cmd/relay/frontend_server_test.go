@@ -55,6 +55,7 @@ func newTestFrontendServer(t *testing.T, token string) (*FrontendServer, string)
 		nil,
 		nil,
 		nil, nil,
+		sessionRouteDeps{},
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
@@ -198,6 +199,7 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 		store, extMgr, extMgr, extMgr,
 		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), "tok"),
 		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		sessionRouteDeps{},
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)

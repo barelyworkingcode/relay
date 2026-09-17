@@ -351,6 +351,36 @@ func TestModelEndpoint_ServiceAllowedModelsEmptyDeniesWildcardAllows(t *testing.
 	}
 }
 
+// TestModelEndpoint_SessionsCapabilityGetsTheUnfilteredListButNoCalls pins
+// plan-broker-and-sessions.md §2 C1: "sessions gets the unfiltered list and
+// no calls" — even with no AllowedModels set (empty means none for a
+// service, MB decision 4), a sessions-capability identity's GET /v1/models
+// still sees every model, and a call attempt is still refused.
+func TestModelEndpoint_SessionsCapabilityGetsTheUnfilteredListButNoCalls(t *testing.T) {
+	m, store, launches, hosts := newModelEndpointTestServer(t)
+	sock := newFakeRouterSocket(t, fakeRouterMux(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}`))
+	}))
+	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
+
+	addModelServiceRecord(t, store, "relaysessions", nil) // no AllowedModels at all
+	ctx := bindModelIdentity(t, launches, "relaysessions", []config.ServiceCapability{config.ServiceCapabilitySessions}, 52003)
+
+	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodGet, "/v1/models", "", ctx, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "vCode") || !strings.Contains(w.Body.String(), "omlx/Chat") {
+		t.Fatalf("sessions capability did not get the unfiltered list: %s", w.Body.String())
+	}
+
+	w = doHandlerRequest(t, m.Handler(transportSocket), http.MethodPost, "/v1/chat/completions", "", ctx, `{"model":"vCode"}`)
+	if w.Code == http.StatusOK {
+		t.Fatalf("sessions capability made a model call: status = %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestModelEndpoint_ModelsListFiltered(t *testing.T) {
 	m, store, launches, hosts := newModelEndpointTestServer(t)
 	sock := newFakeRouterSocket(t, fakeRouterMux(t, nil))

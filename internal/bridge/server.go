@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
@@ -36,6 +37,11 @@ type BridgeServer struct {
 	// PeerCallerSession itself rather than requiring every call site to
 	// know about this field. Production code never overrides it.
 	callerSession func(net.Conn) presence.CallerSession
+
+	// membership answers C3 for a tokenless peer holding no launch identity
+	// (plan-broker-and-sessions.md §2 C3). nil means no caller can ever be a
+	// member: every tokenless request that reaches step 3 is unauthorized.
+	membership MembershipResolver
 }
 
 // SetCallerSessionResolverForTest overrides how THIS server resolves a
@@ -69,19 +75,47 @@ func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, err
 
 	ctx, cancel := context.WithCancel(ctx)
 
-	return &BridgeServer{
+	s := &BridgeServer{
 		router:        router,
 		listener:      listener,
 		sockPath:      sockPath,
 		ctx:           ctx,
 		cancel:        cancel,
 		callerSession: PeerCallerSession,
-	}, nil
+	}
+	// This is deliberate: the membership resolver is taken from the router
+	// by optional interface rather than passed in, so there is no wiring
+	// step a call site can forget. Forgetting one would not fail loudly —
+	// it would silently refuse every legitimate session member, which is
+	// safe but indistinguishable from the feature being broken. A router
+	// that does not implement it (every fake ToolRouter in this repo's
+	// tests) leaves membership nil and refuses, which is the same
+	// fail-closed answer those routers give today. cmd/relay asserts at
+	// compile time that its real router implements it.
+	if mr, ok := router.(MembershipResolver); ok {
+		s.membership = mr
+	}
+	return s, nil
+}
+
+// SetMembershipResolverForTest overrides how THIS server answers C3, for a
+// test that needs a controlled session table without building a real
+// appRouter. Production never calls this: NewBridgeServer's own lookup is
+// the only resolver a shipped relay uses.
+func (s *BridgeServer) SetMembershipResolverForTest(mr MembershipResolver) {
+	s.membership = mr
 }
 
 func (s *BridgeServer) Serve() error {
 	for {
 		conn, err := s.listener.Accept()
+		// This is subtle: taken before the error check, before trackConn,
+		// before anything. acceptedAt bounds the connect→accept pid-reuse
+		// window in C3's walk (the peer must have started before it) — every
+		// microsecond spent between Accept returning and this line is a
+		// microsecond a just-freed peer pid could be reused inside, so
+		// nothing goes above it.
+		acceptedAt := time.Now()
 		if err != nil {
 			return err
 		}
@@ -89,7 +123,7 @@ func (s *BridgeServer) Serve() error {
 			_ = conn.Close()
 			return net.ErrClosed
 		}
-		go s.handleConn(conn)
+		go s.handleConn(conn, acceptedAt)
 	}
 }
 
@@ -128,7 +162,7 @@ func bridgeError(code int, msg string) BridgeResponse {
 	return ErrorResponse(code, msg)
 }
 
-func (s *BridgeServer) handleConn(conn net.Conn) {
+func (s *BridgeServer) handleConn(conn net.Conn, acceptedAt time.Time) {
 	defer s.wg.Done()
 	defer func() { _ = conn.Close() }()
 	defer func() {
@@ -144,9 +178,19 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 	// life of the socket, and the getsockopt is pure overhead on every
 	// subsequent frame. Audit attribution only.
 	ctx = WithCallerPID(ctx, PeerPID(conn))
+	var peer peertoken.Token
 	if tok, err := peertoken.FromConn(conn); err == nil {
+		peer = tok
 		ctx = WithCallerPeer(ctx, tok)
 	}
+
+	// Resolved once per connection like the two above, but LAZILY: the
+	// object is built here, and the ancestry walk behind it runs only if a
+	// request actually reaches C3's step 3 (no token, no launch identity).
+	// The peer captured above and acceptedAt are the walk's two inputs, and
+	// both are fixed at accept — nothing a later request carries can change
+	// which process this connection belongs to.
+	ctx = WithConnMembership(ctx, NewConnMembership(s.membership, peer, acceptedAt))
 
 	// Resolved once per connection too, beside PeerPID, and for the same
 	// reason: it can't change for the socket's lifetime. Unlike PeerPID this
@@ -184,19 +228,16 @@ type bridgeHandler struct {
 }
 
 var bridgeHandlers = map[string]bridgeHandler{
-	ReqListTools:              {handle: handleListTools},
-	ReqCallTool:               {handle: handleCallTool},
-	ReqReconcileExternalMcps:  {requireAdmin: true, handle: handleReconcile},
-	ReqReloadExternalMcp:      {requireAdmin: true, handle: handleReloadMcp},
-	ReqReloadService:          {requireAdmin: true, handle: handleReloadService},
-	ReqListProjects:           {handle: handleListProjects},
-	ReqGetProject:             {handle: handleGetProject},
-	ReqResolvePtyEnv:          {handle: handleResolvePtyEnv},
-	ReqResolveProjectTemplate: {handle: handleResolveProjectTemplate},
-	ReqDescribeProject:        {handle: handleDescribeProject},
-	ReqRegisterManifest:       {handle: handleRegisterManifest},
-	ReqRegisterModelHost:      {handle: handleRegisterModelHost},
-	ReqHello:                  {handle: handleHello},
+	ReqListTools:             {handle: handleListTools},
+	ReqCallTool:              {handle: handleCallTool},
+	ReqReconcileExternalMcps: {requireAdmin: true, handle: handleReconcile},
+	ReqReloadExternalMcp:     {requireAdmin: true, handle: handleReloadMcp},
+	ReqReloadService:         {requireAdmin: true, handle: handleReloadService},
+	ReqDescribeProject:       {handle: handleDescribeProject},
+	ReqRegisterManifest:      {handle: handleRegisterManifest},
+	ReqRegisterModelHost:     {handle: handleRegisterModelHost},
+	ReqHello:                 {handle: handleHello},
+	ReqSessionExited:         {handle: handleSessionExited},
 
 	// This is deliberate: unlike every requireAdmin entry above, admin_op
 	// carries no bearer. ADR-015 and ADR-016 both refuse to spend the 0600
@@ -225,12 +266,15 @@ func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeRes
 		}
 	}
 
-	// Directory auth is a fallback for a tokenless caller; every handler that
-	// doesn't authenticate a project ignores it. Hello's token field is the
-	// launch secret, never absent in a valid Hello, and never a project token.
-	if req.Token == "" && req.Type != ReqHello {
-		ctx = WithCallerCwd(ctx, req.Cwd)
-	}
+	// This is deliberate: BridgeRequest.Cwd is decoded and then dropped on
+	// the floor. Directory auth is retired (plan-broker-and-sessions.md §2
+	// C3): a working directory is something a caller ASSERTS about itself,
+	// and relay now identifies a tokenless caller only by what the kernel
+	// says about it — its audit token, and its ancestry from there. The
+	// field stays on the wire type so an older client's request still parses
+	// rather than erroring, and it reaches no authorization or audit path at
+	// all. Nothing here may put it on the context: the value being
+	// unreachable is the guarantee.
 
 	return h.handle(ctx, &req, s.router)
 }
@@ -278,7 +322,7 @@ func handleReloadService(_ context.Context, req *BridgeRequest, router ToolRoute
 // error names the reason for relay's log, and a caller must learn neither
 // that reason nor, ever, the secret it sent.
 func handleHello(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	result, err := router.Hello(ctx, req.Name, req.Token)
+	result, err := router.Hello(ctx, req.Name, req.Token, req.Kind)
 	if err != nil {
 		slog.Warn("bridge: hello refused", "name", req.Name, "peer_pid", CallerPIDFromContext(ctx), "reason", err)
 		return bridgeError(jsonrpc.CodeUnauthorized, "hello refused")
@@ -288,41 +332,6 @@ func handleHello(ctx context.Context, req *BridgeRequest, router ToolRouter) Bri
 		return bridgeError(jsonrpc.CodeInternalError, "hello: encode result")
 	}
 	return BridgeResponse{Type: RespOK, Data: data}
-}
-
-func handleListProjects(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	data, err := router.ListProjects(ctx, req.Token)
-	if err != nil {
-		return bridgeError(classifyErrorCode(err), err.Error())
-	}
-	return BridgeResponse{Type: RespProjects, Data: data}
-}
-
-func handleGetProject(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	data, err := router.GetProject(ctx, req.ProjectID, req.Token)
-	if err != nil {
-		return bridgeError(classifyErrorCode(err), err.Error())
-	}
-	return BridgeResponse{Type: RespProject, Data: data}
-}
-
-func handleResolvePtyEnv(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	if len(req.Arguments) == 0 {
-		return bridgeError(jsonrpc.CodeInvalidParams, "resolve_pty_env: missing arguments")
-	}
-	var p PtyEnvRequest
-	if err := json.Unmarshal(req.Arguments, &p); err != nil {
-		return bridgeError(jsonrpc.CodeParseError, "resolve_pty_env: "+err.Error())
-	}
-	resp, err := router.ResolvePtyEnv(ctx, p, req.Token)
-	if err != nil {
-		return bridgeError(classifyErrorCode(err), err.Error())
-	}
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return bridgeError(jsonrpc.CodeInternalError, err.Error())
-	}
-	return BridgeResponse{Type: RespPtyEnv, Data: data}
 }
 
 func handleDescribeProject(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
@@ -335,25 +344,6 @@ func handleDescribeProject(ctx context.Context, req *BridgeRequest, router ToolR
 		return bridgeError(jsonrpc.CodeInternalError, err.Error())
 	}
 	return BridgeResponse{Type: RespProjectDescription, Data: data}
-}
-
-func handleResolveProjectTemplate(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	if len(req.Arguments) == 0 {
-		return bridgeError(jsonrpc.CodeInvalidParams, "resolve_project_template: missing arguments")
-	}
-	var p ShellTemplateRequest
-	if err := json.Unmarshal(req.Arguments, &p); err != nil {
-		return bridgeError(jsonrpc.CodeParseError, "resolve_project_template: "+err.Error())
-	}
-	resp, err := router.ResolveProjectTemplate(ctx, p, req.Token)
-	if err != nil {
-		return bridgeError(classifyErrorCode(err), err.Error())
-	}
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return bridgeError(jsonrpc.CodeInternalError, err.Error())
-	}
-	return BridgeResponse{Type: RespProjectTemplate, Data: data}
 }
 
 func handleAdminOp(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
@@ -376,6 +366,23 @@ func handleRegisterModelHost(ctx context.Context, req *BridgeRequest, router Too
 		return bridgeError(jsonrpc.CodeInvalidParams, err.Error())
 	}
 	if err := router.RegisterModelHost(ctx, r, req.Token); err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespOK}
+}
+
+func handleSessionExited(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	if len(req.Arguments) == 0 {
+		return bridgeError(jsonrpc.CodeInvalidParams, "session_exited: missing arguments")
+	}
+	var r SessionExitedRequest
+	if err := json.Unmarshal(req.Arguments, &r); err != nil {
+		return bridgeError(jsonrpc.CodeParseError, "session_exited: "+err.Error())
+	}
+	if err := r.Validate(); err != nil {
+		return bridgeError(jsonrpc.CodeInvalidParams, err.Error())
+	}
+	if err := router.SessionExited(ctx, r, req.Token); err != nil {
 		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespOK}

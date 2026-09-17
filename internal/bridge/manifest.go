@@ -135,6 +135,19 @@ func (m *Manifest) Validate() error {
 		if !strings.HasPrefix(r, "/") {
 			return fmt.Errorf("manifest: routes[%d] %q must start with %q", i, r, "/")
 		}
+		// C5: /launch and /terminate are relay-sessions' internal API, dialed
+		// only by relay itself over a peer-verified connection, never through
+		// the manifest-driven front-door proxy. The risk this refuses is
+		// relay-sessions declaring either in its OWN public manifest: a
+		// manifest is proxied straight to the socket that registered it, so
+		// that would expose its own peer-verification-free /launch or
+		// /terminate to any ordinary frontend caller through
+		// newServiceProxy's unverified reverse proxy. A different service
+		// declaring the same route string only ever reaches its own,
+		// unrelated socket.
+		if isSessionHostReservedRoute(r) {
+			return fmt.Errorf("manifest: routes[%d] %q is reserved to relay's internal session-host API", i, r)
+		}
 		if seen[r] {
 			return fmt.Errorf("manifest: routes[%d] %q is duplicated", i, r)
 		}
@@ -176,6 +189,19 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	return nil
+}
+
+// sessionHostReservedRoutes are C5's two relay-sessions-internal routes: a
+// manifest may never claim either, or a path nested under either.
+var sessionHostReservedRoutes = []string{"/launch", "/terminate"}
+
+func isSessionHostReservedRoute(route string) bool {
+	for _, reserved := range sessionHostReservedRoutes {
+		if route == reserved || strings.HasPrefix(route, reserved+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *ConfigDecl) validate() error {

@@ -50,6 +50,73 @@ func TestServiceOps_Create_RefusesUnsafeIDBeforePersisting(t *testing.T) {
 	}
 }
 
+// TestServiceOps_Create_RefusesTheBuiltinRelaySessionsID pins R-S9: relay
+// service register --capability sessions is refused, whichever id it names.
+// Naming any OTHER id already fails ServiceConfig.Validate's own capability
+// check (config.RelaySessionsServiceID is the only record allowed to hold
+// ServiceCapabilitySessions); this closes the one id that check lets
+// through, since relay-sessions is built in and never user-registered
+// (spec-session-host.md §2.1) regardless of what capability is requested.
+func TestServiceOps_Create_RefusesTheBuiltinRelaySessionsID(t *testing.T) {
+	store := newCLISandboxStore(t)
+	r := newBrokerRouter(t, store, nil)
+	sessionsCaps := []config.ServiceCapability{config.ServiceCapabilitySessions}
+
+	_, err := r.serviceOps.Create(context.Background(), serviceFields{
+		ID:           config.RelaySessionsServiceID,
+		DisplayName:  "Evil Session Host",
+		Command:      "/tmp/evil-relay-sessions",
+		Capabilities: &sessionsCaps,
+	}, auditViaCLI, "")
+	if err == nil {
+		t.Fatal("expected registering the reserved relaysessions id to be refused")
+	}
+	if len(store.Get().Services) != 0 {
+		t.Fatalf("no service should have been persisted, got %+v", store.Get().Services)
+	}
+}
+
+// TestServiceOps_Start_RefusesTheBuiltinRelaySessionsID pins the third site
+// ServiceConfig.Validate's Command requirement reaches: Registry.Start,
+// behind the tray's "Start" button and `relay service start`. Without this
+// refusal, starting the bare record EnsureBuiltinRelaySessionsRecord
+// persists hits Validate() directly and surfaces "service command is
+// required" -- true, but not a caller's fault to decode.
+func TestServiceOps_Start_RefusesTheBuiltinRelaySessionsID(t *testing.T) {
+	store := newCLISandboxStore(t)
+	r := newBrokerRouter(t, store, nil)
+
+	err := r.serviceOps.Start(config.RelaySessionsServiceID)
+	if err == nil {
+		t.Fatal("expected starting the reserved relaysessions id manually to be refused")
+	}
+	if !errors.Is(err, errServiceInvalid) {
+		t.Fatalf("Start(%q) error = %v, want errServiceInvalid", config.RelaySessionsServiceID, err)
+	}
+}
+
+// TestServiceOps_Create_CapabilitySessionsRefusedForAnyOtherID is the other
+// half: naming ANY id but the reserved one and asking for the sessions
+// capability is refused too (ServiceConfig.Validate, exercised here through
+// the same door an operator actually uses).
+func TestServiceOps_Create_CapabilitySessionsRefusedForAnyOtherID(t *testing.T) {
+	store := newCLISandboxStore(t)
+	r := newBrokerRouter(t, store, nil)
+	sessionsCaps := []config.ServiceCapability{config.ServiceCapabilitySessions}
+
+	_, err := r.serviceOps.Create(context.Background(), serviceFields{
+		DisplayName:  "Not The Session Host",
+		Command:      "/bin/true",
+		Capabilities: &sessionsCaps,
+	}, auditViaCLI, "")
+	if err == nil {
+		t.Fatal("expected the sessions capability to be refused for a non-built-in id")
+	}
+	if len(store.Get().Services) != 0 {
+		t.Fatalf("no service should have been persisted, got %+v", store.Get().Services)
+	}
+}
+
 func TestServiceOps_Update_RefusesRelayPrefixedEnvBeforePersisting(t *testing.T) {
 	store := newCLISandboxStore(t)
 	r := newBrokerRouter(t, store, nil)
@@ -207,7 +274,7 @@ func TestServiceOps_RemovingACapabilityIsNowGated(t *testing.T) {
 	if err := store.With(func(s *config.Settings) {
 		s.UpsertService(config.ServiceConfig{
 			ID: "relaytts", DisplayName: "relayTTS", Command: "/bin/tts",
-			Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityProjects},
+			Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityModels},
 		})
 	}); err != nil {
 		t.Fatalf("seed service: %v", err)
@@ -226,7 +293,7 @@ func TestServiceOps_RemovingACapabilityIsNowGated(t *testing.T) {
 	}
 
 	svc, _ := config.FindServiceByID(store.Get(), "relaytts")
-	if svc == nil || !slices.Equal(svc.Capabilities, []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityProjects}) {
+	if svc == nil || !slices.Equal(svc.Capabilities, []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityModels}) {
 		t.Fatalf("a refused update must not persist: capabilities = %+v", svc)
 	}
 }
@@ -246,7 +313,7 @@ func TestServiceOps_AddingACapabilityIsGated(t *testing.T) {
 	assertNoErr(t, err, "NewGate")
 	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: gate, Issuance: enabledIssuanceRecorder(t)}
 
-	caps := []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityProjects}
+	caps := []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityModels}
 	_, err = ops.Update(context.Background(), "relaytts", serviceFields{
 		DisplayName: "relayTTS", Command: "/bin/tts", Capabilities: &caps,
 	}, auditViaCLI, "")

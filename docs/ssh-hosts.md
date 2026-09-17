@@ -102,6 +102,35 @@ An SSH that would ask for a password hangs a headless pipe forever; refusing
 to prompt turns that into an immediate, reportable error whose remedy is
 "set up a key", surfaced by the probe.
 
+## The session host never sandboxes a host project's session
+
+`internal/sessions` (the `relay-sessions` binary described in
+[`docs/session-host.md`](session-host.md)) is the newer launch path for
+`pty`/`claude`/`pi`/`chat` sessions and applies its own confinement (C7
+SBPL sandbox profiles) to a **console** project's session. Today that
+confinement is real for a `pty` launch only. Not for `claude`/`pi`, which
+run with no sandbox and no launch identity despite relay believing
+otherwise, nor for a `chat` session's own provider process or its optional
+relay-MCP tool child — the shim-based path for that tool child exists in
+code, but `RelayMCPCommand` is never set in production, only in tests, so
+it never actually spawns through it. All of this is an existing,
+documented gap, not something this document's own claim below is exempt
+from: see [`docs/session-host.md`](session-host.md#what-is-not-built-yet)
+(gap 1) and `internal/sessions/hostapi/types.go`'s own package doc. A host
+project's session is refused that confinement outright, not merely skipped
+by omission: `cmd/relay/session_launch.go`'s `AuthorizeLaunch` computes
+`sandbox := wantsSandbox(req.Kind, tmpl) && !(proj != nil &&
+proj.IsHosted())` — the whole point of the sandbox is confining a *local*
+process, and a host project's actual target runs on the far end of `ssh`,
+where a profile written on this disk confines nothing. Wrapping the local
+`ssh` client itself in a sandbox profile would only break the one process
+that has to reach the network, the operator's own key material, and
+whatever `~/.ssh/config` names — it would not confine the session at all.
+This is the session-host system's own version of what this document's
+decision 6 says about relay-brokered tools: a host session gets none of
+relay's local confinement machinery, on the same reasoning, because none of
+it describes anything running on this machine.
+
 ## Data model (relay)
 
 `settings.json` gains a top-level `hosts` array. A project gains `host_id`.
@@ -141,7 +170,7 @@ Rules, enforced in `internal/project.ValidateShape` and a new
   references is refused with the list of project names.
 - A host project's `path` must be absolute (lexically: begins with `/`). It is
   **never** stat'd, realpath'd or created on the console.
-- A host project may not carry `allowed_mcp_ids`, `mounts`, `allow_cwd_auth`
+- A host project may not carry `allowed_mcp_ids`, `mounts`,
   or `generate_skill` (decision 6; and the skill generator writes into the
   project directory, which is not here). `chat_templates`,
   `shell_templates`, `allowed_models`, `permission_policy` and
@@ -210,11 +239,16 @@ document's *Fixtures* section so they cannot drift.
 | `POST /api/hosts/{id}/probe` | Configure | → `hostView` with fresh `probe`; 30 s cap |
 | `POST /api/hosts/{id}/disconnect` | Configure | `ssh -O exit`; → `hostView` |
 
-Probe and disconnect are Configure, not Execute, on purpose: they only
-rewrite the host record's own `probe` field and the local control socket,
-and eve's frontend credential carries `read`, `configure` and `proxy` but
-never `execute`, so an Execute class would make the dialog's *Test
-connection* button dead from the browser.
+Probe and disconnect are Configure, not Execute: they only rewrite the host
+record's own `probe` field and the local control socket. This choice was
+originally also justified by eve's frontend credential never holding
+`execute` — that premise changed under plan-broker-and-sessions.md's F1
+decision (eve's frontend launch identity now holds `execute`, for the
+session-host launch routes), so an Execute class would no longer make the
+dialog's *Test connection* button dead from the browser the way it once
+would have. The classification itself is unchanged here and needs a fresh
+look against the current premise, not assumed still correct because it once
+was — see STATUS-relay-security.md.
 
 `hostView` is the record above plus two derived, read-only fields:
 

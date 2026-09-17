@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 )
 
@@ -21,18 +23,58 @@ const (
 	// IdentityKindService is a process relay's service registry launched.
 	// Its capabilities are the service record's capabilities.
 	IdentityKindService IdentityKind = "service"
+	// IdentityKindProjectSession is a project-bound session's root process —
+	// a `relay-sessions exec` shim, per plan-broker-and-sessions.md C2 and
+	// C6. Its authority is the named project's own live grant, not a fixed
+	// capability set. ParentLaunch always names the relaysessions launch
+	// that started it; RootStartSec/RootStartUsec pin the exact process
+	// instance Bind observed, for C3's membership walk (R-S2a) to match
+	// descendants against.
+	IdentityKindProjectSession IdentityKind = "project_session"
 )
+
+// ProjectSessionLaunchTTL is how long an unbound project_session launch may
+// sit waiting for its shim's Hello before Begin's caller must treat it as
+// gone (plan-broker-and-sessions.md §2 C2). Enforced by BeginWithTTL, not
+// automatically by Begin — a caller that wants the old "never expires while
+// unbound" behavior for a service launch keeps calling Begin.
+const ProjectSessionLaunchTTL = 30 * time.Second
 
 // Identity is what relay knows about one launch: who it launched, and once
 // Hello succeeds, which process presented the launch secret.
 type Identity struct {
 	Kind IdentityKind
 	// Name is the launch's name on the wire: Hello's "name". For a service it
-	// is the service id.
+	// is the service id; for a project_session it is the session id (the
+	// same value SessionID carries — Hello's OK data reuses it as
+	// "service_id" so an existing Go client checking ServiceID == name keeps
+	// working).
 	Name string
 	// Capabilities is fixed when the launch begins; editing the service record
-	// changes the next launch, not this one.
+	// changes the next launch, not this one. Empty and unused for a
+	// project_session identity — its authority is ProjectID's live grant.
 	Capabilities []config.ServiceCapability
+
+	// ProjectID names the project a project_session identity is bound to.
+	// Empty for a service identity.
+	ProjectID string
+	// SessionID is the session id a project_session identity was launched
+	// for. Always equal to Name for that kind; kept as its own field because
+	// callers that reason about sessions (audit, C3's Roots.RootByPID)
+	// should not have to know that a launch's wire name happens to double as
+	// one.
+	SessionID string
+	// ParentLaunch is always "relaysessions" for a project_session identity:
+	// the launch name of the relay-sessions host that started it, so
+	// EndByParent can find every session a given host launch owns.
+	ParentLaunch string
+	// RootStartSec/RootStartUsec are the root process's kernel start time, as
+	// read at Bind. Zero until bound. C3's membership walk (R-S2a) matches a
+	// candidate root by pid AND this exact start time — a pid number alone is
+	// reused too often to trust.
+	RootStartSec  int64
+	RootStartUsec int32
+
 	// Process is the zero value until Hello binds the launch.
 	Process peertoken.Process
 }
@@ -59,6 +101,24 @@ type Launches struct {
 	mu     sync.Mutex
 	byName map[string]*Launch
 	bound  map[peertoken.Process]*Launch
+
+	// clock, rootSource and watchRoot are test seams; their zero-argument
+	// production values are wired in NewLaunches. rootSource and watchRoot
+	// back a project_session Bind's ancestry pinning (C2): internal/membership
+	// already exists in this tree (R-M0 landed before this unit started), so
+	// this wires the real thing rather than stubbing it — see the SetXxxForTest
+	// setters' doc comments for exactly what is real and what a test may
+	// override.
+	clock      func() time.Time
+	rootSource membership.Source
+	watchRoot  func(pid int, want membership.ProcInfo, onExit func()) (cancel func(), err error)
+
+	// helperVerifier is SP3/R-S9's code-identity gate on a "service" launch
+	// named config.RelaySessionsServiceID: nil (NewLaunches' default) skips
+	// the check for every launch, service and project_session alike — main
+	// wires the real darwin implementation once codesign_darwin's build-time
+	// cdhash exists; a test wires a stub. See SetHelperVerifier.
+	helperVerifier HelperVerifier
 }
 
 // Launch is one launch's record. Its handle is what ends it.
@@ -70,25 +130,113 @@ type Launch struct {
 	secretHash [sha256.Size]byte
 	spent      bool
 	ended      bool
+	// deadline is when an unbound launch is treated as never having existed.
+	// The zero Time means no deadline — Begin's own, unchanged behavior.
+	deadline time.Time
+	// rootWatchCancel cancels the C2 ancestry watch registered at Bind for a
+	// project_session launch. nil for every other kind, and nil until Bind
+	// succeeds. Cancelling on every End path (endLocked) means no watch
+	// outlives the launch it was registered for, whatever ends it first.
+	rootWatchCancel func()
 }
 
 func NewLaunches() *Launches {
 	return &Launches{
-		byName: make(map[string]*Launch),
-		bound:  make(map[peertoken.Process]*Launch),
+		byName:     make(map[string]*Launch),
+		bound:      make(map[peertoken.Process]*Launch),
+		clock:      time.Now,
+		rootSource: membership.NewSource(),
+		watchRoot:  membership.WatchExit,
 	}
+}
+
+// SetClockForTest overrides the clock BeginWithTTL and the reap-on-access
+// check read, so a TTL expiry test never sleeps in real time.
+func (t *Launches) SetClockForTest(now func() time.Time) {
+	if now == nil {
+		now = time.Now
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.clock = now
+}
+
+// SetRootSourceForTest overrides the ancestry Source a project_session Bind
+// reads the root's start time from. Production wires membership.NewSource()
+// (a real proc_pidinfo(PROC_PIDTBSDINFO) call); a test that cannot fabricate
+// a real process instead controls what Bind believes the kernel reported.
+func (t *Launches) SetRootSourceForTest(src membership.Source) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rootSource = src
+}
+
+// SetRootWatcherForTest overrides the ancestry-exit watch a project_session
+// Bind registers. Production wires membership.WatchExit (a real kqueue
+// EVFILT_PROC watch); a test controls when — or whether — the root is
+// reported to have exited, and can capture onExit to fire it deterministically.
+func (t *Launches) SetRootWatcherForTest(watch func(pid int, want membership.ProcInfo, onExit func()) (cancel func(), err error)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.watchRoot = watch
+}
+
+// SetHelperVerifier installs the code-identity check BindKind applies to a
+// "service" launch named config.RelaySessionsServiceID once it binds (SP3,
+// R-S9's runtime half): the presenting process already proved it holds
+// relay's launch secret; this additionally proves its code identity really
+// is the signed relay-sessions helper, not merely a process that obtained
+// the secret some other way. nil (NewLaunches' default) skips the check.
+// Unlike the SetXxxForTest seams above, production calls this too — there
+// is no sensible always-on default, since the real check needs a
+// build-time cdhash that only exists on a signed build.
+func (t *Launches) SetHelperVerifier(v HelperVerifier) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.helperVerifier = v
 }
 
 // Begin records a new launch named id.Name and returns its single-use secret.
 // A launch already recorded under that name is ended first: a name has at
 // most one live launch, so a restart can never leave the previous process's
 // identity standing beside the new one's.
+//
+// For a project_session identity this applies ProjectSessionLaunchTTL
+// automatically (C2's 30s default) — a caller has no deadline to remember.
+// Every other kind gets BeginWithTTL's no-deadline behavior: an unbound
+// launch waits forever, what every existing service launch depends on. A
+// caller that genuinely needs a different project_session deadline (a test,
+// or a future policy) calls BeginWithTTL directly instead.
 func (t *Launches) Begin(id Identity) (string, *Launch, error) {
+	var ttl time.Duration
+	if id.Kind == IdentityKindProjectSession {
+		ttl = ProjectSessionLaunchTTL
+	}
+	return t.BeginWithTTL(id, ttl)
+}
+
+// BeginWithTTL is Begin plus an explicit expiry: once ttl has passed with
+// the launch still unbound, it is treated as never having existed — Bind,
+// Lookup and Bound all refuse it, the same as after End. ttl <= 0 means no
+// deadline. A launch that DID bind before its deadline never expires: the
+// deadline only ever governs the window before Hello.
+func (t *Launches) BeginWithTTL(id Identity, ttl time.Duration) (string, *Launch, error) {
 	if id.Name == "" {
 		return "", nil, errors.New("launch identity: empty name")
 	}
 	if id.Kind == "" {
 		return "", nil, errors.New("launch identity: empty kind")
+	}
+	// This is subtle: SessionID always equals Name for a project_session
+	// identity (Hello's OK data reuses Name as "service_id" — see Identity's
+	// doc comment), but RootByPID reads SessionID specifically, not Name. A
+	// caller that sets Name and forgets SessionID would otherwise leave
+	// RootByPID returning a live root under an empty session id — fail-OPEN
+	// into a nonsense identifier, not fail-closed, once C3's membership walk
+	// (R-S2a) starts trusting that value. Defaulting it here, once, removes
+	// the chance to forget it at any Begin call site.
+	if id.Kind == IdentityKindProjectSession && id.SessionID == "" {
+		id.SessionID = id.Name
 	}
 	secret, err := GenerateRandomHex(LaunchSecretHexLen / 2)
 	if err != nil {
@@ -100,6 +248,11 @@ func (t *Launches) Begin(id Identity) (string, *Launch, error) {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.clock()
+	if ttl > 0 {
+		l.deadline = now.Add(ttl)
+	}
+	t.reapExpiredLocked(now)
 	if prev := t.byName[id.Name]; prev != nil {
 		t.endLocked(prev)
 	}
@@ -123,6 +276,13 @@ func (t *Launches) endLocked(l *Launch) {
 		return
 	}
 	l.ended = true
+	if l.rootWatchCancel != nil {
+		// Safe to call from any goroutine, including from inside the onExit
+		// this very cancel might race (membership.WatchExit's documented
+		// contract) — endLocked runs both when End is called directly and
+		// from inside a root-exit onExit callback that calls End itself.
+		l.rootWatchCancel()
+	}
 	if t.byName[l.id.Name] == l {
 		delete(t.byName, l.id.Name)
 	}
@@ -131,15 +291,50 @@ func (t *Launches) endLocked(l *Launch) {
 	}
 }
 
+// reapExpiredLocked ends every unbound launch whose deadline has passed.
+// Called at the top of every method that reads or writes byName/bound, under
+// t.mu — there is no background sweeper (see reapExpiredAPICredentials in
+// internal/config for the same discipline and the same reason: a timer is a
+// writer nothing asked for).
+func (t *Launches) reapExpiredLocked(now time.Time) {
+	for _, l := range t.byName {
+		if !l.spent && !l.deadline.IsZero() && !now.Before(l.deadline) {
+			t.endLocked(l)
+		}
+	}
+}
+
 // Bind is Hello: it binds the launch named name to peer if secret is that
 // launch's secret. On success the secret is spent and no later Bind for the
-// same launch succeeds, whoever presents it.
+// same launch succeeds, whoever presents it. Equivalent to BindKind with no
+// kind assertion.
 //
 // A wrong secret does not spend the launch. This is deliberate: spending on a
 // miss would let any same-user process that can name a service turn that
 // service's start into a failure by guessing once, while a guess against 256
 // bits buys nothing.
 func (t *Launches) Bind(name, secret string, peer peertoken.Token) (Identity, error) {
+	return t.BindKind(name, secret, peer, "")
+}
+
+// BindKind is Bind plus an optional wire-level kind assertion
+// (plan-broker-and-sessions.md §2 C2): Hello may name the kind it expects to
+// bind. An empty wantKind skips the check (every service launch that
+// predates this field, and every launch a caller doesn't care to assert
+// about). A non-empty wantKind that does not match the kind recorded at
+// Begin refuses before the secret is spent — same reasoning as a wrong
+// secret: naming the wrong kind is a caller's mistake, not a credential
+// presentation, and must not burn the one legitimate Hello.
+//
+// For a project_session launch, a successful bind also pins the root
+// process's exact start time (RootStartSec/RootStartUsec) and registers an
+// ancestry-exit watch that ends this launch when the root process dies —
+// both read from t.rootSource/t.watchRoot, which is membership.NewSource()/
+// membership.WatchExit in production. A failure to read the root's start
+// time, or to register the watch (including the process having already
+// exited: membership.ErrExited), refuses the Hello and leaves the launch
+// unbound and unspent, exactly like a wrong secret.
+func (t *Launches) BindKind(name, secret string, peer peertoken.Token, wantKind IdentityKind) (Identity, error) {
 	if !peer.Valid() {
 		return Identity{}, fmt.Errorf("%w: peer audit token unavailable", ErrHelloRefused)
 	}
@@ -151,9 +346,14 @@ func (t *Launches) Bind(name, secret string, peer peertoken.Token) (Identity, er
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.reapExpiredLocked(t.clock())
+
 	l := t.byName[name]
 	if l == nil {
 		return Identity{}, fmt.Errorf("%w: no live launch named %q", ErrHelloRefused, name)
+	}
+	if wantKind != "" && l.id.Kind != wantKind {
+		return Identity{}, fmt.Errorf("%w: launch %q is kind %q, not %q", ErrHelloRefused, name, l.id.Kind, wantKind)
 	}
 	if subtle.ConstantTimeCompare(presented[:], l.secretHash[:]) != 1 {
 		return Identity{}, fmt.Errorf("%w: secret does not match launch %q", ErrHelloRefused, name)
@@ -164,8 +364,47 @@ func (t *Launches) Bind(name, secret string, peer peertoken.Token) (Identity, er
 	if other := t.bound[proc]; other != nil {
 		return Identity{}, fmt.Errorf("%w: process %d already holds identity %q", ErrHelloRefused, proc.PID, other.id.Name)
 	}
+	if t.helperVerifier != nil && l.id.Kind == IdentityKindService && l.id.Name == config.RelaySessionsServiceID {
+		// This is deliberate: refused here, before l.spent is set, exactly
+		// like a wrong secret above — a process that presented the right
+		// secret but fails its code-identity check is not a benign retry
+		// case, but burning the secret would still be the wrong response:
+		// there is no legitimate holder left who could present it correctly
+		// a second time.
+		if err := t.helperVerifier.VerifyGuest(peer); err != nil {
+			return Identity{}, fmt.Errorf("%w: helper code identity: %v", ErrHelloRefused, err)
+		}
+	}
+
+	var cancel func()
+	if l.id.Kind == IdentityKindProjectSession {
+		info, ok := t.rootSource.Info(int(proc.PID))
+		if !ok {
+			return Identity{}, fmt.Errorf("%w: could not read the root process's start time", ErrHelloRefused)
+		}
+		c, err := t.watchRoot(int(proc.PID), info, func() { l.End() })
+		if err != nil {
+			if errors.Is(err, membership.ErrExited) {
+				// This is deliberate: ErrExited is not "the watch failed", it
+				// is "the process this launch is for is already gone" — the
+				// pid died mid-Hello, or was recycled between the start-time
+				// read above and the registration. Refusing the Hello alone
+				// would leave the launch live and unbound for the rest of its
+				// TTL, with a secret that is still spendable by whoever else
+				// holds it. There is no session left to protect, so the
+				// launch ends here rather than waiting to expire.
+				t.endLocked(l)
+			}
+			return Identity{}, fmt.Errorf("%w: root process ancestry watch: %v", ErrHelloRefused, err)
+		}
+		cancel = c
+		l.id.RootStartSec = info.StartSec
+		l.id.RootStartUsec = info.StartUsec
+	}
+
 	l.spent = true
 	l.id.Process = proc
+	l.rootWatchCancel = cancel
 	t.bound[proc] = l
 	return l.id, nil
 }
@@ -177,6 +416,7 @@ func (t *Launches) Lookup(peer peertoken.Token) (Identity, bool) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.reapExpiredLocked(t.clock())
 	l := t.bound[peer.Process()]
 	if l == nil {
 		return Identity{}, false
@@ -192,6 +432,7 @@ func (t *Launches) Bound(name string) (Identity, bool) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.reapExpiredLocked(t.clock())
 	l := t.byName[name]
 	if l == nil || !l.spent {
 		return Identity{}, false
@@ -203,7 +444,124 @@ func (t *Launches) Bound(name string) (Identity, bool) {
 func (t *Launches) Len() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.reapExpiredLocked(t.clock())
 	return len(t.byName)
+}
+
+// EndedRoot is one project_session root process a call to EndByParent just
+// stopped tracking: enough for a caller to re-validate liveness (via
+// RootStillAlive) before signalling its process group, since a bare pid is
+// reused too often to trust alone (see Identity.RootStartSec/RootStartUsec's
+// own doc comment).
+type EndedRoot struct {
+	PID       int32
+	StartSec  int64
+	StartUsec int32
+}
+
+// EndByParent ends every live project_session launch whose ParentLaunch is
+// name, and reports how many it ended and the root process of each one that
+// had already bound. Meant to run from the relaysessions launch's own End
+// (R-S9 wires this): when the host process that launched every session
+// under it goes away, those sessions' identities go with it. R-S9 also
+// SIGKILLs each returned root's process group — this function only clears
+// the identity table's view of them, since Launches has no process-group
+// bookkeeping of its own.
+//
+// This is deliberate: reading which roots exist and ending their identities
+// happen under the same lock acquisition, in this one call, rather than a
+// caller enumerating roots first and ending identities in a second call. A
+// project_session that binds in the gap between two separate calls would be
+// invisible to the first (not yet bound) but torn down by the second — its
+// identity ended with no root pid ever handed to anything that could signal
+// its process group, leaving it orphaned. One locked operation closes that
+// gap by construction.
+func (t *Launches) EndByParent(name string) (ended int, roots []EndedRoot) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var matched []*Launch
+	for _, l := range t.byName {
+		if !l.ended && l.id.Kind == IdentityKindProjectSession && l.id.ParentLaunch == name {
+			matched = append(matched, l)
+		}
+	}
+	for _, l := range matched {
+		if l.spent && l.id.Process.PID != 0 {
+			roots = append(roots, EndedRoot{
+				PID:       l.id.Process.PID,
+				StartSec:  l.id.RootStartSec,
+				StartUsec: l.id.RootStartUsec,
+			})
+		}
+		t.endLocked(l)
+	}
+	return len(matched), roots
+}
+
+// RootStillAlive re-validates (pid, startSec, startUsec) against the live
+// process table immediately before a caller signals the process group it
+// names. Guards against pid recycling: the process EndByParent reported has
+// no exit watch left once its launch is ended, so nothing stops the OS from
+// reusing its pid for an unrelated process group leader before the caller
+// gets around to killing it. Reports false for a pid the kernel no longer
+// reports, or reports with a different start time -- either way, the
+// original process is gone and signalling the pid now would hit whatever
+// took its place.
+func (t *Launches) RootStillAlive(pid int32, startSec int64, startUsec int32) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	info, ok := t.rootSource.Info(int(pid))
+	return ok && info.StartSec == startSec && info.StartUsec == startUsec
+}
+
+// EndByProject ends every live project_session launch bound to projectID,
+// and reports how many it ended. Meant to run on project delete.
+func (t *Launches) EndByProject(projectID string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.endWhereLocked(func(l *Launch) bool {
+		return l.id.Kind == IdentityKindProjectSession && l.id.ProjectID == projectID
+	})
+}
+
+// endWhereLocked ends every launch match selects and reports how many.
+// Collected into a slice first: endLocked mutates byName, and ranging over a
+// map while deleting from it inside the loop body is undefined in general —
+// safe in Go's actual implementation for the key being visited, but not for
+// this loop, which may end OTHER entries as a side effect of ending one
+// (a future unit's cleanup hooks) and must not depend on that being safe.
+func (t *Launches) endWhereLocked(match func(*Launch) bool) int {
+	var matched []*Launch
+	for _, l := range t.byName {
+		if !l.ended && match(l) {
+			matched = append(matched, l)
+		}
+	}
+	for _, l := range matched {
+		t.endLocked(l)
+	}
+	return len(matched)
+}
+
+// RootByPID returns the live, bound project_session identity whose root
+// process is pid, shaped as a membership.Root for C3's Roots interface
+// (RootByPID(pid) (Root, bool); HostPID() int — R-S2a supplies HostPID by
+// wrapping this table, since a launch has no notion of relay's own pid).
+func (t *Launches) RootByPID(pid int) (membership.Root, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for proc, l := range t.bound {
+		if int(proc.PID) != pid || l.id.Kind != IdentityKindProjectSession {
+			continue
+		}
+		return membership.Root{
+			SessionID: l.id.SessionID,
+			PID:       int(proc.PID),
+			StartSec:  l.id.RootStartSec,
+			StartUsec: l.id.RootStartUsec,
+		}, true
+	}
+	return membership.Root{}, false
 }
 
 func isLaunchSecretShape(s string) bool {

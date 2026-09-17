@@ -206,6 +206,45 @@ func (ss *FileSettingsStore) path() string {
 
 const CurrentSettingsVersion = 1
 
+// defaultModelEndpointListen is the loopback address EnsureDefaultModelEndpoint
+// writes in for the model endpoint's TCP listener (plan-broker-and-sessions.md
+// C8): the block itself predates the session host and defaults to
+// absent/disabled (model.sock is served regardless), but relayLLM and the
+// session host need to reach models over the same broker, so a build that
+// carries them is meant to turn this on by default the first time it truly
+// starts serving that pairing, exactly as Audit's own default is written
+// explicitly below. Loopback only, same reasoning as remote.listen.
+const defaultModelEndpointListen = "127.0.0.1:8180"
+
+// EnsureDefaultModelEndpoint sets s.ModelEndpoint to its default iff no
+// block exists yet. An install that later clears Listen to "" (an explicit
+// choice to disable the TCP listener while keeping model.sock) keeps a
+// non-nil block from then on, so this never re-fires and never undoes that
+// choice; only a settings.json that has genuinely never decided the block
+// — a fresh install, or one written before this feature existed — sees it
+// applied.
+//
+// This is deliberate: plan-broker-and-sessions.md's C8 and the R-S9 unit
+// row (§3.3) originally scoped R-S9 itself to call this function, from
+// runTrayApp, the first time a feature build starts. R-S9's own code
+// deliberately does not call it. The plan's trigger condition — "the first
+// time the feature build starts" — has no signal in this codebase that
+// tells that apart from any other process that happens to construct this
+// config package against a real config dir; calling it unconditionally
+// from runTrayApp did exactly that, and armed the TCP listener on a real,
+// shared settings.json during this unit's own build-validation run. Scope
+// was narrowed after that incident, on purpose, not left unfinished: the
+// call belongs in whichever unit first makes relay-sessions launch real
+// sessions against a live model endpoint (R-S4a or R-S4b), because that is
+// the first unit able to supply a genuine "this build now needs a live
+// endpoint" signal rather than "a process touched this package."
+func EnsureDefaultModelEndpoint(s *Settings) {
+	if s.ModelEndpoint != nil {
+		return
+	}
+	s.ModelEndpoint = &ModelEndpointConfig{Listen: defaultModelEndpointListen}
+}
+
 func DefaultSettings() *Settings {
 	// This is deliberate: the block is redundant with AuditConfig.resolve(),
 	// which already reads an absent one as enabled, and reads as noise to
@@ -267,6 +306,7 @@ func (ss *FileSettingsStore) load() *Settings {
 
 	for i := range s.Services {
 		s.Services[i].migrateCapabilities()
+		s.Services[i].sanitizeIfBuiltin()
 		if err := s.Services[i].validateCapabilities(); err != nil {
 			slog.Error("service record refused: relay will not start it", "id", s.Services[i].ID, "error", err)
 		}

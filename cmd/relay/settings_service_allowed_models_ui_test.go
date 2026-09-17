@@ -14,8 +14,12 @@ import (
 )
 
 // TestServiceForm_CapabilitiesListIncludesModelCapabilities pins scope item 1:
-// the checkbox section lists all five known capabilities, from the one JS
-// array (serviceCapabilityNames) rather than a second hardcoded list.
+// the checkbox section lists all four known, user-grantable capabilities,
+// from the one JS array (serviceCapabilityNames) rather than a second
+// hardcoded list. `projects` is retired (plan-broker-and-sessions.md C1) and
+// must never reappear here; `sessions` is deliberately absent too, since only
+// the built-in relaysessions record may ever hold it (C1) and this picker is
+// for user-registered services.
 func TestServiceForm_CapabilitiesListIncludesModelCapabilities(t *testing.T) {
 	vm := newAppVM(t)
 
@@ -30,14 +34,15 @@ func TestServiceForm_CapabilitiesListIncludesModelCapabilities(t *testing.T) {
 			hasManifest: html.indexOf('id="svcCap_manifest"') >= 0,
 			hasProjects: html.indexOf('id="svcCap_projects"') >= 0,
 			hasModels: html.indexOf('id="svcCap_models"') >= 0,
-			hasModelHost: html.indexOf('id="svcCap_model_host"') >= 0
+			hasModelHost: html.indexOf('id="svcCap_model_host"') >= 0,
+			hasSessions: html.indexOf('id="svcCap_sessions"') >= 0
 		});
 	})()`
 
 	got := evalString(t, vm, script)
 	for _, want := range []string{
-		`"hasFrontend":true`, `"hasManifest":true`, `"hasProjects":true`,
-		`"hasModels":true`, `"hasModelHost":true`,
+		`"hasFrontend":true`, `"hasManifest":true`, `"hasProjects":false`,
+		`"hasModels":true`, `"hasModelHost":true`, `"hasSessions":false`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("capabilities list: missing %s in %s", want, got)
