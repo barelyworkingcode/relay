@@ -20,10 +20,13 @@
 // ancestry, and the underlying provider.Provider interface exposes no pid
 // for this package to key a membership root on even if it wanted to.
 //
-// Wiring /permission's actual policy decision to a live PermissionManager —
-// today every admitted call still gets a fixed "deny" — and mounting the
-// eve-facing manifest HTTP/WS surface (internal/sessions/api's Hub/handlers)
-// are both left to a later unit; neither is this package's job yet.
+// The eve-facing manifest HTTP/WS surface (internal/sessions/api's
+// Hub/handlers) is mounted on the internal socket's own mux (see
+// ListenInternal), guarded by the same checkInternalPeer mutual check
+// /launch and /terminate use — see the docs/session-host.md note on that
+// surface's trust model. Wiring /permission's actual policy decision to a
+// live PermissionManager — today every admitted call still gets a fixed
+// "deny" — is left to a later unit; that is not this package's job yet.
 //
 // A "claude"/"pi" launch dispatched through this package runs without the
 // sandbox profile or launch identity relay believes it minted for it:

@@ -14,6 +14,8 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
+	"github.com/barelyworkingcode/relay/internal/sessions/api"
+	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	"github.com/barelyworkingcode/relay/internal/sessions/terminal"
 )
@@ -28,6 +30,16 @@ type Config struct {
 	InternalBearer string // the bearer relay must present, per its own RegisterManifest
 	RelayPID       int    // relay's pid, from this host's own Hello OK
 	HookSocket     string // `relay-sessions hook` dials this; POST /permission
+
+	// Permissions/PiBinary/ModelSocket feed the eve-facing manifest surface
+	// mounted on the internal socket alongside /launch and /terminate (see
+	// ListenInternal). Permissions may be nil (a caller — today only a test
+	// — that never sets up the interactive Claude Code approval path); the
+	// other two are only consulted by GET /api/models, and each degrades by
+	// omission the same way api.HandleModels already documents.
+	Permissions *permission.PermissionManager
+	PiBinary    string
+	ModelSocket string
 }
 
 // Server is relay-sessions' internal API host: a thin dispatcher over
@@ -59,6 +71,16 @@ type Server struct {
 	exitHandler func(id string, rootPID, exitCode int, reason string)
 	terminating map[string]bool // session ids this host's own /terminate is closing; read/cleared by the exit callback to tell "closed" apart from an unrelated "exit"
 
+	// hub/sessionWS/terminalWS are the eve-facing manifest surface: one Hub
+	// shared by both handler sets, mounted at /ws, plus the HTTP handlers
+	// mounted alongside /launch and /terminate in ListenInternal. Built once,
+	// in New, before any goroutine can observe them — see New's own comment
+	// on why SetOutputHandler/SetEventSink must land before ListenInternal
+	// ever serves a request.
+	hub        *api.Hub
+	sessionWS  *api.SessionHandlers
+	terminalWS *api.TerminalHandlers
+
 	internalLn  net.Listener
 	internalSrv *http.Server
 	hookLn      net.Listener
@@ -79,6 +101,26 @@ func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Se
 	}
 	terminals.SetExitHandler(s.onTerminalExit)
 	sessions.SetExitHandler(s.onSessionExit)
+
+	// The eve-facing manifest surface. All of this must land before
+	// ListenInternal ever serves a request: session.Manager.SetEventSink and
+	// PermissionManager.SetEventSink both write their target with no lock
+	// (see each's own doc comment), and terminal.Manager.SetOutputHandler's
+	// contract is "before the first Create" — New runs once, synchronously,
+	// before any caller of this Server can reach ListenInternal/Create.
+	s.hub = api.NewHub()
+	s.sessionWS = api.NewSessionHandlers(s.hub, sessions, cfg.Permissions)
+	sessions.SetEventSink(s.sessionWS)
+	if cfg.Permissions != nil {
+		cfg.Permissions.SetEventSink(s.sessionWS)
+	}
+	s.terminalWS = api.NewTerminalHandlers(s.hub, terminals)
+	// Deliberately NOT terminals.SetExitHandler(s.terminalWS.BroadcastExit):
+	// that setter is last-write-wins and would clobber s.onTerminalExit,
+	// which reports SessionExited to relay's bridge — a real regression.
+	// onTerminalExit below calls BroadcastExit itself, after reportExit, so
+	// both fire.
+	terminals.SetOutputHandler(s.terminalWS.BroadcastOutput)
 	return s
 }
 
@@ -155,6 +197,11 @@ func (s *Server) onTerminalExit(id string, exitCode int) {
 		reason = "closed"
 	}
 	s.reportExit(id, rootPID, exitCode, reason)
+	// Both fire on every terminal exit: reportExit is the bridge-facing
+	// SessionExited report, BroadcastExit is the WS-facing terminal_exit
+	// frame a joined eve viewer needs. See New's own comment on why this is
+	// a direct call here rather than a second SetExitHandler registration.
+	s.terminalWS.BroadcastExit(id, exitCode)
 }
 
 // onSessionExit is session.Manager's exit hook. No table entry exists for a
@@ -209,6 +256,32 @@ func listenSocket(path string) (net.Listener, error) {
 	return ln, nil
 }
 
+// guarded wraps h so it only ever runs for a request that has already passed
+// checkInternalPeer — the same mutual check /launch and /terminate use. This
+// is what makes it safe for a request forwarded by relay's own dispatcher
+// (cmd/relay/frontend_dispatcher.go, on eve's behalf) to reach these routes
+// at all: the dispatcher, like every direct /launch caller, dials this
+// socket from relay's own process, so it satisfies the peer-pid half
+// identically, and injects relay-sessions' own bearer (learned at
+// RegisterManifest time) for the other half.
+//
+// Trust model, stated plainly because it is load-bearing for session
+// content specifically: this proves "this request came from relay", never
+// "this caller may see this specific session". Relay's frontend socket is a
+// single trust domain — any frontend-capable caller reaches every session on
+// this host — and relay has no per-user/per-session ownership model
+// anywhere today (docs/session-host.md). Adding one is a design change, not
+// a fix, and is out of scope here.
+func (s *Server) guarded(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.checkInternalPeer(r) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		h(w, r)
+	}
+}
+
 // ListenInternal binds the relay<->host socket. ServeInternal blocks serving
 // it.
 func (s *Server) ListenInternal() error {
@@ -220,10 +293,50 @@ func (s *Server) ListenInternal() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/launch", s.handleLaunch)
 	mux.HandleFunc("/terminate", s.handleTerminate)
+
+	// The eve-facing manifest surface (internal/config's
+	// RelaySessionsManifestRoutes: /api/terminals/, /api/sessions/,
+	// /api/models, /ws), reached only through relay's front-door dispatcher
+	// forwarding on eve's behalf — never directly, since relay-sessions'
+	// OWN manifest is what relay proxies against, and /launch/ /terminate
+	// stay off that manifest (bridge.Manifest.Validate refuses them). Every
+	// one of these is wrapped in guarded: the peer+bearer check must run
+	// before any of them do real work, and for /ws specifically it must run
+	// before hub.HandleUpgrade — Upgrade writes the HTTP 101 immediately,
+	// and that can't be un-sent.
+	modelsCfg := api.ModelsConfig{PiBinary: s.cfg.PiBinary, ModelSocket: s.cfg.ModelSocket}
+	mux.HandleFunc("GET /api/models", s.guarded(func(w http.ResponseWriter, r *http.Request) {
+		api.HandleModels(modelsCfg, w, r)
+	}))
+	mux.HandleFunc("GET /api/sessions", s.guarded(func(w http.ResponseWriter, r *http.Request) {
+		api.HandleListSessions(s.sessions, w, r)
+	}))
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.guarded(func(w http.ResponseWriter, r *http.Request) {
+		api.HandleDeleteSession(s.sessions, r.PathValue("id"), w, r)
+	}))
+	mux.HandleFunc("POST /api/sessions/{id}/message", s.guarded(func(w http.ResponseWriter, r *http.Request) {
+		api.HandleSessionMessageSync(s.sessions, r.PathValue("id"), w, r)
+	}))
+	mux.HandleFunc("GET /api/terminals", s.guarded(func(w http.ResponseWriter, r *http.Request) {
+		api.HandleListTerminals(s.terminals, w, r)
+	}))
+	mux.HandleFunc("DELETE /api/terminals/{id}", s.guarded(func(w http.ResponseWriter, r *http.Request) {
+		api.HandleDeleteTerminal(s.terminals, r.PathValue("id"), w, r)
+	}))
+	mux.HandleFunc("GET /api/terminals/{id}/log", s.guarded(func(w http.ResponseWriter, r *http.Request) {
+		api.HandleTerminalLog(s.terminals, r.PathValue("id"), w, r)
+	}))
+	mux.HandleFunc("/ws", s.guarded(s.hub.HandleUpgrade))
+
 	s.internalSrv = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ConnContext:       captureConnInfo,
+		// A WS connection through /ws is long-lived by design; a WriteTimeout
+		// here would silently kill a streaming session mid-flight the first
+		// time someone "cleans up" this literal without knowing why it is
+		// spelled out — 0 means never, deliberately.
+		WriteTimeout: 0,
 	}
 	return nil
 }

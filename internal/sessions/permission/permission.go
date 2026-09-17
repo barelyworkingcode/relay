@@ -146,6 +146,22 @@ func (m *PermissionManager) CreateRequest(sessionID, toolName, toolInput, toolUs
 	}, ch
 }
 
+// PendingSessionID reports the sessionID a still-pending permission request
+// belongs to, without consuming it — the read handlePermissionResponse's
+// join-scoping check needs before it may call Resolve. false means no
+// request with this id is currently pending (already resolved, timed out,
+// or never existed); callers must not distinguish those cases from each
+// other, same reasoning as ValidateHookToken's own doc comment.
+func (m *PermissionManager) PendingSessionID(permissionID string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.pending[permissionID]
+	if !ok {
+		return "", false
+	}
+	return p.sessionID, true
+}
+
 // Resolve resolves a pending permission request with the given decision.
 func (m *PermissionManager) Resolve(permissionID string, decision PermissionDecision) bool {
 	m.mu.Lock()

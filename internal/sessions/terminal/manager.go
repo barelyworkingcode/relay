@@ -76,6 +76,7 @@ type Manager struct {
 	sessions map[string]*sessionSlot
 	cfg      Config
 	onExit   func(id string, exitCode int)
+	onOutput func(id string, data []byte)
 }
 
 // NewManager constructs a Manager. cfg.ShimBinary must be set before Create
@@ -94,6 +95,19 @@ func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onExit = fn
+}
+
+// SetOutputHandler installs fn to be called, from the session's own readLoop
+// goroutine, with every chunk of raw PTY output any session this manager
+// owns produces — the fan-out a joined WS viewer's scrollback-then-nothing
+// gap needs (TerminalHandlers.BroadcastOutput is the intended fn). Must be
+// called before the first Create: startSession wires onOutput into the
+// Session at construction, the same discipline onExit/onIdle already use, so
+// a session created before this is called never gains a handler later.
+func (m *Manager) SetOutputHandler(fn func(id string, data []byte)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onOutput = fn
 }
 
 // Create starts a new terminal session. Returns ErrSessionExists if spec's
@@ -120,7 +134,14 @@ func (m *Manager) Create(spec CreateSpec) (*Session, error) {
 			fn(id, exitCode)
 		}
 	}
-	s, err := startSession(spec, m.cfg, onExit, onIdle)
+	// Read once, at session-start time, and call lock-free per chunk from
+	// then on: readLoop calls this on every single PTY read, so a per-chunk
+	// manager-wide lock here would contend badly with Create/Close/
+	// ListSummary for the lifetime of every session.
+	m.mu.Lock()
+	onOutput := m.onOutput
+	m.mu.Unlock()
+	s, err := startSession(spec, m.cfg, onExit, onIdle, onOutput)
 
 	m.mu.Lock()
 	stopping := slot.stopping
