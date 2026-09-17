@@ -59,7 +59,10 @@ check entirely rather than refusing every launch.
 
 - **the internal socket** (`RelaySessionsInternalSocketPath(configDir)`,
   `<configDir>/relaysessions-internal.sock`) — dialed only by relay itself,
-  carrying `POST /launch` and `POST /terminate`;
+  carrying `POST /launch`, `POST /terminate`, and (mounted alongside them,
+  on the same mux — see [What is not built yet](#what-is-not-built-yet) gap
+  2) the eve-facing session/terminal/model HTTP+WS surface relay's
+  front-door dispatcher reaches by forwarding on eve's behalf;
 - **the hook socket** (`RelaySessionsHookSocketPath(configDir)`,
   `<configDir>/relaysessions-hook.sock`) — dialed by `relay-sessions hook`
   processes, carrying `POST /permission`.
@@ -328,11 +331,9 @@ re-merging the *current* project permission policy — a policy edited since
 the original launch governs the resumed session, not whatever was merged in
 originally — and mints a fresh launch identity secret and (if the kind wants
 one) a fresh model key, exactly as a brand-new launch does. `internal/sessions/api/ws_session.go`'s
-`sendResumeRequired` is the frame a live WS viewer would see when it asks
-to send a message to a session that needs this before it can continue —
-"would", because `internal/sessions/api` is itself gap 2 below: nothing
-mounts it onto a real HTTP/WS server today, so no viewer can actually reach
-this frame yet.
+`sendResumeRequired` is the frame a live WS viewer sees when it asks to send
+a message to a session that needs this before it can continue — reachable
+now that `internal/sessions/api` is mounted (gap 2 below is fixed).
 
 ## What is not built yet
 
@@ -365,31 +366,52 @@ what works.
    relay-MCP tool child would need to run through the shim like a terminal
    (`buildChatMCPManager`), but that child is never actually spawned in
    production today — see [The shim](#the-shim-relay-sessions-exec).
-2. **The eve-facing session HTTP/WS surface exists but is not reachable.**
-   `internal/sessions/api` (`HandleListSessions`, `HandleDeleteSession`,
-   `HandleSessionMessageSync`, `HandleListTerminals`, `HandleDeleteTerminal`,
-   `HandleTerminalLog`, `HandleModels` — relayLLM's original `/api/models` —
-   and the WS session/terminal handlers, including a `permissionResponse` WS
-   message) is real, tested code — but nothing in `cmd/relaysessions` mounts
-   any of it onto a real HTTP server. (There is no `/api/generated/` handler
-   anywhere in this package, and `/api/permission` is a distinct HTTP route
-   relayLLM used to serve, replaced by C6's own `/permission` hook socket —
-   neither belongs to this package.) Relay itself directly serves exactly
-   seven routes under the `/api/terminals` and `/api/sessions` prefixes
-   (`cmd/relay/session_routes.go`): the create/list/resume surface (`POST
-   /api/terminals[/]`, `POST /api/sessions[/]`, `POST
-   /api/sessions/{id}/resume`, `GET /api/terminals`, `GET /api/sessions`).
-   Everything else nested under a session's own id — WS upgrades, a
-   per-session GET/DELETE — is deliberately left unregistered by relay: the
-   create routes' `{$}` anchoring exists precisely so those nested paths
-   fall through relay's `/` catch-all instead of being captured by relay's
-   own handlers (`session_routes.go`'s own comment on why), reaching
-   relay-sessions' registered manifest instead (`RelaySessionsManifestRoutes`,
-   the same two prefixes) — which resolves to the *same internal socket*
-   that serves `/launch` and `/terminate`, and 404s there today, since
-   nothing routes a manifest request to `internal/sessions/api`'s handlers
-   at all. Wiring this surface up — giving it somewhere to be mounted that
-   the manifest can actually reach — is a genuinely separate, unbuilt unit.
+2. ~~The eve-facing session HTTP/WS surface exists but is not reachable.~~
+   **Fixed.** `internal/sessions/api` (`HandleListSessions`,
+   `HandleDeleteSession`, `HandleSessionMessageSync`, `HandleListTerminals`,
+   `HandleDeleteTerminal`, `HandleTerminalLog`, `HandleModels`, and the WS
+   session/terminal handlers) is mounted on relay-sessions' own internal
+   socket, alongside `/launch` and `/terminate`, by `hostapi.New`/
+   `Server.ListenInternal` (`internal/sessions/hostapi/server.go`) — not by
+   `cmd/relaysessions/main.go`, so every constructor of a `hostapi.Server`
+   gets the mount, including `cmd/relay`'s own capstone integration test.
+   `RelaySessionsManifestRoutes` (`internal/config/models.go`) now also
+   names `/api/models` and `/ws`, so relay's front-door dispatcher resolves
+   them through relay-sessions' manifest instead of 404ing before ever
+   reaching the socket. Every mounted route is wrapped in the same
+   `checkInternalPeer` mutual check `/launch`/`/terminate` already used
+   (`Server.guarded`, `server.go`) — see the note on that wrapper's trust
+   model just below. `terminal.Manager.SetOutputHandler` (new; mirrors the
+   existing `SetExitHandler`) is what makes a joined WS viewer actually see
+   live terminal output rather than a one-time scrollback dump — it did not
+   exist before this fix, since nothing needed it while the surface it fed
+   was unreachable. `terminal_templates` (the WS message eve's Shell
+   Launcher used to send to populate its "New" tab) is retired the same way
+   `terminal_create` already was: the template catalog lives in relay itself
+   (`GET /api/terminal/templates`), so relay-sessions now answers an
+   explicit refusal frame for it rather than dropping it silently.
+
+   **The trust model this mount runs under, stated plainly** (the comment on
+   `Server.guarded` in `internal/sessions/hostapi/server.go` is the
+   authoritative copy; this is the same fact for a reader who does not start
+   from the Go source): passing `checkInternalPeer` proves "this request
+   came from relay" — either a direct `/launch`/`/terminate` call or one
+   relay's front-door dispatcher forwarded on eve's behalf — never "this
+   caller may see this specific session". Relay's frontend socket is a
+   single trust domain: any frontend-capable caller (eve, or a control-plane
+   credential holding `proxy`) reaches every session on the host through
+   this mount, the same way it already reached every project's MCP tools
+   through the manifest-proxy design generally. This is a pre-existing
+   property of that whole design, now load-bearing for session content
+   specifically, and is not fixed here — see the "not fixed here" framing
+   this whole section already uses for gaps 1 and 5. The one piece of
+   scoping this fix does add: `internal/sessions/api/ws_session.go`'s
+   `handlePermissionResponse` refuses to resolve a pending Claude Code
+   tool-approval prompt unless the resolving WS connection has itself
+   `join_session`'d that prompt's session first — closing the sharpest edge
+   in this trust model (an unscoped permission decision) without attempting
+   the broader per-caller session-ownership model relay has no concept of
+   anywhere today.
 3. **`session_bound` is never emitted.** `internal/audit/audit.go` reserves
    the constant and the `AuditActorProjectSession`/`AuditAuthSession`
    vocabulary is real and wired for tool calls and model calls — but nothing
@@ -397,17 +419,18 @@ what works.
    that would mark a project_session launch identity successfully binding at
    Hello, distinct from the launch identity itself binding, which is
    unaudited today). See [`docs/audit-log.md`](audit-log.md#session-host-events).
-4. **Idle close is unreachable, and would not report `reason: "idle"` even if
-   it were.** `terminal.Manager`'s idle callback (`onIdle`,
-   `internal/sessions/terminal/manager.go:114`) calls `m.Close(id)`
-   unconditionally, and nothing calls `NotifyViewerChange` at all today —
-   only the eve-facing WS handlers in gap 2 ever would — so this path never
-   runs. But `onIdle` never marks the session terminating first (the one
-   thing that turns `"exit"` into `"closed"`), so `m.Close` funnels through
-   the same exit report a natural process death does: even once
-   `NotifyViewerChange` is wired up, an idle-close reports `reason: "exit"`,
-   indistinguishable from any other exit. No code anywhere in this repo
-   constructs the literal `"idle"`.
+4. **Idle close would not report `reason: "idle"` even now that it is
+   reachable.** `internal/sessions/api/ws_terminal.go`'s `join`/`leave`/
+   `handleDisconnect` call `terminal.Manager.NotifyViewerChange` on every
+   real join/leave/disconnect now that the WS surface is mounted (gap 2 is
+   fixed), so `terminal.Manager`'s idle callback (`onIdle`,
+   `internal/sessions/terminal/manager.go`) genuinely fires when a
+   terminal's last viewer leaves. But `onIdle` still calls `m.Close(id)`
+   unconditionally, never marking the session terminating first (the one
+   thing that turns `"exit"` into `"closed"`), so an idle-close funnels
+   through the same exit report a natural process death does and reports
+   `reason: "exit"`, indistinguishable from any other exit. No code anywhere
+   in this repo constructs the literal `"idle"`. This is not fixed here.
 5. **`handleTerminate`'s existence-or-liveness probe gates the wrong thing.**
    `handleTerminate` (`internal/sessions/hostapi/server.go`) does call
    `Get`/check `Alive()`/`markTerminatingIfAlive` before signalling — but
@@ -451,10 +474,10 @@ what works.
 | binary entry, `service` mode | `cmd/relaysessions/main.go` |
 | shim (`exec` mode) | `internal/sessions/shim/shim.go` |
 | hook client (`hook` mode) | `internal/sessions/hook/` |
-| internal API server, `/launch`/`/terminate`/`/permission` | `internal/sessions/hostapi/{server,dispatch,types}.go` |
+| internal API server, `/launch`/`/terminate`/`/permission`, and the mounted eve-facing surface | `internal/sessions/hostapi/{server,dispatch,types}.go` |
 | terminal (pty) sessions | `internal/sessions/terminal/` |
 | provider-hosted (claude/pi/chat) sessions | `internal/sessions/session/`, `internal/sessions/provider/` |
-| eve-facing HTTP/WS handlers (not yet mounted) | `internal/sessions/api/` |
+| eve-facing HTTP/WS handlers (mounted by `hostapi.New`/`ListenInternal`) | `internal/sessions/api/` |
 | C3 process-ancestry membership | `internal/membership/` |
 | C7 sandbox profile rendering | `internal/sessions/sandbox/`, `cmd/relay/session_sandbox.go` |
 | relay-side launch authorization | `cmd/relay/session_launch.go` |

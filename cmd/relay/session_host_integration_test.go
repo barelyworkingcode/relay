@@ -178,19 +178,22 @@ func TestHelperSessionHost(t *testing.T) {
 		ModelSocket:  os.Getenv(envSHModelSock),
 	})
 	store := session.NewStore(filepath.Join(dataDir, "sessions"))
+	perms := permission.NewPermissionManager()
 	sessions := session.NewManager(session.Config{
 		Chat: provider.ChatConfig{
 			ModelSocket:  os.Getenv(envSHModelSock),
 			ShimBinary:   os.Getenv(envSHShimBin),
 			BridgeSocket: bridgeSock,
 		},
-	}, store, permission.NewPermissionManager())
+	}, store, perms)
 
 	srv := hostapi.New(hostapi.Config{
 		InternalSocket: os.Getenv(envSHInternalSock),
 		InternalBearer: internalBearer,
 		RelayPID:       hello.RelayPID,
 		HookSocket:     os.Getenv(envSHHookSock),
+		Permissions:    perms,
+		ModelSocket:    os.Getenv(envSHModelSock),
 	}, terminals, sessions)
 	srv.SetExitHandler(func(id string, rootPID, exitCode int, reason string) {
 		_ = bridge.NewClientAt(bridgeSock, "").SessionExited(bridge.SessionExitedRequest{

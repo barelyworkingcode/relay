@@ -163,6 +163,38 @@ func TestFrontendServer_BearerAuth_RejectsWrongScheme(t *testing.T) {
 	}
 }
 
+// TestFrontendServer_SessionHostPaths_StillRequireFrontendCredential pins
+// the negative half of mounting relay-sessions' eve-facing surface: adding
+// /api/models and /ws to RelaySessionsManifestRoutes, and mounting real
+// handlers for every path under /api/sessions/ and /api/terminals/ on
+// relay-sessions' own socket, must not have opened a new unauthenticated
+// door on RELAY'S socket. Every one of these paths still falls through
+// relay's own mux to the "/" catch-all dispatcher, which sits behind the
+// exact same frontendCredentialAuth every other proxied route does — this
+// test never even needs a real relay-sessions process to prove that, since
+// the 401 must happen before dispatch is ever attempted.
+func TestFrontendServer_SessionHostPaths_StillRequireFrontendCredential(t *testing.T) {
+	_, sock := newTestFrontendServer(t, "good-token")
+	client := dialFrontendHTTP(sock)
+
+	paths := []string{
+		"/api/sessions/11111111-1111-1111-1111-111111111111",
+		"/api/terminals/11111111-1111-1111-1111-111111111111/log",
+		"/api/models",
+		"/ws",
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			resp, err := client.Get("http://unix" + path)
+			assertNoErr(t, err, "GET "+path)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("GET %s with no Authorization = %d, want 401 (must fail at relay's own frontend auth layer, before any dispatch)", path, resp.StatusCode)
+			}
+		})
+	}
+}
+
 func TestListenLoopback_RefusesNonLoopback(t *testing.T) {
 	for _, addr := range []string{"0.0.0.0:9980", ":9980", "192.168.64.1:9980"} {
 		t.Run(addr, func(t *testing.T) {

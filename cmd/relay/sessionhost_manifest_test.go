@@ -2,13 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -160,5 +166,76 @@ func TestRealRelaySessionsBinary_RegistersItsManifest(t *testing.T) {
 	// assertion above it already passed.
 	if err := client.Terminate(context.Background(), "no-such-session", "probe"); err != nil {
 		t.Fatalf("Terminate through the registered socket+bearer: %v", err)
+	}
+
+	// The rest of this test drives the real eve-facing surface through a
+	// real NewFrontendDispatcher over this same live registry — dispatcher
+	// lookup, reverse proxy, bearer injection, the real (unmocked)
+	// relay-sessions process, its real handler — the exact chain that was
+	// silently 404ing before this fix (background section of the plan this
+	// test covers). internal/sessions/hostapi/mount_test.go already proves
+	// the mount itself works directly against the socket; this proves the
+	// dispatcher in front of it forwards correctly and, just as important,
+	// that /launch stays unreachable through that same dispatcher.
+	dispatcher := NewFrontendDispatcher(enhanced)
+	dispatcherSrv := httptest.NewServer(dispatcher)
+	t.Cleanup(dispatcherSrv.Close)
+
+	modelsResp, err := http.Get(dispatcherSrv.URL + "/api/models")
+	assertNoErr(t, err, "GET /api/models through the dispatcher")
+	defer modelsResp.Body.Close()
+	if modelsResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(modelsResp.Body)
+		t.Fatalf("GET /api/models through dispatcher = %d, want 200 (body=%s)", modelsResp.StatusCode, body)
+	}
+	var modelsBody map[string]any
+	if err := json.NewDecoder(modelsResp.Body).Decode(&modelsBody); err != nil {
+		t.Fatalf("decode /api/models body: %v", err)
+	}
+	if _, ok := modelsBody["models"]; !ok {
+		t.Fatalf("/api/models body missing \"models\": %+v", modelsBody)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(dispatcherSrv.URL, "http") + "/ws"
+	wsDialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	wsConn, wsResp, err := wsDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WS dial through dispatcher: %v", err)
+	}
+	defer wsConn.Close()
+	if wsResp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("WS handshake through dispatcher = %d, want 101", wsResp.StatusCode)
+	}
+	if err := wsConn.WriteJSON(map[string]any{"type": "terminal_list"}); err != nil {
+		t.Fatalf("write terminal_list through dispatcher: %v", err)
+	}
+	_ = wsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var wsGot map[string]any
+	if err := wsConn.ReadJSON(&wsGot); err != nil {
+		t.Fatalf("read terminal_list reply through dispatcher: %v", err)
+	}
+	if wsGot["type"] != "terminal_list" {
+		t.Fatalf("reply type through dispatcher = %v, want terminal_list (%+v)", wsGot["type"], wsGot)
+	}
+
+	// /launch and /terminate are relay-sessions' peer-verified internal API,
+	// never eve-facing: they are absent from relay-sessions' own manifest
+	// (bridge.Manifest.Validate refuses them there outright), so
+	// LookupByPath must never resolve either through this dispatcher — a
+	// 404 from the dispatcher's own "no service registered for this path",
+	// never a 403/405 from the host behind it. This is the entire safety
+	// argument for exposing the rest of the internal socket's mux through
+	// the manifest surface at all.
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		req, err := http.NewRequest(method, dispatcherSrv.URL+"/launch", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		assertNoErr(t, err, method+" /launch through the dispatcher")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s /launch through dispatcher = %d, want 404 (never reachable through the eve-facing proxy path)", method, resp.StatusCode)
+		}
 	}
 }

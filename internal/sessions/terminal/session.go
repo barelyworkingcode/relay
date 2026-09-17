@@ -116,13 +116,14 @@ var ErrNoBridgeSocket = errors.New("terminal: identity requires a configured bri
 // its status events confirm the target is running, mirroring hostapi's own
 // spawnShim contract but adding real pty wiring end to end.
 //
-// onExit/onIdle are wired into the returned Session before its readLoop/
-// waitForExit goroutines start, not by the caller mutating the struct
-// afterward: a short-lived target (this package's own tests use
-// "echo hi; exit 7") can reach waitForExit before Manager.Create would
-// otherwise have had a chance to set session.onExit, a real data race this
-// signature closes by construction rather than by convention.
-func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode int), onIdle func(id string)) (*Session, error) {
+// onExit/onIdle/onOutput are wired into the returned Session before its
+// readLoop/waitForExit goroutines start, not by the caller mutating the
+// struct afterward: a short-lived target (this package's own tests use
+// "echo hi; exit 7") can reach waitForExit (or readLoop's first chunk)
+// before Manager.Create would otherwise have had a chance to set
+// session.onExit/onOutput, a real data race this signature closes by
+// construction rather than by convention.
+func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode int), onIdle func(id string), onOutput func(id string, data []byte)) (*Session, error) {
 	if err := spec.validate(); err != nil {
 		return nil, err
 	}
@@ -218,6 +219,7 @@ func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode i
 		clock:       cfg.clockOrDefault(),
 		onExit:      onExit,
 		onIdle:      onIdle,
+		onOutput:    onOutput,
 	}
 	s.ptmx.Store(ptmx)
 	s.alive.Store(true)
