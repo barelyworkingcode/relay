@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -512,6 +513,91 @@ func TestExec_SpawnFailed_ENOENT(t *testing.T) {
 	}
 	if ev.Errno == 0 {
 		t.Fatal("spawn_failed event carries no errno")
+	}
+}
+
+// TestExec_PipeMode_StdioPassthroughAndExitCode pins the no-`--pty` contract
+// now that a second, latency-sensitive caller (internal/sessions/provider's
+// shimspawn.go) depends on it: without --pty, the shim wires the target's
+// stdin/stdout directly to its own (os.Stdin/Stdout) -- no pty, no copier
+// goroutine, no buffering -- so a real byte stream sent to the shim's own
+// stdin must arrive at the target unmodified, and the target's own exit code
+// must propagate as the shim's. /bin/cat stands in for a claude/pi child:
+// it echoes stdin to stdout verbatim and exits 0 on EOF, which is exactly
+// pipe mode's own contract, not something claude/pi-specific.
+func TestExec_PipeMode_StdioPassthroughAndExitCode(t *testing.T) {
+	relaySessionsBin, _ := buildBinaries(t)
+
+	statusR, statusW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("status pipe: %v", err)
+	}
+	cmd := exec.Command(relaySessionsBin, "exec", "--session-id", "sess-pipemode", "--status-fd", "3", "--", "/bin/cat")
+	cmd.ExtraFiles = []*os.File{statusW}
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	_ = statusW.Close()
+
+	events := make(chan shim.StatusEvent, 16)
+	go func() {
+		defer close(events)
+		sc := bufio.NewScanner(statusR)
+		for sc.Scan() {
+			var ev shim.StatusEvent
+			if json.Unmarshal(sc.Bytes(), &ev) == nil {
+				events <- ev
+			}
+		}
+	}()
+
+	// Whole lines, multiple writes, and a message spanning far more than one
+	// pty-sized chunk would be -- pipe mode has no framing of its own beyond
+	// what the target's own bytes are, so this must all survive unmodified.
+	payload := []byte("line one\nline two\n" + strings.Repeat("x", 256*1024) + "\nlast line\n")
+	go func() {
+		_, _ = stdin.Write(payload)
+		_ = stdin.Close()
+	}()
+
+	got, err := io.ReadAll(stdout)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("stdout passthrough mismatch: got %d bytes, want %d bytes (not byte-identical)", len(got), len(payload))
+	}
+
+	code := 0
+	if werr := cmd.Wait(); werr != nil {
+		var ee *exec.ExitError
+		if !asExitError(werr, &ee) {
+			t.Fatalf("wait: %v (stderr: %s)", werr, stderrBuf.String())
+		}
+		code = ee.ExitCode()
+	}
+	if code != 0 {
+		t.Fatalf("shim exit code = %d, want 0 (cat's own exit on EOF)", code)
+	}
+
+	var evs []shim.StatusEvent
+	for ev := range events {
+		evs = append(evs, ev)
+	}
+	if got := eventNames(evs); fmt.Sprint(got) != fmt.Sprint([]string{"no_identity", "started", "exit"}) {
+		t.Fatalf("event order = %v, want [no_identity started exit]", got)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/service"
+	"github.com/barelyworkingcode/relay/internal/sessions/sandbox"
 )
 
 // normalizeSandboxProfile replaces every machine-specific path in a
@@ -197,6 +198,60 @@ func TestAuthorizeLaunch_SandboxProfileContents(t *testing.T) {
 	}
 	if strings.Contains(body, "Keychains") {
 		t.Errorf("profile denies ~/Library/Keychains, which SP2 removed:\n%s", body)
+	}
+}
+
+// TestSandboxSpecForLaunch_PiSessionsIsReadWriteAllowed asserts
+// sandboxSpecForLaunch re-permits exactly the one leaf a sandboxed pi
+// session must be able to write its own transcript into
+// (<config dir>/sessions/pi-sessions), while the config dir itself -- and
+// everything else under it -- stays denied whole.
+func TestSandboxSpecForLaunch_PiSessionsIsReadWriteAllowed(t *testing.T) {
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+
+	settings := store.Get()
+	spec, err := sandboxSpecForLaunch(settings, &proj, proj.Path)
+	if err != nil {
+		t.Fatalf("sandboxSpecForLaunch: %v", err)
+	}
+
+	wantAllow := filepath.Join(bridge.ConfigDir(), "sessions", "pi-sessions")
+	found := false
+	for _, p := range spec.AllowAfterDenyDirs {
+		if p == wantAllow {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("AllowAfterDenyDirs = %v, want to contain %q", spec.AllowAfterDenyDirs, wantAllow)
+	}
+
+	relayDir := bridge.ConfigDir()
+	denied := false
+	for _, p := range spec.ReadDeny {
+		if p == relayDir {
+			denied = true
+		}
+	}
+	if !denied {
+		t.Fatalf("ReadDeny = %v, want to still contain the whole config dir %q", spec.ReadDeny, relayDir)
+	}
+
+	body, err := sandbox.Render(spec)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	relayReal := sandboxRealPath(t, relayDir)
+	if !strings.Contains(body, `(subpath "`+relayReal+`")`) {
+		t.Fatalf("rendered profile does not deny the whole config dir:\n%s", body)
+	}
+	// pi-sessions/ itself never exists on disk in this test, so it is
+	// resolved (sandbox.resolve's own "walk up to the nearest existing
+	// ancestor" rule) as relayReal's own resolved form plus the literal
+	// suffix, not independently re-resolved here.
+	if !strings.Contains(body, `(subpath "`+filepath.Join(relayReal, "sessions", "pi-sessions")+`")`) {
+		t.Fatalf("rendered profile does not re-permit pi-sessions:\n%s", body)
 	}
 }
 

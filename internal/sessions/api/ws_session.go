@@ -315,6 +315,10 @@ func (sh *SessionHandlers) handleSetPermissionMode(c *Conn, raw []byte) {
 		return
 	}
 	if err := claude.SetPermissionMode(req.Mode); err != nil {
+		if errors.Is(err, provider.ErrRestartNeedsResume) {
+			sendResumeRequired(c, req.SessionID)
+			return
+		}
 		sendWSError(c, err.Error())
 		return
 	}

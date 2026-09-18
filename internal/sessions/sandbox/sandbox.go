@@ -44,6 +44,14 @@ type Spec struct {
 	// allows so it wins over them: the last matching rule decides in SBPL.
 	ReadDeny []string
 
+	// AllowAfterDenyDirs re-permits read AND write on a subtree nested
+	// inside an otherwise ReadDeny'd directory. Emitted after the deny
+	// file-read*/file-write* block so it wins over it — the read/write
+	// mirror of UnixConnectAllow's own allow-after-deny pattern, and the
+	// only way to re-permit a subtree inside a directory that is otherwise
+	// denied whole.
+	AllowAfterDenyDirs []string
+
 	// UnixConnectDenyDirs denies connecting to every socket beneath a
 	// directory, UnixConnectDenyPaths one named socket, and
 	// UnixConnectAllow re-permits named sockets — emitted last, so an
@@ -101,6 +109,16 @@ func Render(s Spec) (string, error) {
 		denies = append(denies, "(subpath "+lit+")")
 	}
 	writeBlock(&b, "deny file-read* file-write*", denies)
+
+	allowAfterDeny := make([]string, 0, len(s.AllowAfterDenyDirs))
+	for _, p := range s.AllowAfterDenyDirs {
+		lit, err := quoted(resolve(p))
+		if err != nil {
+			return "", fmt.Errorf("allow_after_deny: %w", err)
+		}
+		allowAfterDeny = append(allowAfterDeny, "(subpath "+lit+")")
+	}
+	writeBlock(&b, "allow file-read* file-write*", allowAfterDeny)
 
 	unixDeny := make([]string, 0, len(s.UnixConnectDenyDirs)+len(s.UnixConnectDenyPaths))
 	for _, p := range s.UnixConnectDenyPaths {
