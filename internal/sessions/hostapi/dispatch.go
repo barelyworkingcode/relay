@@ -86,6 +86,7 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 	if req.Identity != nil {
 		spec.Identity = &terminal.IdentitySpec{Secret: req.Identity.Secret}
 	}
+	spec.ModelKey = req.ModelKey
 	return spec, nil
 }
 

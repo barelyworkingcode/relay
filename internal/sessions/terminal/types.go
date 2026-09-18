@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
@@ -42,6 +43,44 @@ type CreateSpec struct {
 	Host     *sessionstypes.HostSpec
 	Sandbox  *SandboxSpec
 	Identity *IdentitySpec
+
+	// ModelKey is this launch's minted model-broker key (C8), set only for a
+	// template with model_key: true. It reaches the child exclusively through
+	// a ${MODEL_KEY} in the template's env values (expandModelKey); nothing
+	// here puts it in the environment on its own, so a template with no
+	// mapping gets no key injected. Never used for a host (ssh) session.
+	ModelKey string
+}
+
+// modelKeyMarker is the one substitution a template env value may name for
+// the session's model key. It mirrors internal/config.ModelKeyMarker, which
+// validates where a template may write it; duplicated rather than imported
+// because this package does not depend on config (hostapi's wire mirrors
+// follow the same rule).
+const modelKeyMarker = "${MODEL_KEY}"
+
+// expandModelKey returns env with ${MODEL_KEY} in each value replaced by key.
+// A value that names the marker when there is no key to put there is dropped
+// whole, never delivered as the literal placeholder: a client handed a
+// half-built header would send it verbatim. That is the case for a host (ssh)
+// session, whose env is written into the remote command line — a key must not
+// appear in the local ssh argv, and a loopback relay URL means nothing on the
+// far machine anyway. env itself is never mutated.
+func expandModelKey(env map[string]string, key string) map[string]string {
+	if len(env) == 0 {
+		return env
+	}
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		if strings.Contains(v, modelKeyMarker) {
+			if key == "" {
+				continue
+			}
+			v = strings.ReplaceAll(v, modelKeyMarker, key)
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func (s CreateSpec) validate() error {

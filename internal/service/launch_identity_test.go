@@ -716,3 +716,73 @@ func TestBindKind_ProjectSession_ServiceIdentityNeverConsultsAncestry(t *testing
 		t.Fatal("a service identity's Bind registered an ancestry watch")
 	}
 }
+
+// Live is what a holder of a launch handle asks instead of tracking whether
+// the launch ended: it follows the root-exit watcher, an explicit End and a
+// replacing Begin with no report from anyone.
+func TestLaunch_LiveFollowsTheRootExitWatcher(t *testing.T) {
+	watcher := &fakeWatcher{}
+	table := newProjectSessionTable(t, fakeRootSource{3200: {PID: 3200, StartSec: 1}}, watcher)
+	secret, l := beginProjectSession(t, table, "sess-live", "proj-live")
+	if !l.Live() {
+		t.Fatal("a fresh launch is not live")
+	}
+	if l.WasBound() {
+		t.Fatal("WasBound is true before Hello")
+	}
+	if _, err := table.BindKind("sess-live", secret, peertoken.ForProcessForTest(3200, 1), IdentityKindProjectSession); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if !l.Live() || !l.WasBound() {
+		t.Fatalf("after Hello: Live=%v WasBound=%v, want both true", l.Live(), l.WasBound())
+	}
+
+	watcher.calls[0].onExit()
+
+	if l.Live() {
+		t.Fatal("the launch is still live after its root exited")
+	}
+	if !l.WasBound() {
+		t.Fatal("WasBound turned false when the launch ended; it records that Hello happened")
+	}
+}
+
+func TestLaunch_LiveEndsWithEndAndWithAReplacingBegin(t *testing.T) {
+	table := NewLaunches()
+	_, first := beginService(t, table, "svc", false)
+	_, second := beginService(t, table, "svc", false)
+	if first.Live() {
+		t.Fatal("a launch a later Begin replaced is still live")
+	}
+	if !second.Live() {
+		t.Fatal("the replacing launch is not live")
+	}
+	second.End()
+	if second.Live() {
+		t.Fatal("an explicitly ended launch is still live")
+	}
+	var none *Launch
+	if none.Live() || none.WasBound() {
+		t.Fatal("a nil launch reads as live or bound")
+	}
+}
+
+// A launch that never says Hello expires unbound; Live reports that too, which
+// is why a key is only bound to a launch that did bind (see cmd/relay's
+// ModelKeyTable.BindLaunch).
+func TestLaunch_LiveIsFalseOnceAnUnboundLaunchExpires(t *testing.T) {
+	table := NewLaunches()
+	now := time.Now()
+	table.SetClockForTest(func() time.Time { return now })
+	_, l := beginProjectSession(t, table, "sess-expire", "proj-expire")
+	if !l.Live() {
+		t.Fatal("not live at the start")
+	}
+	now = now.Add(ProjectSessionLaunchTTL + time.Second)
+	if l.Live() {
+		t.Fatal("an unbound launch is still live past its deadline")
+	}
+	if l.WasBound() {
+		t.Fatal("an expired unbound launch reads as bound")
+	}
+}
