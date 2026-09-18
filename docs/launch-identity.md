@@ -109,6 +109,27 @@ cannot hand its successor a still-valid secret to skip Hello, because there
 is no such thing; the successor is a new launch like any other, and the
 predecessor's identity is gone before it exists.
 
+### A model key is bound to its launch
+
+A session's model key (`rmk_…`, [`docs/model-endpoint.md`](model-endpoint.md#model-keys))
+is not a launch identity, but it lives and dies with one. After a
+`project_session` launch says Hello, `launchOnHost` binds the key it minted for
+that session to the launch handle (`ModelKeyTable.BindLaunch`), and every
+`Lookup` re-derives whether the launch is still live (`Launch.Live`) — the same
+shape `ModelHostRegistry.liveLocked` gives a registered host, and for the same
+reason: relay-sessions reporting `SessionExited` is not the only way a launch
+ends. The root-exit watcher (`membership.WatchExit`) ends the launch when its
+root process does, a later `Begin` under the same name replaces it, and
+`EndByParent` ends every session a relay-sessions launch owned; each kills the
+key on its next use, with no report, no timer and no sweeper. `Launch.WasBound`
+is how the binder tells a launch that says Hello from one that never will.
+
+A launch that never says Hello is not bound, on purpose: a `chat` session's
+provider runs in-process with no shim, so its launch expires unbound after
+`ProjectSessionLaunchTTL` and a key tied to it would die seconds into the
+session. That key, and any key for an ad-hoc or SSH-hosted session (no launch
+at all), keep `SessionExited`-only revocation.
+
 ## Fail-closed rules
 
 - `RELAY_LAUNCH_FD` set, and the read fails or yields anything but 64 hex

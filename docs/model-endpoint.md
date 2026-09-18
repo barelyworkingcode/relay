@@ -2,13 +2,15 @@
 
 Relay is the single authority between projects, tools and models
 (`spec-model-broker.md`). This is the P1, additive shape of that broker
-(`plan-broker-and-sessions.md` §2 C8, §3.2 R-M1b): nothing depends on it yet
-— it is live and reachable, but no shipped client points at it until its own
-migration unit lands. Code: `internal/modelbroker/` (pure decision logic:
-extraction, normalisation, catalog filtering, error bodies, usage parsing —
-imported and never duplicated here), `cmd/relay/model_endpoint.go` (the HTTP
-surface), `cmd/relay/model_host_registry.go`, `cmd/relay/model_keys.go`,
-`cmd/relay/router_model_host.go` (the bridge side of `RegisterModelHost`).
+(`plan-broker-and-sessions.md` §2 C8, §3.2 R-M1b), extended so one base URL
+serves both a model relay manages and a provider's own model
+([Client model routing](#client-model-routing)). Code: `internal/modelbroker/`
+(pure decision logic: extraction, normalisation, catalog filtering, error
+bodies, usage parsing, the passthrough path table and the `/v1/messages`
+classification — imported and never duplicated here),
+`cmd/relay/model_endpoint.go` (the HTTP surface), `cmd/relay/model_host_registry.go`,
+`cmd/relay/model_keys.go`, `cmd/relay/router_model_host.go` (the bridge side
+of `RegisterModelHost`).
 
 ## Listeners
 
@@ -37,17 +39,26 @@ arbitrate.
 The explicit route allowlist and request/response shapes are
 `internal/modelbroker/routes.go` and `extract.go` — this package does not
 restate them; body size limits are their own section below. Anything not on
-that allowlist (`/api/*` passthrough, `/<name>/` passthroughs, `/models/load`,
-`/models/unload`) 404s as "route not found" before authentication even has a
-chance to matter, though authentication is still checked first (§ Auth
-order) so a probe against an unbrokered path costs nothing extra to a caller
+that allowlist and not one of the three fixed passthrough paths
+([below](#client-model-routing)) — `/models/load`, `/models/unload`, any
+other `/<name>/` — 404s as "route not found" after authentication (§ Auth
+order), so a probe against an unbrokered path costs nothing extra to a caller
 holding no credential at all.
 
 ## Auth order
 
-Checked in this order, on every request:
+This is the **local** branch's order ([Client model routing](#client-model-routing)
+says when a request is on it). Checked in this order:
 
-1. **`Authorization: Bearer X` or `x-api-key: X`.** If both headers are
+0. **`X-Relay-Key: X`.** Relay's own credential in its own header, for a client
+   whose `Authorization` is its own provider login and cannot also carry relay's.
+   When present it is the only relay credential considered: `X` is looked up
+   exactly as step 1 below looks up a bearer, and `Authorization` and `x-api-key`
+   are the client's — not consulted, never forwarded. A blank or repeated
+   `X-Relay-Key` is a 401, never read as absent, and never falls through to a
+   launch identity.
+1. **`Authorization: Bearer X` or `x-api-key: X`** (when there is no
+   `X-Relay-Key`; these are what pi's overlay and the chat provider send). If both headers are
    present and name different values, refused (401) before either is looked
    up against anything — a caller cannot use a valid credential in one
    header to smuggle a second, different assertion past the other.
@@ -117,12 +128,66 @@ gated (`cmd/relay/service_ops.go`'s `serviceWidensAllowedModels`).
 Format `rmk_` + 64 lowercase hex, held in relay's memory only as a SHA-256
 hash (`cmd/relay/model_keys.go`). `ModelKeyTable.Mint(projectID, label)`
 returns the plaintext once; nothing else can recover it. `Revoke(label)`
-removes every key minted under that label. **Nothing mints a key yet except
-tests** — the bridge op that will (`MintModelKey`, restricted to a caller
-holding `projects` or, later, a `project_session` acting for its own
-project) is a later unit (`plan-broker-and-sessions.md` F5); this table
-exists now purely so the auth resolver has a real table to check an `rmk_`
-bearer against.
+removes every key minted under that label. `AuthorizeLaunch` mints one under
+the label `session:<id>` for every `pi`/`chat` session and every `pty`
+template with `model_key: true`, scoped to the launching project.
+
+A key dies four ways:
+
+- **`SessionExited`.** relay-sessions reports the session's end and
+  `sessionAccount.end` revokes the key (also on project delete).
+- **Its launch ends.** After a launch says Hello, `launchOnHost` binds the key
+  to the launch (`ModelKeyTable.BindLaunch`), and `Lookup` re-derives whether
+  that launch is still live on every call (`Launch.Live`) — the same "derive
+  liveness, do not track a flag" rule `ModelHostRegistry.liveLocked` uses, with
+  no sweeper. A root process that exits (the launch table's own watcher ends the
+  launch), a replacing `Begin`, or relay-sessions' whole launch ending kills the
+  key with nothing reporting it, which is what covers a crashed relay-sessions
+  or a failed `SessionExited` report. A dead key is dropped from the table on
+  the lookup that finds it.
+- **A relay restart.** The table is in memory, so every live key is invalid
+  after one. Accepted: relay already takes the sessions it hosts down with it.
+- **An explicit `Revoke`/`RevokeKey`**, which a failed launch uses to undo
+  exactly the key it minted.
+
+Which keys are bound to a launch follows which launches say Hello: a `pty`
+session (the shim), and a `claude`/`pi` session with a sandbox profile or a
+launch identity, do; a `chat` session never does (its provider is an in-process
+HTTP client with no shim) and an ad-hoc or SSH-hosted session has no launch at
+all. Those keys keep `SessionExited`-only revocation. An unbound launch expires
+after `ProjectSessionLaunchTTL`, so binding a key to one would kill it seconds
+into the session.
+
+**Delivery is the template's job.** Minting a key does not put it anywhere. A
+`pty` template names where it goes with `${MODEL_KEY}` in an `env` value, and
+only when the template has `model_key: true`; relay-sessions expands it at
+spawn (`internal/sessions/terminal`). A template with no mapping gets no key in
+its environment — nothing sets a default variable. `${MODEL_KEY}` in argv, or in
+a template that did not opt in, is refused at validation, and `${RELAY_TOKEN}`
+still is. For example, Claude Code:
+
+```json
+{ "id": "claude-code-relay", "name": "Claude Code (relay models)", "command": "claude",
+  "model_key": true, "env_passthrough": [],
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:9911",
+    "ANTHROPIC_CUSTOM_HEADERS": "X-Relay-Key: ${MODEL_KEY}"
+  } }
+```
+
+Claude Code sends `ANTHROPIC_CUSTOM_HEADERS` (`Name: value`, newline-separated)
+on its `/v1/messages` calls beside its own `Authorization`; Codex takes
+`env_http_headers = { "X-Relay-Key" = "<env var name>" }` on a
+`model_providers.<id>` entry, or `http_headers`, and sends its ChatGPT-login
+token as `Authorization` beside it (verified against Claude Code 2.1.277 and
+Codex 0.153.4 with a local recording server).
+
+**The cost, accepted.** The key sits in the client's environment, readable by
+any process of the same uid (`KERN_PROCARGS2`) — the exposure class
+`RELAY_PROJECT_TOKEN` already has. It is bounded by the project's
+`allowed_models` and the session's lifetime, and it reaches only this
+endpoint. This reverses the stance `internal/config/templates.go` took when it
+retired `${RELAY_TOKEN}`, for a much lower-value credential.
 
 ## Upstream (`RegisterModelHost`)
 
@@ -160,9 +225,10 @@ the model endpoint's one upstream, tokenless, exactly the same shape
   unavailable` on every route that needs the catalog or a forward, including
   `GET /v1/models`.
 
-Forwarding strips `Authorization`, `x-api-key` and every `x-relay-*` header
-before the request leaves relay (`model_endpoint.go`'s `proxy`, mirroring
-`enhanced_services.go`'s `newServiceProxy`). The response's
+On the local branch, forwarding strips `Authorization`, `x-api-key` and every
+`x-relay-*` header (`X-Relay-Key` included) before the request leaves relay
+(`model_endpoint.go`'s `proxy`, mirroring `enhanced_services.go`'s
+`newServiceProxy`). The passthrough branch strips only the `x-relay-*` ones. The response's
 `X-Relay-Model-Target` header — relayLLM's own account of which managed
 alias, endpoint or resolved virtual candidate served the call — is read for
 the audit hook and removed before the response reaches the caller; it is
@@ -299,18 +365,96 @@ recover/completion logic (`cmd/relay/model_endpoint.go`'s `proxy`):
 
 ## What is not brokered
 
-- **A caller that holds its own upstream credential directly** (Claude
-  Code's Anthropic subscription, a user's own API key) never touches this
-  endpoint at all — that is `spec-model-broker.md` §4's decision, unchanged
-  here.
-- **The `/api/*` and `/<name>/` passthrough routes**, and `/models/load` /
-  `/models/unload` — deliberately absent from
+- **The `/models/load` and `/models/unload` routes** — deliberately absent from
   `internal/modelbroker.MatchRoute`'s allowlist, not merely unlisted by
-  omission (brokering the first would forward a client's own upstream
-  credential; the others reach a control-plane action through what is meant
-  to be a data plane).
+  omission: they reach a control-plane action through what is meant to be a
+  data plane.
+- **A provider's own model, when the client holds its own credential.** It is
+  no longer left to bypass this endpoint: it is forwarded by the passthrough
+  branch ([below](#client-model-routing)), so one base URL serves both. Relay
+  brokers nothing about it — no grant, no `allowed_models`, no scoping — and
+  audits it only as a passthrough.
 - **A `project_session` caller** (a session-host root or one of its
-  descendants) — that identity kind does not exist in this repo yet
-  (`plan-broker-and-sessions.md` §2 C1/C2 is a later unit); the seam is
-  `resolveIdentity` in `model_endpoint.go`, which today only resolves a
-  `service` kind.
+  descendants) reaches the local branch tokenlessly on `model.sock`
+  (`resolveIdentity` in `model_endpoint.go`), as above.
+
+## Client model routing
+
+One endpoint, two branches, chosen per request (`plans/client-model-routing.md`).
+The point: Claude Code, Codex and pi run with one base URL, a model relay
+manages is served by the broker (scoped to the project, audited), and a
+provider's own model reaches that provider with the client's own credential.
+
+**Two credentials, two headers.** The client's own token stays in
+`Authorization` (or `x-api-key`), untouched. Relay's per-session key travels in
+`X-Relay-Key`. A subscription login sends one credential, its OAuth token, on
+every request; it cannot also carry a relay key there.
+
+| Request | Branch |
+|---|---|
+| a path under `/api/`, `/chatgpt/` or `/openai/` | **passthrough** |
+| `POST /v1/messages` or `/v1/messages/count_tokens`, model is a `modelMap` key in relay's catalog | **local** |
+| the same, model is a Claude id (`claude-…`) not in the catalog | **passthrough** (Anthropic) |
+| the same, any other model, including a catalog model that is not a `modelMap` key | 404 |
+| every other allowlisted route | **local** |
+
+- **Local** is everything above this section: a valid relay credential, the
+  project's `allowed_models`, an audit record, and `Authorization`,
+  `x-api-key`, `X-Relay-Key` and every `x-relay-*` stripped before the request
+  reaches the model host.
+- **Passthrough** needs no relay authentication. The request is forwarded to
+  the model host (relayLLM's router.sock, which forwards it to the provider),
+  `Authorization` and `x-api-key` byte for byte, the body exactly as read, and
+  `X-Relay-Key` and every `x-relay-*` stripped. WebSocket upgrades are carried
+  (OMP's codex transport prefers one). A valid `X-Relay-Key` on a passthrough
+  request attributes its audit record to the session's project and grants
+  nothing.
+- The **path table is fixed in relay** (`modelbroker.MatchPassthrough`), not
+  read from relayLLM's `router.passthrough` config, so what can reach a cloud
+  provider does not change under a config edit relay never saw. relayLLM
+  mounts the routes it forwards to (`router.passthrough` entries `chatgpt` and
+  `openai`, `router.anthropic` for `/api/` and `/v1/messages`); a route it does
+  not have is its own 404. A path with a `.`, `..` or empty element is never a
+  passthrough route.
+- `/v1/messages` is classified by the model, so relay reads the body and
+  resolves the model against a **fresh** catalog first
+  (`Cache.Resolve`). The catalog check comes before the id's shape: a
+  `modelMap` key that looks like a Claude id is relay's to serve. A catalog
+  model that is *not* a `modelMap` key (a managed alias, an endpoint model)
+  has no Anthropic-shaped way to be served, and relayLLM would forward it to
+  Anthropic on that route, so relay answers 404 rather than let its prompt
+  leave the machine. A mistyped local name (not Claude-shaped) is the same 404.
+  Cost: a Claude model is never in the catalog, so every such request pays one
+  extra `GET /v1/models` on router.sock.
+
+**Rules that keep it safe.**
+
+- A credential shaped like a relay key (`rmk_…`) that does not validate is a
+  **401 on every branch** and is never forwarded — revoked keys, and every key
+  after a relay restart, included. On a passthrough route an `rmk_`-shaped
+  value in `Authorization` or `x-api-key` is a 401 **whether or not it
+  validates**: those headers are forwarded, and a relay credential never is.
+- A **catalog that cannot be read is a 503** on every path that needs it, and
+  "not in the catalog" is never read as "unmanaged, send it to Anthropic". A
+  passthrough path route needs no catalog and is unaffected. No host, or an
+  unreachable one, is a 503 on both branches.
+- A caller with **no relay credential** at all gets a 401, not a 404, for
+  anything the broker would have to serve or refuse, so it cannot tell which
+  model names relay manages by the shape of the error. (The one exception is
+  inherent to routing by catalog: a Claude-shaped id that is a `modelMap` key
+  is 401 without a credential where an unmapped one is forwarded.)
+- Passthrough is not a relay-managed model, so `allowed_models` does not apply
+  to it. A per-project "may use passthrough" rule is not built.
+- Relay never forwards its own credentials, and forwards the client's only on
+  passthrough routes.
+
+**Audit.** A passthrough call is a `model_call` like any other, with
+`model_target` `passthrough:<api|chatgpt|openai|anthropic>`, its status and
+byte counts, and an anonymous actor unless it carried a valid `X-Relay-Key`. A
+non-streamed passthrough response is not buffered for token usage; a streamed
+one is scanned as usual.
+
+**Listener.** Claude Code and Codex need a URL, so the TCP listener must be on
+(`"model_endpoint": {"listen": "127.0.0.1:9911"}` in `settings.json`; loopback
+only). Over TCP there is no peer identity, so `X-Relay-Key` (or the legacy
+bearer) is the only relay authentication.
