@@ -21,6 +21,17 @@ import (
 // bearer credential in a place any same-uid process can read via
 // KERN_PROCARGS2, and it is retired, not ported (ValidateTerminalTemplate,
 // ExpandTemplateVars).
+//
+// The one credential a template may place in its env is the launch's own
+// model key, spelled ${MODEL_KEY} (ModelKeyMarker), and only when the
+// template opts in with model_key: true. That reverses the stance above for
+// a much lower-value credential on purpose: it is a per-session key that
+// reaches relay's model endpoint only, scoped to the launching project's
+// allowed_models and dead when the session's launch ends, where a project
+// token reaches every tool the project holds. The exposure to same-uid
+// processes is the same one RELAY_PROJECT_TOKEN already has. A template with
+// no ${MODEL_KEY} mapping gets no key in its env at all: nothing sets a
+// default variable for it.
 type TerminalTemplate struct {
 	ID          string            `json:"id,omitempty"`
 	Name        string            `json:"name"`
@@ -50,6 +61,11 @@ type TerminalTemplate struct {
 	// relay's model endpoint. Distinct from C5's LaunchSpec `model_key`
 	// field, which carries the minted secret itself — this is only the
 	// template's declaration that it wants one.
+	//
+	// Minting a key does not deliver it. It reaches the child's env only
+	// through a ${MODEL_KEY} the template's own Env values name (for example
+	// ANTHROPIC_CUSTOM_HEADERS: "X-Relay-Key: ${MODEL_KEY}"), expanded by
+	// relay-sessions at spawn.
 	ModelKey bool `json:"model_key,omitempty"`
 }
 
@@ -138,15 +154,32 @@ var ErrRelayEnvPassthrough = errors.New("template passes through a RELAY_-prefix
 
 const relayTokenMarker = "${RELAY_TOKEN}"
 
+// ModelKeyMarker is the one designated credential substitution in a template:
+// the launch's own model key. Valid only in Env values, and only in a
+// template with model_key: true (ValidateTerminalTemplate); relay-sessions
+// expands it at spawn (internal/sessions/terminal mirrors this constant and
+// does not import this package).
+const ModelKeyMarker = "${MODEL_KEY}"
+
+// ErrModelKeySubstitution is refused at validation: ${MODEL_KEY} outside an
+// env value, or in a template that did not opt in with model_key: true.
+// Argv is the worse place for a credential (ps shows it to every user), and
+// a template that names a key it will never be minted would launch with the
+// literal placeholder text in its header.
+var ErrModelKeySubstitution = errors.New("template uses ${MODEL_KEY} outside the env of a model_key template")
+
 // ValidateTerminalTemplate refuses a template whose argv or env contains
-// the literal substring ${RELAY_TOKEN}, or whose EnvPassthrough names a
-// RELAY_-prefixed variable. This is the one security-relevant check in this
+// the literal substring ${RELAY_TOKEN}, whose EnvPassthrough names a
+// RELAY_-prefixed variable, or that names ${MODEL_KEY} anywhere but the env
+// of a model_key template. This is the one security-relevant check in this
 // file — see the package doc on TerminalTemplate for why: a bearer
 // credential must never reach a spawned child's environment or argv, and
 // ExpandTemplateVars only ever substitutes ${PROJECT_PATH} and
 // ${PROJECT_ID}, so a template that depends on RELAY_TOKEN expansion can
 // never actually get it — it must be refused up front instead of launching
-// with the literal text still in place.
+// with the literal text still in place. ${MODEL_KEY} is the one credential
+// that is expanded, at spawn and not by ExpandTemplateVars, and is carved out
+// only where that expansion happens.
 func ValidateTerminalTemplate(t TerminalTemplate) error {
 	if strings.TrimSpace(t.ID) == "" {
 		return fmt.Errorf("terminal template: id is required")
@@ -172,6 +205,21 @@ func ValidateTerminalTemplate(t TerminalTemplate) error {
 			return fmt.Errorf("terminal template %q: %w (%q)", t.ID, ErrRelayEnvPassthrough, name)
 		}
 	}
+	if strings.Contains(t.Command, ModelKeyMarker) {
+		return fmt.Errorf("terminal template %q: %w (in command)", t.ID, ErrModelKeySubstitution)
+	}
+	for _, a := range t.Args {
+		if strings.Contains(a, ModelKeyMarker) {
+			return fmt.Errorf("terminal template %q: %w (in args)", t.ID, ErrModelKeySubstitution)
+		}
+	}
+	if !t.ModelKey {
+		for k, v := range t.Env {
+			if strings.Contains(v, ModelKeyMarker) {
+				return fmt.Errorf("terminal template %q: %w (in env %q; set model_key: true)", t.ID, ErrModelKeySubstitution, k)
+			}
+		}
+	}
 	return nil
 }
 
@@ -180,6 +228,9 @@ func ValidateTerminalTemplate(t TerminalTemplate) error {
 // ${RELAY_TOKEN} that reached this function by some route
 // ValidateTerminalTemplate didn't catch, is left as the literal text it
 // already was (strings.Replacer only substitutes tokens it knows).
+// ${MODEL_KEY} is deliberately not here: it needs the minted key, which does
+// not exist yet when a template's argv is resolved, and it applies to env
+// values only (ModelKeyMarker).
 func ExpandTemplateVars(in, projectPath, projectID string) string {
 	r := strings.NewReplacer(
 		"${PROJECT_PATH}", projectPath,

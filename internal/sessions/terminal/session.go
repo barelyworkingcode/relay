@@ -133,7 +133,9 @@ func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode i
 
 	targetArgv := spec.Argv
 	if spec.Host != nil {
-		name, args, err := buildHostTargetArgv(spec.Host, spec.Directory, spec.Argv, spec.Env)
+		// No key: a host session's env is written into the remote command line
+		// (expandModelKey).
+		name, args, err := buildHostTargetArgv(spec.Host, spec.Directory, spec.Argv, expandModelKey(spec.Env, ""))
 		if err != nil {
 			return nil, err
 		}
@@ -348,6 +350,10 @@ func childBaseEnv() []string {
 // concern to resolve (cmd/relaysessions, a later wiring unit), not
 // something a bare Config in a unit test should have to fabricate.
 //
+// The launch's model key reaches the child only where the template's env
+// wrote ${MODEL_KEY} (expandModelKey): with no such mapping there is no key in
+// the child's environment, and no default variable is ever set for it.
+//
 // Every RELAY_-prefixed key in spec.Env is dropped before the merge, the
 // same prefix-not-denylist reasoning internal/config/templates.go's
 // EnvPassthrough check already uses: a caller/template must never be able to
@@ -355,8 +361,9 @@ func childBaseEnv() []string {
 // reach the child, even by the host simply having nothing of its own to
 // override it with.
 func buildShimEnv(spec CreateSpec, cfg Config) []string {
-	add := make(map[string]string, len(spec.Env)+3)
-	for k, v := range spec.Env {
+	env := expandModelKey(spec.Env, spec.ModelKey)
+	add := make(map[string]string, len(env)+3)
+	for k, v := range env {
 		if strings.HasPrefix(k, "RELAY_") {
 			continue
 		}
