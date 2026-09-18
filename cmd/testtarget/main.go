@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +36,7 @@ func main() {
 	callToolOut := flag.String("calltool-out", "", "make a real, tokenless bridge.Client.CallTool request and write the outcome here as JSON")
 	callToolName := flag.String("calltool-name", "echo", "tool name to call for -calltool-out")
 	callToolViaChild := flag.Bool("calltool-via-child", false, "spawn one ordinary child to perform -calltool-out, adding one ancestry hop")
+	envOut := flag.String("env-out", "", "write this process's environment here as a JSON object")
 	detachBeforeCallTool := flag.Bool("detach-before-calltool", false, "double-fork and setsid before -calltool-out, then exit immediately; the detached descendant makes the call after reparenting")
 	flag.Parse()
 
@@ -44,6 +46,20 @@ func main() {
 			state = "EBADF"
 		}
 		_ = os.WriteFile(*fd3Check, []byte(state), 0o600)
+	}
+
+	if *envOut != "" {
+		env := map[string]string{}
+		for _, kv := range os.Environ() {
+			if k, v, ok := strings.Cut(kv, "="); ok {
+				env[k] = v
+			}
+		}
+		b, _ := json.Marshal(env)
+		if err := os.WriteFile(*envOut, b, 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, "testtarget: write env:", err)
+			os.Exit(1)
+		}
 	}
 
 	if *writeOutside != "" {

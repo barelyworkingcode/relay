@@ -387,3 +387,75 @@ func TestImportLegacyPTYTemplates_RefusesRelayTokenSubstitution(t *testing.T) {
 		t.Fatalf("expected ErrRelayTokenSubstitution, got %v", err)
 	}
 }
+
+// --- ${MODEL_KEY}: the one credential a template may map into its env ---
+
+func TestValidateTerminalTemplate_AllowsModelKeyInEnvOfAModelKeyTemplate(t *testing.T) {
+	tmpl := TerminalTemplate{
+		ID: "cc", Name: "CC", ModelKey: true,
+		Env: map[string]string{
+			"ANTHROPIC_BASE_URL":       "http://127.0.0.1:9911",
+			"ANTHROPIC_CUSTOM_HEADERS": "X-Relay-Key: ${MODEL_KEY}",
+		},
+	}
+	if err := ValidateTerminalTemplate(tmpl); err != nil {
+		t.Fatalf("a model_key template mapping the key into env was refused: %v", err)
+	}
+}
+
+func TestValidateTerminalTemplate_RefusesModelKeyInATemplateThatDidNotOptIn(t *testing.T) {
+	tmpl := TerminalTemplate{ID: "cc", Name: "CC", Env: map[string]string{"H": "X-Relay-Key: ${MODEL_KEY}"}}
+	if err := ValidateTerminalTemplate(tmpl); !errors.Is(err, ErrModelKeySubstitution) {
+		t.Fatalf("model_key false with a ${MODEL_KEY} mapping: err = %v, want ErrModelKeySubstitution", err)
+	}
+}
+
+func TestValidateTerminalTemplate_RefusesModelKeyInArgv(t *testing.T) {
+	for name, tmpl := range map[string]TerminalTemplate{
+		"command": {ID: "x", Name: "X", ModelKey: true, Command: "tool-${MODEL_KEY}"},
+		"args":    {ID: "x", Name: "X", ModelKey: true, Args: []string{"--key", "${MODEL_KEY}"}},
+	} {
+		if err := ValidateTerminalTemplate(tmpl); !errors.Is(err, ErrModelKeySubstitution) {
+			t.Errorf("${MODEL_KEY} in %s: err = %v, want ErrModelKeySubstitution", name, err)
+		}
+	}
+}
+
+// The carve-out is for ${MODEL_KEY} alone: the retired credential stays
+// refused, including in a model_key template's env.
+func TestValidateTerminalTemplate_ModelKeyCarveOutDoesNotReopenRelayToken(t *testing.T) {
+	tmpl := TerminalTemplate{ID: "x", Name: "X", ModelKey: true, Env: map[string]string{"T": "${RELAY_TOKEN}", "K": "${MODEL_KEY}"}}
+	if err := ValidateTerminalTemplate(tmpl); !errors.Is(err, ErrRelayTokenSubstitution) {
+		t.Fatalf("err = %v, want ErrRelayTokenSubstitution", err)
+	}
+}
+
+// ExpandTemplateVars is argv-only and knows nothing of the key: the marker
+// survives it untouched (it is expanded at spawn, where the minted key exists).
+func TestExpandTemplateVars_LeavesModelKeyMarkerAlone(t *testing.T) {
+	if got := ExpandTemplateVars("${MODEL_KEY}", "/p", "id"); got != "${MODEL_KEY}" {
+		t.Fatalf("ExpandTemplateVars expanded the model key marker: %q", got)
+	}
+}
+
+func TestEffectiveTerminalTemplates_SkipsAModelKeyMappingWithoutOptIn(t *testing.T) {
+	s := &Settings{TerminalTemplates: []TerminalTemplate{
+		{ID: "unmapped-optin", Name: "Opted in, no mapping", ModelKey: true},
+		{ID: "mapped-noopt", Name: "Mapped, not opted in", Env: map[string]string{"H": "${MODEL_KEY}"}},
+	}}
+	var sawOptIn, sawNoOpt bool
+	for _, tmpl := range EffectiveTerminalTemplates(s) {
+		switch tmpl.ID {
+		case "unmapped-optin":
+			sawOptIn = true
+		case "mapped-noopt":
+			sawNoOpt = true
+		}
+	}
+	if !sawOptIn {
+		t.Error("a model_key template with no mapping was refused; it is valid, it just gets no env injected")
+	}
+	if sawNoOpt {
+		t.Error("a template mapping ${MODEL_KEY} without model_key: true reached the effective list")
+	}
+}
