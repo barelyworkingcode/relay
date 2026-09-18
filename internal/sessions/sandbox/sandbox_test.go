@@ -81,6 +81,41 @@ func TestRender_AllowsWinOverDenies(t *testing.T) {
 	}
 }
 
+// TestRender_AllowAfterDenyWinsOverReadDeny pins the read/write mirror of
+// TestRender_AllowsWinOverDenies: AllowAfterDenyDirs is the only way to
+// re-permit a subtree nested inside an otherwise-denied one, and that only
+// works because SBPL's last-matching-rule-decides semantics make emission
+// ORDER the mechanism -- a presence-only check ("the allow rule is
+// somewhere in the output") would still pass on a profile that emitted the
+// allow BEFORE the deny, which the deny would then override, silently
+// leaving the subtree denied despite the rule sitting right there in the
+// text. This asserts the allow block is textually AFTER the deny block.
+func TestRender_AllowAfterDenyWinsOverReadDeny(t *testing.T) {
+	spec := Spec{
+		ReadDeny:           []string{"/private/tmp/relay-sandbox-golden/relay"},
+		AllowAfterDenyDirs: []string{"/private/tmp/relay-sandbox-golden/relay/sessions/pi-sessions"},
+	}
+	got, err := Render(spec)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	readDeny := strings.Index(got, "(deny file-read* file-write*")
+	allowAfterDeny := strings.Index(got, "(allow file-read* file-write*")
+	if readDeny < 0 {
+		t.Fatal("deny file-read*/file-write* block missing from rendered profile")
+	}
+	if allowAfterDeny < 0 {
+		t.Fatal("allow file-read*/file-write* block missing from rendered profile")
+	}
+	if allowAfterDeny <= readDeny {
+		t.Fatalf("allow-after-deny block (offset %d) must come AFTER the deny block (offset %d) -- order is the mechanism, not merely presence", allowAfterDeny, readDeny)
+	}
+	if !strings.Contains(got, `(allow file-read* file-write*`+"\n  "+`(subpath "/private/tmp/relay-sandbox-golden/relay/sessions/pi-sessions"))`) {
+		t.Fatalf("allow-after-deny block missing the expected subpath rule:\n%s", got)
+	}
+}
+
 func TestRender_EscapesQuotesBackslashesSpacesAndUnicode(t *testing.T) {
 	got, err := Render(Spec{WriteAllowDirs: []string{
 		`/private/tmp/relay-sandbox-golden/odd "quoted" dir`,

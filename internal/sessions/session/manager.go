@@ -490,10 +490,15 @@ func (m *Manager) respawnSpec(sess *sessionstypes.Session) CreateSpec {
 func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {
 	switch spec.Kind {
 	case KindClaude:
-		return provider.NewClaudeProvider(sess, handler, m.cfg.Claude, m.perms), nil
+		ccfg := m.cfg.Claude
+		ccfg.Identity = spec.Identity
+		ccfg.SandboxProfile = spec.SandboxProfile
+		return provider.NewClaudeProvider(sess, handler, ccfg, m.perms), nil
 	case KindPi:
 		picfg := m.cfg.Pi
 		picfg.ModelKey = spec.ModelKey
+		picfg.Identity = spec.Identity
+		picfg.SandboxProfile = spec.SandboxProfile
 		return provider.NewPiProvider(sess, handler, picfg), nil
 	case KindChat:
 		chatcfg := m.cfg.Chat

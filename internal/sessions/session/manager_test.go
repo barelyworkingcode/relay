@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
+	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
@@ -872,5 +874,50 @@ func TestManager_EndSession_ChatKind_FiresExitHandler(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("EndSession on a chat-kind session never fired the exit handler — relay would never learn to revoke its identity/key/sandbox profile")
+	}
+}
+
+// TestManager_BuildProvider_ThreadsSandboxAndIdentityIntoClaudeAndPi proves
+// buildProvider mirrors the KindChat branch's own threading of
+// spec.SandboxProfile/spec.Identity into KindClaude/KindPi (manager.go),
+// through the real (non-factory) provider construction path -- the
+// providerFactory test seam bypasses buildProvider entirely, so this
+// deliberately leaves it unset.
+//
+// There is no exported way to read ClaudeConfig/PiConfig back out of a
+// constructed provider, so this observes the threading indirectly but
+// unambiguously: with no ShimBinary configured on either base config, a
+// CreateSpec carrying a SandboxProfile makes Start fail closed with
+// provider.ErrShimRequired specifically -- a sentinel only reachable if the
+// sandbox profile actually reached ClaudeConfig/PiConfig's own field. Before
+// this fix, Create instead attempted (and failed via) a direct, unconfined
+// spawn of the configured (nonexistent) binary, never returning this
+// sentinel at all.
+func TestManager_BuildProvider_ThreadsSandboxAndIdentityIntoClaudeAndPi(t *testing.T) {
+	for _, kind := range []string{session.KindClaude, session.KindPi} {
+		t.Run(kind, func(t *testing.T) {
+			store := session.NewStore(t.TempDir())
+			mgr := session.NewManager(session.Config{
+				Claude: provider.ClaudeConfig{Binary: "/no/such/claude-binary"},
+				// DataDir must be a real (temp) directory, not PiConfig's
+				// zero value: PiProvider.Start's os.MkdirAll(sessionDir, ...)
+				// runs before the shim-required check this test relies on,
+				// and an empty DataDir makes sessionDir the relative path
+				// "pi-sessions" -- silently creating it under whatever the
+				// test binary's own working directory happens to be.
+				Pi: provider.PiConfig{Binary: "/no/such/pi-binary", DataDir: t.TempDir()},
+			}, store, nil)
+
+			_, err := mgr.Create(session.CreateSpec{
+				SessionID:      "44444444-4444-4444-4444-444444444444",
+				ProjectID:      "proj-1",
+				Kind:           kind,
+				SandboxProfile: "/abs/profile.sb",
+				Identity:       &sessionsmcp.IdentitySpec{Secret: "deadbeef"},
+			})
+			if !errors.Is(err, provider.ErrShimRequired) {
+				t.Fatalf("Create error = %v, want provider.ErrShimRequired -- SandboxProfile never reached %sConfig", err, kind)
+			}
+		})
 	}
 }
