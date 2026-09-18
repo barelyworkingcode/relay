@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/membership"
+	"github.com/barelyworkingcode/relay/internal/peertoken"
+	"github.com/barelyworkingcode/relay/internal/service"
+)
 
 func TestModelKeyTable_MintLookupRevoke(t *testing.T) {
 	table := NewModelKeyTable()
@@ -88,5 +95,104 @@ func TestHasModelKeyPrefix(t *testing.T) {
 		if got := HasModelKeyPrefix(in); got != want {
 			t.Errorf("HasModelKeyPrefix(%q) = %v, want %v", in, got, want)
 		}
+	}
+}
+
+// bindableLaunch begins and binds a project_session launch whose root-exit
+// watcher the test drives by hand, and returns the launch handle with the
+// function that simulates its root process exiting.
+func bindableLaunch(t *testing.T, launches *service.Launches, name string, rootPID int) (*service.Launch, func()) {
+	t.Helper()
+	procs := newProcTable()
+	procs.set(membership.ProcInfo{PID: rootPID, PPID: 1, StartSec: 1})
+	var onExit func()
+	launches.SetRootSourceForTest(procs)
+	launches.SetRootWatcherForTest(func(_ int, _ membership.ProcInfo, cb func()) (func(), error) {
+		onExit = cb
+		return func() {}, nil
+	})
+	secret, launch, err := launches.Begin(service.Identity{
+		Kind: service.IdentityKindProjectSession, Name: name, ProjectID: "proj-1",
+		ParentLaunch: config.RelaySessionsServiceID,
+	})
+	assertNoErr(t, err, "Begin")
+	_, err = launches.BindKind(name, secret, peertoken.ForProcessForTest(int32(rootPID), 1), service.IdentityKindProjectSession)
+	assertNoErr(t, err, "Bind")
+	return launch, func() { onExit() }
+}
+
+// A key bound to its session's launch dies when the launch ends through the
+// root-exit watcher, with nothing ever reporting SessionExited or calling
+// Revoke.
+func TestModelKeyTable_BoundKeyDiesWhenItsLaunchEnds(t *testing.T) {
+	launches := service.NewLaunches()
+	table := NewModelKeyTable()
+	key, err := table.Mint("proj-1", "session:s1")
+	assertNoErr(t, err, "Mint")
+	launch, rootExits := bindableLaunch(t, launches, "s1", 71001)
+	table.BindLaunch(key, launch)
+
+	if _, _, ok := table.Lookup(key); !ok {
+		t.Fatal("a key bound to a live launch does not resolve")
+	}
+
+	rootExits()
+
+	if _, _, ok := table.Lookup(key); ok {
+		t.Fatal("the key still resolves after its launch's root exited")
+	}
+	if _, _, ok := table.Lookup(key); ok {
+		t.Fatal("the key came back on a second lookup")
+	}
+}
+
+func TestModelKeyTable_BoundKeyDiesWhenAnotherBeginReplacesItsLaunch(t *testing.T) {
+	launches := service.NewLaunches()
+	table := NewModelKeyTable()
+	key, err := table.Mint("proj-1", "session:s2")
+	assertNoErr(t, err, "Mint")
+	launch, _ := bindableLaunch(t, launches, "s2", 71002)
+	table.BindLaunch(key, launch)
+
+	// A resume of the same session id begins a new launch under the name,
+	// which ends the old one.
+	_, _, err = launches.Begin(service.Identity{Kind: service.IdentityKindProjectSession, Name: "s2", ProjectID: "proj-1", ParentLaunch: config.RelaySessionsServiceID})
+	assertNoErr(t, err, "second Begin")
+
+	if _, _, ok := table.Lookup(key); ok {
+		t.Fatal("a key outlived the launch a resume replaced")
+	}
+}
+
+// A key nobody bound keeps the pre-existing lifetime: explicit revocation or
+// a relay restart, and nothing a launch does touches it.
+func TestModelKeyTable_UnboundKeyIsUnaffectedByLaunches(t *testing.T) {
+	launches := service.NewLaunches()
+	table := NewModelKeyTable()
+	key, err := table.Mint("proj-1", "session:s3")
+	assertNoErr(t, err, "Mint")
+	launch, rootExits := bindableLaunch(t, launches, "s3", 71003)
+	rootExits()
+	launch.End()
+
+	if _, _, ok := table.Lookup(key); !ok {
+		t.Fatal("a key that was never bound to a launch stopped resolving when a launch ended")
+	}
+}
+
+func TestModelKeyTable_BindLaunchIgnoresWhatItCannotBind(t *testing.T) {
+	launches := service.NewLaunches()
+	table := NewModelKeyTable()
+	launch, _ := bindableLaunch(t, launches, "s4", 71004)
+	table.BindLaunch("rmk_never_minted", launch) // must not panic or invent a record
+	table.BindLaunch("", launch)
+	key, err := table.Mint("proj-1", "session:s4")
+	assertNoErr(t, err, "Mint")
+	table.BindLaunch(key, nil)
+	if _, _, ok := table.Lookup(key); !ok {
+		t.Fatal("binding a nil launch made a live key stop resolving")
+	}
+	if _, _, ok := table.Lookup("rmk_never_minted"); ok {
+		t.Fatal("BindLaunch created a key for a plaintext that was never minted")
 	}
 }
