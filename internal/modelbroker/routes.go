@@ -33,12 +33,12 @@ type Route struct {
 // allowedRoutes is exactly spec §2.2's table, including the bare-path forms
 // relayLLM's own openAIRoutesWithoutV1 accepts (router.go) for llama.cpp-
 // style clients that post to a bare base URL. Anything not listed here is
-// refused with the "route not found" 404 (spec §2.4) — /api/* bootstrap
-// passthrough, /<name>/ passthroughs, and /models/load, /models/unload are
-// deliberately absent, not merely unlisted by omission: brokering them would
-// either forward a client's own upstream credential (passthrough) or let a
-// caller reach a control-plane action through what is meant to be a data
-// plane (model load/unload).
+// refused with the "route not found" 404 (spec §2.4), except the fixed
+// passthrough paths MatchPassthrough recognises, which the handler forwards
+// as the client's own request instead of brokering them. /models/load and
+// /models/unload are deliberately absent, not merely unlisted by omission:
+// they would let a caller reach a control-plane action through what is meant
+// to be a data plane.
 var allowedRoutes = []Route{
 	{"GET", "/v1/models", ShapeOpenAI, ModelSourceNone},
 	{"GET", "/models", ShapeOpenAI, ModelSourceNone},

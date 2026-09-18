@@ -548,6 +548,14 @@ same policy tool calls get.
   credential gets. `actor.auth` still names what was *attempted* (`token`,
   `model_key`, or the identity path), or is absent when nothing was
   presented at all (no header, on TCP).
+- **A passthrough call** (a provider's own request forwarded with the
+  client's own credential, `docs/model-endpoint.md#client-model-routing`) is a
+  `model_call` too, with `model_target` `passthrough:api`, `passthrough:chatgpt`,
+  `passthrough:openai` or `passthrough:anthropic` and, for a WebSocket upgrade,
+  status `101`. Its actor is `unknown` (`auth` absent) unless the request also
+  carried a valid `X-Relay-Key`, in which case it is the session's project with
+  `auth: model_key`. Neither the client's provider credential nor the relay key
+  is recorded, and there is no token usage for a non-streamed one.
 - **`model_key_label`** names the `rmk_` key's label the caller authenticated
   with. **Never the key itself** — there is no field on this record able to
   carry it, a project token's plaintext, or either one's hash.

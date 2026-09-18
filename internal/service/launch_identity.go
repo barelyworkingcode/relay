@@ -271,6 +271,38 @@ func (l *Launch) End() {
 	l.table.endLocked(l)
 }
 
+// Live reports whether this launch is still in the table: not ended, and, if
+// it never bound, not past its deadline. Re-derived from the table on every
+// call, the way ModelHostRegistry re-derives whether its host is live — a
+// caller that holds a launch handle asks this instead of tracking whether the
+// launch ended, so a root process that exits (the root-exit watcher calls
+// End) or a launch a later Begin replaced is answered the instant it
+// happens, with no report from anyone and no sweeper. A nil launch is not
+// live.
+func (l *Launch) Live() bool {
+	if l == nil {
+		return false
+	}
+	l.table.mu.Lock()
+	defer l.table.mu.Unlock()
+	l.table.reapExpiredLocked(l.table.clock())
+	return !l.ended
+}
+
+// WasBound reports whether Hello ever bound this launch, whether or not it
+// has ended since. It is how a holder tells a launch whose end it can observe
+// (a shim said Hello, and the root-exit watcher ends the launch with it) from
+// one that never will bind (a provider process with no shim), whose Begin
+// then expires unbound.
+func (l *Launch) WasBound() bool {
+	if l == nil {
+		return false
+	}
+	l.table.mu.Lock()
+	defer l.table.mu.Unlock()
+	return l.spent
+}
+
 func (t *Launches) endLocked(l *Launch) {
 	if l.ended {
 		return

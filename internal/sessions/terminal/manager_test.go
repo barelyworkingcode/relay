@@ -576,6 +576,56 @@ func TestBuildShimEnv_HostSocketsWin_EvenWhenHostHasNoValue(t *testing.T) {
 	}
 }
 
+// A ${MODEL_KEY} in a template env value is expanded from the launch's own key
+// at spawn, wherever it sits in the value, and nothing else carries the key
+// into the child: a spec with a key but no mapping gets none injected.
+func TestBuildShimEnv_ModelKeyReachesTheChildOnlyThroughItsMapping(t *testing.T) {
+	const key = "rmk_0123456789abcdef"
+	spec := CreateSpec{
+		SessionID: "sess-key",
+		ModelKey:  key,
+		Env: map[string]string{
+			"ANTHROPIC_CUSTOM_HEADERS": "X-Relay-Key: ${MODEL_KEY}",
+			"ANTHROPIC_BASE_URL":       "http://127.0.0.1:9911",
+		},
+	}
+	env := envMap(t, buildShimEnv(spec, Config{}))
+	if env["ANTHROPIC_CUSTOM_HEADERS"] != "X-Relay-Key: "+key {
+		t.Errorf("ANTHROPIC_CUSTOM_HEADERS = %q, want the key expanded in place", env["ANTHROPIC_CUSTOM_HEADERS"])
+	}
+	if env["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:9911" {
+		t.Errorf("a value with no marker changed: %q", env["ANTHROPIC_BASE_URL"])
+	}
+
+	// Minted but unmapped: the key is nowhere in the environment.
+	unmapped := CreateSpec{SessionID: "sess-nomap", ModelKey: key, Env: map[string]string{"TERM": "xterm"}}
+	for _, kv := range buildShimEnv(unmapped, Config{}) {
+		if strings.Contains(kv, key) {
+			t.Fatalf("a template with no ${MODEL_KEY} mapping still had the key injected: %q", kv)
+		}
+	}
+	if strings.Contains(strings.Join(buildShimEnv(unmapped, Config{}), "\n"), "MODEL_KEY") {
+		t.Error("a default MODEL_KEY variable was set for a template with no mapping")
+	}
+}
+
+// A mapping with no key to put in it is dropped, never delivered as literal
+// placeholder text, and a host (ssh) session's remote command line never
+// carries the key.
+func TestExpandModelKey_DropsAMappingThereIsNoKeyFor(t *testing.T) {
+	env := map[string]string{"H": "X-Relay-Key: ${MODEL_KEY}", "TERM": "xterm"}
+	got := expandModelKey(env, "")
+	if _, ok := got["H"]; ok {
+		t.Errorf("a ${MODEL_KEY} value with no key survived as %q", got["H"])
+	}
+	if got["TERM"] != "xterm" {
+		t.Error("an unrelated value was dropped")
+	}
+	if env["H"] != "X-Relay-Key: ${MODEL_KEY}" {
+		t.Error("expandModelKey mutated its input")
+	}
+}
+
 func envMap(t *testing.T, env []string) map[string]string {
 	t.Helper()
 	out := make(map[string]string, len(env))
