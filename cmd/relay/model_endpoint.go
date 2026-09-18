@@ -255,6 +255,10 @@ func (m *ModelEndpointServer) upstreamTransport() (*http.Transport, error) {
 			return dialVerifiedUnix(ctx, socketPath, process)
 		},
 		DisableKeepAlives: true,
+		// A passthrough response is the provider's own bytes: the transport
+		// must not add Accept-Encoding to a request that had none and
+		// decompress what comes back.
+		DisableCompression: true,
 	}, nil
 }
 
@@ -294,7 +298,7 @@ func (m *ModelEndpointServer) fetchCatalog(ctx context.Context) ([]modelbroker.R
 }
 
 func shapeForPath(path string) modelbroker.Shape {
-	if path == "/v1/messages" || path == "/v1/messages/count_tokens" {
+	if modelbroker.IsMessagesRoute(path) || strings.HasPrefix(path, "/api/") {
 		return modelbroker.ShapeAnthropic
 	}
 	return modelbroker.ShapeOpenAI
@@ -363,11 +367,71 @@ func resolveBearerHeaders(r *http.Request) (bearer string, present bool) {
 	}
 }
 
-// resolveCaller is the model endpoint's auth resolver (spec §3.1): a bearer
-// header on either listener, else a launch identity on the socket, else 401
-// (always, on TCP).
+// relayKeyHeader is where a client that authenticates to its own provider
+// with its own credential presents relay's (plans/client-model-routing.md):
+// Authorization and x-api-key stay the client's, untouched, and this header
+// carries the per-session model key. Relay reads it and strips it, and never
+// forwards it.
+const relayKeyHeader = "X-Relay-Key"
+
+// relayKeyFromHeader reads relayKeyHeader. present is true the instant the
+// header was sent at all, the same rule resolveBearerHeaders applies to the
+// two credential headers: a blank or repeated one is present but unusable
+// (usable false) and is refused, never read as absent.
+func relayKeyFromHeader(r *http.Request) (key string, present, usable bool) {
+	vals := r.Header.Values(relayKeyHeader)
+	if len(vals) == 0 {
+		return "", false, false
+	}
+	if len(vals) > 1 {
+		return "", true, false
+	}
+	key = strings.TrimSpace(vals[0])
+	return key, true, key != ""
+}
+
+// relayShapedClientCredential reports whether Authorization or x-api-key
+// carries something shaped like a relay model key. Those two headers are the
+// client's own credential slots and are forwarded to the provider on a
+// passthrough route, so a relay credential in one must be refused before it
+// can leave the machine.
+func relayShapedClientCredential(r *http.Request) bool {
+	for _, v := range r.Header.Values("Authorization") {
+		if bearer, ok := stripBearerPrefix(v); ok {
+			v = bearer
+		}
+		if HasModelKeyPrefix(strings.TrimSpace(v)) {
+			return true
+		}
+	}
+	for _, v := range r.Header.Values("x-api-key") {
+		if HasModelKeyPrefix(strings.TrimSpace(v)) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveCaller is the model endpoint's auth resolver for a request the
+// broker serves (spec §3.1): relay's own key in X-Relay-Key when one is sent,
+// else a bearer header on either listener, else a launch identity on the
+// socket, else 401 (always, on TCP).
+//
+// X-Relay-Key wins outright when present: Authorization and x-api-key then
+// belong to the client (its own provider credential) and are neither
+// consulted nor forwarded. Without it the bearer headers are relay's, as
+// they were before X-Relay-Key existed, which is what pi's overlay and the
+// chat provider still send.
 func (m *ModelEndpointServer) resolveCaller(r *http.Request, transport string) (modelCaller, *modelbroker.ErrorBody) {
 	shape := shapeForPath(r.URL.Path)
+
+	if key, present, usable := relayKeyFromHeader(r); present {
+		if !usable {
+			errBody := modelbroker.UnauthorizedError(shape)
+			return modelCaller{auth: "model_key"}, &errBody
+		}
+		return m.resolveBearer(key, shape)
+	}
 
 	if bearer, present := resolveBearerHeaders(r); present {
 		if bearer == "" {
@@ -417,6 +481,39 @@ func (m *ModelEndpointServer) resolveBearer(bearer string, shape modelbroker.Sha
 		return modelCaller{auth: "token"}, &errBody
 	}
 	return callerForProject(*proj, "token", ""), nil
+}
+
+// resolvePassthroughCaller is the passthrough branch's only use of relay's
+// credentials. No relay authentication is required: the request is the
+// client's own, made with its own provider credential, and reaches only that
+// provider. What relay still enforces is that its own credential never
+// travels with it.
+//
+//   - A relay key in X-Relay-Key is optional, and when sent must validate:
+//     an rmk_ key that does not (revoked, or from before a relay restart) is a
+//     401 here as everywhere, never quietly dropped and forwarded. A valid one
+//     only attributes the audit record; it grants nothing on this branch.
+//   - An rmk_-shaped value in Authorization or x-api-key is a 401 whether or
+//     not it validates. Those headers are forwarded, and a relay credential
+//     must not be.
+func (m *ModelEndpointServer) resolvePassthroughCaller(r *http.Request, shape modelbroker.Shape) (modelCaller, *modelbroker.ErrorBody) {
+	var caller modelCaller
+	if key, present, usable := relayKeyFromHeader(r); present {
+		if !usable {
+			errBody := modelbroker.UnauthorizedError(shape)
+			return modelCaller{auth: "model_key"}, &errBody
+		}
+		resolved, errBody := m.resolveBearer(key, shape)
+		if errBody != nil {
+			return resolved, errBody
+		}
+		caller = resolved
+	}
+	if relayShapedClientCredential(r) {
+		errBody := modelbroker.UnauthorizedError(shape)
+		return modelCaller{auth: "model_key"}, &errBody
+	}
+	return caller, nil
 }
 
 // callerForProject translates a project's own empty-means-any AllowedModels
@@ -545,9 +642,33 @@ func (m *ModelEndpointServer) auditFor(caller modelCaller, transport string, r *
 
 // Handler builds the endpoint's http.Handler for one transport. Exported for
 // tests that want to drive it directly over httptest, without a real socket.
+//
+// Every request takes one of two branches (plans/client-model-routing.md):
+//
+//   - passthrough, for a provider's own request: a fixed path (/api/*,
+//     /chatgpt/*, /openai/*) or a /v1/messages naming a Claude model relay
+//     does not manage. No relay authentication; the client's own credential is
+//     forwarded untouched and relay's is stripped.
+//   - local, for everything else: relay's credential is required, the
+//     project's allowed_models applies, the call is audited, and the client's
+//     own credential is stripped.
+//
+// Only /v1/messages needs the request's model (and so the catalog) to choose;
+// every other route's branch follows from its path.
 func (m *ModelEndpointServer) Handler(transport string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+
+		if name, ok := modelbroker.MatchPassthrough(r.URL.Path); ok {
+			m.servePassthroughPath(w, r, transport, name, start)
+			return
+		}
+
+		route, routeOK := modelbroker.MatchRoute(r.Method, r.URL.Path)
+		if routeOK && modelbroker.IsMessagesRoute(route.Path) {
+			m.serveMessagesRoute(w, r, transport, route, start)
+			return
+		}
 
 		caller, errBody := m.resolveCaller(r, transport)
 		if errBody != nil {
@@ -569,8 +690,7 @@ func (m *ModelEndpointServer) Handler(transport string) http.Handler {
 			return
 		}
 
-		route, ok := modelbroker.MatchRoute(r.Method, r.URL.Path)
-		if !ok {
+		if !routeOK {
 			eb := modelbroker.RouteNotFoundError(shape)
 			m.writeError(w, eb)
 			m.audit(m.auditFor(caller, transport, r, eb.Status, "route_not_found", start, "", ""))
@@ -583,6 +703,98 @@ func (m *ModelEndpointServer) Handler(transport string) http.Handler {
 		}
 		m.serveModelRoute(w, r, caller, transport, route, start)
 	})
+}
+
+// servePassthroughPath forwards one of the fixed passthrough routes. Nothing
+// about it depends on the request's model, so it needs neither the body nor
+// the catalog: an unreadable catalog is no reason to refuse a request that
+// was never going to consult it.
+func (m *ModelEndpointServer) servePassthroughPath(w http.ResponseWriter, r *http.Request, transport, name string, start time.Time) {
+	shape := shapeForPath(r.URL.Path)
+	caller, errBody := m.resolvePassthroughCaller(r, shape)
+	if errBody != nil {
+		m.writeError(w, *errBody)
+		m.audit(m.auditFor(caller, transport, r, errBody.Status, "unauthorized", start, "", ""))
+		return
+	}
+	route := modelbroker.Route{Method: r.Method, Path: r.URL.Path, Shape: shape, Source: modelbroker.ModelSourceNone}
+	m.proxy(w, r, caller, transport, route, "", "", start, "passthrough:"+name)
+}
+
+// serveMessagesRoute handles /v1/messages and its count_tokens, the routes
+// whose branch is chosen by the request's model. The model is read and
+// resolved against a fresh catalog before anything is decided, so a request
+// for a Claude model relay does not manage can be told apart from a local
+// model's, and a catalog that cannot be read is a 503 on every path through
+// here: "not in the catalog" must never mean "unmanaged, send it to
+// Anthropic" while relayLLM is down.
+//
+// Relay's own credential is resolved first but not yet enforced: the
+// passthrough branch needs none. It is enforced on the local branch, and on a
+// model neither branch claims, where a 401 (never the 404) is what a caller
+// with no relay credential gets, so that an unauthenticated caller cannot use
+// the difference to learn which model names relay manages.
+func (m *ModelEndpointServer) serveMessagesRoute(w http.ResponseWriter, r *http.Request, transport string, route modelbroker.Route, start time.Time) {
+	caller, authErr := m.resolveCaller(r, transport)
+
+	mr, ok := m.readModelRequest(w, r, caller, transport, route, start)
+	if !ok {
+		return
+	}
+	defer mr.release()
+
+	rows, err := m.catalog.Resolve(r.Context(), mr.requested)
+	if err != nil {
+		eb := modelbroker.HostUnavailableError(route.Shape)
+		m.writeError(w, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, "host_unavailable", start, mr.requested, ""))
+		return
+	}
+
+	branch := modelbroker.ClassifyMessagesModel(mr.requested, rows)
+	if branch == modelbroker.MessagesAnthropic {
+		m.serveMessagesPassthrough(w, r, transport, route, start, mr)
+		return
+	}
+
+	if authErr != nil {
+		m.writeError(w, *authErr)
+		m.audit(m.auditFor(caller, transport, r, authErr.Status, "unauthorized", start, mr.requested, ""))
+		return
+	}
+	if caller.remote {
+		eb := modelbroker.RemoteProjectError(route.Shape)
+		m.writeError(w, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, "remote_project", start, mr.requested, ""))
+		return
+	}
+	if branch == modelbroker.MessagesUnknown {
+		eb := modelbroker.ModelNotFoundError(route.Shape, modelbroker.ReasonNotFound)
+		m.writeError(w, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, modelbroker.ReasonNotFound, start, mr.requested, ""))
+		return
+	}
+	m.serveLocal(w, r, caller, transport, route, start, mr, rows)
+}
+
+// serveMessagesPassthrough forwards a /v1/messages request for a Claude model
+// relay does not manage. The body is forwarded exactly as read, not
+// re-encoded the way a local call's is: the provider gets the client's bytes.
+func (m *ModelEndpointServer) serveMessagesPassthrough(w http.ResponseWriter, r *http.Request, transport string, route modelbroker.Route, start time.Time, mr *modelRequest) {
+	caller, errBody := m.resolvePassthroughCaller(r, route.Shape)
+	if errBody != nil {
+		m.writeError(w, *errBody)
+		m.audit(m.auditFor(caller, transport, r, errBody.Status, "unauthorized", start, mr.requested, ""))
+		return
+	}
+	body := mr.bodyBytes
+	// No amplifying work follows for a byte-for-byte forward, so the admission
+	// slot is released here rather than held for the length of the upstream
+	// call, the way serveLocal releases it after its rewrite.
+	mr.release()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	m.proxy(w, r, caller, transport, route, mr.requested, "", start, "passthrough:anthropic")
 }
 
 func (m *ModelEndpointServer) serveNoModelRoute(w http.ResponseWriter, r *http.Request, caller modelCaller, transport string, route modelbroker.Route, start time.Time) {
@@ -600,7 +812,7 @@ func (m *ModelEndpointServer) serveNoModelRoute(w http.ResponseWriter, r *http.R
 		return
 	}
 	// /health: proxied upstream, no model to check.
-	m.proxy(w, r, caller, transport, route, "", "", start)
+	m.proxy(w, r, caller, transport, route, "", "", start, "")
 }
 
 func (m *ModelEndpointServer) writeModelList(w http.ResponseWriter, rows []modelbroker.Row) {
@@ -643,7 +855,22 @@ func errorBodyFor(shape modelbroker.Shape, status int, message, reason string) m
 	return modelbroker.ErrorBody{Status: status, Body: body, Reason: reason}
 }
 
-func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Request, caller modelCaller, transport string, route modelbroker.Route, start time.Time) {
+// modelRequest is a request body that has been read once, capped, with its
+// model extracted, and that still holds its BodyBudget slot until release is
+// called. release is idempotent, so a caller may release early (after the
+// amplifying work) and still defer it for every return path.
+type modelRequest struct {
+	bodyBytes []byte
+	boundary  string // multipart only
+	requested string
+	release   func()
+}
+
+// readModelRequest admits the request against the shared BodyBudget, reads
+// its body up to the route's cap and extracts the model it names. On any
+// failure it has already written the response and audited it, and returns
+// ok=false with nothing held.
+func (m *ModelEndpointServer) readModelRequest(w http.ResponseWriter, r *http.Request, caller modelCaller, transport string, route modelbroker.Route, start time.Time) (mr *modelRequest, ok bool) {
 	bodyCap := int64(modelbroker.JSONBodyCap)
 	if route.Path == "/v1/audio/transcriptions" {
 		bodyCap = modelbroker.AudioMultipartCap
@@ -655,11 +882,11 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 	// smaller would let a caller under-report size to buy extra
 	// concurrency the cap exists to rule out (S6 of the relay#116
 	// re-review; BodyBudget's own doc has the full reasoning). Released via
-	// the deferred call on every early-return path below (a request refused
-	// before forwarding never needed the memory for long); the success path
-	// releases explicitly, right after the amplifying work — extraction and
-	// rewrite — is done and before proxy() hands the single, already-final
-	// forwardBody to the reverse proxy.
+	// the deferred call in the caller on every early-return path (a request
+	// refused before forwarding never needed the memory for long); the
+	// success path releases explicitly, right after the amplifying work —
+	// extraction and rewrite — is done and before proxy() hands the single,
+	// already-final forwardBody to the reverse proxy.
 	budgetCtx, cancel := context.WithTimeout(r.Context(), bodyBudgetWaitTimeout)
 	admitted := m.bodyBudget.Acquire(budgetCtx, bodyCap)
 	cancel()
@@ -674,7 +901,7 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 		}
 		m.writeError(w, eb)
 		m.audit(m.auditFor(caller, transport, r, eb.Status, outcome, start, "", ""))
-		return
+		return nil, false
 	}
 	released := false
 	release := func() {
@@ -683,7 +910,6 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 			m.bodyBudget.Release(bodyCap)
 		}
 	}
-	defer release()
 
 	// bodyBudgetHeldHookForTest, when non-nil, runs once per request right
 	// after admission, before any body is read. A test-only seam
@@ -723,20 +949,37 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 	_ = r.Body.Close()
 
 	if err != nil {
+		release()
 		eb := requestErrorBody(route.Shape, err)
 		m.writeError(w, eb)
 		m.audit(m.auditFor(caller, transport, r, eb.Status, eb.Reason, start, requested, ""))
+		return nil, false
+	}
+	return &modelRequest{bodyBytes: bodyBytes, boundary: boundary, requested: requested, release: release}, true
+}
+
+func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Request, caller modelCaller, transport string, route modelbroker.Route, start time.Time) {
+	mr, ok := m.readModelRequest(w, r, caller, transport, route, start)
+	if !ok {
 		return
 	}
+	defer mr.release()
 
-	rows, err := m.catalog.Resolve(r.Context(), requested)
+	rows, err := m.catalog.Resolve(r.Context(), mr.requested)
 	if err != nil {
 		eb := modelbroker.HostUnavailableError(route.Shape)
 		m.writeError(w, eb)
-		m.audit(m.auditFor(caller, transport, r, eb.Status, "host_unavailable", start, requested, ""))
+		m.audit(m.auditFor(caller, transport, r, eb.Status, "host_unavailable", start, mr.requested, ""))
 		return
 	}
+	m.serveLocal(w, r, caller, transport, route, start, mr, rows)
+}
 
+// serveLocal is the broker's own branch: the caller's grant decides whether
+// the model is served, and the request is forwarded to the model host with
+// every credential stripped.
+func (m *ModelEndpointServer) serveLocal(w http.ResponseWriter, r *http.Request, caller modelCaller, transport string, route modelbroker.Route, start time.Time, mr *modelRequest, rows []modelbroker.Row) {
+	requested := mr.requested
 	canonical, ok, reason := modelbroker.Allowed(requested, caller.grant, rows)
 	if !ok {
 		eb := modelbroker.ModelNotFoundError(route.Shape, reason)
@@ -757,13 +1000,16 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 	// makes the ALLOW decision and the forwarded call agree by construction
 	// rather than by the extractor and relayLLM happening to parse the same
 	// way.
-	var forwardBody []byte
-	var forwardContentType string
+	var (
+		forwardBody        []byte
+		forwardContentType string
+		err                error
+	)
 	switch route.Source {
 	case modelbroker.ModelSourceJSONBody:
-		forwardBody, err = modelbroker.RewriteJSONModel(bodyBytes, canonical)
+		forwardBody, err = modelbroker.RewriteJSONModel(mr.bodyBytes, canonical)
 	case modelbroker.ModelSourceMultipart:
-		forwardBody, forwardContentType, err = modelbroker.RewriteMultipartModel(bytes.NewReader(bodyBytes), boundary, canonical)
+		forwardBody, forwardContentType, err = modelbroker.RewriteMultipartModel(bytes.NewReader(mr.bodyBytes), mr.boundary, canonical)
 	}
 	if err != nil {
 		eb := errorBodyFor(route.Shape, http.StatusInternalServerError, "internal error", "error")
@@ -777,8 +1023,8 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 	// rather than via the deferred release at function return, keeps both
 	// from being held for the (potentially long, streamed) duration of the
 	// upstream call that follows.
-	bodyBytes = nil
-	release()
+	mr.bodyBytes = nil
+	mr.release()
 
 	r.Body = io.NopCloser(bytes.NewReader(forwardBody))
 	r.ContentLength = int64(len(forwardBody))
@@ -786,7 +1032,7 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 		r.Header.Set("Content-Type", forwardContentType)
 	}
 
-	m.proxy(w, r, caller, transport, route, requested, canonical, start)
+	m.proxy(w, r, caller, transport, route, requested, canonical, start, "")
 }
 
 func readCapped(r io.Reader, capBytes int64) ([]byte, error) {
@@ -834,6 +1080,11 @@ func (s *statusCapturingWriter) Flush() {
 	}
 }
 
+// Unwrap lets http.NewResponseController reach the real connection, which is
+// how httputil.ReverseProxy hijacks it to carry a WebSocket upgrade on a
+// passthrough route.
+func (s *statusCapturingWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 // countingReader counts bytes read through it. Not safe for concurrent use;
 // the proxy path below only ever reads it from the single goroutine that
 // called ServeHTTP.
@@ -870,7 +1121,15 @@ type teeReadCloser struct {
 // teeing the response through a usage scanner (streamed responses) or a
 // bounded buffer (non-streamed) for the audit record — never retaining
 // anything else of the body (docs/model-endpoint.md; spec §2.3, §7).
-func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, caller modelCaller, transport string, route modelbroker.Route, requested, canonical string, start time.Time) {
+//
+// passthrough is "" for the local branch. For the passthrough branch it is the
+// audit label ("passthrough:openai", "passthrough:anthropic", ...) and changes
+// three things: Authorization and x-api-key are the client's own credential
+// and are forwarded untouched (relay's own, X-Relay-Key and every x-relay-*,
+// is still stripped); a WebSocket upgrade is carried, which needs the
+// response body left unwrapped; and a non-streamed response is not buffered
+// for usage, since it is not relay's to parse and can be arbitrarily large.
+func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, caller modelCaller, transport string, route modelbroker.Route, requested, canonical string, start time.Time, passthrough string) {
 	transportRT, err := m.upstreamTransport()
 	if err != nil {
 		eb := modelbroker.HostUnavailableError(route.Shape)
@@ -880,12 +1139,14 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 	}
 
 	var (
-		target       string
+		target       = passthrough
 		streamed     bool
+		upgraded     bool
 		usageScanner = modelbroker.NewSSEUsageScanner(route.Shape)
 		buffered     bytes.Buffer
 		counter      *countingReader
 		upstreamErr  error
+		sw           *statusCapturingWriter
 	)
 
 	rp := httputil.NewSingleHostReverseProxy(modelUpstreamURL)
@@ -897,8 +1158,10 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 		if proxyPanicForTest != nil {
 			panic(proxyPanicForTest)
 		}
-		req.Header.Del("Authorization")
-		req.Header.Del("x-api-key")
+		if passthrough == "" {
+			req.Header.Del("Authorization")
+			req.Header.Del("x-api-key")
+		}
 		for k := range req.Header {
 			if strings.HasPrefix(strings.ToLower(k), "x-relay-") {
 				req.Header.Del(k)
@@ -906,7 +1169,9 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 		}
 	}
 	rp.ModifyResponse = func(resp *http.Response) error {
-		target = resp.Header.Get("X-Relay-Model-Target")
+		if passthrough == "" {
+			target = resp.Header.Get("X-Relay-Model-Target")
+		}
 		// Every x-relay-* response header is relay/relayLLM's own internal
 		// signalling, never the caller's business — X-Relay-Model-Target is
 		// the only one with a defined meaning today, but stripping by
@@ -917,12 +1182,24 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 				resp.Header.Del(k)
 			}
 		}
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			// An upgraded connection's body is the raw connection:
+			// httputil.ReverseProxy hands it to the hijacked client side and
+			// needs it to still be an io.ReadWriteCloser, which the counting
+			// wrapper below is not. Nothing of the stream is metered.
+			upgraded = true
+			sw.status = http.StatusSwitchingProtocols
+			return nil
+		}
 		streamed = strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 
 		counter = &countingReader{r: resp.Body}
 		var sink io.Writer = &buffered
-		if streamed {
+		switch {
+		case streamed:
 			sink = usageScanner
+		case passthrough != "":
+			sink = io.Discard
 		}
 		resp.Body = teeReadCloser{Reader: io.TeeReader(counter, sink), Closer: resp.Body}
 		return nil
@@ -944,7 +1221,7 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 		m.audit(m.auditFor(caller, transport, r, eb.Status, outcome, start, requested, canonical))
 	}
 
-	sw := &statusCapturingWriter{ResponseWriter: w, status: http.StatusOK}
+	sw = &statusCapturingWriter{ResponseWriter: w, status: http.StatusOK}
 
 	// A mid-stream client abort after headers are already flushed doesn't
 	// reach ErrorHandler (that only fires for a RoundTrip failure, before
@@ -988,6 +1265,16 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 
 	if postServeHookForTest != nil {
 		postServeHookForTest()
+	}
+
+	if upgraded {
+		// The connection was hijacked and has since closed; the request
+		// context is cancelled by then whichever side ended it, so it says
+		// nothing about whether the upgrade succeeded.
+		ev := m.auditFor(caller, transport, r, http.StatusSwitchingProtocols, "ok", start, requested, canonical)
+		ev.Target = target
+		m.audit(ev)
+		return
 	}
 
 	// This is subtle: a client that disconnects the instant after receiving
