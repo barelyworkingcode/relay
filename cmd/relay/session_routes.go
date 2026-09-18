@@ -583,6 +583,19 @@ func (d sessionRouteDeps) launchOnHost(ctx context.Context, result *LaunchResult
 		return nil, err
 	}
 
+	// A key dies with the launch it was minted for, so a root that exits
+	// without relay-sessions reporting SessionExited (a crash, a failed
+	// report) still takes its key with it. Only a launch that said Hello
+	// qualifies: /launch answers after the shim's Hello for a pty, claude or
+	// pi launch, so it has bound by now, and its root-exit watcher is what
+	// ends it. A chat session never says Hello (no shim), so its launch
+	// expires unbound after ProjectSessionLaunchTTL and binding would kill
+	// its key seconds in; it, and an ad-hoc or SSH-hosted session with no
+	// launch at all, keep SessionExited-only revocation (docs/launch-identity.md).
+	if launch != nil && result.Spec.ModelKey != "" && launch.WasBound() {
+		d.modelKeys.BindLaunch(result.Spec.ModelKey, launch)
+	}
+
 	acc := sessionAccount{projectID: result.AuditFields.ProjectID, modelKeyLabel: result.ModelKeyLabel, launch: launch,
 		sandboxProfile: sandboxProfilePath(result)}
 	d.accounting.track(result.SessionID, acc)

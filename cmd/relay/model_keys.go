@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sync"
+
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // modelKeyPrefix makes a model key recognisable in a leak scan, and is what
@@ -20,15 +22,24 @@ const modelKeyHexLen = 64
 type modelKeyRecord struct {
 	projectID string
 	label     string
+	// launch, when set, is the launch this key lives and dies with: Lookup
+	// re-derives whether it is still live on every call (BindLaunch). nil
+	// means the key is revoked only explicitly (Revoke/RevokeKey), which is
+	// every key minted for a session that has no launch to bind.
+	launch *service.Launch
 }
 
 // ModelKeyTable is relay's in-memory table of minted model keys
 // (spec-model-broker.md §3.4). Only the SHA-256 of the plaintext is held;
-// the plaintext itself is returned once, by Mint, and never stored. Nothing
-// mints a key yet except tests — the bridge op to do so (MintModelKey) is a
-// later unit (plan-broker-and-sessions.md F5); this table exists now so the
-// model endpoint's auth resolver has a real table to consult for an `rmk_`
-// bearer.
+// the plaintext itself is returned once, by Mint, and never stored.
+// AuthorizeLaunch mints one per session under the label "session:<id>", and
+// the model endpoint's auth resolver consults this table for an `rmk_`
+// credential.
+//
+// A key dies three ways: an explicit Revoke (sessionAccount.end, on
+// SessionExited or project delete), a process restart (the table is in
+// memory), and — for a key bound to its session's launch with BindLaunch —
+// the launch ending, whatever ends it.
 type ModelKeyTable struct {
 	mu   sync.Mutex
 	byID map[string]modelKeyRecord // sha256 hex of the full plaintext -> record
@@ -92,9 +103,38 @@ func (t *ModelKeyTable) RevokeKey(plaintext string) {
 	delete(t.byID, hashModelKey(plaintext))
 }
 
+// BindLaunch ties plaintext's lifetime to launch's: from now on Lookup
+// answers "no such key" the moment launch is no longer live, with nothing
+// reporting the end. This is the same shape ModelHostRegistry uses for its
+// host — liveness is re-derived from the launch table on every check, not
+// tracked as a flag, and there is no sweeper — and it exists because
+// revocation through sessionAccount.end depends on relay-sessions reporting
+// SessionExited, which a crash, a failed report or a root that exits through
+// the launch table's own watcher never delivers.
+//
+// Bind only a launch that says Hello (Launch.WasBound): its root-exit watcher
+// is what ends it. A launch that never binds — a provider session with no
+// shim — expires unbound after ProjectSessionLaunchTTL and would take its key
+// with it seconds after the session started. Those keys keep SessionExited-
+// only revocation. A key that was never minted or already revoked is left
+// alone.
+func (t *ModelKeyTable) BindLaunch(plaintext string, launch *service.Launch) {
+	if plaintext == "" || launch == nil {
+		return
+	}
+	hash := hashModelKey(plaintext)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if rec, ok := t.byID[hash]; ok {
+		rec.launch = launch
+		t.byID[hash] = rec
+	}
+}
+
 // Lookup reports the project a presented rmk_ bearer is scoped to, and its
-// label for audit. ok is false for a key that was never minted or was
-// revoked. A direct map lookup by hash, not a scan: the hash itself is not
+// label for audit. ok is false for a key that was never minted, was
+// revoked, or is bound to a launch that has ended. A direct map lookup by
+// hash, not a scan: the hash itself is not
 // a secret Lookup is trying to keep a scan-timing side channel away from
 // (that concern applies to comparing a caller-controlled value against a
 // stored secret, e.g. the admin token check elsewhere in this codebase —
@@ -104,9 +144,24 @@ func (t *ModelKeyTable) RevokeKey(plaintext string) {
 func (t *ModelKeyTable) Lookup(bearer string) (projectID, label string, ok bool) {
 	hash := hashModelKey(bearer)
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	rec, ok := t.byID[hash]
-	return rec.projectID, rec.label, ok
+	t.mu.Unlock()
+	if !ok {
+		return "", "", false
+	}
+	// Asked outside t.mu: Live takes the launch table's lock, and holding
+	// this one across it would order the two for anything that ever calls in
+	// the other direction.
+	if rec.launch != nil && !rec.launch.Live() {
+		// The launch is gone for good, so is the key. Dropped here rather than
+		// left for a sweeper; deleting by hash is idempotent against a
+		// concurrent Revoke.
+		t.mu.Lock()
+		delete(t.byID, hash)
+		t.mu.Unlock()
+		return "", "", false
+	}
+	return rec.projectID, rec.label, true
 }
 
 // HasPrefix reports whether bearer has the rmk_ shape, the auth resolver's
