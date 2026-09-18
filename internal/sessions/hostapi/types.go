@@ -28,15 +28,19 @@
 // live PermissionManager — today every admitted call still gets a fixed
 // "deny" — is left to a later unit; that is not this package's job yet.
 //
-// A "claude"/"pi" launch dispatched through this package runs without the
-// sandbox profile or launch identity relay believes it minted for it:
-// provider.ClaudeConfig/PiConfig carry no Sandbox/Identity fields at all
-// (unlike ChatConfig, which does), and both providers spawn via a bare
-// exec.Command — no shim, no sandbox-exec, no identity presented anywhere.
-// relay's own launch-authorization path writes a real sandbox profile file
-// and mints a real launch secret for every claude/pi launch regardless, and
-// this package answers 201 as if both were applied. Wiring sandboxing and
-// identity into ClaudeConfig/PiConfig is out of scope here.
+// A "claude"/"pi" launch dispatched through this package now carries the
+// sandbox profile and launch identity relay minted for it through to the
+// target: provider.ClaudeConfig/PiConfig carry Sandbox/Identity fields (like
+// ChatConfig always did), and session.Manager.buildProvider threads
+// spec.SandboxProfile/spec.Identity into both. Both providers spawn through
+// the shim (internal/sessions/provider/shimspawn.go, pipe mode — no --pty)
+// whenever either is set, and refuse to spawn unconfined when a sandbox
+// profile is requested but no shim binary is configured
+// (provider.ErrShimRequired). What is still open: no provider.Provider
+// implementation exposes a pid this handler could report, so root_pid stays
+// 0 for every provider-hosted (claude/pi/chat) launch even though a real
+// root (the shim) now exists for a shim-wrapped one — see [Known
+// gaps](../../docs/session-host.md#what-is-not-built-yet).
 package hostapi
 
 import "encoding/json"

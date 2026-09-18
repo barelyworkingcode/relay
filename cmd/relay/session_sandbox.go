@@ -45,6 +45,15 @@ func sessionProfilesDir() string {
 	return filepath.Join(bridge.ConfigDir(), "sessions", "profiles")
 }
 
+// sessionPiSessionsDir is where pi's own JSONL transcripts live under this
+// host's data directory (provider.PiProvider.sessionDir, computed
+// independently from the same bridge.ConfigDir()) — the one leaf inside
+// relay's own denied directory tree a sandboxed pi launch must still be able
+// to read and write, or it cannot write its own transcript on its first turn.
+func sessionPiSessionsDir() string {
+	return filepath.Join(bridge.ConfigDir(), "sessions", "pi-sessions")
+}
+
 // writeSessionSandboxProfile is AuthorizeLaunch's extension point: it turns
 // "this session wants sandboxing" into an SBPL file on disk and returns its
 // absolute path. Every failure is a refusal to launch — there is no branch
@@ -126,6 +135,11 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 		// C7's "<other sessions' data dirs>" needs no entry of its own: the
 		// host keeps them under relay's own directory, which is denied whole.
 		ReadDeny: append(readDeny, otherProjectPaths(settings, proj, workDir)...),
+		// pi's transcripts live under relay's own directory, which is denied
+		// whole above; this is the one re-permitted leaf, and it means one
+		// sandboxed pi session can read another's transcripts (documented
+		// tradeoff, not fixed here).
+		AllowAfterDenyDirs: []string{sessionPiSessionsDir()},
 		// Directory prefixes, not just the four named sockets C7 lists: a
 		// literal-only denylist leaves any socket that appears in one of
 		// these directories later reachable under (allow default) — SP2 row

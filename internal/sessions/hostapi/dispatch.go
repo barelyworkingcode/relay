@@ -6,6 +6,7 @@ import (
 	"time"
 
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
+	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	"github.com/barelyworkingcode/relay/internal/sessions/terminal"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
@@ -184,6 +185,9 @@ func terminalLaunchStatus(err error) (int, string) {
 func sessionLaunchStatus(err error) (int, string) {
 	if errors.Is(err, session.ErrSessionExists) {
 		return 409, ErrSessionExists
+	}
+	if errors.Is(err, provider.ErrIdentityRefused) {
+		return 502, ErrIdentityRefused
 	}
 	return 500, ErrSpawnFailed
 }

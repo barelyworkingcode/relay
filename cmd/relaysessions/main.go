@@ -123,11 +123,13 @@ func runService(args []string) int {
 			HookCommandPath: shimBinary,
 			BridgeSocket:    bridgeSock,
 			ModelSocket:     cfg.modelSocket,
+			ShimBinary:      shimBinary,
 		},
 		Pi: provider.PiConfig{
 			DataDir:      cfg.dataDir,
 			BridgeSocket: bridgeSock,
 			ModelSocket:  cfg.modelSocket,
+			ShimBinary:   shimBinary,
 		},
 		Chat: provider.ChatConfig{
 			ModelSocket:  cfg.modelSocket,

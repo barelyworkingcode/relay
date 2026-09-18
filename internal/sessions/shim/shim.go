@@ -7,6 +7,15 @@
 // and reports each step on fd 4 as newline-delimited JSON so the host never
 // has to guess what happened from the exit code alone.
 //
+// --pty is optional and orthogonal to --sandbox-profile, not a precondition
+// for the rest of this package's behavior. Without it, runConfig wires the
+// target's stdin/stdout/stderr directly to the shim's own (os.Stdin/Stdout/
+// Stderr) — no pty, no copier goroutine, no buffering, just fd passthrough —
+// which is the shape every claude/pi provider-session launch uses today
+// (internal/sessions/provider's own shimspawn.go): a pty session leader is
+// exactly what a claude/pi child, talking newline-delimited JSON over a
+// plain pipe, must never become.
+//
 // The shim's own pid — not the target's — is this session's root (SH §4.2):
 // it is what relay's own launch identity binds to (whoever said Hello, C6
 // step 3, is the shim), so internal/sessions/hostapi records the shim's pid
