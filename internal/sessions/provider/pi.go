@@ -13,11 +13,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
+	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/pioverlay"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
@@ -41,6 +43,21 @@ type PiConfig struct {
 	// overlay entirely — pi falls back to its own global ~/.pi/agent/
 	// config, unauthenticated against relay's model broker.
 	ModelKey string
+
+	// ShimBinary is the absolute path to relay-sessions' own binary, run in
+	// "exec" mode to wrap the pi child. Empty means a direct spawn, which is
+	// refused outright when SandboxProfile or Identity is set (Start).
+	ShimBinary string
+
+	// SandboxProfile is this launch's own absolute SBPL profile path (C7);
+	// "" runs the child unsandboxed. Never cached across calls, same rule as
+	// Identity below.
+	SandboxProfile string
+
+	// Identity is this launch's own project_session secret, presented by the
+	// shim to relay's bridge socket — never by the pi child itself, and never
+	// in argv. nil for a launch with no identity to mint.
+	Identity *sessionsmcp.IdentitySpec
 }
 
 // PiProvider manages a persistent pi CLI process in `--mode rpc`. The wire
@@ -56,6 +73,12 @@ type PiProvider struct {
 	stdin io.WriteCloser
 	mu    sync.Mutex
 	alive atomic.Bool
+
+	// targetPID is the shim's own child (the real pi process) when this
+	// launch went through the shim — 0 on a direct spawn. Used by Kill's
+	// hard-kill fallback to reach the target's whole process group, not just
+	// the shim.
+	targetPID int
 
 	piSessionID   string
 	modelID       string
@@ -222,7 +245,31 @@ func (p *PiProvider) Start() (err error) {
 	args := p.buildPiArgs(sessionDir, p.resolveSkillDir(), sysPromptPath)
 
 	piPath := resolvePiPath(p.cfg.Binary)
-	cmd := exec.Command(piPath, args...)
+
+	spec := shimSpec{
+		Binary:         p.cfg.ShimBinary,
+		SessionID:      p.session.ID,
+		BridgeSocket:   p.cfg.BridgeSocket,
+		SandboxProfile: p.cfg.SandboxProfile,
+		Identity:       p.cfg.Identity,
+	}
+	var cmd *exec.Cmd
+	var statusR *os.File
+	var extraFiles []*os.File
+	switch {
+	case spec.wanted() && spec.Binary == "":
+		return ErrShimRequired
+	case spec.Identity != nil && spec.BridgeSocket == "":
+		return ErrNoBridgeSocket
+	case spec.wanted():
+		var berr error
+		cmd, statusR, extraFiles, berr = buildShimCmd(spec, piPath, args)
+		if berr != nil {
+			return berr
+		}
+	default:
+		cmd = exec.Command(piPath, args...) // unchanged direct spawn
+	}
 	cmd.Dir = p.directory
 	env := ensurePath(childBaseEnv())
 	env = append(env, "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1")
@@ -280,6 +327,28 @@ func (p *PiProvider) Start() (err error) {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start pi: %w", err)
 	}
+	// Load-bearing: without closing the parent's own copies, the status pipe
+	// (and, when present, the identity secret pipe) never reaches EOF.
+	for _, f := range extraFiles {
+		_ = f.Close()
+	}
+
+	if statusR != nil {
+		outcome, _ := readShimStatus(statusR)
+		_ = statusR.Close()
+		switch {
+		case outcome.identityRefused:
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("%w: session %s", ErrIdentityRefused, p.session.ID)
+		case !outcome.started || outcome.spawnFailed:
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("%w: errno=%d", ErrSpawnFailed, outcome.spawnErrno)
+		default:
+			p.targetPID = outcome.targetPID
+		}
+	}
 
 	p.cmd = cmd
 	p.stdin = stdin
@@ -294,7 +363,7 @@ func (p *PiProvider) Start() (err error) {
 	go p.waitForExit()
 	go p.idleWatcher()
 
-	slog.Info("pi process started", "session", p.session.ID, "model", p.modelID, "pid", cmd.Process.Pid)
+	slog.Info("pi process started", "session", p.session.ID, "model", p.modelID, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
 
 	go p.fetchInitialState()
 
@@ -968,6 +1037,12 @@ func (p *PiProvider) Kill() {
 	select {
 	case <-p.waitDone:
 	case <-time.After(3 * time.Second):
+		// Target group first, then the shim, so the shim's own Wait can
+		// return and emit its final exit status. p.targetPID stays 0 on a
+		// direct spawn, so that behavior here is unchanged.
+		if p.targetPID > 0 {
+			_ = syscall.Kill(-p.targetPID, syscall.SIGKILL)
+		}
 		_ = p.cmd.Process.Kill()
 		<-p.waitDone
 	}

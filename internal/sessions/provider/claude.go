@@ -14,10 +14,12 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	"github.com/barelyworkingcode/relay/internal/sessions/hook"
+	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
@@ -55,6 +57,21 @@ type ClaudeConfig struct {
 	// useRelayTools setting; see this package's doc comment on the
 	// judgment call this represents.
 	RelayMCPCommand string
+
+	// ShimBinary is the absolute path to relay-sessions' own binary, run in
+	// "exec" mode to wrap the CLI child. Empty means a direct spawn, which is
+	// refused outright when SandboxProfile or Identity is set (Start).
+	ShimBinary string
+
+	// SandboxProfile is this launch's own absolute SBPL profile path (C7);
+	// "" runs the child unsandboxed. Never cached across calls, same rule as
+	// Identity below.
+	SandboxProfile string
+
+	// Identity is this launch's own project_session secret, presented by the
+	// shim to relay's bridge socket — never by the CLI child itself, and never
+	// in argv. nil for a launch with no identity to mint (SSH-hosted).
+	Identity *sessionsmcp.IdentitySpec
 }
 
 // ClaudeProvider manages a persistent Claude CLI process and translates its
@@ -73,6 +90,12 @@ type ClaudeProvider struct {
 	stdin io.WriteCloser
 	mu    sync.Mutex // serializes writes to stdin
 	alive atomic.Bool
+
+	// targetPID is the shim's own child (the real claude process) when this
+	// launch went through the shim — 0 on a direct spawn or an SSH-hosted
+	// session. Used by Kill's hard-kill fallback to reach the target's whole
+	// process group, not just the shim.
+	targetPID int
 
 	claudeSessionID string
 	model           string
@@ -281,7 +304,20 @@ func (p *ClaudeProvider) Start() error {
 	p.cleanupSpawnFiles()
 
 	var cmd *exec.Cmd
+	var statusR *os.File
+	var extraFiles []*os.File
+
 	if host := p.session.GetHost(); host != nil {
+		if p.cfg.SandboxProfile != "" || p.cfg.Identity != nil {
+			// relay's own launch authorization never mints a sandbox profile
+			// or launch identity for a hosted project (needsIdentity), so
+			// this should be unreachable in practice. Warn and ignore rather
+			// than refuse: refusing here would break every SSH-hosted
+			// session outright if that guarantee ever drifted, which is
+			// strictly worse than silently ignoring two fields that ought
+			// to already be empty.
+			slog.Warn("claude: sandbox/identity requested for a host session; ignoring", "session", p.session.ID)
+		}
 		if host.ClaudePath == "" {
 			return fmt.Errorf("host %q has no claude: run a probe", host.Name)
 		}
@@ -329,7 +365,28 @@ func (p *ClaudeProvider) Start() error {
 
 		args := p.buildClaudeArgs(mcpConfigPath, sysPromptPath)
 		claudePath := resolveClaudePath(p.cfg.Binary)
-		cmd = exec.Command(claudePath, args...)
+
+		spec := shimSpec{
+			Binary:         p.cfg.ShimBinary,
+			SessionID:      p.session.ID,
+			BridgeSocket:   p.cfg.BridgeSocket,
+			SandboxProfile: p.cfg.SandboxProfile,
+			Identity:       p.cfg.Identity,
+		}
+		switch {
+		case spec.wanted() && spec.Binary == "":
+			return ErrShimRequired
+		case spec.Identity != nil && spec.BridgeSocket == "":
+			return ErrNoBridgeSocket
+		case spec.wanted():
+			var berr error
+			cmd, statusR, extraFiles, berr = buildShimCmd(spec, claudePath, args)
+			if berr != nil {
+				return berr
+			}
+		default:
+			cmd = exec.Command(claudePath, args...) // unchanged direct spawn
+		}
 		cmd.Dir = p.directory
 		cmd.Env = p.buildClaudeEnv(ensurePath(childBaseEnv()))
 	}
@@ -354,6 +411,28 @@ func (p *ClaudeProvider) Start() error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start claude: %w", err)
 	}
+	// Load-bearing: without closing the parent's own copies, the status pipe
+	// (and, when present, the identity secret pipe) never reaches EOF.
+	for _, f := range extraFiles {
+		_ = f.Close()
+	}
+
+	if statusR != nil {
+		outcome, _ := readShimStatus(statusR)
+		_ = statusR.Close()
+		switch {
+		case outcome.identityRefused:
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("%w: session %s", ErrIdentityRefused, p.session.ID)
+		case !outcome.started || outcome.spawnFailed:
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("%w: errno=%d", ErrSpawnFailed, outcome.spawnErrno)
+		default:
+			p.targetPID = outcome.targetPID
+		}
+	}
 
 	p.cmd = cmd
 	p.stdin = stdin
@@ -368,7 +447,7 @@ func (p *ClaudeProvider) Start() error {
 	go p.waitForExit()
 	go p.idleWatcher()
 
-	slog.Info("claude process started", "session", p.session.ID, "model", p.model, "pid", cmd.Process.Pid)
+	slog.Info("claude process started", "session", p.session.ID, "model", p.model, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
 	return nil
 }
 
@@ -1023,6 +1102,13 @@ func (p *ClaudeProvider) Kill() {
 	select {
 	case <-p.waitDone:
 	case <-time.After(3 * time.Second):
+		// Target group first, then the shim, so the shim's own Wait can
+		// return and emit its final exit status. p.targetPID stays 0 on a
+		// direct spawn or an SSH-hosted session, so their behavior here is
+		// unchanged.
+		if p.targetPID > 0 {
+			_ = syscall.Kill(-p.targetPID, syscall.SIGKILL)
+		}
 		_ = p.cmd.Process.Kill()
 		<-p.waitDone
 	}
@@ -1035,6 +1121,15 @@ func (p *ClaudeProvider) Alive() bool {
 }
 
 func (p *ClaudeProvider) SetPermissionMode(mode string) error {
+	if p.cfg.Identity != nil || p.cfg.SandboxProfile != "" {
+		// This launch's identity is single-use (a second Hello is refused)
+		// and Kill fires process_exited, which tears down the sandbox
+		// profile file and ends the launch identity — a Kill-then-Start
+		// restart below would hand --sandbox-profile a path that no longer
+		// exists. The caller must drive a real resume instead, which mints
+		// both fresh.
+		return ErrRestartNeedsResume
+	}
 	switch mode {
 	case "", "default", "acceptEdits", "plan", "bypassPermissions":
 	default:

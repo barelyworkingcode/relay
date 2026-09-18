@@ -152,11 +152,20 @@ is the same no-op `/terminate` always was.
 
 ## The shim: `relay-sessions exec`
 
-Every pty session runs under a small process, `relay-sessions exec`, whose
-whole job is C6. Today it runs **pty launches only**. A `claude`- or
-`pi`-kind session does not go through the shim at all — see [Known
-gaps](#what-is-not-built-yet), gap 1. A `chat`-kind session's own provider
-process doesn't either: `ChatProvider` is an in-process HTTP client talking
+Every pty session, and every `claude`/`pi` session whose launch carries a
+sandbox profile or a launch identity, runs under a small process,
+`relay-sessions exec`, whose whole job is C6. A pty session always runs
+`--pty`; a `claude`/`pi` session never does — pipe mode (direct fd
+passthrough, no pty, no copier goroutine) is the shape
+`internal/sessions/provider/shimspawn.go` builds, and it needs no
+`--pty` for the shim's identity, sandboxing, or signal-forwarding behavior
+to apply. A `claude`/`pi` launch with neither a sandbox profile nor a launch
+identity to present skips the shim entirely and spawns directly, same as
+before (see [Known gaps](#what-is-not-built-yet), gap 1, for what this
+still doesn't cover: `root_pid`, and `SetPermissionMode`'s new
+resume-required behavior on a shim-wrapped claude session). A `chat`-kind
+session's own provider process doesn't go through the shim either:
+`ChatProvider` is an in-process HTTP client talking
 to relay's model broker, with no external CLI child at all
 (`internal/sessions/provider/chat_base.go`'s `ChatConfig` doc comment states
 this plainly). `buildChatMCPManager` (`chat_base.go`) can in principle spawn
@@ -246,6 +255,18 @@ computed independently from `bridge.ConfigDir()`), not by relay-sessions;
 the shim reads it by the absolute path relay hands it in the `LaunchSpec`.
 A profile is removed at session teardown (`sandbox.Remove`, called from
 `sessionAccount.end`).
+
+`sessions/pi-sessions/` sits inside the same tree every sandbox profile
+denies whole (relay's own config dir), which would otherwise leave a
+sandboxed pi session unable to write its own transcript on its first turn.
+`sandboxSpecForLaunch` re-permits exactly this one leaf
+(`sessionPiSessionsDir()`, `Spec.AllowAfterDenyDirs`) — computed
+independently, the same way `sessionProfilesDir()` is, so it stays correct
+under a `relay --config-dir` override without needing to import
+`provider.PiConfig`. The tradeoff this accepts: a sandboxed pi session can
+read (and write) another sandboxed pi session's own transcript, since the
+allow rule names the whole `pi-sessions/` directory, not a single session's
+file within it.
 
 `~/Library/Application Support/relayLLM` (relayLLM's own, separate data
 directory) is a one-time, best-effort migration *source*: `runService` calls
@@ -341,31 +362,57 @@ These are real, current gaps. Documenting them precisely — not smoothing
 them into "future work" — is this document's job as much as describing
 what works.
 
-1. **Claude/pi launches run with no sandbox and no launch identity, despite
-   relay believing otherwise.** `provider.ClaudeConfig`/`provider.PiConfig`
-   (`internal/sessions/provider`) carry no `Sandbox` or `Identity` fields at
-   all — unlike `provider.ChatConfig`, which does — and both providers spawn
-   via a bare `exec.Command`: no shim, no `sandbox-exec` wrapping, no
-   identity presented anywhere. Meanwhile relay's own `AuthorizeLaunch`
-   (`cmd/relay/session_launch.go`) writes a real SBPL profile file to disk
-   for every local-project (non-SSH) claude/pi launch (`wantsSandbox`
-   returns `true` unconditionally for `claude`/`pi`/`chat`, and `sandbox` is
-   cleared only for a hosted project's session); the launch secret itself is
-   minted separately, by `launchOnHost` (`cmd/relay/session_routes.go`),
-   gated on `needsIdentity` — a project and no SSH host — so a hosted
-   project's claude/pi launch gets neither a profile nor a secret.
-   `internal/sessions/hostapi`'s `launchSession` answers `201` as if a
-   sandbox and an identity were actually applied to the claude/pi target
-   itself, which they never are. `internal/sessions/hostapi/types.go`'s own
-   package doc states this plainly in code; this is the same fact surfaced
-   here for a reader who does not start from the Go source. A chat-kind
-   session's own provider process is unaffected by this gap in the same way
-   it is exempt from the shim entirely (see [The shim](#the-shim-relay-sessions-exec))
-   — it has no external CLI child to sandbox or identify. `ChatConfig`
-   already carries the `Sandbox` and `Identity` fields its optional
-   relay-MCP tool child would need to run through the shim like a terminal
-   (`buildChatMCPManager`), but that child is never actually spawned in
-   production today — see [The shim](#the-shim-relay-sessions-exec).
+1. ~~Claude/pi launches run with no sandbox and no launch identity, despite
+   relay believing otherwise.~~ **Fixed.** `provider.ClaudeConfig`/
+   `provider.PiConfig` (`internal/sessions/provider`) now carry `ShimBinary`,
+   `SandboxProfile` and `Identity` fields — the same shape `ChatConfig`
+   already had — and `session.Manager.buildProvider` threads
+   `spec.SandboxProfile`/`spec.Identity` into both, mirroring the `chat`
+   branch it already did this for. Both providers' `Start` build a
+   `relay-sessions exec` invocation (`internal/sessions/provider/
+   shimspawn.go`'s `buildShimCmd`, mirroring `internal/sessions/mcp`'s
+   `buildShimCommand` and `internal/sessions/terminal`'s own `buildShimCmd`)
+   whenever either field is set, in pipe mode — never `--pty` — and refuse
+   to spawn unconfined when a sandbox profile is requested but no shim
+   binary is configured (`provider.ErrShimRequired`); a launch with neither
+   set still spawns directly, unchanged. What is still open, on purpose:
+   - `root_pid` stays `0` for every provider-hosted (claude/pi/chat) launch
+     in `hostapi`'s `201` response — a real root (the shim's own pid) now
+     exists for a shim-wrapped claude/pi launch, but no
+     `provider.Provider` implementation exposes a pid this handler could
+     report, and wiring that through is a separate piece of work.
+   - `ClaudeProvider.SetPermissionMode`'s existing Kill-then-Start restart
+     is unsound once a launch's identity and sandbox profile are real: the
+     identity secret is single-use, and `Kill` fires `process_exited`,
+     which ends the launch identity and deletes the sandbox profile file
+     relay wrote — so `Start` afterward would hand `--sandbox-profile` a
+     path that no longer exists. A shim-wrapped claude session's
+     `SetPermissionMode` now refuses with `ErrRestartNeedsResume` instead,
+     surfaced over WS as the same `resume_required` frame
+     `ErrResumeRequired` already produces (`internal/sessions/api/
+     ws_session.go`) — the caller drives a real resume (`POST /launch
+     resume:true`), which mints both fresh, rather than this package
+     attempting to reuse either.
+   - A sandboxed pi session can read (and, if it chose to, tamper with)
+     another sandboxed pi session's own JSONL transcript: pi's transcripts
+     live under relay's own directory, which every sandbox profile denies
+     whole, so `sandboxSpecForLaunch` (`cmd/relay/session_sandbox.go`) now
+     re-permits exactly that one leaf (`<config dir>/sessions/pi-sessions`,
+     `Spec.AllowAfterDenyDirs`, `internal/sessions/sandbox/sandbox.go`) —
+     the read/write mirror of the unix-connect-allow-after-deny pattern the
+     same file already used for sockets. A documented tradeoff, not fixed
+     here.
+   - The broker-vs-subprocess question this fix's own design explicitly
+     carved out (whether relayLLM's model broker should sit behind the same
+     boundary) is separate, later work.
+   A chat-kind session's own provider process is unaffected by any of this
+   in the same way it is exempt from the shim entirely (see [The
+   shim](#the-shim-relay-sessions-exec)) — it has no external CLI child to
+   sandbox or identify. `ChatConfig` already carried the `Sandbox` and
+   `Identity` fields its optional relay-MCP tool child would need to run
+   through the shim like a terminal (`buildChatMCPManager`), but that child
+   is never actually spawned in production today — see [The
+   shim](#the-shim-relay-sessions-exec).
 2. ~~The eve-facing session HTTP/WS surface exists but is not reachable.~~
    **Fixed.** `internal/sessions/api` (`HandleListSessions`,
    `HandleDeleteSession`, `HandleSessionMessageSync`, `HandleListTerminals`,
