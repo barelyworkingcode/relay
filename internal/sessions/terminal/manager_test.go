@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,6 +75,52 @@ func TestManager_LocalPTY_ExitAndLog(t *testing.T) {
 	}
 	if !bytes.Contains(sess.ScrollbackBytes(), []byte("hi-from-pty")) {
 		t.Fatal("scrollback missing expected output")
+	}
+}
+
+// TestManager_LocalPTY_StartsInSpecDirectory pins that a local pty's target
+// starts in CreateSpec.Directory. The field used to be recorded on the session
+// and never applied, so a shell launched for a project opened in whatever
+// directory relay-sessions itself had.
+func TestManager_LocalPTY_StartsInSpecDirectory(t *testing.T) {
+	cfg := testConfig(t)
+	mgr := NewManager(cfg)
+
+	exitCh := make(chan int, 1)
+	mgr.SetExitHandler(func(_ string, code int) { exitCh <- code })
+
+	// Resolved first: the target's `pwd -P` reports the real path, and
+	// t.TempDir lives under /var, a symlink to /private/var.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
+	sess, err := mgr.Create(CreateSpec{
+		SessionID: "22222222-3333-4444-5555-666666666666",
+		Name:      "cwd",
+		Directory: dir,
+		Argv:      []string{"/bin/sh", "-c", "pwd -P"},
+		Cols:      80,
+		Rows:      24,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { mgr.Close(sess.ID) })
+
+	select {
+	case <-exitCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for exit")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !bytes.Contains(sess.ScrollbackBytes(), []byte(dir)) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !bytes.Contains(sess.ScrollbackBytes(), []byte(dir)) {
+		t.Fatalf("target did not start in %q; output: %q", dir, sess.ScrollbackBytes())
 	}
 }
 
@@ -242,11 +289,14 @@ func TestSession_CreatedBody_MatchesGoldenTerminalCreatedFrame(t *testing.T) {
 	cfg := testConfig(t)
 	mgr := NewManager(cfg)
 
+	// A real directory: the target starts in it, so a made-up path fails the
+	// launch.
+	dir := t.TempDir()
 	sess, err := mgr.Create(CreateSpec{
 		SessionID:  "sess-golden",
 		TemplateID: "shell",
 		Name:       "my shell",
-		Directory:  "/tmp/proj",
+		Directory:  dir,
 		Argv:       []string{"/bin/sh", "-c", "sleep 5"},
 	})
 	if err != nil {
@@ -267,7 +317,7 @@ func TestSession_CreatedBody_MatchesGoldenTerminalCreatedFrame(t *testing.T) {
 		"terminalId": "sess-golden",
 		"templateId": "shell",
 		"name":       "my shell",
-		"directory":  "/tmp/proj",
+		"directory":  dir,
 		"host":       nil,
 	}
 	if len(got) != len(golden) {
