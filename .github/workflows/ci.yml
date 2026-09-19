@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to the same PR makes the older run's answer worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    # relay is cgo + Cocoa; there is no Linux build to test.
+    runs-on: macos-15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: test
+            flags: ""
+          - name: race
+            flags: "-race"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: gofmt
+        if: matrix.name == 'test'
+        run: |
+          unformatted=$(gofmt -l cmd internal web)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        if: matrix.name == 'test'
+        run: go vet ./...
+      - name: go test ${{ matrix.flags }}
+        run: go test ${{ matrix.flags }} ./...

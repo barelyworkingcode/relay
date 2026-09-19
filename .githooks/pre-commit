@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit hook: gate every commit on the hermetic test suite.
+# Pre-commit hook: the checks that cost seconds.
 #
 # Install once per clone:
 #   git config core.hooksPath .githooks
@@ -8,24 +8,38 @@
 #   git commit --no-verify
 #
 # What runs:
-#   1. go build ./...        — fail fast on compile errors
-#   2. go vet ./...          — cheap static checks
-#   3. go test ./...         — hermetic suite (no external deps, no user files)
+#   1. gofmt -l on the staged Go files
+#   2. go build ./...
+#   3. go vet ./...
 #
-# What does NOT run:
-#   - -tags=live  (needs ../relayLLM binary; spawned subprocesses)
-#   - go test -race (slower; run via .githooks/pre-push)
+# What does NOT run here, and where it runs instead (docs/testing.md):
+#   - go test ./...        pre-push hook, and CI on every PR
+#   - go test -race ./...  CI on every PR and on main
+#   - -tags=live           by hand
 
 set -e
 
-# Only run if any Go file is staged. Lets non-Go commits (docs, fixtures) skip.
-if ! git diff --cached --name-only | grep -qE '\.(go|mod|sum)$'; then
+cd "$(git rev-parse --show-toplevel)"
+
+staged_go=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.go$' || true)
+
+if [ -z "$staged_go" ] && ! git diff --cached --name-only | grep -qE '\.(mod|sum)$'; then
     exit 0
 fi
 
-cd "$(git rev-parse --show-toplevel)"
-
 start=$(date +%s)
+
+if [ -n "$staged_go" ]; then
+    echo "→ gofmt"
+    # Reads the working-tree file, not the staged blob: a partially staged file
+    # is judged on what is on disk.
+    unformatted=$(echo "$staged_go" | xargs gofmt -l)
+    if [ -n "$unformatted" ]; then
+        echo "✗ not gofmt-clean; commit aborted:"
+        echo "$unformatted" | sed 's/^/    /'
+        exit 1
+    fi
+fi
 
 echo "→ go build ./..."
 if ! go build ./...; then
@@ -36,13 +50,6 @@ fi
 echo "→ go vet ./..."
 if ! go vet ./...; then
     echo "✗ vet failed; commit aborted"
-    exit 1
-fi
-
-echo "→ go test ./..."
-if ! go test ./...; then
-    echo "✗ tests failed; commit aborted"
-    echo "  (rerun with: go test -v ./...)"
     exit 1
 fi
 

@@ -2,8 +2,7 @@ package testutil
 
 // Shared in-memory certificate generation for TLS-pinning test suites. No
 // openssl dependency — everything is crypto/x509 + crypto/ecdsa, so callers
-// stay hermetic (the default tier has no external deps, per CLAUDE.md's
-// Testing section).
+// stay hermetic (the default tier has no external deps, per docs/testing.md).
 
 import (
 	"crypto/ecdsa"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-push hook: gate every push on the race detector.
+# Pre-push hook: the hermetic suite, once per push rather than once per commit.
 #
 # Install once per clone (same setting enables the pre-commit hook):
 #   git config core.hooksPath .githooks
@@ -8,31 +8,53 @@
 #   git push --no-verify
 #
 # What runs:
-#   go test -race ./...   — hermetic suite under the race detector
+#   go test ./...   — only when the commits being pushed touch Go sources
 #
-# The pre-commit hook already runs build + vet + test on every commit; this is
-# the slower race pass, kept at push time so commits stay fast. The -tags=live
-# tier still runs manually (it needs the ../relayLLM binary and spawns it).
+# The race detector is CI's job (.github/workflows/ci.yml, every PR and main).
+# The suite expects relay stopped: a running instance rewrites the real
+# settings.json and trips support_safety_test.go.
 
 set -e
 
 cd "$(git rev-parse --show-toplevel)"
 
-# Only run if the repo has Go sources — keeps the hook a no-op in a docs-only
-# checkout. Go files live under cmd/ and internal/, not the repo root, so this
-# has to search the tree rather than glob the top level.
-if ! git ls-files -- '*.go' | head -n1 | grep -q .; then
+zero=0000000000000000000000000000000000000000
+touches_go=false
+
+# git feeds one line per ref being pushed.
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue # deleting a remote ref
+    if [ "$remote_sha" = "$zero" ]; then
+        # A new branch has no remote side to diff against; measure it from
+        # where it left main.
+        base=$(git merge-base "$local_sha" origin/main 2>/dev/null || true)
+    else
+        base=$remote_sha
+    fi
+    # No usable base (unfetched remote sha, no origin/main): run the suite
+    # rather than guess.
+    if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then
+        touches_go=true
+        break
+    fi
+    if git diff --name-only "$base" "$local_sha" | grep -qE '\.(go|mod|sum|m|h)$|^test/|^testdata/|^web/'; then
+        touches_go=true
+        break
+    fi
+done
+
+if [ "$touches_go" = false ]; then
     exit 0
 fi
 
 start=$(date +%s)
 
-echo "→ go test -race ./..."
-if ! go test -race ./...; then
-    echo "✗ race tests failed; push aborted"
-    echo "  (rerun with: go test -race -v ./...)"
+echo "→ go test ./..."
+if ! go test ./...; then
+    echo "✗ tests failed; push aborted"
+    echo "  (rerun with: go test -v ./...)"
     exit 1
 fi
 
 elapsed=$(($(date +%s) - start))
-echo "✓ pre-push race checks passed in ${elapsed}s"
+echo "✓ pre-push checks passed in ${elapsed}s"

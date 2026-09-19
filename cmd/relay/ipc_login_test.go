@@ -15,7 +15,7 @@ package main
 //
 // What is NOT covered here: the Cocoa half. NSMenu item construction, the
 // WKWebView, and the click that reaches goOnMenuClick are outside the hermetic
-// tier (CLAUDE.md, "Not covered by the suite"). Everything on the Go side of
+// tier (docs/testing.md, "Not covered by the suite"). Everything on the Go side of
 // that boundary is — the menu JSON, App.showLoginCode, and the document handed
 // to Platform.OpenSettings.
 
