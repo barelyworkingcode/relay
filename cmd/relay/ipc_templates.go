@@ -7,9 +7,8 @@ import (
 )
 
 // ipcListTemplates answers the Templates section's list — read-only, since
-// built-ins are seeded in code and the only override points
-// (Settings.TerminalTemplates, a project's ShellTemplates) have no editor
-// in this unit. Thin adapter over the same config.EffectiveTerminalTemplates
+// the templates (Settings.TerminalTemplates, a project's ShellTemplates) have
+// no editor in this unit (issue #148). Thin adapter over the same config.EffectiveTerminalTemplates
 // RegisterTemplateRoutes uses, so a curl and the Settings window see the
 // same list.
 func ipcListTemplates(ctx *IPCContext, raw json.RawMessage) {

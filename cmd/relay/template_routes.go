@@ -9,10 +9,9 @@ import (
 )
 
 // RegisterTemplateRoutes serves relay's own terminal-template config.
-// Read-only — template mutation has no route in this unit: the built-ins
-// are seeded in code (internal/config/templates.go), and the only override
-// points, Settings.TerminalTemplates and a project's ShellTemplates, have
-// no editor yet. The JSON shape matches relayLLM's former
+// Read-only — template mutation has no route in this unit: the templates are
+// Settings.TerminalTemplates (nothing is computed in code) and a project's
+// ShellTemplates, and neither has an editor yet (issue #148). The JSON shape matches relayLLM's former
 // GET /api/terminal/templates field-for-field, minus useRelayToken
 // (dropped, not ported).
 func RegisterTemplateRoutes(rr *control.RouteRegistrar, store config.SettingsStore) {

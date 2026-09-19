@@ -17,12 +17,14 @@ func newTemplateRoutesServer(t *testing.T) (*httptest.Server, config.SettingsSto
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
+	seedTestTemplates(t, store)
 	mux := http.NewServeMux()
 	RegisterTemplateRoutes(&control.RouteRegistrar{Mux: mux, Transport: control.TransportSocket}, store)
 	return httptest.NewServer(mux), store
 }
 
-func TestTemplateRoutes_ListReturnsFiveBuiltins(t *testing.T) {
+// The list is what settings.json holds, nothing computed in code.
+func TestTemplateRoutes_ListReturnsTheSettingsTemplates(t *testing.T) {
 	srv, _ := newTemplateRoutesServer(t)
 	defer srv.Close()
 
@@ -32,8 +34,8 @@ func TestTemplateRoutes_ListReturnsFiveBuiltins(t *testing.T) {
 	}
 	var got []config.TerminalTemplate
 	mustUnmarshal(t, body, &got)
-	if len(got) != 5 {
-		t.Fatalf("got %d templates, want 5: %s", len(got), body)
+	if want := len(testTerminalTemplates()); len(got) != want {
+		t.Fatalf("got %d templates, want the %d in settings.json: %s", len(got), want, body)
 	}
 }
 
@@ -41,13 +43,13 @@ func TestTemplateRoutes_GetByID(t *testing.T) {
 	srv, _ := newTemplateRoutesServer(t)
 	defer srv.Close()
 
-	resp, body := doJSON(t, "GET", srv.URL+"/api/terminal/templates/rh", nil)
+	resp, body := doJSON(t, "GET", srv.URL+"/api/terminal/templates/claude-code", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
 	var got config.TerminalTemplate
 	mustUnmarshal(t, body, &got)
-	if got.ID != "rh" || got.Command != "rh" {
+	if got.ID != "claude-code" || got.Command != "claude" {
 		t.Fatalf("unexpected template: %+v", got)
 	}
 }
@@ -88,10 +90,10 @@ func TestTemplateRoutes_ClassIsRead(t *testing.T) {
 // a field rename or reorder is a visible diff. The golden's fields mirror
 // relayLLM's former GET /api/terminal/templates response
 // (relayLLM/internal/config/terminal.go's TerminalTemplate: id, name,
-// command, args, env, description, icon, builtIn, idleTimeout,
-// env_passthrough) minus useRelayToken (retired, never ported — see
-// internal/config/templates.go), plus the two new C5 fields this unit adds
-// (sandbox, model_key).
+// command, args, env, description, icon, idleTimeout, env_passthrough) minus
+// useRelayToken (retired, never ported — see internal/config/templates.go) and
+// builtIn (nothing is built in any more), plus the fields added since
+// (sandbox, model_key, read, read_write).
 func TestTemplateRoutes_GoldenJSON(t *testing.T) {
 	srv, _ := newTemplateRoutesServer(t)
 	defer srv.Close()

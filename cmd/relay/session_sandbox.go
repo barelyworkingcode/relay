@@ -5,11 +5,12 @@ package main
 // the LaunchSpec. Relay decides what a session may reach; the sandbox
 // package decides how that is spelled in SBPL.
 //
-// File access is denied by default. A session reaches its project, a fixed
-// set of toolchain and temp directories, a short read-only set, and whatever
-// `sandbox` in settings.json adds. Nothing here lists a directory to deny:
-// relay's own data, other projects, eve's data and ~/.ssh are unreachable
-// because nothing grants them.
+// File access is denied by default. A session reaches its project, the temp
+// directories and /dev every process needs, the developer tools, and the
+// `read` and `read_write` folders of the template it launches from
+// (settings.json). Nothing here lists a directory to deny: relay's own data,
+// other projects, eve's data and ~/.ssh are unreachable unless a template
+// grants them.
 
 import (
 	"fmt"
@@ -63,8 +64,8 @@ func sessionPiSessionsDir() string {
 // "this session wants sandboxing" into an SBPL file on disk and returns its
 // absolute path. Every failure is a refusal to launch — there is no branch
 // that returns an empty path and lets the caller spawn anyway.
-func writeSessionSandboxProfile(settings *config.Settings, proj *config.Project, directory, sessionID string) (string, error) {
-	spec, err := sandboxSpecForLaunch(settings, proj, directory)
+func writeSessionSandboxProfile(settings *config.Settings, proj *config.Project, directory, sessionID, kind string, tmpl *config.TerminalTemplate) (string, error) {
+	spec, err := sandboxSpecForLaunch(settings, proj, directory, kind, tmpl)
 	if err != nil {
 		return "", err
 	}
@@ -80,16 +81,17 @@ func sandboxProfilePath(result *LaunchResult) string {
 	return result.Spec.Sandbox.ProfilePath
 }
 
-// sandboxSpecForLaunch builds C7's input for one session, with SP2's
-// amendments applied: `~/Library/Keychains` is readable on purpose (denying
-// it logs Claude Code out), `~/.claude.json`'s atomic-write siblings ride
-// along with it, and `/private/tmp/cc-socks` plus the Darwin per-user temp dir
-// are writable because Claude Code and Apple's own tools write there whatever
-// TMPDIR says.
+// sandboxSpecForLaunch builds C7's input for one session. tmpl is the template
+// whose folders the session gets: the one a terminal launches, or for a
+// claude, pi or chat session the template named for its kind
+// (templateForKind). A nil tmpl grants only what every session gets.
 //
 // Every path returned is a grant. What relay does not name is what a session
-// cannot reach, so a new directory worth protecting needs no entry here.
-func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, directory string) (sandbox.Spec, error) {
+// cannot reach, so a directory worth protecting needs no entry here. What a
+// tool needs to run lives in the template, not in this function: the project's
+// own directory, the temp directories and /dev every process uses, and the
+// developer tools are the only grants that do not come from one.
+func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, directory, kind string, tmpl *config.TerminalTemplate) (sandbox.Spec, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return sandbox.Spec{}, fmt.Errorf("resolve home directory: %w", err)
@@ -121,47 +123,47 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	if workDir != "" {
 		readWrite = append(readWrite, workDir)
 	}
-	readWrite = append(readWrite, ensureToolchainDirs(home)...)
 	// Both temp directories, deliberately: the session's own TMPDIR is
 	// whatever relay's environment carries, while xcrun and Apple's command
 	// line tools write to DARWIN_USER_TEMP_DIR whatever TMPDIR says (SP2
 	// change 3, and `git` under a profile missing it logs an xcrun cache
 	// failure on every call).
-	readWrite = append(readWrite, "/private/tmp/cc-socks", os.TempDir())
+	readWrite = append(readWrite, os.TempDir())
 	// Cleaned before comparing: getconf answers with a trailing slash and
 	// os.TempDir does not, so the raw strings differ for the same directory.
 	if darwin := darwinUserTempDir(); darwin != "" && filepath.Clean(darwin) != filepath.Clean(os.TempDir()) {
 		readWrite = append(readWrite, darwin)
 	}
-	// pi's transcripts live under relay's own directory, which nothing else
-	// grants; this one leaf is what lets a sandboxed pi write its own on its
-	// first turn. It means one sandboxed pi session can read another's
-	// transcripts (documented tradeoff, not fixed here).
-	readWrite = append(readWrite, "/dev", sessionPiSessionsDir())
+	readWrite = append(readWrite, "/dev")
+	// pi's transcripts live under relay's own directory, which no template
+	// can name portably (it moves with `relay --config-dir`), so the one leaf a
+	// pi session writes its transcript into is granted here, for that kind
+	// only. It means one sandboxed pi session can read another's transcripts
+	// (documented tradeoff, not fixed here).
+	if kind == KindPi {
+		readWrite = append(readWrite, sessionPiSessionsDir())
+	}
 
-	read := []string{filepath.Join(home, "Library", "Keychains"), "/opt/homebrew"}
+	var read, readFiles, readWriteFiles []string
 	if dev := developerTools(); dev != "" {
 		read = append(read, dev)
 	}
-	readFiles := []string{
-		filepath.Join(home, ".gitconfig"),
-		filepath.Join(home, ".zshenv"),
-		filepath.Join(home, ".zprofile"),
-		filepath.Join(home, ".zshrc"),
+	if tmpl != nil {
+		var err error
+		if read, readFiles, err = addTemplateGrants(read, readFiles, "read", tmpl.Read, home); err != nil {
+			return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
+		}
+		if readWrite, readWriteFiles, err = addTemplateGrants(readWrite, readWriteFiles, "read_write", tmpl.ReadWrite, home); err != nil {
+			return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
+		}
 	}
-
-	extraRead, extraReadWrite, err := sandboxSettingsPaths(settings, home)
-	if err != nil {
-		return sandbox.Spec{}, err
-	}
-	read = append(read, extraRead...)
-	readWrite = append(readWrite, extraReadWrite...)
+	ensureGrantDirs(readWrite)
 
 	spec := sandbox.Spec{
 		Read:           read,
 		ReadFiles:      readFiles,
 		ReadWrite:      readWrite,
-		ReadWriteFiles: []string{filepath.Join(home, ".claude.json")},
+		ReadWriteFiles: readWriteFiles,
 		// Directory prefixes, not just the four named sockets C7 lists: a
 		// literal-only denylist leaves any socket that appears in one of
 		// these directories later reachable under (allow default) — SP2 row
@@ -181,28 +183,16 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	return spec, nil
 }
 
-// sandboxSettingsPaths is `sandbox` in settings.json, ~-expanded and checked.
-// An entry that is not an absolute or ~ path, or that names the whole
-// filesystem, refuses the launch: a grant relay cannot place is a grant it
-// cannot enforce, and dropping it quietly would leave the operator believing a
-// tool's directory was reachable when it was not.
-func sandboxSettingsPaths(settings *config.Settings, home string) (read, readWrite []string, err error) {
-	if settings == nil || settings.Sandbox == nil {
-		return nil, nil, nil
-	}
-	if read, err = expandSandboxPaths("sandbox.read", settings.Sandbox.Read, home); err != nil {
-		return nil, nil, err
-	}
-	if readWrite, err = expandSandboxPaths("sandbox.read_write", settings.Sandbox.ReadWrite, home); err != nil {
-		return nil, nil, err
-	}
-	return read, readWrite, nil
-}
-
-func expandSandboxPaths(field string, in []string, home string) ([]string, error) {
-	out := make([]string, 0, len(in))
-	for _, raw := range in {
-		p := strings.TrimSpace(raw)
+// addTemplateGrants expands one of a template's folder lists and sorts each
+// entry into directories and single files: an entry that exists as a regular
+// file is a file grant (a read-write one gets its atomic-write siblings), and
+// anything else, including a path that does not exist yet, is a subtree. An
+// entry relay cannot place refuses the launch: a grant it cannot enforce is
+// one it must not drop quietly, or the operator believes a folder is reachable
+// when it is not.
+func addTemplateGrants(dirs, files []string, field string, entries []string, home string) ([]string, []string, error) {
+	for _, raw := range entries {
+		p := raw
 		switch {
 		case p == "~":
 			p = home
@@ -210,15 +200,42 @@ func expandSandboxPaths(field string, in []string, home string) ([]string, error
 			p = filepath.Join(home, p[2:])
 		}
 		if !filepath.IsAbs(p) {
-			return nil, fmt.Errorf("settings %s: %q is not an absolute path or a ~ path", field, raw)
+			return nil, nil, fmt.Errorf("%s %q is not an absolute path or a ~ path", field, raw)
 		}
 		p = filepath.Clean(p)
 		if p == "/" {
-			return nil, fmt.Errorf("settings %s: %q grants the whole filesystem", field, raw)
+			return nil, nil, fmt.Errorf("%s %q grants the whole filesystem", field, raw)
 		}
-		out = append(out, p)
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			files = append(files, p)
+			continue
+		}
+		dirs = append(dirs, p)
 	}
-	return out, nil
+	return dirs, files, nil
+}
+
+// ensureGrantDirs creates any read-write directory that does not exist yet.
+//
+// A (subpath …) rule lets the session create that directory itself but not an
+// ancestor of it: on a machine with no ~/go, a grant on ~/go/pkg leaves `go
+// build` unable to create the module cache at all (measured). Creating them
+// here is what makes each grant real, and it is exactly what the toolchain
+// would do if it were allowed to. A base name with an extension is skipped: it
+// is a file that has not been written yet (~/.claude.json), and a directory
+// made under that name would break the tool that expects a file.
+func ensureGrantDirs(dirs []string) {
+	for _, dir := range dirs {
+		if _, err := os.Stat(dir); err == nil {
+			continue
+		}
+		if strings.Contains(strings.TrimPrefix(filepath.Base(dir), "."), ".") {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			slog.Warn("session sandbox: could not create a granted directory", "dir", dir, "error", err)
+		}
+	}
 }
 
 // developerToolsDir is where `git`, `clang` and the rest resolve their real
@@ -319,31 +336,6 @@ func apiListenLoopbackPort() (int, bool) {
 		return 0, false
 	}
 	return port, true
-}
-
-// ensureToolchainDirs returns C7's agent-state and toolchain write
-// allowances, creating any that are missing first.
-//
-// A (subpath …) rule lets the session create that directory itself but not
-// an ancestor of it: on a machine with no ~/go, an allowance on ~/go/pkg
-// leaves `go build` unable to create the module cache at all (measured).
-// Creating them here is what makes each allowance real, and it is exactly
-// what the toolchain would do if it were allowed to.
-func ensureToolchainDirs(home string) []string {
-	dirs := []string{
-		filepath.Join(home, ".cache"),
-		filepath.Join(home, "go", "pkg"),
-		filepath.Join(home, ".npm"),
-		filepath.Join(home, "Library", "Caches"),
-		filepath.Join(home, ".claude"),
-		filepath.Join(home, ".pi"),
-	}
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			slog.Warn("session sandbox: could not create a write-allowed directory", "dir", dir, "error", err)
-		}
-	}
-	return dirs
 }
 
 var (

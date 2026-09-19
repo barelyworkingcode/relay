@@ -62,12 +62,6 @@ type Settings struct {
 	// unaffected either way. Same "absent means closed" default as Remote.
 	ModelEndpoint *ModelEndpointConfig `json:"model_endpoint,omitempty"`
 
-	// Sandbox names extra directories every sandboxed session may read or
-	// read and write (SandboxConfig). Absent means none beyond what relay
-	// grants itself, so an install that never sets it keeps settings.json
-	// byte-identical to one written before this field existed.
-	Sandbox *SandboxConfig `json:"sandbox,omitempty"`
-
 	// APICredentials are the bearer credentials the control-plane API
 	// accepts, each naming its own capability classes (ADR-015 decision 3).
 	// omitempty, like Enrolments and Audit: an install that never mints one
@@ -107,12 +101,13 @@ type Settings struct {
 	// EvePasskeys.
 	EvePasskeyRevocations []EvePasskeyRevocation `json:"eve_passkey_revocations,omitempty"`
 
-	// TerminalTemplates holds only a user's added or customized terminal
-	// launch templates (templates.go); the five built-ins are seeded in
-	// code by BuiltinTerminalTemplates and never appear here unless an
-	// entry overrides one by id. omitempty, like Enrolments and Passkeys:
-	// an install that never customizes a template keeps settings.json
-	// byte-identical to one written before this feature existed.
+	// TerminalTemplates is the complete set of terminal launch templates
+	// (templates.go): there is no set computed in code, so what is listed here
+	// is what a project can launch, and every entry, including the ones relay
+	// seeds on first start, can be edited or removed. Each carries its own
+	// sandbox folders. When it is empty relay writes one default template on
+	// its next start (EnsureDefaultTerminalTemplates). omitempty, like
+	// Enrolments and Passkeys.
 	TerminalTemplates []TerminalTemplate `json:"terminal_templates,omitempty"`
 }
 
