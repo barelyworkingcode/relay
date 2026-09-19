@@ -139,7 +139,7 @@ func TestEvePasskeyRoutes_OnChangeFiresOnReport(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	doJSON(t, "PUT", srv.URL+"/api/eve/passkeys", map[string]any{"passkeys": []map[string]any{}})
+	doJSON(t, "PUT", srv.URL+"/api/eve/passkeys", map[string]any{"passkeys": []map[string]any{{"id": "a", "label": "iPhone"}}})
 	if fired == 0 {
 		t.Fatal("expected OnChange to fire on a successful report")
 	}

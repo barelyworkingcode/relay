@@ -10,11 +10,15 @@ package main
 // "eve.passkey.revoke" -- this file does not repeat that.
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 )
@@ -42,6 +46,80 @@ func TestEvePasskeyOps_ReportReplacesWholesaleAndStampsReported(t *testing.T) {
 	if got[0].Label != "iPhone" || got[0].Created != "2026-09-07T10:00:00Z" || got[0].LastUsed != "2026-09-07T11:00:00Z" {
 		t.Fatalf("Report did not carry every reported field through: %+v", got[0])
 	}
+}
+
+// Eve's 30-second poll is a report. One that changes nothing must leave
+// settings.json byte for byte alone: the sealed fields carry a fresh nonce on
+// every save, so any write at all shows up as a different file.
+func TestEvePasskeyOps_UnchangedReportWritesNothingAndFiresNoOnChange(t *testing.T) {
+	dir := mkEmptySandboxRelayHome(t)
+	store := sealedSettingsStoreAt(dir)
+	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
+	fired := 0
+	ops := &EvePasskeyOps{Store: store, OnChange: func() { fired++ }}
+	list := []evePasskeyReportEntry{{ID: "a", Label: "iPhone", Created: "2026-09-07T10:00:00Z", LastUsed: "2026-09-07T11:00:00Z"}}
+
+	assertNoErr(t, ops.Report(list), "first Report")
+	first := readSettingsFile(t, dir)
+	if fired != 1 {
+		t.Fatalf("first report fired OnChange %d times, want 1", fired)
+	}
+
+	assertNoErr(t, ops.Report(list), "repeat Report")
+	if !bytes.Equal(first, readSettingsFile(t, dir)) {
+		t.Fatal("a repeat report of the same list rewrote settings.json")
+	}
+	if fired != 1 {
+		t.Fatalf("a repeat report fired OnChange, total %d", fired)
+	}
+
+	list[0].LastUsed = "2026-09-07T12:00:00Z"
+	assertNoErr(t, ops.Report(list), "changed Report")
+	if bytes.Equal(first, readSettingsFile(t, dir)) || fired != 2 {
+		t.Fatalf("a changed list was not written (fired=%d)", fired)
+	}
+}
+
+// The stamp is what makes a mirror eve stopped refreshing visibly stale, so an
+// unchanged list still refreshes it once it is older than the heartbeat.
+func TestEvePasskeyOps_UnchangedReportRefreshesAStaleStamp(t *testing.T) {
+	store := eveOpsStore(t)
+	ops := &EvePasskeyOps{Store: store}
+	stale := time.Now().UTC().Add(-2 * eveReportHeartbeat).Format(time.RFC3339)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.EvePasskeys = []config.EvePasskey{{ID: "a", Label: "iPhone", Reported: stale}}
+	}), "seed a stale stamp")
+
+	assertNoErr(t, ops.Report([]evePasskeyReportEntry{{ID: "a", Label: "iPhone"}}), "Report")
+
+	if got := store.Get().EvePasskeys[0].Reported; got == stale {
+		t.Fatalf("Reported stayed at %s; want it refreshed", got)
+	}
+}
+
+// An unchanged list is not a no-op when it acknowledges a revocation: the
+// pending set still has to shrink.
+func TestEvePasskeyOps_ReportStillDropsRevocationWhenListIsUnchanged(t *testing.T) {
+	store := eveOpsStore(t)
+	ops := &EvePasskeyOps{Store: store}
+	now := time.Now().UTC().Format(time.RFC3339)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.EvePasskeys = []config.EvePasskey{{ID: "a", Reported: now}, {ID: "b", Reported: now}}
+		s.EvePasskeyRevocations = []config.EvePasskeyRevocation{{ID: "gone", Requested: now}}
+	}), "seed")
+
+	assertNoErr(t, ops.Report([]evePasskeyReportEntry{{ID: "a"}, {ID: "b"}}), "Report")
+
+	if got := store.Get().EvePasskeyRevocations; len(got) != 0 {
+		t.Fatalf("revocation for an id absent from the report survived: %+v", got)
+	}
+}
+
+func readSettingsFile(t *testing.T, dir string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	assertNoErr(t, err, "read settings.json")
+	return b
 }
 
 // Decision 12: the report IS the acknowledgement. A pending revocation for
