@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/service"
+	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
 )
 
 // relaySecretEnvKeys is the canonical list every env builder under
@@ -35,11 +36,16 @@ var relaySecretEnvKeys = []string{
 }
 
 // childBaseEnv returns os.Environ() with every relaySecretEnvKeys entry
-// stripped, so no stale relay credential reaches a claude/pi child.
+// stripped, so no stale relay credential reaches a claude/pi child, and with
+// the launching Claude Code session's own variables stripped too
+// (childenv.IsParentClaudeSession).
 func childBaseEnv() []string {
 	src := os.Environ()
 	out := make([]string, 0, len(src))
 	for _, kv := range src {
+		if childenv.IsParentClaudeSession(kv) {
+			continue
+		}
 		drop := false
 		for _, k := range relaySecretEnvKeys {
 			if strings.HasPrefix(kv, k+"=") {
