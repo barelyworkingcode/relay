@@ -204,7 +204,7 @@ func (ss *FileSettingsStore) path() string {
 	return filepath.Join(ss.dir, "settings.json")
 }
 
-const CurrentSettingsVersion = 1
+const CurrentSettingsVersion = 2
 
 // defaultModelEndpointListen is the loopback address EnsureDefaultModelEndpoint
 // writes in for the model endpoint's TCP listener (plan-broker-and-sessions.md
@@ -337,7 +337,17 @@ func ensureMap[K comparable, V any](m *map[K]V) {
 }
 
 func (s *Settings) normalize() {
-	if s.Version == 0 {
+	if s.Version < 2 {
+		// Version 2 introduced Project.AllowedTemplates, where empty means
+		// none. A project from before it had every template, so it keeps
+		// them; a remote project launches nothing. Keyed on the version so
+		// it runs once: a project created afterwards, with an empty list,
+		// is never widened by a later load.
+		for i := range s.Projects {
+			if p := &s.Projects[i]; p.AllowedTemplates == nil && !p.IsRemote() {
+				p.AllowedTemplates = []string{"*"}
+			}
+		}
 		s.Version = CurrentSettingsVersion
 	}
 	ensureSlice(&s.ExternalMcps)
@@ -355,6 +365,7 @@ func (s *Settings) normalize() {
 	for i := range s.Projects {
 		ensureSlice(&s.Projects[i].AllowedMcpIDs)
 		ensureSlice(&s.Projects[i].AllowedModels)
+		ensureSlice(&s.Projects[i].AllowedTemplates)
 	}
 	ensureSlice(&s.Hosts)
 }

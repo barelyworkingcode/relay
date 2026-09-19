@@ -143,12 +143,6 @@ func clonePermissionPolicy(p *PermissionPolicy) *PermissionPolicy {
 	return &cp
 }
 
-func cloneShellTemplate(t ShellTemplate) ShellTemplate {
-	t.Args = cloneSlice(t.Args)
-	t.Env = cloneMap(t.Env)
-	return t
-}
-
 func cloneTerminalTemplate(t TerminalTemplate) TerminalTemplate {
 	t.Args = cloneSlice(t.Args)
 	t.Env = cloneMap(t.Env)
@@ -170,22 +164,11 @@ func cloneTerminalTemplates(s []TerminalTemplate) []TerminalTemplate {
 	return out
 }
 
-func cloneShellTemplates(s []ShellTemplate) []ShellTemplate {
-	if s == nil {
-		return nil
-	}
-	out := make([]ShellTemplate, len(s))
-	for i, t := range s {
-		out[i] = cloneShellTemplate(t)
-	}
-	return out
-}
-
 func cloneProject(p Project) Project {
 	p.AllowedMcpIDs = cloneSlice(p.AllowedMcpIDs)
 	p.AllowedModels = cloneSlice(p.AllowedModels)
 	p.ChatTemplates = cloneSlice(p.ChatTemplates)
-	p.ShellTemplates = cloneShellTemplates(p.ShellTemplates)
+	p.AllowedTemplates = cloneSlice(p.AllowedTemplates)
 	p.DisabledTools = cloneStringSliceMap(p.DisabledTools)
 	p.Context = cloneContextMap(p.Context)
 	p.AllowedTools = cloneStringSliceMap(p.AllowedTools)

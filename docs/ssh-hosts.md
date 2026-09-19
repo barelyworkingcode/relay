@@ -173,7 +173,7 @@ Rules, enforced in `internal/project.ValidateShape` and a new
 - A host project may not carry `allowed_mcp_ids`, `mounts`,
   or `generate_skill` (decision 6; and the skill generator writes into the
   project directory, which is not here). `chat_templates`,
-  `shell_templates`, `allowed_models`, `permission_policy` and
+  `allowed_templates`, `allowed_models`, `permission_policy` and
   `session_folders` are allowed and mean what they mean locally.
 - `kind: remote` and `host_id` are mutually exclusive.
 - `syncProjectToken` skips path injection for a host project: a host path must

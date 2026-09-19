@@ -376,25 +376,6 @@ type ChatTemplate struct {
 	UseRelayTools  bool   `json:"use_relay_tools,omitempty"`
 }
 
-// ShellTemplate is a project-scoped terminal launch template, unlike the
-// global ones in relayLLM's settings.json `pty` map, so a project can carry
-// private shells (e.g. an ssh into a specific host) not shared elsewhere.
-// The global-only fields on relayLLM's TerminalTemplate (BuiltIn,
-// UseRelayToken, EnvPassthrough, IdleTimeout) are deliberately omitted: a
-// project-scoped template always gets RELAY_PROJECT_TOKEN via its
-// projectID launch path, and relayLLM stamps remaining defaults
-// server-side. Env is a plain map persisted in settings.json (0600) — do
-// not store secrets here.
-type ShellTemplate struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Command     string            `json:"command,omitempty"`
-	Args        []string          `json:"args,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Icon        string            `json:"icon,omitempty"`
-}
-
 // PermissionPolicy is forwarded to relayLLM for both Claude CLI flags and to
 // short-circuit permission requests in the hook. Tool patterns follow Claude
 // CLI's grammar: "ToolName" matches any use, "ToolName:argPrefix" matches
@@ -509,11 +490,14 @@ type Project struct {
 	// exclusive with Kind == ProjectKindRemote — the two solve different
 	// problems (a host project still IS kind: local in shape) and must never
 	// be read together.
-	HostID         string          `json:"host_id,omitempty"`
-	AllowedMcpIDs  []string        `json:"allowed_mcp_ids"`
-	AllowedModels  []string        `json:"allowed_models"`
-	ChatTemplates  []ChatTemplate  `json:"chat_templates,omitempty"`
-	ShellTemplates []ShellTemplate `json:"shell_templates,omitempty"`
+	HostID        string         `json:"host_id,omitempty"`
+	AllowedMcpIDs []string       `json:"allowed_mcp_ids"`
+	AllowedModels []string       `json:"allowed_models"`
+	ChatTemplates []ChatTemplate `json:"chat_templates,omitempty"`
+	// AllowedTemplates names the terminal templates (Settings.TerminalTemplates)
+	// this project may launch, its claude, pi and chat sessions included:
+	// empty is none, a lone "*" is every template, otherwise the ids listed.
+	AllowedTemplates []string `json:"allowed_templates"`
 	// Token is sealed (§4.1); TokenHash is the SHA-256 AuthenticateProject
 	// actually resolves against and stays clear. The two are the same length
 	// in hex and are NOT distinguishable by shape — never seal or clear one

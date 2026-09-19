@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -304,61 +305,21 @@ func GetTerminalTemplate(s *Settings, id string) (TerminalTemplate, bool) {
 	return TerminalTemplate{}, false
 }
 
-// EffectiveTerminalTemplatesForProject overlays a project's own
-// ShellTemplates (internal/project's per-project override — a project can
-// carry private shells, e.g. an ssh alias, not shared elsewhere) on top of
-// EffectiveTerminalTemplates: same override-by-id shape one level down. proj
-// may be nil (no project scope).
+// AllowsTemplate reports whether p may launch the template with this id: a
+// lone "*" allows every template, an empty list none. A nil project (no
+// project scope) allows nothing.
+func (p *Project) AllowsTemplate(id string) bool {
+	if p == nil {
+		return false
+	}
+	return IsWildcard(p.AllowedTemplates) || slices.Contains(p.AllowedTemplates, id)
+}
+
+// EffectiveTerminalTemplatesForProject is EffectiveTerminalTemplates narrowed
+// to the templates proj may launch (Project.AllowedTemplates).
 func EffectiveTerminalTemplatesForProject(s *Settings, proj *Project) []TerminalTemplate {
-	base := EffectiveTerminalTemplates(s)
-	if proj == nil || len(proj.ShellTemplates) == 0 {
-		return base
-	}
-	byID := make(map[string]TerminalTemplate, len(base)+len(proj.ShellTemplates))
-	for _, t := range base {
-		byID[t.ID] = t
-	}
-	for _, st := range proj.ShellTemplates {
-		t := TerminalTemplate{
-			ID:          st.ID,
-			Name:        st.Name,
-			Command:     st.Command,
-			Args:        st.Args,
-			Env:         st.Env,
-			Description: st.Description,
-			Icon:        st.Icon,
-		}
-		// ShellTemplate has no Sandbox or folder fields of its own (see its
-		// doc comment), so an override sharing a shadowed entry's id would
-		// otherwise silently reset them to their zero values, which is an
-		// unsandboxed template. Carry the shadowed entry's Sandbox and folders
-		// forward -- they always win, and a project override can neither clear
-		// nor widen them. Deliberately NOT done for ModelKey: inheriting it
-		// here would let a project override widen a template's authority
-		// (grant a model key the shadowed entry didn't have), the opposite of
-		// what this carries-forward is for.
-		if base, ok := byID[st.ID]; ok {
-			t.Sandbox = base.Sandbox
-			t.Read = cloneSlice(base.Read)
-			t.ReadWrite = cloneSlice(base.ReadWrite)
-			t.Deny = cloneSlice(base.Deny)
-		}
-		if err := ValidateTerminalTemplate(t); err != nil {
-			slog.Warn("project shell template refused at resolution", "project", proj.ID, "id", st.ID, "error", err)
-			continue
-		}
-		byID[st.ID] = t
-	}
-	ids := make([]string, 0, len(byID))
-	for id := range byID {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	out := make([]TerminalTemplate, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, byID[id])
-	}
-	return out
+	all := EffectiveTerminalTemplates(s)
+	return slices.DeleteFunc(all, func(t TerminalTemplate) bool { return !proj.AllowsTemplate(t.ID) })
 }
 
 func sortedTemplates(byID map[string]TerminalTemplate) []TerminalTemplate {

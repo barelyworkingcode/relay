@@ -282,12 +282,19 @@ temp/`/dev`/developer-tools paths. It blocks read, write and `stat` alike.
 Denying a path that a session needs to run (the project directory, say)
 locks the session out of it; relay does not second-guess that. `deny` takes
 the same entry shape as `read` and `read_write`, is ignored without
-`"sandbox": true`, and a project's shell template that shadows a template
-inherits the shadowed template's `deny` like its other folders.
+`"sandbox": true`.
 
 **Templates live only in `settings.json`.** Nothing is computed in code, so
-every template, including the ones relay seeds, can be edited or removed. Each
-carries its own folders:
+every template, including the ones relay seeds, can be edited or removed. The
+Settings window's Templates tab edits them, and `POST /api/terminal/templates`, `PUT` and `DELETE
+/api/terminal/templates/{id}` do the same over HTTP, both through
+`TemplateOps`. The routes are `configure` class and **deliberately not
+presence-gated**, unlike `ProjectOps` and `McpOps`: a caller holding a
+`configure` credential (a frontend-capable service included) can widen a
+template's folders or opt it into a model key with no prompt. That is the same
+trust hosts and services already carry, chosen knowingly; gating template
+saves means adding them to `presence.GatedOps`. Each template carries its own
+folders:
 
 ```json
 "terminal_templates": [
@@ -322,6 +329,21 @@ shell, sandboxed, with `~` read-write. That grant includes `~/.ssh` and every
 other credential directory under the home directory; narrow it by editing the
 template. To keep the shell out of the credential directories, add
 `"deny": ["~/.ssh"]`, or the relay settings directory, to the template.
+
+**A project opts in to templates.** `allowed_templates` on the project record
+is an array: empty is none, a lone `"*"` is every template, otherwise the ids
+listed (`"*"` beside other entries is refused). It gates every launch: a
+terminal template, and the `claude-code`, `pi` or `chat` template a claude, pi
+or chat session reads, so a project needs `claude-code` listed to run Claude
+sessions. An unlisted template is refused `template_not_allowed`; a launch
+naming no project is refused `project_required` for every kind, so there are
+no ad-hoc terminals. A project created without the field holds none. Projects
+that predate it (settings version 1) were migrated once to `["*"]`, and their
+old per-project `shell_templates` were dropped. A remote project must keep the
+list empty. `GET /api/terminal/templates?project=<id>` returns that project's
+permitted templates, and `[]` with no project; the Settings window lists all
+of them over IPC. The list rides on the project save, so it is gated as any
+project edit already is.
 
 **A template can point a client at relay's model endpoint.** `model_key: true`
 mints a per-session key, and `${MODEL_KEY}` in an `env` value delivers it.
@@ -438,8 +460,7 @@ record shape.
 
 ## Resume (user action only) — SH-6
 
-A project-bound provider session (claude/pi/chat; **not** an ad-hoc,
-project-less one) never respawns itself when its provider process dies.
+A project-bound provider session (claude/pi/chat) never respawns itself when its provider process dies.
 `internal/sessions/session.Manager.SendMessage` returns `ErrResumeRequired`
 instead of silently restarting anything, and the session sits `dormant` in
 the ledger until a caller explicitly resumes it: `POST /launch` with
@@ -449,16 +470,9 @@ is `StateDormant`, and names the same project the resume request names — a
 caller cannot squat a live session id or resume one project's session under
 another project's name this way.
 
-Only an **ad-hoc** session (`ProjectID == ""`, pty-only per SH §3.1's own
-rule) still auto-respawns; SH-6's restriction is specific to a project-bound
-session, which carries real authority (a model key, a permission policy) an
-automatic respawn should not be trusted to re-establish silently. In
-practice this carve-out is currently unreachable: `AuthorizeLaunch` refuses
-a project-less launch outright for every kind but `pty`
-(`req.ProjectID == "" && req.Kind != KindPTY`), and `SendMessage`/
-`ErrResumeRequired` is `session.Manager`'s own mechanism — a `pty` session
-never goes through it — so no session that could exist today both
-auto-respawns and carries the authority this paragraph is warning about.
+There is no project-less launch: `AuthorizeLaunch` refuses one for every kind
+(`project_required`), so every session that can exist carries a project's
+authority and none auto-respawns.
 
 A resumed launch runs the whole `AuthorizeLaunch` gauntlet again, including
 re-merging the *current* project permission policy — a policy edited since

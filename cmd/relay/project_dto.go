@@ -30,7 +30,7 @@ type projectView struct {
 	AllowedMcpIDs    []string                   `json:"allowed_mcp_ids"`
 	AllowedModels    []string                   `json:"allowed_models"`
 	ChatTemplates    []config.ChatTemplate      `json:"chat_templates,omitempty"`
-	ShellTemplates   []config.ShellTemplate     `json:"shell_templates,omitempty"`
+	AllowedTemplates []string                   `json:"allowed_templates"`
 	CreatedAt        string                     `json:"created_at"`
 	DisabledTools    map[string][]string        `json:"disabled_tools,omitempty"`
 	Context          map[string]json.RawMessage `json:"context,omitempty"`
@@ -53,7 +53,7 @@ func projectToView(p config.Project) projectView {
 		AllowedMcpIDs:    p.AllowedMcpIDs,
 		AllowedModels:    p.AllowedModels,
 		ChatTemplates:    p.ChatTemplates,
-		ShellTemplates:   p.ShellTemplates,
+		AllowedTemplates: p.AllowedTemplates,
 		CreatedAt:        p.CreatedAt,
 		DisabledTools:    p.DisabledTools,
 		Context:          p.Context,

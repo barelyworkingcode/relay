@@ -172,24 +172,15 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 	}
 }
 
-func TestProjectRoutes_ShellTemplates(t *testing.T) {
+func TestProjectRoutes_AllowedTemplates(t *testing.T) {
 	srv, _ := newProjectRoutesServer(t)
 	defer srv.Close()
 
-	tmpDir := t.TempDir()
 	resp, body := doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
-		"name":           "Shells",
-		"path":           tmpDir,
-		"allowed_models": []string{"claude-opus"},
-		"shell_templates": []map[string]interface{}{
-			{
-				"id":          "ssh-box",
-				"name":        "Box SSH",
-				"command":     "ssh",
-				"args":        []string{"me@box"},
-				"description": "private shell",
-			},
-		},
+		"name":              "Shells",
+		"path":              t.TempDir(),
+		"allowed_models":    []string{"claude-opus"},
+		"allowed_templates": []string{"shell", "pi"},
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create: status %d body %s", resp.StatusCode, body)
@@ -198,46 +189,42 @@ func TestProjectRoutes_ShellTemplates(t *testing.T) {
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v", err)
 	}
-	if tok, _ := created.Token.Reveal(); tok != "" || created.TokenHash != "" {
-		t.Fatalf("create response leaked token: %+v", created)
-	}
-	if len(created.ShellTemplates) != 1 || created.ShellTemplates[0].Command != "ssh" {
-		t.Fatalf("shell_templates not round-tripped on create/view: %+v", created.ShellTemplates)
-	}
-	if len(created.ShellTemplates[0].Args) != 1 || created.ShellTemplates[0].Args[0] != "me@box" {
-		t.Errorf("shell template args not round-tripped: %+v", created.ShellTemplates[0])
+	if len(created.AllowedTemplates) != 2 {
+		t.Fatalf("allowed_templates not round-tripped on create: %+v", created.AllowedTemplates)
 	}
 
-	// project.UpdateFields uses a nil pointer for "no change": omitting
-	// shell_templates from the patch must leave the list untouched.
-	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
-		"name": "Shells-Renamed",
-	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("rename: status %d body %s", resp.StatusCode, body)
-	}
+	// An absent field is no change; an explicit empty array clears to none.
+	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{"name": "Renamed"})
 	var renamed config.Project
-	if err := json.Unmarshal(body, &renamed); err != nil {
-		t.Fatalf("decode renamed: %v", err)
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &renamed) != nil || len(renamed.AllowedTemplates) != 2 {
+		t.Fatalf("rename changed the list: status %d body %s", resp.StatusCode, body)
 	}
-	if len(renamed.ShellTemplates) != 1 {
-		t.Errorf("rename wiped shell templates (absent != clear): %+v", renamed.ShellTemplates)
+	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{"allowed_templates": []string{}})
+	var cleared config.Project
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &cleared) != nil || len(cleared.AllowedTemplates) != 0 {
+		t.Fatalf("explicit empty array did not clear: status %d body %s", resp.StatusCode, body)
 	}
 
-	// An explicit empty array, by contrast, sets the pointer to an empty
-	// slice and clears the list.
-	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
-		"shell_templates": []map[string]interface{}{},
+	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{"allowed_templates": []string{"*", "shell"}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("star plus another id: status %d, want 400 (%s)", resp.StatusCode, body)
+	}
+}
+
+// A project created without the field launches nothing: absent on create is
+// none, not every template.
+func TestProjectRoutes_CreateWithoutTemplatesIsNone(t *testing.T) {
+	srv, _ := newProjectRoutesServer(t)
+	defer srv.Close()
+	resp, body := doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
+		"name": "Bare", "path": t.TempDir(), "allowed_models": []string{"claude-opus"},
 	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("clear: status %d body %s", resp.StatusCode, body)
+	var created config.Project
+	if resp.StatusCode != http.StatusCreated || json.Unmarshal(body, &created) != nil {
+		t.Fatalf("create: status %d body %s", resp.StatusCode, body)
 	}
-	var cleared config.Project
-	if err := json.Unmarshal(body, &cleared); err != nil {
-		t.Fatalf("decode cleared: %v", err)
-	}
-	if len(cleared.ShellTemplates) != 0 {
-		t.Errorf("explicit empty array did not clear shell templates: %+v", cleared.ShellTemplates)
+	if created.AllowedTemplates == nil || len(created.AllowedTemplates) != 0 {
+		t.Fatalf("allowed_templates = %#v, want an empty list", created.AllowedTemplates)
 	}
 }
 

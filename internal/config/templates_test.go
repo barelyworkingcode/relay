@@ -246,133 +246,60 @@ func TestEffectiveTerminalTemplates_SkipsARelativeFolder(t *testing.T) {
 	}
 }
 
-func TestEffectiveTerminalTemplatesForProject_ShellTemplatesOverride(t *testing.T) {
+func TestEffectiveTerminalTemplatesForProject_FiltersByAllowedTemplates(t *testing.T) {
 	s := &Settings{TerminalTemplates: []TerminalTemplate{
-		{ID: "shell", Name: "Shell"},
-		{ID: "claude-code", Name: "Claude Code", Command: "claude"},
+		{ID: "shell", Name: "Shell"}, {ID: "pi", Name: "pi"}, {ID: "rh", Name: "rh"},
 	}}
-	proj := &Project{
-		ID: "p1",
-		ShellTemplates: []ShellTemplate{
-			{ID: "shell", Name: "Project Shell", Command: "/bin/fish"},
-			{ID: "prod-ssh", Name: "Prod SSH", Command: "ssh", Args: []string{"prod-host"}},
-		},
+	ids := func(p *Project) string {
+		var out []string
+		for _, tmpl := range EffectiveTerminalTemplatesForProject(s, p) {
+			out = append(out, tmpl.ID)
+		}
+		return strings.Join(out, ",")
 	}
-
-	got := EffectiveTerminalTemplatesForProject(s, proj)
-
-	byID := map[string]TerminalTemplate{}
-	for _, tmpl := range got {
-		byID[tmpl.ID] = tmpl
-	}
-
-	shell, ok := byID["shell"]
-	if !ok || shell.Name != "Project Shell" || shell.Command != "/bin/fish" {
-		t.Fatalf("project ShellTemplates did not override the global shell template: %+v (ok=%v)", shell, ok)
-	}
-	sshTmpl, ok := byID["prod-ssh"]
-	if !ok || sshTmpl.Command != "ssh" {
-		t.Fatalf("project-only ShellTemplate did not appear: %+v (ok=%v)", sshTmpl, ok)
-	}
-
-	// Every other global template must still be present, untouched.
-	if _, ok := byID["claude-code"]; !ok {
-		t.Fatal("expected claude-code to still be present via the global set")
-	}
-}
-
-// A project ShellTemplate reusing a global template's id (e.g. "rh") must not
-// be able to silently clear Sandbox or its folders: ShellTemplate has no such
-// fields of its own, so the zero values would otherwise reset a sandboxed
-// template to unsandboxed. The shadowed entry's Sandbox and folders always win,
-// so a project override can neither clear nor widen them.
-func TestEffectiveTerminalTemplatesForProject_ShadowedTemplateKeepsSandboxAndFolders(t *testing.T) {
-	s := &Settings{TerminalTemplates: []TerminalTemplate{
-		{ID: "rh", Name: "rh", Command: "rh", Sandbox: true, Read: []string{"/opt/rh"}, ReadWrite: []string{"~/.rh"}, Deny: []string{"~/.rh/secret"}},
-	}}
-	proj := &Project{
-		ID: "p1",
-		ShellTemplates: []ShellTemplate{
-			{ID: "rh", Name: "Custom rh", Command: "/opt/rh/rh"},
-		},
-	}
-
-	got := EffectiveTerminalTemplatesForProject(s, proj)
-
-	rh, ok := TerminalTemplate{}, false
-	for _, tmpl := range got {
-		if tmpl.ID == "rh" {
-			rh, ok = tmpl, true
+	for name, c := range map[string]struct {
+		proj *Project
+		want string
+	}{
+		"nil project":   {nil, ""},
+		"nil list":      {&Project{}, ""},
+		"empty list":    {&Project{AllowedTemplates: []string{}}, ""},
+		"wildcard":      {&Project{AllowedTemplates: []string{"*"}}, "pi,rh,shell"},
+		"listed":        {&Project{AllowedTemplates: []string{"shell", "rh", "gone"}}, "rh,shell"},
+		"star + others": {&Project{AllowedTemplates: []string{"*", "shell"}}, "shell"},
+	} {
+		if got := ids(c.proj); got != c.want {
+			t.Errorf("%s: got %q, want %q", name, got, c.want)
 		}
 	}
-	if !ok {
-		t.Fatal("expected rh template to resolve")
-	}
-	if rh.Command != "/opt/rh/rh" {
-		t.Fatalf("expected the project override's command to take effect, got %q", rh.Command)
-	}
-	if !rh.Sandbox {
-		t.Fatal("expected the shadowed template's Sandbox: true to survive a project override that has no Sandbox field to set")
-	}
-	if len(rh.Read) != 1 || rh.Read[0] != "/opt/rh" || len(rh.ReadWrite) != 1 || rh.ReadWrite[0] != "~/.rh" {
-		t.Fatalf("the shadowed template's folders did not survive the override: read=%v read_write=%v", rh.Read, rh.ReadWrite)
-	}
-	if len(rh.Deny) != 1 || rh.Deny[0] != "~/.rh/secret" {
-		t.Fatalf("the shadowed template's deny list did not survive the override: %v", rh.Deny)
-	}
 }
 
-// A project ShellTemplate must never inherit ModelKey from a shadowed
-// entry: unlike Sandbox, that would let a project override widen a
-// template's authority rather than only narrow/preserve it.
-func TestEffectiveTerminalTemplatesForProject_ShadowedTemplateDoesNotInheritModelKey(t *testing.T) {
-	s := &Settings{TerminalTemplates: []TerminalTemplate{
-		{ID: "pi", Name: "pi", Command: "pi", Sandbox: true, ModelKey: true},
+// A project from before allowed_templates existed keeps every template; one
+// created after (empty list, current version) is never widened by a load.
+func TestNormalize_MigratesTemplateAccessOnce(t *testing.T) {
+	s := &Settings{Version: 1, Projects: []Project{
+		{ID: "old"},
+		{ID: "remote", Kind: ProjectKindRemote},
+		{ID: "set", AllowedTemplates: []string{"shell"}},
 	}}
-	proj := &Project{
-		ID: "p1",
-		ShellTemplates: []ShellTemplate{
-			{ID: "pi", Name: "Custom pi", Command: "/opt/pi/pi"},
-		},
+	s.normalize()
+	if got := s.Projects[0].AllowedTemplates; !IsWildcard(got) {
+		t.Errorf("existing project = %v, want [*]", got)
+	}
+	if got := s.Projects[1].AllowedTemplates; got == nil || len(got) != 0 {
+		t.Errorf("remote project = %#v, want empty", got)
+	}
+	if got := s.Projects[2].AllowedTemplates; len(got) != 1 || got[0] != "shell" {
+		t.Errorf("explicit list = %v, want it kept", got)
+	}
+	if s.Version != CurrentSettingsVersion {
+		t.Errorf("version = %d, want %d", s.Version, CurrentSettingsVersion)
 	}
 
-	got := EffectiveTerminalTemplatesForProject(s, proj)
-
-	pi, ok := TerminalTemplate{}, false
-	for _, tmpl := range got {
-		if tmpl.ID == "pi" {
-			pi, ok = tmpl, true
-		}
-	}
-	if !ok {
-		t.Fatal("expected pi template to resolve")
-	}
-	if pi.ModelKey {
-		t.Fatal("a project override must not inherit ModelKey from the shadowed template it shares an id with")
-	}
-}
-
-func TestEffectiveTerminalTemplatesForProject_NilProjectReturnsGlobal(t *testing.T) {
-	s := &Settings{TerminalTemplates: []TerminalTemplate{{ID: "shell", Name: "Shell"}, {ID: "pi", Name: "pi"}}}
-	got := EffectiveTerminalTemplatesForProject(s, nil)
-	if len(got) != 2 {
-		t.Fatalf("got %d templates, want the two global ones", len(got))
-	}
-}
-
-func TestEffectiveTerminalTemplatesForProject_SkipsInvalidShellTemplate(t *testing.T) {
-	s := &Settings{}
-	proj := &Project{
-		ID: "p1",
-		ShellTemplates: []ShellTemplate{
-			{ID: "leaky", Name: "Leaky", Env: map[string]string{"T": "${RELAY_TOKEN}"}},
-		},
-	}
-	got := EffectiveTerminalTemplatesForProject(s, proj)
-	for _, tmpl := range got {
-		if tmpl.ID == "leaky" {
-			t.Fatal("a project ShellTemplate referencing ${RELAY_TOKEN} must not reach the resolved list")
-		}
+	s.Projects = append(s.Projects, Project{ID: "new", AllowedTemplates: []string{}})
+	s.normalize()
+	if got := s.Projects[3].AllowedTemplates; len(got) != 0 {
+		t.Errorf("a project created after the migration was widened: %v", got)
 	}
 }
 

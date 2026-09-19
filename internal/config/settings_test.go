@@ -22,8 +22,8 @@ func TestLoad(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := store.load()
-		if s.Version != 1 {
-			t.Fatalf("expected version 1, got %d", s.Version)
+		if s.Version != CurrentSettingsVersion {
+			t.Fatalf("expected version %d, got %d", CurrentSettingsVersion, s.Version)
 		}
 	})
 
@@ -45,8 +45,8 @@ func TestLoad(t *testing.T) {
 	t.Run("returns defaults for missing file", func(t *testing.T) {
 		store, _ := newStore(t)
 		s := store.load()
-		if s.Version != 1 {
-			t.Fatalf("expected version 1, got %d", s.Version)
+		if s.Version != CurrentSettingsVersion {
+			t.Fatalf("expected version %d, got %d", CurrentSettingsVersion, s.Version)
 		}
 	})
 
@@ -56,8 +56,8 @@ func TestLoad(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := store.load()
-		if s.Version != 1 {
-			t.Fatalf("expected version 1 for invalid JSON, got %d", s.Version)
+		if s.Version != CurrentSettingsVersion {
+			t.Fatalf("expected version %d for invalid JSON, got %d", CurrentSettingsVersion, s.Version)
 		}
 	})
 }

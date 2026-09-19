@@ -37,7 +37,7 @@ func CreateWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path
 	if models == nil {
 		models = []string{}
 	}
-	// GenerateSkill/ShellTemplates aren't parameters here — they
+	// GenerateSkill/AllowedTemplates aren't parameters here — they
 	// are applied by later mutators in ApplyCreate — so this candidate
 	// only carries what this function actually knows about; a direct caller
 	// relying solely on this function (as every pre-remote test does) still
@@ -104,8 +104,22 @@ func validateProjectPath(path string) error {
 	return nil
 }
 
+// validateAllowedTemplates refuses what could not be placed: a blank entry, and
+// a "*" alongside other ids, which would read as a list but mean everything.
+func validateAllowedTemplates(ids []string) error {
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("allowed_templates must not hold an empty entry")
+		}
+		if id == "*" && len(ids) > 1 {
+			return fmt.Errorf(`allowed_templates: "*" must be the only entry`)
+		}
+	}
+	return nil
+}
+
 // ValidateShape is the single point that decides whether a given
-// combination of Kind, Path, GenerateSkill, ShellTemplates,
+// combination of Kind, Path, GenerateSkill, AllowedTemplates,
 // AllowedMcpIDs and AllowedModels is coherent — called from both the create
 // and update paths so a project can never reach settings.json in a
 // self-contradictory shape.
@@ -119,6 +133,9 @@ func ValidateShape(proj *config.Project) error {
 	// project — refusing both keeps validation and enforcement the same rule
 	// (see validateToolPattern).
 	if err := validateAllowedToolPatterns(proj); err != nil {
+		return err
+	}
+	if err := validateAllowedTemplates(proj.AllowedTemplates); err != nil {
 		return err
 	}
 	// Kind-independent like validateAllowedToolPatterns: a local project with
@@ -149,8 +166,8 @@ func ValidateShape(proj *config.Project) error {
 	if proj.GenerateSkill {
 		return fmt.Errorf("remote project must not enable generate_skill: skills are written under <path>/.claude/skills, and a remote project has no path")
 	}
-	if len(proj.ShellTemplates) > 0 {
-		return fmt.Errorf("remote project must not have shell templates: shell templates launch a terminal on the project's host directory, which a remote project doesn't have")
+	if len(proj.AllowedTemplates) > 0 {
+		return fmt.Errorf("remote project must not allow templates: templates launch a terminal on the project's host directory, which a remote project doesn't have")
 	}
 	// On a local project "*" means every MCP relay currently knows about; on
 	// a remote grant it would let registering a new MCP silently widen what

@@ -88,6 +88,9 @@ func addLaunchTestProject(t *testing.T, store config.SettingsStore, mutate func(
 		Path:          t.TempDir(),
 		AllowedMcpIDs: []string{"*"},
 		AllowedModels: []string{"*"},
+		// Every launch test that is not about the template list gets every
+		// template; an empty list would refuse them all.
+		AllowedTemplates: []string{"*"},
 	}
 	if mutate != nil {
 		mutate(&proj)
@@ -177,23 +180,21 @@ func TestAuthorizeLaunch_NonFrontendIdentityRefuses(t *testing.T) {
 	}
 }
 
-func TestAuthorizeLaunch_ExecuteBearerAdHocPtySucceeds(t *testing.T) {
+func TestAuthorizeLaunch_ExecuteBearerAdHocPtyRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
 	sessions := newLaunchTestLedger(t)
 	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), Kind: KindPTY, TemplateID: "shell"}
-	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
-	if refusal != nil {
-		t.Fatalf("valid ad-hoc pty launch refused: %+v", refusal)
-	}
-	if result.Spec.Project != nil {
-		t.Fatalf("ad-hoc launch carries a project: %s", result.Spec.Project)
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal == nil || refusal.Code != "project_required" {
+		t.Fatalf("an ad-hoc pty launch was not refused with project_required: %+v", refusal)
 	}
 }
 
 func TestAuthorizeLaunch_FrontendIdentitySucceeds(t *testing.T) {
 	store := newLaunchTestStore(t)
 	sessions := newLaunchTestLedger(t)
-	req := LaunchRequest{Caller: frontendIdentityCaller("eve"), Kind: KindPTY, TemplateID: "shell"}
+	proj := addLaunchTestProject(t, store, nil)
+	req := LaunchRequest{Caller: frontendIdentityCaller("eve"), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell"}
 	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal != nil {
 		t.Fatalf("eve's own frontend identity was refused: %+v", refusal)
 	}
@@ -317,19 +318,35 @@ func TestAuthorizeLaunch_UnknownTemplateRefuses(t *testing.T) {
 	}
 }
 
-func TestAuthorizeLaunch_ProjectScopedTemplateNotVisibleToOtherProject(t *testing.T) {
+// The project's allowed_templates gates every kind: an unlisted terminal
+// template and the claude session's own kind template are both refused.
+func TestAuthorizeLaunch_TemplateNotInProjectListRefuses(t *testing.T) {
 	store := newLaunchTestStore(t)
 	sessions := newLaunchTestLedger(t)
-	addLaunchTestProject(t, store, func(p *config.Project) {
-		p.ID = "owner"
-		p.ShellTemplates = []config.ShellTemplate{{ID: "private-shell", Name: "Private", Command: "zsh"}}
-	})
-	other := addLaunchTestProject(t, store, func(p *config.Project) { p.ID = "other" })
+	proj := addLaunchTestProject(t, store, func(p *config.Project) { p.AllowedTemplates = []string{"shell"} })
 
-	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: other.ID, Kind: KindPTY, TemplateID: "private-shell"}
-	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
-	if refusal == nil {
-		t.Fatal("a template scoped to another project was accepted")
+	for name, req := range map[string]LaunchRequest{
+		"unlisted pty":        {Kind: KindPTY, TemplateID: "claude-code"},
+		"claude, no template": {Kind: KindClaude, Model: "claude-sonnet-4.5"},
+	} {
+		req.Caller, req.ProjectID = bearerCaller(control.ClassExecute), proj.ID
+		if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal == nil || refusal.Code != "template_not_allowed" {
+			t.Errorf("%s: refusal = %+v, want template_not_allowed", name, refusal)
+		}
+	}
+	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell"}
+	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal != nil {
+		t.Fatalf("a listed template was refused: %+v", refusal)
+	}
+}
+
+func TestAuthorizeLaunch_EmptyTemplateListRefusesEverything(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	proj := addLaunchTestProject(t, store, func(p *config.Project) { p.AllowedTemplates = []string{} })
+	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell"}
+	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal == nil || refusal.Code != "template_not_allowed" {
+		t.Fatalf("refusal = %+v, want template_not_allowed", refusal)
 	}
 }
 
@@ -795,17 +812,6 @@ func TestAuthorizeLaunch_AdHocPiAndChatRefuse(t *testing.T) {
 		if refusal == nil {
 			t.Fatalf("an ad-hoc (no-project) %s launch was accepted", kind)
 		}
-	}
-}
-
-func TestAuthorizeLaunch_AdHocPtyStillSucceeds(t *testing.T) {
-	// F2 narrows the ad-hoc exemption to terminals; this confirms it still
-	// applies there, alongside TestAuthorizeLaunch_ExecuteBearerAdHocPtySucceeds.
-	store := newLaunchTestStore(t)
-	sessions := newLaunchTestLedger(t)
-	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), Kind: KindPTY, TemplateID: "shell"}
-	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal != nil {
-		t.Fatalf("an ad-hoc pty launch was refused: %+v", refusal)
 	}
 }
 

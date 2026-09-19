@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// GenerateSkill and ShellTemplates aren't parameters of
+// GenerateSkill and AllowedTemplates aren't parameters of
 // CreateWithTokenKind (see project_test.go) — they're applied by
 // follow-on mutators inside ApplyCreate, so testing their rejection
 // requires the full CreateFields path.
@@ -29,17 +29,15 @@ func TestApplyProjectCreate_RemoteRejectsGenerateSkill(t *testing.T) {
 	}
 }
 
-func TestApplyProjectCreate_RemoteRejectsShellTemplates(t *testing.T) {
+func TestApplyProjectCreate_RemoteRejectsAllowedTemplates(t *testing.T) {
 	s := &config.Settings{Version: 1}
 	f := CreateFields{
-		Name: "Agent VM",
-		Kind: config.ProjectKindRemote,
-		ShellTemplates: []config.ShellTemplate{
-			{ID: "ssh-1", Name: "SSH box"},
-		},
+		Name:             "Agent VM",
+		Kind:             config.ProjectKindRemote,
+		AllowedTemplates: []string{"shell"},
 	}
 	if _, err := ApplyCreate(s, f, nil); err == nil {
-		t.Fatal("expected rejection of remote project with shell templates")
+		t.Fatal("expected rejection of remote project with allowed templates")
 	}
 	if len(s.Projects) != 0 {
 		t.Fatalf("rejected create must not persist a project; got %d", len(s.Projects))
@@ -157,5 +155,23 @@ func TestApplyProjectUpdate_MountsIsPersisted(t *testing.T) {
 	after, _ := config.FindProjectByID(s, created.ID)
 	if len(after.Mounts) != 1 {
 		t.Fatalf("mounts not found on re-read: %+v", after.Mounts)
+	}
+}
+
+func TestValidateShape_AllowedTemplates(t *testing.T) {
+	for name, c := range map[string]struct {
+		ids []string
+		ok  bool
+	}{
+		"none":            {[]string{}, true},
+		"star":            {[]string{"*"}, true},
+		"listed":          {[]string{"shell", "pi"}, true},
+		"star and others": {[]string{"*", "shell"}, false},
+		"blank entry":     {[]string{"shell", " "}, false},
+	} {
+		p := config.Project{Path: "/tmp/x", AllowedTemplates: c.ids}
+		if err := ValidateShape(&p); (err == nil) != c.ok {
+			t.Errorf("%s: err = %v, want ok=%v", name, err, c.ok)
+		}
 	}
 }

@@ -556,7 +556,7 @@ func (f *sessionHostFixture) newProject(t *testing.T, id string, mutate func(*co
 	t.Helper()
 	proj := config.Project{
 		ID: id, Name: id, Path: t.TempDir(),
-		AllowedMcpIDs: []string{"*"}, AllowedModels: []string{"*"},
+		AllowedMcpIDs: []string{"*"}, AllowedModels: []string{"*"}, AllowedTemplates: []string{"*"},
 	}
 	if mutate != nil {
 		mutate(&proj)

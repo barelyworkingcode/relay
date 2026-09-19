@@ -153,8 +153,13 @@ let state = {
     hostProbePending: {},     // id -> true while a probe/create/re-probe is in flight ('new' for the add form)
     hostError: null,
 
-    // Templates tab: read-only, no form/error state to track.
+    // Templates tab (internal/config/templates.go).
     templates: TEMPLATES_INIT,
+    editingTemplateId: null,  // null = list, 'new' = add form, '<id>' = edit form
+    templateForm: null,
+    templateFormError: null,
+    templateSaving: false,    // a save is in flight; the next onTemplatesListed closes the form
+    templateError: null,
 
     // The enumeration picker (ADR-011 decision 6). Enumeration is a LIVE call
     // into another process, so none of this is populated by a paint: a list is
@@ -255,9 +260,8 @@ function showPage(page) {
     // network peer can change the table while the operator is on another tab.
     // The Overview tab's "Needs attention" list counts them too.
     if (page === 'remote' || page === 'overview') listEnrolmentRequests();
-    // Templates has no mutation route to push a fresh list after (read-only
-    // in this unit), so the tab re-fetches on every visit instead — cheap,
-    // and it picks up a hand-edited settings.json without a restart.
+    // A hand-edited settings.json or an HTTP edit changes the list behind the
+    // UI's back, so the tab re-fetches on every visit — cheap, and no restart.
     if (page === 'templates') listTemplates();
     render();
 }
@@ -288,6 +292,7 @@ function render(source) {
     if (state.projectForm) captureProjectFormInputs();
     if (state.enrolForm) captureEnrolFormInputs();
     if (state.hostForm) captureHostFormInputs();
+    if (state.templateForm) captureTemplateFormInputs();
     const el = document.getElementById('content');
     const fromPush = source === 'push';
     if (state.page === 'overview') {
@@ -2046,6 +2051,7 @@ function blankProjectForm() {
         host_id: '',
         allowed_mcp_ids: [PROJ_MCP_WILDCARD],   // wildcard by default
         allowed_models: [PROJ_MCP_WILDCARD],
+        allowed_templates: [],                  // none until the operator opts in
         chat_templates: [],
         permission_policy: { default_mode: '', allowed_tools: [], denied_tools: [] },
         generate_skill: false,
@@ -2089,6 +2095,7 @@ function projectFormFromExisting(p) {
         host_id: p.host_id || '',
         allowed_mcp_ids: (p.allowed_mcp_ids || []).slice(),
         allowed_models: (p.allowed_models || []).slice(),
+        allowed_templates: (p.allowed_templates || []).slice(),
         chat_templates: JSON.parse(JSON.stringify(p.chat_templates || [])),
         permission_policy: {
             default_mode: policy.default_mode || '',
@@ -2241,6 +2248,7 @@ function setProjKind(kind) {
         if (isProjMcpWildcard(f)) f.allowed_mcp_ids = [];
         // Remote projects always carry an empty model allowlist.
         f.allowed_models = [];
+        f.allowed_templates = [];
     }
     render();
 }
@@ -3086,6 +3094,26 @@ function isProjModelsWildcard(f) {
     return f.allowed_models.length === 1 && f.allowed_models[0] === PROJ_MCP_WILDCARD;
 }
 
+function isProjTemplatesWildcard(f) {
+    return f.allowed_templates.length === 1 && f.allowed_templates[0] === PROJ_MCP_WILDCARD;
+}
+
+function setProjTemplatesWildcard(checked) {
+    const f = state.projectForm;
+    if (!f) return;
+    f.allowed_templates = checked ? [PROJ_MCP_WILDCARD] : [];
+    render();
+}
+
+function toggleProjTemplate(id) {
+    const f = state.projectForm;
+    if (!f) return;
+    f.allowed_templates = f.allowed_templates.includes(id)
+        ? f.allowed_templates.filter(x => x !== id)
+        : f.allowed_templates.concat(id);
+    render();
+}
+
 // ---- Form renderer ----
 
 function renderProjectForm() {
@@ -3329,6 +3357,26 @@ function renderProjectForm() {
     }
     html += '</div>';
 
+    // ---- Allowed templates ----
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Templates</div>';
+    if (isRemote) {
+        html += '<p class="proj-section-help">Not applicable to an access profile — it launches nothing.</p>';
+    } else {
+        const tplWild = isProjTemplatesWildcard(f);
+        html += '<p class="proj-section-help">The launch templates this project may run: terminals, and the claude-code, pi and chat templates that claude, pi and chat sessions read. None selected means the project can launch nothing.</p>';
+        html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+        html += '<span>Allow all templates (wildcard <code>*</code>)</span>';
+        html += '<label class="switch"><input type="checkbox" aria-label="Allow all templates (wildcard *)" ' + (tplWild ? 'checked' : '') + ' onchange="setProjTemplatesWildcard(this.checked)" /><span class="slider"></span></label>';
+        html += '</div>';
+        if (!tplWild) {
+            for (const t of state.templates || []) {
+                html += '<label class="proj-mcp-row"><input type="checkbox" ' + bind(toggleProjTemplate, t.id) + ' ' + (f.allowed_templates.includes(t.id) ? 'checked' : '') + ' /> ' + esc(t.name) + ' <code>' + esc(t.id) + '</code></label>';
+            }
+        }
+    }
+    html += '</div>';
+
     // ---- Chat templates (read-only; relay stores them, Eve edits them) ----
     // Absent for an access profile, because the model now REFUSES one on a
     // remote record rather than storing an inert copy (validateProjectShape).
@@ -3538,6 +3586,7 @@ function harvestProjectForm() {
         host_id: isRemote ? '' : f.host_id,
         allowed_mcp_ids: hosted ? [] : f.allowed_mcp_ids,
         allowed_models: allowedModels,
+        allowed_templates: isRemote ? [] : f.allowed_templates,
         permission_policy: policy,
         // Directory-flavored and meaningless without a console path; force
         // it off for remote AND for a hosted project regardless of stale
@@ -3948,9 +3997,9 @@ function renderHostProbeSummary(h) {
 // Templates tab (internal/config/templates.go)
 // ---------------------------------------------------------------------------
 //
-// Read-only: built-ins are seeded in Go, and the only override points
-// (Settings.TerminalTemplates, a project's ShellTemplates) have no editor
-// yet, so there is nothing here to create, edit or remove.
+// Edits Settings.TerminalTemplates. A project's own ShellTemplates have no
+// editor. Every successful mutation answers with a fresh onTemplatesListed, so
+// that event is also what closes the form.
 
 function templateCommandLine(t) {
     const parts = [t.command || '(default shell)'].concat(t.args || []);
@@ -3958,8 +4007,12 @@ function templateCommandLine(t) {
 }
 
 function renderTemplates() {
-    let html = '<div class="page-header"><h2>Templates</h2></div>';
+    if (state.editingTemplateId) return renderTemplateForm();
+
+    let html = '<div class="page-header"><h2>Templates</h2>';
+    html += '<button class="btn btn-primary" onclick="newTemplate()">+ Add template</button></div>';
     html += '<p class="page-intro">Launch configs for project terminals: argv, env passthrough and the sandbox/model-key defaults a session inherits unless a project\'s own Shell Templates override them.</p>';
+    if (state.templateError) html += '<div class="proj-error">' + esc(state.templateError) + '</div>';
 
     if ((state.templates || []).length === 0) {
         html += '<div class="empty-state">No templates.</div>';
@@ -3974,6 +4027,10 @@ function renderTemplates() {
         if (t.builtIn) html += '<span class="pill muted">built-in</span>';
         if (t.sandbox) html += '<span class="pill ok">sandboxed</span>';
         if (t.model_key) html += '<span class="pill ok">model key</span>';
+        html += '</div>';
+        html += '<div style="display:flex;gap:4px">';
+        html += '<button class="btn btn-sm" ' + bind(editTemplate, t.id) + '>Edit</button>';
+        html += '<button class="btn btn-sm btn-danger" ' + bind(removeTemplate, t.id, t.name) + '>Remove</button>';
         html += '</div></div>';
         html += '<div class="proj-card-path">' + templateCommandLine(t) + '</div>';
         if (t.description) html += '<div class="proj-card-meta"><span>' + esc(t.description) + '</span></div>';
@@ -3982,9 +4039,160 @@ function renderTemplates() {
     return html;
 }
 
+function templateLines(text) {
+    return text.split('\n').map(s => s.trim()).filter(Boolean);
+}
+
+function blankTemplateForm() {
+    return { id: '', name: '', description: '', icon: '', command: '', args: '', env: '', env_passthrough: '', idleTimeout: '', sandbox: false, model_key: false, read: '', read_write: '', deny: '' };
+}
+
+function templateFormFromExisting(t) {
+    const lines = a => (a || []).join('\n');
+    return {
+        id: t.id, name: t.name || '', description: t.description || '', icon: t.icon || '',
+        command: t.command || '', args: lines(t.args),
+        env: Object.keys(t.env || {}).map(k => k + '=' + t.env[k]).join('\n'),
+        env_passthrough: lines(t.env_passthrough),
+        idleTimeout: t.idleTimeout ? String(t.idleTimeout) : '',
+        sandbox: !!t.sandbox, model_key: !!t.model_key,
+        read: lines(t.read), read_write: lines(t.read_write), deny: lines(t.deny),
+    };
+}
+
+function newTemplate() {
+    state.editingTemplateId = 'new';
+    state.templateForm = blankTemplateForm();
+    state.templateFormError = null;
+    render();
+}
+
+function editTemplate(id) {
+    const t = (state.templates || []).find(x => x.id === id);
+    if (!t) return;
+    state.editingTemplateId = id;
+    state.templateForm = templateFormFromExisting(t);
+    state.templateFormError = null;
+    render();
+}
+
+function cancelTemplateEdit() {
+    state.editingTemplateId = null;
+    state.templateForm = null;
+    state.templateFormError = null;
+    render();
+}
+
+// Same reason as captureHostFormInputs: the inputs live only in the DOM
+// between renders.
+function captureTemplateFormInputs() {
+    const f = state.templateForm;
+    for (const k of Object.keys(f)) {
+        const el = document.getElementById('tpl_' + k);
+        if (!el) continue;
+        f[k] = el.type === 'checkbox' ? el.checked : el.value;
+    }
+}
+
+function removeTemplate(id, name) {
+    if (!confirm('Remove template "' + name + '"?')) return;
+    ipc(JSON.stringify({ type: 'remove_template', id }));
+}
+
+function saveTemplateForm() {
+    const f = state.templateForm;
+    if (!f) return;
+    captureTemplateFormInputs();
+    const env = {};
+    for (const line of templateLines(f.env)) {
+        const i = line.indexOf('=');
+        if (i < 1) {
+            state.templateFormError = 'Env lines must be KEY=value: ' + line;
+            render();
+            return;
+        }
+        env[line.slice(0, i).trim()] = line.slice(i + 1);
+    }
+    const isNew = state.editingTemplateId === 'new';
+    const payload = {
+        type: isNew ? 'create_template' : 'update_template',
+        id: f.id.trim(), name: f.name.trim(), description: f.description.trim(), icon: f.icon.trim(),
+        command: f.command.trim(), args: templateLines(f.args), env,
+        env_passthrough: templateLines(f.env_passthrough),
+        sandbox: f.sandbox, model_key: f.model_key,
+        read: templateLines(f.read), read_write: templateLines(f.read_write), deny: templateLines(f.deny),
+    };
+    const idle = parseInt(f.idleTimeout, 10);
+    if (!isNaN(idle)) payload.idleTimeout = idle;
+    state.templateFormError = null;
+    state.templateSaving = true;
+    ipc(JSON.stringify(payload));
+    render();
+}
+
+function renderTemplateForm() {
+    const f = state.templateForm;
+    if (!f) return '<div class="empty-state">No form state.</div>';
+    const isNew = state.editingTemplateId === 'new';
+    const input = (key, label, placeholder, disabled) =>
+        '<label for="tpl_' + key + '">' + label + '</label>' +
+        '<input type="text" id="tpl_' + key + '" value="' + esc(f[key]) + '" placeholder="' + esc(placeholder || '') + '"' + (disabled ? ' disabled' : '') + ' />';
+    const lines = (key, label, placeholder) =>
+        '<label for="tpl_' + key + '">' + label + '</label>' +
+        '<textarea id="tpl_' + key + '" rows="3" placeholder="' + placeholder + '">' + esc(f[key]) + '</textarea>';
+    const toggle = (key, label) =>
+        '<div class="toggle-row"><span>' + label + '</span><label class="switch"><input type="checkbox" id="tpl_' + key + '" aria-label="' + esc(label) + '" ' + (f[key] ? 'checked' : '') + ' /><span class="slider"></span></label></div>';
+
+    let html = '<h2>' + (isNew ? 'Add template' : 'Edit template') + '</h2>';
+    if (state.templateFormError) html += '<div class="proj-error" tabindex="-1">' + esc(state.templateFormError) + '</div>';
+
+    html += '<div class="proj-section"><div class="proj-section-title">Identity</div>';
+    html += input('id', 'ID', 'shell', !isNew);
+    html += input('name', 'Name', 'Shell');
+    html += input('description', 'Description', 'optional');
+    html += input('icon', 'Icon', 'optional, e.g. shell');
+    html += '</div>';
+
+    html += '<div class="proj-section"><div class="proj-section-title">Launch</div>';
+    html += input('command', 'Command', 'empty = the default shell');
+    html += lines('args', 'Arguments (one per line)', '--flag&#10;${PROJECT_PATH}');
+    html += lines('env', 'Environment (KEY=value per line)', 'DEBUG=true');
+    html += lines('env_passthrough', 'Host variables to pass through (one per line)', 'ANTHROPIC_API_KEY');
+    html += input('idleTimeout', 'Idle timeout (minutes)', '1440');
+    html += toggle('model_key', 'Mint a model key (${MODEL_KEY} in env)');
+    html += '</div>';
+
+    html += '<div class="proj-section"><div class="proj-section-title">Sandbox</div>';
+    html += '<p class="proj-section-help">A sandboxed launch can reach only the project directory, the system baseline and the folders below. Entries are absolute paths or start with ~. Deny wins over every grant.</p>';
+    html += toggle('sandbox', 'Sandboxed');
+    html += lines('read', 'Read-only folders (one per line)', '~/.local/bin');
+    html += lines('read_write', 'Read-write folders (one per line)', '~/.claude');
+    html += lines('deny', 'Denied paths (one per line)', '~/.ssh');
+    html += '</div>';
+
+    html += '<div class="proj-form-actions">';
+    html += '<button class="btn btn-primary" onclick="saveTemplateForm()" ' + (state.templateSaving ? 'disabled' : '') + '>Save</button>';
+    html += '<button class="btn btn-danger" onclick="cancelTemplateEdit()">Cancel</button>';
+    html += '</div>';
+    return html;
+}
+
 window.onTemplatesListed = function(templates) {
     state.templates = templates || [];
+    if (state.templateSaving) {
+        state.templateSaving = false;
+        state.editingTemplateId = null;
+        state.templateForm = null;
+    }
+    state.templateError = null;
     render('push');
+};
+
+window.onTemplateError = function(msg) {
+    state.templateSaving = false;
+    state.templateError = msg;
+    state.templateFormError = msg;
+    render();
 };
 
 function blankHostForm() {
@@ -6203,6 +6411,7 @@ document.addEventListener('keydown', function(e) {
     if (e.key !== 'Escape') return;
     if (state.editingProjectId) { cancelProjectEdit(); return; }
     if (state.editingHostId) { cancelHostEdit(); return; }
+    if (state.editingTemplateId) { cancelTemplateEdit(); return; }
     if (state.editingServiceId) { cancelServiceEdit(); return; }
     if (state.editingMcpId) { cancelMcpEdit(); return; }
     if (state.enrolForm) { cancelEnrolment(); return; }
@@ -6762,6 +6971,8 @@ Object.assign(window, {
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueIsAsserted, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addProjMount, removeProjMount, setProjMountAccess,
+    isProjTemplatesWildcard, setProjTemplatesWildcard, toggleProjTemplate,
+    blankTemplateForm, cancelTemplateEdit, captureTemplateFormInputs, editTemplate, newTemplate, removeTemplate, renderTemplateForm, saveTemplateForm, templateFormFromExisting, templateLines,
     blankHostForm, cancelHostEdit, captureHostFormInputs, disconnectHost, editHost, harvestHostForm, hostFormFromExisting, hostNameFor, isHostedForm, newHost, probeHost, removeHost, renderHostForm, renderHostProbeCard, renderHostProbeSummary, renderHostStatus, renderHosts, saveHostForm, setProjWhere, testHostConnection,
     mcpHealthPillFor, toggleMcpToolsDisclosure, renderMcpToolsDisclosure, formatUptime, serviceStatusLineHTML,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyToClipboard, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceEnvRows, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcEnvAddRow, svcEnvMergedForDisplay, svcEnvRemoveRow, svcEnvSetMode, svcEnvSetValue, svcEnvWireValue, svcFormValues, svcModelAddRow, svcModelRemoveRow, svcModelSetValue, svcModelsCapChanged, renderServiceModelRows, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});

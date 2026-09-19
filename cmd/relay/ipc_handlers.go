@@ -394,7 +394,10 @@ const (
 	MsgRevealServiceLog = "reveal_service_log"
 
 	// Templates (ipc_templates.go)
-	MsgListTemplates = "list_templates"
+	MsgListTemplates  = "list_templates"
+	MsgCreateTemplate = "create_template"
+	MsgUpdateTemplate = "update_template"
+	MsgRemoveTemplate = "remove_template"
 )
 
 // ---------------------------------------------------------------------------
@@ -464,7 +467,10 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgRevealServiceLog: ipcRevealServiceLog,
 
 	// Templates (ipc_templates.go)
-	MsgListTemplates: ipcListTemplates,
+	MsgListTemplates:  ipcListTemplates,
+	MsgCreateTemplate: ipcCreateTemplate,
+	MsgUpdateTemplate: ipcUpdateTemplate,
+	MsgRemoveTemplate: ipcRemoveTemplate,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.

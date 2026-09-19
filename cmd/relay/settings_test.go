@@ -251,8 +251,8 @@ func TestIsHTTP(t *testing.T) {
 
 func TestDefaultSettings(t *testing.T) {
 	s := config.DefaultSettings()
-	if s.Version != 1 {
-		t.Fatalf("expected version 1, got %d", s.Version)
+	if s.Version != config.CurrentSettingsVersion {
+		t.Fatalf("expected version %d, got %d", config.CurrentSettingsVersion, s.Version)
 	}
 	if s.ExternalMcps == nil || len(s.ExternalMcps) != 0 {
 		t.Fatal("ExternalMcps should be non-nil empty slice")
@@ -279,8 +279,8 @@ func TestSettingsCache(t *testing.T) {
 		if s == nil {
 			t.Fatal("Get should never return nil")
 		}
-		if s.Version != 1 {
-			t.Fatalf("expected version 1, got %d", s.Version)
+		if s.Version != config.CurrentSettingsVersion {
+			t.Fatalf("expected version %d, got %d", config.CurrentSettingsVersion, s.Version)
 		}
 	})
 

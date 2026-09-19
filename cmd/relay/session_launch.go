@@ -108,13 +108,9 @@ func callerAuditActor(c LaunchCaller) audit.AuditActor {
 // Cols, Rows) or its POST /api/sessions body (Kind == KindClaude/KindPi/
 // KindChat: Model, ClientSettings, SystemPrompt, AppendClaudeMd) —
 // session-messages.js's handleCreateSession is the wire shape for the
-// latter. ProjectID == "" is a legitimate ad-hoc request only for
-// Kind == KindPTY (SH §3.1: "project: null for ad-hoc terminals" — the rule
-// names terminals specifically, not every kind); AuthorizeLaunch refuses an
-// ad-hoc claude/pi/chat request outright, since those kinds mint a model key
-// scoped to a project and carry a permission policy that only a real project
-// has. EffectiveTerminalTemplatesForProject's own proj-may-be-nil contract
-// is what the ad-hoc pty path relies on.
+// latter. Every request names a project: AuthorizeLaunch refuses one without
+// (project_required), because the project's allowed_templates is what permits
+// a template at all.
 type LaunchRequest struct {
 	Caller LaunchCaller
 
@@ -294,10 +290,9 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		}
 	}
 
-	// SH §3.1 sanctions ad-hoc (no-project) launches for terminals only —
-	// claude/pi/chat mint a project-scoped model key and carry a project's
-	// permission policy, neither of which exists without a real project.
-	if req.ProjectID == "" && req.Kind != KindPTY {
+	// Every launch names a project: a project's allowed_templates is what
+	// says which template it may run, so a launch without one has none.
+	if req.ProjectID == "" {
 		return nil, forbidden("project_required", fmt.Sprintf("%s sessions require a project", req.Kind), baseFields)
 	}
 
@@ -328,8 +323,13 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		}
 		tmpl = &t
 		baseFields.TemplateID = tmpl.ID
-	} else if req.ProjectID != "" && req.Model != "" && !modelAllowedForProject(store, req.ProjectID, req.Model) {
-		return nil, forbidden("model_not_allowed", "model is not allowed for this project", baseFields)
+	} else {
+		if !proj.AllowsTemplate(kindTemplateIDs[req.Kind]) {
+			return nil, forbidden("template_not_allowed", fmt.Sprintf("template %q is not available for this project", kindTemplateIDs[req.Kind]), baseFields)
+		}
+		if req.Model != "" && !modelAllowedForProject(store, req.ProjectID, req.Model) {
+			return nil, forbidden("model_not_allowed", "model is not allowed for this project", baseFields)
+		}
 	}
 
 	// An SSH-hosted project's target runs on the far end, where a profile

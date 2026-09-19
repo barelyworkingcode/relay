@@ -119,6 +119,10 @@ var gateAllowlistedFiles = map[string]string{
 	"cmd/relay/host_ops.go": "the HostOps core: deliberately UNGATED (docs/ssh-hosts.md) -- a host record names an ssh destination, not a tool-permission grant, " +
 		"and is not one of the acts in presence.GatedOps; the control-plane `configure`/`execute` capability classes checked by the route " +
 		"registrar before either door's handler runs are the boundary this record's mutations sit behind",
+	"cmd/relay/template_ops.go": "the TemplateOps core: deliberately UNGATED, by the operator's decision (docs/session-host.md) -- unlike a host " +
+		"record, a template can widen a sandboxed session's folders or opt it into a model key, so this is a knowing exception to the " +
+		"fail-closed default, not a claim that it is not a grant; the `configure` class the routes require and the Settings window are the " +
+		"boundary. Gating it means adding template ops to presence.GatedOps and calling Require here",
 
 	// S6 brokered every mutating CLI command over admin_op (ADR-017
 	// implementation spec §7): credential_cmd.go, mcp_cmd.go, service_cmd.go
@@ -336,7 +340,7 @@ var wantGateAllowlistedFiles = []string{
 	"cmd/relay/enrolment_ops.go", "cmd/relay/login_ops.go",
 	"internal/project/scope.go", "cmd/relay/api_credential.go", "internal/enrolment/enrolment.go", "internal/project/apply.go",
 	"cmd/relay/project_routes.go", "cmd/relay/ipc_handlers.go", "cmd/relay/trayapp.go", "cmd/relay/login_routes.go",
-	"cmd/relay/host_ops.go", "cmd/relay/eve_enrolment_ops.go", "cmd/relay/eve_passkey_ops.go",
+	"cmd/relay/host_ops.go", "cmd/relay/eve_enrolment_ops.go", "cmd/relay/eve_passkey_ops.go", "cmd/relay/template_ops.go",
 }
 
 // TestGate_MutatorAndAllowlistSetsHaveNotShrunk is AC-11: a

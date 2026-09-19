@@ -58,10 +58,10 @@ func TestValidateShape_HostProject(t *testing.T) {
 		}
 	})
 
-	t.Run("allows chat_templates, shell_templates, allowed_models, permission_policy, session_folders", func(t *testing.T) {
+	t.Run("allows chat_templates, allowed_templates, allowed_models, permission_policy, session_folders", func(t *testing.T) {
 		p := base()
 		p.ChatTemplates = []config.ChatTemplate{{ID: "c1", Name: "default", Model: "sonnet"}}
-		p.ShellTemplates = []config.ShellTemplate{{ID: "s1", Name: "shell"}}
+		p.AllowedTemplates = []string{"shell"}
 		p.AllowedModels = []string{"sonnet"}
 		p.PermissionPolicy = &config.PermissionPolicy{DefaultMode: "acceptEdits"}
 		p.SessionFolders = []string{"folder1"}

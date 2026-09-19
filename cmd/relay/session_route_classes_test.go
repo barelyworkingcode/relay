@@ -20,15 +20,18 @@ import (
 
 func TestSessionRouteClasses_MatchesTheC1Table(t *testing.T) {
 	want := map[string]control.CapabilityClass{
-		"POST /api/terminals":              control.ClassExecute,
-		"POST /api/terminals/{$}":          control.ClassExecute,
-		"POST /api/sessions":               control.ClassExecute,
-		"POST /api/sessions/{$}":           control.ClassExecute,
-		"POST /api/sessions/{id}/resume":   control.ClassExecute,
-		"GET /api/terminal/templates":      control.ClassRead,
-		"GET /api/terminal/templates/{id}": control.ClassRead,
-		"GET /api/terminals":               control.ClassProxy,
-		"GET /api/sessions":                control.ClassProxy,
+		"POST /api/terminals":                 control.ClassExecute,
+		"POST /api/terminals/{$}":             control.ClassExecute,
+		"POST /api/sessions":                  control.ClassExecute,
+		"POST /api/sessions/{$}":              control.ClassExecute,
+		"POST /api/sessions/{id}/resume":      control.ClassExecute,
+		"GET /api/terminal/templates":         control.ClassRead,
+		"GET /api/terminal/templates/{id}":    control.ClassRead,
+		"POST /api/terminal/templates":        control.ClassConfigure,
+		"PUT /api/terminal/templates/{id}":    control.ClassConfigure,
+		"DELETE /api/terminal/templates/{id}": control.ClassConfigure,
+		"GET /api/terminals":                  control.ClassProxy,
+		"GET /api/sessions":                   control.ClassProxy,
 	}
 	if len(sessionRouteClasses) != len(want) {
 		t.Fatalf("sessionRouteClasses has %d entries, want %d: %v", len(sessionRouteClasses), len(want), sessionRouteClasses)

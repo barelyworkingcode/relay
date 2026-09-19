@@ -276,14 +276,17 @@ func (s *Settings) UpdateProjectChatTemplates(id string, templates []ChatTemplat
 	proj.ChatTemplates = templates
 }
 
-// UpdateProjectShellTemplates: no SyncProjectToken call, for the same reason
-// as UpdateProjectChatTemplates.
-func (s *Settings) UpdateProjectShellTemplates(id string, templates []ShellTemplate) {
+// UpdateProjectAllowedTemplates: no SyncProjectToken call, for the same reason
+// as UpdateProjectChatTemplates. A nil list is stored as empty: none.
+func (s *Settings) UpdateProjectAllowedTemplates(id string, templates []string) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
 		return
 	}
-	proj.ShellTemplates = templates
+	if templates == nil {
+		templates = []string{}
+	}
+	proj.AllowedTemplates = templates
 }
 
 // UpdateProjectSessionFolders trims and de-duplicates names
@@ -475,7 +478,7 @@ func (s *Settings) UpdateProjectAllowExternal(id string, allow map[string]bool) 
 }
 
 // UpdateProjectMounts replaces id's mount-plane grant list wholesale — the
-// same plain-replace shape as UpdateProjectShellTemplates, since a mount
+// same plain-replace shape as UpdateProjectAllowedTemplates, since a mount
 // carries no per-MCP cross-check the way AllowExternal's does; ValidateMounts
 // (called from ValidateShape, before this mutator ever runs) is what refuses
 // a bad id, an overlapping path, or a kind:local project's non-empty list.

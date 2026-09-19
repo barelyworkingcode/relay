@@ -259,7 +259,7 @@ every project written before this field existed round-trips unaffected, and
 an equality check invites a future bug where an unset field reads as remote.
 
 A remote project has no `Path` and cannot have anything that presumes a host
-directory — `GenerateSkill`, `ShellTemplates`, and the
+directory — `GenerateSkill`, a non-empty `allowed_templates`, and the
 `allowed_mcp_ids: ["*"]` wildcard are all refused by `project.ValidateShape`,
 as is a non-empty `allowed_models` (an empty allowlist is the
 only value `modelAllowedForProject` won't misread as "unrestricted"). A

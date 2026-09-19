@@ -20,7 +20,7 @@ type CreateFields struct {
 	AllowedMcpIDs    []string                 `json:"allowed_mcp_ids"`
 	AllowedModels    []string                 `json:"allowed_models"`
 	ChatTemplates    []config.ChatTemplate    `json:"chat_templates"`
-	ShellTemplates   []config.ShellTemplate   `json:"shell_templates"`
+	AllowedTemplates []string                 `json:"allowed_templates"`
 	PermissionPolicy *config.PermissionPolicy `json:"permission_policy,omitempty"`
 	GenerateSkill    bool                     `json:"generate_skill,omitempty"`
 	DisabledTools    map[string][]string      `json:"disabled_tools,omitempty"`
@@ -54,7 +54,7 @@ type UpdateFields struct {
 	AllowedMcpIDs    *[]string                `json:"allowed_mcp_ids,omitempty"`
 	AllowedModels    *[]string                `json:"allowed_models,omitempty"`
 	ChatTemplates    *[]config.ChatTemplate   `json:"chat_templates,omitempty"`
-	ShellTemplates   *[]config.ShellTemplate  `json:"shell_templates,omitempty"`
+	AllowedTemplates *[]string                `json:"allowed_templates,omitempty"`
 	PermissionPolicy *config.PermissionPolicy `json:"permission_policy,omitempty"`
 	GenerateSkill    *bool                    `json:"generate_skill,omitempty"`
 	DisabledTools    *map[string][]string     `json:"disabled_tools,omitempty"`
@@ -77,7 +77,7 @@ type UpdateFields struct {
 // rolled back. Returns the fully-resolved project (re-read after the
 // sub-mutations).
 func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (config.Project, error) {
-	// GenerateSkill, ShellTemplates, PermissionPolicy,
+	// GenerateSkill, AllowedTemplates, PermissionPolicy,
 	// ChatTemplates and the permission-set fields are not parameters of
 	// CreateWithTokenKind — they are applied by sub-mutations below,
 	// after the project already exists. They still have to be on this
@@ -92,7 +92,7 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 		Path:             f.Path,
 		AllowedMcpIDs:    f.AllowedMcpIDs,
 		AllowedModels:    f.AllowedModels,
-		ShellTemplates:   f.ShellTemplates,
+		AllowedTemplates: f.AllowedTemplates,
 		GenerateSkill:    f.GenerateSkill,
 		DisabledTools:    f.DisabledTools,
 		AllowedTools:     f.AllowedTools,
@@ -154,9 +154,7 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 	if len(f.Context) > 0 {
 		updateProjectContext(s, created.ID, f.Context, surfaces)
 	}
-	if len(f.ShellTemplates) > 0 {
-		s.UpdateProjectShellTemplates(created.ID, f.ShellTemplates)
-	}
+	s.UpdateProjectAllowedTemplates(created.ID, f.AllowedTemplates)
 	for mcpID, disabled := range f.DisabledTools {
 		s.UpdateProjectDisabledTools(created.ID, mcpID, disabled)
 	}
@@ -199,8 +197,8 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	if f.AllowedModels != nil {
 		candidate.AllowedModels = *f.AllowedModels
 	}
-	if f.ShellTemplates != nil {
-		candidate.ShellTemplates = *f.ShellTemplates
+	if f.AllowedTemplates != nil {
+		candidate.AllowedTemplates = *f.AllowedTemplates
 	}
 	if f.GenerateSkill != nil {
 		candidate.GenerateSkill = *f.GenerateSkill
@@ -301,8 +299,8 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	if f.ChatTemplates != nil {
 		s.UpdateProjectChatTemplates(id, *f.ChatTemplates)
 	}
-	if f.ShellTemplates != nil {
-		s.UpdateProjectShellTemplates(id, *f.ShellTemplates)
+	if f.AllowedTemplates != nil {
+		s.UpdateProjectAllowedTemplates(id, *f.AllowedTemplates)
 	}
 	if f.PermissionPolicy != nil {
 		// Same reading the candidate above was validated under: an empty
