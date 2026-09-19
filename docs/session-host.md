@@ -228,6 +228,29 @@ is fully closed by the time the target spawns (step 1), and fd 4 is
 `CLOSE_ON_EXEC` (set at open), so `exec(2)` closes it in the child
 automatically.
 
+## What a child inherits
+
+A terminal, a claude or pi session and an MCP server child each start from
+`relay-sessions`' own environment, minus two sets:
+
+- **Relay's credentials**: `RELAY_SERVICE_TOKEN`, `RELAY_PROJECT_TOKEN` and the
+  rest of `relaySecretEnvKeys`.
+- **The variables of any Claude Code session that launched relay**:
+  `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT` and everything prefixed
+  `CLAUDE_CODE_` (`childenv.IsParentClaudeSession`). Relay is often started from
+  a terminal, and a build script run inside a Claude Code session hands it that
+  session's environment: its id, its bridge and messaging token, and the
+  `CLAUDE_CODE_CHILD_SESSION` marker. Without the scrub, a `claude` in a terminal
+  relay starts believes it is a child of that session (it turns transcript
+  saving off) and every terminal can read the parent's messaging token.
+
+`CLAUDE_CONFIG_DIR` and the `ANTHROPIC_*` names are not dropped: they configure a
+Claude Code the operator means to run. A template's `env` and `env_passthrough`
+are applied after this base, so a template that wants one of the dropped names,
+`CLAUDE_CODE_OAUTH_TOKEN` for example, names it. Services relay starts (relayLLM,
+eve) still inherit relay's environment apart from relay's own tokens; that is not
+covered here.
+
 ## What a sandboxed session can reach
 
 File access is denied by default, in both directions. `sandboxSpecForLaunch`

@@ -17,6 +17,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/barelyworkingcode/relay/internal/service"
+	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
 	"github.com/barelyworkingcode/relay/internal/sessions/clock"
 	"github.com/barelyworkingcode/relay/internal/sessions/shim"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
@@ -321,10 +322,16 @@ var relaySecretEnvKeys = []string{
 	"RELAY_LLM_HOOK_TOKEN",
 }
 
+// childBaseEnv is os.Environ() minus relaySecretEnvKeys and minus the variables
+// of whatever Claude Code session launched relay (childenv.IsParentClaudeSession):
+// a terminal relay starts must not believe it is a child of that session.
 func childBaseEnv() []string {
 	src := os.Environ()
 	out := make([]string, 0, len(src))
 	for _, kv := range src {
+		if childenv.IsParentClaudeSession(kv) {
+			continue
+		}
 		drop := false
 		for _, k := range relaySecretEnvKeys {
 			if strings.HasPrefix(kv, k+"=") {
