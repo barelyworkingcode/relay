@@ -108,6 +108,7 @@ func BuiltinTerminalTemplates() []TerminalTemplate {
 			Name:        "Shell",
 			Icon:        "shell",
 			Description: "Default system shell",
+			Sandbox:     true,
 		},
 		{
 			ID:          "rh",

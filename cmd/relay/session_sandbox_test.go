@@ -255,6 +255,26 @@ func TestSandboxSpecForLaunch_PiSessionsIsReadWriteAllowed(t *testing.T) {
 	}
 }
 
+// TestAuthorizeLaunch_ShellTemplateIsSandboxed pins that a plain Shell
+// terminal is confined: it shipped with sandbox off, so a terminal opened from
+// eve could write anywhere the user could.
+func TestAuthorizeLaunch_ShellTemplateIsSandboxed(t *testing.T) {
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), newLaunchTestLedger(t), LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell",
+	})
+	if refusal != nil {
+		t.Fatalf("refused: %+v", refusal)
+	}
+	if result.Spec.Sandbox == nil || result.Spec.Sandbox.ProfilePath == "" {
+		t.Fatalf("the built-in shell template got no sandbox profile: %+v", result.Spec.Sandbox)
+	}
+	if !result.AuditFields.Sandbox {
+		t.Error("audit says a shell launch is unsandboxed")
+	}
+}
+
 // TestAuthorizeLaunch_NoProfileWhenNotSandboxed covers the two ways a launch
 // is deliberately unconfined: a pty template that never opted in, and an SSH
 // project whose target runs on another machine entirely.
@@ -263,7 +283,7 @@ func TestAuthorizeLaunch_NoProfileWhenNotSandboxed(t *testing.T) {
 		store := newLaunchTestStore(t)
 		proj := addLaunchTestProject(t, store, nil)
 		result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), newLaunchTestLedger(t), LaunchRequest{
-			Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell",
+			Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "opencode",
 		})
 		if refusal != nil {
 			t.Fatalf("refused: %+v", refusal)
