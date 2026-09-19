@@ -63,6 +63,7 @@ func TestIPCDispatch_HandlerMapKeysAreUnique(t *testing.T) {
 }
 
 func TestIPCDispatch_HandlerSurvivesMalformedPayload(t *testing.T) {
+	mkSandboxRelayHome(t)
 	// Every handler receives a json.RawMessage that may be garbage; none
 	// of them should panic or hang. Smoke-test by invoking each handler
 	// with a payload that doesn't match its schema.
