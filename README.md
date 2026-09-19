@@ -48,6 +48,10 @@ and back. Services hold no hardcoded knowledge of each other — each declares t
 routes it serves in a manifest and relay routes accordingly. See
 [`docs/service-manifest.md`](./docs/service-manifest.md).
 
+The full design — the grant model, remote enrolment, the credential model and
+the reasoning behind each — is in [`docs/architecture.md`](./docs/architecture.md);
+the command line is in [`docs/cli.md`](./docs/cli.md).
+
 ## Projects
 
 Projects are the primary unit of organization and security. Each project binds a
@@ -116,7 +120,8 @@ same selection logic and env var, so all binaries ship under one identity.
 Relay is the sole broker of credentials in the ecosystem. The model, in brief:
 
 - **Project tokens** scope MCP access per project; the token *is* the boundary.
-  Stored as plaintext + SHA-256 hash in `settings.json` (mode 0600).
+  Sealed at rest beside a clear SHA-256 hash in `settings.json` (mode 0600);
+  see [`docs/sealed-config.md`](./docs/sealed-config.md).
 - **Launch identity** — no relay credential is in any managed service's
   environment. Relay hands each launch a single-use secret on fd 3; the
   service's bridge `Hello` binds it to the process's kernel audit token, and

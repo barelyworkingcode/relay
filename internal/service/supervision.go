@@ -10,7 +10,7 @@ import (
 )
 
 // Restart policy for a service relay is responsible for running (docs/service-manifest.md,
-// CLAUDE.md's Security section). Vars, not consts, so a test can shorten them
+// docs/architecture.md's Security section). Vars, not consts, so a test can shorten them
 // to exercise a full crash loop without waiting out real backoff; nothing in
 // production writes them.
 var (

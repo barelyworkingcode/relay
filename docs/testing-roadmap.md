@@ -11,7 +11,7 @@ record the approach here when you add coverage to a new one.
 
 | Repo | Default tier | Live tier | Pre-commit gate | Sandbox guard |
 |---|---|---|---|---|
-| **relay** | yes (~1.5s) | yes (`-tags=live`) | yes (`.githooks/pre-commit`) | yes (`support_safety_test.go`) |
+| **relay** | yes (minutes; see [`testing.md`](testing.md)) | yes (`-tags=live`) | build+vet at commit, suite at push, suite+race in CI | yes (`support_safety_test.go`) |
 | **relayLLM** | yes | yes (`-tags=live` + `-tags=llm`) | yes (`.githooks/pre-commit`) | partial |
 | **eve** | yes (Jest) + e2e (Playwright) | no | no | no |
 | **relayScheduler** | partial (`client_test.go`) | no | no | no |

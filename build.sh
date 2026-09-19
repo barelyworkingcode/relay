@@ -8,8 +8,8 @@
 #   ./build.sh --release        # sign, notarize, emit /tmp/Relay.dmg (implies --test)
 #
 # Tests run BEFORE install so a broken binary never lands in /Applications.
-# Use --test on every developer-machine build; the pre-commit hook already
-# gates commits, but install-from-local-changes deserves the same safety net.
+# Use --test on every developer-machine build: the suite otherwise runs only at
+# push time, and an install from local changes deserves the same safety net.
 
 set -euo pipefail
 
@@ -39,8 +39,8 @@ done
 echo "Bundling settings UI..."
 go run ./web/gen
 
-# Run the hermetic test suite up front. Mirrors what .githooks/pre-commit
-# runs — keeps the install path consistent with the commit gate.
+# Run the hermetic test suite up front. Mirrors what .githooks/pre-push runs —
+# keeps the install path consistent with the push gate.
 if $RUN_TESTS; then
     echo "=== Pre-install: hermetic test suite ==="
     if ! go vet ./...; then
