@@ -228,6 +228,58 @@ is fully closed by the time the target spawns (step 1), and fd 4 is
 `CLOSE_ON_EXEC` (set at open), so `exec(2)` closes it in the child
 automatically.
 
+## What a sandboxed session can reach
+
+File access is denied by default, in both directions. `sandboxSpecForLaunch`
+(`cmd/relay/session_sandbox.go`) names what a session is granted and
+`internal/sessions/sandbox` renders it as one Seatbelt profile: a bare
+`(deny file-read* file-write*)`, then the grants, then read-only `stat` on the
+parents of each grant so a process can reach it. Nothing is listed to deny.
+Relay's own data directory, another project, eve's data and `~/.ssh` are
+unreachable because nothing names them, so a directory nobody thought to
+protect is protected anyway. Everything that is not a file (network, process,
+mach) stays `(allow default)`; the unix-socket, loopback and setuid rules are
+separate and unchanged.
+
+| Grant | Paths | Why |
+|---|---|---|
+| **Read-write** | the project directory | the session's own work |
+| | `~/.cache`, `~/go/pkg`, `~/.npm`, `~/Library/Caches`, `~/.claude`, `~/.pi` | toolchain and agent state |
+| | the file `~/.claude.json` and its `.lock`, `.tmp.*`, `.backup` siblings | Claude Code's atomic writes (SP2 row 17) |
+| | `/private/tmp/cc-socks`, `os.TempDir()`, `DARWIN_USER_TEMP_DIR`, `/dev` | Claude Code and Apple's tools write there whatever `TMPDIR` says |
+| | `<config dir>/sessions/pi-sessions` | pi's own transcript |
+| **Read-only** | `~/Library/Keychains` | denying it logs Claude Code out (SP2) |
+| | `/opt/homebrew` | Homebrew tools |
+| | the developer tools: `<Xcode>.app/Contents`, or `/Library/Developer/CommandLineTools` | `git` and `clang` resolve through `/var/select/developer_dir` |
+| | the files `~/.gitconfig`, `~/.zshenv`, `~/.zprofile`, `~/.zshrc` | a shell that starts with its configuration |
+| **System baseline** (every sandboxed session, read-only, in code) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves | the smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. |
+
+Two rules the measurement turned up. **Exec does not need a read grant on the
+binary**, so a system binary runs without one; **a symlink does**: a tool that
+lives behind a link (`~/.local/bin/claude`, `~/.bun/bin/pi`) needs the
+directory holding the link and the directory holding its target. And the
+kernel matches the path *it* resolved, in the volume's own letter case, so
+`sandbox.resolve` asks the kernel for the on-disk spelling of every grant: a
+project path stored as `/users/me/Proj` would otherwise match nothing and lock
+the session out of its own directory. A grant reached through a symlinked final
+component also names the link itself.
+
+**Tools outside that set do not run** until their directory is granted. That
+is `sandbox` in `settings.json`, which adds to every sandboxed session:
+
+```json
+"sandbox": {
+  "read":       ["~/.local/bin", "~/.local/share/claude", "~/.bun/bin", "~/.bun/install/global", "~/.hermes/node"],
+  "read_write": []
+}
+```
+
+Each entry is an absolute path or starts with `~`; `read` grants reading and
+`read_write` grants both. An entry that is relative, empty, or the whole
+filesystem refuses the launch (`sandbox_unavailable`) rather than being
+dropped, since a dropped entry would leave a tool silently unreachable. Absent
+means nothing extra.
+
 ## Host data directory layout
 
 Everything relay-sessions owns lives under one directory, resolved from the
@@ -256,17 +308,17 @@ the shim reads it by the absolute path relay hands it in the `LaunchSpec`.
 A profile is removed at session teardown (`sandbox.Remove`, called from
 `sessionAccount.end`).
 
-`sessions/pi-sessions/` sits inside the same tree every sandbox profile
-denies whole (relay's own config dir), which would otherwise leave a
-sandboxed pi session unable to write its own transcript on its first turn.
-`sandboxSpecForLaunch` re-permits exactly this one leaf
-(`sessionPiSessionsDir()`, `Spec.AllowAfterDenyDirs`) — computed
-independently, the same way `sessionProfilesDir()` is, so it stays correct
-under a `relay --config-dir` override without needing to import
+`sessions/pi-sessions/` sits inside relay's own config dir, which no sandbox
+profile grants (see [What a sandboxed session can
+reach](#what-a-sandboxed-session-can-reach)), so a sandboxed pi session would
+be unable to write its own transcript on its first turn. `sandboxSpecForLaunch`
+grants read-write on exactly this one leaf (`sessionPiSessionsDir()`) —
+computed independently, the same way `sessionProfilesDir()` is, so it stays
+correct under a `relay --config-dir` override without needing to import
 `provider.PiConfig`. The tradeoff this accepts: a sandboxed pi session can
 read (and write) another sandboxed pi session's own transcript, since the
-allow rule names the whole `pi-sessions/` directory, not a single session's
-file within it.
+grant names the whole `pi-sessions/` directory, not a single session's file
+within it.
 
 `~/Library/Application Support/relayLLM` (relayLLM's own, separate data
 directory) is a one-time, best-effort migration *source*: `runService` calls
@@ -395,13 +447,11 @@ what works.
      attempting to reuse either.
    - A sandboxed pi session can read (and, if it chose to, tamper with)
      another sandboxed pi session's own JSONL transcript: pi's transcripts
-     live under relay's own directory, which every sandbox profile denies
-     whole, so `sandboxSpecForLaunch` (`cmd/relay/session_sandbox.go`) now
-     re-permits exactly that one leaf (`<config dir>/sessions/pi-sessions`,
-     `Spec.AllowAfterDenyDirs`, `internal/sessions/sandbox/sandbox.go`) —
-     the read/write mirror of the unix-connect-allow-after-deny pattern the
-     same file already used for sockets. A documented tradeoff, not fixed
-     here.
+     live under relay's own directory, which no sandbox profile grants, so
+     `sandboxSpecForLaunch` (`cmd/relay/session_sandbox.go`) grants
+     read-write on exactly that one leaf (`<config dir>/sessions/pi-sessions`,
+     `Spec.ReadWrite`, `internal/sessions/sandbox/sandbox.go`). A documented
+     tradeoff, not fixed here.
    - The broker-vs-subprocess question this fix's own design explicitly
      carved out (whether relayLLM's model broker should sit behind the same
      boundary) is separate, later work.

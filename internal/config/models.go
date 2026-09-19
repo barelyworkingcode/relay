@@ -907,3 +907,16 @@ type RemoteConfig struct {
 type ModelEndpointConfig struct {
 	Listen string `json:"listen,omitempty"`
 }
+
+// SandboxConfig lists directories a sandboxed session may reach beyond the set
+// relay grants on its own (docs/session-host.md, "What a session can reach").
+// File access is denied by default, so a tool that lives outside that set (a
+// Node or Bun install, a version manager, an editor's cache) does not run until
+// its directory is named here. Every entry is a path that is absolute or starts
+// with `~`; `read` grants reading, `read_write` grants reading and writing.
+// Absent means nothing extra: the same "absent means closed" default as
+// ModelEndpoint and Remote.
+type SandboxConfig struct {
+	Read      []string `json:"read,omitempty"`
+	ReadWrite []string `json:"read_write,omitempty"`
+}

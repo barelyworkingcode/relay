@@ -35,7 +35,32 @@ func normalizeSandboxProfile(t *testing.T, body, projectA, projectB, home, eveDa
 	for _, s := range subs {
 		body = strings.ReplaceAll(body, s.from, s.to)
 	}
-	return body
+	return dropMetadataBlock(body)
+}
+
+// dropMetadataBlock removes the ancestor-metadata block from a profile. Its
+// entries are the parent directories of every grant, and a grant under a test
+// temp directory has parents whose names are random, so they cannot sit in a
+// golden. The block's construction is pinned in the sandbox package's own tests.
+func dropMetadataBlock(body string) string {
+	start := strings.Index(body, "(allow file-read-metadata")
+	if start < 0 {
+		return body
+	}
+	end := strings.Index(body[start:], "))\n")
+	if end < 0 {
+		return body
+	}
+	return body[:start] + body[start+end+3:]
+}
+
+// noDeveloperTools makes the profile independent of the developer tools the
+// test machine has installed.
+func noDeveloperTools(t *testing.T) {
+	t.Helper()
+	original := developerTools
+	t.Cleanup(func() { developerTools = original })
+	developerTools = func() string { return "" }
 }
 
 // setModelEndpoint gives a test store C8's default block, so the golden
@@ -120,6 +145,7 @@ func TestAuthorizeLaunch_SandboxProfileGoldenPerKind(t *testing.T) {
 		{"rh", LaunchRequest{Kind: KindPTY, TemplateID: "rh"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			noDeveloperTools(t)
 			store := newLaunchTestStore(t)
 			proj := addLaunchTestProject(t, store, nil)
 			other := addLaunchTestProject(t, store, func(p *config.Project) { p.ID = "p2"; p.Name = "Other" })
@@ -170,14 +196,16 @@ func TestAuthorizeLaunch_SandboxProfileIsWrittenWhereTheShimLooks(t *testing.T) 
 }
 
 // TestAuthorizeLaunch_SandboxProfileContents asserts the rules whose absence
-// would be invisible in a golden that drifted with them: the hook socket a
-// session must reach, the relay directory it must not, another project's
-// path, and the Keychains deny SP2 removed (blocking it logs Claude Code
-// out, so its reappearance is a regression, not a tightening).
+// would be invisible in a golden that drifted with them: the project it owns,
+// the hook socket a session must reach, and the Keychains SP2 found must stay
+// readable (blocking them logs Claude Code out, so their disappearance is a
+// regression, not a tightening).
 func TestAuthorizeLaunch_SandboxProfileContents(t *testing.T) {
+	noDeveloperTools(t)
 	store := newLaunchTestStore(t)
 	proj := addLaunchTestProject(t, store, nil)
-	other := addLaunchTestProject(t, store, func(p *config.Project) { p.ID = "p2"; p.Name = "Other" })
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
 	_, body := launchWithSandbox(t, LaunchRequest{
 		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude,
@@ -186,7 +214,7 @@ func TestAuthorizeLaunch_SandboxProfileContents(t *testing.T) {
 	relayDir := sandboxRealPath(t, bridge.ConfigDir())
 	for _, want := range []string{
 		`(subpath "` + sandboxRealPath(t, proj.Path) + `")`,
-		`(subpath "` + sandboxRealPath(t, other.Path) + `")`,
+		`(subpath "` + filepath.Join(sandboxRealPath(t, home), "Library", "Keychains") + `")`,
 		`(remote unix-socket (path-literal "` + filepath.Join(relayDir, filepath.Base(service.RelaySessionsHookSocketPath(bridge.ConfigDir()))) + `"))`,
 		`(remote unix-socket (path-literal "` + filepath.Join(relayDir, "relay.sock") + `"))`,
 		`(remote unix-socket (path-regex #"^` + relayDir + `/"))`,
@@ -196,16 +224,51 @@ func TestAuthorizeLaunch_SandboxProfileContents(t *testing.T) {
 			t.Errorf("profile is missing %s\ngot:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "Keychains") {
-		t.Errorf("profile denies ~/Library/Keychains, which SP2 removed:\n%s", body)
+}
+
+// TestAuthorizeLaunch_SandboxGrantsOnlyWhatItNames is the point of the model:
+// the profile denies files by default and names no directory to deny, so what
+// a session cannot reach is everything the profile does not grant. Another
+// project, relay's own directory, eve's data and the home directory itself are
+// absent, and the one deny names no path.
+func TestAuthorizeLaunch_SandboxGrantsOnlyWhatItNames(t *testing.T) {
+	noDeveloperTools(t)
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+	other := addLaunchTestProject(t, store, func(p *config.Project) { p.ID = "p2"; p.Name = "Other" })
+	eveData := addEveTestService(t, store)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	_, body := launchWithSandbox(t, LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude,
+	}, store)
+
+	if !strings.Contains(body, "(deny file-read* file-write*)\n") {
+		t.Errorf("profile lacks the one bare file deny:\n%s", body)
+	}
+	// Ancestor metadata (stat, never contents) names the home directory as the
+	// parent of ~/.cache; that is not a grant of it.
+	fileRules := dropMetadataBlock(body[:strings.Index(body, "(deny network-outbound")])
+	homeReal := sandboxRealPath(t, home)
+	for name, path := range map[string]string{
+		"another project":    sandboxRealPath(t, other.Path),
+		"relay's directory":  sandboxRealPath(t, bridge.ConfigDir()),
+		"eve's data":         sandboxRealPath(t, eveData),
+		"the home directory": homeReal,
+		"~/.ssh":             filepath.Join(homeReal, ".ssh"),
+	} {
+		if strings.Contains(strings.ReplaceAll(fileRules, `(subpath "`+filepath.Join(sandboxRealPath(t, bridge.ConfigDir()), "sessions", "pi-sessions")+`")`, ""), `"`+path+`"`) {
+			t.Errorf("profile grants %s (%s):\n%s", name, path, fileRules)
+		}
 	}
 }
 
 // TestSandboxSpecForLaunch_PiSessionsIsReadWriteAllowed asserts
-// sandboxSpecForLaunch re-permits exactly the one leaf a sandboxed pi
-// session must be able to write its own transcript into
-// (<config dir>/sessions/pi-sessions), while the config dir itself -- and
-// everything else under it -- stays denied whole.
+// sandboxSpecForLaunch grants exactly the one leaf a sandboxed pi session must
+// be able to write its own transcript into (<config dir>/sessions/pi-sessions),
+// and that nothing grants the config dir itself: it is unreachable because it
+// is never named.
 func TestSandboxSpecForLaunch_PiSessionsIsReadWriteAllowed(t *testing.T) {
 	store := newLaunchTestStore(t)
 	proj := addLaunchTestProject(t, store, nil)
@@ -216,42 +279,132 @@ func TestSandboxSpecForLaunch_PiSessionsIsReadWriteAllowed(t *testing.T) {
 		t.Fatalf("sandboxSpecForLaunch: %v", err)
 	}
 
-	wantAllow := filepath.Join(bridge.ConfigDir(), "sessions", "pi-sessions")
+	relayDir := bridge.ConfigDir()
+	wantGrant := filepath.Join(relayDir, "sessions", "pi-sessions")
 	found := false
-	for _, p := range spec.AllowAfterDenyDirs {
-		if p == wantAllow {
+	for _, p := range spec.ReadWrite {
+		if p == wantGrant {
 			found = true
+		}
+		if p == relayDir {
+			t.Fatalf("ReadWrite grants the whole config dir %q", relayDir)
 		}
 	}
 	if !found {
-		t.Fatalf("AllowAfterDenyDirs = %v, want to contain %q", spec.AllowAfterDenyDirs, wantAllow)
+		t.Fatalf("ReadWrite = %v, want to contain %q", spec.ReadWrite, wantGrant)
 	}
-
-	relayDir := bridge.ConfigDir()
-	denied := false
-	for _, p := range spec.ReadDeny {
+	for _, p := range spec.Read {
 		if p == relayDir {
-			denied = true
+			t.Fatalf("Read grants the whole config dir %q", relayDir)
 		}
 	}
-	if !denied {
-		t.Fatalf("ReadDeny = %v, want to still contain the whole config dir %q", spec.ReadDeny, relayDir)
-	}
 
+	noDeveloperTools(t)
 	body, err := sandbox.Render(spec)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	relayReal := sandboxRealPath(t, relayDir)
-	if !strings.Contains(body, `(subpath "`+relayReal+`")`) {
-		t.Fatalf("rendered profile does not deny the whole config dir:\n%s", body)
+	if strings.Contains(body, `(subpath "`+relayReal+`")`) {
+		t.Fatalf("rendered profile grants the whole config dir:\n%s", body)
 	}
 	// pi-sessions/ itself never exists on disk in this test, so it is
 	// resolved (sandbox.resolve's own "walk up to the nearest existing
 	// ancestor" rule) as relayReal's own resolved form plus the literal
 	// suffix, not independently re-resolved here.
 	if !strings.Contains(body, `(subpath "`+filepath.Join(relayReal, "sessions", "pi-sessions")+`")`) {
-		t.Fatalf("rendered profile does not re-permit pi-sessions:\n%s", body)
+		t.Fatalf("rendered profile does not grant pi-sessions:\n%s", body)
+	}
+}
+
+// TestSandboxSettings_AddGrantsFromSettingsJSON pins where a tool that lives
+// outside the fixed set gets its directory: `sandbox` in settings.json, ~
+// expanded, read or read-write as named.
+func TestSandboxSettings_AddGrantsFromSettingsJSON(t *testing.T) {
+	noDeveloperTools(t)
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := store.With(func(s *config.Settings) {
+		s.Sandbox = &config.SandboxConfig{
+			Read:      []string{"~/.hermes/node", "/private/tmp/relay-extra-read"},
+			ReadWrite: []string{"~/scratch"},
+		}
+	}); err != nil {
+		t.Fatalf("store.With: %v", err)
+	}
+
+	_, body := launchWithSandbox(t, LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude,
+	}, store)
+
+	homeReal := sandboxRealPath(t, home)
+	writeAt := strings.Index(body, "(allow file-read* file-write*")
+	if writeAt < 0 {
+		t.Fatalf("no read-write block:\n%s", body)
+	}
+	readPart, writePart := body[:writeAt], body[writeAt:]
+	for _, want := range []string{
+		`(subpath "` + filepath.Join(homeReal, ".hermes", "node") + `")`,
+		`(subpath "/private/tmp/relay-extra-read")`,
+	} {
+		if !strings.Contains(readPart, want) {
+			t.Errorf("read block lacks %s\n%s", want, body)
+		}
+		if strings.Contains(writePart, want) {
+			t.Errorf("a read grant %s is in the write block\n%s", want, body)
+		}
+	}
+	if want := `(subpath "` + filepath.Join(homeReal, "scratch") + `")`; !strings.Contains(writePart, want) {
+		t.Errorf("write block lacks %s\n%s", want, body)
+	}
+}
+
+// TestSandboxSettings_RefuseAnEntryRelayCannotPlace pins fail-closed: a grant
+// that is relative, empty, or the whole filesystem refuses the launch rather
+// than being dropped, which would leave the operator believing a directory was
+// reachable when it was not.
+func TestSandboxSettings_RefuseAnEntryRelayCannotPlace(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  config.SandboxConfig
+	}{
+		{"relative read", config.SandboxConfig{Read: []string{"tools/bin"}}},
+		{"empty read-write", config.SandboxConfig{ReadWrite: []string{""}}},
+		{"whole filesystem", config.SandboxConfig{Read: []string{"/"}}},
+		{"whole filesystem, spelled oddly", config.SandboxConfig{ReadWrite: []string{"/tmp/.."}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newLaunchTestStore(t)
+			proj := addLaunchTestProject(t, store, nil)
+			cfg := tc.cfg
+			if err := store.With(func(s *config.Settings) { s.Sandbox = &cfg }); err != nil {
+				t.Fatalf("store.With: %v", err)
+			}
+			result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), newLaunchTestLedger(t), LaunchRequest{
+				Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude,
+			})
+			if result != nil || refusal == nil {
+				t.Fatalf("launch was authorized with sandbox settings %+v: %+v", tc.cfg, result)
+			}
+			if refusal.Code != "sandbox_unavailable" {
+				t.Fatalf("refusal code = %q, want sandbox_unavailable", refusal.Code)
+			}
+		})
+	}
+}
+
+func TestDeveloperToolsRoot(t *testing.T) {
+	for in, want := range map[string]string{
+		"/Applications/Xcode.app/Contents/Developer":       "/Applications/Xcode.app/Contents",
+		"/Applications/Xcode-beta.app/Contents/Developer":  "/Applications/Xcode-beta.app/Contents",
+		"/Library/Developer/CommandLineTools":              "/Library/Developer/CommandLineTools",
+		"/Users/me/tools/Xcode.app/Contents/Developer/usr": "/Users/me/tools/Xcode.app/Contents",
+	} {
+		if got := developerToolsRoot(in); got != want {
+			t.Errorf("developerToolsRoot(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -322,26 +475,6 @@ func TestAuthorizeLaunch_NoProfileWhenNotSandboxed(t *testing.T) {
 	})
 }
 
-// TestOtherProjectPaths_SkipsWhatCannotBeDenied covers the three records
-// whose path must never reach read_deny: this session's own project, a
-// record with no local path at all, and a wider project that CONTAINS this
-// session's directory (denying that one denies the session's own tree).
-func TestOtherProjectPaths_SkipsWhatCannotBeDenied(t *testing.T) {
-	self := config.Project{ID: "self", Path: "/private/tmp/outer/inner"}
-	settings := &config.Settings{Projects: []config.Project{
-		self,
-		{ID: "outer", Path: "/private/tmp/outer"},
-		{ID: "remote", Kind: config.ProjectKindRemote},
-		{ID: "hosted", Path: "/private/tmp/elsewhere", HostID: "host-1"},
-		{ID: "peer", Path: "/private/tmp/peer"},
-	}}
-
-	got := otherProjectPaths(settings, &self, self.Path)
-	if len(got) != 1 || got[0] != "/private/tmp/peer" {
-		t.Fatalf("otherProjectPaths = %v, want only the peer project", got)
-	}
-}
-
 // TestEveDataDir_ComesFromEvesRegisteredRecord covers every shape of eve's
 // service record, including the two that yield nothing: a path relay cannot
 // derive must produce no rule at all, because a subpath deny on a directory
@@ -372,9 +505,10 @@ func TestEveDataDir_ComesFromEvesRegisteredRecord(t *testing.T) {
 	}
 }
 
-// TestAuthorizeLaunch_EveDenyNamesARealDirectory is the assertion a deny
-// rule has to pass to be worth emitting: the directory it names exists, and
-// it is the one eve's own registered record puts its auth material in.
+// TestAuthorizeLaunch_EveDenyNamesARealDirectory is the assertion a socket
+// denial has to pass to be worth emitting: the directory it names exists, and
+// it is the one eve's own registered record puts its auth material in. Eve's
+// files need no rule of their own; nothing grants them.
 func TestAuthorizeLaunch_EveDenyNamesARealDirectory(t *testing.T) {
 	store := newLaunchTestStore(t)
 	proj := addLaunchTestProject(t, store, nil)
@@ -384,13 +518,8 @@ func TestAuthorizeLaunch_EveDenyNamesARealDirectory(t *testing.T) {
 		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude,
 	}, store)
 
-	for _, want := range []string{
-		`(subpath "` + sandboxRealPath(t, eveData) + `")`,
-		`(remote unix-socket (path-regex #"^` + sandboxRealPath(t, eveData) + `/"))`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("profile is missing %s\ngot:\n%s", want, body)
-		}
+	if want := `(remote unix-socket (path-regex #"^` + sandboxRealPath(t, eveData) + `/"))`; !strings.Contains(body, want) {
+		t.Errorf("profile is missing %s\ngot:\n%s", want, body)
 	}
 	if strings.Contains(body, filepath.Join("Application Support", "eve")) {
 		t.Errorf("profile names an Application Support directory eve does not use:\n%s", body)
