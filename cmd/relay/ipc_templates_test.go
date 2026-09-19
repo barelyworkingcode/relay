@@ -38,8 +38,8 @@ func TestIpcListTemplates_EmitsResolvedList(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal emitted templates: %v", err)
 	}
-	if len(got) != 5 {
-		t.Fatalf("got %d templates, want built-ins (5)", len(got))
+	if len(got) != 1 {
+		t.Fatalf("got %d templates, want only the one in settings.json", len(got))
 	}
 	found := false
 	for _, tmpl := range got {

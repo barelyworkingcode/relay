@@ -7,37 +7,114 @@ import (
 	"testing"
 )
 
-func TestBuiltinTerminalTemplates_SeedsExpectedIDs(t *testing.T) {
-	want := []string{"claude-code", "opencode", "shell", "rh", "pi"}
-	got := BuiltinTerminalTemplates()
-	if len(got) != len(want) {
-		t.Fatalf("got %d built-in templates, want %d: %+v", len(got), len(want), got)
+// Nothing is computed in code: an install with no templates in settings.json
+// resolves to none, not to a built-in set.
+func TestEffectiveTerminalTemplates_ComesOnlyFromSettings(t *testing.T) {
+	if got := EffectiveTerminalTemplates(&Settings{}); len(got) != 0 {
+		t.Fatalf("an empty settings resolved to %d template(s), want none: %+v", len(got), got)
 	}
-	seen := map[string]bool{}
-	for _, tmpl := range got {
-		seen[tmpl.ID] = true
-		if tmpl.Name == "" {
-			t.Errorf("template %q has no name", tmpl.ID)
+	s := &Settings{TerminalTemplates: []TerminalTemplate{
+		{ID: "b", Name: "B"},
+		{ID: "a", Name: "A"},
+	}}
+	got := EffectiveTerminalTemplates(s)
+	if len(got) != 2 || got[0].ID != "a" || got[1].ID != "b" {
+		t.Fatalf("effective set = %+v, want the two settings entries sorted by id", got)
+	}
+}
+
+// The default is what the operator asked for: the shell, sandboxed, with the
+// home directory read-write. It is written into settings, not held in code.
+func TestEnsureDefaultTerminalTemplates(t *testing.T) {
+	s := &Settings{}
+	if !EnsureDefaultTerminalTemplates(s) {
+		t.Fatal("an empty settings was not seeded")
+	}
+	if len(s.TerminalTemplates) != 1 {
+		t.Fatalf("seeded %d templates, want one default", len(s.TerminalTemplates))
+	}
+	def := s.TerminalTemplates[0]
+	if def.ID != "shell" || !def.Sandbox || len(def.ReadWrite) != 1 || def.ReadWrite[0] != "~" || len(def.Read) != 0 {
+		t.Fatalf("default template = %+v, want a sandboxed shell with ~ read-write", def)
+	}
+	if err := ValidateTerminalTemplate(def); err != nil {
+		t.Fatalf("the default template does not validate: %v", err)
+	}
+	if _, ok := GetTerminalTemplate(s, "shell"); !ok {
+		t.Fatal("the seeded template does not resolve")
+	}
+
+	t.Run("does not touch an install that has templates", func(t *testing.T) {
+		existing := &Settings{TerminalTemplates: []TerminalTemplate{{ID: "mine", Name: "Mine"}}}
+		if EnsureDefaultTerminalTemplates(existing) {
+			t.Fatal("seeded over an existing template")
 		}
+		if len(existing.TerminalTemplates) != 1 || existing.TerminalTemplates[0].ID != "mine" {
+			t.Fatalf("the operator's templates changed: %+v", existing.TerminalTemplates)
+		}
+	})
+
+	t.Run("seeds again when the list is emptied", func(t *testing.T) {
+		s := &Settings{TerminalTemplates: []TerminalTemplate{}}
+		if !EnsureDefaultTerminalTemplates(s) {
+			t.Fatal("an emptied list was not seeded")
+		}
+	})
+}
+
+// The sandbox folders are a template's own: they validate as shapes, and a
+// folder relay could never place is refused when the template is read.
+func TestValidateTerminalTemplate_SandboxFolders(t *testing.T) {
+	ok := TerminalTemplate{ID: "x", Name: "X", Sandbox: true,
+		Read:      []string{"~", "~/.gitconfig", "/opt/homebrew", "~/Library/Application Support/tool"},
+		ReadWrite: []string{"~/.claude", "/private/tmp/cc-socks"}}
+	if err := ValidateTerminalTemplate(ok); err != nil {
+		t.Fatalf("a well-formed template was refused: %v", err)
 	}
-	for _, id := range want {
-		if !seen[id] {
-			t.Errorf("missing built-in template %q", id)
+	for name, folder := range map[string]string{
+		"relative":          "tools/bin",
+		"empty":             "",
+		"the root":          "/",
+		"the root, unclean": "/tmp/..",
+		"another user's ~":  "~alice/x",
+		"dot-relative":      "./tools",
+	} {
+		for _, field := range []string{"read", "read_write"} {
+			tmpl := TerminalTemplate{ID: "x", Name: "X"}
+			if field == "read" {
+				tmpl.Read = []string{folder}
+			} else {
+				tmpl.ReadWrite = []string{folder}
+			}
+			err := ValidateTerminalTemplate(tmpl)
+			if !errors.Is(err, ErrTemplateGrant) {
+				t.Errorf("%s %s (%q): err = %v, want ErrTemplateGrant", field, name, folder, err)
+			}
 		}
 	}
 }
 
-// BuiltinTerminalTemplates must return a fresh slice/value each call: a
-// caller mutating one returned copy (e.g. EffectiveTerminalTemplates
-// building its override map) must never affect another.
-func TestBuiltinTerminalTemplates_ReturnsIndependentCopies(t *testing.T) {
-	a := BuiltinTerminalTemplates()
-	a[0].Args = append(a[0].Args, "mutated")
-	b := BuiltinTerminalTemplates()
-	for _, arg := range b[0].Args {
-		if arg == "mutated" {
-			t.Fatal("mutating one BuiltinTerminalTemplates() result affected a later call")
+func TestValidateTerminalTemplate_ModelEndpointURLOnlyInEnv(t *testing.T) {
+	if err := ValidateTerminalTemplate(TerminalTemplate{ID: "x", Name: "X", Env: map[string]string{"U": ModelEndpointURLMarker}}); err != nil {
+		t.Fatalf("${MODEL_ENDPOINT_URL} in env was refused: %v", err)
+	}
+	for name, tmpl := range map[string]TerminalTemplate{
+		"command": {ID: "x", Name: "X", Command: "curl " + ModelEndpointURLMarker},
+		"args":    {ID: "x", Name: "X", Args: []string{ModelEndpointURLMarker}},
+	} {
+		if err := ValidateTerminalTemplate(tmpl); !errors.Is(err, ErrModelEndpointSubstitution) {
+			t.Errorf("%s: err = %v, want ErrModelEndpointSubstitution", name, err)
 		}
+	}
+}
+
+func TestTerminalTemplate_CloneKeepsFoldersIndependent(t *testing.T) {
+	orig := &Settings{TerminalTemplates: []TerminalTemplate{{ID: "x", Name: "X", Read: []string{"/a"}, ReadWrite: []string{"/b"}}}}
+	cp := orig.Clone()
+	cp.TerminalTemplates[0].Read[0] = "/changed"
+	cp.TerminalTemplates[0].ReadWrite = append(cp.TerminalTemplates[0].ReadWrite, "/extra")
+	if orig.TerminalTemplates[0].Read[0] != "/a" || len(orig.TerminalTemplates[0].ReadWrite) != 1 {
+		t.Fatalf("mutating the clone changed the original: %+v", orig.TerminalTemplates[0])
 	}
 }
 
@@ -137,83 +214,39 @@ func TestExpandTemplateVars_OnlyProjectPathAndProjectIDExpand(t *testing.T) {
 	}
 }
 
-func TestEffectiveTerminalTemplates_NoOverrides_ReturnsBuiltins(t *testing.T) {
-	s := &Settings{}
-	got := EffectiveTerminalTemplates(s)
-	if len(got) != len(BuiltinTerminalTemplates()) {
-		t.Fatalf("got %d templates, want %d built-ins", len(got), len(BuiltinTerminalTemplates()))
-	}
-	for _, tmpl := range got {
-		if !tmpl.BuiltIn {
-			t.Errorf("template %q should be marked BuiltIn with no overrides present", tmpl.ID)
-		}
-	}
-}
-
-func TestEffectiveTerminalTemplates_UserOverrideReplacesBuiltinByID(t *testing.T) {
-	s := &Settings{
-		TerminalTemplates: []TerminalTemplate{
-			{ID: "shell", Name: "Custom Shell", Command: "/bin/bash"},
-		},
-	}
-	got, ok := GetTerminalTemplate(s, "shell")
-	if !ok {
-		t.Fatal("expected shell template to resolve")
-	}
-	if got.Name != "Custom Shell" || got.Command != "/bin/bash" {
-		t.Fatalf("override did not take effect: %+v", got)
-	}
-	// BuiltIn still reflects the id, not the content -- an override of a
-	// built-in id is still relay's "shell" slot, just customized.
-	if !got.BuiltIn {
-		t.Fatal("expected overridden built-in id to stay marked BuiltIn")
-	}
-}
-
-func TestEffectiveTerminalTemplates_UserAdditionAppendsNewID(t *testing.T) {
-	s := &Settings{
-		TerminalTemplates: []TerminalTemplate{
-			{ID: "my-repl", Name: "My REPL", Command: "node"},
-		},
-	}
-	got, ok := GetTerminalTemplate(s, "my-repl")
-	if !ok {
-		t.Fatal("expected custom template to resolve")
-	}
-	if got.BuiltIn {
-		t.Fatal("a custom-id template must not be marked BuiltIn")
-	}
-	all := EffectiveTerminalTemplates(s)
-	if len(all) != len(BuiltinTerminalTemplates())+1 {
-		t.Fatalf("got %d templates, want built-ins + 1", len(all))
-	}
-}
-
 // A hand-edited settings.json (or a future editor) that writes
 // ${RELAY_TOKEN} into Settings.TerminalTemplates must not reach the
 // resolved list -- resolution refuses it the same as ValidateTerminalTemplate
 // does at the point of writing.
-func TestEffectiveTerminalTemplates_SkipsInvalidOverride(t *testing.T) {
+func TestEffectiveTerminalTemplates_SkipsInvalidEntry(t *testing.T) {
 	s := &Settings{
 		TerminalTemplates: []TerminalTemplate{
-			{ID: "shell", Name: "Bad", Args: []string{"${RELAY_TOKEN}"}},
+			{ID: "bad", Name: "Bad", Args: []string{"${RELAY_TOKEN}"}},
+			{ID: "good", Name: "Good"},
 		},
 	}
 	got := EffectiveTerminalTemplates(s)
-	for _, tmpl := range got {
-		if tmpl.ID == "shell" && tmpl.Name == "Bad" {
-			t.Fatal("invalid override reached the effective list")
-		}
+	if len(got) != 1 || got[0].ID != "good" {
+		t.Fatalf("effective set = %+v, want only the valid entry", got)
 	}
-	// The built-in shell template is still there, untouched by the refused override.
-	shell, ok := GetTerminalTemplate(s, "shell")
-	if !ok || shell.Name == "Bad" {
-		t.Fatalf("expected the built-in shell template, got %+v (ok=%v)", shell, ok)
+}
+
+// A template with a folder relay cannot place is refused like any other invalid
+// one, so it never reaches a launch with a grant that would be dropped.
+func TestEffectiveTerminalTemplates_SkipsARelativeFolder(t *testing.T) {
+	s := &Settings{TerminalTemplates: []TerminalTemplate{
+		{ID: "bad", Name: "Bad", Sandbox: true, ReadWrite: []string{"tools"}},
+	}}
+	if got := EffectiveTerminalTemplates(s); len(got) != 0 {
+		t.Fatalf("a template with a relative folder resolved: %+v", got)
 	}
 }
 
 func TestEffectiveTerminalTemplatesForProject_ShellTemplatesOverride(t *testing.T) {
-	s := &Settings{}
+	s := &Settings{TerminalTemplates: []TerminalTemplate{
+		{ID: "shell", Name: "Shell"},
+		{ID: "claude-code", Name: "Claude Code", Command: "claude"},
+	}}
 	proj := &Project{
 		ID: "p1",
 		ShellTemplates: []ShellTemplate{
@@ -233,27 +266,26 @@ func TestEffectiveTerminalTemplatesForProject_ShellTemplatesOverride(t *testing.
 	if !ok || shell.Name != "Project Shell" || shell.Command != "/bin/fish" {
 		t.Fatalf("project ShellTemplates did not override the global shell template: %+v (ok=%v)", shell, ok)
 	}
-	if shell.BuiltIn {
-		t.Fatal("a project-overridden template must not read as the global BuiltIn")
-	}
-
 	sshTmpl, ok := byID["prod-ssh"]
 	if !ok || sshTmpl.Command != "ssh" {
 		t.Fatalf("project-only ShellTemplate did not appear: %+v (ok=%v)", sshTmpl, ok)
 	}
 
-	// Every other global built-in must still be present, untouched.
+	// Every other global template must still be present, untouched.
 	if _, ok := byID["claude-code"]; !ok {
 		t.Fatal("expected claude-code to still be present via the global set")
 	}
 }
 
-// A project ShellTemplate reusing a built-in's id (e.g. "rh") must not be
-// able to silently clear Sandbox: ShellTemplate has no Sandbox field of its
-// own, so the zero value would otherwise reset a sandboxed built-in to
-// unsandboxed. The shadowed entry's Sandbox always wins.
-func TestEffectiveTerminalTemplatesForProject_ShadowedBuiltinKeepsSandbox(t *testing.T) {
-	s := &Settings{}
+// A project ShellTemplate reusing a global template's id (e.g. "rh") must not
+// be able to silently clear Sandbox or its folders: ShellTemplate has no such
+// fields of its own, so the zero values would otherwise reset a sandboxed
+// template to unsandboxed. The shadowed entry's Sandbox and folders always win,
+// so a project override can neither clear nor widen them.
+func TestEffectiveTerminalTemplatesForProject_ShadowedTemplateKeepsSandboxAndFolders(t *testing.T) {
+	s := &Settings{TerminalTemplates: []TerminalTemplate{
+		{ID: "rh", Name: "rh", Command: "rh", Sandbox: true, Read: []string{"/opt/rh"}, ReadWrite: []string{"~/.rh"}},
+	}}
 	proj := &Project{
 		ID: "p1",
 		ShellTemplates: []ShellTemplate{
@@ -276,15 +308,20 @@ func TestEffectiveTerminalTemplatesForProject_ShadowedBuiltinKeepsSandbox(t *tes
 		t.Fatalf("expected the project override's command to take effect, got %q", rh.Command)
 	}
 	if !rh.Sandbox {
-		t.Fatal("expected the built-in rh template's Sandbox: true to survive a project override that has no Sandbox field to set")
+		t.Fatal("expected the shadowed template's Sandbox: true to survive a project override that has no Sandbox field to set")
+	}
+	if len(rh.Read) != 1 || rh.Read[0] != "/opt/rh" || len(rh.ReadWrite) != 1 || rh.ReadWrite[0] != "~/.rh" {
+		t.Fatalf("the shadowed template's folders did not survive the override: read=%v read_write=%v", rh.Read, rh.ReadWrite)
 	}
 }
 
 // A project ShellTemplate must never inherit ModelKey from a shadowed
 // entry: unlike Sandbox, that would let a project override widen a
 // template's authority rather than only narrow/preserve it.
-func TestEffectiveTerminalTemplatesForProject_ShadowedBuiltinDoesNotInheritModelKey(t *testing.T) {
-	s := &Settings{}
+func TestEffectiveTerminalTemplatesForProject_ShadowedTemplateDoesNotInheritModelKey(t *testing.T) {
+	s := &Settings{TerminalTemplates: []TerminalTemplate{
+		{ID: "pi", Name: "pi", Command: "pi", Sandbox: true, ModelKey: true},
+	}}
 	proj := &Project{
 		ID: "p1",
 		ShellTemplates: []ShellTemplate{
@@ -304,15 +341,15 @@ func TestEffectiveTerminalTemplatesForProject_ShadowedBuiltinDoesNotInheritModel
 		t.Fatal("expected pi template to resolve")
 	}
 	if pi.ModelKey {
-		t.Fatal("a project override must not inherit ModelKey from the shadowed built-in it shares an id with")
+		t.Fatal("a project override must not inherit ModelKey from the shadowed template it shares an id with")
 	}
 }
 
 func TestEffectiveTerminalTemplatesForProject_NilProjectReturnsGlobal(t *testing.T) {
-	s := &Settings{}
+	s := &Settings{TerminalTemplates: []TerminalTemplate{{ID: "shell", Name: "Shell"}, {ID: "pi", Name: "pi"}}}
 	got := EffectiveTerminalTemplatesForProject(s, nil)
-	if len(got) != len(BuiltinTerminalTemplates()) {
-		t.Fatalf("got %d templates, want the global built-in set", len(got))
+	if len(got) != 2 {
+		t.Fatalf("got %d templates, want the two global ones", len(got))
 	}
 }
 
