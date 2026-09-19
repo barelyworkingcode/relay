@@ -16,6 +16,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
 	"github.com/barelyworkingcode/relay/internal/sessions/shim"
 )
 
@@ -43,11 +44,16 @@ var relaySecretEnvKeys = []string{
 }
 
 // childBaseEnv returns os.Environ() with every relaySecretEnvKeys entry
-// stripped, so no stale relay credential reaches an MCP server child.
+// stripped, so no stale relay credential reaches an MCP server child, and with
+// the launching Claude Code session's own variables stripped too
+// (childenv.IsParentClaudeSession).
 func childBaseEnv() []string {
 	src := os.Environ()
 	out := make([]string, 0, len(src))
 	for _, kv := range src {
+		if childenv.IsParentClaudeSession(kv) {
+			continue
+		}
 		drop := false
 		for _, k := range relaySecretEnvKeys {
 			if strings.HasPrefix(kv, k+"=") {

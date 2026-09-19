@@ -95,3 +95,30 @@ func assertNoForbiddenSecrets(t *testing.T, label string, entries []string) {
 		}
 	}
 }
+
+// A relay launched from inside a Claude Code session inherits that session's
+// variables; a claude or pi child must not, or it believes it is a child of it.
+func TestChildBaseEnv_DropsTheLaunchingClaudeSession(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+	t.Setenv("CLAUDE_CODE_MESSAGING_TOKEN", "parent-secret")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/Users/me/.claude-alt")
+	t.Setenv("ANTHROPIC_API_KEY", "kept")
+
+	env := childBaseEnv()
+	have := map[string]bool{}
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		have[name] = true
+	}
+	for _, gone := range []string{"CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_MESSAGING_TOKEN"} {
+		if have[gone] {
+			t.Errorf("childBaseEnv carried the launching session's %s", gone)
+		}
+	}
+	for _, kept := range []string{"CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY"} {
+		if !have[kept] {
+			t.Errorf("childBaseEnv dropped %s, which configures a Claude Code the operator means to run", kept)
+		}
+	}
+}
