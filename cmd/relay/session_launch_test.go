@@ -512,7 +512,9 @@ func TestAuthorizeLaunch_PtyLaunchSpecGolden(t *testing.T) {
 		V: 1, SessionID: result.SessionID, Kind: KindPTY, Resume: false,
 		Project: projJSON, Directory: wantDir, Name: "term 1", TemplateID: "shell",
 		Argv: []string{"/bin/zsh"}, IdleTimeoutSec: 1440 * 60,
-		PTY: &hostapi.PTYSpec{Cols: 100, Rows: 30},
+		PTY:     &hostapi.PTYSpec{Cols: 100, Rows: 30},
+		Sandbox: &hostapi.SandboxSpec{ProfilePath: filepath.Join(sessionProfilesDir(), result.SessionID+".sb")},
+		Env:     map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"},
 	}
 
 	gotJSON, _ := json.Marshal(result.Spec)
@@ -901,4 +903,31 @@ func TestAuthorizeLaunch_ResumeDormantSameProjectSucceeds(t *testing.T) {
 	if !result.Spec.Resume {
 		t.Fatal("Spec.Resume was not carried through for a resume request")
 	}
+}
+
+// TestResolveTemplateEnv_TerminalDefaults pins that a pty always gets a real
+// TERM. Relay runs with none, and a child that inherits that cannot redraw on
+// backspace; the template's own value, from env or passthrough, still wins.
+func TestResolveTemplateEnv_TerminalDefaults(t *testing.T) {
+	t.Run("bare template gets both defaults", func(t *testing.T) {
+		got := resolveTemplateEnv(config.TerminalTemplate{})
+		if got["TERM"] != "xterm-256color" || got["COLORTERM"] != "truecolor" {
+			t.Fatalf("env = %v, want TERM=xterm-256color and COLORTERM=truecolor", got)
+		}
+	})
+
+	t.Run("template env wins", func(t *testing.T) {
+		got := resolveTemplateEnv(config.TerminalTemplate{Env: map[string]string{"TERM": "vt100", "FOO": "bar"}})
+		if got["TERM"] != "vt100" || got["FOO"] != "bar" || got["COLORTERM"] != "truecolor" {
+			t.Fatalf("env = %v, want the template's TERM kept and COLORTERM defaulted", got)
+		}
+	})
+
+	t.Run("passthrough wins", func(t *testing.T) {
+		t.Setenv("TERM", "screen-256color")
+		got := resolveTemplateEnv(config.TerminalTemplate{EnvPassthrough: []string{"TERM"}})
+		if got["TERM"] != "screen-256color" {
+			t.Fatalf("TERM = %q, want the passed-through value", got["TERM"])
+		}
+	})
 }

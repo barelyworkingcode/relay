@@ -292,6 +292,13 @@ func buildShimCmd(spec CreateSpec, cfg Config, targetArgv []string, tty *os.File
 	cmd.ExtraFiles = extraFiles
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	cmd.Env = buildShimEnv(spec, cfg)
+	// The shim and its target inherit this cwd, sandbox-exec included. A host
+	// session's directory is applied on the far end by buildHostTargetArgv;
+	// the local ssh client's own cwd is irrelevant, and the path need not
+	// exist on this machine.
+	if spec.Host == nil {
+		cmd.Dir = spec.Directory
+	}
 	return cmd, sr, extraFiles, nil
 }
 
