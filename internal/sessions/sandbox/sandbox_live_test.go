@@ -53,6 +53,10 @@ func TestSandboxProbeHelper(t *testing.T) {
 		}
 	case "exec":
 		err = exec.Command(arg, "-p", fmt.Sprint(os.Getpid())).Run()
+	case "run":
+		err = exec.Command(arg).Run()
+	case "list":
+		_, err = os.ReadDir(arg)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown probe %q\n", action)
 		os.Exit(2)
@@ -82,12 +86,16 @@ func runProbe(t *testing.T, profile, action string) bool {
 	return false
 }
 
-// liveFixture is one session's worth of C7: a project the session owns,
-// another project it must not reach, a stand-in relay directory holding two
-// sockets, and two loopback listeners.
+// liveFixture is one session's worth of C7: a project the session owns, a
+// read-only directory, another project and a stand-in home directory it was
+// never granted, a stand-in relay directory holding two sockets, and two
+// loopback listeners.
 type liveFixture struct {
 	profile      string
 	projA, projB string
+	readOnly     string
+	roFile       string
+	homeSecret   string
 	secret       string
 	allowSock    string
 	denySock     string
@@ -113,7 +121,9 @@ func newLiveFixture(t *testing.T) liveFixture {
 		projB: filepath.Join(root, "projB"),
 	}
 	relayDir := filepath.Join(root, "relay")
-	for _, dir := range []string{f.projA, f.projB, relayDir} {
+	f.readOnly = filepath.Join(root, "readonly")
+	homeSSH := filepath.Join(root, "home", ".ssh")
+	for _, dir := range []string{f.projA, f.projB, relayDir, f.readOnly, homeSSH} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
@@ -122,6 +132,14 @@ func newLiveFixture(t *testing.T) liveFixture {
 	if err := os.WriteFile(f.secret, []byte("other project's secret\n"), 0o600); err != nil {
 		t.Fatalf("write secret: %v", err)
 	}
+	f.roFile = filepath.Join(f.readOnly, "tool.conf")
+	if err := os.WriteFile(f.roFile, []byte("read-only config\n"), 0o600); err != nil {
+		t.Fatalf("write read-only file: %v", err)
+	}
+	f.homeSecret = filepath.Join(homeSSH, "id_ed25519")
+	if err := os.WriteFile(f.homeSecret, []byte("a private key\n"), 0o600); err != nil {
+		t.Fatalf("write home secret: %v", err)
+	}
 
 	f.allowSock = listenUnix(t, filepath.Join(relayDir, "relay.sock"))
 	f.denySock = listenUnix(t, filepath.Join(relayDir, "relay-frontend.sock"))
@@ -129,14 +147,14 @@ func newLiveFixture(t *testing.T) liveFixture {
 	f.denyAddr = listenTCP(t)
 
 	spec := Spec{
-		WriteAllowDirs:       []string{f.projA, "/dev"},
-		ReadDeny:             []string{f.projB, relayDir},
+		ReadWrite:            []string{f.projA, "/dev"},
+		Read:                 []string{f.readOnly},
 		UnixConnectDenyDirs:  []string{relayDir},
 		UnixConnectAllow:     []string{f.allowSock},
 		TCPLoopbackDeny:      []int{port(t, f.denyAddr)},
 		TCPLoopbackAllow:     []int{port(t, f.allowAddr)},
 		DenySetIDExec:        true,
-		WriteAllowFiles:      []string{filepath.Join(f.projA, "state.json")},
+		ReadWriteFiles:       []string{filepath.Join(f.projA, "state.json")},
 		UnixConnectDenyPaths: []string{f.denySock},
 	}
 	profile, err := Write(filepath.Join(root, "profiles"), "live-session", spec)
@@ -217,6 +235,93 @@ func TestLive_OtherProjectIsUnreadableAndUnchanged(t *testing.T) {
 	}
 	if after := fileDigest(t, f.secret); after != before {
 		t.Error("another project's file changed on disk")
+	}
+}
+
+// TestLive_UngrantedFilesAreUnreadable is the property the whole model
+// exists for: nothing names the directories below, and none of them is
+// reachable. A stand-in ~/.ssh is one of them.
+func TestLive_UngrantedFilesAreUnreadable(t *testing.T) {
+	f := newLiveFixture(t)
+	for name, path := range map[string]string{
+		"a stand-in ~/.ssh key": f.homeSecret,
+		"another project":       f.secret,
+	} {
+		if runProbe(t, f.profile, "read "+path) {
+			t.Errorf("%s was readable", name)
+		}
+		if runProbe(t, f.profile, "list "+filepath.Dir(path)) {
+			t.Errorf("the directory holding %s could be listed", name)
+		}
+	}
+}
+
+// TestLive_ReadOnlyGrantReadsButDoesNotWrite pins the two directions apart.
+func TestLive_ReadOnlyGrantReadsButDoesNotWrite(t *testing.T) {
+	f := newLiveFixture(t)
+	if !runProbe(t, f.profile, "read "+f.roFile) {
+		t.Error("a file under a read grant was unreadable")
+	}
+	if runProbe(t, f.profile, "write "+f.roFile) {
+		t.Error("a file under a read grant was writable")
+	}
+	if runProbe(t, f.profile, "write "+filepath.Join(f.readOnly, "new.txt")) {
+		t.Error("a file could be created under a read grant")
+	}
+}
+
+// TestLive_ProjectIsReadableAndWritable pins that a read-write grant is both.
+func TestLive_ProjectIsReadableAndWritable(t *testing.T) {
+	f := newLiveFixture(t)
+	file := filepath.Join(f.projA, "own.txt")
+	if !runProbe(t, f.profile, "write "+file) {
+		t.Fatal("a write inside the project was denied")
+	}
+	if !runProbe(t, f.profile, "read "+file) {
+		t.Error("a file the session just wrote was unreadable")
+	}
+	if !runProbe(t, f.profile, "list "+f.projA) {
+		t.Error("the project directory could not be listed")
+	}
+}
+
+// TestLive_BaselineLetsAProcessStart pins that the system baseline is enough
+// to run a system binary, which is what denying every file read would
+// otherwise break first.
+func TestLive_BaselineLetsAProcessStart(t *testing.T) {
+	f := newLiveFixture(t)
+	if !runProbe(t, f.profile, "run /usr/bin/true") {
+		t.Error("/usr/bin/true did not start under the baseline")
+	}
+}
+
+// TestLive_WronglyCasedGrantStillGrants is the reason resolve asks the kernel
+// for the on-disk spelling: without it a project path stored in the wrong
+// case renders a rule that matches nothing, and the session cannot touch its
+// own directory.
+func TestLive_WronglyCasedGrantStillGrants(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skipf("sandbox-exec unavailable: %v", err)
+	}
+	root, err := os.MkdirTemp("/tmp", "Relay-Sandbox-Case-")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	proj := filepath.Join(root, "MixedCaseProject")
+	if err := os.Mkdir(proj, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	wrong := strings.ToLower(proj)
+	if _, err := os.Stat(wrong); err != nil {
+		t.Skip("this volume is case-sensitive; the case problem does not exist here")
+	}
+	profile, err := Write(filepath.Join(root, "profiles"), "case-session", Spec{ReadWrite: []string{wrong, "/dev"}})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !runProbe(t, profile, "write "+filepath.Join(proj, "ok.txt")) {
+		t.Error("a grant spelled in the wrong case did not grant the real directory")
 	}
 }
 

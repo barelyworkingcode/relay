@@ -5,16 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 )
 
 // TerminalTemplate is relay's own launch config for a PTY terminal — the
 // data relayLLM's internal/terminal/terminal_template.go used to own before
-// session-host moved launching into relay (SH §terminal templates). On disk
-// inside Settings.TerminalTemplates the entries carry their own ID; the five
-// built-ins (BuiltinTerminalTemplates) are computed in code and never
-// written to settings.json unless an operator's own entry shares one's ID.
+// session-host moved launching into relay (SH §terminal templates).
+// Settings.TerminalTemplates is the complete set: nothing is computed in code,
+// so every template, including the ones relay seeds on first start, is an
+// entry in settings.json that can be changed or removed.
 //
 // There is deliberately no UseRelayToken field. relayLLM's template could
 // interpolate ${RELAY_TOKEN} into a spawned child's argv/env; that is a
@@ -40,7 +41,6 @@ type TerminalTemplate struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Description string            `json:"description,omitempty"`
 	Icon        string            `json:"icon,omitempty"`
-	BuiltIn     bool              `json:"builtIn,omitempty"`
 	IdleTimeout int               `json:"idleTimeout,omitempty"` // minutes, 0 = default (1440 = 24h)
 
 	// EnvPassthrough names host environment variables copied into the
@@ -49,12 +49,23 @@ type TerminalTemplate struct {
 	// that is R-S4a/R-S4b's launch path, not this package.
 	EnvPassthrough []string `json:"env_passthrough,omitempty"`
 
-	// Sandbox is the template's default opt-in to C7 seatbelt confinement.
-	// relay-sessions builds the real sandbox profile from this bool plus the
-	// launch's project/session paths; this field only records the
-	// template's own default. False for every human pty template
-	// (shell, opencode) unless the operator opts one in.
+	// Sandbox is the template's opt-in to C7 seatbelt confinement. When it is
+	// set, relay builds the session's profile from the launch's project and
+	// the folders below. Absent means unsandboxed, so a template that should
+	// be confined says so.
 	Sandbox bool `json:"sandbox,omitempty"`
+
+	// Read and ReadWrite are the folders a sandboxed launch of this template
+	// may reach, and the only ones: file access is denied by default, so a
+	// folder that is not listed here (or the launching project's own
+	// directory, which is always read-write, or the fixed system baseline in
+	// internal/sessions/sandbox) is unreachable. Each entry is an absolute
+	// path or starts with `~`. A directory grants its whole subtree; a
+	// regular file grants that file, and a read-write file also grants the
+	// atomic-write siblings a CLI leaves beside it (`.lock`, `.tmp.*`,
+	// `.backup`). Ignored when Sandbox is false.
+	Read      []string `json:"read,omitempty"`
+	ReadWrite []string `json:"read_write,omitempty"`
 
 	// ModelKey opts a pty template into a minted model-broker key at launch
 	// (C8), the way the `pi` template does so its interactive CLI reaches
@@ -69,66 +80,34 @@ type TerminalTemplate struct {
 	ModelKey bool `json:"model_key,omitempty"`
 }
 
-// builtinTerminalTemplateIDs drives the BuiltIn field on every resolved
-// template, the same way relayLLM's protectedTemplateIDs did — computed
-// from the ID, never stored, so a hand-edited settings.json can't grant or
-// revoke the flag by writing it.
-var builtinTerminalTemplateIDs = map[string]bool{
-	"claude-code": true,
-	"opencode":    true,
-	"shell":       true,
-	"rh":          true,
-	"pi":          true,
+// DefaultShellTemplate is the one template relay writes into settings.json
+// when it holds none (EnsureDefaultTerminalTemplates): the system shell,
+// sandboxed, with read-write access to the home directory. That is a wide
+// grant on purpose, and it includes credential directories such as ~/.ssh: an
+// operator narrows it by editing the template's folders.
+func DefaultShellTemplate() TerminalTemplate {
+	return TerminalTemplate{
+		ID:          "shell",
+		Name:        "Shell",
+		Icon:        "shell",
+		Description: "Default system shell",
+		Sandbox:     true,
+		ReadWrite:   []string{"~"},
+	}
 }
 
-// BuiltinTerminalTemplates returns relay's five seeded templates, freshly
-// constructed on every call so a caller mutating one slice can never affect
-// another. Ported from relayLLM's seedDefaultPTYConfig plus the two new
-// session-host templates (rh, pi), with useRelayToken dropped everywhere.
-func BuiltinTerminalTemplates() []TerminalTemplate {
-	return []TerminalTemplate{
-		{
-			ID:             "claude-code",
-			Name:           "Claude Code",
-			Command:        "claude",
-			Icon:           "terminal",
-			Description:    "Claude Code CLI agent",
-			EnvPassthrough: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"},
-			Sandbox:        true,
-		},
-		{
-			ID:          "opencode",
-			Name:        "OpenCode",
-			Command:     "opencode",
-			Icon:        "terminal",
-			Description: "OpenCode CLI agent",
-		},
-		{
-			ID:          "shell",
-			Name:        "Shell",
-			Icon:        "shell",
-			Description: "Default system shell",
-			Sandbox:     true,
-		},
-		{
-			ID:          "rh",
-			Name:        "rh",
-			Command:     "rh",
-			Args:        []string{"--project", "${PROJECT_ID}"},
-			Icon:        "terminal",
-			Description: "relayHarness: folder- and tool-confined coding agent",
-			Sandbox:     true,
-		},
-		{
-			ID:          "pi",
-			Name:        "pi",
-			Command:     "pi",
-			Icon:        "terminal",
-			Description: "pi coding agent",
-			Sandbox:     true,
-			ModelKey:    true,
-		},
+// EnsureDefaultTerminalTemplates writes DefaultShellTemplate into s iff s holds
+// no template at all, and reports whether it did. Relay calls it once at start
+// (through WithDeclinable, so an install that already has templates is not
+// rewritten): the default lives in settings.json where it can be seen and
+// edited, not in code where it could not. It re-fires whenever the list is
+// empty, so an operator cannot leave relay with zero templates.
+func EnsureDefaultTerminalTemplates(s *Settings) bool {
+	if len(s.TerminalTemplates) > 0 {
+		return false
 	}
+	s.TerminalTemplates = []TerminalTemplate{DefaultShellTemplate()}
+	return true
 }
 
 // ErrRelayTokenSubstitution is refused at validation, never silently
@@ -161,6 +140,23 @@ const relayTokenMarker = "${RELAY_TOKEN}"
 // expands it at spawn (internal/sessions/terminal mirrors this constant and
 // does not import this package).
 const ModelKeyMarker = "${MODEL_KEY}"
+
+// ModelEndpointURLMarker is the second designated substitution: the URL of
+// relay's model endpoint listener, `http://<model_endpoint.listen>`. Relay
+// expands it at launch, in env values only, and a launch of a template that
+// uses it is refused when the listener is off (cmd/relay resolveTemplateEnv):
+// leaving it unexpanded would point a client at a literal placeholder, and
+// dropping only the URL while keeping a ${MODEL_KEY} header would send the
+// relay key to the client's real provider.
+const ModelEndpointURLMarker = "${MODEL_ENDPOINT_URL}"
+
+// ErrModelEndpointSubstitution is refused at validation: ${MODEL_ENDPOINT_URL}
+// in a template's command or args, where a URL has no business being expanded.
+var ErrModelEndpointSubstitution = errors.New("template uses ${MODEL_ENDPOINT_URL} outside its env")
+
+// ErrTemplateGrant is refused at validation: a sandbox folder that is not an
+// absolute or ~ path, or that grants the whole filesystem.
+var ErrTemplateGrant = errors.New("sandbox folder must be an absolute path or start with ~, and not be /")
 
 // ErrModelKeySubstitution is refused at validation: ${MODEL_KEY} outside an
 // env value, or in a template that did not opt in with model_key: true.
@@ -221,6 +217,41 @@ func ValidateTerminalTemplate(t TerminalTemplate) error {
 			}
 		}
 	}
+	if strings.Contains(t.Command, ModelEndpointURLMarker) {
+		return fmt.Errorf("terminal template %q: %w (in command)", t.ID, ErrModelEndpointSubstitution)
+	}
+	for _, a := range t.Args {
+		if strings.Contains(a, ModelEndpointURLMarker) {
+			return fmt.Errorf("terminal template %q: %w (in args)", t.ID, ErrModelEndpointSubstitution)
+		}
+	}
+	for _, list := range []struct {
+		field string
+		paths []string
+	}{{"read", t.Read}, {"read_write", t.ReadWrite}} {
+		for _, p := range list.paths {
+			if err := validateGrantPath(p); err != nil {
+				return fmt.Errorf("terminal template %q: %s %q: %w", t.ID, list.field, p, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateGrantPath is the shape check for one sandbox folder. Expansion of
+// `~` needs the launching user's home, so it happens at launch; this only
+// refuses what can never be placed: a relative path, `~user`, an empty entry,
+// and the whole filesystem, which would make the sandbox decoration.
+func validateGrantPath(p string) error {
+	if p == "" {
+		return ErrTemplateGrant
+	}
+	if p != "~" && !strings.HasPrefix(p, "~/") && !filepath.IsAbs(p) {
+		return ErrTemplateGrant
+	}
+	if filepath.Clean(p) == "/" {
+		return ErrTemplateGrant
+	}
 	return nil
 }
 
@@ -240,26 +271,12 @@ func ExpandTemplateVars(in, projectPath, projectID string) string {
 	return r.Replace(in)
 }
 
-// hydrateTerminalTemplate fills in BuiltIn from the id, the same computed
-// -not-stored shape relayLLM's TemplateStore.hydrate used.
-func hydrateTerminalTemplate(t TerminalTemplate) TerminalTemplate {
-	t.BuiltIn = builtinTerminalTemplateIDs[t.ID]
-	return t
-}
-
-// EffectiveTerminalTemplates overlays Settings.TerminalTemplates on the
-// built-in set: an entry sharing a built-in's ID replaces it, any other ID
-// is appended. An install that has never customized a template keeps
-// settings.json byte-identical to one written before this feature existed,
-// because the built-ins here are never persisted — only an override is.
-// An override that fails ValidateTerminalTemplate (e.g. a hand-edited
-// settings.json reintroducing ${RELAY_TOKEN}) is refused at resolution
-// rather than served, and logged.
+// EffectiveTerminalTemplates is Settings.TerminalTemplates, sorted by id, minus
+// any entry that fails ValidateTerminalTemplate (a hand-edited settings.json
+// reintroducing ${RELAY_TOKEN}, or a relative sandbox folder) — refused at
+// resolution rather than served, and logged. Nothing is added from code.
 func EffectiveTerminalTemplates(s *Settings) []TerminalTemplate {
-	byID := make(map[string]TerminalTemplate, len(builtinTerminalTemplateIDs)+len(s.TerminalTemplates))
-	for _, t := range BuiltinTerminalTemplates() {
-		byID[t.ID] = t
-	}
+	byID := make(map[string]TerminalTemplate, len(s.TerminalTemplates))
 	for _, t := range s.TerminalTemplates {
 		if err := ValidateTerminalTemplate(t); err != nil {
 			slog.Warn("terminal template refused at resolution", "id", t.ID, "error", err)
@@ -267,7 +284,7 @@ func EffectiveTerminalTemplates(s *Settings) []TerminalTemplate {
 		}
 		byID[t.ID] = t
 	}
-	return sortedHydratedTemplates(byID)
+	return sortedTemplates(byID)
 }
 
 // GetTerminalTemplate looks up one template by id from the effective set.
@@ -283,10 +300,8 @@ func GetTerminalTemplate(s *Settings, id string) (TerminalTemplate, bool) {
 // EffectiveTerminalTemplatesForProject overlays a project's own
 // ShellTemplates (internal/project's per-project override — a project can
 // carry private shells, e.g. an ssh alias, not shared elsewhere) on top of
-// EffectiveTerminalTemplates: same override-by-id shape one level down. A
-// project-scoped entry never inherits BuiltIn even when its id collides
-// with a global built-in's — a project that overrides "shell" is no longer
-// serving relay's own shell template. proj may be nil (no project scope).
+// EffectiveTerminalTemplates: same override-by-id shape one level down. proj
+// may be nil (no project scope).
 func EffectiveTerminalTemplatesForProject(s *Settings, proj *Project) []TerminalTemplate {
 	base := EffectiveTerminalTemplates(s)
 	if proj == nil || len(proj.ShellTemplates) == 0 {
@@ -306,17 +321,19 @@ func EffectiveTerminalTemplatesForProject(s *Settings, proj *Project) []Terminal
 			Description: st.Description,
 			Icon:        st.Icon,
 		}
-		// ShellTemplate has no Sandbox field of its own (see its doc
-		// comment), so an override sharing a shadowed entry's id would
-		// otherwise silently reset Sandbox to false via the zero value.
-		// Carry the shadowed entry's Sandbox forward -- it always wins, an
-		// operator has no way to clear it through a project override.
-		// Deliberately NOT done for ModelKey: inheriting it here would let
-		// a project override widen a template's authority (grant a model
-		// key the shadowed entry didn't have), the opposite of what this
-		// carries-forward is for.
+		// ShellTemplate has no Sandbox or folder fields of its own (see its
+		// doc comment), so an override sharing a shadowed entry's id would
+		// otherwise silently reset them to their zero values, which is an
+		// unsandboxed template. Carry the shadowed entry's Sandbox and folders
+		// forward -- they always win, and a project override can neither clear
+		// nor widen them. Deliberately NOT done for ModelKey: inheriting it
+		// here would let a project override widen a template's authority
+		// (grant a model key the shadowed entry didn't have), the opposite of
+		// what this carries-forward is for.
 		if base, ok := byID[st.ID]; ok {
 			t.Sandbox = base.Sandbox
+			t.Read = cloneSlice(base.Read)
+			t.ReadWrite = cloneSlice(base.ReadWrite)
 		}
 		if err := ValidateTerminalTemplate(t); err != nil {
 			slog.Warn("project shell template refused at resolution", "project", proj.ID, "id", st.ID, "error", err)
@@ -336,7 +353,7 @@ func EffectiveTerminalTemplatesForProject(s *Settings, proj *Project) []Terminal
 	return out
 }
 
-func sortedHydratedTemplates(byID map[string]TerminalTemplate) []TerminalTemplate {
+func sortedTemplates(byID map[string]TerminalTemplate) []TerminalTemplate {
 	ids := make([]string, 0, len(byID))
 	for id := range byID {
 		ids = append(ids, id)
@@ -344,7 +361,7 @@ func sortedHydratedTemplates(byID map[string]TerminalTemplate) []TerminalTemplat
 	sort.Strings(ids)
 	out := make([]TerminalTemplate, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, hydrateTerminalTemplate(byID[id]))
+		out = append(out, byID[id])
 	}
 	return out
 }

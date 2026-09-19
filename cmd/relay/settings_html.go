@@ -137,8 +137,8 @@ func renderSettingsDocument(settings *config.Settings, runningIDs []string, tool
 		"__VERSION_JSON__", mustMarshalJSON("version", seed.Version),
 		"__PATHS_JSON__", mustMarshalJSON("paths", seed.Paths),
 		// Templates tab: seeded like Hosts, for the same reason — the list is
-		// small (five built-ins plus any override) and read-only in this
-		// unit, with no loading state to fail into.
+		// small (whatever settings.json holds) and read-only in this unit,
+		// with no loading state to fail into.
 		"__TEMPLATES_JSON__", mustMarshalJSON("templates", config.EffectiveTerminalTemplates(settings)),
 	).Replace(settingsHTML)
 }

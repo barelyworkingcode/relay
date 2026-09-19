@@ -12,18 +12,16 @@ import (
 // what makes the golden file below stable outside this developer's disk.
 func goldenSpec() Spec {
 	return Spec{
-		WriteAllowDirs: []string{
+		ReadWrite: []string{
 			"/private/tmp/relay-sandbox-golden/projects/widget",
 			"/private/tmp/relay-sandbox-golden/home/.cache",
 			"/private/tmp/relay-sandbox-golden/home/go/pkg",
 			"/private/tmp/cc-socks",
 			"/dev",
 		},
-		WriteAllowFiles: []string{"/private/tmp/relay-sandbox-golden/home/.claude.json"},
-		ReadDeny: []string{
-			"/private/tmp/relay-sandbox-golden/relay",
-			"/private/tmp/relay-sandbox-golden/projects/other",
-		},
+		ReadWriteFiles:       []string{"/private/tmp/relay-sandbox-golden/home/.claude.json"},
+		Read:                 []string{"/private/tmp/relay-sandbox-golden/opt/homebrew"},
+		ReadFiles:            []string{"/private/tmp/relay-sandbox-golden/home/.gitconfig"},
 		UnixConnectDenyDirs:  []string{"/private/tmp/relay-sandbox-golden/relay"},
 		UnixConnectDenyPaths: []string{"/private/tmp/relay-sandbox-golden/relayllm/router.sock"},
 		UnixConnectAllow: []string{
@@ -50,18 +48,22 @@ func TestRender_Golden(t *testing.T) {
 	}
 }
 
-// TestRender_AllowsWinOverDenies pins SBPL's own rule-ordering semantics, the
-// one property C7's socket rules depend on: the last matching rule decides,
-// so an allowed socket inside a denied directory is reachable only because
-// its allow is emitted after the deny (SP2 row 6).
-func TestRender_AllowsWinOverDenies(t *testing.T) {
+// TestRender_GrantsComeAfterTheDeny pins SBPL's own rule-ordering semantics,
+// the one property every grant depends on: the last matching rule decides, so
+// a grant is reachable only because it is emitted after the deny. A
+// presence-only check would still pass on a profile that emitted a grant
+// BEFORE the deny, which the deny would then override -- the rule sitting
+// right there in the text, and the path denied anyway. The socket and
+// loopback rules rely on the same order (SP2 row 6).
+func TestRender_GrantsComeAfterTheDeny(t *testing.T) {
 	got, err := Render(goldenSpec())
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	denyWrite := strings.Index(got, "(deny file-write*)")
-	allowWrite := strings.Index(got, "(allow file-write*")
-	readDeny := strings.Index(got, "(deny file-read* file-write*")
+	deny := strings.Index(got, "(deny file-read* file-write*)")
+	readGrant := strings.Index(got, "(allow file-read*\n")
+	writeGrant := strings.Index(got, "(allow file-read* file-write*")
+	metadata := strings.Index(got, "(allow file-read-metadata")
 	unixDeny := strings.Index(got, `(path-regex #"^/private/tmp/relay-sandbox-golden/relay/")`)
 	unixAllow := strings.Index(got, `(path-literal "/private/tmp/relay-sandbox-golden/relay/relay.sock")`)
 	tcpDeny := strings.Index(got, `(remote ip "localhost:3000")`)
@@ -70,8 +72,9 @@ func TestRender_AllowsWinOverDenies(t *testing.T) {
 		name          string
 		first, second int
 	}{
-		{"file-write deny before allow", denyWrite, allowWrite},
-		{"write allow before read deny", allowWrite, readDeny},
+		{"file deny before read grants", deny, readGrant},
+		{"read grants before read-write grants", readGrant, writeGrant},
+		{"read-write grants before ancestor metadata", writeGrant, metadata},
 		{"unix deny before unix allow", unixDeny, unixAllow},
 		{"tcp deny before tcp allow", tcpDeny, tcpAllow},
 	} {
@@ -81,43 +84,126 @@ func TestRender_AllowsWinOverDenies(t *testing.T) {
 	}
 }
 
-// TestRender_AllowAfterDenyWinsOverReadDeny pins the read/write mirror of
-// TestRender_AllowsWinOverDenies: AllowAfterDenyDirs is the only way to
-// re-permit a subtree nested inside an otherwise-denied one, and that only
-// works because SBPL's last-matching-rule-decides semantics make emission
-// ORDER the mechanism -- a presence-only check ("the allow rule is
-// somewhere in the output") would still pass on a profile that emitted the
-// allow BEFORE the deny, which the deny would then override, silently
-// leaving the subtree denied despite the rule sitting right there in the
-// text. This asserts the allow block is textually AFTER the deny block.
-func TestRender_AllowAfterDenyWinsOverReadDeny(t *testing.T) {
-	spec := Spec{
-		ReadDeny:           []string{"/private/tmp/relay-sandbox-golden/relay"},
-		AllowAfterDenyDirs: []string{"/private/tmp/relay-sandbox-golden/relay/sessions/pi-sessions"},
-	}
-	got, err := Render(spec)
+// TestRender_NothingIsDeniedByName is the point of the model: the one file
+// deny names no path. A profile that listed what to deny would protect only
+// what someone thought to list.
+func TestRender_NothingIsDeniedByName(t *testing.T) {
+	got, err := Render(goldenSpec())
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
+	if n := strings.Count(got, "(deny file-read*"); n != 1 {
+		t.Fatalf("profile has %d file-read deny blocks, want exactly the one bare deny:\n%s", n, got)
+	}
+	if strings.Contains(got, "(deny file-write*") {
+		t.Fatalf("profile carries a separate write deny:\n%s", got)
+	}
+}
 
-	readDeny := strings.Index(got, "(deny file-read* file-write*")
-	allowAfterDeny := strings.Index(got, "(allow file-read* file-write*")
-	if readDeny < 0 {
-		t.Fatal("deny file-read*/file-write* block missing from rendered profile")
+// TestRender_BaselineIsSystemOnly pins what every session gets without being
+// asked, and what it must never include.
+func TestRender_BaselineIsSystemOnly(t *testing.T) {
+	got, err := Render(Spec{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
 	}
-	if allowAfterDeny < 0 {
-		t.Fatal("allow file-read*/file-write* block missing from rendered profile")
+	for _, want := range []string{`(literal "/")`, `(literal "/var")`, `(literal "/etc")`, `(subpath "/usr")`, `(subpath "/private/etc")`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("baseline lacks %s\n%s", want, got)
+		}
 	}
-	if allowAfterDeny <= readDeny {
-		t.Fatalf("allow-after-deny block (offset %d) must come AFTER the deny block (offset %d) -- order is the mechanism, not merely presence", allowAfterDeny, readDeny)
+	for _, never := range []string{"/Users", "/Volumes", "/opt", ".ssh", `(subpath "/")`, `(subpath "/private")`, `(subpath "/private/var")`} {
+		if strings.Contains(got, never) {
+			t.Errorf("baseline names %q\n%s", never, got)
+		}
 	}
-	if !strings.Contains(got, `(allow file-read* file-write*`+"\n  "+`(subpath "/private/tmp/relay-sandbox-golden/relay/sessions/pi-sessions"))`) {
-		t.Fatalf("allow-after-deny block missing the expected subpath rule:\n%s", got)
+}
+
+// TestRender_ReadOnlyGrantIsNotWritable pins the two directions apart: a Read
+// entry is emitted only in the read block, a ReadWrite entry in both.
+func TestRender_ReadOnlyGrantIsNotWritable(t *testing.T) {
+	got, err := Render(Spec{
+		Read:      []string{"/private/tmp/relay-sandbox-golden/ro"},
+		ReadFiles: []string{"/private/tmp/relay-sandbox-golden/ro.conf"},
+		ReadWrite: []string{"/private/tmp/relay-sandbox-golden/rw"},
+	})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	writeAt := strings.Index(got, "(allow file-read* file-write*")
+	if writeAt < 0 {
+		t.Fatalf("no read-write block:\n%s", got)
+	}
+	readBlock, writeBlock := got[:writeAt], got[writeAt:]
+	for _, ro := range []string{`(subpath "/private/tmp/relay-sandbox-golden/ro")`, `(literal "/private/tmp/relay-sandbox-golden/ro.conf")`} {
+		if !strings.Contains(readBlock, ro) {
+			t.Errorf("read block lacks %s\n%s", ro, got)
+		}
+		if strings.Contains(writeBlock, ro) {
+			t.Errorf("a read-only grant %s is in the write block\n%s", ro, got)
+		}
+	}
+	if !strings.Contains(writeBlock, `(subpath "/private/tmp/relay-sandbox-golden/rw")`) {
+		t.Errorf("write block lacks the read-write grant\n%s", got)
+	}
+}
+
+// TestRender_AncestorsGetMetadataButNotContents pins that reaching a granted
+// directory needs `stat` on the path above it, and that this never widens to
+// a listing or a read.
+func TestRender_AncestorsGetMetadataButNotContents(t *testing.T) {
+	got, err := Render(Spec{ReadWrite: []string{"/private/tmp/relay-sandbox-golden/projects/widget"}})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	at := strings.Index(got, "(allow file-read-metadata")
+	if at < 0 {
+		t.Fatalf("no metadata block:\n%s", got)
+	}
+	meta := got[at:]
+	for _, want := range []string{
+		`(literal "/private/tmp/relay-sandbox-golden/projects")`,
+		`(literal "/private/tmp/relay-sandbox-golden")`,
+	} {
+		if !strings.Contains(meta, want) {
+			t.Errorf("metadata block lacks %s\n%s", want, meta)
+		}
+	}
+	if strings.Contains(got[:at], `"/private/tmp/relay-sandbox-golden/projects")`) {
+		t.Errorf("an ancestor was granted contents, not just metadata\n%s", got)
+	}
+}
+
+// TestRender_SymlinkedGrantAlsoNamesTheLink pins that a grant whose final
+// component is a symlink is readable as the link and as its target: a process
+// follows the link by reading it first. A grant that merely passes through a
+// symlinked parent names only the resolved path.
+func TestRender_SymlinkedGrantAlsoNamesTheLink(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	link := filepath.Join(root, "link")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	got, err := Render(Spec{Read: []string{link}})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(got, `(subpath "`+resolve(link)+`")`) {
+		t.Errorf("profile lacks the target subtree\n%s", got)
+	}
+	// The link sits under the kernel's spelling of its parent, not the
+	// caller's: t.TempDir is reached through /var, which is /private/var.
+	if want := filepath.Join(resolve(root), "link"); !strings.Contains(got, `(literal "`+want+`")`) {
+		t.Errorf("profile lacks the link itself, %s\n%s", want, got)
 	}
 }
 
 func TestRender_EscapesQuotesBackslashesSpacesAndUnicode(t *testing.T) {
-	got, err := Render(Spec{WriteAllowDirs: []string{
+	got, err := Render(Spec{ReadWrite: []string{
 		`/private/tmp/relay-sandbox-golden/odd "quoted" dir`,
 		`/private/tmp/relay-sandbox-golden/back\slash`,
 		"/private/tmp/relay-sandbox-golden/unicode-café-δοκιμή",
@@ -141,7 +227,7 @@ func TestRender_EscapesQuotesBackslashesSpacesAndUnicode(t *testing.T) {
 // is silently lost. The regex metacharacters in the path itself are escaped,
 // so ".claude.json" cannot match ".claudeXjson".
 func TestRender_FileEntryCoversAtomicSiblings(t *testing.T) {
-	got, err := Render(Spec{WriteAllowFiles: []string{"/private/tmp/relay-sandbox-golden/home/.claude.json"}})
+	got, err := Render(Spec{ReadWriteFiles: []string{"/private/tmp/relay-sandbox-golden/home/.claude.json"}})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -168,10 +254,11 @@ func TestRender_RefusesPathsItCannotSpell(t *testing.T) {
 		name string
 		spec Spec
 	}{
-		{"quote in a file entry", Spec{WriteAllowFiles: []string{`/private/tmp/odd "q" dir/.claude.json`}}},
+		{"quote in a file entry", Spec{ReadWriteFiles: []string{`/private/tmp/odd "q" dir/.claude.json`}}},
 		{"quote in a socket directory", Spec{UnixConnectDenyDirs: []string{`/private/tmp/odd "q" dir`}}},
-		{"newline in a directory", Spec{WriteAllowDirs: []string{"/private/tmp/line\nbreak"}}},
-		{"newline in a read deny", Spec{ReadDeny: []string{"/private/tmp/line\nbreak"}}},
+		{"newline in a read-write directory", Spec{ReadWrite: []string{"/private/tmp/line\nbreak"}}},
+		{"newline in a read directory", Spec{Read: []string{"/private/tmp/line\nbreak"}}},
+		{"newline in a read file", Spec{ReadFiles: []string{"/private/tmp/line\nbreak"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -279,5 +366,50 @@ func TestResolve(t *testing.T) {
 	}
 	if got := resolve("/private/tmp/relay-sandbox-golden/nothing/here"); got != "/private/tmp/relay-sandbox-golden/nothing/here" {
 		t.Errorf("resolve(missing) = %q, want it unchanged", got)
+	}
+}
+
+// TestResolve_CorrectsLetterCase pins the reason resolve asks the kernel for
+// the path rather than trusting the caller's spelling. A project path stored
+// as `/users/me/Proj` opens fine on a case-insensitive volume, but Seatbelt
+// matches the kernel's spelling, so a grant written that way matches nothing
+// and the session is locked out of its own directory.
+func TestResolve_CorrectsLetterCase(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	dir := filepath.Join(root, "MixedCaseProject")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	wrong := strings.ToLower(dir)
+	if _, err := os.Stat(wrong); err != nil {
+		t.Skip("this volume is case-sensitive; the case problem does not exist here")
+	}
+	if got := resolve(wrong); got != dir {
+		t.Errorf("resolve(%q) = %q, want the on-disk spelling %q", wrong, got, dir)
+	}
+	if got, want := resolve(filepath.Join(wrong, "not", "yet")), filepath.Join(dir, "not", "yet"); got != want {
+		t.Errorf("resolve(missing under a wrongly-cased dir) = %q, want %q", got, want)
+	}
+}
+
+// TestRender_SymlinkedParentNamesOnlyTheResolvedPath pins the other half: a
+// caller's spelling that differs only in a symlinked parent (/var for
+// /private/var, ~ through a link) adds no literal, because Seatbelt never sees
+// that spelling.
+func TestRender_SymlinkedParentNamesOnlyTheResolvedPath(t *testing.T) {
+	root := t.TempDir() // reached through /var, which is /private/var
+	dir := filepath.Join(root, "proj")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	got, err := Render(Spec{ReadWrite: []string{dir}})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if strings.Contains(got, `(literal "`+dir+`")`) && dir != resolve(dir) {
+		t.Errorf("profile names the unresolved spelling %s\n%s", dir, got)
 	}
 }
