@@ -257,7 +257,8 @@ File access is denied by default, in both directions. `sandboxSpecForLaunch`
 (`cmd/relay/session_sandbox.go`) names what a session is granted and
 `internal/sessions/sandbox` renders it as one Seatbelt profile: a bare
 `(deny file-read* file-write*)`, then the grants, then read-only `stat` on the
-parents of each grant so a process can reach it. Nothing is listed to deny.
+parents of each grant so a process can reach it, then the template's `deny`
+list (below). Nothing is denied by name unless a template says so.
 Relay's own data directory, another project, eve's data and `~/.ssh` are
 unreachable unless a template grants them, so a directory nobody thought to
 protect is protected anyway. Everything that is not a file (network, process,
@@ -271,6 +272,18 @@ A session's folders come from four places, and only the third is configured:
 | **System baseline** (read-only, every sandboxed session) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves | `sandbox.baselineReadDirs`. The smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. |
 | **Every session** | the project directory (read-write), `os.TempDir()`, `DARWIN_USER_TEMP_DIR` and `/dev` (read-write), the developer tools (read-only: `<Xcode>.app/Contents`, or `/Library/Developer/CommandLineTools`, resolved from `/var/select/developer_dir`) | `sandboxSpecForLaunch`. A pi session also gets `<config dir>/sessions/pi-sessions` for its transcript, since that path moves with `relay --config-dir` and no template can name it. |
 | **The template** | its `read` and `read_write` lists | the template's entry in `settings.json` |
+
+A fourth list, `deny`, is not a grant. It carves a path out of a grant that
+covers it: `{"read_write": ["~"], "deny": ["~/.ssh"]}` gives the session its
+home directory except `~/.ssh`. A denied path is rendered last, after every
+grant and after the ancestor `stat` rules, so nothing reopens it: not the
+template's grants, not the project directory, not the always-granted
+temp/`/dev`/developer-tools paths. It blocks read, write and `stat` alike.
+Denying a path that a session needs to run (the project directory, say)
+locks the session out of it; relay does not second-guess that. `deny` takes
+the same entry shape as `read` and `read_write`, is ignored without
+`"sandbox": true`, and a project's shell template that shadows a template
+inherits the shadowed template's `deny` like its other folders.
 
 **Templates live only in `settings.json`.** Nothing is computed in code, so
 every template, including the ones relay seeds, can be edited or removed. Each
@@ -307,7 +320,8 @@ gets only what every session gets, and relay logs which template to add.
 When `terminal_templates` is empty, relay writes one default at start: the
 shell, sandboxed, with `~` read-write. That grant includes `~/.ssh` and every
 other credential directory under the home directory; narrow it by editing the
-template.
+template. To keep the shell out of the credential directories, add
+`"deny": ["~/.ssh"]`, or the relay settings directory, to the template.
 
 **A template can point a client at relay's model endpoint.** `model_key: true`
 mints a per-session key, and `${MODEL_KEY}` in an `env` value delivers it.

@@ -362,3 +362,43 @@ func fileDigest(t *testing.T, path string) string {
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
+
+// TestLive_DenyCarvesAHoleOutOfAGrant is the case Spec.Deny exists for: the
+// grant covers the directory, the deny removes one child of it.
+func TestLive_DenyCarvesAHoleOutOfAGrant(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skip(err)
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	ssh := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(ssh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(ssh, "id_test")
+	other := filepath.Join(home, "notes.txt")
+	for _, p := range []string{key, other} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profile, err := Write(filepath.Join(root, "profiles"), "deny-session", Spec{
+		ReadWrite: []string{home, "/dev"},
+		Deny:      []string{ssh},
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !runProbe(t, profile, "read "+other) {
+		t.Error("a file beside the denied directory was unreadable")
+	}
+	if runProbe(t, profile, "read "+key) {
+		t.Error("a file under the denied directory was readable")
+	}
+	if runProbe(t, profile, "write "+filepath.Join(ssh, "new")) {
+		t.Error("a file could be created under the denied directory")
+	}
+	if runProbe(t, profile, "list "+ssh) {
+		t.Error("the denied directory could be listed")
+	}
+}

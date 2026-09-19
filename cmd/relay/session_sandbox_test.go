@@ -688,3 +688,37 @@ func TestModelEndpointLoopbackPort(t *testing.T) {
 		t.Errorf("port = %d, ok = %v, want 9999", port, ok)
 	}
 }
+
+// A template's deny list reaches the profile as a deny block after every
+// grant, so a `~` read-write grant cannot reopen ~/.ssh.
+func TestSandboxTemplate_DenyCarvesAHoleOutOfAHomeGrant(t *testing.T) {
+	noDeveloperTools(t)
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := store.With(func(s *config.Settings) {
+		s.TerminalTemplates = append(s.TerminalTemplates, config.TerminalTemplate{
+			ID: "custom", Name: "Custom", Sandbox: true,
+			ReadWrite: []string{"~"},
+			Deny:      []string{"~/.ssh"},
+		})
+	}); err != nil {
+		t.Fatalf("store.With: %v", err)
+	}
+
+	_, body := launchWithSandbox(t, LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "custom",
+	}, store)
+
+	denyAt := strings.Index(body, "(deny file-read* file-write*\n")
+	if denyAt < 0 {
+		t.Fatalf("no path deny block:\n%s", body)
+	}
+	if want := `(subpath "` + filepath.Join(sandboxRealPath(t, home), ".ssh") + `")`; !strings.Contains(body[denyAt:], want) {
+		t.Errorf("deny block lacks %s\n%s", want, body)
+	}
+	if grantAt := strings.Index(body, "(allow file-read* file-write*"); grantAt < 0 || grantAt > denyAt {
+		t.Errorf("read-write grant is not before the deny block:\n%s", body)
+	}
+}

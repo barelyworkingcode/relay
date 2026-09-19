@@ -84,9 +84,9 @@ func TestRender_GrantsComeAfterTheDeny(t *testing.T) {
 	}
 }
 
-// TestRender_NothingIsDeniedByName is the point of the model: the one file
-// deny names no path. A profile that listed what to deny would protect only
-// what someone thought to list.
+// TestRender_NothingIsDeniedByName is the point of the model: without
+// Spec.Deny the one file deny names no path. A profile that listed what to
+// deny by default would protect only what someone thought to list.
 func TestRender_NothingIsDeniedByName(t *testing.T) {
 	got, err := Render(goldenSpec())
 	if err != nil {
@@ -411,5 +411,33 @@ func TestRender_SymlinkedParentNamesOnlyTheResolvedPath(t *testing.T) {
 	}
 	if strings.Contains(got, `(literal "`+dir+`")`) && dir != resolve(dir) {
 		t.Errorf("profile names the unresolved spelling %s\n%s", dir, got)
+	}
+}
+
+func TestRender_DenyComesAfterEveryGrantAndNamesItsPath(t *testing.T) {
+	s := goldenSpec()
+	s.Deny = []string{"/private/tmp/relay-sandbox-golden/home/.ssh"}
+	got, err := Render(s)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	const head = "(deny file-read* file-write*\n"
+	deny := strings.Index(got, head)
+	if deny < 0 {
+		t.Fatalf("no path deny block:\n%s", got)
+	}
+	if !strings.Contains(got[deny:], `(subpath "/private/tmp/relay-sandbox-golden/home/.ssh")`) {
+		t.Errorf("deny block does not name the path:\n%s", got[deny:])
+	}
+	for _, grant := range []string{"(allow file-read*\n", "(allow file-read* file-write*", "(allow file-read-metadata"} {
+		if i := strings.Index(got, grant); i < 0 || i > deny {
+			t.Errorf("%q is not before the deny block (%d, %d)", grant, i, deny)
+		}
+	}
+}
+
+func TestRender_DenyRefusesAPathItCannotExpress(t *testing.T) {
+	if _, err := Render(Spec{Deny: []string{"/tmp/bad\npath"}}); err == nil {
+		t.Fatal("a control character in a deny path rendered")
 	}
 }

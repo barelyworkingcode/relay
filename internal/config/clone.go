@@ -155,6 +155,7 @@ func cloneTerminalTemplate(t TerminalTemplate) TerminalTemplate {
 	t.EnvPassthrough = cloneSlice(t.EnvPassthrough)
 	t.Read = cloneSlice(t.Read)
 	t.ReadWrite = cloneSlice(t.ReadWrite)
+	t.Deny = cloneSlice(t.Deny)
 	return t
 }
 

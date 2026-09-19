@@ -79,12 +79,15 @@ func TestValidateTerminalTemplate_SandboxFolders(t *testing.T) {
 		"another user's ~":  "~alice/x",
 		"dot-relative":      "./tools",
 	} {
-		for _, field := range []string{"read", "read_write"} {
+		for _, field := range []string{"read", "read_write", "deny"} {
 			tmpl := TerminalTemplate{ID: "x", Name: "X"}
-			if field == "read" {
+			switch field {
+			case "read":
 				tmpl.Read = []string{folder}
-			} else {
+			case "read_write":
 				tmpl.ReadWrite = []string{folder}
+			default:
+				tmpl.Deny = []string{folder}
 			}
 			err := ValidateTerminalTemplate(tmpl)
 			if !errors.Is(err, ErrTemplateGrant) {
@@ -109,11 +112,12 @@ func TestValidateTerminalTemplate_ModelEndpointURLOnlyInEnv(t *testing.T) {
 }
 
 func TestTerminalTemplate_CloneKeepsFoldersIndependent(t *testing.T) {
-	orig := &Settings{TerminalTemplates: []TerminalTemplate{{ID: "x", Name: "X", Read: []string{"/a"}, ReadWrite: []string{"/b"}}}}
+	orig := &Settings{TerminalTemplates: []TerminalTemplate{{ID: "x", Name: "X", Read: []string{"/a"}, ReadWrite: []string{"/b"}, Deny: []string{"/c"}}}}
 	cp := orig.Clone()
+	cp.TerminalTemplates[0].Deny[0] = "/changed"
 	cp.TerminalTemplates[0].Read[0] = "/changed"
 	cp.TerminalTemplates[0].ReadWrite = append(cp.TerminalTemplates[0].ReadWrite, "/extra")
-	if orig.TerminalTemplates[0].Read[0] != "/a" || len(orig.TerminalTemplates[0].ReadWrite) != 1 {
+	if orig.TerminalTemplates[0].Deny[0] != "/c" || orig.TerminalTemplates[0].Read[0] != "/a" || len(orig.TerminalTemplates[0].ReadWrite) != 1 {
 		t.Fatalf("mutating the clone changed the original: %+v", orig.TerminalTemplates[0])
 	}
 }
@@ -284,7 +288,7 @@ func TestEffectiveTerminalTemplatesForProject_ShellTemplatesOverride(t *testing.
 // so a project override can neither clear nor widen them.
 func TestEffectiveTerminalTemplatesForProject_ShadowedTemplateKeepsSandboxAndFolders(t *testing.T) {
 	s := &Settings{TerminalTemplates: []TerminalTemplate{
-		{ID: "rh", Name: "rh", Command: "rh", Sandbox: true, Read: []string{"/opt/rh"}, ReadWrite: []string{"~/.rh"}},
+		{ID: "rh", Name: "rh", Command: "rh", Sandbox: true, Read: []string{"/opt/rh"}, ReadWrite: []string{"~/.rh"}, Deny: []string{"~/.rh/secret"}},
 	}}
 	proj := &Project{
 		ID: "p1",
@@ -312,6 +316,9 @@ func TestEffectiveTerminalTemplatesForProject_ShadowedTemplateKeepsSandboxAndFol
 	}
 	if len(rh.Read) != 1 || rh.Read[0] != "/opt/rh" || len(rh.ReadWrite) != 1 || rh.ReadWrite[0] != "~/.rh" {
 		t.Fatalf("the shadowed template's folders did not survive the override: read=%v read_write=%v", rh.Read, rh.ReadWrite)
+	}
+	if len(rh.Deny) != 1 || rh.Deny[0] != "~/.rh/secret" {
+		t.Fatalf("the shadowed template's deny list did not survive the override: %v", rh.Deny)
 	}
 }
 

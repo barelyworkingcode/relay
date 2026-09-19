@@ -144,7 +144,7 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 		readWrite = append(readWrite, sessionPiSessionsDir())
 	}
 
-	var read, readFiles, readWriteFiles []string
+	var read, readFiles, readWriteFiles, deny []string
 	if dev := developerTools(); dev != "" {
 		read = append(read, dev)
 	}
@@ -156,6 +156,13 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 		if readWrite, readWriteFiles, err = addTemplateGrants(readWrite, readWriteFiles, "read_write", tmpl.ReadWrite, home); err != nil {
 			return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
 		}
+		// A denied file needs no separate spelling: a subtree rule on a
+		// regular file matches that file.
+		denyDirs, denyFiles, err := addTemplateGrants(nil, nil, "deny", tmpl.Deny, home)
+		if err != nil {
+			return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
+		}
+		deny = append(denyDirs, denyFiles...)
 	}
 	ensureGrantDirs(readWrite)
 
@@ -164,6 +171,7 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 		ReadFiles:      readFiles,
 		ReadWrite:      readWrite,
 		ReadWriteFiles: readWriteFiles,
+		Deny:           deny,
 		// Directory prefixes, not just the four named sockets C7 lists: a
 		// literal-only denylist leaves any socket that appears in one of
 		// these directories later reachable under (allow default) — SP2 row

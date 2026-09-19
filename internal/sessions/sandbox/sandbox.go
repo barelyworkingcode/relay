@@ -4,9 +4,10 @@
 //
 // File access is denied by default, in both directions. A path is reachable
 // only if the Spec grants it as read-only or as read-write, or if it is in the
-// fixed system baseline below. Nothing is listed to be denied: a directory that
-// is not granted (another project, relay's own data, ~/.ssh) is unreachable
-// because nothing names it, not because someone remembered to.
+// fixed system baseline below. A directory that is not granted (another
+// project, relay's own data, ~/.ssh) is unreachable because nothing names it,
+// not because someone remembered to. Spec.Deny is the one explicit deny: it
+// carves a path out of a grant that would otherwise cover it.
 //
 // Everything that is not a file (network, process, mach) stays `(allow
 // default)`, as SP2 measured it; only the unix-socket, loopback and setuid
@@ -81,6 +82,11 @@ type Spec struct {
 	ReadWrite      []string
 	ReadWriteFiles []string
 
+	// Deny are paths, directories or files, that are unreachable whatever the
+	// grants say: no read, write or stat. Rendered after every grant, so it
+	// wins over a grant that contains it.
+	Deny []string
+
 	// UnixConnectDenyDirs denies connecting to every socket beneath a
 	// directory, UnixConnectDenyPaths one named socket, and
 	// UnixConnectAllow re-permits named sockets — emitted last, so an
@@ -106,8 +112,8 @@ type Spec struct {
 // whose boundary would not be the path the caller named (see quoted and
 // regexEscape).
 //
-// Order is the mechanism: SBPL's last matching rule decides, so the one deny
-// comes first and every grant after it.
+// Order is the mechanism: SBPL's last matching rule decides, so the blanket
+// deny comes first, every grant after it, and Spec.Deny after those.
 func Render(s Spec) (string, error) {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -189,6 +195,18 @@ func Render(s Spec) (string, error) {
 	// own bin directory and Go cannot find GOROOT. It names existence and
 	// mode, never a listing or a file's bytes.
 	writeBlock(&b, "allow file-read-metadata", ancestorTerms(reachable))
+
+	// Last of the file rules, after the ancestor metadata allow too, so a
+	// denied path is not reopened by being an ancestor of a grant.
+	denies := make([]string, 0, len(s.Deny))
+	for _, p := range s.Deny {
+		terms, _, err := subtreeTerms(p)
+		if err != nil {
+			return "", fmt.Errorf("deny: %w", err)
+		}
+		denies = append(denies, terms...)
+	}
+	writeBlock(&b, "deny file-read* file-write*", denies)
 
 	unixDeny := make([]string, 0, len(s.UnixConnectDenyDirs)+len(s.UnixConnectDenyPaths))
 	for _, p := range s.UnixConnectDenyPaths {

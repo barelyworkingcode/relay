@@ -67,6 +67,13 @@ type TerminalTemplate struct {
 	Read      []string `json:"read,omitempty"`
 	ReadWrite []string `json:"read_write,omitempty"`
 
+	// Deny lists paths a sandboxed launch cannot reach at all, whatever the
+	// grants above (or the project directory) say: no read, write or stat.
+	// It exists to carve a hole out of a wide grant, such as `~/.ssh` under a
+	// `~` read-write. Same entry shape as Read and ReadWrite. Ignored when
+	// Sandbox is false.
+	Deny []string `json:"deny,omitempty"`
+
 	// ModelKey opts a pty template into a minted model-broker key at launch
 	// (C8), the way the `pi` template does so its interactive CLI reaches
 	// relay's model endpoint. Distinct from C5's LaunchSpec `model_key`
@@ -228,7 +235,7 @@ func ValidateTerminalTemplate(t TerminalTemplate) error {
 	for _, list := range []struct {
 		field string
 		paths []string
-	}{{"read", t.Read}, {"read_write", t.ReadWrite}} {
+	}{{"read", t.Read}, {"read_write", t.ReadWrite}, {"deny", t.Deny}} {
 		for _, p := range list.paths {
 			if err := validateGrantPath(p); err != nil {
 				return fmt.Errorf("terminal template %q: %s %q: %w", t.ID, list.field, p, err)
@@ -334,6 +341,7 @@ func EffectiveTerminalTemplatesForProject(s *Settings, proj *Project) []Terminal
 			t.Sandbox = base.Sandbox
 			t.Read = cloneSlice(base.Read)
 			t.ReadWrite = cloneSlice(base.ReadWrite)
+			t.Deny = cloneSlice(base.Deny)
 		}
 		if err := ValidateTerminalTemplate(t); err != nil {
 			slog.Warn("project shell template refused at resolution", "project", proj.ID, "id", st.ID, "error", err)
