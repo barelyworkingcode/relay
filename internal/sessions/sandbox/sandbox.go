@@ -2,13 +2,20 @@
 // profile and writes it where the shim's --sandbox-profile flag can find it:
 // `<profiles dir>/<session id>.sb`, mode 0600.
 //
-// Every rule and the order they are emitted in comes from spike SP2, which
-// measured them against real Claude Code, pi, node and go toolchains on
-// macOS 26.4. Two of its findings are load-bearing and invisible in the
-// output: `~/Library/Keychains` is deliberately NOT read-denied (denying it
-// logs Claude Code out of a desktop session; keychain items stay protected
-// by their own ACLs), and `(with report)` is a syntax error on a deny rule,
-// so no deny here carries one.
+// File access is denied by default, in both directions. A path is reachable
+// only if the Spec grants it as read-only or as read-write, or if it is in the
+// fixed system baseline below. Nothing is listed to be denied: a directory that
+// is not granted (another project, relay's own data, ~/.ssh) is unreachable
+// because nothing names it, not because someone remembered to.
+//
+// Everything that is not a file (network, process, mach) stays `(allow
+// default)`, as SP2 measured it; only the unix-socket, loopback and setuid
+// rules below narrow that.
+//
+// Two SP2 findings are load-bearing and invisible in the output: `(with
+// report)` is a syntax error on a deny rule, so no deny here carries one, and
+// `~/Library/Keychains` must stay readable for Claude Code to stay logged in,
+// so a caller that wants that grants it explicitly.
 //
 // This package renders text and writes a file. It does not decide whether a
 // session is sandboxed, what a session may reach, or when the profile is
@@ -20,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -28,35 +36,58 @@ import (
 // sandbox-exec actually being missing from the machine running the suite.
 var sandboxExecPath = "/usr/bin/sandbox-exec"
 
+// baselineReadLiterals are read as themselves, not as subtrees: the root
+// directory and the three top-level symlinks. A process cannot start without
+// reading `/`, and resolving `/var/select/developer_dir`, `/etc/ssl` or
+// `/tmp/...` reads the link itself before the kernel follows it. A `(subpath)`
+// on a symlink covers nothing, which is why these are literals.
+var baselineReadLiterals = []string{"/", "/var", "/etc", "/tmp"}
+
+// baselineReadDirs is the read-only system set every sandboxed session gets.
+// It holds no user data: system binaries, libraries and configuration a
+// process needs to run at all. Each entry is here because something measured
+// did not work without it, on macOS 26 with Homebrew, Xcode and a Node
+// toolchain installed:
+//
+//	/usr                        scripts under /usr/bin, locale, zsh functions, terminfo
+//	/System/Library             SystemVersion.plist (host OS check), OpenSSL config
+//	/private/etc                ssl certificates, hosts, resolv.conf, zshrc, ssh_config
+//	/private/var/db/timezone    the zone /etc/localtime points at
+//	/private/var/select         developer_dir, which git and clang resolve through
+//
+// The developer tools themselves (Xcode or the command line tools) are not
+// listed: where they live is per machine, so the caller resolves them.
+var baselineReadDirs = []string{
+	"/usr",
+	"/System/Library",
+	"/private/etc",
+	"/private/var/db/timezone",
+	"/private/var/select",
+}
+
 // Spec is C7's sandbox input, in the shape this package renders. Every path
 // must be absolute and already ~-expanded by relay; Render resolves symlinks
-// itself (SP2: Seatbelt matches the kernel's resolved path).
+// and letter case itself (SP2: Seatbelt matches the kernel's resolved path).
 type Spec struct {
-	// WriteAllowDirs are write-allowed subtrees. WriteAllowFiles are single
-	// regular files, each rendered so that the atomic-write siblings a CLI
-	// actually uses — `<file>.lock`, `<file>.tmp.*`, `<file>.backup` — are
-	// allowed with it. SP2 row 17: without the siblings, Claude Code's
-	// writes to `~/.claude.json` are denied and its state is silently lost.
-	WriteAllowDirs  []string
-	WriteAllowFiles []string
+	// Read and ReadFiles are read-only: subtrees, and single regular files.
+	Read      []string
+	ReadFiles []string
 
-	// ReadDeny denies read AND write on a subtree. Emitted after the write
-	// allows so it wins over them: the last matching rule decides in SBPL.
-	ReadDeny []string
-
-	// AllowAfterDenyDirs re-permits read AND write on a subtree nested
-	// inside an otherwise ReadDeny'd directory. Emitted after the deny
-	// file-read*/file-write* block so it wins over it — the read/write
-	// mirror of UnixConnectAllow's own allow-after-deny pattern, and the
-	// only way to re-permit a subtree inside a directory that is otherwise
-	// denied whole.
-	AllowAfterDenyDirs []string
+	// ReadWrite are read-write subtrees. ReadWriteFiles are single regular
+	// files, each rendered so that the atomic-write siblings a CLI actually
+	// uses — `<file>.lock`, `<file>.tmp.*`, `<file>.backup` — are allowed with
+	// it. SP2 row 17: without the siblings, Claude Code's writes to
+	// `~/.claude.json` are denied and its state is silently lost.
+	ReadWrite      []string
+	ReadWriteFiles []string
 
 	// UnixConnectDenyDirs denies connecting to every socket beneath a
 	// directory, UnixConnectDenyPaths one named socket, and
 	// UnixConnectAllow re-permits named sockets — emitted last, so an
 	// allowed socket inside a denied directory is reachable and a socket
-	// that appears there later is not (SP2 row 6).
+	// that appears there later is not (SP2 row 6). Files and sockets are
+	// separate operations: a socket is reached by connecting to it, not by
+	// reading its path.
 	UnixConnectDenyDirs  []string
 	UnixConnectDenyPaths []string
 	UnixConnectAllow     []string
@@ -74,51 +105,90 @@ type Spec struct {
 // Render produces the profile text. It fails rather than emitting a rule
 // whose boundary would not be the path the caller named (see quoted and
 // regexEscape).
+//
+// Order is the mechanism: SBPL's last matching rule decides, so the one deny
+// comes first and every grant after it.
 func Render(s Spec) (string, error) {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
-	// (allow default), not a deny-default profile: SH §5.2 chose this
-	// because a deny-default profile breaks Node and Go toolchains too often
-	// to maintain, and SP2 measured only the allow-default shape.
+	// (allow default) for everything that is not a file. A deny-default
+	// profile for the whole system breaks Node and Go toolchains too often to
+	// maintain (SH §5.2); files are where the secrets are, so files are what
+	// is denied.
 	b.WriteString("(allow default)\n")
-	b.WriteString("(deny file-write*)\n")
+	b.WriteString("(deny file-read* file-write*)\n")
 
-	writes := make([]string, 0, len(s.WriteAllowDirs)+len(s.WriteAllowFiles))
-	for _, p := range s.WriteAllowDirs {
-		lit, err := quoted(resolve(p))
+	// reachable collects every path a grant names, in both spellings, for the
+	// ancestor metadata rule below.
+	var reachable []string
+
+	reads := make([]string, 0, len(baselineReadLiterals)+len(baselineReadDirs)+len(s.Read)+len(s.ReadFiles))
+	for _, p := range baselineReadLiterals {
+		lit, err := quoted(p)
 		if err != nil {
-			return "", fmt.Errorf("write_allow: %w", err)
+			return "", fmt.Errorf("baseline: %w", err)
 		}
-		writes = append(writes, "(subpath "+lit+")")
+		reads = append(reads, "(literal "+lit+")")
 	}
-	for _, p := range s.WriteAllowFiles {
-		re, err := fileWithAtomicSiblings(resolve(p))
+	for _, p := range baselineReadDirs {
+		terms, paths, err := subtreeTerms(p)
 		if err != nil {
-			return "", fmt.Errorf("write_allow: %w", err)
+			return "", fmt.Errorf("baseline: %w", err)
+		}
+		reads = append(reads, terms...)
+		reachable = append(reachable, paths...)
+	}
+	for _, p := range s.Read {
+		terms, paths, err := subtreeTerms(p)
+		if err != nil {
+			return "", fmt.Errorf("read: %w", err)
+		}
+		reads = append(reads, terms...)
+		reachable = append(reachable, paths...)
+	}
+	for _, p := range s.ReadFiles {
+		terms, paths, err := fileTerms(p)
+		if err != nil {
+			return "", fmt.Errorf("read: %w", err)
+		}
+		reads = append(reads, terms...)
+		reachable = append(reachable, paths...)
+	}
+	writeBlock(&b, "allow file-read*", reads)
+
+	writes := make([]string, 0, len(s.ReadWrite)+len(s.ReadWriteFiles))
+	for _, p := range s.ReadWrite {
+		terms, paths, err := subtreeTerms(p)
+		if err != nil {
+			return "", fmt.Errorf("read_write: %w", err)
+		}
+		writes = append(writes, terms...)
+		reachable = append(reachable, paths...)
+	}
+	for _, p := range s.ReadWriteFiles {
+		resolved := resolve(p)
+		re, err := fileWithAtomicSiblings(resolved)
+		if err != nil {
+			return "", fmt.Errorf("read_write: %w", err)
 		}
 		writes = append(writes, "(regex "+re+")")
-	}
-	writeBlock(&b, "allow file-write*", writes)
-
-	denies := make([]string, 0, len(s.ReadDeny))
-	for _, p := range s.ReadDeny {
-		lit, err := quoted(resolve(p))
-		if err != nil {
-			return "", fmt.Errorf("read_deny: %w", err)
+		reachable = append(reachable, resolved)
+		if link := linkPath(p, resolved); link != "" {
+			lit, err := quoted(link)
+			if err != nil {
+				return "", fmt.Errorf("read_write: %w", err)
+			}
+			writes = append(writes, "(literal "+lit+")")
+			reachable = append(reachable, link)
 		}
-		denies = append(denies, "(subpath "+lit+")")
 	}
-	writeBlock(&b, "deny file-read* file-write*", denies)
+	writeBlock(&b, "allow file-read* file-write*", writes)
 
-	allowAfterDeny := make([]string, 0, len(s.AllowAfterDenyDirs))
-	for _, p := range s.AllowAfterDenyDirs {
-		lit, err := quoted(resolve(p))
-		if err != nil {
-			return "", fmt.Errorf("allow_after_deny: %w", err)
-		}
-		allowAfterDeny = append(allowAfterDeny, "(subpath "+lit+")")
-	}
-	writeBlock(&b, "allow file-read* file-write*", allowAfterDeny)
+	// Metadata, not contents: `stat` and `realpath` on the ancestors of a
+	// granted path. Without it `ls ..` fails, python's realpath fails on its
+	// own bin directory and Go cannot find GOROOT. It names existence and
+	// mode, never a listing or a file's bytes.
+	writeBlock(&b, "allow file-read-metadata", ancestorTerms(reachable))
 
 	unixDeny := make([]string, 0, len(s.UnixConnectDenyDirs)+len(s.UnixConnectDenyPaths))
 	for _, p := range s.UnixConnectDenyPaths {
@@ -154,6 +224,75 @@ func Render(s Spec) (string, error) {
 		b.WriteString("(deny process-exec* (require-any (file-mode #o4000) (file-mode #o2000)))\n")
 	}
 	return b.String(), nil
+}
+
+// subtreeTerms renders one granted directory. The resolved path carries the
+// subtree; when the entry itself is a symlink the link is also readable as a
+// literal, because a process that follows it reads the link first.
+func subtreeTerms(p string) (terms, paths []string, err error) {
+	return grantTerms(p, "subpath")
+}
+
+// fileTerms renders one granted regular file, and the link to it when the
+// entry is a symlink, for the same reason as subtreeTerms.
+func fileTerms(p string) (terms, paths []string, err error) {
+	return grantTerms(p, "literal")
+}
+
+func grantTerms(p, kind string) (terms, paths []string, err error) {
+	resolved := resolve(p)
+	lit, err := quoted(resolved)
+	if err != nil {
+		return nil, nil, err
+	}
+	terms = append(terms, "("+kind+" "+lit+")")
+	paths = append(paths, resolved)
+	if link := linkPath(p, resolved); link != "" {
+		l, err := quoted(link)
+		if err != nil {
+			return nil, nil, err
+		}
+		terms = append(terms, "(literal "+l+")")
+		paths = append(paths, link)
+	}
+	return terms, paths, nil
+}
+
+// linkPath is where the entry p itself sits when its final component is a
+// symlink, or "" when it is not. That is the kernel's spelling of p's parent
+// plus p's own name, not the caller's whole spelling: Seatbelt only ever sees
+// the resolved parent, so a literal for the unresolved string would name a path
+// no process presents.
+func linkPath(p, resolved string) string {
+	clean := filepath.Clean(p)
+	link := filepath.Join(resolve(filepath.Dir(clean)), filepath.Base(clean))
+	if link == resolved {
+		return ""
+	}
+	return link
+}
+
+// ancestorTerms is one metadata literal for every ancestor directory of every
+// path, sorted so the profile is the same for the same Spec.
+func ancestorTerms(paths []string) []string {
+	seen := map[string]bool{}
+	for _, p := range paths {
+		for d := filepath.Dir(p); d != "/" && d != "." && !seen[d]; d = filepath.Dir(d) {
+			seen[d] = true
+		}
+	}
+	dirs := make([]string, 0, len(seen))
+	for d := range seen {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	terms := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		if lit, err := quoted(d); err == nil {
+			terms = append(terms, "(literal "+lit+")")
+		}
+	}
+	return terms
 }
 
 // Write renders s and writes it to <profilesDir>/<sessionID>.sb at 0600
@@ -247,17 +386,22 @@ func loopbackTerms(ports []int) []string {
 
 // resolve is SP2's "realpath every entry": Seatbelt matches the path the
 // kernel resolved, so a rule spelled through a symlink (/tmp, which is
-// /private/tmp) governs a path no process ever presents. A path that does
-// not exist yet resolves as far as its deepest existing ancestor — a profile
-// may legitimately name a directory the session creates later, and refusing
-// those would deny a write the session is meant to have.
+// /private/tmp) governs a path no process ever presents. The same is true of
+// letter case: macOS volumes are case-insensitive, so `/users/Me/proj` opens
+// fine while a rule spelled that way matches nothing the kernel reports, and
+// under a grant-only profile that is a session locked out of its own project.
+// EvalSymlinks does not correct case, so the on-disk spelling comes from the
+// kernel (onDiskPath). A path that does not exist yet resolves as far as its
+// deepest existing ancestor — a profile may legitimately name a directory the
+// session creates later, and refusing those would deny a write the session is
+// meant to have.
 func resolve(p string) string {
 	if p == "" {
 		return ""
 	}
 	p = filepath.Clean(p)
 	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return r
+		return onDiskPath(r)
 	}
 	var rest []string
 	cur := p
@@ -268,7 +412,7 @@ func resolve(p string) string {
 		}
 		rest = append([]string{base}, rest...)
 		if r, err := filepath.EvalSymlinks(parent); err == nil {
-			return filepath.Join(append([]string{r}, rest...)...)
+			return filepath.Join(append([]string{onDiskPath(r)}, rest...)...)
 		}
 		cur = parent
 	}

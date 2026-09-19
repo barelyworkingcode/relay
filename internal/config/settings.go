@@ -62,6 +62,12 @@ type Settings struct {
 	// unaffected either way. Same "absent means closed" default as Remote.
 	ModelEndpoint *ModelEndpointConfig `json:"model_endpoint,omitempty"`
 
+	// Sandbox names extra directories every sandboxed session may read or
+	// read and write (SandboxConfig). Absent means none beyond what relay
+	// grants itself, so an install that never sets it keeps settings.json
+	// byte-identical to one written before this field existed.
+	Sandbox *SandboxConfig `json:"sandbox,omitempty"`
+
 	// APICredentials are the bearer credentials the control-plane API
 	// accepts, each naming its own capability classes (ADR-015 decision 3).
 	// omitempty, like Enrolments and Audit: an install that never mints one
