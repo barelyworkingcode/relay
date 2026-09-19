@@ -20,7 +20,6 @@ func (s *Settings) Clone() *Settings {
 	cp.Audit = cloneAuditConfig(s.Audit)
 	cp.Remote = cloneRemoteConfig(s.Remote)
 	cp.ModelEndpoint = cloneModelEndpointConfig(s.ModelEndpoint)
-	cp.Sandbox = cloneSandboxConfig(s.Sandbox)
 	cp.APICredentials = cloneAPICredentials(s.APICredentials)
 	cp.LoginBootstrap = cloneLoginBootstrap(s.LoginBootstrap)
 	cp.Passkeys = clonePasskeys(s.Passkeys)
@@ -154,6 +153,8 @@ func cloneTerminalTemplate(t TerminalTemplate) TerminalTemplate {
 	t.Args = cloneSlice(t.Args)
 	t.Env = cloneMap(t.Env)
 	t.EnvPassthrough = cloneSlice(t.EnvPassthrough)
+	t.Read = cloneSlice(t.Read)
+	t.ReadWrite = cloneSlice(t.ReadWrite)
 	return t
 }
 
@@ -274,13 +275,6 @@ func cloneModelEndpointConfig(c *ModelEndpointConfig) *ModelEndpointConfig {
 	}
 	cp := *c
 	return &cp
-}
-
-func cloneSandboxConfig(c *SandboxConfig) *SandboxConfig {
-	if c == nil {
-		return nil
-	}
-	return &SandboxConfig{Read: cloneSlice(c.Read), ReadWrite: cloneSlice(c.ReadWrite)}
 }
 
 func cloneAPICredential(c APICredential) APICredential {

@@ -26,7 +26,44 @@ func newLaunchTestStore(t *testing.T) config.SettingsStore {
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
+	seedTestTemplates(t, store)
 	return store
+}
+
+// testTerminalTemplates is the set a launch test finds in settings.json. Relay
+// computes no templates in code, so a test that launches one has to put it
+// there. They mirror what a real install holds: a shell with the whole home
+// directory, Claude Code and pi with only the folders they need, and one
+// template that opts out of the sandbox.
+func testTerminalTemplates() []config.TerminalTemplate {
+	dotfiles := []string{"~/.gitconfig", "~/.zshenv", "~/.zprofile", "~/.zshrc"}
+	return []config.TerminalTemplate{
+		{
+			ID: "shell", Name: "Shell", Icon: "shell", Description: "Default system shell",
+			Sandbox: true, ReadWrite: []string{"~"},
+		},
+		{
+			ID: "claude-code", Name: "Claude Code", Command: "claude", Icon: "terminal", Description: "Claude Code CLI agent",
+			EnvPassthrough: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"},
+			Sandbox:        true,
+			ReadWrite:      []string{"~/.claude", "~/.claude.json", "~/.cache", "~/.npm", "~/go/pkg", "~/Library/Caches", "/private/tmp/cc-socks"},
+			Read:           append([]string{"~/Library/Keychains", "/opt/homebrew", "~/.local/bin", "~/.local/share/claude"}, dotfiles...),
+		},
+		{
+			ID: "pi", Name: "pi", Command: "pi", Icon: "terminal", Description: "pi coding agent",
+			Sandbox: true, ModelKey: true,
+			ReadWrite: []string{"~/.pi", "~/.cache", "~/.npm", "~/go/pkg", "~/Library/Caches"},
+			Read:      append([]string{"/opt/homebrew", "~/.bun/bin", "~/.bun/install/global"}, dotfiles...),
+		},
+		{ID: "plain", Name: "Plain", Icon: "terminal", Description: "A template that opts out of the sandbox"},
+	}
+}
+
+func seedTestTemplates(t *testing.T, store config.SettingsStore) {
+	t.Helper()
+	if err := store.With(func(s *config.Settings) { s.TerminalTemplates = testTerminalTemplates() }); err != nil {
+		t.Fatalf("seed terminal templates: %v", err)
+	}
 }
 
 // newLaunchTestLedger gives each test its own on-disk ledger, matching how
@@ -910,14 +947,20 @@ func TestAuthorizeLaunch_ResumeDormantSameProjectSucceeds(t *testing.T) {
 // backspace; the template's own value, from env or passthrough, still wins.
 func TestResolveTemplateEnv_TerminalDefaults(t *testing.T) {
 	t.Run("bare template gets both defaults", func(t *testing.T) {
-		got := resolveTemplateEnv(config.TerminalTemplate{})
+		got, err := resolveTemplateEnv(config.TerminalTemplate{}, &config.Settings{})
+		if err != nil {
+			t.Fatalf("resolveTemplateEnv: %v", err)
+		}
 		if got["TERM"] != "xterm-256color" || got["COLORTERM"] != "truecolor" {
 			t.Fatalf("env = %v, want TERM=xterm-256color and COLORTERM=truecolor", got)
 		}
 	})
 
 	t.Run("template env wins", func(t *testing.T) {
-		got := resolveTemplateEnv(config.TerminalTemplate{Env: map[string]string{"TERM": "vt100", "FOO": "bar"}})
+		got, err := resolveTemplateEnv(config.TerminalTemplate{Env: map[string]string{"TERM": "vt100", "FOO": "bar"}}, &config.Settings{})
+		if err != nil {
+			t.Fatalf("resolveTemplateEnv: %v", err)
+		}
 		if got["TERM"] != "vt100" || got["FOO"] != "bar" || got["COLORTERM"] != "truecolor" {
 			t.Fatalf("env = %v, want the template's TERM kept and COLORTERM defaulted", got)
 		}
@@ -925,9 +968,79 @@ func TestResolveTemplateEnv_TerminalDefaults(t *testing.T) {
 
 	t.Run("passthrough wins", func(t *testing.T) {
 		t.Setenv("TERM", "screen-256color")
-		got := resolveTemplateEnv(config.TerminalTemplate{EnvPassthrough: []string{"TERM"}})
+		got, err := resolveTemplateEnv(config.TerminalTemplate{EnvPassthrough: []string{"TERM"}}, &config.Settings{})
+		if err != nil {
+			t.Fatalf("resolveTemplateEnv: %v", err)
+		}
 		if got["TERM"] != "screen-256color" {
 			t.Fatalf("TERM = %q, want the passed-through value", got["TERM"])
 		}
 	})
+}
+
+// TestResolveTemplateEnv_ModelEndpointURL pins the one substitution relay fills
+// in itself: the model endpoint's URL, from model_endpoint.listen.
+func TestResolveTemplateEnv_ModelEndpointURL(t *testing.T) {
+	tmpl := config.TerminalTemplate{
+		ID: "mapped", ModelKey: true,
+		Env: map[string]string{
+			"ANTHROPIC_BASE_URL":       config.ModelEndpointURLMarker,
+			"ANTHROPIC_CUSTOM_HEADERS": "X-Relay-Key: " + config.ModelKeyMarker,
+		},
+	}
+
+	t.Run("listener on", func(t *testing.T) {
+		settings := &config.Settings{ModelEndpoint: &config.ModelEndpointConfig{Listen: "127.0.0.1:8180"}}
+		got, err := resolveTemplateEnv(tmpl, settings)
+		if err != nil {
+			t.Fatalf("resolveTemplateEnv: %v", err)
+		}
+		if got["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:8180" {
+			t.Fatalf("ANTHROPIC_BASE_URL = %q, want http://127.0.0.1:8180", got["ANTHROPIC_BASE_URL"])
+		}
+		if got["ANTHROPIC_CUSTOM_HEADERS"] != "X-Relay-Key: "+config.ModelKeyMarker {
+			t.Fatalf("relay altered the key mapping, which relay-sessions expands at spawn: %q", got["ANTHROPIC_CUSTOM_HEADERS"])
+		}
+	})
+
+	for name, settings := range map[string]*config.Settings{
+		"no model_endpoint block":     {},
+		"listener explicitly cleared": {ModelEndpoint: &config.ModelEndpointConfig{}},
+		"nil settings":                nil,
+	} {
+		t.Run("listener off, "+name, func(t *testing.T) {
+			if got, err := resolveTemplateEnv(tmpl, settings); err == nil {
+				t.Fatalf("resolved %v with no listener; it must refuse, or the ${MODEL_KEY} header reaches the client's real provider", got)
+			}
+		})
+	}
+}
+
+// TestAuthorizeLaunch_RefusesAMappedTemplateWithNoListener pins that the
+// refusal reaches the caller with a reason, and leaves nothing behind: no
+// model key minted, no profile written.
+func TestAuthorizeLaunch_RefusesAMappedTemplateWithNoListener(t *testing.T) {
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+	if err := store.With(func(s *config.Settings) {
+		s.TerminalTemplates = append(s.TerminalTemplates, config.TerminalTemplate{
+			ID: "mapped", Name: "Mapped", Command: "claude", Sandbox: true, ModelKey: true,
+			Env: map[string]string{"ANTHROPIC_BASE_URL": config.ModelEndpointURLMarker, "H": config.ModelKeyMarker},
+		})
+	}); err != nil {
+		t.Fatalf("store.With: %v", err)
+	}
+
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), newLaunchTestLedger(t), LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "mapped",
+	})
+	if result != nil || refusal == nil {
+		t.Fatalf("launch was authorized with no model endpoint listener: %+v", result)
+	}
+	if refusal.Code != "model_endpoint_unavailable" {
+		t.Fatalf("refusal code = %q, want model_endpoint_unavailable", refusal.Code)
+	}
+	if entries, err := os.ReadDir(sessionProfilesDir()); err == nil && len(entries) != 0 {
+		t.Fatalf("a refused launch left %d profile(s) behind", len(entries))
+	}
 }

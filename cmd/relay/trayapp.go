@@ -279,6 +279,20 @@ func runTrayApp() {
 	if err != nil && !errors.Is(err, errRelaySessionsRecordAlreadyPersisted) {
 		slog.Warn("could not persist the default relaysessions record", "error", err)
 	}
+	// Terminal templates live only in settings.json, so an empty list means
+	// no terminal can launch. Persist the default shell template when there is
+	// none, where the operator can see and change it; an install that already
+	// has templates is not rewritten. Best-effort, like the record above.
+	errTemplatesAlreadyPresent := errors.New("terminal templates already present")
+	err = config.WithDeclinable(store, func(s *config.Settings) error {
+		if !config.EnsureDefaultTerminalTemplates(s) {
+			return errTemplatesAlreadyPresent
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errTemplatesAlreadyPresent) {
+		slog.Warn("could not persist the default terminal template", "error", err)
+	}
 	var sealStatus string
 	if reason := store.SealStatus(); reason != nil {
 		// §5.6: the read half works in full from here on — relay grant,

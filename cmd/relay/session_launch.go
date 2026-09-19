@@ -10,6 +10,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -394,7 +395,11 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 
 	if req.Kind == KindPTY {
 		spec.Argv = resolveArgv(*tmpl, projectPathOrEmpty(proj), req.ProjectID)
-		spec.Env = resolveTemplateEnv(*tmpl)
+		env, err := resolveTemplateEnv(*tmpl, settings)
+		if err != nil {
+			return nil, invalidRequest("model_endpoint_unavailable", err.Error(), baseFields)
+		}
+		spec.Env = env
 		spec.TemplateID = tmpl.ID
 		idleMinutes := tmpl.IdleTimeout
 		if idleMinutes == 0 {
@@ -424,7 +429,11 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	// reached after this point would leave one behind with no session to
 	// own it.
 	if sandbox {
-		profilePath, err := writeSessionSandboxProfile(settings, proj, directory, sessionID)
+		grants := tmpl
+		if grants == nil {
+			grants = templateForKind(settings, proj, req.Kind)
+		}
+		profilePath, err := writeSessionSandboxProfile(settings, proj, directory, sessionID, req.Kind, grants)
 		if err != nil {
 			return nil, invalidRequest("sandbox_unavailable", err.Error(), baseFields)
 		}
@@ -533,6 +542,32 @@ func lexicalDirWithin(dir, projectPath string) bool {
 	return true
 }
 
+// kindTemplateIDs names the template a claude, pi or chat session reads its
+// sandbox folders from. Those kinds are not launched from a template, but they
+// run the same tools, so the template that describes a tool's folders is the
+// one place they are written down.
+var kindTemplateIDs = map[string]string{
+	KindClaude: "claude-code",
+	KindPi:     "pi",
+	KindChat:   "chat",
+}
+
+// templateForKind is the template whose folders a non-terminal session gets,
+// or nil when settings.json holds none by that id. A missing template is not a
+// refusal: the session runs with only what every session gets, which is the
+// fail-closed direction, and the warning names what to add.
+func templateForKind(settings *config.Settings, proj *config.Project, kind string) *config.TerminalTemplate {
+	id := kindTemplateIDs[kind]
+	if id == "" {
+		return nil
+	}
+	if t, ok := findTemplate(settings, proj, id); ok {
+		return &t
+	}
+	slog.Warn("session sandbox: no template for this session kind, so it gets no folders beyond its project", "kind", kind, "template", id)
+	return nil
+}
+
 func findTemplate(settings *config.Settings, proj *config.Project, id string) (config.TerminalTemplate, bool) {
 	for _, t := range config.EffectiveTerminalTemplatesForProject(settings, proj) {
 		if t.ID == id {
@@ -587,9 +622,21 @@ var terminalEnvDefaults = map[string]string{
 	"COLORTERM": "truecolor",
 }
 
-func resolveTemplateEnv(t config.TerminalTemplate) map[string]string {
+// resolveTemplateEnv is a template's env as the session sees it: the template's
+// own values, then the passthrough variables, then TERM and COLORTERM where
+// neither set them. ${MODEL_ENDPOINT_URL} in a value becomes the model
+// endpoint's URL; with the listener off it refuses, because dropping only the
+// URL would leave a ${MODEL_KEY} header pointed at the client's real provider,
+// which would then receive the relay key.
+func resolveTemplateEnv(t config.TerminalTemplate, settings *config.Settings) (map[string]string, error) {
 	env := make(map[string]string, len(t.Env)+len(t.EnvPassthrough)+len(terminalEnvDefaults))
 	for k, v := range t.Env {
+		if strings.Contains(v, config.ModelEndpointURLMarker) {
+			if settings == nil || settings.ModelEndpoint == nil || settings.ModelEndpoint.Listen == "" {
+				return nil, fmt.Errorf("template %q uses %s in env %q but model_endpoint.listen is not set in settings.json", t.ID, config.ModelEndpointURLMarker, k)
+			}
+			v = strings.ReplaceAll(v, config.ModelEndpointURLMarker, "http://"+settings.ModelEndpoint.Listen)
+		}
 		env[k] = v
 	}
 	for _, name := range t.EnvPassthrough {
@@ -602,14 +649,12 @@ func resolveTemplateEnv(t config.TerminalTemplate) map[string]string {
 			env[k] = v
 		}
 	}
-	return env
+	return env, nil
 }
 
 // wantsSandbox is C7's default table: on for claude/pi/chat unconditionally,
 // and for a pty launch exactly what the template's own Sandbox field says
-// (already true for claude-code/rh/pi/shell, false for opencode, per
-// BuiltinTerminalTemplates — this function does not special-case any
-// template id itself).
+// (this function does not special-case any template id itself).
 func wantsSandbox(kind string, tmpl *config.TerminalTemplate) bool {
 	switch kind {
 	case KindClaude, KindPi, KindChat:

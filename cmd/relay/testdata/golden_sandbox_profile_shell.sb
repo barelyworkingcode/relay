@@ -1,0 +1,32 @@
+(version 1)
+(allow default)
+(deny file-read* file-write*)
+(allow file-read*
+  (literal "/")
+  (literal "/var")
+  (literal "/etc")
+  (literal "/tmp")
+  (subpath "/usr")
+  (subpath "/System/Library")
+  (subpath "/private/etc")
+  (subpath "/private/var/db/timezone")
+  (subpath "/private/var/select"))
+(allow file-read* file-write*
+  (subpath "<PROJECT>")
+  (subpath "<DARWIN_TMP>")
+  (subpath "/dev")
+  (subpath "<HOME>"))
+(deny network-outbound
+  (remote unix-socket (path-regex #"^<RELAY_DIR>/"))
+  (remote unix-socket (path-regex #"^<HOME>/Library/Application Support/relayLLM/"))
+  (remote unix-socket (path-regex #"^<EVE_DATA>/")))
+(allow network-outbound
+  (remote unix-socket (path-literal "<RELAY_DIR>/relay.sock"))
+  (remote unix-socket (path-literal "<RELAY_DIR>/model.sock"))
+  (remote unix-socket (path-literal "<RELAY_DIR>/relaysessions-hook.sock")))
+(deny network-outbound
+  (remote ip "localhost:3000")
+  (remote ip "localhost:8181"))
+(allow network-outbound
+  (remote ip "localhost:8180"))
+(deny process-exec* (require-any (file-mode #o4000) (file-mode #o2000)))

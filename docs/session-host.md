@@ -236,49 +236,73 @@ File access is denied by default, in both directions. `sandboxSpecForLaunch`
 `(deny file-read* file-write*)`, then the grants, then read-only `stat` on the
 parents of each grant so a process can reach it. Nothing is listed to deny.
 Relay's own data directory, another project, eve's data and `~/.ssh` are
-unreachable because nothing names them, so a directory nobody thought to
+unreachable unless a template grants them, so a directory nobody thought to
 protect is protected anyway. Everything that is not a file (network, process,
 mach) stays `(allow default)`; the unix-socket, loopback and setuid rules are
 separate and unchanged.
 
-| Grant | Paths | Why |
-|---|---|---|
-| **Read-write** | the project directory | the session's own work |
-| | `~/.cache`, `~/go/pkg`, `~/.npm`, `~/Library/Caches`, `~/.claude`, `~/.pi` | toolchain and agent state |
-| | the file `~/.claude.json` and its `.lock`, `.tmp.*`, `.backup` siblings | Claude Code's atomic writes (SP2 row 17) |
-| | `/private/tmp/cc-socks`, `os.TempDir()`, `DARWIN_USER_TEMP_DIR`, `/dev` | Claude Code and Apple's tools write there whatever `TMPDIR` says |
-| | `<config dir>/sessions/pi-sessions` | pi's own transcript |
-| **Read-only** | `~/Library/Keychains` | denying it logs Claude Code out (SP2) |
-| | `/opt/homebrew` | Homebrew tools |
-| | the developer tools: `<Xcode>.app/Contents`, or `/Library/Developer/CommandLineTools` | `git` and `clang` resolve through `/var/select/developer_dir` |
-| | the files `~/.gitconfig`, `~/.zshenv`, `~/.zprofile`, `~/.zshrc` | a shell that starts with its configuration |
-| **System baseline** (every sandboxed session, read-only, in code) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves | the smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. |
+A session's folders come from four places, and only the third is configured:
 
-Two rules the measurement turned up. **Exec does not need a read grant on the
+| Grant | Paths | Where it lives |
+|---|---|---|
+| **System baseline** (read-only, every sandboxed session) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves | `sandbox.baselineReadDirs`. The smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. |
+| **Every session** | the project directory (read-write), `os.TempDir()`, `DARWIN_USER_TEMP_DIR` and `/dev` (read-write), the developer tools (read-only: `<Xcode>.app/Contents`, or `/Library/Developer/CommandLineTools`, resolved from `/var/select/developer_dir`) | `sandboxSpecForLaunch`. A pi session also gets `<config dir>/sessions/pi-sessions` for its transcript, since that path moves with `relay --config-dir` and no template can name it. |
+| **The template** | its `read` and `read_write` lists | the template's entry in `settings.json` |
+
+**Templates live only in `settings.json`.** Nothing is computed in code, so
+every template, including the ones relay seeds, can be edited or removed. Each
+carries its own folders:
+
+```json
+"terminal_templates": [
+  {
+    "id": "claude-code", "name": "Claude Code", "command": "claude", "sandbox": true,
+    "read_write": ["~/.claude", "~/.claude.json", "~/.cache", "~/Library/Caches"],
+    "read": ["~/Library/Keychains", "~/.local/bin", "~/.local/share/claude", "~/.zshrc"]
+  },
+  { "id": "shell", "name": "Shell", "sandbox": true, "read_write": ["~"] }
+]
+```
+
+Each entry is an absolute path or starts with `~`, and never `/`. A directory
+grants its subtree; an existing regular file grants that file, and a
+read-write file also grants the atomic-write siblings a CLI leaves beside it
+(`.lock`, `.tmp.*`, `.backup`; SP2 row 17). A read-write directory that does
+not exist is created at launch, because a `(subpath)` rule cannot create its
+own ancestors (`go build` with no `~/go` needs `~/go/pkg` to exist). An entry
+that cannot be placed refuses the template when settings are read, and the
+launch if it slips through, rather than being dropped: a dropped entry would
+leave a tool silently unreachable. `sandbox` absent means unsandboxed, so a
+template that should be confined says `"sandbox": true`; `read` and
+`read_write` are ignored without it.
+
+A **claude, pi or chat session** is not launched from a template, but it reads
+its folders from the template named for its kind: `claude-code`, `pi` and
+`chat` (`kindTemplateIDs`). A missing template is not a refusal; the session
+gets only what every session gets, and relay logs which template to add.
+
+When `terminal_templates` is empty, relay writes one default at start: the
+shell, sandboxed, with `~` read-write. That grant includes `~/.ssh` and every
+other credential directory under the home directory; narrow it by editing the
+template.
+
+**A template can point a client at relay's model endpoint.** `model_key: true`
+mints a per-session key, and `${MODEL_KEY}` in an `env` value delivers it.
+`${MODEL_ENDPOINT_URL}` in an `env` value becomes `http://<model_endpoint.listen>`.
+With the listener off the launch is refused (`model_endpoint_unavailable`)
+instead of leaving the placeholder or dropping only the URL, because a
+`${MODEL_KEY}` header with no relay URL would be sent to the client's real
+provider. Relay never turns the listener on for you.
+
+Three rules the measurement turned up. **Exec does not need a read grant on the
 binary**, so a system binary runs without one; **a symlink does**: a tool that
 lives behind a link (`~/.local/bin/claude`, `~/.bun/bin/pi`) needs the
 directory holding the link and the directory holding its target. And the
 kernel matches the path *it* resolved, in the volume's own letter case, so
 `sandbox.resolve` asks the kernel for the on-disk spelling of every grant: a
 project path stored as `/users/me/Proj` would otherwise match nothing and lock
-the session out of its own directory. A grant reached through a symlinked final
-component also names the link itself.
-
-**Tools outside that set do not run** until their directory is granted. That
-is `sandbox` in `settings.json`, which adds to every sandboxed session:
-
-```json
-"sandbox": {
-  "read":       ["~/.local/bin", "~/.local/share/claude", "~/.bun/bin", "~/.bun/install/global", "~/.hermes/node"],
-  "read_write": []
-}
-```
-
-Each entry is an absolute path or starts with `~`; `read` grants reading and
-`read_write` grants both. An entry that is relative, empty, or the whole
-filesystem refuses the launch (`sandbox_unavailable`) rather than being
-dropped, since a dropped entry would leave a tool silently unreachable. Absent
-means nothing extra.
+the session out of its own directory. A grant whose final component is a
+symlink also names the link itself.
 
 ## Host data directory layout
 
