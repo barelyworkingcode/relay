@@ -577,11 +577,18 @@ func defaultShell() string {
 	return "/bin/zsh"
 }
 
+// terminalEnvDefaults are set when the template supplies neither. Relay and
+// relay-sessions run with no TERM, and a pty child inherits that: zsh then
+// treats the terminal as dumb and cannot redraw on backspace. Set here rather
+// than in buildShimEnv so an SSH host terminal, which only sees spec.Env,
+// gets them too.
+var terminalEnvDefaults = map[string]string{
+	"TERM":      "xterm-256color",
+	"COLORTERM": "truecolor",
+}
+
 func resolveTemplateEnv(t config.TerminalTemplate) map[string]string {
-	if len(t.Env) == 0 && len(t.EnvPassthrough) == 0 {
-		return nil
-	}
-	env := make(map[string]string, len(t.Env)+len(t.EnvPassthrough))
+	env := make(map[string]string, len(t.Env)+len(t.EnvPassthrough)+len(terminalEnvDefaults))
 	for k, v := range t.Env {
 		env[k] = v
 	}
@@ -590,15 +597,17 @@ func resolveTemplateEnv(t config.TerminalTemplate) map[string]string {
 			env[name] = v
 		}
 	}
-	if len(env) == 0 {
-		return nil
+	for k, v := range terminalEnvDefaults {
+		if _, set := env[k]; !set {
+			env[k] = v
+		}
 	}
 	return env
 }
 
 // wantsSandbox is C7's default table: on for claude/pi/chat unconditionally,
 // and for a pty launch exactly what the template's own Sandbox field says
-// (already true for claude-code/rh/pi, false for opencode/shell, per
+// (already true for claude-code/rh/pi/shell, false for opencode, per
 // BuiltinTerminalTemplates — this function does not special-case any
 // template id itself).
 func wantsSandbox(kind string, tmpl *config.TerminalTemplate) bool {

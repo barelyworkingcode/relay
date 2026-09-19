@@ -187,7 +187,9 @@ func TestSessionRoutes_CreateTerminal_GoldenLaunchSpec(t *testing.T) {
 		V: 1, SessionID: gotSpec.SessionID, Kind: KindPTY, Resume: false,
 		Project: projJSON, Directory: wantDir, Name: "term 1", TemplateID: "shell",
 		Argv: []string{"/bin/zsh"}, IdleTimeoutSec: 1440 * 60,
-		PTY: &hostapi.PTYSpec{Cols: 100, Rows: 30},
+		PTY:     &hostapi.PTYSpec{Cols: 100, Rows: 30},
+		Sandbox: &hostapi.SandboxSpec{ProfilePath: filepath.Join(sessionProfilesDir(), gotSpec.SessionID+".sb")},
+		Env:     map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"},
 	}
 	wantJSON, _ := json.Marshal(want)
 	gotJSON, _ := json.Marshal(gotSpec)
