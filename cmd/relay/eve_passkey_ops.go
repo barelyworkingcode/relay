@@ -168,22 +168,44 @@ func (o *EvePasskeyOps) notifyConsole(title, body string) {
 	}
 }
 
+// eveReportHeartbeat is how old a mirror entry's Reported stamp may get while
+// eve keeps reporting the same list. Eve's 30-second poll IS a report, so an
+// unconditional write rewrote and re-sealed all of settings.json twice a
+// minute for a mirror that had not changed. The stamp exists to make a mirror
+// eve has stopped refreshing visibly stale (days, not seconds), so an hour of
+// resolution costs it nothing.
+const eveReportHeartbeat = time.Hour
+
+// errEveMirrorCurrent declines Report's write: nothing it would change is
+// different from what is already stored.
+var errEveMirrorCurrent = errors.New("eve passkey mirror already current")
+
 // Report replaces the mirror wholesale and stamps Reported on every entry,
 // then drops every pending revocation whose id no longer appears in list or
 // whose id is the list's only entry (decisions 12 and 13: a report is both
 // "here is my list" and "I did what you asked", and relay never lets its own
 // pending set outlive what would empty eve's last passkey).
+//
+// A report that would change none of that, and whose stamps are still inside
+// eveReportHeartbeat, writes nothing and does not fire OnChange.
 func (o *EvePasskeyOps) Report(list []evePasskeyReportEntry) error {
 	if o == nil {
 		return errEvePasskeyOpsUnavailable
 	}
-	reported := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
+	reported := now.Format(time.RFC3339)
 	present := make(map[string]bool, len(list))
 	for _, e := range list {
 		present[e.ID] = true
 	}
 	lastStanding := len(list) == 1
-	if err := o.Store.With(func(s *config.Settings) {
+	dropsRevocation := func(r config.EvePasskeyRevocation) bool {
+		return !present[r.ID] || (lastStanding && r.ID == list[0].ID)
+	}
+	err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+		if eveMirrorCurrent(s, list, dropsRevocation, now) {
+			return errEveMirrorCurrent
+		}
 		out := make([]config.EvePasskey, 0, len(list))
 		for _, e := range list {
 			out = append(out, config.EvePasskey{
@@ -195,14 +217,36 @@ func (o *EvePasskeyOps) Report(list []evePasskeyReportEntry) error {
 			})
 		}
 		s.EvePasskeys = out
-		s.EvePasskeyRevocations = slices.DeleteFunc(s.EvePasskeyRevocations, func(r config.EvePasskeyRevocation) bool {
-			return !present[r.ID] || (lastStanding && r.ID == list[0].ID)
-		})
-	}); err != nil {
+		s.EvePasskeyRevocations = slices.DeleteFunc(s.EvePasskeyRevocations, dropsRevocation)
+		return nil
+	})
+	if errors.Is(err, errEveMirrorCurrent) {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
 	o.notify()
 	return nil
+}
+
+// eveMirrorCurrent reports whether writing list would leave s unchanged apart
+// from refreshing a Reported stamp that is still fresh.
+func eveMirrorCurrent(s *config.Settings, list []evePasskeyReportEntry, dropsRevocation func(config.EvePasskeyRevocation) bool, now time.Time) bool {
+	if len(s.EvePasskeys) != len(list) {
+		return false
+	}
+	for i, e := range list {
+		p := s.EvePasskeys[i]
+		if p.ID != e.ID || p.Label != e.Label || p.Created != e.Created || p.LastUsed != e.LastUsed {
+			return false
+		}
+		stamp, err := time.Parse(time.RFC3339, p.Reported)
+		if err != nil || now.Sub(stamp) >= eveReportHeartbeat {
+			return false
+		}
+	}
+	return !slices.ContainsFunc(s.EvePasskeyRevocations, dropsRevocation)
 }
 
 // List is the mirror, each entry told whether its revocation is pending.
