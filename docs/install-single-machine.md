@@ -333,8 +333,8 @@ refused: this needs your confirmation on the Mac's screen, and the session this
   There is no queue and no pending-approval list.
   Run it from a terminal in the logged-in desktop session, or from the Relay
   Settings window.
-  Read commands never prompt (relay grant and every `list`), but they do need
-  Relay running.
+  Read commands never prompt: relay audit, relay grant, and every `list` (all
+  but audit need Relay running).
 ```
 
 Relay decided this from a kernel-attested property of your session, not from

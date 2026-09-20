@@ -74,8 +74,8 @@ const sshRefusalMessage = "refused: this needs your confirmation on the Mac's sc
 	"  There is no queue and no pending-approval list.\n" +
 	"  Run it from a terminal in the logged-in desktop session, or from the Relay\n" +
 	"  Settings window.\n" +
-	"  Read commands never prompt (relay grant and every `list`), but they do need\n" +
-	"  Relay running."
+	"  Read commands never prompt: relay audit, relay grant, and every `list` (all\n" +
+	"  but audit need Relay running)."
 
 // adminOpErrorText renders an admin_op failure for a human at a terminal.
 //

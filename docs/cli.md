@@ -236,7 +236,7 @@ a run from an unattended session — a headless install has no working path to
 any gated command at all, by design (see
 [`docs/tokens.md`](tokens.md#the-login-bootstrap-code-is-not-a-credential)).
 Reads never touch the gate: `relay audit`, `relay grant` and every `list`
-subcommand never prompt (the tray-answered ones still need the tray running).
+subcommand never prompt (all but `audit` still need the tray running).
 
 ---
 
