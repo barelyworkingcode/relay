@@ -101,6 +101,9 @@ unbounded subprocess wait must not hold the lane.
   update, reap and session-credential mint on assertion) write through
   `LoginOps` on the same queue. Each write is one short queued step; the
   issuance record is still written after the mint and before the token leaves.
+- The IPC project disabled-tools toggle now runs through
+  `ProjectOps.SetDisabledTools` on the queue; the generic IPC
+  `withSettings`/`withSettingsNotify` helpers, which wrote unqueued, are gone.
 
 The remaining work is to apply the same boundary to the other configuration
 domains, route normal CLI reads through the tray, and queue service-owned config

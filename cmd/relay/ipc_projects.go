@@ -203,19 +203,9 @@ func ipcUpdateProjectDisabledTools(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	var updated config.Project
-	var found bool
-	okSettings := ctx.withSettings(func(s *config.Settings) {
-		if proj, _ := config.FindProjectByID(s, msg.ID); proj == nil {
-			return
-		}
-		s.UpdateProjectDisabledTools(msg.ID, msg.McpID, msg.Disabled)
-		if proj, _ := config.FindProjectByID(s, msg.ID); proj != nil {
-			updated = *proj
-			found = true
-		}
-	})
-	if !okSettings {
+	updated, found, err := ctx.ProjectOps.SetDisabledTools(ctx.Ctx, msg.ID, msg.McpID, msg.Disabled)
+	if err != nil {
+		ctx.UI.EmitEvent("onSettingsError", err.Error())
 		return
 	}
 	if !found {

@@ -113,7 +113,6 @@ var gateAllowlistedFiles = map[string]string{
 	// none of these are project.grant, credential.mint or any other op in
 	// presence.GatedOps.
 	"cmd/relay/project_routes.go": "DELETE /api/projects is not gated (deleting a project is not in presence.GatedOps); create/update/rotate_token go through ops.Create/Update/RotateToken, not store.With, directly",
-	"cmd/relay/ipc_handlers.go":   "withSettings/withSettingsNotify are the generic IPC mutation helper every ungated IPC handler (autostart toggle, disabled_tools, remote config, ...) shares",
 	"cmd/relay/trayapp.go":        "the OAuth refresh callback's store.With, persisting a token an upstream MCP rotated; not a gated op",
 	"cmd/relay/login_routes.go":   "the WebAuthn ceremony's own mintAPICredentialFor (a signed assertion is a different presence factor from this gate) and config.WithDeclinable (POST /relay/login/verify is unauthenticated by design, ADR-016 decision 5)",
 	"cmd/relay/host_ops.go": "the HostOps core: deliberately UNGATED (docs/ssh-hosts.md) -- a host record names an ssh destination, not a tool-permission grant, " +

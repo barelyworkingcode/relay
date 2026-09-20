@@ -264,36 +264,6 @@ type IPCContext struct {
 	LogsDir   func() (string, error)
 }
 
-// withSettings atomically mutates settings and emits an error event on failure.
-// Returns true on success.
-func (ctx *IPCContext) withSettings(fn func(*config.Settings)) bool {
-	return ctx.withSettingsNotify(fn, nil)
-}
-
-// withSettingsNotify atomically mutates settings, then dispatches a bridge
-// notification asynchronously via GoFunc. This avoids blocking the main/UI
-// thread during bridge round-trips that may trigger MCP process spawning or
-// network I/O. Settings are persisted to disk before the notification is sent,
-// so the notification handler reads the updated state.
-func (ctx *IPCContext) withSettingsNotify(fn func(*config.Settings), notify func(string) error) bool {
-	var secret string
-	if err := ctx.Store.With(func(s *config.Settings) {
-		fn(s)
-		secret, _ = s.AdminSecret.Reveal()
-	}); err != nil {
-		ctx.UI.EmitEvent("onSettingsError", err.Error())
-		return false
-	}
-	if notify != nil {
-		ctx.GoFunc(func() {
-			if err := notify(secret); err != nil {
-				slog.Warn("bridge notification failed", "error", err)
-			}
-		})
-	}
-	return true
-}
-
 // refreshServiceUI emits current service status and rebuilds the tray menu.
 // Must be called on the main thread.
 func (ctx *IPCContext) refreshServiceUI() {

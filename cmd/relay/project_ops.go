@@ -55,6 +55,16 @@ func (o *ProjectOps) runQueued(ctx context.Context, fn func() error) error {
 	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
+// runCommitted is runQueued for steps whose results the caller reads after
+// return: an admitted step is never abandoned on caller cancellation, so the
+// closure's outputs cannot race the worker.
+func (o *ProjectOps) runCommitted(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
+}
+
 // errProjectSaveFailed distinguishes an internal settings-write failure
 // from a validation refusal (project.ApplyCreate/project.ApplyUpdate's own
 // error) and from a presence/audit refusal, so a door can map each to its
@@ -391,6 +401,28 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 	o.SessionCleanup.cleanupProject(id)
 	o.notify()
 	return removed, true, nil
+}
+
+// SetDisabledTools replaces the disabled-tool list one MCP has on a project.
+// Not gated: like RegenSkill it narrows what the project's client sees and
+// cannot widen a grant. The record is resolved and mutated inside one queued
+// step, and found is false when the project no longer exists.
+func (o *ProjectOps) SetDisabledTools(ctx context.Context, id, mcpID string, disabled []string) (updated config.Project, found bool, err error) {
+	if err := o.runCommitted(ctx, func() error {
+		return o.Store.With(func(s *config.Settings) {
+			if proj, _ := config.FindProjectByID(s, id); proj == nil {
+				return
+			}
+			s.UpdateProjectDisabledTools(id, mcpID, disabled)
+			if proj, _ := config.FindProjectByID(s, id); proj != nil {
+				updated = *proj
+				found = true
+			}
+		})
+	}); err != nil {
+		return config.Project{}, false, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
+	}
+	return updated, found, nil
 }
 
 // RotateToken issues a new token and withholds it on an audit failure,
