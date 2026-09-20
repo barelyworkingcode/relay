@@ -2,35 +2,44 @@
 
 `relay` is one binary with two personalities. Run with no arguments, it is the
 tray app — the thing that owns `settings.json`, holds the sealing key, and
-answers presence prompts. Run with a subcommand, it is a CLI that either reads
-`settings.json` directly, or asks the running tray to make a change on its
-behalf.
+answers presence prompts. Run with a subcommand, it is a CLI that asks the
+running tray — to show its configuration or to change it — or reads the audit
+log.
 
 That split is the one fact this whole document keeps coming back to, so it
 comes first.
 
 ## The mental model: read vs. write
 
-**Every read command works with the tray stopped.** `relay grant`,
-`relay audit`, and every `list` subcommand (`credential list`, `enrol list`,
-`login list`, `mcp list`, `service list`) open `settings.json` or the audit
-log directly. They need no socket, no key, and no presence prompt.
+**The running tray is the only reader of configuration.** `relay grant` and
+every `list` subcommand (`credential list`, `enrol list`, `login list`,
+`eve list`, `mcp list`, `service list`) ask the tray over the same bridge
+socket the mutating commands use (`admin_op`), and the tray answers from a
+fresh snapshot of its own settings. No CLI process opens `settings.json` for
+these commands, so what they print is what the tray holds now, never a stale
+file. Reads never prompt for presence, and the answer is a purpose-built view
+per command: token hashes, sealed values, environment values and public-key
+coordinates have no field to travel in. With the tray stopped they refuse by
+name, exactly like the mutating commands. The exceptions are the commands
+that read their own files: `relay audit` (the audit log) and
+`relay enrol ca-fingerprint` (the public `ca.crt`) work with the tray stopped.
 
-**Every mutating command asks the running tray**, over relay's own
-Unix-socket bridge (`admin_op`), and refuses by name if the tray is not
-running. Nothing in this program writes `settings.json` from a CLI process
-any more: the tray is the only process holding the keychain key that unseals
-its sealed fields (project tokens, the admin secret, OAuth bearers, the CA
-key — see [`docs/sealed-config.md`](sealed-config.md)), so it has to be the
-only process writing them. Stop relay and try one:
+**Every mutating command asks the running tray**, the same way, and refuses
+by name if the tray is not running. Nothing in this program writes
+`settings.json` from a CLI process any more: the tray is the only process
+holding the keychain key that unseals its sealed fields (project tokens, the
+admin secret, OAuth bearers, the CA key — see
+[`docs/sealed-config.md`](sealed-config.md)), so it has to be the only
+process writing them. Stop relay and try one (a read refuses the same way):
 
 ```
 $ relay credential mint --name test --class read
 error: relay is not running; `relay credential mint` requires the service.
   relay is the sole broker of its own credentials: the secrets are sealed and
-  only the tray holds the key (ADR-017 decision 2). Start Relay and retry.
-  Read commands still work with relay stopped: `relay credential list`,
-  `relay grant`, `relay audit`.
+  only the tray holds the key (ADR-017 decision 2), and it is the only reader of
+  the configuration for `list`, `grant` and every other command that shows it.
+  Start Relay and retry. `relay audit` and `relay enrol ca-fingerprint` read
+  their own files and still work with relay stopped.
 ```
 
 **A subset of the mutating commands also demand presence** — a real
@@ -59,12 +68,12 @@ Two consequences follow immediately, and both are covered in full below:
 
 | Command | Needs service | Prompts | Works over SSH |
 |---|---|---|---|
-| `relay grant` | no | no | yes |
+| `relay grant` | yes | no | yes |
 | `relay audit` | no | no | yes |
-| `relay credential list` | no | no | yes |
+| `relay credential list` | yes | no | yes |
 | `relay credential mint` | yes | **yes** | no |
 | `relay credential revoke` | yes | **yes** | no |
-| `relay enrol list` | no | no | yes |
+| `relay enrol list` | yes | no | yes |
 | `relay enrol create` | yes | **yes** | no |
 | `relay enrol sign` | yes | **yes** | no |
 | `relay enrol update` | yes | **yes** | no |
@@ -73,16 +82,16 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay enrol approve` | yes | **yes** | no |
 | `relay enrol refuse` | yes | no | yes |
 | `relay enrol ca-fingerprint` | no | no | yes |
-| `relay login list` | no | no | yes |
+| `relay login list` | yes | no | yes |
 | `relay login enrol` | yes | **yes** | no |
 | `relay login revoke` | yes | **yes** | no |
 | `relay eve enrol` | yes | **yes** | no |
-| `relay eve list` | no | no | yes |
+| `relay eve list` | yes | no | yes |
 | `relay eve revoke` | yes | **yes** | no |
-| `relay mcp list` | no | no | yes |
+| `relay mcp list` | yes | no | yes |
 | `relay mcp register` | yes | **yes** | no |
 | `relay mcp unregister` | yes | no | yes |
-| `relay service list` | no | no | yes |
+| `relay service list` | yes | no | yes |
 | `relay service register` | yes | **yes** | no |
 | `relay service unregister` | yes | no | yes |
 | `relay service restart` | yes | no | yes |
@@ -226,8 +235,8 @@ There is no pending-approval list to check later and no way to pre-authorize
 a run from an unattended session — a headless install has no working path to
 any gated command at all, by design (see
 [`docs/tokens.md`](tokens.md#the-login-bootstrap-code-is-not-a-credential)).
-Reads are entirely unaffected: `relay audit`, `relay grant`, and every `list`
-subcommand read a file directly and never touch the gate.
+Reads never touch the gate: `relay audit`, `relay grant` and every `list`
+subcommand never prompt (the tray-answered ones still need the tray running).
 
 ---
 
@@ -237,9 +246,9 @@ subcommand read a file directly and never touch the gate.
 
 Prints a project's or access profile's grant **as authored** — every MCP it
 reaches, its access mode, its outbound (external-network) permission, its
-tool pattern, and the real resource-scope values, never redacted. It reads
-`settings.json` directly, so it works with the tray stopped, and it is
-deliberately blind to `disclose`: that field governs what a *client* sees,
+tool pattern, and the real resource-scope values, never redacted. The running
+tray builds the answer from a fresh snapshot (`grant.view`), so it needs the
+tray running, and it is deliberately blind to `disclose`: that field governs what a *client* sees,
 never what this command shows an operator.
 
 ```
@@ -307,8 +316,8 @@ each record.
 ## `relay audit`
 
 Tails the tool-call audit log — relay's own ground truth for anything it
-gates. Reads the JSONL file directly (`readAuditTail`), so, like `relay
-grant`, it works with the tray stopped and needs nothing sealed.
+gates. Reads the JSONL file directly (`readAuditTail`), so unlike `relay
+grant` it works with the tray stopped and needs nothing sealed.
 
 ```
 relay audit [--tail N] [--project ID] [--mcp ID] [--outcome OUTCOME]
@@ -437,7 +446,8 @@ bacf762f-6eb1-425b-bd20-20756a97b6c5  eve-view  read,configure  2026-08-28T21:34
 `--include-expired` also shows expired records — otherwise they're hidden,
 awaiting the next mint's lazy reap. `EXPIRES` prints `never` for a credential
 minted with no `--ttl`, and `<timestamp> (expired)` for one whose time has
-passed. Needs service: no. Prompts: no. Works over SSH: yes.
+passed. Needs service: yes (`credential.list`; the answer carries no hash).
+Prompts: no. Works over SSH: yes.
 
 ### `credential revoke`
 
@@ -610,7 +620,7 @@ hermes-v3-ro     b0000000-0000-4000-8000-000000000002  -          120/3600s     
 The fingerprint is printed in full (all 64 hex characters), deliberately: an
 enrolment's audit history stays legible after it's revoked, and a shortened
 listing is the obvious place someone starts copying a truncated form from.
-Needs service: no. Prompts: no. Works over SSH: yes.
+Needs service: yes (`enrolment.list`). Prompts: no. Works over SSH: yes.
 
 ### `enrol update`
 
@@ -767,8 +777,8 @@ Needs service: yes. Prompts: no. Works over SSH: yes.
 
 Prints relay's CA certificate hash — the value a client pins with
 `relayremote enrol --ca-fingerprint` so it can tell the real relay from an
-impostor on the network. Reads `ca.crt` straight off disk, like `enrol
-list`, so it works with the tray stopped; the certificate is public and the
+impostor on the network. Reads `ca.crt` straight off disk, so it is the
+one `enrol` subcommand that works with the tray stopped; the certificate is public and the
 key it corresponds to is not needed to fingerprint it.
 
 Needs service: no. Prompts: no. Works over SSH: yes.
@@ -819,7 +829,7 @@ browser passkey 2026-08-28T21:35:51Z  xNtuo_H_0XSA…  2026-08-28T21:35:51Z  2
 ```
 
 Never prints the public key — there's no legitimate reason for a listing to
-show it. Needs service: no. Prompts: no. Works over SSH: yes.
+show it. Needs service: yes (`login.list`). Prompts: no. Works over SSH: yes.
 
 ### `login revoke`
 
@@ -875,9 +885,8 @@ took it.
 
 ### `eve list`
 
-Reads relay's mirror of eve's own credential list straight off disk
-([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md) decision 8) --
-no running tray required. STATUS is `-` for an ordinary credential or
+Shows relay's mirror of eve's own credential list, as the running tray holds
+it ([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md) decision 8). STATUS is `-` for an ordinary credential or
 `revocation pending` for one relay has revoked that eve has not yet applied.
 
 ```
@@ -886,7 +895,7 @@ LABEL                    CREDENTIAL ID  CREATED               LAST USED         
 Mozilla/5.0 (iPhone...)  xNtuo_H_0XSA…  2026-09-07T10:12:31Z  2026-09-07T18:02:11Z  -
 ```
 
-Needs service: no. Prompts: no. Works over SSH: yes.
+Needs service: yes (`eve.list`). Prompts: no. Works over SSH: yes.
 
 ### `eve revoke`
 
@@ -1011,7 +1020,8 @@ fsmcp3    fsMCP v3 (testfolder)             stdio      /Users/admin/.local/bin/f
 fsmcp3ro  fsMCP v3 (testfolder, read-only)  stdio      /Users/admin/.local/bin/fsmcp3 --root /Users/admin/source/barelyworkingcode/testfolder --read-only
 ```
 
-Needs service: no. Prompts: no. Works over SSH: yes.
+Needs service: yes (`mcp.list`; environment values are never sent). Prompts:
+no. Works over SSH: yes.
 
 ## `relay service`
 
@@ -1140,17 +1150,15 @@ no services registered
 (This machine's stack — macMCP, fsMCP — is registered as MCPs, not
 services; nothing is currently registered as a background service.) When a
 service is registered, the table carries a `CAPABILITIES` column listing the
-record's capabilities, or `none`. Needs service: no. Prompts: no. Works over SSH: yes.
+record's capabilities, or `none`. Needs service: yes (`service.list`). Prompts: no. Works over SSH: yes.
 
 The table also carries a `STATE` column reporting relay's restart-supervision
 state for the row (docs/service-manifest.md#restart-supervision): `running`,
 `restarting (attempt N, next in Xs)`, `failed (exit E)`, or `-` when relay is
 not supervising the service (never started this session, or the operator
-stopped it) or the tray is not reachable to ask. Unlike every other column,
-`STATE` needs a live tray: restart-supervision state exists only in its
-memory, never in `settings.json`, so `service list` probes for it best-effort
-(`service.status`, ungated) and falls back to `-` with the tray stopped rather
-than failing the whole command.
+stopped it). Supervision state exists only in the tray's memory, never in
+`settings.json`; `service.list` (ungated) carries it beside the records, and
+neither `env` nor `working_dir` is sent.
 
 ## `relay mcpExec` (also `relay mcp call`)
 
@@ -1258,8 +1266,7 @@ browser or HTTP consumer:
 relay credential mint --name eve-view --class read --class configure
 ```
 
-**5. Read back what was actually granted**, with the tray stopped if you
-like — this is the real, captured output for the profile above:
+**5. Read back what was actually granted** — this is the real, captured output for the profile above:
 
 ```
 $ relay grant --project 477d9a17-da03-45eb-a433-764f93fe96fc
@@ -1335,9 +1342,11 @@ Keyed on the literal strings you will see.
 
 ### `relay is not running; ... requires the service.`
 
-A mutating command was run with the tray stopped. Start Relay (open the app,
-or run it) and retry. Every read command — `relay grant`, `relay audit`, and
-every `list` — is unaffected and needs no service at all.
+A command that mutates or shows configuration was run with the tray stopped
+— that includes `relay grant` and every `list`, because the running tray is
+the only reader of the configuration. Start Relay (open the app, or run it)
+and retry. Only `relay audit` and `relay enrol ca-fingerprint`, which read
+their own files, work with the tray stopped.
 
 ### `refused: this needs your confirmation on the Mac's screen, ...`
 

@@ -51,6 +51,19 @@ unbounded subprocess wait must not hold the lane.
 
 ### Completed on this branch
 
+- The running tray is the only reader of configuration for normal CLI
+  commands. `credential list`, `service list`, `mcp list`, `login list`,
+  `eve list`, `enrol list` and `grant` are admin ops (`credential.list`,
+  `service.list`, `mcp.list`, `login.list`, `eve.list`, `enrolment.list`,
+  `grant.view`) that answer with a purpose-specific projection of a fresh
+  snapshot (`config.FreshSettings`), never a Settings value, so no hash,
+  sealed value, environment value or key coordinate can cross the bridge.
+  They are not presence-gated and do not use the config lane: one snapshot is
+  a consistent read. `service unregister/restart` and `mcp unregister`
+  resolve `--name` inside their own op, so no stale CLI-side read feeds a
+  mutation. With the tray stopped these commands refuse by name, as the
+  mutating ones do; there is no offline read mode.
+
 - Sealed-store reset runs its destructive sequence (deletes, keychain destroy,
   `Reresolve`, `EnsureInitialized`) as one queued step after the presence
   prompt, which stays off the lane. The step re-checks the approved key ids
@@ -494,16 +507,21 @@ The target is zero direct `Get()` calls outside the config implementation and
 test seams. In particular, fix the model endpoint, remote/enrolment views,
 service/MCP/project operations, route handlers, IPC views, and model guards.
 
-### Phase 5 — make the tray the normal CLI authority
+### Phase 5 — make the tray the normal CLI authority (done, as scoped)
 
-Route normal read-only CLI commands through the tray too. This makes the CLI
+Normal read-only CLI commands go through the tray too. This makes the CLI
 report the same snapshot the running system uses and removes the second reader.
 
-Keep a narrowly named offline command only if recovery value justifies it, for
-example `relay config export --offline`. It must be clearly read-only, must not
-pretend to describe live state, and should refuse to run while the tray is
-active unless it can prove a consistent snapshot. Do not keep many ordinary
-commands with hidden direct-file behavior.
+Done for `credential list`, `service list`, `mcp list`, `login list`,
+`eve list`, `enrol list`, `grant` and the name resolution in
+`service unregister/restart` and `mcp unregister`. The owner's decision is
+that there is no offline recovery read (`relay config export --offline` is not
+built): a stopped tray is an explicit unavailable state. Two commands still
+read a file of their own and need no tray: `relay audit` (the audit log) and
+`relay enrol ca-fingerprint` (the public `ca.crt`); neither reads
+`settings.json`. A source-text guard
+(`TestReadCommands_NeverConstructASettingsStore`) keeps the scoped commands
+from constructing a settings store.
 
 ### Phase 6 — replace polling with event-driven convergence
 

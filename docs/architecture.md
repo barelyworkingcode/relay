@@ -42,7 +42,10 @@ audit_issuance.go        The gate-facing half of issuance: IssuanceAuditor, requ
                          and MUST stay an unqualified identifier in this package — gate_ast_scan_test.go matches
                          its call sites as a bare *ast.Ident), recordEnrolmentIssued/recordBootstrapIssued/etc.,
                          and the CLI's own append-only recorder
-grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant
+grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant (rendered from `grant.view`)
+admin_read_ops.go        The ungated admin_op reads (`*.list`, `grant.view`): the running tray is the only reader of
+                         configuration for a CLI command; each answers with a purpose-built view, never Settings, so
+                         no hash, sealed value, env value or key coordinate crosses the bridge
 enrolment_ops.go         EnrolmentOps: the gated, audited core the CLI, HTTP and IPC doors share
 enrol_cmd.go             `relay enrol` CLI
 api_credential.go        APICredential CRUD, the frontend capability class set, legacy-frontend-token retirement, credentialAuthorizer

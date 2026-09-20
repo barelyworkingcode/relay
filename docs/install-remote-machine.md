@@ -1036,7 +1036,8 @@ refused: approving needs your confirmation on the Mac's screen, and the session 
   The request is still waiting — it does not expire because this command refused.
   Approve it from the Mac's own screen instead: open the Relay tray ->
   Settings -> Remote Clients -> Pending requests.
-  Read commands are unaffected: relay enrol requests, relay audit, relay grant.
+  Read commands never prompt (relay grant and every `list`), but they do need
+  Relay running.
 ```
 
 Unlike every other gated command, this one *does* have something queued —

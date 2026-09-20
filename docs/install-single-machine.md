@@ -50,8 +50,10 @@ The rest of this guide writes plain `relay`.
 `relay` is one binary with two personalities. With no arguments it is the tray
 app. With a subcommand it is a CLI, and that CLI splits in two:
 
-- **Read commands work with the tray stopped.** `relay grant`, `relay audit`,
-  and every `list` subcommand read files directly. No socket, no prompt.
+- **Read commands ask the running tray too.** `relay grant` and every `list`
+  subcommand are answered by the tray from its own settings; no prompt, but
+  they refuse by name with the tray stopped. Only `relay audit` (which reads
+  the audit log) works stopped.
 - **Mutating commands ask the running tray**, and a subset of those also
   demand your presence — a real macOS login-password prompt, answered at this
   Mac's own screen, before anything is written.
@@ -66,7 +68,7 @@ These are the ones that prompt:
 | `relay enrol create` / `sign` / `update` / `revoke` / `approve` | **yes** | no |
 | `relay login enrol` / `revoke` | **yes** | no |
 | `relay mcp unregister`, `service unregister`, `service restart` | no | yes |
-| `relay grant`, `relay audit`, every `list` | no | yes |
+| `relay grant`, `relay audit`, every `list` | no | yes (`grant` and `list` need Relay running) |
 | `relay mcpExec` (calling a tool) | no | yes |
 
 The rule is: *any operation that issues a credential, widens one, or chooses
@@ -97,9 +99,10 @@ not running, and every command in steps 2 and 3 will refuse by name:
 ```
 error: relay is not running; `relay mcp register` requires the service.
   relay is the sole broker of its own credentials: the secrets are sealed and
-  only the tray holds the key (ADR-017 decision 2). Start Relay and retry.
-  Read commands still work with relay stopped: `relay credential list`,
-  `relay grant`, `relay audit`.
+  only the tray holds the key (ADR-017 decision 2), and it is the only reader of
+  the configuration for `list`, `grant` and every other command that shows it.
+  Start Relay and retry. `relay audit` and `relay enrol ca-fingerprint` read
+  their own files and still work with relay stopped.
 ```
 
 ---
@@ -313,8 +316,9 @@ The binary is inside the app bundle and not on your PATH. See
 
 ### `error: relay is not running; ... requires the service.`
 
-A mutating command with the tray stopped. Start Relay and retry. Read
-commands — `relay grant`, `relay audit`, every `list` — are unaffected.
+A command that mutates or shows configuration (including `relay grant` and
+every `list`) with the tray stopped. Start Relay and retry. Only
+`relay audit` is unaffected.
 
 ### `error: bridge error (code -32603): presence was refused`
 
@@ -329,7 +333,8 @@ refused: this needs your confirmation on the Mac's screen, and the session this
   There is no queue and no pending-approval list.
   Run it from a terminal in the logged-in desktop session, or from the Relay
   Settings window.
-  Read commands are unaffected: relay audit, relay grant, and every `list`.
+  Read commands never prompt (relay grant and every `list`), but they do need
+  Relay running.
 ```
 
 Relay decided this from a kernel-attested property of your session, not from

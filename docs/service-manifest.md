@@ -290,8 +290,8 @@ exposed read-only, never mutated by a reader: `relay service list`'s `STATE`
 column and the Settings status poll both show `running` / `restarting
 (attempt N, next in Xs)` / `failed (exit E)`, reading
 `Registry.SupervisionStatuses()`, which exists only in the running tray's
-memory (`relay service list` still works with the tray stopped; that column
-alone falls back to `-`).
+memory (`relay service list` is itself answered by the tray, `service.list`,
+which carries that state beside the records).
 
 An operator `Stop` (directly, via `Remove`, or as `Reload`'s first half)
 always retires the id's restart campaign before anything is killed, so a

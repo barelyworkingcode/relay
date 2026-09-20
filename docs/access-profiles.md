@@ -552,8 +552,8 @@ scope that reaches further than a folder is called out on its own line:
       no enrolments reach this profile
 
 Run it with no `--project` to sweep every record on the machine, and `--json`
-for a shape you can diff between reviews. Like `relay audit`, it reads
-`settings.json` directly, so it works with the tray stopped. What it cannot do
+for a shape you can diff between reviews. The running tray answers it from a fresh snapshot
+(`grant.view`), so it needs the tray running. What it cannot do
 is ask a live MCP whether it still declares these fields — check 4 answers
 that.
 

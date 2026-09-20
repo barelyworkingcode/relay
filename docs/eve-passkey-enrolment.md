@@ -258,7 +258,7 @@ revocation it applied, a login that bumped `lastUsedAt`). Only display
 metadata travels: id, label, created, last used. Never a public key, never a
 counter. Relay stores the mirror in settings so the Passkeys tab and
 `relay eve list` read it the way `relay login list` reads relay's own —
-straight off disk, with the tray stopped.
+from the running tray (`eve.list`), never off disk.
 
 **9. Revoke is relay's act, gated like its own.** `eve.passkey.revoke` sits
 behind the presence gate exactly as `login.passkey.revoke` does. Relay

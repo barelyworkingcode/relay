@@ -132,14 +132,15 @@ plaintext leak would live. There is no such branch to get wrong.
 Three things a hand-editable, structurally-readable `settings.json` buys, and
 what each one costs to keep:
 
-- **`relay grant` works with the tray stopped.** It is the operator's *what
-  did I actually grant?* surface — every project's MCPs, mode, tools, and the
-  real scope values, including a scope reaching a filesystem root. It builds
-  a `StoredToken` purely from the clear fields the permission-derivation
-  logic already reads, and touches no plaintext at all. Encrypt the whole
-  file and this command becomes a client of the thing it exists to audit —
-  it would need the same key the thing it audits needs, at which point an
-  operator locked out of one is locked out of both.
+- **`relay grant` needs no plaintext.** It is the operator's *what did I
+  actually grant?* surface — every project's MCPs, mode, tools, and the real
+  scope values, including a scope reaching a filesystem root. The running
+  tray builds its answer (`grant.view`) as a `StoredToken` purely from the
+  clear fields the permission-derivation logic already reads, and touches no
+  plaintext at all. Encrypt the whole file and the view would need the very
+  key the thing it audits needs; keeping the fields clear is what lets the
+  answer be built without ever unsealing anything. The CLI process itself
+  holds no key and opens no file: it renders what the tray sends.
 - **`relay audit` stays ground truth.** It reads the tool-call log, not
   settings, and is unaffected either way — but it is the surface `CLAUDE.md`
   names as authoritative for anything relay gates, and ground truth that
@@ -347,9 +348,11 @@ which is not a real option once minting a credential or rotating a token
 
 The cost is real and is stated as a cost, not hidden: every mutating command
 now requires relay running, and says so by its own name rather than failing
-with a generic bridge or settings error. The read half — `relay audit`,
-`relay grant`, and every `list` subcommand — needs nothing sealed and keeps
-working exactly as before, with the tray stopped.
+with a generic bridge or settings error. So does every command that shows
+configuration — `relay grant` and every `list` subcommand — because the
+running tray is the only reader of it; those need nothing unsealed and send
+no secret. Only `relay audit` and `relay enrol ca-fingerprint`, which read
+their own files, work with the tray stopped.
 
 ## Three degraded states, and why relay starts anyway
 
