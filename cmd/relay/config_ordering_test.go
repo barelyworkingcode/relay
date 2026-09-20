@@ -237,3 +237,96 @@ func commitQueueFor(t *testing.T, store config.SettingsStore, events *atomic.Int
 	queue.SetCommitObserver(store.(*config.FileSettingsStore).Commits, func() { events.Add(1) })
 	return queue
 }
+
+// One HTTP mutation and one IPC mutation on the same core, queue and store:
+// both commit and each publishes exactly one event.
+func TestHTTPAndIPCDoorsShareOneCoreQueueAndEventPerCommit(t *testing.T) {
+	stubSSHRunner(t, func(ctx context.Context, name string, args []string) ([]byte, []byte, error) {
+		return []byte(cannedProbeOutputForTest), nil, nil
+	})
+	type domain struct {
+		name string
+		// wire registers the HTTP routes and IPC context for one core over
+		// store and queue, and returns the count of committed records.
+		wire     func(t *testing.T, store *config.FileSettingsStore, queue *config.CommandQueue, rr *control.RouteRegistrar, ipc *IPCContext) func() int
+		httpPath string
+		httpBody map[string]any
+		ipcMsg   map[string]any
+		ipcRun   func(*IPCContext, json.RawMessage)
+		// perDoor is the commits one mutation makes: a host create commits the
+		// record and then its probe result as two queued commands.
+		perDoor int64
+	}
+	domains := []domain{
+		{
+			name: "hosts", perDoor: 2, httpPath: "/api/hosts",
+			httpBody: map[string]any{"name": "h-http", "target": "a@h-http"},
+			ipcMsg:   map[string]any{"name": "h-ipc", "target": "a@h-ipc"},
+			ipcRun:   ipcCreateHost,
+			wire: func(t *testing.T, store *config.FileSettingsStore, queue *config.CommandQueue, rr *control.RouteRegistrar, ipc *IPCContext) func() int {
+				ops := &HostOps{Store: store, Queue: queue}
+				RegisterHostRoutes(rr, ops)
+				ipc.HostOps = ops
+				return func() int { return len(store.Get().Hosts) }
+			},
+		},
+		{
+			name: "services", perDoor: 1, httpPath: "/api/services",
+			httpBody: map[string]any{"display_name": "s-http", "command": "/bin/x"},
+			ipcMsg:   map[string]any{"display_name": "s-ipc", "command": "/bin/y"},
+			ipcRun:   ipcAddService,
+			wire: func(t *testing.T, store *config.FileSettingsStore, queue *config.CommandQueue, rr *control.RouteRegistrar, ipc *IPCContext) func() int {
+				ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, Queue: queue, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+				RegisterServiceRoutes(rr, ops)
+				ipc.Ops = ops
+				ipc.UpdateMenu = func() {}
+				return func() int { return len(store.Get().Services) }
+			},
+		},
+		{
+			name: "projects", perDoor: 1, httpPath: "/api/projects",
+			httpBody: map[string]any{"name": "p-http", "path": t.TempDir()},
+			ipcMsg:   map[string]any{"name": "p-ipc", "path": t.TempDir()},
+			ipcRun:   ipcCreateProject,
+			wire: func(t *testing.T, store *config.FileSettingsStore, queue *config.CommandQueue, rr *control.RouteRegistrar, ipc *IPCContext) func() int {
+				ops := &ProjectOps{Store: store, Queue: queue, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+				RegisterProjectRoutes(rr, store, ops, schemaProviderFunc(testSchemas), nil, nil, nil, nil)
+				ipc.ProjectOps = ops
+				return func() int { return len(store.Get().Projects) }
+			},
+		},
+	}
+	for _, d := range domains {
+		t.Run(d.name, func(t *testing.T) {
+			store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
+			assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
+			var events atomic.Int64
+			queue := commitQueueFor(t, store, &events)
+			mux := http.NewServeMux()
+			var ipcWork sync.WaitGroup
+			ipc := &IPCContext{
+				Ctx: context.Background(), Store: store, UI: &recordingUI{}, Platform: stubPlatform{},
+				GoFunc: func(f func()) { ipcWork.Add(1); go func() { defer ipcWork.Done(); f() }() },
+			}
+			count := d.wire(t, store, queue, &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ipc)
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+			before := count()
+
+			if resp, body := doJSON(t, "POST", srv.URL+d.httpPath, d.httpBody); resp.StatusCode >= 300 {
+				t.Fatalf("http door = %d %s", resp.StatusCode, body)
+			}
+			raw, err := json.Marshal(d.ipcMsg)
+			assertNoErr(t, err, "marshal ipc")
+			d.ipcRun(ipc, raw)
+			ipcWork.Wait()
+
+			if got := count() - before; got != 2 {
+				t.Fatalf("%d records committed, want 2 (one per door)", got)
+			}
+			if n := events.Load(); n != 2*d.perDoor {
+				t.Fatalf("%d events, want %d", n, 2*d.perDoor)
+			}
+		})
+	}
+}

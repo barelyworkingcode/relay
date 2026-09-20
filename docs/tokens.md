@@ -532,7 +532,7 @@ Two consequences worth stating rather than discovering:
 - **A hand-edit under a running tray is imported, not merged.** The tray's
   store never re-reads the file on its own; a watcher submits the edit as one
   queued, validated import, so it is ordered with every other mutation (a save
-  admitted first overwrites it). See the external-writer policy in
+  imports a pending edit first, then applies on top). See the external-writer policy in
   [`config-ownership-and-races.md`](config-ownership-and-races.md).
 - **Historically it was last-writer-wins, narrowed to a hand-edit.** The reload closes
   the window between a caller's cached view and the file; it does not make

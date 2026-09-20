@@ -274,6 +274,25 @@ func TestHandEditIsOrderedWithQueuedMutationsByAdmission(t *testing.T) {
 	f.want(t, 2, "one event for the import and one for the mutation")
 }
 
+func TestMutationAdmittedBeforeTheWatcherImportsBuildsOnTheEdit(t *testing.T) {
+	f := newImportFixture(t)
+	f.handEdit(t, "edit")
+
+	if err := f.run(func(context.Context) error {
+		return f.store.With(func(s *Settings) { s.Hosts = append(s.Hosts, Host{ID: "after"}) })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, h := range f.store.Get().Hosts {
+		ids = append(ids, h.ID)
+	}
+	if len(ids) != 2 || ids[0] != "edit" || ids[1] != "after" {
+		t.Fatalf("hosts = %v, want the unimported edit kept under the mutation", ids)
+	}
+	f.want(t, 1, "the mutation publishes once even though it imported first")
+}
+
 func TestSettingsWatcherSeesInPlaceEditsAndRepeatedAtomicReplaces(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 	path := filepath.Join(dir, "settings.json")

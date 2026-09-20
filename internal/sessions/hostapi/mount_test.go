@@ -290,7 +290,10 @@ func TestMount_TerminalExit_FanOut_BridgeAndWS_BothFire(t *testing.T) {
 
 	client := unixClient(internalSock)
 	const sessionID = "22222222-3333-4444-5555-666666666666"
-	resp := postJSON(t, client, "http://h/launch", bearer, launchBody(sessionID, []string{"/bin/sh", "-c", "exit 3"}))
+	// The command lives briefly on purpose: launch reads the shim's start time
+	// after spawning and answers 500 when the shim has already exited, so an
+	// instant `exit 3` makes the launch itself race the exit.
+	resp := postJSON(t, client, "http://h/launch", bearer, launchBody(sessionID, []string{"/bin/sh", "-c", "sleep 0.3; exit 3"}))
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("launch status = %d, want 201", resp.StatusCode)

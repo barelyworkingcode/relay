@@ -164,7 +164,7 @@ convergence, and live second-writer handling remain outstanding below.
 | Event-driven convergence | Complete (task 5) | `statusPoller` no longer reads `settings.json`; the commit event drives UI, listener and model-endpoint reconciliation; a 30 s `RecoveryPollInterval` reconciles from tray-owned state. | The two-second settings poll still reloads configuration and triggers listener reconciliation. |
 | External writers | Complete (task 6) | Policy: import. A kqueue watcher (`config.WatchSettingsFile`, no timer) on the settings directory and file submits `FileSettingsStore.ImportFile` through the config queue. A valid file is applied; an unparseable or unsealable one keeps current state and logs. The store's own writes are recognised by digest and ignored; exactly one commit event fires per real change. Limitation: ordering is by admission, so a mutation admitted between the edit landing and the import overwrites it — quit the tray first for certainty. Tests in `internal/config/commit_event_test.go`. |
 | Ordering and freshness tests | Complete (task 7) | Added commit-event, direct-file, restart-snapshot, Start/Restart-behind-Remove, cross-door (HTTP/IPC/tray, templates only) and reverse-order service-update tests in `internal/config/commit_event_test.go` and `cmd/relay/config_ordering_test.go`. Final `go test ./...` and `go test -race ./...` (relay stopped) report no FAIL or data race. |
-| Completion | All seven tasks Complete | Open follow-ups: detect an unimported edit before a save overwrites it; cross-door coverage is templates only. Known pre-existing flake, also on HEAD and unrelated to this work: `TestMount_TerminalExit_FanOut_BridgeAndWS_BothFire` (`internal/sessions/hostapi`) intermittently returns launch 500 under `-count>1` or `-race`. |
+| Completion | All seven tasks Complete | No open follow-ups. A save first adopts a valid pending file edit (`importLocked` inside the queued command), so an edit is not overwritten before the watcher imports it. Cross-door coverage: `TestHTTPAndIPCDoorsShareOneCoreQueueAndEventPerCommit` covers hosts, services and projects; MCP and enrolment doors are not added (heavier setup, same shared-core pattern). The `hostapi` launch-500 flake was a test race (instant-exit shim) and is fixed in the test. |
 
 ### Outstanding task breakdown
 
@@ -674,11 +674,12 @@ mutation:
   whitespace-only edit is absorbed the same way. Only an edit that changes state
   advances the commit counter, so it publishes exactly one commit event and the
   usual UI refresh and listener reconcile follow.
-- Ordering is by admission: the watcher submits when it sees the change, so a
-  mutation admitted between the edit landing on disk and the watcher's import
-  saves over the edit, and the import then finds its own write. A mutation
-  admitted after the import builds on the edit. Operators who need certainty
-  should quit the tray first.
+- Ordering is by admission, and no mutation saves over an unimported edit:
+  every save inside the store first checks the file's digest against the last
+  one it wrote or read and, if it differs, imports the file (same validation;
+  an invalid file is refused and the mutation proceeds on the current state),
+  then applies the mutation on top. The mutation's single commit event covers
+  both. The watcher's later import finds its own write and does nothing.
 - The recovery tick never reads `settings.json`. `Reload` remains only as the
   sealed reset's explicit primitive.
 

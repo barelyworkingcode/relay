@@ -781,6 +781,15 @@ func (ss *FileSettingsStore) WithDeclinable(fn func(s *Settings) error) error {
 	if ss.cache == nil {
 		ss.cache = ss.load()
 	}
+	if ss.owned {
+		// This is deliberate: an edit the watcher has not imported yet is
+		// adopted here, inside the queued command, so the mutation builds on
+		// it instead of saving over it. An invalid file is refused and the
+		// mutation proceeds on the current state.
+		if _, err := ss.importLocked(); err != nil {
+			slog.Warn("settings.json edit not applied; keeping the current settings", "error", err)
+		}
+	}
 	if err := ss.unreadableErrLocked(); err != nil {
 		slog.Error("refusing to save settings over a file that could not be read", "error", err)
 		return err
@@ -811,6 +820,11 @@ func (ss *FileSettingsStore) WithDeclinable(fn func(s *Settings) error) error {
 func (ss *FileSettingsStore) ImportFile() (bool, error) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
+	return ss.importLocked()
+}
+
+// importLocked is ImportFile with the mutex held.
+func (ss *FileSettingsStore) importLocked() (bool, error) {
 	data, err := os.ReadFile(ss.path())
 	if err != nil {
 		if os.IsNotExist(err) {

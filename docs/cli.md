@@ -1404,8 +1404,8 @@ keychain item together, then re-initializes from nothing.
 is imported through the tray's config queue, in order with other changes, and
 takes effect without a restart. An invalid edit (unparseable, or a sealed value
 that will not open) is refused: the tray logs why and keeps its current
-settings. A save the tray makes while your edit is still unimported overwrites
-it, so for a certain edit quit the tray first. There is no import command.
+settings. A change the tray makes at the same moment builds on your valid edit
+rather than overwriting it. There is no import command.
 
 There is deliberately **no CLI equivalent, no flag, and no offline recovery
 code** for this. A second door into the sealed store is exactly what the
