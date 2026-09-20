@@ -96,7 +96,7 @@ func (o *EveEnrolmentOps) runQueued(ctx context.Context, fn func() error) error 
 	if o.Queue == nil {
 		return fn()
 	}
-	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
+	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
 }
 
 func (o *EveEnrolmentOps) auditor() IssuanceAuditor {

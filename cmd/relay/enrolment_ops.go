@@ -211,7 +211,7 @@ func (o *EnrolmentOps) runQueued(ctx context.Context, fn func() error) error {
 	if o.Queue == nil {
 		return fn()
 	}
-	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
+	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
 }
 
 func (o *EnrolmentOps) notify() {
@@ -930,56 +930,39 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 		}
 	}
 
-	// existing is read outside the store lock purely to decide whether this
-	// request needs the gate at all, the same read-outside/mutate-inside
-	// split ServiceOps.Update documents and accepts: a block created between
-	// this read and the write below would let a concurrent Remove through
-	// ungated. Narrow (it needs a second caller racing a create against this
-	// Remove) and not new to this change -- the field-level Update path had
-	// the identical shape before Remove was gated too.
-	existing := o.Store.Get().Remote
-	var changed []string
-	// needGate, digest and reason are computed for either shape (Remove or a
-	// field-level Update) and fed through the ONE requireGate call below --
-	// gate_structural_test.go's completeness scan expects exactly one call
-	// site per op, so this is one call expression with two ways to arm it,
-	// not two call expressions.
-	var needGate bool
-	var digest presence.Digest
-	var reason string
-	switch {
-	case f.Remove:
-		// Removing an already-absent block changes nothing, same as a resend
-		// of the exact stored record for an Update -- no gate either. When it
-		// does change something, name it in the audit log the same way an
-		// Update's changed fields are: without this, a gated Remove and an
-		// unchanged resend would both audit an identical empty field list,
-		// distinguishable only by the presence of a presence_id.
-		if existing != nil {
-			needGate = true
-			digest = f.removePresenceDigest()
-			reason = "remove relay's remote configuration entirely"
-			changed = []string{"remove"}
-		}
-	default:
-		changed = remoteConfigChangedFields(existing, listen, enrolListen, f)
-		if len(changed) > 0 {
-			needGate = true
-			digest = f.presenceDigest(listen, enrolListen)
-			reason = remoteConfigReason(changed)
-		}
-	}
-	var presenceID string
-	if needGate {
-		grant, err := requireGate(o.Gate, ctx, "remote.configure", digest, reason)
-		if err != nil {
-			return remoteConfigView{}, err
-		}
-		presenceID = grant.ID()
-	}
-
 	var view remoteConfigView
 	err := o.runQueued(ctx, func() error {
+		existing := o.Store.Get().Remote
+		var changed []string
+		var needGate bool
+		var digest presence.Digest
+		var reason string
+		switch {
+		case f.Remove:
+			if existing != nil {
+				needGate = true
+				digest = f.removePresenceDigest()
+				reason = "remove relay's remote configuration entirely"
+				changed = []string{"remove"}
+			}
+		default:
+			changed = remoteConfigChangedFields(existing, listen, enrolListen, f)
+			if len(changed) > 0 {
+				needGate = true
+				digest = f.presenceDigest(listen, enrolListen)
+				reason = remoteConfigReason(changed)
+			}
+		}
+
+		var presenceID string
+		if needGate {
+			grant, err := requireGate(o.Gate, context.WithoutCancel(ctx), "remote.configure", digest, reason)
+			if err != nil {
+				return err
+			}
+			presenceID = grant.ID()
+		}
+
 		if err := o.Store.With(func(s *config.Settings) {
 			if f.Remove {
 				s.Remote = nil

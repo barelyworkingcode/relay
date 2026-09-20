@@ -55,6 +55,8 @@ ordering is the primary mechanism.
 - Enrolment create, sign, approve, update, revoke, refusal, and remote-config
   mutations now use the same queue. Their settings, issuance/audit work, and
   approval payload resolution complete before the caller returns.
+- Remote-config change detection and its presence decision now run on that
+  queue, so a queued remove cannot authorize against a stale pre-queue state.
 - Eve enrolment-window open/consume and Eve passkey report/revoke/unrevoke
   mutations now use the same queue, including persistence and audit effects.
 

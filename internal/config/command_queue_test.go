@@ -174,6 +174,65 @@ func TestCommandQueueCancellationBeforeAdmission(t *testing.T) {
 	}
 }
 
+func TestCommandQueueDoCommittedFinishesAfterCallerCancellation(t *testing.T) {
+	q, err := NewCommandQueue(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = q.Shutdown(context.Background()) })
+	canceled, cancelBeforeAdmission := context.WithCancel(context.Background())
+	cancelBeforeAdmission()
+	if err := q.DoCommitted(canceled, func(context.Context) error {
+		t.Fatal("canceled committed command was admitted")
+		return nil
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled committed submission error = %v, want context.Canceled", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- q.Do(context.Background(), func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	completed := make(chan error, 1)
+	go func() {
+		completed <- q.DoCommitted(ctx, func(context.Context) error { return nil })
+	}()
+	if err := q.WaitForPending(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case err := <-completed:
+		t.Fatalf("committed command returned before execution: %v", err)
+	default:
+	}
+
+	close(release)
+	if err := receiveQueueResult(t, firstDone); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiveQueueResult(t, completed); err != nil {
+		t.Fatalf("committed command result = %v, want nil", err)
+	}
+}
+
 func TestCommandQueueShutdownCancelsQueuedAndActiveCommands(t *testing.T) {
 	q, err := NewCommandQueue(2)
 	if err != nil {

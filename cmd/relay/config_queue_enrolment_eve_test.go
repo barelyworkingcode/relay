@@ -2,29 +2,67 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/presence"
+	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
 
-func TestEnrolmentOpsCreateWaitsForQueueAndRecordsBeforeReturn(t *testing.T) {
-	_, store := newEnrolmentSandbox(t)
-	queue, err := config.NewCommandQueue(1)
-	assertNoErr(t, err, "NewCommandQueue")
-	t.Cleanup(func() { _ = queue.Shutdown(context.Background()) })
-
+func queueBlocker(t *testing.T, queue *config.CommandQueue) func() {
+	t.Helper()
 	started := make(chan struct{})
 	release := make(chan struct{})
-	blockDone := make(chan error, 1)
+	done := make(chan error, 1)
 	go func() {
-		blockDone <- queue.Do(context.Background(), func(context.Context) error {
+		done <- queue.Do(context.Background(), func(context.Context) error {
 			close(started)
 			<-release
 			return nil
 		})
 	}()
 	<-started
+
+	released := false
+	finished := false
+	releaseBlocker := func() {
+		if !released {
+			close(release)
+			released = true
+		}
+		if !finished {
+			assertNoErr(t, <-done, "blocking command")
+			finished = true
+		}
+	}
+	t.Cleanup(releaseBlocker)
+	return releaseBlocker
+}
+
+func waitForMutationAdmission(t *testing.T, queue *config.CommandQueue) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+	assertNoErr(t, queue.WaitForPending(ctx, 1), "wait for mutation admission")
+}
+
+func assertMutationStillWaiting(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		t.Fatalf("queued mutation returned before the blocker completed: %v", err)
+	default:
+	}
+}
+
+func TestEnrolmentOpsCreateWaitsForQueueAndRecordsBeforeReturn(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	queue, err := config.NewCommandQueue(1)
+	assertNoErr(t, err, "NewCommandQueue")
+	t.Cleanup(func() { _ = queue.Shutdown(context.Background()) })
+	releaseBlocker := queueBlocker(t, queue)
 
 	rec := enabledIssuanceRecorder(t)
 	ops := &EnrolmentOps{Store: store, Queue: queue, Gate: allowGate(t), Audit: rec}
@@ -33,14 +71,9 @@ func TestEnrolmentOpsCreateWaitsForQueueAndRecordsBeforeReturn(t *testing.T) {
 		_, err := ops.Create(context.Background(), enrolmentFields{ClientID: "queued-enrolment"}, auditViaCLI, "")
 		created <- err
 	}()
-
-	select {
-	case err := <-created:
-		t.Fatalf("queued enrolment mutation returned before the earlier command completed: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	close(release)
-	assertNoErr(t, <-blockDone, "blocking command")
+	waitForMutationAdmission(t, queue)
+	assertMutationStillWaiting(t, created)
+	releaseBlocker()
 	assertNoErr(t, <-created, "Create")
 
 	if got := len(store.Get().Enrolments); got != 1 {
@@ -51,23 +84,42 @@ func TestEnrolmentOpsCreateWaitsForQueueAndRecordsBeforeReturn(t *testing.T) {
 	}
 }
 
+func TestEnrolmentOpsCreateCompletesAfterCallerCancellation(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	queue, err := config.NewCommandQueue(1)
+	assertNoErr(t, err, "NewCommandQueue")
+	t.Cleanup(func() { _ = queue.Shutdown(context.Background()) })
+	releaseBlocker := queueBlocker(t, queue)
+
+	rec := enabledIssuanceRecorder(t)
+	ops := &EnrolmentOps{Store: store, Queue: queue, Gate: allowGate(t), Audit: rec}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	created := make(chan error, 1)
+	go func() {
+		_, err := ops.Create(ctx, enrolmentFields{ClientID: "canceled-enrolment"}, auditViaCLI, "")
+		created <- err
+	}()
+	waitForMutationAdmission(t, queue)
+	cancel()
+	assertMutationStillWaiting(t, created)
+	releaseBlocker()
+	assertNoErr(t, <-created, "Create after cancellation")
+
+	if got := len(store.Get().Enrolments); got != 1 {
+		t.Fatalf("canceled caller returned before persisting its enrolment: got %d records", got)
+	}
+	if events := readLoggedEvents(t, rec); len(events) != 1 {
+		t.Fatalf("canceled caller returned before recording its issuance: %+v", events)
+	}
+}
+
 func TestEveEnrolmentOpenWaitsForQueueAndRecordsBeforeReturn(t *testing.T) {
 	store := eveOpsStore(t)
 	queue, err := config.NewCommandQueue(1)
 	assertNoErr(t, err, "NewCommandQueue")
 	t.Cleanup(func() { _ = queue.Shutdown(context.Background()) })
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	blockDone := make(chan error, 1)
-	go func() {
-		blockDone <- queue.Do(context.Background(), func(context.Context) error {
-			close(started)
-			<-release
-			return nil
-		})
-	}()
-	<-started
+	releaseBlocker := queueBlocker(t, queue)
 
 	rec := enabledIssuanceRecorder(t)
 	ops := &EveEnrolmentOps{Store: store, Queue: queue, Gate: allowGate(t), Audit: rec}
@@ -76,14 +128,9 @@ func TestEveEnrolmentOpenWaitsForQueueAndRecordsBeforeReturn(t *testing.T) {
 		_, err := ops.Open(context.Background(), auditViaCLI)
 		opened <- err
 	}()
-
-	select {
-	case err := <-opened:
-		t.Fatalf("queued Eve mutation returned before the earlier command completed: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	close(release)
-	assertNoErr(t, <-blockDone, "blocking command")
+	waitForMutationAdmission(t, queue)
+	assertMutationStillWaiting(t, opened)
+	releaseBlocker()
 	assertNoErr(t, <-opened, "Open")
 
 	if store.Get().EveEnrolment == nil {
@@ -91,5 +138,56 @@ func TestEveEnrolmentOpenWaitsForQueueAndRecordsBeforeReturn(t *testing.T) {
 	}
 	if events := readLoggedEvents(t, rec); len(events) != 1 {
 		t.Fatalf("Open returned before recording the Eve issuance: %+v", events)
+	}
+}
+
+func TestEvePasskeyReportWaitsForQueue(t *testing.T) {
+	store := eveOpsStore(t)
+	queue, err := config.NewCommandQueue(1)
+	assertNoErr(t, err, "NewCommandQueue")
+	t.Cleanup(func() { _ = queue.Shutdown(context.Background()) })
+	releaseBlocker := queueBlocker(t, queue)
+
+	ops := &EvePasskeyOps{Store: store, Queue: queue}
+	reported := make(chan error, 1)
+	go func() {
+		reported <- ops.Report([]evePasskeyReportEntry{{ID: "queued-passkey", Label: "browser"}})
+	}()
+	waitForMutationAdmission(t, queue)
+	assertMutationStillWaiting(t, reported)
+	releaseBlocker()
+	assertNoErr(t, <-reported, "Report")
+
+	if got := store.Get().EvePasskeys; len(got) != 1 || got[0].ID != "queued-passkey" {
+		t.Fatalf("Report returned before persisting its mirror: %+v", got)
+	}
+}
+
+func TestEnrolmentOpsSetRemoteConfigAuthorizesCurrentQueuedState(t *testing.T) {
+	store := eveOpsStore(t)
+	queue, err := config.NewCommandQueue(1)
+	assertNoErr(t, err, "NewCommandQueue")
+	t.Cleanup(func() { _ = queue.Shutdown(context.Background()) })
+	releaseBlocker := queueBlocker(t, queue)
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &EnrolmentOps{Store: store, Queue: queue, Gate: gate, Issuance: pgwWithIssuance(t)}
+	removed := make(chan error, 1)
+	go func() {
+		_, err := ops.SetRemoteConfig(context.Background(), remoteConfigFields{Remove: true}, auditViaCLI, "")
+		removed <- err
+	}()
+	waitForMutationAdmission(t, queue)
+
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.Remote = &config.RemoteConfig{Listen: "127.0.0.1:9910", Enabled: boolPtr(true)}
+	}), "seed remote config after admission")
+	releaseBlocker()
+	if err := <-removed; !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("Remove authorized against stale state: err = %v, want presence.ErrRefused", err)
+	}
+	if store.Get().Remote == nil {
+		t.Fatal("a queued Remove cleared remote config after its gate refused")
 	}
 }

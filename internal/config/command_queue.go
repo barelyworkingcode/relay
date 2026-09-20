@@ -63,6 +63,45 @@ func NewCommandQueue(capacity int) (*CommandQueue, error) {
 // cancels a command already running. A running function must honor ctx; Go
 // cannot forcibly stop a function that ignores cancellation.
 func (q *CommandQueue) Do(ctx context.Context, command Command) error {
+	return q.do(ctx, command, false)
+}
+
+// DoCommitted preserves cancellation while a command is waiting for
+// admission, then waits for an admitted command to finish. Use it when a
+// caller receives values produced by the command: returning on the caller's
+// cancellation after admission would race those values with the worker.
+func (q *CommandQueue) DoCommitted(ctx context.Context, command Command) error {
+	return q.do(ctx, command, true)
+}
+
+// WaitForPending waits until at least minimum accepted commands are waiting
+// behind the active command. It is intended for lifecycle coordination and
+// deterministic tests; it never admits or executes a command itself.
+func (q *CommandQueue) WaitForPending(ctx context.Context, minimum int) error {
+	if minimum <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		q.mu.Lock()
+		if len(q.pending) >= minimum {
+			q.mu.Unlock()
+			return nil
+		}
+		wake := q.wake
+		q.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-wake:
+		}
+	}
+}
+
+func (q *CommandQueue) do(ctx context.Context, command Command, committed bool) error {
 	if command == nil {
 		return ErrNilCommand
 	}
@@ -70,7 +109,11 @@ func (q *CommandQueue) Do(ctx context.Context, command Command) error {
 		ctx = context.Background()
 	}
 
-	commandCtx, cancel := context.WithCancel(ctx)
+	commandBase := ctx
+	if committed {
+		commandBase = context.Background()
+	}
+	commandCtx, cancel := context.WithCancel(commandBase)
 	req := &commandRequest{
 		command: command,
 		ctx:     commandCtx,
@@ -120,6 +163,12 @@ func (q *CommandQueue) Do(ctx context.Context, command Command) error {
 		}
 	}
 	q.submitMu.Unlock()
+
+	if committed {
+		err := <-req.result
+		cancel()
+		return err
+	}
 
 	select {
 	case err := <-req.result:
