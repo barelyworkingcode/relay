@@ -217,6 +217,7 @@ type loginCodeView struct {
 // a panic in any handler takes every other tab down with it.
 type LoginOps struct {
 	Store config.SettingsStore
+	Queue *config.CommandQueue
 	// Audit records the issuance and revocation this core performs. Nil-safe
 	// like every audit.AuditRecorder method; nil reads as "auditing is off", which
 	// records nothing and refuses nothing.
@@ -226,6 +227,13 @@ type LoginOps struct {
 	// refuses both rather than allowing either — see requireGate.
 	Gate     *presence.Gate
 	OnChange func()
+}
+
+func (o *LoginOps) runQueued(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
 func (o *LoginOps) auditor() IssuanceAuditor {
@@ -259,16 +267,23 @@ func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (loginCodeView
 	if err != nil {
 		return loginCodeView{}, err
 	}
-	plaintext, expires, err := mintLoginBootstrap(o.Store)
-	if err != nil {
+	var plaintext, expires string
+	if err := o.runQueued(ctx, func() error {
+		var err error
+		plaintext, expires, err = mintLoginBootstrap(o.Store)
+		if err != nil {
+			return err
+		}
+		// The code is withheld rather than returned when it cannot be recorded:
+		// this value IS the moment the code exists, so returning it is the
+		// disclosure, and refusing before it happens is what makes the refusal
+		// real. The unshown anchor expires on its own.
+		if err := recordBootstrapIssued(o.auditor(), expires, via, grant.ID()); err != nil {
+			return fmt.Errorf("a login code was minted but could not be recorded in the audit log, so it was not shown: %w", err)
+		}
+		return nil
+	}); err != nil {
 		return loginCodeView{}, err
-	}
-	// The code is withheld rather than returned when it cannot be recorded:
-	// this value IS the moment the code exists, so returning it is the
-	// disclosure, and refusing before it happens is what makes the refusal
-	// real. The unshown anchor expires on its own.
-	if err := recordBootstrapIssued(o.auditor(), expires, via, grant.ID()); err != nil {
-		return loginCodeView{}, fmt.Errorf("a login code was minted but could not be recorded in the audit log, so it was not shown: %w", err)
 	}
 	o.notify()
 	return loginCodeView{
@@ -345,15 +360,22 @@ func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (config.Passkey
 	if err != nil {
 		return config.Passkey{}, err
 	}
-	removed, err := revokePasskey(o.Store, id)
-	if err != nil {
+	var removed config.Passkey
+	if err := o.runQueued(ctx, func() error {
+		var err error
+		removed, err = revokePasskey(o.Store, id)
+		if err != nil {
+			return err
+		}
+		// Reported and not refused: the passkey is already gone, and a revocation
+		// narrows — a failing log must not be the reason a compromised credential
+		// stays live, the opposite balance from issuance.
+		if err := recordPasskeyRevoked(o.auditor(), removed, auditViaIPC, grant.ID()); err != nil {
+			slog.Error("passkey revoked but not recorded in the audit log", "id", abbreviatePasskeyID(removed.ID), "error", err)
+		}
+		return nil
+	}); err != nil {
 		return config.Passkey{}, err
-	}
-	// Reported and not refused: the passkey is already gone, and a revocation
-	// narrows — a failing log must not be the reason a compromised credential
-	// stays live, the opposite balance from issuance.
-	if err := recordPasskeyRevoked(o.auditor(), removed, auditViaIPC, grant.ID()); err != nil {
-		slog.Error("passkey revoked but not recorded in the audit log", "id", abbreviatePasskeyID(removed.ID), "error", err)
 	}
 	o.notify()
 	return removed, nil
@@ -370,24 +392,31 @@ func (o *LoginOps) SignOut(id string) (config.APICredential, error) {
 	if o == nil {
 		return config.APICredential{}, errLoginOpsUnavailable
 	}
-	removed, err := revokeAPICredentialIf(o.Store, id, func(c config.APICredential) error {
-		if !isLoginCredential(c) {
-			return fmt.Errorf("credential %q is not a browser login session; revoke it with `relay credential revoke --id %s`", c.Name, c.ID)
+	var removed config.APICredential
+	if err := o.runQueued(context.Background(), func() error {
+		var err error
+		removed, err = revokeAPICredentialIf(o.Store, id, func(c config.APICredential) error {
+			if !isLoginCredential(c) {
+				return fmt.Errorf("credential %q is not a browser login session; revoke it with `relay credential revoke --id %s`", c.Name, c.ID)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		if err := recordIssuance(o.auditor(), audit.CredentialIssuance{
+			Revoked:    true,
+			Credential: auditCredentialAPI,
+			Subject:    removed.ID,
+			Name:       removed.Name,
+			Grants:     audit.ClassStrings(removed.Classes),
+			Via:        auditViaIPC,
+		}); err != nil {
+			slog.Error("login session signed out but not recorded in the audit log", "id", removed.ID, "error", err)
 		}
 		return nil
-	})
-	if err != nil {
-		return config.APICredential{}, err
-	}
-	if err := recordIssuance(o.auditor(), audit.CredentialIssuance{
-		Revoked:    true,
-		Credential: auditCredentialAPI,
-		Subject:    removed.ID,
-		Name:       removed.Name,
-		Grants:     audit.ClassStrings(removed.Classes),
-		Via:        auditViaIPC,
 	}); err != nil {
-		slog.Error("login session signed out but not recorded in the audit log", "id", removed.ID, "error", err)
+		return config.APICredential{}, err
 	}
 	o.notify()
 	return removed, nil

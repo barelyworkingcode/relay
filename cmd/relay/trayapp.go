@@ -41,6 +41,8 @@ type App struct {
 	platform     Platform
 	extMgr       *mcpbroker.Manager
 	registry     service.Manager
+	serviceQueue *config.CommandQueue
+	serviceOps   *ServiceOps
 	bridgeServer *bridge.BridgeServer
 	// frontendChannel provisions and, on shutdown, closes the frontend
 	// socket/token. Owned here rather than by the registry: the registry
@@ -329,6 +331,11 @@ func runTrayApp() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	registry := service.NewRegistry()
+	serviceQueue, err := config.NewCommandQueue(32)
+	if err != nil {
+		slog.Error("failed to start service command queue", "error", err)
+		os.Exit(1)
+	}
 
 	app := &App{
 		ctx:           ctx,
@@ -337,6 +344,7 @@ func runTrayApp() {
 		platform:      platform,
 		extMgr:        extMgr,
 		registry:      registry,
+		serviceQueue:  serviceQueue,
 		presenceGate:  presenceGate,
 		sealedKeyring: keyring,
 		configDir:     configDir,
@@ -375,6 +383,7 @@ func runTrayApp() {
 	serviceOps := &ServiceOps{
 		Store:    store,
 		Registry: registry,
+		Queue:    serviceQueue,
 		Gate:     presenceGate,
 		OnChange: func() {
 			app.platform.DispatchToMain(func() {
@@ -383,6 +392,7 @@ func runTrayApp() {
 			})
 		},
 	}
+	app.serviceOps = serviceOps
 
 	app.ipcCtx = &IPCContext{
 		Ctx:                    ctx,
@@ -447,7 +457,7 @@ func runTrayApp() {
 	// and has no Settings tab of its own, so it is wired straight onto the
 	// router rather than threaded through IPCContext the way the other five
 	// cores are.
-	credentialOps := &CredentialOps{Store: store, Gate: presenceGate, Issuance: issuanceAuditorOrNil(rec)}
+	credentialOps := &CredentialOps{Store: store, Queue: serviceQueue, Gate: presenceGate, Issuance: issuanceAuditorOrNil(rec)}
 	router.credentialOps = credentialOps
 
 	// auditOps is the one core behind both the Tool Calls tab (via
@@ -464,6 +474,7 @@ func runTrayApp() {
 	// in sync with an enrolment created or revoked from curl.
 	enrolmentOps := &EnrolmentOps{
 		Store: store,
+		Queue: serviceQueue,
 		Audit: rec,
 		Gate:  presenceGate,
 		OnChange: func() {
@@ -481,6 +492,7 @@ func runTrayApp() {
 	// open window in sync with a revoke made from a terminal.
 	loginOps := &LoginOps{
 		Store: store,
+		Queue: serviceQueue,
 		Audit: rec,
 		Gate:  presenceGate,
 		OnChange: func() {
@@ -499,6 +511,7 @@ func runTrayApp() {
 	// eve's own poll can never disagree about whether a window is open.
 	eveEnrolmentOps := &EveEnrolmentOps{
 		Store: store,
+		Queue: serviceQueue,
 		Audit: rec,
 		Gate:  presenceGate,
 		OnChange: func() {
@@ -518,6 +531,7 @@ func runTrayApp() {
 	// revoke from a terminal must show up without a manual reload.
 	evePasskeyOps := &EvePasskeyOps{
 		Store: store,
+		Queue: serviceQueue,
 		Audit: rec,
 		Gate:  presenceGate,
 		OnChange: func() {
@@ -538,6 +552,7 @@ func runTrayApp() {
 	mcpOps := &McpOps{
 		Store:           store,
 		Ctx:             ctx,
+		Queue:           serviceQueue,
 		Gate:            presenceGate,
 		Issuance:        issuanceAuditorOrNil(rec),
 		NotifyReconcile: bridge.SendReconcile,
@@ -680,6 +695,7 @@ func runTrayApp() {
 	// the tray share the presence gate and the audit record.
 	projectOps := &ProjectOps{
 		Store:    store,
+		Queue:    serviceQueue,
 		Gate:     presenceGate,
 		Issuance: issuanceAuditorOrNil(rec),
 		OnChange: func() {
@@ -1295,16 +1311,15 @@ func (a *App) toggleService(menuItemID int) {
 		slog.Error("service toggle refused: relaysessions is relay's built-in session host and cannot be toggled from the tray")
 		return
 	}
-	s := a.store.Get()
-	cfg, _ := config.FindServiceByID(s, svcID)
-	if cfg == nil {
-		return
-	}
-
-	if a.registry.IsRunning(cfg.ID) {
-		id := cfg.ID
+	if a.registry.IsRunning(svcID) {
 		a.goFunc(func() {
-			a.registry.Stop(id)
+			if a.serviceOps != nil {
+				if err := a.serviceOps.Stop(svcID); err != nil {
+					slog.Error("service toggle failed", "id", svcID, "error", err)
+				}
+			} else {
+				a.registry.Stop(svcID)
+			}
 			a.platform.DispatchToMain(func() {
 				a.pushServiceStatus()
 				a.updateMenu()
@@ -1314,9 +1329,19 @@ func (a *App) toggleService(menuItemID int) {
 		// Off-main, same as Stop above: Start spawns a process and does its
 		// own file I/O (pidfile, log dir), neither of which belongs on the
 		// menu-click thread.
-		svcCfg := *cfg
 		a.goFunc(func() {
-			if err := a.registry.Start(&svcCfg); err != nil {
+			var err error
+			if a.serviceOps != nil {
+				err = a.serviceOps.Start(svcID)
+			} else {
+				svc, _ := config.FindServiceByID(a.store.Get(), svcID)
+				if svc == nil {
+					err = fmt.Errorf("service %q not found", svcID)
+				} else {
+					err = a.registry.Start(svc)
+				}
+			}
+			if err != nil {
 				slog.Error("service toggle failed", "error", err)
 			}
 			a.platform.DispatchToMain(func() {
@@ -1357,6 +1382,14 @@ func (a *App) cleanup() {
 		a.extMgr.StopAll()
 		if a.bridgeServer != nil {
 			a.bridgeServer.Close()
+		}
+		if a.serviceQueue != nil {
+			a.serviceQueue.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), cleanupWaitGroupTimeout)
+			if err := a.serviceQueue.Shutdown(ctx); err != nil {
+				slog.Warn("service command queue did not shut down cleanly", "error", err)
+			}
+			cancel()
 		}
 		// Drained after the MCPs die, like the bridge: an in-flight remote
 		// CallTool fails fast rather than holding the drain open, and its

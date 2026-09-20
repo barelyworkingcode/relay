@@ -31,6 +31,7 @@ import (
 // from the other's gate.
 type ProjectOps struct {
 	Store config.SettingsStore
+	Queue *config.CommandQueue
 	// Gate is the presence check Create, Update and RotateToken demand
 	// before they touch the store. A nil Gate refuses all three — see
 	// requireGate.
@@ -45,6 +46,13 @@ type ProjectOps struct {
 	// "no session-host wiring" -- see cleanupProject's own ready() guard,
 	// which every caller not wiring session routes relies on.
 	SessionCleanup sessionRouteDeps
+}
+
+func (o *ProjectOps) runQueued(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
 // errProjectSaveFailed distinguishes an internal settings-write failure
@@ -212,19 +220,27 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 
 	var created config.Project
 	var createErr error
-	if err := o.Store.With(func(s *config.Settings) {
-		created, createErr = project.ApplyCreate(s, f, surfaces)
+	if err := o.runQueued(ctx, func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			created, createErr = project.ApplyCreate(s, f, surfaces)
+		}); err != nil {
+			return fmt.Errorf("%w: %w", errProjectSaveFailed, err)
+		}
+		if createErr != nil {
+			return createErr
+		}
+		if auditErr := recordConfigChange(o.Issuance, auditCredentialProjectGrant, created.ID,
+			projectCreateGrantFieldNames(f), via, credID, grant.ID()); auditErr != nil {
+			slog.Error("project created but not recorded in the audit log", "id", created.ID, "error", auditErr)
+		}
+		o.notify()
+		return nil
 	}); err != nil {
-		return config.Project{}, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
+		if createErr != nil {
+			return config.Project{}, createErr
+		}
+		return config.Project{}, err
 	}
-	if createErr != nil {
-		return config.Project{}, createErr
-	}
-	if auditErr := recordConfigChange(o.Issuance, auditCredentialProjectGrant, created.ID,
-		projectCreateGrantFieldNames(f), via, credID, grant.ID()); auditErr != nil {
-		slog.Error("project created but not recorded in the audit log", "id", created.ID, "error", auditErr)
-	}
-	o.notify()
 	return created, nil
 }
 
@@ -264,24 +280,35 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 	var updated config.Project
 	var found bool
 	var updateErr error
-	if err := o.Store.With(func(s *config.Settings) {
-		updated, found, updateErr = project.ApplyUpdate(s, id, f, surfaces)
+	if err := o.runQueued(ctx, func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			updated, found, updateErr = project.ApplyUpdate(s, id, f, surfaces)
+		}); err != nil {
+			return fmt.Errorf("%w: %w", errProjectSaveFailed, err)
+		}
+		if updateErr != nil {
+			return updateErr
+		}
+		if !found {
+			return nil
+		}
+		if touchesGrant {
+			if auditErr := recordConfigChange(o.Issuance, auditCredentialProjectGrant, id,
+				widened, via, credID, presenceID); auditErr != nil {
+				slog.Error("project grant updated but not recorded in the audit log", "id", id, "error", auditErr)
+			}
+		}
+		o.notify()
+		return nil
 	}); err != nil {
-		return config.Project{}, false, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
-	}
-	if updateErr != nil {
-		return config.Project{}, true, updateErr
+		if updateErr != nil {
+			return config.Project{}, true, updateErr
+		}
+		return config.Project{}, false, err
 	}
 	if !found {
 		return config.Project{}, false, nil
 	}
-	if touchesGrant {
-		if auditErr := recordConfigChange(o.Issuance, auditCredentialProjectGrant, id,
-			widened, via, credID, presenceID); auditErr != nil {
-			slog.Error("project grant updated but not recorded in the audit log", "id", id, "error", auditErr)
-		}
-	}
-	o.notify()
 	return updated, true, nil
 }
 
@@ -318,14 +345,16 @@ func (o *ProjectOps) RegenSkill(ctx context.Context, lister SkillLister, id stri
 // /api/projects/{id} and IPC delete_project share, so removal and its
 // skill cleanup cannot drift between the two doors.
 func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err error) {
-	if err := o.Store.With(func(s *config.Settings) {
-		proj, _ := config.FindProjectByID(s, id)
-		if proj == nil {
-			return
-		}
-		found = true
-		removed = *proj
-		s.RemoveProject(id)
+	if err := o.runQueued(context.Background(), func() error {
+		return o.Store.With(func(s *config.Settings) {
+			proj, _ := config.FindProjectByID(s, id)
+			if proj == nil {
+				return
+			}
+			found = true
+			removed = *proj
+			s.RemoveProject(id)
+		})
 	}); err != nil {
 		return config.Project{}, false, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
 	}
@@ -365,21 +394,32 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (s
 	var newPlaintext string
 	var ok bool
 	var genErr error
-	if err := o.Store.With(func(s *config.Settings) {
-		newPlaintext, ok, genErr = s.RotateProjectToken(id)
+	if err := o.runQueued(ctx, func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			newPlaintext, ok, genErr = s.RotateProjectToken(id)
+		}); err != nil {
+			return fmt.Errorf("%w: %w", errProjectSaveFailed, err)
+		}
+		if genErr != nil {
+			return fmt.Errorf("%w: %w", errProjectSaveFailed, genErr)
+		}
+		if !ok {
+			return nil
+		}
+		if auditErr := recordProjectTokenRotated(o.Issuance, id, via, credID, grant.ID()); auditErr != nil {
+			return fmt.Errorf("%w: %w", errProjectTokenUnrecorded, auditErr)
+		}
+		o.notify()
+		return nil
 	}); err != nil {
-		return "", false, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
-	}
-	if genErr != nil {
-		return "", false, fmt.Errorf("%w: %w", errProjectSaveFailed, genErr)
+		if genErr != nil {
+			return "", false, fmt.Errorf("%w: %w", errProjectSaveFailed, genErr)
+		}
+		return "", false, err
 	}
 	if !ok {
 		return "", false, nil
 	}
-	if auditErr := recordProjectTokenRotated(o.Issuance, id, via, credID, grant.ID()); auditErr != nil {
-		return "", false, fmt.Errorf("%w: %w", errProjectTokenUnrecorded, auditErr)
-	}
-	o.notify()
 	return newPlaintext, true, nil
 }
 
@@ -447,27 +487,42 @@ func (o *ProjectOps) NarrowForEnrolment(
 
 	var updated config.Project
 	var found, noop bool
-	err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
-		// Resolved INSIDE the callback, not from a value the caller
-		// captured earlier: the store's lock is what makes "narrower than
-		// what is stored right now" an answerable question rather than a
-		// race with whatever else touched this project between the request
-		// arriving and this closure running.
-		proj, _ := config.FindProjectByID(s, projectID)
-		if proj == nil {
-			return fmt.Errorf("project %q no longer exists", projectID)
-		}
-		if err := project.NarrowsOnly(*proj, f); err != nil {
+	err := o.runQueued(ctx, func() error {
+		err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			// Resolved INSIDE the callback, not from a value the caller
+			// captured earlier: the store's lock is what makes "narrower than
+			// what is stored right now" an answerable question rather than a
+			// race with whatever else touched this project between the request
+			// arriving and this closure running.
+			proj, _ := config.FindProjectByID(s, projectID)
+			if proj == nil {
+				return fmt.Errorf("project %q no longer exists", projectID)
+			}
+			if err := project.NarrowsOnly(*proj, f); err != nil {
+				return err
+			}
+			if project.NarrowingIsNoop(*proj, f) {
+				found, noop = true, true
+				updated = *proj
+				return errNarrowingIsNoop
+			}
+			var applyErr error
+			updated, found, applyErr = project.ApplyUpdate(s, projectID, project.NarrowUpdateFields(*proj, f), surfaces)
+			return applyErr
+		})
+		if err != nil && !noop {
 			return err
 		}
-		if project.NarrowingIsNoop(*proj, f) {
-			found, noop = true, true
-			updated = *proj
-			return errNarrowingIsNoop
+		if !found || noop {
+			return nil
 		}
-		var applyErr error
-		updated, found, applyErr = project.ApplyUpdate(s, projectID, project.NarrowUpdateFields(*proj, f), surfaces)
-		return applyErr
+		changed := project.NarrowFieldNames(f)
+		if auditErr := recordConfigChangeRemote(o.Issuance, auditCredentialProjectGrant, projectID, changed, caller); auditErr != nil {
+			slog.Error("a remote narrowed its own grant but the change was not recorded in the audit log",
+				"project_id", projectID, "client_id", caller.ClientID, "error", auditErr)
+		}
+		o.notify()
+		return nil
 	})
 	if err != nil && !noop {
 		return config.Project{}, nil, err
@@ -486,15 +541,6 @@ func (o *ProjectOps) NarrowForEnrolment(
 	}
 
 	changed := project.NarrowFieldNames(f)
-	// Reported and not undone, the same balance EnrolmentOps.Update and
-	// Revoke strike: a narrowing act has no side artifact to roll back, and
-	// refusing to narrow because the log is broken would make a failing
-	// disk the reason a remote keeps a grant it was trying to shed.
-	if auditErr := recordConfigChangeRemote(o.Issuance, auditCredentialProjectGrant, projectID, changed, caller); auditErr != nil {
-		slog.Error("a remote narrowed its own grant but the change was not recorded in the audit log",
-			"project_id", projectID, "client_id", caller.ClientID, "error", auditErr)
-	}
-	o.notify()
 	return updated, changed, nil
 }
 

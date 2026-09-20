@@ -34,7 +34,7 @@ func (msg *ipcServiceMsg) fields() serviceFields {
 
 func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcServiceMsg](raw, "add_service")
-	if !ok {
+	if !ok || ctx.Ops == nil {
 		return
 	}
 	fields := msg.fields()

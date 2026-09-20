@@ -1,12 +1,50 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 )
+
+func TestLoginOpsMutationWaitsForQueue(t *testing.T) {
+	dir := mkEmptySandboxRelayHome(t)
+	store := sealedSettingsStoreAt(dir)
+	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
+	queue, err := config.NewCommandQueue(1)
+	assertNoErr(t, err, "NewCommandQueue")
+	t.Cleanup(func() { _ = queue.Shutdown(context.Background()) })
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	blockDone := make(chan error, 1)
+	go func() {
+		blockDone <- queue.Do(context.Background(), func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+
+	ops := &LoginOps{Store: store, Queue: queue, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
+	mintDone := make(chan error, 1)
+	go func() {
+		_, err := ops.MintBootstrap(context.Background(), auditViaTray)
+		mintDone <- err
+	}()
+
+	select {
+	case err := <-mintDone:
+		t.Fatalf("queued login mutation returned before the earlier command completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	assertNoErr(t, <-blockDone, "blocking command")
+	assertNoErr(t, <-mintDone, "MintBootstrap")
+}
 
 func TestConsumeBootstrapCode_VerifiesOnceThenRefusesReplay(t *testing.T) {
 	store := newCLISandboxStore(t)

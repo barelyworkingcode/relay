@@ -140,6 +140,7 @@ func evePasskeyRevocable(s *config.Settings, id string) error {
 // itself drives, and Unrevoke narrows nothing a caller widened.
 type EvePasskeyOps struct {
 	Store    config.SettingsStore
+	Queue    *config.CommandQueue
 	Audit    *audit.AuditRecorder
 	Gate     *presence.Gate
 	OnChange func()
@@ -147,6 +148,13 @@ type EvePasskeyOps struct {
 	// report path, for a revocation eve confirms it applied). Nil is safe
 	// and raises nothing.
 	Notify func(title, body string)
+}
+
+func (o *EvePasskeyOps) runQueued(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
 func (o *EvePasskeyOps) auditor() IssuanceAuditor {
@@ -183,23 +191,28 @@ func (o *EvePasskeyOps) Report(list []evePasskeyReportEntry) error {
 		present[e.ID] = true
 	}
 	lastStanding := len(list) == 1
-	if err := o.Store.With(func(s *config.Settings) {
-		out := make([]config.EvePasskey, 0, len(list))
-		for _, e := range list {
-			out = append(out, config.EvePasskey{
-				ID:       e.ID,
-				Label:    e.Label,
-				Created:  e.Created,
-				LastUsed: e.LastUsed,
-				Reported: reported,
+	if err := o.runQueued(context.Background(), func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			out := make([]config.EvePasskey, 0, len(list))
+			for _, e := range list {
+				out = append(out, config.EvePasskey{
+					ID:       e.ID,
+					Label:    e.Label,
+					Created:  e.Created,
+					LastUsed: e.LastUsed,
+					Reported: reported,
+				})
+			}
+			s.EvePasskeys = out
+			s.EvePasskeyRevocations = slices.DeleteFunc(s.EvePasskeyRevocations, func(r config.EvePasskeyRevocation) bool {
+				return !present[r.ID] || (lastStanding && r.ID == list[0].ID)
 			})
+		}); err != nil {
+			return fmt.Errorf("save settings: %w", err)
 		}
-		s.EvePasskeys = out
-		s.EvePasskeyRevocations = slices.DeleteFunc(s.EvePasskeyRevocations, func(r config.EvePasskeyRevocation) bool {
-			return !present[r.ID] || (lastStanding && r.ID == list[0].ID)
-		})
+		return nil
 	}); err != nil {
-		return fmt.Errorf("save settings: %w", err)
+		return err
 	}
 	o.notify()
 	return nil
@@ -244,24 +257,32 @@ func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (config.EveP
 		return config.EvePasskeyRevocation{}, err
 	}
 	var rec config.EvePasskeyRevocation
-	if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
-		if err := evePasskeyRevocable(s, id); err != nil {
-			return err
+	if err := o.runQueued(ctx, func() error {
+		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if err := evePasskeyRevocable(s, id); err != nil {
+				return err
+			}
+			rec = config.EvePasskeyRevocation{ID: id, Requested: time.Now().UTC().Format(time.RFC3339)}
+			s.EvePasskeyRevocations = append(s.EvePasskeyRevocations, rec)
+			return nil
+		}); err != nil {
+			if errors.Is(err, errEvePasskeyUnknown) || errors.Is(err, errEvePasskeyAlreadyPending) || errors.Is(err, errEvePasskeyLast) {
+				return err
+			}
+			return fmt.Errorf("save settings: %w", err)
 		}
-		rec = config.EvePasskeyRevocation{ID: id, Requested: time.Now().UTC().Format(time.RFC3339)}
-		s.EvePasskeyRevocations = append(s.EvePasskeyRevocations, rec)
+		// Reported and not refused, the same balance recordPasskeyRevoked
+		// strikes: the revocation is already pending, and a failing log must
+		// not be the reason it goes unrecorded rather than merely un-narrated.
+		if err := recordEvePasskeyRevoked(o.auditor(), id, via, grant.ID()); err != nil {
+			slog.Error("eve passkey revocation recorded but not written to the audit log", "id", abbreviatePasskeyID(id), "error", err)
+		}
 		return nil
 	}); err != nil {
 		if errors.Is(err, errEvePasskeyUnknown) || errors.Is(err, errEvePasskeyAlreadyPending) || errors.Is(err, errEvePasskeyLast) {
 			return config.EvePasskeyRevocation{}, err
 		}
-		return config.EvePasskeyRevocation{}, fmt.Errorf("save settings: %w", err)
-	}
-	// Reported and not refused, the same balance recordPasskeyRevoked
-	// strikes: the revocation is already pending, and a failing log must
-	// not be the reason it goes unrecorded rather than merely un-narrated.
-	if err := recordEvePasskeyRevoked(o.auditor(), id, via, grant.ID()); err != nil {
-		slog.Error("eve passkey revocation recorded but not written to the audit log", "id", abbreviatePasskeyID(id), "error", err)
+		return config.EvePasskeyRevocation{}, err
 	}
 	o.notify()
 	o.notifyConsole("Relay", "Eve passkey revoked: it stops working on its next use")
@@ -277,14 +298,19 @@ func (o *EvePasskeyOps) Unrevoke(id string) error {
 	}
 	id = strings.TrimSpace(id)
 	changed := false
-	if err := o.Store.With(func(s *config.Settings) {
-		before := len(s.EvePasskeyRevocations)
-		s.EvePasskeyRevocations = slices.DeleteFunc(s.EvePasskeyRevocations, func(r config.EvePasskeyRevocation) bool {
-			return r.ID == id
-		})
-		changed = len(s.EvePasskeyRevocations) != before
+	if err := o.runQueued(context.Background(), func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			before := len(s.EvePasskeyRevocations)
+			s.EvePasskeyRevocations = slices.DeleteFunc(s.EvePasskeyRevocations, func(r config.EvePasskeyRevocation) bool {
+				return r.ID == id
+			})
+			changed = len(s.EvePasskeyRevocations) != before
+		}); err != nil {
+			return fmt.Errorf("save settings: %w", err)
+		}
+		return nil
 	}); err != nil {
-		return fmt.Errorf("save settings: %w", err)
+		return err
 	}
 	if changed {
 		o.notify()

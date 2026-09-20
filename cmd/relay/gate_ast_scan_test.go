@@ -115,7 +115,7 @@ func scanRequireGateCallSites(t *testing.T, root string) []gateCallSite {
 			if !ok || fd.Body == nil {
 				continue
 			}
-			method := enclosingMethodName(fd)
+			method := normalizeGateMethodName(enclosingMethodName(fd))
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
@@ -162,7 +162,7 @@ func scanRequireIssuanceAuditorCallSites(t *testing.T, root string) []string {
 			if !ok || fd.Body == nil {
 				continue
 			}
-			method := enclosingMethodName(fd)
+			method := normalizeGateMethodName(enclosingMethodName(fd))
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
@@ -178,4 +178,17 @@ func scanRequireIssuanceAuditorCallSites(t *testing.T, root string) []string {
 		}
 	}
 	return methods
+}
+
+func normalizeGateMethodName(method string) string {
+	switch method {
+	case "ServiceOps.create":
+		return "ServiceOps.Create"
+	case "ServiceOps.update":
+		return "ServiceOps.Update"
+	case "ServiceOps.remove":
+		return "ServiceOps.Remove"
+	default:
+		return method
+	}
 }

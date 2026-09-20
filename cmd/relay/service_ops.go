@@ -427,6 +427,7 @@ func (f serviceFields) presenceDigest(id string) presence.Digest {
 type ServiceOps struct {
 	Store    config.SettingsStore
 	Registry service.Manager
+	Queue    *config.CommandQueue
 	// Gate is the presence check Create and Update demand before they
 	// touch the store (ADR-017 decisions 3 and 4): a service's `command`
 	// is what relay will run, the caller's choice (ADR-015 decision 1).
@@ -440,6 +441,13 @@ type ServiceOps struct {
 	// (§7.5) and is the hard dependency §7.4 checks before Gate.
 	Issuance IssuanceAuditor
 	OnChange func()
+}
+
+func (o *ServiceOps) runQueued(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
 func (o *ServiceOps) notify() {
@@ -464,7 +472,31 @@ func (o *ServiceOps) Get(id string) (config.ServiceConfig, error) {
 	return *svc, nil
 }
 
-func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID string) (config.ServiceConfig, error) {
+// Register decides whether a request creates or updates inside the same queue
+// as the mutation. The caller must not resolve this choice from its own read.
+func (o *ServiceOps) Register(ctx context.Context, f serviceFields, via, credID string) (cfg config.ServiceConfig, err error) {
+	err = o.runQueued(ctx, func() error {
+		id := f.resolvedID()
+		if svc, _ := config.FindServiceByID(o.Store.Get(), id); svc != nil {
+			cfg, err = o.update(ctx, id, f, via, credID)
+			return err
+		}
+		cfg, err = o.create(ctx, f, via, credID)
+		return err
+	})
+	return cfg, err
+}
+
+func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID string) (cfg config.ServiceConfig, err error) {
+	err = o.runQueued(ctx, func() error {
+		var innerErr error
+		cfg, innerErr = o.create(ctx, f, via, credID)
+		return innerErr
+	})
+	return cfg, err
+}
+
+func (o *ServiceOps) create(ctx context.Context, f serviceFields, via, credID string) (config.ServiceConfig, error) {
 	id := f.resolvedID()
 	if id == "" {
 		return config.ServiceConfig{}, invalidService("display name is required")
@@ -521,7 +553,16 @@ func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID st
 // Restart is conditional on current state, not on the request: starting a
 // stopped service as a side effect of editing it would surprise a caller who
 // asked only for an edit.
-func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via, credID string) (config.ServiceConfig, error) {
+func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via, credID string) (cfg config.ServiceConfig, err error) {
+	err = o.runQueued(ctx, func() error {
+		var innerErr error
+		cfg, innerErr = o.update(ctx, id, f, via, credID)
+		return innerErr
+	})
+	return cfg, err
+}
+
+func (o *ServiceOps) update(ctx context.Context, id string, f serviceFields, via, credID string) (config.ServiceConfig, error) {
 	if id == config.RelaySessionsServiceID {
 		return config.ServiceConfig{}, invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be edited", id))
 	}
@@ -640,6 +681,12 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 }
 
 func (o *ServiceOps) Remove(id, via, credID string) error {
+	return o.runQueued(context.Background(), func() error {
+		return o.remove(id, via, credID)
+	})
+}
+
+func (o *ServiceOps) remove(id, via, credID string) error {
 	// No requireGate call here (ADR-018 step 3, §5.2): unregistering only
 	// narrows what the caller already reaches -- stopping the process is
 	// already ungated configure, and re-registering under the same id
@@ -671,6 +718,12 @@ func (o *ServiceOps) Remove(id, via, credID string) error {
 }
 
 func (o *ServiceOps) SetAutostart(id string, on bool) error {
+	return o.runQueued(context.Background(), func() error {
+		return o.setAutostart(id, on)
+	})
+}
+
+func (o *ServiceOps) setAutostart(id string, on bool) error {
 	if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
 		if _, idx := config.FindServiceByID(s, id); idx < 0 {
 			return fmt.Errorf("%w: %s", errServiceNotFound, id)
@@ -688,6 +741,12 @@ func (o *ServiceOps) SetAutostart(id string, on bool) error {
 }
 
 func (o *ServiceOps) Start(id string) error {
+	return o.runQueued(context.Background(), func() error {
+		return o.start(id)
+	})
+}
+
+func (o *ServiceOps) start(id string) error {
 	if id == config.RelaySessionsServiceID {
 		// The stored record for this id is deliberately bare (no Command --
 		// see EnsureBuiltinRelaySessionsRecord), so a bare pass-through to
@@ -718,6 +777,12 @@ func (o *ServiceOps) Start(id string) error {
 // a live process no door can stop — a service unregistered by the CLI while
 // still running is exactly that state.
 func (o *ServiceOps) Stop(id string) error {
+	return o.runQueued(context.Background(), func() error {
+		return o.stop(id)
+	})
+}
+
+func (o *ServiceOps) stop(id string) error {
 	_, idx := config.FindServiceByID(o.Store.Get(), id)
 	if idx < 0 && !o.Registry.IsRunning(id) {
 		return fmt.Errorf("%w: %s", errServiceNotFound, id)
@@ -725,4 +790,18 @@ func (o *ServiceOps) Stop(id string) error {
 	o.Registry.Stop(id)
 	o.notify()
 	return nil
+}
+
+func (o *ServiceOps) Restart(id string) error {
+	return o.runQueued(context.Background(), func() error {
+		svc, _ := config.FindServiceByID(o.Store.Get(), id)
+		if svc == nil {
+			return fmt.Errorf("%w: %s", errServiceNotFound, id)
+		}
+		if err := o.Registry.Reload(id, svc); err != nil {
+			return fmt.Errorf("restart service: %w", err)
+		}
+		o.notify()
+		return nil
+	})
 }

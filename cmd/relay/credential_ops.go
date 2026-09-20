@@ -19,6 +19,7 @@ import (
 // every other door and minting one is host-only by design.
 type CredentialOps struct {
 	Store config.SettingsStore
+	Queue *config.CommandQueue
 	// Gate is the presence check Mint and Revoke demand before they touch
 	// the store (ADR-017 decisions 3 and 4): minting a credential issues
 	// authority, and revoking one is the one act that must never be
@@ -29,6 +30,13 @@ type CredentialOps struct {
 	// is also the hard dependency §7.4 checks before Gate: without a sink,
 	// there is nowhere the ADR's detection argument's record could land.
 	Issuance IssuanceAuditor
+}
+
+func (o *CredentialOps) runQueued(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
 // presenceDigest binds a credential.mint grant to exactly the name, class
@@ -77,25 +85,31 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 		return config.APICredential{}, "", err
 	}
 
-	cred, plaintext, err := mintAPICredential(o.Store, credentialMintRequest{Name: name, Classes: req.Classes, TTL: req.TTL})
-	if err != nil {
-		return config.APICredential{}, "", err
-	}
-	if auditErr := recordIssuance(o.Issuance, audit.CredentialIssuance{
-		Credential: auditCredentialAPI,
-		Subject:    cred.ID,
-		Name:       cred.Name,
-		Grants:     audit.ClassStrings(cred.Classes),
-		Via:        via,
-		CredID:     credID,
-		PresenceID: grant.ID(),
-	}); auditErr != nil {
-		// The mint already committed. The caller must treat a non-nil error
-		// here as "do not show the plaintext" regardless of what else it
-		// received.
-		return cred, plaintext, auditErr
-	}
-	return cred, plaintext, nil
+	var cred config.APICredential
+	var plaintext string
+	err = o.runQueued(ctx, func() error {
+		var mintErr error
+		cred, plaintext, mintErr = mintAPICredential(o.Store, credentialMintRequest{Name: name, Classes: req.Classes, TTL: req.TTL})
+		if mintErr != nil {
+			return mintErr
+		}
+		if auditErr := recordIssuance(o.Issuance, audit.CredentialIssuance{
+			Credential: auditCredentialAPI,
+			Subject:    cred.ID,
+			Name:       cred.Name,
+			Grants:     audit.ClassStrings(cred.Classes),
+			Via:        via,
+			CredID:     credID,
+			PresenceID: grant.ID(),
+		}); auditErr != nil {
+			// The mint already committed. The caller must treat a non-nil error
+			// here as "do not show the plaintext" regardless of what else it
+			// received.
+			return auditErr
+		}
+		return nil
+	})
+	return cred, plaintext, err
 }
 
 // Revoke narrows, so an audit failure is reported rather than undone: a
@@ -116,21 +130,23 @@ func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (con
 		return config.APICredential{}, err
 	}
 
-	removed, err := revokeAPICredential(o.Store, id)
-	if err != nil {
-		return config.APICredential{}, err
-	}
-	if auditErr := recordIssuance(o.Issuance, audit.CredentialIssuance{
-		Revoked:    true,
-		Credential: auditCredentialAPI,
-		Subject:    removed.ID,
-		Name:       removed.Name,
-		Grants:     audit.ClassStrings(removed.Classes),
-		Via:        via,
-		CredID:     credID,
-		PresenceID: grant.ID(),
-	}); auditErr != nil {
-		return removed, auditErr
-	}
-	return removed, nil
+	var removed config.APICredential
+	err = o.runQueued(ctx, func() error {
+		var revokeErr error
+		removed, revokeErr = revokeAPICredential(o.Store, id)
+		if revokeErr != nil {
+			return revokeErr
+		}
+		return recordIssuance(o.Issuance, audit.CredentialIssuance{
+			Revoked:    true,
+			Credential: auditCredentialAPI,
+			Subject:    removed.ID,
+			Name:       removed.Name,
+			Grants:     audit.ClassStrings(removed.Classes),
+			Via:        via,
+			CredID:     credID,
+			PresenceID: grant.ID(),
+		})
+	})
+	return removed, err
 }

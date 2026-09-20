@@ -534,14 +534,7 @@ func adminServiceRegister(ctx context.Context, r *appRouter, args json.RawMessag
 	if err != nil {
 		return nil, err
 	}
-	id := req.resolvedID()
-	var cfg config.ServiceConfig
-	var opErr error
-	if _, getErr := ops.Get(id); getErr == nil {
-		cfg, opErr = ops.Update(ctx, id, req, auditViaCLI, "")
-	} else {
-		cfg, opErr = ops.Create(ctx, req, auditViaCLI, "")
-	}
+	cfg, opErr := ops.Register(ctx, req, auditViaCLI, "")
 	if opErr != nil && !errors.Is(opErr, errServiceProcess) {
 		return nil, opErr
 	}
@@ -584,7 +577,10 @@ func adminServiceRestart(_ context.Context, r *appRouter, args json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
-	if err := r.ReloadService(req.ID); err != nil {
+	if r.serviceOps == nil {
+		return nil, errors.New("service operations are not available in this relay process")
+	}
+	if err := r.serviceOps.Restart(req.ID); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {

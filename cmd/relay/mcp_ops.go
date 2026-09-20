@@ -103,6 +103,7 @@ func mcpRegisterReason(id string, f mcpFields) string {
 type McpOps struct {
 	Store config.SettingsStore
 	Ctx   context.Context
+	Queue *config.CommandQueue
 	// Gate is the presence check Add and StartOAuth demand before they
 	// touch the store (ADR-017 decisions 3 and 4): the caller chooses what
 	// relay runs or connects to, and that is exactly the act ADR-015
@@ -132,6 +133,13 @@ type McpOps struct {
 	// that was happening is not resurrected by the persist — is otherwise
 	// unreachable without standing up an OAuth server to make it happen in.
 	StartFlow func(mcpURL string, openURL func(string)) (*mcpbroker.OAuthResult, error)
+}
+
+func (o *McpOps) runQueued(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
 func (o *McpOps) startFlow(mcpURL string, openURL func(string)) (*mcpbroker.OAuthResult, error) {
@@ -239,26 +247,27 @@ func (o *McpOps) addHTTP(displayName, id, mcpURL string, tccServices []string, v
 
 func (o *McpOps) persist(cfg config.ExternalMcp, via, credID, presenceID string) error {
 	var secret string
-	if err := o.Store.With(func(s *config.Settings) {
-		s.UpsertExternalMcp(cfg)
-		secret, _ = s.AdminSecret.Reveal()
+	if err := o.runQueued(context.Background(), func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			s.UpsertExternalMcp(cfg)
+			secret, _ = s.AdminSecret.Reveal()
+		}); err != nil {
+			return fmt.Errorf("save mcp: %w", err)
+		}
+		if err := recordConfigChange(o.Issuance, auditCredentialExternalMcp, cfg.ID, nil, via, credID, presenceID); err != nil {
+			// Reported rather than undone: the config landed and is visible on
+			// every operator surface already, unlike an enrolment whose only
+			// artifact is the record itself -- there is nothing here to roll
+			// back that recordEnrolmentIssued's undo pattern would improve on.
+			slog.Error("mcp registered but not recorded in the audit log", "id", cfg.ID, "error", err)
+		}
+		o.notify()
+		return nil
 	}); err != nil {
-		return fmt.Errorf("save mcp: %w", err)
+		return err
 	}
-	if err := recordConfigChange(o.Issuance, auditCredentialExternalMcp, cfg.ID, nil, via, credID, presenceID); err != nil {
-		// Reported rather than undone: the config landed and is visible on
-		// every operator surface already, unlike an enrolment whose only
-		// artifact is the record itself -- there is nothing here to roll
-		// back that recordEnrolmentIssued's undo pattern would improve on.
-		slog.Error("mcp registered but not recorded in the audit log", "id", cfg.ID, "error", err)
-	}
-	o.notify()
 	if o.NotifyReconcile != nil {
 		if err := o.NotifyReconcile(secret); err != nil {
-			// Best-effort: the record already landed in settings, so the
-			// connection converges on the next reconcile even if this one
-			// failed to reach the tray. Same tolerance mcp_cmd.go's
-			// warnNotifyFailure and IPCContext.withSettingsNotify give it.
 			slog.Warn("mcp reconcile notify failed", "id", cfg.ID, "error", err)
 		}
 	}
@@ -276,12 +285,21 @@ func (o *McpOps) Remove(id, via, credID string) error {
 	}
 
 	var secret string
-	if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
-		if _, idx := config.FindExternalMcpByID(s, id); idx < 0 {
-			return fmt.Errorf("%w: %s", errMcpNotFound, id)
+	if err := o.runQueued(context.Background(), func() error {
+		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if _, idx := config.FindExternalMcpByID(s, id); idx < 0 {
+				return fmt.Errorf("%w: %s", errMcpNotFound, id)
+			}
+			s.RemoveExternalMcp(id)
+			secret, _ = s.AdminSecret.Reveal()
+			return nil
+		}); err != nil {
+			return err
 		}
-		s.RemoveExternalMcp(id)
-		secret, _ = s.AdminSecret.Reveal()
+		if err := recordConfigChange(o.Issuance, auditCredentialExternalMcp, id, nil, via, credID, ""); err != nil {
+			slog.Error("mcp unregistered but not recorded in the audit log", "id", id, "error", err)
+		}
+		o.notify()
 		return nil
 	}); err != nil {
 		if errors.Is(err, errMcpNotFound) {
@@ -289,10 +307,6 @@ func (o *McpOps) Remove(id, via, credID string) error {
 		}
 		return fmt.Errorf("save mcp: %w", err)
 	}
-	if err := recordConfigChange(o.Issuance, auditCredentialExternalMcp, id, nil, via, credID, ""); err != nil {
-		slog.Error("mcp unregistered but not recorded in the audit log", "id", id, "error", err)
-	}
-	o.notify()
 	if o.NotifyReconcile != nil {
 		if err := o.NotifyReconcile(secret); err != nil {
 			slog.Warn("mcp reconcile notify failed", "id", id, "error", err)
@@ -341,12 +355,21 @@ func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string)
 	// silently match nothing and this method report a persisted OAuth state
 	// that never landed — and, worse, rewrite settings.json to say so.
 	var secret string
-	if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
-		if _, idx := config.FindExternalMcpByID(s, id); idx < 0 {
-			return fmt.Errorf("%w: %s", errMcpNotFound, id)
+	if err := o.runQueued(context.Background(), func() error {
+		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if _, idx := config.FindExternalMcpByID(s, id); idx < 0 {
+				return fmt.Errorf("%w: %s", errMcpNotFound, id)
+			}
+			s.UpdateOAuthState(id, oauth.ToOAuthState())
+			secret, _ = s.AdminSecret.Reveal()
+			return nil
+		}); err != nil {
+			return err
 		}
-		s.UpdateOAuthState(id, oauth.ToOAuthState())
-		secret, _ = s.AdminSecret.Reveal()
+		if err := recordConfigChange(o.Issuance, auditCredentialExternalMcp, id, nil, via, credID, grant.ID()); err != nil {
+			slog.Error("mcp OAuth started but not recorded in the audit log", "id", id, "error", err)
+		}
+		o.notify()
 		return nil
 	}); err != nil {
 		if errors.Is(err, errMcpNotFound) {
@@ -354,10 +377,6 @@ func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string)
 		}
 		return nil, fmt.Errorf("save mcp: %w", err)
 	}
-	if err := recordConfigChange(o.Issuance, auditCredentialExternalMcp, id, nil, via, credID, grant.ID()); err != nil {
-		slog.Error("mcp OAuth started but not recorded in the audit log", "id", id, "error", err)
-	}
-	o.notify()
 	if o.NotifyReloadMcp != nil {
 		// Best-effort, same as persist's reconcile notify: the token is
 		// already on disk, and a failed reload here just means the live

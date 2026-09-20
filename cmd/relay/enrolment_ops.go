@@ -181,6 +181,7 @@ type remoteConfigFields struct {
 // beyond decoding a request and spelling the result.
 type EnrolmentOps struct {
 	Store config.SettingsStore
+	Queue *config.CommandQueue
 	// Audit answers whether the tool-call audit log is on. Remote access is
 	// gated on it (ADR-010 decision 5), so the remote-config view reports it
 	// alongside the block's own state, the same pair pushFullSettings has
@@ -204,6 +205,13 @@ type EnrolmentOps struct {
 	// unset (errEnrolmentRequestsNotWired).
 	Requests EnrolmentRequestApprovalSink
 	OnChange func()
+}
+
+func (o *EnrolmentOps) runQueued(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
 func (o *EnrolmentOps) notify() {
@@ -249,23 +257,30 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 		return EnrolmentCreated{}, err
 	}
 
-	bundle, err := enrolment.Create(o.Store, enrolment.Request{
-		ClientID:   clientID,
-		ProjectIDs: f.ProjectIDs,
-		Budget:     f.Budget,
-	})
-	if err != nil && !errors.Is(err, enrolment.ErrBundle) {
-		return EnrolmentCreated{}, err
-	}
-	bundleErr := err
-	created := EnrolmentCreated{Enrolment: bundle.Enrolment, Dir: bundle.Dir}
+	var created EnrolmentCreated
+	var bundleErr error
+	if err := o.runQueued(ctx, func() error {
+		bundle, err := enrolment.Create(o.Store, enrolment.Request{
+			ClientID:   clientID,
+			ProjectIDs: f.ProjectIDs,
+			Budget:     f.Budget,
+		})
+		if err != nil && !errors.Is(err, enrolment.ErrBundle) {
+			return err
+		}
+		bundleErr = err
+		created = EnrolmentCreated{Enrolment: bundle.Enrolment, Dir: bundle.Dir}
 
-	// Recorded before the bundle directory is announced, and the enrolment
-	// is revoked if the record cannot be written (recordEnrolmentIssued's
-	// own undo): the client key on disk is the credential, so an unrecorded
-	// create must not stand.
-	if auditErr := recordEnrolmentIssued(o.auditor(), o.Store, bundle.Enrolment, via, credID, grant.ID()); auditErr != nil {
-		return EnrolmentCreated{}, fmt.Errorf("%w: %w", errEnrolmentUnrecorded, auditErr)
+		// Recorded before the bundle directory is announced, and the enrolment
+		// is revoked if the record cannot be written (recordEnrolmentIssued's
+		// own undo): the client key on disk is the credential, so an unrecorded
+		// create must not stand.
+		if auditErr := recordEnrolmentIssued(o.auditor(), o.Store, bundle.Enrolment, via, credID, grant.ID()); auditErr != nil {
+			return fmt.Errorf("%w: %w", errEnrolmentUnrecorded, auditErr)
+		}
+		return nil
+	}); err != nil {
+		return EnrolmentCreated{}, err
 	}
 	o.notify()
 	if bundleErr != nil {
@@ -300,7 +315,13 @@ func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, cre
 		return EnrolmentCreated{}, err
 	}
 
-	return o.completeSigning(enrolment.Request{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
+	var created EnrolmentCreated
+	err = o.runQueued(ctx, func() error {
+		var err error
+		created, err = o.completeSigning(enrolment.Request{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
+		return err
+	})
+	return created, err
 }
 
 // completeSigning is the ordering §11.2 pins as normative — enrolment.Sign,
@@ -459,34 +480,42 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 		return EnrolmentCreated{}, err
 	}
 
-	created, err := o.completeSigning(enrolment.Request{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
-	if err != nil && !errors.Is(err, enrolment.ErrBundle) {
+	var created EnrolmentCreated
+	var signingErr error
+	err = o.runQueued(ctx, func() error {
+		created, signingErr = o.completeSigning(enrolment.Request{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
+		if signingErr != nil && !errors.Is(signingErr, enrolment.ErrBundle) {
+			return signingErr
+		}
+		// Reachable only once completeSigning's own fail-closed undo has
+		// already succeeded (err here is nil or enrolment.ErrBundle — never
+		// errEnrolmentUnrecorded, which returned above): the poll response must
+		// never carry an approval the audit log could not record (AC-24). The
+		// bundle write may still have failed (§11.7) — the certificate is
+		// delivered from memory regardless.
+		//
+		// MarkApproved's outcome answers a question completeSigning cannot: is
+		// the row STILL THERE, and if not, why. The gate above can hold the
+		// operator's presence prompt open for as long as it takes a human to
+		// answer it, and in that window either the row's own independent
+		// 15-minute TTL can pass, or the operator can refuse this exact request
+		// from the pending list — two different races with two different facts
+		// to report. Either way the enrolment above has ALREADY committed (this
+		// line runs after it, never before), so the right answer is never to
+		// undo it; it is to say which of the two happened, the same way an
+		// on-disk bundle failure already does with enrolment.ErrBundle.
+		switch o.Requests.MarkApproved(requestID, clientID, o.approvedProjects(f.ProjectIDs), o.relayAddr(), created.CertPEM, created.CAPEM) {
+		case markApprovedRowGone:
+			signingErr = errors.Join(signingErr, errEnrolmentRequestExpired)
+		case markApprovedRowRefused:
+			signingErr = errors.Join(signingErr, errEnrolmentRequestRefused)
+		}
+		return nil
+	})
+	if err != nil {
 		return EnrolmentCreated{}, err
 	}
-	// Reachable only once completeSigning's own fail-closed undo has
-	// already succeeded (err here is nil or enrolment.ErrBundle — never
-	// errEnrolmentUnrecorded, which returned above): the poll response must
-	// never carry an approval the audit log could not record (AC-24). The
-	// bundle write may still have failed (§11.7) — the certificate is
-	// delivered from memory regardless.
-	//
-	// MarkApproved's outcome answers a question completeSigning cannot: is
-	// the row STILL THERE, and if not, why. The gate above can hold the
-	// operator's presence prompt open for as long as it takes a human to
-	// answer it, and in that window either the row's own independent
-	// 15-minute TTL can pass, or the operator can refuse this exact request
-	// from the pending list — two different races with two different facts
-	// to report. Either way the enrolment above has ALREADY committed (this
-	// line runs after it, never before), so the right answer is never to
-	// undo it; it is to say which of the two happened, the same way an
-	// on-disk bundle failure already does with enrolment.ErrBundle.
-	switch o.Requests.MarkApproved(requestID, clientID, o.approvedProjects(f.ProjectIDs), o.relayAddr(), created.CertPEM, created.CAPEM) {
-	case markApprovedRowGone:
-		err = errors.Join(err, errEnrolmentRequestExpired)
-	case markApprovedRowRefused:
-		err = errors.Join(err, errEnrolmentRequestRefused)
-	}
-	return created, err
+	return created, signingErr
 }
 
 // approvedProjects pairs each granted id with the display name the operator
@@ -577,10 +606,12 @@ func (o *EnrolmentOps) Refuse(requestID string) error {
 	if requestID == "" {
 		return enrolment.Invalid("request id is required")
 	}
-	if !o.Requests.Refuse(o.Audit, requestID) {
-		return fmt.Errorf("%w: %s", errEnrolmentRequestNotFound, requestID)
-	}
-	return nil
+	return o.runQueued(context.Background(), func() error {
+		if !o.Requests.Refuse(o.Audit, requestID) {
+			return fmt.Errorf("%w: %s", errEnrolmentRequestNotFound, requestID)
+		}
+		return nil
+	})
 }
 
 // lodgeGenerationReader is enrolmentRequestTable's monotonic insert counter,
@@ -649,32 +680,38 @@ func (o *EnrolmentOps) Update(ctx context.Context, req enrolment.UpdateRequest, 
 		return config.Enrolment{}, config.Enrolment{}, err
 	}
 
-	before, after, err = enrolment.Update(o.Store, req)
+	err = o.runQueued(ctx, func() error {
+		before, after, err = enrolment.Update(o.Store, req)
+		if err != nil {
+			return err
+		}
+		// Reported and not undone, matching the passkey-revoke and login-signout
+		// balance: unlike create, there is no side artifact (a private key
+		// already on disk) that an unrecorded update would leave dangling.
+		if auditErr := recordIssuance(o.auditor(), audit.CredentialIssuance{
+			Credential: auditCredentialEnrolment,
+			Subject:    after.ClientID,
+			Grants:     after.ProjectIDs,
+			Via:        via,
+			CredID:     credID,
+			PresenceID: grant.ID(),
+		}); auditErr != nil {
+			slog.Error("enrolment updated but not recorded in the audit log", "client_id", after.ClientID, "error", auditErr)
+		}
+		if req.CLIAdmin != nil {
+			cliAdminGrant := "cli_admin=off"
+			if after.CLIAdmin {
+				cliAdminGrant = "cli_admin=on"
+			}
+			if auditErr := recordConfigChange(o.auditor(), auditCredentialEnrolment, after.ClientID,
+				[]string{cliAdminGrant}, via, credID, grant.ID()); auditErr != nil {
+				slog.Error("enrolment cli-admin toggled but not recorded in the audit log", "client_id", after.ClientID, "error", auditErr)
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return before, after, err
-	}
-	// Reported and not undone, matching the passkey-revoke and login-signout
-	// balance: unlike create, there is no side artifact (a private key
-	// already on disk) that an unrecorded update would leave dangling.
-	if auditErr := recordIssuance(o.auditor(), audit.CredentialIssuance{
-		Credential: auditCredentialEnrolment,
-		Subject:    after.ClientID,
-		Grants:     after.ProjectIDs,
-		Via:        via,
-		CredID:     credID,
-		PresenceID: grant.ID(),
-	}); auditErr != nil {
-		slog.Error("enrolment updated but not recorded in the audit log", "client_id", after.ClientID, "error", auditErr)
-	}
-	if req.CLIAdmin != nil {
-		cliAdminGrant := "cli_admin=off"
-		if after.CLIAdmin {
-			cliAdminGrant = "cli_admin=on"
-		}
-		if auditErr := recordConfigChange(o.auditor(), auditCredentialEnrolment, after.ClientID,
-			[]string{cliAdminGrant}, via, credID, grant.ID()); auditErr != nil {
-			slog.Error("enrolment cli-admin toggled but not recorded in the audit log", "client_id", after.ClientID, "error", auditErr)
-		}
 	}
 	o.notify()
 	return before, after, nil
@@ -704,23 +741,31 @@ func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string)
 	// the revoked certificate. A compromised agent sitting in a persistent
 	// scanner loop never reconnects on its own, so deleting only the
 	// settings record would leave it working indefinitely.
-	revoked, err := enrolment.Revoke(o.Store, clientID)
+	var revoked config.Enrolment
+	err = o.runQueued(ctx, func() error {
+		var err error
+		revoked, err = enrolment.Revoke(o.Store, clientID)
+		if err != nil {
+			return err
+		}
+		// Reported and not undone: a revocation narrows, and refusing to narrow
+		// one because the log is broken would make a failing disk the reason a
+		// compromised client stays enrolled.
+		if auditErr := recordIssuance(o.auditor(), audit.CredentialIssuance{
+			Revoked:    true,
+			Credential: auditCredentialEnrolment,
+			Subject:    revoked.ClientID,
+			Grants:     revoked.ProjectIDs,
+			Via:        via,
+			CredID:     credID,
+			PresenceID: grant.ID(),
+		}); auditErr != nil {
+			slog.Error("enrolment revoked but not recorded in the audit log", "client_id", revoked.ClientID, "error", auditErr)
+		}
+		return nil
+	})
 	if err != nil {
 		return config.Enrolment{}, err
-	}
-	// Reported and not undone: a revocation narrows, and refusing to narrow
-	// one because the log is broken would make a failing disk the reason a
-	// compromised client stays enrolled.
-	if auditErr := recordIssuance(o.auditor(), audit.CredentialIssuance{
-		Revoked:    true,
-		Credential: auditCredentialEnrolment,
-		Subject:    revoked.ClientID,
-		Grants:     revoked.ProjectIDs,
-		Via:        via,
-		CredID:     credID,
-		PresenceID: grant.ID(),
-	}); auditErr != nil {
-		slog.Error("enrolment revoked but not recorded in the audit log", "client_id", revoked.ClientID, "error", auditErr)
 	}
 	o.notify()
 	return revoked, nil
@@ -933,50 +978,58 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 		presenceID = grant.ID()
 	}
 
-	if err := o.Store.With(func(s *config.Settings) {
-		if f.Remove {
-			s.Remote = nil
-			return
+	var view remoteConfigView
+	err := o.runQueued(ctx, func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			if f.Remove {
+				s.Remote = nil
+				return
+			}
+			if s.Remote == nil {
+				s.Remote = &config.RemoteConfig{}
+			}
+			// Empty stays empty rather than being filled with the default: the
+			// listener applies resolve()'s loopback default itself, and writing
+			// it out here would freeze today's default into every settings.json.
+			s.Remote.Listen = listen
+			if f.Enabled {
+				enabled := true
+				s.Remote.Enabled = &enabled
+			} else {
+				// Off collapses to an absent key rather than an explicit false:
+				// a block created by setting only an address must never read as
+				// `enabled: true` — opening a network listener is a thing the
+				// operator says, not a thing relay infers.
+				s.Remote.Enabled = nil
+			}
+			s.Remote.EnrolmentListen = enrolListen
+			if f.EnrolmentRequests {
+				enrolEnabled := true
+				s.Remote.EnrolmentRequests = &enrolEnabled
+			} else {
+				// Same discipline as Enabled, and for the same reason: opening
+				// the enrolment-request door is a thing the operator says, and
+				// enrolment_requests:true-with-enabled:false is refused where
+				// it has always been refused — at resolve time
+				// (resolveRemoteEnrolment) — not duplicated here.
+				s.Remote.EnrolmentRequests = nil
+			}
+		}); err != nil {
+			return fmt.Errorf("save remote config: %w", err)
 		}
-		if s.Remote == nil {
-			s.Remote = &config.RemoteConfig{}
-		}
-		// Empty stays empty rather than being filled with the default: the
-		// listener applies resolve()'s loopback default itself, and writing
-		// it out here would freeze today's default into every settings.json.
-		s.Remote.Listen = listen
-		if f.Enabled {
-			enabled := true
-			s.Remote.Enabled = &enabled
-		} else {
-			// Off collapses to an absent key rather than an explicit false:
-			// a block created by setting only an address must never read as
-			// `enabled: true` — opening a network listener is a thing the
-			// operator says, not a thing relay infers.
-			s.Remote.Enabled = nil
-		}
-		s.Remote.EnrolmentListen = enrolListen
-		if f.EnrolmentRequests {
-			enrolEnabled := true
-			s.Remote.EnrolmentRequests = &enrolEnabled
-		} else {
-			// Same discipline as Enabled, and for the same reason: opening
-			// the enrolment-request door is a thing the operator says, and
-			// enrolment_requests:true-with-enabled:false is refused where
-			// it has always been refused — at resolve time
-			// (resolveRemoteEnrolment) — not duplicated here.
-			s.Remote.EnrolmentRequests = nil
-		}
-	}); err != nil {
-		return remoteConfigView{}, fmt.Errorf("save remote config: %w", err)
-	}
 
-	if auditErr := recordConfigChange(o.auditor(), auditCredentialRemote, "remote", changed, via, credID, presenceID); auditErr != nil {
-		slog.Error("remote config updated but not recorded in the audit log", "error", auditErr)
+		if auditErr := recordConfigChange(o.auditor(), auditCredentialRemote, "remote", changed, via, credID, presenceID); auditErr != nil {
+			slog.Error("remote config updated but not recorded in the audit log", "error", auditErr)
+		}
+		view = remoteConfigViewOf(o.Store.Get(), o.auditEnabled())
+		return nil
+	})
+	if err != nil {
+		return remoteConfigView{}, err
 	}
 
 	o.notify()
-	return remoteConfigViewOf(o.Store.Get(), o.auditEnabled()), nil
+	return view, nil
 }
 
 // validateRemoteListen refuses an address the listener could only fail to

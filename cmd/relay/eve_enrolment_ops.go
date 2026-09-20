@@ -78,6 +78,7 @@ type eveEnrolmentConsumedView struct {
 // twice.
 type EveEnrolmentOps struct {
 	Store config.SettingsStore
+	Queue *config.CommandQueue
 	// Audit records Open's issuance and Consume's own record. Nil-safe like
 	// every audit.AuditRecorder method, matching LoginOps.Audit.
 	Audit *audit.AuditRecorder
@@ -89,6 +90,13 @@ type EveEnrolmentOps struct {
 	// (docs/eve-passkey-enrolment.md: "Relay notifies the console..."). Nil
 	// is safe and raises nothing.
 	Notify func(title, body string)
+}
+
+func (o *EveEnrolmentOps) runQueued(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
 func (o *EveEnrolmentOps) auditor() IssuanceAuditor {
@@ -137,13 +145,18 @@ func (o *EveEnrolmentOps) Open(ctx context.Context, via string) (eveEnrolmentSta
 		return eveEnrolmentStatusView{}, err
 	}
 	var expires string
-	if err := o.Store.With(func(s *config.Settings) {
-		expires = mintEveEnrolment(s)
+	if err := o.runQueued(ctx, func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			expires = mintEveEnrolment(s)
+		}); err != nil {
+			return fmt.Errorf("save settings: %w", err)
+		}
+		if err := recordEveEnrolmentIssued(o.auditor(), expires, via, grant.ID()); err != nil {
+			return fmt.Errorf("an eve passkey enrolment window was opened but could not be recorded in the audit log, so it was not shown: %w", err)
+		}
+		return nil
 	}); err != nil {
-		return eveEnrolmentStatusView{}, fmt.Errorf("save settings: %w", err)
-	}
-	if err := recordEveEnrolmentIssued(o.auditor(), expires, via, grant.ID()); err != nil {
-		return eveEnrolmentStatusView{}, fmt.Errorf("an eve passkey enrolment window was opened but could not be recorded in the audit log, so it was not shown: %w", err)
+		return eveEnrolmentStatusView{}, err
 	}
 	o.notify()
 	o.notifyConsole("Relay", "Eve passkey enrolment open for 5 minutes")
@@ -182,20 +195,25 @@ func (o *EveEnrolmentOps) Consume(ctx context.Context, claim eveEnrolmentClaim) 
 	}
 	var expires string
 	var open bool
-	if err := o.Store.With(func(s *config.Settings) {
-		open = eveEnrolmentOpen(s.EveEnrolment, time.Now())
-		if open {
-			expires = s.EveEnrolment.Expires
-			s.EveEnrolment = nil
+	if err := o.runQueued(ctx, func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			open = eveEnrolmentOpen(s.EveEnrolment, time.Now())
+			if open {
+				expires = s.EveEnrolment.Expires
+				s.EveEnrolment = nil
+			}
+		}); err != nil {
+			return fmt.Errorf("save settings: %w", err)
 		}
+		if !open {
+			return errEveEnrolmentClosed
+		}
+		if err := recordEveEnrolmentConsumed(o.auditor(), claim, auditViaHTTP); err != nil {
+			slog.Error("eve passkey enrolment consumed but not recorded in the audit log", "ip", claim.IP, "error", err)
+		}
+		return nil
 	}); err != nil {
-		return eveEnrolmentConsumedView{}, fmt.Errorf("save settings: %w", err)
-	}
-	if !open {
-		return eveEnrolmentConsumedView{}, errEveEnrolmentClosed
-	}
-	if err := recordEveEnrolmentConsumed(o.auditor(), claim, auditViaHTTP); err != nil {
-		slog.Error("eve passkey enrolment consumed but not recorded in the audit log", "ip", claim.IP, "error", err)
+		return eveEnrolmentConsumedView{}, err
 	}
 	o.notify()
 	o.notifyConsole("Relay", fmt.Sprintf("Eve: a new browser registered a passkey (from %s)", claim.IP))
