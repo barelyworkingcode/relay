@@ -62,8 +62,14 @@ unbounded subprocess wait must not hold the lane.
 - Credential mint and revoke now use the same queue, including their required
   issuance record, so the caller does not return before the mutation and its
   audit side effect complete.
-- MCP add/remove and OAuth-state mutations now use the same queue. Discovery,
+- MCP add/remove and the OAuth-start state write use the same queue. Discovery,
   browser flows, and bridge notifications remain outside the queue.
+- The broker's OAuth token-refresh persistence also goes through
+  `McpOps.PersistOAuthState` on the queue. The refresh callback runs on a
+  request goroutine, never inside a queued step: no queued step calls into the
+  MCP manager's network paths, so the callback cannot wait on the lane it is
+  already holding. A refresh for an MCP removed in the meantime is dropped
+  instead of written.
 - Project create/update/remove/token-rotation mutations now use the same queue;
   project skill cleanup and session cleanup remain after the committed delete.
 - Login bootstrap mint, passkey revoke, and browser-session sign-out now use the

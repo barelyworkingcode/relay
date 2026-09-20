@@ -142,6 +142,26 @@ func (o *McpOps) runQueued(ctx context.Context, fn func() error) error {
 	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
+// PersistOAuthState stores a token the broker refreshed on its own. It runs as
+// one short queued step with no prompt, network or notification, so it is safe
+// on the refresh path; that path must never be entered from a queued step, or
+// the single lane would wait on itself. An MCP removed since the refresh began
+// is dropped rather than resurrected by a write.
+func (o *McpOps) PersistOAuthState(mcpID string, oauth *config.OAuthState) error {
+	if o == nil {
+		return errors.New("mcp operations are unavailable in this relay process")
+	}
+	return o.runQueued(context.Background(), func() error {
+		return config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if _, idx := config.FindExternalMcpByID(s, mcpID); idx < 0 {
+				return fmt.Errorf("%w: %s", errMcpNotFound, mcpID)
+			}
+			s.UpdateOAuthState(mcpID, oauth)
+			return nil
+		})
+	})
+}
+
 func (o *McpOps) startFlow(mcpURL string, openURL func(string)) (*mcpbroker.OAuthResult, error) {
 	if o.StartFlow != nil {
 		return o.StartFlow(mcpURL, openURL)

@@ -320,9 +320,16 @@ func runTrayApp() {
 	}
 
 	// External MCP manager with injected callback for OAuth token refresh persistence.
+	// mcpOps is bound below, before extMgr.StartAll can connect anything and so
+	// before any refresh can fire.
+	var mcpOps *McpOps
 	extMgr := mcpbroker.NewManager(
 		func(mcpID string, oauth *config.OAuthState) {
-			if err := store.With(func(s *config.Settings) { s.UpdateOAuthState(mcpID, oauth) }); err != nil {
+			if err := mcpOps.PersistOAuthState(mcpID, oauth); err != nil {
+				if errors.Is(err, errMcpNotFound) {
+					slog.Warn("refreshed OAuth token dropped: the MCP was removed", "mcp", mcpID)
+					return
+				}
 				slog.Error("failed to persist refreshed OAuth token", "mcp", mcpID, "error", err)
 			}
 		},
@@ -549,7 +556,7 @@ func runTrayApp() {
 	// the same SSRF guard, discovery, and reconcile. Only add/remove get an
 	// HTTP door; authenticate and reset-permissions stay IPC-only (McpOps
 	// doc comment explains why) and keep calling this same instance.
-	mcpOps := &McpOps{
+	mcpOps = &McpOps{
 		Store:           store,
 		Ctx:             ctx,
 		Queue:           serviceQueue,

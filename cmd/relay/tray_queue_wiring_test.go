@@ -42,3 +42,16 @@ func TestTrayAppWiresLoginRoutesToTheSharedQueue(t *testing.T) {
 		t.Fatalf("the login routes no longer share the login core and its command queue:\n%s", want)
 	}
 }
+
+func TestTrayAppRoutesOAuthRefreshPersistenceThroughMcpOps(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join(relaySourceDir(t), "trayapp.go"))
+	assertNoErr(t, err, "read trayapp.go")
+	for _, want := range []string{
+		"mcpOps.PersistOAuthState(mcpID, oauth)",
+		"mcpOps = &McpOps{\n\t\tStore:           store,\n\t\tCtx:             ctx,\n\t\tQueue:           serviceQueue,",
+	} {
+		if !strings.Contains(string(source), want) {
+			t.Fatalf("the OAuth refresh callback no longer persists through the queued McpOps:\n%s", want)
+		}
+	}
+}
