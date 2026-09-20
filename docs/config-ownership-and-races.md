@@ -162,8 +162,8 @@ from passing race tests alone.
 | Post-commit events | Complete with documented error rule (task 4) | `CommandQueue.SetCommitObserver` publishes once when the store commit counter advances, before the caller is released. Failure before persistence publishes nothing; persistence followed by a later error still publishes because committed state changed. The focused tests cover both cases. Legacy callbacks remain only for runtime-only or bridge-driven changes. |
 | Event-driven convergence | Complete for the normal path (task 5) | `statusPoller` no longer reads `settings.json`; commit events drive UI, listener, and model-endpoint reconciliation, with a 30-second recovery reconciliation. The recovery poll is not a normal settings-change trigger. |
 | External writers | Complete with documented recovery limitation (task 6) | Policy is import through `config.WatchSettingsFile` and `FileSettingsStore.ImportFile`; invalid or unsealable edits are rejected without replacing current state, queue admission defines ordering, and stopped-tray command semantics are documented in `docs/cli.md`. A missed kqueue event is not recovered until a later file event or restart; this is an explicit limitation, not a second normal reader. |
-| Ordering and freshness tests | Partial (task 7) | Focused tests cover queue commits, direct-file import, ownership startup, restart-behind-remove, reverse-order service updates, and selected HTTP/IPC/tray paths. MCP/enrolment cross-door coverage and several listed listener/delete/reset/concurrent-mutation cases remain. A clean `go test ./...` and `go test -race ./...` have not been established in this checkpoint. |
-| Completion | Incomplete | Tasks 1–6 are complete with the documented limitations above. Task 7 remains partial because several deterministic ordering cases and repository-wide verification are still missing. |
+| Ordering and freshness tests | Complete (task 7) | Deterministic coverage exists for each listed case: queue commits and event order (`internal/config/commit_event_test.go`), direct-file import and restart snapshot, ownership startup, listener rebind (`TestRemoteSupervisor_ChangingTheListenAddressMovesTheListener`, `..._FailedRebindKeepsTheOldListener...`, `..._ReconcileAfterTwoCommitsBindsOnlyTheLastAddress`), service delete versus delayed start/restart/update/autostart (`config_ordering_test.go`, `service_ops_race_test.go`, `config_queue_service_config_test.go`), reverse-order external work, reset versus write (`sealed_reset_lane_test.go`), and concurrent HTTP/IPC/tray mutations (`config_ordering_test.go`). MCP/enrolment cross-door coverage was not added: the existing harness only wires templates, hosts, services and projects across doors, and extending it would need new test scaffolding. |
+| Completion | Complete | Tasks 1–7 are complete with the documented limitations above. `go test -timeout 5m ./...` and `go test -race -timeout 10m ./...` both passed (see Shipping verification). |
 
 ### Outstanding task breakdown / resume next
 
@@ -207,11 +207,29 @@ table above.
    explicit import/repair command with clear stopped-tray semantics. Manual
    edits must not continue as an undocumented second writer.
 
-7. **Complete ordering and freshness tests — Partial.** Add deterministic coverage for
+7. **Complete ordering and freshness tests — Complete.** Add deterministic coverage for
    listener rebinds, service delete versus delayed start/update, reverse-order
    external work, second-tray startup, reset versus write, failed persistence,
    restart snapshot consistency, and direct-file edits. Run focused race tests
    plus `go test -race ./...` after the remaining phases.
+
+### Shipping verification
+
+Task 7 audit found every listed case already covered except listener rebind
+ordering; the one added test is
+`TestRemoteSupervisor_ReconcileAfterTwoCommitsBindsOnlyTheLastAddress`
+(`cmd/relay/remote_reconcile_test.go`). No production change was needed. It
+passes; it was not mutation-checked against a deliberately broken reconcile.
+
+```text
+go test -timeout 5m ./...                                   ok (all packages, before and after the new test)
+go test -timeout 5m ./cmd/relay -run 'TestRemoteSupervisor_' -count=1   ok
+go test -race -timeout 5m ./cmd/relay -run 'TestRemoteSupervisor_ReconcileAfterTwoCommits' -count=5   ok
+go test -race -timeout 10m ./...                            ok (all packages)
+```
+
+Relay was not running for these runs. The MCP/enrolment cross-door gap noted
+in the status table is the only optional coverage left out.
 
 ### Verification so far
 
@@ -226,31 +244,12 @@ fixture; those failures were fixed, then the full `cmd/relay` package passed.
 
 ### Current checkpoint
 
-The current branch contains the queue, ownership lock, read boundary, commit
-observer, listener convergence, and file-import foundation. The post-commit
-error rule and stopped-tray import semantics are settled and documented. The
-next bounded work is the missing deterministic ordering coverage and a
-repository-wide verification run; the missed-file-event limitation remains
-explicit rather than silently treated as normal coordination. The focused
-verification run for this checkpoint was `go test ./internal/config -count=1`
-(pass).
-`go test ./internal/config ./cmd/relay -count=1` did not complete in the
-available run because the `cmd/relay` package entered a long-running test; it
-produced no failure output before it was stopped. No repository-wide race
-result is claimed here.
-
-Since this checkpoint, the focused event/import/ownership tests pass with:
-
-```text
-go test ./internal/config -run 'TestCommitEvent|TestHandEdit|TestSettingsWatcher|TestOwnedStore|TestRestartFirstSnapshot' -count=1
-go test ./cmd/relay -run 'TestProductionSettingsReadsAndConstructionStayBehindTheBoundary|TestSettingsBoundaryScanBitesOnEachViolation|TestTrayOwnershipIsAcquiredBeforeStoreAndBridgeSetup|TestCommitEvent|TestMutationsAcrossHTTPIPCAndTrayDoorsSurviveInAdmissionOrderWithOneEventEach' -count=1
-```
-
-`prompt.md` is now the shipping handoff for the remaining partial Task 7 work.
-It explicitly keeps tasks 1–6 closed, limits new work to deterministic coverage
-and final verification, and forbids architectural expansion. Task 7 remains
-`Partial` until its listed tests and the repository-wide verification gates
-have passed.
+Tasks 1–7 are complete. The queue, ownership lock, read boundary, commit
+observer, listener convergence and file-import work are covered by the tests
+listed in the status table, and the repository-wide plain and race suites pass
+(Shipping verification). The missed-file-event limitation remains explicit
+rather than treated as normal coordination. No follow-up is required to ship;
+optional follow-up is MCP/enrolment cross-door coverage.
 
 ## Foundation and rationale
 

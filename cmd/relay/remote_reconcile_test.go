@@ -363,6 +363,40 @@ func TestRemoteSupervisor_ChangingTheListenAddressMovesTheListener(t *testing.T)
 	}
 }
 
+// Two listen-address commits land before the reconcile their first event
+// triggered runs. Reconcile reads the live settings, not the event, so that
+// late reconcile binds the last committed address directly, never the
+// intermediate one, and the reconcile the second event triggers is a no-op.
+func TestRemoteSupervisor_ReconcileAfterTwoCommitsBindsOnlyTheLastAddress(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
+	sup := f.supervise()
+	assertNoErr(t, sup.Reconcile(), "initial reconcile")
+	first := sup.Addr()
+
+	intermediate := freeLoopbackAddr(t)
+	last := freeLoopbackAddr(t)
+	for _, listen := range []string{intermediate, last} {
+		assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+			s.Remote = &config.RemoteConfig{Enabled: ptr(true), Listen: listen}
+		}), "commit listen address %s", listen)
+	}
+
+	assertNoErr(t, sup.Reconcile(), "reconcile for the first event")
+	if got := sup.Addr(); got != last {
+		t.Fatalf("listener is bound to %q, want the last committed %q", got, last)
+	}
+	server := sup.Server()
+	assertNoErr(t, sup.Reconcile(), "reconcile for the second event")
+	if sup.Server() != server || sup.Addr() != last {
+		t.Fatal("the reconcile for the second event rebound an already converged listener")
+	}
+	assertNothingListensAt(t, first, "the address before both commits")
+	assertNothingListensAt(t, intermediate, "the intermediate address")
+	if c := f.dialAddr(last, f.bundle); c == nil {
+		t.Fatalf("the converged listener at %s refused a handshake", last)
+	}
+}
+
 // A reconcile that changes nothing must change nothing: rebinding an unchanged
 // address every poll would cut every live connection every two seconds.
 func TestRemoteSupervisor_RepeatedReconcileLeavesTheListenerAndItsConnectionsAlone(t *testing.T) {
