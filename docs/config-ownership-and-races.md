@@ -59,6 +59,9 @@ ordering is the primary mechanism.
   queue, so a queued remove cannot authorize against a stale pre-queue state.
 - Eve enrolment-window open/consume and Eve passkey report/revoke/unrevoke
   mutations now use the same queue, including persistence and audit effects.
+- Host create, update, remove, and probe reserve and commit persisted probe
+  generations on the queue; SSH discovery remains outside it, and stale probe
+  results cannot overwrite a newer connection shape or a removed host.
 
 The remaining work is to apply the same boundary to the other configuration
 domains, route normal CLI reads through the tray, and queue service-owned config

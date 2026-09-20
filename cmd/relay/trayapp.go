@@ -713,6 +713,7 @@ func runTrayApp() {
 	// chip and the project form's Where control show.
 	hostOps := &HostOps{
 		Store:    store,
+		Queue:    serviceQueue,
 		Auditor:  rec,
 		OnChange: onProjectsChanged,
 	}

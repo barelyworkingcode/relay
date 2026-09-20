@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	ErrNoToken      = errors.New("no token provided")
-	ErrInvalidToken = errors.New("invalid token")
+	ErrNoToken                     = errors.New("no token provided")
+	ErrInvalidToken                = errors.New("invalid token")
+	ErrHostProbeGenerationOverflow = errors.New("host probe generation exhausted")
 )
 
 type Settings struct {
@@ -548,6 +549,7 @@ func (s *Settings) AddHost(h Host) (Host, error) {
 	if h.CreatedAt == "" {
 		h.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
+	h.ProbeGeneration = 1
 	if err := ValidateHost(&h, s.Hosts, ""); err != nil {
 		return Host{}, err
 	}
@@ -594,6 +596,56 @@ func (s *Settings) UpdateHost(id string, patch HostPatch) (Host, bool, error) {
 	return candidate, true, nil
 }
 
+// UpdateHostAndReserveProbe applies a host patch and reserves a generation
+// when its connection fields changed. A rename leaves the generation alone.
+func (s *Settings) UpdateHostAndReserveProbe(id string, patch HostPatch) (Host, bool, bool, error) {
+	h, idx := s.findHostByID(id)
+	if h == nil {
+		return Host{}, false, false, nil
+	}
+	candidate := *h
+	if patch.Name != nil {
+		candidate.Name = *patch.Name
+	}
+	if patch.Target != nil {
+		candidate.Target = *patch.Target
+	}
+	if patch.Port != nil {
+		candidate.Port = *patch.Port
+	}
+	if patch.IdentityFile != nil {
+		candidate.IdentityFile = *patch.IdentityFile
+	}
+	if err := ValidateHost(&candidate, s.Hosts, id); err != nil {
+		return Host{}, true, false, err
+	}
+	connectionChanged := candidate.Target != h.Target || candidate.Port != h.Port || candidate.IdentityFile != h.IdentityFile
+	if connectionChanged {
+		if candidate.ProbeGeneration == ^uint64(0) {
+			return Host{}, true, false, ErrHostProbeGenerationOverflow
+		}
+		candidate.ProbeGeneration++
+	}
+	s.Hosts[idx] = candidate
+	return candidate, true, connectionChanged, nil
+}
+
+// ReserveHostProbe gives an explicit probe a new generation before network
+// work starts. A later result can persist only if this generation still owns
+// the record.
+func (s *Settings) ReserveHostProbe(id string) (Host, bool, error) {
+	h, idx := s.findHostByID(id)
+	if h == nil {
+		return Host{}, false, nil
+	}
+	if h.ProbeGeneration == ^uint64(0) {
+		return Host{}, true, ErrHostProbeGenerationOverflow
+	}
+	h.ProbeGeneration++
+	s.Hosts[idx] = *h
+	return *h, true, nil
+}
+
 // RemoveHost refuses to remove a host any project still references, naming
 // every referencing project so the operator knows what to repoint first.
 // found is false when no host has this id at all; refs is non-empty exactly
@@ -624,6 +676,17 @@ func (s *Settings) SetHostProbe(id string, probe HostProbe) bool {
 	}
 	h.Probe = &probe
 	return true
+}
+
+// SetHostProbeIfGeneration persists a probe only when the host still has the
+// connection generation it was run against.
+func (s *Settings) SetHostProbeIfGeneration(id string, generation uint64, probe HostProbe) (Host, bool) {
+	h, _ := s.findHostByID(id)
+	if h == nil || h.ProbeGeneration != generation {
+		return Host{}, false
+	}
+	h.Probe = &probe
+	return *h, true
 }
 
 func (s *Settings) findMcpByID(id string) (*ExternalMcp, int) {

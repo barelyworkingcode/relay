@@ -69,11 +69,19 @@ func (f hostPatchFields) touchesConnection(before config.Host) bool {
 // specifies for it.
 type HostOps struct {
 	Store config.SettingsStore
+	Queue *config.CommandQueue
 	// Auditor records a host.probe event per probe; nil is safe (probes
 	// still run, just unrecorded), matching AuditRecorder's nil-receiver
 	// methods elsewhere.
 	Auditor  *audit.AuditRecorder
 	OnChange func()
+}
+
+func (o *HostOps) runQueued(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
 }
 
 func (o *HostOps) notify() {
@@ -116,28 +124,28 @@ func (o *HostOps) Create(ctx context.Context, f hostFields) (config.Host, error)
 
 	var created config.Host
 	var createErr error
-	if err := o.Store.With(func(s *config.Settings) {
-		created, createErr = s.AddHost(config.Host{
-			Name: f.Name, Target: f.Target, Port: f.Port, IdentityFile: f.IdentityFile,
-		})
+	if err := o.runQueued(ctx, func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			created, createErr = s.AddHost(config.Host{Name: f.Name, Target: f.Target, Port: f.Port, IdentityFile: f.IdentityFile})
+		}); err != nil {
+			return fmt.Errorf("save host: %w", err)
+		}
+		if createErr != nil {
+			return invalidHost(createErr.Error())
+		}
+		return nil
 	}); err != nil {
-		return config.Host{}, fmt.Errorf("save host: %w", err)
-	}
-	if createErr != nil {
-		return config.Host{}, invalidHost(createErr.Error())
+		return config.Host{}, err
 	}
 
 	probe, _ := sshhost.Probe(ctx, created)
-	// Propagated rather than swallowed, the same as Probe below: a caller
-	// that gets an error here knows the auto-probe's result did not make it
-	// to disk, instead of reading a host record whose probe field silently
-	// never updated.
-	if err := o.Store.With(func(s *config.Settings) { s.SetHostProbe(created.ID, probe) }); err != nil {
-		return created, fmt.Errorf("save probe result: %w", err)
-	}
 	recordHostProbe(o.Auditor, created, probe)
-	if h, _ := config.FindHostByID(o.Store.Get(), created.ID); h != nil {
-		created = *h
+	committed, found, err := o.commitProbe(created.ID, created.ProbeGeneration, probe)
+	if err != nil {
+		return created, err
+	}
+	if found {
+		created = committed
 	}
 	o.notify()
 	return created, nil
@@ -147,36 +155,38 @@ func (o *HostOps) Create(ctx context.Context, f hostFields) (config.Host, error)
 // identity_file changed (docs/ssh-hosts.md) — a rename alone must not pay
 // for a round trip to a machine that didn't change.
 func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (config.Host, bool, error) {
-	before, err := o.Get(id)
-	if err != nil {
-		return config.Host{}, false, nil //nolint:nilerr // Get's only error is not-found; found=false is the signal here, not the error return
-	}
-
 	var updated config.Host
 	var found bool
+	var connectionChanged bool
 	var updateErr error
-	if err := o.Store.With(func(s *config.Settings) {
-		updated, found, updateErr = s.UpdateHost(id, config.HostPatch{
-			Name: f.Name, Target: f.Target, Port: f.Port, IdentityFile: f.IdentityFile,
-		})
+	if err := o.runQueued(ctx, func() error {
+		if err := o.Store.With(func(s *config.Settings) {
+			updated, found, connectionChanged, updateErr = s.UpdateHostAndReserveProbe(id, config.HostPatch{Name: f.Name, Target: f.Target, Port: f.Port, IdentityFile: f.IdentityFile})
+		}); err != nil {
+			return fmt.Errorf("save host: %w", err)
+		}
+		if updateErr != nil {
+			if errors.Is(updateErr, config.ErrHostProbeGenerationOverflow) {
+				return updateErr
+			}
+			return invalidHost(updateErr.Error())
+		}
+		return nil
 	}); err != nil {
-		return config.Host{}, false, fmt.Errorf("save host: %w", err)
-	}
-	if updateErr != nil {
-		return config.Host{}, true, invalidHost(updateErr.Error())
+		return config.Host{}, found, err
 	}
 	if !found {
 		return config.Host{}, false, nil
 	}
-
-	if f.touchesConnection(before) {
+	if connectionChanged {
 		probe, _ := sshhost.Probe(ctx, updated)
-		if err := o.Store.With(func(s *config.Settings) { s.SetHostProbe(id, probe) }); err != nil {
-			return updated, true, fmt.Errorf("save probe result: %w", err)
-		}
 		recordHostProbe(o.Auditor, updated, probe)
-		if h, _ := config.FindHostByID(o.Store.Get(), id); h != nil {
-			updated = *h
+		committed, current, err := o.commitProbe(updated.ID, updated.ProbeGeneration, probe)
+		if err != nil {
+			return updated, true, err
+		}
+		if current {
+			updated = committed
 		}
 	}
 	o.notify()
@@ -185,11 +195,15 @@ func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (con
 
 // Remove refuses (found=true, refs non-empty) while any project still
 // references the host, naming them — settings.RemoveHost's own contract.
-func (o *HostOps) Remove(id string) (found bool, refs []string, err error) {
-	if err := o.Store.With(func(s *config.Settings) {
-		found, refs = s.RemoveHost(id)
-	}); err != nil {
-		return false, nil, fmt.Errorf("save settings: %w", err)
+func (o *HostOps) Remove(ctx context.Context, id string) (found bool, refs []string, err error) {
+	err = o.runQueued(ctx, func() error {
+		if err := o.Store.With(func(s *config.Settings) { found, refs = s.RemoveHost(id) }); err != nil {
+			return fmt.Errorf("save settings: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return false, nil, err
 	}
 	if found && len(refs) == 0 {
 		o.notify()
@@ -201,18 +215,40 @@ func (o *HostOps) Remove(id string) (found bool, refs []string, err error) {
 // unconditionally — the explicit "do it now" action, unlike Update's
 // conditional re-probe.
 func (o *HostOps) Probe(ctx context.Context, id string) (config.Host, bool, error) {
-	h, err := o.Get(id)
-	if err != nil {
-		return config.Host{}, false, nil //nolint:nilerr // Get's only error is not-found; found=false is the signal here, not the error return
+	var h config.Host
+	var found bool
+	if err := o.runQueued(ctx, func() error {
+		var reserveErr error
+		if err := o.Store.With(func(s *config.Settings) { h, found, reserveErr = s.ReserveHostProbe(id) }); err != nil {
+			return fmt.Errorf("save host: %w", err)
+		}
+		return reserveErr
+	}); err != nil {
+		return config.Host{}, found, err
+	}
+	if !found {
+		return config.Host{}, false, nil
 	}
 	probe, _ := sshhost.Probe(ctx, h)
-	if err := o.Store.With(func(s *config.Settings) { s.SetHostProbe(id, probe) }); err != nil {
-		return config.Host{}, true, fmt.Errorf("save probe result: %w", err)
-	}
 	recordHostProbe(o.Auditor, h, probe)
-	updated, _ := o.Get(id)
+	updated, current, err := o.commitProbe(id, h.ProbeGeneration, probe)
+	if err != nil {
+		return config.Host{}, true, err
+	}
 	o.notify()
-	return updated, true, nil
+	return updated, current, nil
+}
+
+func (o *HostOps) commitProbe(id string, generation uint64, probe config.HostProbe) (config.Host, bool, error) {
+	var committed config.Host
+	var found bool
+	err := o.runQueued(context.Background(), func() error {
+		if err := o.Store.With(func(s *config.Settings) { committed, found = s.SetHostProbeIfGeneration(id, generation, probe) }); err != nil {
+			return fmt.Errorf("save probe result: %w", err)
+		}
+		return nil
+	})
+	return committed, found, err
 }
 
 // Disconnect tears down the host's live ControlMaster (ssh -O exit). A

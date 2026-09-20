@@ -71,20 +71,22 @@ func ipcRemoveHost(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ID == "" {
 		return
 	}
-	found, refs, err := ctx.HostOps.Remove(msg.ID)
-	if err != nil {
-		ctx.UI.EmitEvent("onHostError", err.Error())
-		return
-	}
-	if !found {
-		ctx.UI.EmitEvent("onHostError", "host not found")
-		return
-	}
-	if len(refs) > 0 {
-		ctx.UI.EmitEvent("onHostError", "host is used by: "+joinNames(refs))
-		return
-	}
-	ctx.UI.EmitEvent("onHostRemoved", msg.ID)
+	ctx.GoFunc(func() {
+		found, refs, err := ctx.HostOps.Remove(ctx.Ctx, msg.ID)
+		if err != nil {
+			dispatchEmit(ctx, "onHostError", err.Error())
+			return
+		}
+		if !found {
+			dispatchEmit(ctx, "onHostError", "host not found")
+			return
+		}
+		if len(refs) > 0 {
+			dispatchEmit(ctx, "onHostError", "host is used by: "+joinNames(refs))
+			return
+		}
+		dispatchEmit(ctx, "onHostRemoved", msg.ID)
+	})
 }
 
 // ipcProbeHost is the explicit "Probe" button — runs off the main thread,

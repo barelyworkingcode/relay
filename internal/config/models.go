@@ -421,6 +421,10 @@ type Host struct {
 	// own ssh-agent/config, which is the ordinary case.
 	IdentityFile string `json:"identity_file,omitempty"`
 	CreatedAt    string `json:"created_at"`
+	// ProbeGeneration identifies the connection shape a probe result belongs
+	// to. It is reserved before probing so a delayed result cannot overwrite
+	// a newer target, port, identity, or explicit probe.
+	ProbeGeneration uint64 `json:"probe_generation,omitempty"`
 	// Probe is the last probe result; nil until the first one runs.
 	Probe *HostProbe `json:"probe,omitempty"`
 }

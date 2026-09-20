@@ -216,6 +216,42 @@ func TestSetHostProbe(t *testing.T) {
 	}
 }
 
+func TestHostProbeGenerationReservesAndRejectsStaleResults(t *testing.T) {
+	var s Settings
+	h, err := s.AddHost(Host{Name: "devbox", Target: "admin@devbox.local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.ProbeGeneration != 1 {
+		t.Fatalf("create generation = %d, want 1", h.ProbeGeneration)
+	}
+	reserved, found, err := s.ReserveHostProbe(h.ID)
+	if err != nil || !found {
+		t.Fatalf("ReserveHostProbe = (%+v, %v, %v)", reserved, found, err)
+	}
+	if reserved.ProbeGeneration != 2 {
+		t.Fatalf("reserved generation = %d, want 2", reserved.ProbeGeneration)
+	}
+	if _, ok := s.SetHostProbeIfGeneration(h.ID, 1, HostProbe{OK: true}); ok {
+		t.Fatal("stale probe generation was persisted")
+	}
+	committed, ok := s.SetHostProbeIfGeneration(h.ID, 2, HostProbe{OK: true})
+	if !ok || committed.Probe == nil || !committed.Probe.OK {
+		t.Fatalf("matching probe generation was not persisted: %+v, %v", committed, ok)
+	}
+
+	name := "renamed"
+	renamed, found, changed, err := s.UpdateHostAndReserveProbe(h.ID, HostPatch{Name: &name})
+	if err != nil || !found || changed || renamed.ProbeGeneration != 2 {
+		t.Fatalf("rename = (%+v, %v, %v, %v)", renamed, found, changed, err)
+	}
+	target := "admin@other.local"
+	updated, found, changed, err := s.UpdateHostAndReserveProbe(h.ID, HostPatch{Target: &target})
+	if err != nil || !found || !changed || updated.ProbeGeneration != 3 {
+		t.Fatalf("connection update = (%+v, %v, %v, %v)", updated, found, changed, err)
+	}
+}
+
 func TestFindHostByName(t *testing.T) {
 	var s Settings
 	h, _ := s.AddHost(Host{Name: "DevBox", Target: "admin@devbox.local"})

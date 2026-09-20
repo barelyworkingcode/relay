@@ -80,7 +80,7 @@ func RegisterHostRoutes(rr *control.RouteRegistrar, ops *HostOps) {
 
 	rr.Handle(control.ClassConfigure, "DELETE /api/hosts/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		found, refs, err := ops.Remove(id)
+		found, refs, err := ops.Remove(r.Context(), id)
 		if err != nil {
 			writeHostError(w, err)
 			return
