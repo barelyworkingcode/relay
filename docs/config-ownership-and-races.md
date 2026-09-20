@@ -146,11 +146,10 @@ unbounded subprocess wait must not hold the lane.
   `errServiceProcess`, so "written, restart failed" stays distinct from
   "nothing written". The editor has no HTTP route.
 
-The queue migration and the scoped tray-mediated CLI read migration are now
-implemented. This is substantial progress, but it is not the complete
-configuration-ownership migration described by this document. Direct cached
-reads, process ownership, universal post-commit events, polling-based
-convergence, and live second-writer handling remain outstanding below.
+The queue migration and the scoped tray-mediated CLI read migration are
+implemented. The status below is authoritative for the remaining ownership
+work. It deliberately records partial areas instead of claiming completion
+from passing race tests alone.
 
 ### Status summary
 
@@ -158,53 +157,55 @@ convergence, and live second-writer handling remain outstanding below.
 | --- | --- | --- |
 | Queued mutations | Mostly complete | The major settings mutation domains now use the tray queue, including ordered service effects and the documented generation checks. |
 | Normal CLI reads | Complete for the scoped commands | The listed commands use tray admin reads and refuse when the tray is stopped. |
-| Direct production reads | Complete (tasks 2–3) | Decision reads use `config.FreshSettings`, display reads `config.DisplaySettings`; `cmd/relay/settings_read_boundary_test.go` rejects direct `Get`/`Reload`/store construction outside three named seams (startup read, startup construct, `statusPoller` recovery poll — the last retires with task 5). Freshness test: `TestDecisionReadsSeeACommittedChangeWithoutWaitingForThePoll`. | Production code still uses cached `SettingsStore.Get()` in authorization, routing, lifecycle, IPC, and display paths. |
-| Single tray ownership | Complete (task 1) | `config.AcquireTrayOwnership` takes a `flock` on `tray.lock` before the store and bridge open; a second tray fails with `ErrOwnedByAnotherTray`; released last on clean shutdown. Tests in `internal/config/owner_test.go` (8-way start race) and `TestTrayOwnershipIsAcquiredBeforeStoreAndBridgeSetup`. | There is not yet an exclusive per-config-dir process lock held before store and bridge initialization. |
-| Post-commit events | Complete (task 4) | `CommandQueue.SetCommitObserver` publishes once per command whose store save count moved, before the caller is released; none for failed/declined/non-persisting commands; a persisted-then-failed command still publishes. Tray subscribes once (`onConfigCommitted`). Legacy callbacks still wired: `ServiceOps.OnChange`, `appRouter.onChange`, manifest-registry hook. Tests: `internal/config/commit_event_test.go`. | Several operations call local `OnChange` hooks, but there is no universal queue-level event for every committed change. |
-| Event-driven convergence | Complete (task 5) | `statusPoller` no longer reads `settings.json`; the commit event drives UI, listener and model-endpoint reconciliation; a 30 s `RecoveryPollInterval` reconciles from tray-owned state. | The two-second settings poll still reloads configuration and triggers listener reconciliation. |
-| External writers | Complete (task 6) | Policy: import. A kqueue watcher (`config.WatchSettingsFile`, no timer) on the settings directory and file submits `FileSettingsStore.ImportFile` through the config queue. A valid file is applied; an unparseable or unsealable one keeps current state and logs. The store's own writes are recognised by digest and ignored; exactly one commit event fires per real change. Limitation: ordering is by admission, so a mutation admitted between the edit landing and the import overwrites it — quit the tray first for certainty. Tests in `internal/config/commit_event_test.go`. |
-| Ordering and freshness tests | Complete (task 7) | Added commit-event, direct-file, restart-snapshot, Start/Restart-behind-Remove, cross-door (HTTP/IPC/tray, templates only) and reverse-order service-update tests in `internal/config/commit_event_test.go` and `cmd/relay/config_ordering_test.go`. Final `go test ./...` and `go test -race ./...` (relay stopped) report no FAIL or data race. |
-| Completion | All seven tasks Complete | No open follow-ups. A save first adopts a valid pending file edit (`importLocked` inside the queued command), so an edit is not overwritten before the watcher imports it. Cross-door coverage: `TestHTTPAndIPCDoorsShareOneCoreQueueAndEventPerCommit` covers hosts, services and projects; MCP and enrolment doors are not added (heavier setup, same shared-core pattern). The `hostapi` launch-500 flake was a test race (instant-exit shim) and is fixed in the test. |
+| Direct production reads | Complete with named exceptions (tasks 2–3) | `config.FreshSettings` and `config.DisplaySettings` are the normal read paths. `cmd/relay/settings_read_boundary_test.go` rejects direct `Get`/`Reload`/store construction outside startup seams; `TestDecisionReadsSeeACommittedChangeWithoutWaitingForThePoll` covers freshness. The scan is a guardrail, not proof against indirect aliases or helper paths. |
+| Single tray ownership | Complete (task 1) | `config.AcquireTrayOwnership` takes a non-blocking `flock` on `tray.lock` before store and bridge setup; a second tray fails with `ErrOwnedByAnotherTray`; cleanup releases it. Tests cover release, simultaneous startup, and setup ordering. |
+| Post-commit events | Partial (task 4) | `CommandQueue.SetCommitObserver` publishes once when the store commit counter advances, before the caller is released. A persisted-then-failed command still publishes because state changed; this is the current behavior but differs from the simpler “failed commands publish none” wording in the original acceptance criteria. Legacy callbacks remain wired. Follow-up: settle the committed-state/error contract, then remove duplicate callbacks where safe. |
+| Event-driven convergence | Complete for the normal path (task 5) | `statusPoller` no longer reads `settings.json`; commit events drive UI, listener, and model-endpoint reconciliation, with a 30-second recovery reconciliation. The recovery poll is not a normal settings-change trigger. |
+| External writers | Partial (task 6) | Policy is import through `config.WatchSettingsFile` and `FileSettingsStore.ImportFile`; invalid or unsealable edits are rejected without replacing current state, and queue admission defines ordering. A missed kqueue event is not recovered until a later file event or restart, and stopped-tray/direct-file semantics still need explicit operator documentation or a deliberate repair path. |
+| Ordering and freshness tests | Partial (task 7) | Focused tests cover queue commits, direct-file import, ownership startup, restart-behind-remove, reverse-order service updates, and selected HTTP/IPC/tray paths. MCP/enrolment cross-door coverage and several listed listener/delete/reset/concurrent-mutation cases remain. A clean `go test ./...` and `go test -race ./...` have not been established in this checkpoint. |
+| Completion | Incomplete | Tasks 1–3 are complete, task 5 is complete for normal convergence, and tasks 4, 6, and 7 remain partial. Do not claim overall completion until those acceptance criteria are closed and the verification record is refreshed. |
 
-### Outstanding task breakdown
+### Outstanding task breakdown / resume next
 
-These tasks are the remaining work for the full migration. They are ordered by
-dependency, not by implementation size.
+These are the remaining acceptance items for the full migration. They are
+ordered by dependency, not implementation size. Tasks 1–3 are retained below
+as historical acceptance descriptions; their current status is Complete in the
+table above.
 
-1. **Enforce one tray owner.** Add an exclusive per-config-dir ownership lock
+1. **Enforce one tray owner — Complete.** Add an exclusive per-config-dir ownership lock
    before opening the writable store or removing the bridge socket. A second
    tray must fail clearly and the lock must remain held for the tray lifetime.
    Add a deterministic startup-race test.
 
-2. **Finish the production-read audit.** Classify every production
+2. **Finish the production-read audit — Complete with named exceptions.** Classify every production
    `SettingsStore.Get()` and `Reload()` call as display-only, authorization or
    routing, mutation precondition, lifecycle convergence, or explicitly
    isolated recovery. Replace the non-display cases with snapshots or
    purpose-specific queries. The target is zero direct cached reads outside
    the config implementation and documented test seams.
 
-3. **Make the read boundary enforceable.** Extend structural checks beyond
+3. **Make the read boundary enforceable — Complete for the current syntax guard.** Extend structural checks beyond
    writes so new production callers cannot introduce direct store reads or
    construct independent settings stores. Keep narrowly documented startup and
    recovery exceptions.
 
-4. **Add a universal post-commit event.** Have every successful queued
+4. **Add a universal post-commit event — Partial.** Have every successful queued
    configuration command publish exactly one event after persistence succeeds;
    failed commands must publish none. Move UI refresh and reconciliation
    triggers toward that event rather than operation-specific callbacks.
 
-5. **Replace polling as the normal coordination path.** Use the post-commit
+5. **Replace polling as the normal coordination path — Complete for the normal path.** Use the post-commit
    event to trigger UI refresh, remote-listener reconciliation, model-endpoint
    reconciliation, and service configuration refresh. Retain only a slow
    recovery/health poll for missed events, crashed children, and external
    repair.
 
-6. **Resolve the external-writer policy.** Either reject live edits to
+6. **Resolve the external-writer policy — Partial.** Either reject live edits to
    `settings.json` while Relay owns the configuration directory, or provide an
    explicit import/repair command with clear stopped-tray semantics. Manual
    edits must not continue as an undocumented second writer.
 
-7. **Complete ordering and freshness tests.** Add deterministic coverage for
+7. **Complete ordering and freshness tests — Partial.** Add deterministic coverage for
    listener rebinds, service delete versus delayed start/update, reverse-order
    external work, second-tray startup, reset versus write, failed persistence,
    restart snapshot consistency, and direct-file edits. Run focused race tests
@@ -221,7 +222,24 @@ The repository-wide pass was run before the structural-test adjustments and
 failed only in the command package's gate-name expectations and malformed IPC
 fixture; those failures were fixed, then the full `cmd/relay` package passed.
 
-## What Relay has today
+### Current checkpoint
+
+The current branch contains the queue, ownership lock, read boundary, commit
+observer, listener convergence, and file-import foundation. The next bounded
+work is to settle the post-commit error contract, decide how missed file-watch
+events are recovered, document stopped-tray operator semantics, and add only
+the missing deterministic ordering tests. The focused verification run for
+this checkpoint was `go test ./internal/config -count=1` (pass).
+`go test ./internal/config ./cmd/relay -count=1` did not complete in the
+available run because the `cmd/relay` package entered a long-running test; it
+produced no failure output before it was stopped. No repository-wide race
+result is claimed here.
+
+## Foundation and rationale
+
+This section records the foundation and design rationale that led to the
+current implementation. Where it conflicts with the status summary above, the
+status summary is authoritative.
 
 Relay has already made a substantial move in this direction:
 
@@ -239,7 +257,7 @@ Relay has already made a substantial move in this direction:
 
 That is a good foundation, not a finished ownership model.
 
-The current design still has several competing meanings of “the configuration”:
+The pre-migration design had several competing meanings of “the configuration”:
 
 1. The file on disk.
 2. A `FileSettingsStore` cache.
@@ -247,10 +265,14 @@ The current design still has several competing meanings of “the configuration�
 4. A component's copied settings passed into a long-lived operation.
 5. A second CLI process' read-only store.
 
-Those views can disagree by design. That is where the remaining race surface
-comes from.
+Those views could disagree by design. That was the race surface this work was
+intended to reduce.
 
-## Where it falls short
+## Where it fell short before the current checkpoint
+
+The following sections preserve the original problem analysis and rationale.
+They are historical context, not a second current-status list; the status
+summary and checkpoint above are authoritative.
 
 ### 1. The public store API is too easy to misuse
 
@@ -717,8 +739,8 @@ is “configuration has one owner and one ordered lane; everything else talks to
 that owner.”
 
 The current implementation has paid much of the cost, especially for sealed
-writes, brokered mutations, and normal CLI reads. The migration is not yet
-complete: the remaining work is to enforce one tray owner, remove direct
-cached reads, make post-commit events universal, replace polling as normal
-coordination, and resolve live file edits as an explicit recovery/import
-policy. The task breakdown above is the current implementation backlog.
+writes, brokered mutations, normal CLI reads, ownership, and event-driven
+convergence. The migration is not yet complete: the remaining work is the
+partial event contract, missed-file-event recovery and stopped-tray import
+semantics, plus the missing deterministic ordering tests. The task breakdown
+and checkpoint above are the current implementation backlog.
