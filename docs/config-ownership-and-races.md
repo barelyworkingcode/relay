@@ -246,6 +246,12 @@ go test ./internal/config -run 'TestCommitEvent|TestHandEdit|TestSettingsWatcher
 go test ./cmd/relay -run 'TestProductionSettingsReadsAndConstructionStayBehindTheBoundary|TestSettingsBoundaryScanBitesOnEachViolation|TestTrayOwnershipIsAcquiredBeforeStoreAndBridgeSetup|TestCommitEvent|TestMutationsAcrossHTTPIPCAndTrayDoorsSurviveInAdmissionOrderWithOneEventEach' -count=1
 ```
 
+`prompt.md` is now the shipping handoff for the remaining partial Task 7 work.
+It explicitly keeps tasks 1–6 closed, limits new work to deterministic coverage
+and final verification, and forbids architectural expansion. Task 7 remains
+`Partial` until its listed tests and the repository-wide verification gates
+have passed.
+
 ## Foundation and rationale
 
 This section records the foundation and design rationale that led to the
