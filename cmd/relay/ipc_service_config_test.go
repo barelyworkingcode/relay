@@ -77,6 +77,7 @@ func newConfigIPC(t *testing.T, reg *EnhancedServiceRegistry, mgr service.Manage
 		Platform:               stubPlatform{},
 		Registry:               mgr,
 		Enhanced:               reg,
+		Ops:                    &ServiceOps{Store: store, Registry: mgr, Enhanced: reg},
 		PushServiceStatusBatch: func() {},
 		GoFunc:                 func(fn func()) { fn() },
 	}

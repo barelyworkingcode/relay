@@ -37,7 +37,8 @@ between reading state and committing a result. Host probes are the precedent:
 they reserve and commit a per-host probe generation on the queue
 (`internal/config/settings.go`, `host_ops.go`), so a stale probe result is
 dropped. The same rule applies to a presence approval that cannot run inside
-the queued step and to service-owned config file edits. Revisions for UI
+the queued step. Service-owned config file edits need no check: they run
+entirely inside one queued step. Revisions for UI
 freshness are optional.
 
 A global monotonic revision counter and a `ConfigManager` snapshot API are not
@@ -116,10 +117,17 @@ unbounded subprocess wait must not hold the lane.
   (`runQueued`, `runCommitted` or `Queue.Do`), unless it is on a small explicit
   allowlist (startup, and helpers that run inside their caller's queued step).
   It also asserts it still finds known queued writes, so it cannot pass empty.
+- The service config editor's save runs through `ServiceOps.SaveConfigFile` as
+  one queued step: it re-resolves the live service record, the allowed root and
+  the path, validates, writes the file, and restarts only a service that is
+  running at that moment (`ApplyMode: live` writes only). A save queued behind a
+  remove, stop or working-directory update sees the result of it; two saves
+  restart in admission order. A restart failure after the write wraps
+  `errServiceProcess`, so "written, restart failed" stays distinct from
+  "nothing written". The editor has no HTTP route.
 
 The remaining work is to apply the same boundary to the other configuration
-domains, route normal CLI reads through the tray, and queue service-owned config
-file edits with their restart. The branch is deliberately not calling this
+domains and route normal CLI reads through the tray. The branch is deliberately not calling this
 finished until those paths are covered.
 
 ### Verification so far
@@ -403,8 +411,9 @@ Before a larger API migration, fix the races with the highest consequence:
 - Enforce one tray owner before store initialization and bridge socket setup.
 - Make sealed-store reset exclusive across settings, CA files, and keychain
   changes.
-- Add generation checks to service-owned configuration writes. Delayed
-  host-probe writes already reserve and commit a generation on the queue.
+- Service-owned configuration saves already run inside one queued step
+  (`ServiceOps.SaveConfigFile`), so they need no generation check. Delayed
+  host-probe writes reserve and commit a generation on the queue.
 
 These are correctness fixes, not a reason to serialize network or subprocess
 work on the configuration lane.

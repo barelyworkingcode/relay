@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -36,6 +37,16 @@ type serviceValidationError struct{ reason string }
 
 func (e *serviceValidationError) Error() string        { return e.reason }
 func (e *serviceValidationError) Is(target error) bool { return target == errServiceInvalid }
+
+// serviceConfigError carries the exact text the service config editor shows,
+// tagged with the sentinel callers branch on.
+type serviceConfigError struct {
+	reason string
+	kind   error
+}
+
+func (e *serviceConfigError) Error() string        { return e.reason }
+func (e *serviceConfigError) Is(target error) bool { return target == e.kind }
 
 func invalidService(reason string) error {
 	return &serviceValidationError{reason: reason}
@@ -432,6 +443,9 @@ func (f serviceFields) presenceDigest(id string) presence.Digest {
 type ServiceOps struct {
 	Store    config.SettingsStore
 	Registry service.Manager
+	// Enhanced holds the manifests SaveConfigFile resolves a service's
+	// declared config file from. nil refuses every config save.
+	Enhanced *EnhancedServiceRegistry
 	Queue    *config.CommandQueue
 	// Gate is the presence check Create and Update demand before they
 	// touch the store (ADR-017 decisions 3 and 4): a service's `command`
@@ -865,4 +879,69 @@ func (o *ServiceOps) Restart(id string) error {
 		o.notify()
 		return nil
 	})
+}
+
+// ConfigSaveResult reports what a committed SaveConfigFile did to the process.
+type ConfigSaveResult struct {
+	Restarted bool
+}
+
+// SaveConfigFile writes a service-owned config file and restarts the service
+// as one queued step, so the record, the path, the file and the process all
+// come from the same instant: a save cannot outlive a queued remove or update
+// of its service, and cannot revive one a queued stop just stopped.
+//
+// An error wrapping errServiceProcess means the file WAS written and only the
+// restart failed; every other error means nothing was written.
+func (o *ServiceOps) SaveConfigFile(ctx context.Context, id, text string) (res ConfigSaveResult, err error) {
+	err = o.runQueued(ctx, func() error {
+		var innerErr error
+		res, innerErr = o.saveConfigFile(id, text)
+		return innerErr
+	})
+	return res, err
+}
+
+func (o *ServiceOps) saveConfigFile(id, text string) (ConfigSaveResult, error) {
+	if o.Enhanced == nil {
+		return ConfigSaveResult{}, invalidService("no enhanced registry")
+	}
+	svc, _ := config.FindServiceByID(o.Store.Get(), id)
+	if svc == nil {
+		return ConfigSaveResult{}, &serviceConfigError{reason: fmt.Sprintf("service %q not registered", id), kind: errServiceNotFound}
+	}
+	rec := o.Enhanced.Get(id)
+	if rec == nil {
+		return ConfigSaveResult{}, &serviceConfigError{reason: fmt.Sprintf("service %q not registered", id), kind: errServiceNotFound}
+	}
+	decl := rec.Manifest.Config
+	if decl == nil {
+		return ConfigSaveResult{}, invalidService(fmt.Sprintf("service %q declares no config file", id))
+	}
+	// Validate BEFORE resolving/writing so a malformed edit never touches the
+	// file (load-bearing safety property).
+	if err := service.ValidateConfigText([]byte(text), decl.Format); err != nil {
+		return ConfigSaveResult{}, invalidService("config does not parse: " + err.Error())
+	}
+	realPath, info, err := service.ResolveConfigPath(decl, svc.WorkingDir)
+	if err != nil {
+		return ConfigSaveResult{}, err
+	}
+	// Write the ORIGINAL edited bytes (not a re-marshal) so comments and key
+	// order survive on disk; the mode comes from the FileInfo just validated,
+	// avoiding a re-stat race.
+	if err := service.WriteConfigFile(realPath, []byte(text), info.Mode().Perm()); err != nil {
+		return ConfigSaveResult{}, err
+	}
+	// A stopped service stays stopped: only a live process needs the new file.
+	if decl.ApplyMode == bridge.ConfigApplyLive || !o.Registry.IsRunning(id) {
+		return ConfigSaveResult{}, nil
+	}
+	cfg := *svc
+	if err := o.Registry.Reload(id, &cfg); err != nil {
+		slog.Error("service restart after config save failed", "id", id, "error", err)
+		return ConfigSaveResult{}, &serviceConfigError{reason: fmt.Sprintf("config saved but restart failed: %v", err), kind: errServiceProcess}
+	}
+	o.notify()
+	return ConfigSaveResult{Restarted: true}, nil
 }

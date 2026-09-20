@@ -55,3 +55,16 @@ func TestTrayAppRoutesOAuthRefreshPersistenceThroughMcpOps(t *testing.T) {
 		}
 	}
 }
+
+func TestTrayAppWiresServiceConfigSavesThroughTheQueuedServiceOps(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join(relaySourceDir(t), "trayapp.go"))
+	assertNoErr(t, err, "read trayapp.go")
+	for _, want := range []string{
+		"Enhanced: enhancedRegistry,\n\t\tQueue:    serviceQueue,",
+		"Ops:                    serviceOps,",
+	} {
+		if !strings.Contains(string(source), want) {
+			t.Fatalf("service config saves no longer run through the queued ServiceOps:\n%s", want)
+		}
+	}
+}

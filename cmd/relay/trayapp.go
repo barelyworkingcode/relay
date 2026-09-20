@@ -390,6 +390,7 @@ func runTrayApp() {
 	serviceOps := &ServiceOps{
 		Store:    store,
 		Registry: registry,
+		Enhanced: enhancedRegistry,
 		Queue:    serviceQueue,
 		Gate:     presenceGate,
 		OnChange: func() {
