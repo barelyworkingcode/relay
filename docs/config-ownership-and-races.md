@@ -219,7 +219,8 @@ Task 7 audit found every listed case already covered except listener rebind
 ordering; the one added test is
 `TestRemoteSupervisor_ReconcileAfterTwoCommitsBindsOnlyTheLastAddress`
 (`cmd/relay/remote_reconcile_test.go`). No production change was needed. It
-passes; it was not mutation-checked against a deliberately broken reconcile.
+passes, and it fails against each of two deliberately broken reconciles
+(one reading a stale snapshot, one rebinding an unchanged address).
 
 ```text
 go test -timeout 5m ./...                                   ok (all packages, before and after the new test)
