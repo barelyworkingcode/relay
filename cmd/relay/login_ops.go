@@ -14,6 +14,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/login"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
@@ -236,6 +237,16 @@ func (o *LoginOps) runQueued(ctx context.Context, fn func() error) error {
 	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
+// runCommitted is runQueued for steps whose results the caller reads after
+// return: it never abandons an admitted step on caller cancellation, so the
+// closure's outputs cannot race the worker.
+func (o *LoginOps) runCommitted(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
+}
+
 func (o *LoginOps) auditor() IssuanceAuditor {
 	if o == nil {
 		return nil
@@ -420,4 +431,89 @@ func (o *LoginOps) SignOut(id string) (config.APICredential, error) {
 	}
 	o.notify()
 	return removed, nil
+}
+
+// RegisterPasskey commits a verified registration: the cap and duplicate
+// checks and the bootstrap-code consumption run inside one queued step, so the
+// code is spent only when the record lands. refusal is a decision about the
+// request (limit, duplicate, bad code) and leaves settings untouched; saveErr
+// is relay failing to write, which the caller must not charge to the ceremony
+// limiter. It runs no prompt and no network.
+func (o *LoginOps) RegisterPasskey(ctx context.Context, passkey config.Passkey, code string) (refusal, saveErr error) {
+	if o == nil {
+		return nil, errLoginOpsUnavailable
+	}
+	queueErr := o.runCommitted(ctx, func() error {
+		// This is deliberate: the refusal is RETURNED from the callback, not
+		// just recorded in it. A returned error declines the write, so a refused
+		// registration leaves settings.json untouched — otherwise every refused
+		// registration, which needs no code and no credential, would drive
+		// relay's settings writer for whatever can reach the listener.
+		saveErr = config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if len(s.Passkeys) >= login.MaxRegisteredPasskeys {
+				refusal = fmt.Errorf("%w: %d registered", login.ErrWebAuthnPasskeyLimit, len(s.Passkeys))
+			} else if slices.ContainsFunc(s.Passkeys, func(p config.Passkey) bool { return p.ID == passkey.ID }) {
+				refusal = login.ErrWebAuthnDuplicateCred
+			} else if err := consumeBootstrapCode(s, code); err != nil {
+				refusal = err
+			}
+			if refusal != nil {
+				return refusal
+			}
+			s.Passkeys = append(s.Passkeys, passkey)
+			return nil
+		})
+		return nil
+	})
+	if queueErr != nil {
+		return nil, queueErr
+	}
+	return refusal, saveErr
+}
+
+// RemoveUnrecordedPasskey deletes a passkey whose issuance record could not be
+// written. Unlike RevokePasskey it takes no presence prompt and writes no
+// audit row: it undoes a registration the caller has just made.
+func (o *LoginOps) RemoveUnrecordedPasskey(ctx context.Context, id string) error {
+	if o == nil {
+		return errLoginOpsUnavailable
+	}
+	return o.runCommitted(ctx, func() error {
+		_, err := revokePasskey(o.Store, id)
+		return err
+	})
+}
+
+// MintLoginSession applies a verified assertion: it advances the passkey's
+// sign counter when the authenticator keeps one, reaps expired credentials and
+// mints the browser session credential, in one queued step. The plaintext
+// leaves only through the return value, and recording the issuance before the
+// caller reveals it stays the caller's job.
+func (o *LoginOps) MintLoginSession(ctx context.Context, passkeyID string, updateSignCount bool, signCount uint32) (token, expires, credID string, err error) {
+	if o == nil {
+		return "", "", "", errLoginOpsUnavailable
+	}
+	queueErr := o.runCommitted(ctx, func() error {
+		err = config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if updateSignCount {
+				for i := range s.Passkeys {
+					if s.Passkeys[i].ID == passkeyID {
+						s.Passkeys[i].SignCount = signCount
+					}
+				}
+			}
+			reapExpiredAPICredentials(s)
+			cred, plaintext, err := mintAPICredentialFor(s, loginCredentialName(passkeyID), loginCredentialClasses, loginCredentialTTL)
+			if err != nil {
+				return err
+			}
+			token, expires, credID = plaintext, cred.Expires, cred.ID
+			return nil
+		})
+		return nil
+	})
+	if queueErr != nil {
+		return "", "", "", queueErr
+	}
+	return token, expires, credID, err
 }

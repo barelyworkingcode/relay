@@ -138,6 +138,9 @@ func (s *FrontendServer) newLoginMuxFor(origin string) (*http.ServeMux, error) {
 	}
 	lr := newLoginRoutes(s.routeDeps.store, verifier, s.auditor)
 	lr.issuance = s.routeDeps.issuance
+	if s.routeDeps.loginOps != nil {
+		lr.ops = s.routeDeps.loginOps
+	}
 	return newLoginMux(lr), nil
 }
 
@@ -179,6 +182,9 @@ type frontendRouteDeps struct {
 	projectOps        *ProjectOps
 	hostOps           *HostOps
 	templateOps       *TemplateOps
+	// loginOps carries the queue the login routes write through; nil leaves
+	// them writing inline.
+	loginOps *LoginOps
 	// eveEnrolmentOps backs eve's own status/consume door
 	// (docs/eve-passkey-enrolment.md). Unlike every other field here it has
 	// no IPC-tab counterpart: Open is reachable only from the tray menu and

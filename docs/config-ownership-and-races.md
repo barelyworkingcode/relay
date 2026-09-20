@@ -96,6 +96,11 @@ unbounded subprocess wait must not hold the lane.
   again inside the queue; both bind the same digest, so an approval for either
   covers the other, while an unprompted update whose record vanished (now a
   create) is refused.
+- The login HTTP routes (passkey registration with bootstrap-code consumption,
+  its undo when the issuance record cannot be written, and the sign-count
+  update, reap and session-credential mint on assertion) write through
+  `LoginOps` on the same queue. Each write is one short queued step; the
+  issuance record is still written after the mint and before the token leaves.
 
 The remaining work is to apply the same boundary to the other configuration
 domains, route normal CLI reads through the tray, and queue service-owned config

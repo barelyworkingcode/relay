@@ -71,6 +71,13 @@ type lrServer struct {
 // would prove nothing about which door serves it.
 func lrNewServer(t *testing.T) *lrServer {
 	t.Helper()
+	return lrNewServerWith(t, nil, nil)
+}
+
+// lrNewServerWith is lrNewServer with the login routes writing through queue
+// and recording issuance through issuance, the way the tray wires them.
+func lrNewServerWith(t *testing.T, queue *config.CommandQueue, issuance IssuanceAuditor) *lrServer {
+	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
@@ -95,6 +102,12 @@ func lrNewServer(t *testing.T) *lrServer {
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
+	}
+	if queue != nil {
+		srv.routeDeps.loginOps = &LoginOps{Store: store, Queue: queue}
+	}
+	if issuance != nil {
+		srv.routeDeps.issuance = issuance
 	}
 	if err := srv.ListenLoopback("127.0.0.1:0"); err != nil {
 		t.Fatalf("ListenLoopback: %v", err)

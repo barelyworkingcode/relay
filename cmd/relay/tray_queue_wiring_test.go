@@ -34,3 +34,11 @@ func TestTrayAppWiresTemplateOpsToTheSharedQueueAndBothDoors(t *testing.T) {
 		}
 	}
 }
+
+func TestTrayAppWiresLoginRoutesToTheSharedQueue(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join(relaySourceDir(t), "trayapp.go"))
+	assertNoErr(t, err, "read trayapp.go")
+	if want := "frontend.routeDeps.loginOps = loginOps"; !strings.Contains(string(source), want) {
+		t.Fatalf("the login routes no longer share the login core and its command queue:\n%s", want)
+	}
+}

@@ -725,6 +725,7 @@ func runTrayApp() {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)
 	}
+	frontend.routeDeps.loginOps = loginOps
 	app.frontendServer = frontend
 	app.goFunc(func() {
 		if err := frontend.Serve(); err != nil {

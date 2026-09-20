@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"slices"
 	"strconv"
 	"time"
 
@@ -75,7 +75,10 @@ var (
 // 5. It is built only where an origin exists to verify against — see
 // FrontendServer.ListenLoopback.
 type loginRoutes struct {
-	store    config.SettingsStore
+	store config.SettingsStore
+	// ops performs every settings write on the shared config queue; without a
+	// queue it runs them inline.
+	ops      *LoginOps
 	verifier *login.WebAuthnVerifier
 	auditor  control.ControlAuditor
 	// issuance records the two credentials this surface hands out — a
@@ -87,7 +90,7 @@ type loginRoutes struct {
 }
 
 func newLoginRoutes(store config.SettingsStore, verifier *login.WebAuthnVerifier, auditor control.ControlAuditor) *loginRoutes {
-	return &loginRoutes{store: store, verifier: verifier, auditor: auditor}
+	return &loginRoutes{store: store, ops: &LoginOps{Store: store}, verifier: verifier, auditor: auditor}
 }
 
 // loginHandlers is the whole public surface, in one place, the shape
@@ -221,13 +224,13 @@ func (lr *loginRoutes) serveVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	switch ceremony {
 	case login.WebAuthnCeremonyRegister:
-		lr.register(w, req)
+		lr.register(w, r.Context(), req)
 	case login.WebAuthnCeremonyAssert:
-		lr.assert(w, req)
+		lr.assert(w, r.Context(), req)
 	}
 }
 
-func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
+func (lr *loginRoutes) register(w http.ResponseWriter, ctx context.Context, req loginVerifyRequest) {
 	clientData, err := decodeLoginField(req.ClientDataJSON)
 	if err != nil {
 		writeLoginRefusal(w, err)
@@ -263,34 +266,13 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 		Created:          now.Format(time.RFC3339),
 	}
 
-	// The cap and the duplicate check are re-run here even though
+	// The cap and the duplicate check are re-run inside the commit even though
 	// VerifyRegistration already ran both: it ran them against a snapshot
 	// read before the ceremony, and two registrations racing would each
-	// pass that snapshot and both commit. The commit-time check under
-	// withDeclinable is the one that decides. The code is consumed only once
-	// the record is certain to land, so a refused registration does not
-	// spend the operator's anchor.
-	//
-	// This is deliberate: the refusal is RETURNED from the callback, not just
-	// recorded in it. A returned error declines the write, so a registration
-	// refused here leaves settings.json untouched — otherwise every refused
-	// registration, which needs no code and no credential, would drive relay's
-	// settings writer for whatever can reach the listener.
-	var refusal error
-	saveErr := config.WithDeclinable(lr.store, func(s *config.Settings) error {
-		if len(s.Passkeys) >= login.MaxRegisteredPasskeys {
-			refusal = fmt.Errorf("%w: %d registered", login.ErrWebAuthnPasskeyLimit, len(s.Passkeys))
-		} else if slices.ContainsFunc(s.Passkeys, func(p config.Passkey) bool { return p.ID == id }) {
-			refusal = login.ErrWebAuthnDuplicateCred
-		} else if err := consumeBootstrapCode(s, req.Code); err != nil {
-			refusal = err
-		}
-		if refusal != nil {
-			return refusal
-		}
-		s.Passkeys = append(s.Passkeys, passkey)
-		return nil
-	})
+	// pass that snapshot and both commit. The commit-time check decides. The
+	// code is consumed only once the record is certain to land, so a refused
+	// registration does not spend the operator's anchor.
+	refusal, saveErr := lr.ops.RegisterPasskey(ctx, passkey, req.Code)
 	if refusal != nil {
 		// The verifier accepted this ceremony and cannot see what refused it,
 		// so the charge is made here or a code guess costs the caller nothing.
@@ -319,7 +301,7 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 		Name:       passkey.Name,
 		Via:        auditViaHTTP,
 	}); auditErr != nil {
-		if _, undoErr := revokePasskey(lr.store, id); undoErr != nil {
+		if undoErr := lr.ops.RemoveUnrecordedPasskey(context.WithoutCancel(ctx), id); undoErr != nil {
 			slog.Error("login: unrecorded passkey could not be removed", "id", abbreviatePasskeyID(id), "error", undoErr)
 		}
 		lr.recordLoginOutcome("", false, auditErr)
@@ -332,7 +314,7 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 	writeJSON(w, http.StatusCreated, loginRegisteredResponse{CredentialID: id, Name: passkey.Name})
 }
 
-func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
+func (lr *loginRoutes) assert(w http.ResponseWriter, ctx context.Context, req loginVerifyRequest) {
 	clientData, err := decodeLoginField(req.ClientDataJSON)
 	if err != nil {
 		writeLoginRefusal(w, err)
@@ -380,23 +362,7 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 	}
 
 	id := base64.RawURLEncoding.EncodeToString(result.CredentialID)
-	var token, expires, credID string
-	saveErr := config.WithDeclinable(lr.store, func(s *config.Settings) error {
-		if result.UpdateSignCount {
-			for i := range s.Passkeys {
-				if s.Passkeys[i].ID == id {
-					s.Passkeys[i].SignCount = result.SignCount
-				}
-			}
-		}
-		reapExpiredAPICredentials(s)
-		cred, plaintext, err := mintAPICredentialFor(s, loginCredentialName(id), loginCredentialClasses, loginCredentialTTL)
-		if err != nil {
-			return err
-		}
-		token, expires, credID = plaintext, cred.Expires, cred.ID
-		return nil
-	})
+	token, expires, credID, saveErr := lr.ops.MintLoginSession(ctx, id, result.UpdateSignCount, result.SignCount)
 	if saveErr != nil || token == "" {
 		lr.recordLoginOutcome("", false, saveErr)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
