@@ -574,28 +574,15 @@ func (o *ServiceOps) update(ctx context.Context, id string, f serviceFields, via
 		return config.ServiceConfig{}, err
 	}
 
-	// existing is read outside the store lock purely to decide whether this
-	// update needs the gate at all; the mutation below re-reads it inside
-	// config.WithDeclinable, which is what actually has to be race-safe
-	// (TestServiceOpsRace_UpdateLosesToConcurrentRemove). A record that
-	// disappears between this read and the lock either way ends in
-	// errServiceNotFound, gated needlessly or not -- allowGate-equipped
-	// tests aside, that path never reaches a real prompt.
+	// existing decides only whether this update needs the gate; the mutation
+	// below re-reads it inside config.WithDeclinable. A record removed between
+	// the two ends in errServiceNotFound, gated needlessly or not
+	// (TestServiceOpsRace_UpdateLosesToConcurrentRemove).
 	//
-	// A request with an empty display_name reaches the same fate a step
-	// later, inside WithDeclinable's cfg.Validate() call: it is refused
-	// either way, just after a presence prompt if serviceUpdateNeedsGate
-	// already fires on some other field. Hoisting that check up here to
-	// save the prompt was considered and reverted: it would have to be
-	// conditioned on this pre-read actually finding a record, since
-	// errServiceNotFound must keep winning over a validation complaint for
-	// a request naming an id that was never there to begin with
-	// (TestOpsThatFindNothingWriteNothing) or one whose record a concurrent
-	// Remove takes out from under this exact race window
-	// (TestServiceOpsRace_UpdateLosesToConcurrentRemove, whose fixture also
-	// omits display_name) -- and conditioning it on a pre-read that is
-	// explicitly documented one line up as racy is the wrong place to add a
-	// second meaning to that variable.
+	// This is deliberate: an empty display_name is not refused here, before
+	// the prompt. It must lose to errServiceNotFound for an id that was never
+	// there (TestOpsThatFindNothingWriteNothing), and this read of existing is
+	// the wrong place to give it a second meaning.
 	var existing config.ServiceConfig
 	if e, _ := config.FindServiceByID(o.Store.Get(), id); e != nil {
 		existing = *e

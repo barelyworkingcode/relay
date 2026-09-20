@@ -78,6 +78,11 @@ unbounded subprocess wait must not hold the lane.
 - Host create, update, remove, and probe reserve and commit persisted probe
   generations on the queue; SSH discovery remains outside it, and stale probe
   results cannot overwrite a newer connection shape or a removed host.
+- Project update approval is re-checked against the live record inside the
+  queue. The prompt stays outside the lane; the queued step recomputes
+  `UpdateWidensGrant` on the live record and, when it names a field the
+  approval did not cover, commits nothing and returns
+  `errProjectChangedDuringApproval` (HTTP 409, IPC `onProjectError`).
 - Terminal template create, update, and remove now use the same queue; the
   Settings window (IPC) and the HTTP routes share one `TemplateOps`.
 
@@ -227,6 +232,14 @@ happens outside that step (a human prompt must not hold the lane), the approval
 must carry what it was based on, such as the record's generation or a hash of
 the fields it approved, and the commit must refuse or re-check when that
 changed.
+
+`ProjectOps.Update` is resolved this way: the prompt runs before the queue, and
+the queued step re-derives the widening against the live record and refuses
+when it exceeds the approved field set. A stale snapshot that over-prompted is
+tolerated. Remaining work: `ServiceOps` Create/Update/Register and
+`EnrolmentOps.SetRemoteConfig` still hold the lane during the presence prompt,
+which breaks the lane-duration assumption; they need the same
+prompt-outside, re-check-inside shape.
 
 ### 7. Persisted configuration and running processes can diverge
 

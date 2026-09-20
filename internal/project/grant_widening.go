@@ -59,6 +59,18 @@ func UpdateWidensGrant(stored config.Project, f UpdateFields) []string {
 	return out
 }
 
+// UnapprovedWidening returns the fields in now that approved does not cover.
+// approved is empty when no prompt happened, so any widening is unapproved.
+func UnapprovedWidening(now, approved []string) []string {
+	var out []string
+	for _, field := range now {
+		if !slices.Contains(approved, field) {
+			out = append(out, field)
+		}
+	}
+	return out
+}
+
 // normalizeKind reads Project.Kind's own documented rule -- "" and
 // ProjectKindLocal are the same project, never distinguishable by comparing
 // the raw string -- so a request that spells its own kind "local" against a

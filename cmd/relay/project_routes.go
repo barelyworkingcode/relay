@@ -26,6 +26,8 @@ func projectOpsHTTPStatus(err error) int {
 		errors.Is(err, presence.ErrNoSession), errors.Is(err, presence.ErrUnavailable),
 		errors.Is(err, errPresenceGateNotWired), errors.Is(err, errIssuanceAuditingRequired):
 		return http.StatusForbidden
+	case errors.Is(err, errProjectChangedDuringApproval):
+		return http.StatusConflict
 	case errors.Is(err, errProjectSaveFailed), errors.Is(err, errProjectTokenUnrecorded):
 		return http.StatusInternalServerError
 	default:

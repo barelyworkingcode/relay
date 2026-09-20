@@ -61,6 +61,12 @@ func (o *ProjectOps) runQueued(ctx context.Context, fn func() error) error {
 // own status code without inspecting error text.
 var errProjectSaveFailed = errors.New("failed to save settings")
 
+// errProjectChangedDuringApproval means the record moved between the
+// presence decision and the queued commit far enough that the request now
+// widens a field its approval did not cover. Nothing was written; the caller
+// retries against the current record.
+var errProjectChangedDuringApproval = errors.New("project changed while the request was being approved; retry the update")
+
 // errProjectTokenUnrecorded means the rotation committed and the audit
 // write then failed: the new plaintext is withheld (§7.6's rotate_token
 // withhold, unchanged) but the old token is already dead either way, so a
@@ -251,12 +257,13 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 // window that always sends the whole record must not have that resend read
 // as widening every field it happens to carry.
 //
-// stored is read before anything else, outside Store.With's lock, the same
-// read-then-gate-then-mutate shape ServiceOps.Update uses: it only ever
-// feeds the widen comparison and the digest, and project.ApplyUpdate
-// re-reads and re-validates the live record inside the actual mutation, so
-// a settings.json changed by something else between this read and the
-// write below is caught there, not silently papered over here.
+// stored is read before the queue and only decides whether to prompt: a
+// human prompt must not hold the queue lane, so approval is necessarily made
+// against a snapshot that another request may outdate. The queued step
+// therefore recomputes the widening against the live record and refuses
+// (errProjectChangedDuringApproval, nothing written) when it names any field
+// the approval did not cover. A live widening within the approved set commits
+// as approved; a stale snapshot that over-prompted needs no handling.
 func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFields, surfaces func() project.McpSurfaces, via, credID string) (config.Project, bool, error) {
 	var stored config.Project
 	if existing, _ := config.FindProjectByID(o.Store.Get(), id); existing != nil {
@@ -281,9 +288,18 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 	var found bool
 	var updateErr error
 	if err := o.runQueued(ctx, func() error {
-		if err := o.Store.With(func(s *config.Settings) {
+		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if live, _ := config.FindProjectByID(s, id); live != nil {
+				if unapproved := project.UnapprovedWidening(project.UpdateWidensGrant(*live, f), widened); len(unapproved) > 0 {
+					return fmt.Errorf("%w: %s", errProjectChangedDuringApproval, strings.Join(unapproved, ", "))
+				}
+			}
 			updated, found, updateErr = project.ApplyUpdate(s, id, f, surfaces)
+			return nil
 		}); err != nil {
+			if errors.Is(err, errProjectChangedDuringApproval) {
+				return err
+			}
 			return fmt.Errorf("%w: %w", errProjectSaveFailed, err)
 		}
 		if updateErr != nil {
