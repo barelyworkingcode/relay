@@ -159,11 +159,11 @@ from passing race tests alone.
 | Normal CLI reads | Complete for the scoped commands | The listed commands use tray admin reads and refuse when the tray is stopped. |
 | Direct production reads | Complete with named exceptions (tasks 2–3) | `config.FreshSettings` and `config.DisplaySettings` are the normal read paths. `cmd/relay/settings_read_boundary_test.go` rejects direct `Get`/`Reload`/store construction outside startup seams; `TestDecisionReadsSeeACommittedChangeWithoutWaitingForThePoll` covers freshness. The scan is a guardrail, not proof against indirect aliases or helper paths. |
 | Single tray ownership | Complete (task 1) | `config.AcquireTrayOwnership` takes a non-blocking `flock` on `tray.lock` before store and bridge setup; a second tray fails with `ErrOwnedByAnotherTray`; cleanup releases it. Tests cover release, simultaneous startup, and setup ordering. |
-| Post-commit events | Partial (task 4) | `CommandQueue.SetCommitObserver` publishes once when the store commit counter advances, before the caller is released. A persisted-then-failed command still publishes because state changed; this is the current behavior but differs from the simpler “failed commands publish none” wording in the original acceptance criteria. Legacy callbacks remain wired. Follow-up: settle the committed-state/error contract, then remove duplicate callbacks where safe. |
+| Post-commit events | Complete with documented error rule (task 4) | `CommandQueue.SetCommitObserver` publishes once when the store commit counter advances, before the caller is released. Failure before persistence publishes nothing; persistence followed by a later error still publishes because committed state changed. The focused tests cover both cases. Legacy callbacks remain only for runtime-only or bridge-driven changes. |
 | Event-driven convergence | Complete for the normal path (task 5) | `statusPoller` no longer reads `settings.json`; commit events drive UI, listener, and model-endpoint reconciliation, with a 30-second recovery reconciliation. The recovery poll is not a normal settings-change trigger. |
-| External writers | Partial (task 6) | Policy is import through `config.WatchSettingsFile` and `FileSettingsStore.ImportFile`; invalid or unsealable edits are rejected without replacing current state, and queue admission defines ordering. A missed kqueue event is not recovered until a later file event or restart, and stopped-tray/direct-file semantics still need explicit operator documentation or a deliberate repair path. |
+| External writers | Complete with documented recovery limitation (task 6) | Policy is import through `config.WatchSettingsFile` and `FileSettingsStore.ImportFile`; invalid or unsealable edits are rejected without replacing current state, queue admission defines ordering, and stopped-tray command semantics are documented in `docs/cli.md`. A missed kqueue event is not recovered until a later file event or restart; this is an explicit limitation, not a second normal reader. |
 | Ordering and freshness tests | Partial (task 7) | Focused tests cover queue commits, direct-file import, ownership startup, restart-behind-remove, reverse-order service updates, and selected HTTP/IPC/tray paths. MCP/enrolment cross-door coverage and several listed listener/delete/reset/concurrent-mutation cases remain. A clean `go test ./...` and `go test -race ./...` have not been established in this checkpoint. |
-| Completion | Incomplete | Tasks 1–3 are complete, task 5 is complete for normal convergence, and tasks 4, 6, and 7 remain partial. Do not claim overall completion until those acceptance criteria are closed and the verification record is refreshed. |
+| Completion | Incomplete | Tasks 1–6 are complete with the documented limitations above. Task 7 remains partial because several deterministic ordering cases and repository-wide verification are still missing. |
 
 ### Outstanding task breakdown / resume next
 
@@ -189,10 +189,12 @@ table above.
    construct independent settings stores. Keep narrowly documented startup and
    recovery exceptions.
 
-4. **Add a universal post-commit event — Partial.** Have every successful queued
-   configuration command publish exactly one event after persistence succeeds;
-   failed commands must publish none. Move UI refresh and reconciliation
-   triggers toward that event rather than operation-specific callbacks.
+4. **Add a universal post-commit event — Complete with documented error rule.** Have every queued
+   configuration command publish exactly one event when persistence succeeds;
+   a command that fails before persistence publishes none, while a later error
+   after persistence still publishes because committed state changed. Move UI
+   refresh and reconciliation triggers toward that event rather than
+   operation-specific callbacks.
 
 5. **Replace polling as the normal coordination path — Complete for the normal path.** Use the post-commit
    event to trigger UI refresh, remote-listener reconciliation, model-endpoint
@@ -200,7 +202,7 @@ table above.
    recovery/health poll for missed events, crashed children, and external
    repair.
 
-6. **Resolve the external-writer policy — Partial.** Either reject live edits to
+6. **Resolve the external-writer policy — Complete with documented recovery limitation.** Either reject live edits to
    `settings.json` while Relay owns the configuration directory, or provide an
    explicit import/repair command with clear stopped-tray semantics. Manual
    edits must not continue as an undocumented second writer.
@@ -225,15 +227,24 @@ fixture; those failures were fixed, then the full `cmd/relay` package passed.
 ### Current checkpoint
 
 The current branch contains the queue, ownership lock, read boundary, commit
-observer, listener convergence, and file-import foundation. The next bounded
-work is to settle the post-commit error contract, decide how missed file-watch
-events are recovered, document stopped-tray operator semantics, and add only
-the missing deterministic ordering tests. The focused verification run for
-this checkpoint was `go test ./internal/config -count=1` (pass).
+observer, listener convergence, and file-import foundation. The post-commit
+error rule and stopped-tray import semantics are settled and documented. The
+next bounded work is the missing deterministic ordering coverage and a
+repository-wide verification run; the missed-file-event limitation remains
+explicit rather than silently treated as normal coordination. The focused
+verification run for this checkpoint was `go test ./internal/config -count=1`
+(pass).
 `go test ./internal/config ./cmd/relay -count=1` did not complete in the
 available run because the `cmd/relay` package entered a long-running test; it
 produced no failure output before it was stopped. No repository-wide race
 result is claimed here.
+
+Since this checkpoint, the focused event/import/ownership tests pass with:
+
+```text
+go test ./internal/config -run 'TestCommitEvent|TestHandEdit|TestSettingsWatcher|TestOwnedStore|TestRestartFirstSnapshot' -count=1
+go test ./cmd/relay -run 'TestProductionSettingsReadsAndConstructionStayBehindTheBoundary|TestSettingsBoundaryScanBitesOnEachViolation|TestTrayOwnershipIsAcquiredBeforeStoreAndBridgeSetup|TestCommitEvent|TestMutationsAcrossHTTPIPCAndTrayDoorsSurviveInAdmissionOrderWithOneEventEach' -count=1
+```
 
 ## Foundation and rationale
 
