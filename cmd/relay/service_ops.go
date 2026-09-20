@@ -23,6 +23,11 @@ var (
 	// mutation: the returned config is the record that landed, and reporting
 	// it as an error alone loses a service the operator can see in the file.
 	errServiceProcess = errors.New("service process")
+	// errServiceChangedDuringApproval means the record moved between the
+	// presence decision and the queued commit so the request now needs an
+	// approval it never obtained. Nothing was written; retry against the
+	// current record.
+	errServiceChangedDuringApproval = errors.New("service changed while the request was being approved; retry the request")
 )
 
 // Carries the reason text verbatim because the settings UI shows it as-is.
@@ -472,34 +477,77 @@ func (o *ServiceOps) Get(id string) (config.ServiceConfig, error) {
 	return *svc, nil
 }
 
-// Register decides whether a request creates or updates inside the same queue
-// as the mutation. The caller must not resolve this choice from its own read.
+// serviceApproval is what the presence prompt, run before the queue, obtained.
+// Create and update bind the same digest (serviceFields.presenceDigest), so an
+// approval for either covers the other for the same request.
+type serviceApproval struct {
+	granted    bool
+	presenceID string
+}
+
+// Register decides whether a request creates or updates twice: before the
+// queue, from a snapshot, only to know whether to prompt (a human prompt must
+// not hold the lane); and again inside the queue against the live record,
+// which is the decision that counts. The caller must not resolve this choice
+// from its own read.
 func (o *ServiceOps) Register(ctx context.Context, f serviceFields, via, credID string) (cfg config.ServiceConfig, err error) {
+	id := f.resolvedID()
+	var approval serviceApproval
+	if snapshot, _ := config.FindServiceByID(o.Store.Get(), id); snapshot != nil {
+		if err := o.preflightUpdate(id, f); err != nil {
+			return config.ServiceConfig{}, err
+		}
+		if approval, err = o.approveUpdate(ctx, id, f, *snapshot); err != nil {
+			return config.ServiceConfig{}, err
+		}
+	} else {
+		if err := o.preflightCreate(id, f); err != nil {
+			return config.ServiceConfig{}, err
+		}
+		if approval, err = o.approveCreate(ctx, id, f); err != nil {
+			return config.ServiceConfig{}, err
+		}
+	}
 	err = o.runQueued(ctx, func() error {
-		id := f.resolvedID()
 		if svc, _ := config.FindServiceByID(o.Store.Get(), id); svc != nil {
-			cfg, err = o.update(ctx, id, f, via, credID)
+			if err := o.preflightUpdate(id, f); err != nil {
+				return err
+			}
+			cfg, err = o.commitUpdate(id, f, via, credID, approval)
 			return err
 		}
-		cfg, err = o.create(ctx, f, via, credID)
+		if err := o.preflightCreate(id, f); err != nil {
+			return err
+		}
+		cfg, err = o.commitCreate(id, f, via, credID, approval)
 		return err
 	})
 	return cfg, err
 }
 
 func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID string) (cfg config.ServiceConfig, err error) {
+	id := f.resolvedID()
+	if err := o.preflightCreate(id, f); err != nil {
+		return config.ServiceConfig{}, err
+	}
+	approval, err := o.approveCreate(ctx, id, f)
+	if err != nil {
+		return config.ServiceConfig{}, err
+	}
 	err = o.runQueued(ctx, func() error {
 		var innerErr error
-		cfg, innerErr = o.create(ctx, f, via, credID)
+		cfg, innerErr = o.commitCreate(id, f, via, credID, approval)
 		return innerErr
 	})
 	return cfg, err
 }
 
-func (o *ServiceOps) create(ctx context.Context, f serviceFields, via, credID string) (config.ServiceConfig, error) {
-	id := f.resolvedID()
+// preflightCreate and preflightUpdate refuse a request before any prompt. They
+// have no side effects, so the queued step repeats them against a request
+// whose create-versus-update outcome may have flipped.
+func (o *ServiceOps) preflightCreate(id string, f serviceFields) error {
 	if id == "" {
-		return config.ServiceConfig{}, invalidService("display name is required")
+		return invalidService("display name is required")
 	}
 	if id == config.RelaySessionsServiceID {
 		// SH §2.1: relay-sessions is built in, synthesized at every start,
@@ -508,19 +556,54 @@ func (o *ServiceOps) create(ctx context.Context, f serviceFields, via, credID st
 		// capability sessions is refused for every OTHER id already, so the
 		// only way a register call could ever hold it is by also claiming
 		// this reserved one.
-		return config.ServiceConfig{}, invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be registered", id))
+		return invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be registered", id))
 	}
 	if f.Command == "" {
-		return config.ServiceConfig{}, invalidService("command is required")
+		return invalidService("command is required")
 	}
+	return requireIssuanceAuditor(o.Issuance)
+}
 
-	if err := requireIssuanceAuditor(o.Issuance); err != nil {
-		return config.ServiceConfig{}, err
+func (o *ServiceOps) preflightUpdate(id string, f serviceFields) error {
+	if id == config.RelaySessionsServiceID {
+		return invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be edited", id))
 	}
+	if f.Command == "" {
+		return invalidService("command is required")
+	}
+	return requireIssuanceAuditor(o.Issuance)
+}
+
+func (o *ServiceOps) approveCreate(ctx context.Context, id string, f serviceFields) (serviceApproval, error) {
 	grant, err := requireGate(o.Gate, ctx, "service.register", f.presenceDigest(id),
 		fmt.Sprintf("register the service %q (%s) that runs %s", f.DisplayName, id, f.Command))
 	if err != nil {
-		return config.ServiceConfig{}, err
+		return serviceApproval{}, err
+	}
+	return serviceApproval{granted: true, presenceID: grant.ID()}, nil
+}
+
+// approveUpdate prompts only when the update changes something serviceUpdateNeedsGate
+// names, judged against snapshot. snapshot is the zero record when the id is
+// unknown, which over-prompts and then loses to errServiceNotFound in the commit.
+func (o *ServiceOps) approveUpdate(ctx context.Context, id string, f serviceFields, snapshot config.ServiceConfig) (serviceApproval, error) {
+	if !serviceUpdateNeedsGate(snapshot, f) {
+		return serviceApproval{}, nil
+	}
+	grant, err := requireGate(o.Gate, ctx, "service.register", f.presenceDigest(id),
+		fmt.Sprintf("update the service %q to run %s", id, f.Command))
+	if err != nil {
+		return serviceApproval{}, err
+	}
+	return serviceApproval{granted: true, presenceID: grant.ID()}, nil
+}
+
+// Runs on the lane: no prompt, no network. A create always needs the approval;
+// one that arrives without it means the record vanished after the snapshot
+// said update-without-prompt.
+func (o *ServiceOps) commitCreate(id string, f serviceFields, via, credID string, approval serviceApproval) (config.ServiceConfig, error) {
+	if !approval.granted {
+		return config.ServiceConfig{}, fmt.Errorf("%w: %s", errServiceChangedDuringApproval, id)
 	}
 
 	cfg := f.toConfig(id)
@@ -535,7 +618,7 @@ func (o *ServiceOps) create(ctx context.Context, f serviceFields, via, credID st
 	if err := o.Store.With(func(s *config.Settings) { s.UpsertService(cfg) }); err != nil {
 		return config.ServiceConfig{}, fmt.Errorf("save service: %w", err)
 	}
-	if err := recordConfigChange(o.Issuance, auditCredentialService, id, nil, via, credID, grant.ID()); err != nil {
+	if err := recordConfigChange(o.Issuance, auditCredentialService, id, nil, via, credID, approval.presenceID); err != nil {
 		slog.Error("service registered but not recorded in the audit log", "id", id, "error", err)
 	}
 
@@ -553,50 +636,38 @@ func (o *ServiceOps) create(ctx context.Context, f serviceFields, via, credID st
 // Restart is conditional on current state, not on the request: starting a
 // stopped service as a side effect of editing it would surprise a caller who
 // asked only for an edit.
+//
+// The prompt runs before the queue against a snapshot of the record; the
+// queued commit re-derives serviceUpdateNeedsGate on the live record and
+// refuses with errServiceChangedDuringApproval when it now needs an approval
+// that was not obtained. A stale snapshot that over-prompted needs no handling.
 func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via, credID string) (cfg config.ServiceConfig, err error) {
+	if err := o.preflightUpdate(id, f); err != nil {
+		return config.ServiceConfig{}, err
+	}
+
+	// This is deliberate: an empty display_name is not refused here, before
+	// the prompt. It must lose to errServiceNotFound for an id that was never
+	// there (TestOpsThatFindNothingWriteNothing), and this read of the
+	// snapshot is the wrong place to give it a second meaning.
+	var snapshot config.ServiceConfig
+	if e, _ := config.FindServiceByID(o.Store.Get(), id); e != nil {
+		snapshot = *e
+	}
+	approval, err := o.approveUpdate(ctx, id, f, snapshot)
+	if err != nil {
+		return config.ServiceConfig{}, err
+	}
 	err = o.runQueued(ctx, func() error {
 		var innerErr error
-		cfg, innerErr = o.update(ctx, id, f, via, credID)
+		cfg, innerErr = o.commitUpdate(id, f, via, credID, approval)
 		return innerErr
 	})
 	return cfg, err
 }
 
-func (o *ServiceOps) update(ctx context.Context, id string, f serviceFields, via, credID string) (config.ServiceConfig, error) {
-	if id == config.RelaySessionsServiceID {
-		return config.ServiceConfig{}, invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be edited", id))
-	}
-	if f.Command == "" {
-		return config.ServiceConfig{}, invalidService("command is required")
-	}
-
-	if err := requireIssuanceAuditor(o.Issuance); err != nil {
-		return config.ServiceConfig{}, err
-	}
-
-	// existing decides only whether this update needs the gate; the mutation
-	// below re-reads it inside config.WithDeclinable. A record removed between
-	// the two ends in errServiceNotFound, gated needlessly or not
-	// (TestServiceOpsRace_UpdateLosesToConcurrentRemove).
-	//
-	// This is deliberate: an empty display_name is not refused here, before
-	// the prompt. It must lose to errServiceNotFound for an id that was never
-	// there (TestOpsThatFindNothingWriteNothing), and this read of existing is
-	// the wrong place to give it a second meaning.
-	var existing config.ServiceConfig
-	if e, _ := config.FindServiceByID(o.Store.Get(), id); e != nil {
-		existing = *e
-	}
-	var presenceID string
-	if serviceUpdateNeedsGate(existing, f) {
-		grant, err := requireGate(o.Gate, ctx, "service.register", f.presenceDigest(id),
-			fmt.Sprintf("update the service %q to run %s", id, f.Command))
-		if err != nil {
-			return config.ServiceConfig{}, err
-		}
-		presenceID = grant.ID()
-	}
-
+// Runs on the lane: no prompt, no network.
+func (o *ServiceOps) commitUpdate(id string, f serviceFields, via, credID string, approval serviceApproval) (config.ServiceConfig, error) {
 	// IsRunning is sampled before the commit, same as the config merge below;
 	// what makes this race-safe is not when wasRunning is read but that a
 	// stale true never reaches Reload, because the callback below resolves the
@@ -608,6 +679,9 @@ func (o *ServiceOps) update(ctx context.Context, id string, f serviceFields, via
 		existing, idx := config.FindServiceByID(s, id)
 		if idx < 0 {
 			return fmt.Errorf("%w: %s", errServiceNotFound, id)
+		}
+		if !approval.granted && serviceUpdateNeedsGate(*existing, f) {
+			return fmt.Errorf("%w: %s", errServiceChangedDuringApproval, id)
 		}
 		cfg = f.toConfig(id)
 		// Every pointer/nil-able field on serviceFields means the same thing
@@ -647,12 +721,12 @@ func (o *ServiceOps) update(ctx context.Context, id string, f serviceFields, via
 		s.UpdateService(cfg)
 		return nil
 	}); err != nil {
-		if errors.Is(err, errServiceNotFound) || errors.Is(err, errServiceInvalid) {
+		if errors.Is(err, errServiceNotFound) || errors.Is(err, errServiceInvalid) || errors.Is(err, errServiceChangedDuringApproval) {
 			return config.ServiceConfig{}, err
 		}
 		return config.ServiceConfig{}, fmt.Errorf("save service: %w", err)
 	}
-	if err := recordConfigChange(o.Issuance, auditCredentialService, id, nil, via, credID, presenceID); err != nil {
+	if err := recordConfigChange(o.Issuance, auditCredentialService, id, nil, via, credID, approval.presenceID); err != nil {
 		slog.Error("service updated but not recorded in the audit log", "id", id, "error", err)
 	}
 

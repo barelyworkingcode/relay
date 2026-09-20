@@ -182,9 +182,9 @@ func scanRequireIssuanceAuditorCallSites(t *testing.T, root string) []string {
 
 func normalizeGateMethodName(method string) string {
 	switch method {
-	case "ServiceOps.create":
+	case "ServiceOps.create", "ServiceOps.preflightCreate", "ServiceOps.approveCreate":
 		return "ServiceOps.Create"
-	case "ServiceOps.update":
+	case "ServiceOps.update", "ServiceOps.preflightUpdate", "ServiceOps.approveUpdate":
 		return "ServiceOps.Update"
 	case "ServiceOps.remove":
 		return "ServiceOps.Remove"

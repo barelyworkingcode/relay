@@ -48,6 +48,8 @@ func serviceHTTPStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, errServiceInvalid):
 		return http.StatusBadRequest
+	case errors.Is(err, errServiceChangedDuringApproval):
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}

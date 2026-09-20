@@ -66,6 +66,8 @@ func enrolmentHTTPStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, enrolment.ErrInvalid):
 		return http.StatusBadRequest
+	case errors.Is(err, errRemoteConfigChangedDuringApproval):
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}

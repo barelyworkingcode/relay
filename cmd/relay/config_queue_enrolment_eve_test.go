@@ -163,7 +163,7 @@ func TestEvePasskeyReportWaitsForQueue(t *testing.T) {
 	}
 }
 
-func TestEnrolmentOpsSetRemoteConfigAuthorizesCurrentQueuedState(t *testing.T) {
+func TestEnrolmentOpsSetRemoteConfigRefusesStaleApprovalDecision(t *testing.T) {
 	store := eveOpsStore(t)
 	queue, err := config.NewCommandQueue(1)
 	assertNoErr(t, err, "NewCommandQueue")
@@ -184,8 +184,8 @@ func TestEnrolmentOpsSetRemoteConfigAuthorizesCurrentQueuedState(t *testing.T) {
 		s.Remote = &config.RemoteConfig{Listen: "127.0.0.1:9910", Enabled: boolPtr(true)}
 	}), "seed remote config after admission")
 	releaseBlocker()
-	if err := <-removed; !errors.Is(err, presence.ErrRefused) {
-		t.Fatalf("Remove authorized against stale state: err = %v, want presence.ErrRefused", err)
+	if err := <-removed; !errors.Is(err, errRemoteConfigChangedDuringApproval) {
+		t.Fatalf("Remove committed on a stale approval decision: err = %v, want errRemoteConfigChangedDuringApproval", err)
 	}
 	if store.Get().Remote == nil {
 		t.Fatal("a queued Remove cleared remote config after its gate refused")

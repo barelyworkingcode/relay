@@ -887,6 +887,52 @@ func (f remoteConfigFields) removePresenceDigest() presence.Digest {
 		Build()
 }
 
+// errRemoteConfigChangedDuringApproval means the remote block moved between
+// the presence decision and the queued commit so the request now needs an
+// approval it never obtained. Nothing was written; retry the request.
+var errRemoteConfigChangedDuringApproval = errors.New("remote configuration changed while the request was being approved; retry the request")
+
+type remoteGateDecision struct {
+	needGate bool
+	digest   presence.Digest
+	remove   bool
+	changed  []string
+}
+
+// remoteGateReason is the prompt text for a decision whose needGate is true.
+func remoteGateReason(d remoteGateDecision) string {
+	if d.remove {
+		return "remove relay's remote configuration entirely"
+	}
+	return remoteConfigReason(d.changed)
+}
+
+// decideRemoteGate is the one place the prompt-or-not decision for a remote
+// configuration request is derived, used both for the snapshot before the
+// queue and the live record inside it.
+func decideRemoteGate(existing *config.RemoteConfig, f remoteConfigFields, listen, enrolListen string) remoteGateDecision {
+	if f.Remove {
+		if existing == nil {
+			return remoteGateDecision{}
+		}
+		return remoteGateDecision{
+			needGate: true,
+			digest:   f.removePresenceDigest(),
+			remove:   true,
+			changed:  []string{"remove"},
+		}
+	}
+	changed := remoteConfigChangedFields(existing, listen, enrolListen, f)
+	if len(changed) == 0 {
+		return remoteGateDecision{}
+	}
+	return remoteGateDecision{
+		needGate: true,
+		digest:   f.presenceDigest(listen, enrolListen),
+		changed:  changed,
+	}
+}
+
 // SetRemoteConfig is the one core the HTTP door (PUT /api/remote) and the
 // Settings-window IPC door (update_remote_config) both call: gating it here
 // gates both, and any future CLI path to the same operation for free.
@@ -930,43 +976,33 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 		}
 	}
 
+	// The decision to prompt is made from a snapshot, before the queue: a human
+	// prompt must not hold the lane. The queued step re-derives it against the
+	// live record and refuses unless the approval obtained covers it.
+	snapshot := decideRemoteGate(o.Store.Get().Remote, f, listen, enrolListen)
+	var approved *presence.Digest
+	var presenceID string
+	if snapshot.needGate {
+		grant, err := requireGate(o.Gate, context.WithoutCancel(ctx), "remote.configure", snapshot.digest, remoteGateReason(snapshot))
+		if err != nil {
+			return remoteConfigView{}, err
+		}
+		approved = &snapshot.digest
+		presenceID = grant.ID()
+	}
+
 	var view remoteConfigView
 	err := o.runQueued(ctx, func() error {
-		existing := o.Store.Get().Remote
 		var changed []string
-		var needGate bool
-		var digest presence.Digest
-		var reason string
-		switch {
-		case f.Remove:
-			if existing != nil {
-				needGate = true
-				digest = f.removePresenceDigest()
-				reason = "remove relay's remote configuration entirely"
-				changed = []string{"remove"}
+		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			live := decideRemoteGate(s.Remote, f, listen, enrolListen)
+			if live.needGate && (approved == nil || !approved.Equal(live.digest)) {
+				return errRemoteConfigChangedDuringApproval
 			}
-		default:
-			changed = remoteConfigChangedFields(existing, listen, enrolListen, f)
-			if len(changed) > 0 {
-				needGate = true
-				digest = f.presenceDigest(listen, enrolListen)
-				reason = remoteConfigReason(changed)
-			}
-		}
-
-		var presenceID string
-		if needGate {
-			grant, err := requireGate(o.Gate, context.WithoutCancel(ctx), "remote.configure", digest, reason)
-			if err != nil {
-				return err
-			}
-			presenceID = grant.ID()
-		}
-
-		if err := o.Store.With(func(s *config.Settings) {
+			changed = live.changed
 			if f.Remove {
 				s.Remote = nil
-				return
+				return nil
 			}
 			if s.Remote == nil {
 				s.Remote = &config.RemoteConfig{}
@@ -997,7 +1033,11 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 				// (resolveRemoteEnrolment) — not duplicated here.
 				s.Remote.EnrolmentRequests = nil
 			}
+			return nil
 		}); err != nil {
+			if errors.Is(err, errRemoteConfigChangedDuringApproval) {
+				return err
+			}
 			return fmt.Errorf("save remote config: %w", err)
 		}
 

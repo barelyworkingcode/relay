@@ -71,8 +71,8 @@ unbounded subprocess wait must not hold the lane.
 - Enrolment create, sign, approve, update, revoke, refusal, and remote-config
   mutations now use the same queue. Their settings, issuance/audit work, and
   approval payload resolution complete before the caller returns.
-- Remote-config change detection and its presence decision now run on that
-  queue, so a queued remove cannot authorize against a stale pre-queue state.
+- Remote-config mutation runs on that queue; its presence decision follows the
+  approval rule below.
 - Eve enrolment-window open/consume and Eve passkey report/revoke/unrevoke
   mutations now use the same queue, including persistence and audit effects.
 - Host create, update, remove, and probe reserve and commit persisted probe
@@ -85,6 +85,17 @@ unbounded subprocess wait must not hold the lane.
   `errProjectChangedDuringApproval` (HTTP 409, IPC `onProjectError`).
 - Terminal template create, update, and remove now use the same queue; the
   Settings window (IPC) and the HTTP routes share one `TemplateOps`.
+- Service create/register/update and remote-config set no longer hold the lane
+  during their presence prompt. The rule, stated once: a presence prompt never
+  runs on the lane; approval is obtained outside the queue from a snapshot, and
+  the queued commit re-derives the decision against the live record and refuses
+  on divergence. The refusals are `errServiceChangedDuringApproval` and
+  `errRemoteConfigChangedDuringApproval` (HTTP 409, IPC and CLI surface the
+  message): nothing is written, the caller retries. A stale snapshot that
+  over-prompted is tolerated. `service register` decides create versus update
+  again inside the queue; both bind the same digest, so an approval for either
+  covers the other, while an unprompted update whose record vanished (now a
+  create) is refused.
 
 The remaining work is to apply the same boundary to the other configuration
 domains, route normal CLI reads through the tray, and queue service-owned config
@@ -233,13 +244,11 @@ must carry what it was based on, such as the record's generation or a hash of
 the fields it approved, and the commit must refuse or re-check when that
 changed.
 
-`ProjectOps.Update` is resolved this way: the prompt runs before the queue, and
-the queued step re-derives the widening against the live record and refuses
-when it exceeds the approved field set. A stale snapshot that over-prompted is
-tolerated. Remaining work: `ServiceOps` Create/Update/Register and
-`EnrolmentOps.SetRemoteConfig` still hold the lane during the presence prompt,
-which breaks the lane-duration assumption; they need the same
-prompt-outside, re-check-inside shape.
+`ProjectOps.Update`, `ServiceOps.Create/Update/Register` and
+`EnrolmentOps.SetRemoteConfig` are resolved this way: the prompt runs before the
+queue, and the queued step re-derives the decision against the live record and
+refuses when it needs an approval that was not obtained (or a different digest
+than the one approved). A stale snapshot that over-prompted is tolerated.
 
 ### 7. Persisted configuration and running processes can diverge
 
