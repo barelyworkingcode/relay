@@ -51,6 +51,13 @@ unbounded subprocess wait must not hold the lane.
 
 ### Completed on this branch
 
+- Sealed-store reset runs its destructive sequence (deletes, keychain destroy,
+  `Reresolve`, `EnsureInitialized`) as one queued step after the presence
+  prompt, which stays off the lane. The step re-checks the approved key ids
+  against the live ones and refuses with `errSealedKeysChangedDuringApproval`
+  ("sealing keys changed during approval, retry"; the tray logs it), deleting
+  nothing.
+
 - Added `internal/config.CommandQueue`, with bounded admission, FIFO execution,
   caller waiting, cancellation, shutdown, panic recovery, and deterministic
   tests.
@@ -307,9 +314,15 @@ entire lifetime.
 ### 9. Reset and adjacent configuration files need the same owner
 
 Sealed-store reset deletes settings, CA material, and the keychain item across
-multiple steps. It must pause or exclusively own the configuration lane for the
-whole recovery operation; a concurrent write must not use the old sealing key
-mid-reset.
+multiple steps. It now owns the configuration lane for that whole destructive
+sequence, after an off-lane presence prompt (`resetSealedStore`,
+`commitSealedReset`): a concurrent queued write cannot use the old sealing key
+mid-reset, and commands queued behind it see the post-reset store. The queued
+step re-checks that the key ids bound in the approved digest are still the live
+ones and otherwise deletes nothing (`errSealedKeysChangedDuringApproval`).
+Not queued: the poller's `ReloadIfChanged` and other readers take only the
+store's own mutex, so they can observe the store between the file deletes and
+`Reresolve` (settings resolve to empty; they never write).
 
 Also include configuration files that are not fields in `settings.json`. The
 service configuration editor writes service-owned files separately, and host

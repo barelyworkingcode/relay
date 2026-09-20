@@ -55,7 +55,7 @@ func TestResetSealedStore_RequiresPresence(t *testing.T) {
 	dir, store, keyring := srSetup(t, "aaaaaaaaaaaaaaaa")
 	before := sdRead(t, dir)
 
-	err := resetSealedStore(context.Background(), dir, store, keyring, nil)
+	err := resetSealedStore(context.Background(), dir, store, keyring, nil, nil)
 	if !errors.Is(err, errPresenceGateNotWired) {
 		t.Fatalf("resetSealedStore with a nil gate: err = %v, want errPresenceGateNotWired", err)
 	}
@@ -72,7 +72,7 @@ func TestResetSealedStore_RefusedPresenceLeavesEverythingIntact(t *testing.T) {
 	gate, err := presence.NewGate(presencetest.Deny())
 	assertNoErr(t, err, "NewGate")
 
-	err = resetSealedStore(context.Background(), dir, store, keyring, gate)
+	err = resetSealedStore(context.Background(), dir, store, keyring, gate, nil)
 	if !errors.Is(err, presence.ErrRefused) {
 		t.Fatalf("resetSealedStore with a denying gate: err = %v, want presence.ErrRefused", err)
 	}
@@ -109,7 +109,7 @@ func TestResetSealedStore_DeletesEverythingAndReinitialisesWithAFreshKey(t *test
 	gate, err := presence.NewGate(presencetest.Allow())
 	assertNoErr(t, err, "NewGate")
 
-	assertNoErr(t, resetSealedStore(context.Background(), dir, store, keyring, gate), "resetSealedStore")
+	assertNoErr(t, resetSealedStore(context.Background(), dir, store, keyring, gate, nil), "resetSealedStore")
 
 	// The store handed to resetSealedStore is the SAME instance every
 	// already-wired subsystem in a running tray holds — the whole point of

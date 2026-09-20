@@ -1295,7 +1295,7 @@ func (a *App) confirmAndResetSealedStore() {
 			slog.Error("sealed store reset: store is not file-backed")
 			return
 		}
-		if err := resetSealedStore(a.ctx, a.configDir, ss, a.sealedKeyring, a.presenceGate); err != nil {
+		if err := resetSealedStore(a.ctx, a.configDir, ss, a.sealedKeyring, a.presenceGate, a.serviceQueue); err != nil {
 			slog.Error("sealed store reset failed", "error", err)
 			return
 		}

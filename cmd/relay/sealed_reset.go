@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,10 @@ import (
 // the ordinary case — this is usually run BECAUSE the key vanished).
 // Neither value is a secret; both are 16 hex characters naming a key, never
 // the key itself.
+// errSealedKeysChangedDuringApproval means the key ids the operator approved
+// are no longer the live ones; nothing was deleted.
+var errSealedKeysChangedDuringApproval = errors.New("sealing keys changed during approval, retry")
+
 func sealedResetDigest(settingsKeyID string, keyring sealed.Keyring) presence.Digest {
 	keychainKeyID, _, _ := keyring.Load()
 	return presence.NewDigestBuilder("sealed.reset").
@@ -56,13 +61,33 @@ func sealedResetReason(s *config.Settings) string {
 // program where minting a brand new key is correct, because the operator
 // standing at the keyboard just proved it with their password, which is
 // exactly what §5.5.1 reserves this act for and no other.
-func resetSealedStore(ctx context.Context, dir string, store *config.FileSettingsStore, keyring sealed.Keyring, gate *presence.Gate) error {
-	s := store.Get()
+//
+// The prompt runs off the config lane (a person can take minutes); the
+// destructive sequence then runs as ONE queued step, so no queued write can
+// interleave with the deletes or seal under the old key mid-reset. queue is nil
+// only where no queue exists (tests): the sequence then runs inline.
+func resetSealedStore(ctx context.Context, dir string, store *config.FileSettingsStore, keyring sealed.Keyring, gate *presence.Gate, queue *config.CommandQueue) error {
+	s := config.FreshSettings(store)
 	digest := sealedResetDigest(s.SealedKeyID, keyring)
 	if _, err := requireGate(gate, ctx, "sealed.reset", digest, sealedResetReason(s)); err != nil {
 		return err
 	}
+	step := func() error { return commitSealedReset(dir, store, keyring, digest) }
+	if queue == nil {
+		return step()
+	}
+	return queue.DoCommitted(ctx, func(context.Context) error { return step() })
+}
 
+// commitSealedReset is the destructive sequence, run on the lane. It commits
+// nothing unless the key ids the operator approved are still the live ones.
+// This is subtle: the check reads the FILE's key id (FreshSettings), not the
+// cache, because another process may have rewritten settings.json since the
+// prompt was raised.
+func commitSealedReset(dir string, store *config.FileSettingsStore, keyring sealed.Keyring, approved presence.Digest) error {
+	if sealedResetDigest(config.FreshSettings(store).SealedKeyID, keyring) != approved {
+		return errSealedKeysChangedDuringApproval
+	}
 	for _, name := range []string{"settings.json", enrolment.CAKeySealedFile, enrolment.CACertFile} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("sealed reset: removing %s: %w", name, err)
