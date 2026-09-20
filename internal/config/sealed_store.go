@@ -157,6 +157,7 @@ func (ss *FileSettingsStore) Reresolve(keyring sealed.Keyring) error {
 	ss.readErr = nil
 	ss.sealErrors = nil
 	ss.lastModTime = 0
+	ss.fileHash = [32]byte{}
 	return nil
 }
 

@@ -18,7 +18,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func (a *App) openSettingsWindow() {
-	s := a.store.Get()
+	s := config.DisplaySettings(a.store)
 	// Consumed here so a code minted for THIS open never survives into the
 	// next one: it is single use and two minutes old at best, and a stale one
 	// reappearing would read as a code that still works.
@@ -94,7 +94,7 @@ func serviceStatusEventPayload(reg service.Manager) map[string]interface{} {
 // adds/removes/auth — discovered_tools is runtime-only and never serialized
 // on ExternalMcp itself.
 func (a *App) pushFullSettings() {
-	s := a.store.Get()
+	s := config.DisplaySettings(a.store)
 	seed := a.buildOverviewSeed(s)
 	a.emitSettingsEvent("onSettingsReloaded", map[string]interface{}{
 		// Native-viewed, not the raw settings slices: config.Secret refuses to
@@ -169,7 +169,7 @@ func (a *App) buildScopeFields() map[string][]project.ScopeFieldView {
 // scheduler, or the CLI mutates a project the in-tray UI re-renders.
 // Cheaper than pushFullSettings when only projects changed.
 func (a *App) pushFullProjects() {
-	a.emitSettingsEvent("onProjectsReloaded", a.store.Get().Projects)
+	a.emitSettingsEvent("onProjectsReloaded", config.DisplaySettings(a.store).Projects)
 }
 
 // ---------------------------------------------------------------------------

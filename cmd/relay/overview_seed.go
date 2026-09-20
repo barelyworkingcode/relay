@@ -64,7 +64,7 @@ func (a *App) recordHealthEvent(ev mcpbroker.HealthEvent) {
 	a.lastHealth[ev.ID] = ev
 	a.mcpHealthMu.Unlock()
 	a.platform.DispatchToMain(func() {
-		a.emitSettingsEvent("onMcpHealth", a.buildMcpHealth(a.store.Get()))
+		a.emitSettingsEvent("onMcpHealth", a.buildMcpHealth(config.DisplaySettings(a.store)))
 	})
 }
 

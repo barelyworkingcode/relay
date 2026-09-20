@@ -216,7 +216,7 @@ func issuanceActor(iss CredentialIssuance) AuditActor {
 // size. Issuance is an operator act at human rate, so the overshoot is a few
 // hundred bytes per invocation.
 func OpenCLIIssuanceRecorder(store config.SettingsStore, logDir string) (*AuditRecorder, error) {
-	cfg := store.Get().Audit
+	cfg := config.FreshSettings(store).Audit
 	resolved := ResolveAuditConfig(cfg)
 	if !resolved.Enabled {
 		return nil, nil

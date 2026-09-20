@@ -72,7 +72,7 @@ type eveEnrolmentConsumedView struct {
 }
 
 // EveEnrolmentOps is the second-browser counterpart to LoginOps, the same
-// Store/Audit/Gate/OnChange shape (ADR-016). Only Open is gated: Status is a
+// Store/Audit/Gate shape (ADR-016). Only Open is gated: Status is a
 // read, and Consume narrows a window the operator already opened at the
 // console rather than widening anything, so neither asks a human to confirm
 // twice.
@@ -84,8 +84,7 @@ type EveEnrolmentOps struct {
 	Audit *audit.AuditRecorder
 	// Gate is the presence check Open demands before it touches the store.
 	// A nil Gate refuses — see requireGate.
-	Gate     *presence.Gate
-	OnChange func()
+	Gate *presence.Gate
 	// Notify raises the tray's console banners for Open and Consume
 	// (docs/eve-passkey-enrolment.md: "Relay notifies the console..."). Nil
 	// is safe and raises nothing.
@@ -107,12 +106,6 @@ func (o *EveEnrolmentOps) auditor() IssuanceAuditor {
 }
 
 var errEveEnrolmentOpsUnavailable = errors.New("eve enrolment management is unavailable in this relay process")
-
-func (o *EveEnrolmentOps) notify() {
-	if o.OnChange != nil {
-		o.OnChange()
-	}
-}
 
 func (o *EveEnrolmentOps) notifyConsole(title, body string) {
 	if o != nil && o.Notify != nil {
@@ -158,7 +151,6 @@ func (o *EveEnrolmentOps) Open(ctx context.Context, via string) (eveEnrolmentSta
 	}); err != nil {
 		return eveEnrolmentStatusView{}, err
 	}
-	o.notify()
 	o.notifyConsole("Relay", "Eve passkey enrolment open for 5 minutes")
 	return eveEnrolmentStatusView{Open: true, Expires: expires}, nil
 }
@@ -170,7 +162,7 @@ func (o *EveEnrolmentOps) Status() eveEnrolmentStatusView {
 	if o == nil || o.Store == nil {
 		return eveEnrolmentStatusView{}
 	}
-	w := o.Store.Get().EveEnrolment
+	w := config.DisplaySettings(o.Store).EveEnrolment
 	if !eveEnrolmentOpen(w, time.Now()) {
 		return eveEnrolmentStatusView{}
 	}
@@ -215,7 +207,6 @@ func (o *EveEnrolmentOps) Consume(ctx context.Context, claim eveEnrolmentClaim) 
 	}); err != nil {
 		return eveEnrolmentConsumedView{}, err
 	}
-	o.notify()
 	o.notifyConsole("Relay", fmt.Sprintf("Eve: a new browser registered a passkey (from %s)", claim.IP))
 	return eveEnrolmentConsumedView{Expires: expires}, nil
 }

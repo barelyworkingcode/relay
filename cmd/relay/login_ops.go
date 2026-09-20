@@ -226,8 +226,7 @@ type LoginOps struct {
 	// Gate is the presence check MintBootstrap and RevokePasskey demand
 	// before they touch the store (ADR-017 decisions 3 and 4). A nil Gate
 	// refuses both rather than allowing either — see requireGate.
-	Gate     *presence.Gate
-	OnChange func()
+	Gate *presence.Gate
 }
 
 func (o *LoginOps) runQueued(ctx context.Context, fn func() error) error {
@@ -255,12 +254,6 @@ func (o *LoginOps) auditor() IssuanceAuditor {
 }
 
 var errLoginOpsUnavailable = errors.New("passkey management is unavailable in this relay process")
-
-func (o *LoginOps) notify() {
-	if o.OnChange != nil {
-		o.OnChange()
-	}
-}
 
 // via names the door this mint came from (auditViaTray for the menu item,
 // auditViaCLI for `relay login enrol` since S6 brokers it over admin_op) —
@@ -296,7 +289,6 @@ func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (loginCodeView
 	}); err != nil {
 		return loginCodeView{}, err
 	}
-	o.notify()
 	return loginCodeView{
 		Code:    plaintext,
 		Expires: expires,
@@ -349,14 +341,14 @@ func (o *LoginOps) Passkeys() []passkeyView {
 	if o == nil {
 		return []passkeyView{}
 	}
-	return passkeyViews(o.Store.Get())
+	return passkeyViews(config.DisplaySettings(o.Store))
 }
 
 func (o *LoginOps) Sessions() []loginSessionView {
 	if o == nil {
 		return []loginSessionView{}
 	}
-	return loginSessionViews(o.Store.Get(), time.Now())
+	return loginSessionViews(config.DisplaySettings(o.Store), time.Now())
 }
 
 func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (config.Passkey, error) {
@@ -388,7 +380,6 @@ func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (config.Passkey
 	}); err != nil {
 		return config.Passkey{}, err
 	}
-	o.notify()
 	return removed, nil
 }
 
@@ -429,7 +420,6 @@ func (o *LoginOps) SignOut(id string) (config.APICredential, error) {
 	}); err != nil {
 		return config.APICredential{}, err
 	}
-	o.notify()
 	return removed, nil
 }
 

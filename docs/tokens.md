@@ -529,7 +529,12 @@ Two consequences worth stating rather than discovering:
   between two processes and now runs between two goroutines in one, which is
   a smaller window and not a closed one: an HTTP handler, an IPC handler and
   the status poller can still all reach the same `With` concurrently.
-- **It is still last-writer-wins, narrowed to a hand-edit.** The reload closes
+- **A hand-edit under a running tray is imported, not merged.** The tray's
+  store never re-reads the file on its own; a watcher submits the edit as one
+  queued, validated import, so it is ordered with every other mutation (a save
+  admitted first overwrites it). See the external-writer policy in
+  [`config-ownership-and-races.md`](config-ownership-and-races.md).
+- **Historically it was last-writer-wins, narrowed to a hand-edit.** The reload closes
   the window between a caller's cached view and the file; it does not make
   read-modify-write atomic against a write that lands in the gap between the
   reload and the save. The mutex around `With` already serializes every

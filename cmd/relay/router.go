@@ -231,7 +231,7 @@ type appRouter struct {
 	// spec §7.2). These are the SAME instances the IPC and HTTP doors hold
 	// (trayapp.go constructs each once and wires it here too), so a mutation
 	// brokered over admin_op carries the same Gate, the same nonce table and
-	// the same OnChange as one made from curl or the Settings window — never
+	// the same post-commit event as one made from curl or the Settings window — never
 	// a second, parallel copy. A nil field here refuses by name
 	// (admin_ops.go's requireXxxOps) rather than panicking three calls deep
 	// inside a core, which is what a test appRouter that forgot to wire one
@@ -314,7 +314,7 @@ type callerAuth struct {
 // below decide the rest.
 func (r *appRouter) resolveAuth(ctx context.Context, token string, op service.Operation) (callerAuth, error) {
 	if token != "" {
-		s := r.store.Get()
+		s := config.FreshSettings(r.store)
 		if stored := s.AuthenticateProjectByHash(config.HashToken(token)); stored != nil {
 			return callerAuth{stored: stored, settings: s}, nil
 		}
@@ -349,7 +349,7 @@ func (r *appRouter) resolveAuth(ctx context.Context, token string, op service.Op
 // so reaching this is a race between a delete and an in-flight request, and
 // the delete wins.
 func (r *appRouter) sessionScope(sessionID, projectID string) (callerAuth, error) {
-	s := r.store.Get()
+	s := config.FreshSettings(r.store)
 	proj, _ := config.FindProjectByID(s, projectID)
 	if proj == nil {
 		slog.Debug("session auth rejected: project is gone", "session_id", sessionID, "project", projectID)
@@ -923,7 +923,7 @@ func (v scopeView) annotate(t *mcp.Tool) {
 }
 
 func (r *appRouter) ValidateAdmin(token string) error {
-	s := r.store.Get()
+	s := config.FreshSettings(r.store)
 	// A degraded sealed store (§5.6) has no admin_secret to compare
 	// against, so this fails closed exactly like an empty token would.
 	adminSecret, ok := s.AdminSecret.Reveal()
@@ -934,7 +934,7 @@ func (r *appRouter) ValidateAdmin(token string) error {
 }
 
 func (r *appRouter) ReconcileExternalMcps(ctx context.Context) {
-	settings := r.store.Reload()
+	settings := config.FreshSettings(r.store)
 	r.tools.Reconcile(ctx, settings.ExternalMcps)
 	r.regenProjectSkills(ctx, settings)
 	r.onChange()
@@ -968,7 +968,7 @@ func (r *appRouter) ReloadService(id string) error {
 	if r.serviceOps != nil {
 		return r.serviceOps.Restart(id)
 	}
-	settings := r.store.Reload()
+	settings := config.FreshSettings(r.store)
 	svc, _ := config.FindServiceByID(settings, id)
 	if svc == nil {
 		slog.Warn("reload: no service found", "id", id)
@@ -1100,7 +1100,7 @@ func (r *appRouter) listableToolsByMcp(stored *config.StoredToken, settings *con
 }
 
 func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) error {
-	settings := r.store.Reload()
+	settings := config.FreshSettings(r.store)
 	mcpCfg, _ := config.FindExternalMcpByID(settings, id)
 	if mcpCfg == nil {
 		slog.Warn("reload: no external MCP found", "id", id)

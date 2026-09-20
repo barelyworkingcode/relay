@@ -459,7 +459,7 @@ func (m *ModelEndpointServer) resolveBearer(bearer string, shape modelbroker.Sha
 			errBody := modelbroker.UnauthorizedError(shape)
 			return modelCaller{auth: "model_key"}, &errBody
 		}
-		proj, _ := config.FindProjectByID(m.store.Get(), projectID)
+		proj, _ := config.FindProjectByID(config.FreshSettings(m.store), projectID)
 		if proj == nil {
 			// The project was deleted after the key was minted: fail closed
 			// rather than serve a key that has nothing left to scope it to.
@@ -470,12 +470,12 @@ func (m *ModelEndpointServer) resolveBearer(bearer string, shape modelbroker.Sha
 	}
 
 	hash := config.HashToken(bearer)
-	stored := m.store.Get().AuthenticateProjectByHash(hash)
+	stored := config.FreshSettings(m.store).AuthenticateProjectByHash(hash)
 	if stored == nil || stored.ProjectID == "" {
 		errBody := modelbroker.UnauthorizedError(shape)
 		return modelCaller{auth: "token"}, &errBody
 	}
-	proj, _ := config.FindProjectByID(m.store.Get(), stored.ProjectID)
+	proj, _ := config.FindProjectByID(config.FreshSettings(m.store), stored.ProjectID)
 	if proj == nil {
 		errBody := modelbroker.UnauthorizedError(shape)
 		return modelCaller{auth: "token"}, &errBody
@@ -585,7 +585,7 @@ func (m *ModelEndpointServer) resolveIdentity(r *http.Request, shape modelbroker
 	if op == service.OpModelList && slices.Contains(id.Capabilities, config.ServiceCapabilitySessions) {
 		return modelCaller{kind: "service", name: id.Name, grant: []string{"*"}, auth: "identity"}, nil
 	}
-	svc, _ := config.FindServiceByID(m.store.Get(), id.Name)
+	svc, _ := config.FindServiceByID(config.FreshSettings(m.store), id.Name)
 	var allowed []string
 	if svc != nil {
 		allowed = svc.AllowedModels
@@ -599,7 +599,7 @@ func (m *ModelEndpointServer) resolveIdentity(r *http.Request, shape modelbroker
 // and `allowed_models` is read live for every call by the same rule that
 // governs a project bearer.
 func (m *ModelEndpointServer) callerForSession(projectID, sessionID string, shape modelbroker.Shape) (modelCaller, *modelbroker.ErrorBody) {
-	proj, _ := config.FindProjectByID(m.store.Get(), projectID)
+	proj, _ := config.FindProjectByID(config.FreshSettings(m.store), projectID)
 	if proj == nil {
 		errBody := modelbroker.UnauthorizedError(shape)
 		return modelCaller{auth: "session", sessionID: sessionID}, &errBody
@@ -1368,7 +1368,7 @@ func (m *ModelEndpointServer) targetAddr() string {
 	if modelListenOverrideForTest != "" {
 		return modelListenOverrideForTest
 	}
-	s := m.store.Get()
+	s := config.FreshSettings(m.store)
 	if s.ModelEndpoint == nil {
 		return ""
 	}

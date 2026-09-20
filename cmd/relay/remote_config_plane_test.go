@@ -753,7 +753,6 @@ func TestCliAdmin_NoPresencePromptReachableFromRemoteListener(t *testing.T) {
 		Store:    f.store,
 		Gate:     gate,
 		Issuance: issuanceAuditorOrNil(f.audit),
-		OnChange: func() {},
 	}
 
 	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, configurer, f.mgr.AllMcpSurfaces)
@@ -814,7 +813,7 @@ func TestNarrowForEnrolment_DroppingAnMcpPrunesItsStaleGrantEntries(t *testing.T
 		p.Access = map[string]string{"macmcp": config.AccessRead, "other": config.AccessRead}
 	}), "widen behind the guards")
 
-	ops := &ProjectOps{Store: store, Issuance: pgwWithIssuance(t), OnChange: func() {}}
+	ops := &ProjectOps{Store: store, Issuance: pgwWithIssuance(t)}
 	surfaces := func() project.McpSurfaces { return project.McpSurfaces{"macmcp": macmcpSurface()} }
 	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
 
@@ -860,7 +859,7 @@ func TestNarrowForEnrolment_IssuanceAuditingOffRefusesBeforeTouchingStore(t *tes
 	}), "seed allowed_mcp_ids and allowed_tools")
 
 	before := odwSnap(t, dir)
-	ops := &ProjectOps{Store: store, Issuance: nil, OnChange: func() {}}
+	ops := &ProjectOps{Store: store, Issuance: nil}
 	surfaces := func() project.McpSurfaces { return project.McpSurfaces{"macmcp": macmcpSurface()} }
 	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
 

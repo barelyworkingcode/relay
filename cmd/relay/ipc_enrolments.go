@@ -308,7 +308,7 @@ func ipcUpdateRemoteConfig(ctx *IPCContext, raw json.RawMessage) {
 // ctx.GoFunc on its own account.
 func emitPendingEnrolmentRequests(ctx *IPCContext) {
 	ctx.UI.EmitEvent("onEnrolmentRequestsChanged",
-		marshalForUI(pendingEnrolmentRequestViewsOf(ctx.EnrolmentOps.PendingRequests(), ctx.Store.Get())))
+		marshalForUI(pendingEnrolmentRequestViewsOf(ctx.EnrolmentOps.PendingRequests(), config.DisplaySettings(ctx.Store))))
 }
 
 // ipcListEnrolmentRequests answers the Remote Clients tab's Pending requests

@@ -98,7 +98,7 @@ func refuseRemoteSession(store config.SettingsStore, projectID string) error {
 	if projectID == "" {
 		return nil
 	}
-	proj, _ := config.FindProjectByID(store.Get(), projectID)
+	proj, _ := config.FindProjectByID(config.FreshSettings(store), projectID)
 	if proj == nil || !proj.IsRemote() {
 		return nil
 	}
@@ -109,7 +109,7 @@ func modelAllowedForProject(store config.SettingsStore, projectID, model string)
 	if projectID == "" || model == "" {
 		return true // no project scope, or server-default model
 	}
-	proj, _ := config.FindProjectByID(store.Get(), projectID)
+	proj, _ := config.FindProjectByID(config.FreshSettings(store), projectID)
 	if proj == nil {
 		return true // unknown project — let relayLLM produce the authoritative error
 	}

@@ -149,15 +149,12 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj config.
 // tools enumerates the live MCP tool list for the project-picker UI; nil
 // makes the GET /api/mcps/{id}/tools route return 503.
 //
-// onChange fires after any successful create/update/delete/rotate so the
-// tray-window state can re-render. nil = no fan-out (tests use this).
-// onChange is unused here directly — every mutation now goes through ops,
-// which already holds the identical ProjectsChangedFn as its own OnChange
-// (see NewFrontendServer) and fires it itself. The parameter stays for
-// callers and doc symmetry with the IPC surface.
+// onChange is unused: every mutation goes through ops, and the tray refreshes
+// from the config queue's post-commit event. The parameter stays for callers
+// and doc symmetry with the IPC surface.
 func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) { //nolint:unparam // deliberate: kept for doc/call-site symmetry with the IPC surface, see comment above
 	rr.Handle(control.ClassRead, "GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
-		projects := store.Get().Projects
+		projects := config.DisplaySettings(store).Projects
 		if projects == nil {
 			projects = []config.Project{}
 		}
@@ -166,7 +163,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 	})
 
 	rr.Handle(control.ClassRead, "GET /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
-		proj, _ := config.FindProjectByID(store.Get(), r.PathValue("id"))
+		proj, _ := config.FindProjectByID(config.DisplaySettings(store), r.PathValue("id"))
 		if proj == nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
@@ -193,7 +190,6 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 		if skillLister != nil {
 			reconcileProjectSkill(r.Context(), skillLister, created)
 		}
-		// ops.Create already fired ops.OnChange; notify() here would double it.
 		writeJSON(w, http.StatusCreated, projectToView(created))
 	})
 
@@ -229,7 +225,6 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 		if skillLister != nil {
 			reconcileProjectSkill(r.Context(), skillLister, updated)
 		}
-		// ops.Update already fired ops.OnChange; notify() here would double it.
 		writeJSON(w, http.StatusOK, projectToView(updated))
 	})
 
@@ -245,14 +240,13 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
 		}
-		// ops.Remove already fired ops.OnChange; notify() here would double it.
 		w.WriteHeader(http.StatusNoContent)
 	})
 
 	// MCP listing for the Eve project dialog's "Allowed MCPs" picker.
 	// Returns id + display_name only; OAuth state and credentials stay private.
 	rr.Handle(control.ClassRead, "GET /api/mcps", func(w http.ResponseWriter, r *http.Request) {
-		mcps := store.Get().ExternalMcps
+		mcps := config.DisplaySettings(store).ExternalMcps
 		out := make([]map[string]string, 0, len(mcps))
 		for _, m := range mcps {
 			out = append(out, map[string]string{
@@ -285,7 +279,6 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
 		}
-		// ops.RotateToken already fired ops.OnChange; notify() here would double it.
 		writeJSON(w, http.StatusOK, map[string]string{"token": newPlaintext})
 	})
 

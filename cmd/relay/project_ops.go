@@ -40,7 +40,6 @@ type ProjectOps struct {
 	// and the credential_issued a rotation is (§7.5), and is the hard
 	// dependency §7.4 checks before Gate.
 	Issuance IssuanceAuditor
-	OnChange func()
 	// SessionCleanup ends and terminates a deleted project's live sessions
 	// (plan-broker-and-sessions.md §2 C5). Its zero value is a legitimate
 	// "no session-host wiring" -- see cleanupProject's own ready() guard,
@@ -93,12 +92,6 @@ var errProjectHosted = errors.New("project lives on a host; skills are generated
 // errProjectHasNoPath refuses a skill regen for a console project with an
 // empty Path (nothing for EmitSkills to write under).
 var errProjectHasNoPath = errors.New("project has no path")
-
-func (o *ProjectOps) notify() {
-	if o.OnChange != nil {
-		o.OnChange()
-	}
-}
 
 // projectCreateDigest binds a project.grant grant to exactly the shape being
 // created (§6.4). project_id is absent on create — there is none yet.
@@ -249,7 +242,6 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 			projectCreateGrantFieldNames(f), via, credID, grant.ID()); auditErr != nil {
 			slog.Error("project created but not recorded in the audit log", "id", created.ID, "error", auditErr)
 		}
-		o.notify()
 		return nil
 	}); err != nil {
 		if createErr != nil {
@@ -276,7 +268,7 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 // as approved; a stale snapshot that over-prompted needs no handling.
 func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFields, surfaces func() project.McpSurfaces, via, credID string) (config.Project, bool, error) {
 	var stored config.Project
-	if existing, _ := config.FindProjectByID(o.Store.Get(), id); existing != nil {
+	if existing, _ := config.FindProjectByID(config.FreshSettings(o.Store), id); existing != nil {
 		stored = *existing
 	}
 	widened := project.UpdateWidensGrant(stored, f)
@@ -324,7 +316,6 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 				slog.Error("project grant updated but not recorded in the audit log", "id", id, "error", auditErr)
 			}
 		}
-		o.notify()
 		return nil
 	}); err != nil {
 		if updateErr != nil {
@@ -347,7 +338,7 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 // .claude/skills, which project.grant already covers via allowed_tools/
 // allowed_mcp_ids at the time GenerateSkill was turned on.
 func (o *ProjectOps) RegenSkill(ctx context.Context, lister SkillLister, id string) (dir string, found bool, err error) {
-	proj, _ := config.FindProjectByID(o.Store.Get(), id)
+	proj, _ := config.FindProjectByID(config.FreshSettings(o.Store), id)
 	if proj == nil {
 		return "", false, nil
 	}
@@ -399,7 +390,6 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 	// delete"). A zero SessionCleanup (a caller with no session-host wiring)
 	// is a no-op, guarded by sessionRouteDeps.ready() inside cleanupProject.
 	o.SessionCleanup.cleanupProject(id)
-	o.notify()
 	return removed, true, nil
 }
 
@@ -457,7 +447,6 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (s
 		if auditErr := recordProjectTokenRotated(o.Issuance, id, via, credID, grant.ID()); auditErr != nil {
 			return fmt.Errorf("%w: %w", errProjectTokenUnrecorded, auditErr)
 		}
-		o.notify()
 		return nil
 	}); err != nil {
 		if genErr != nil {
@@ -569,7 +558,6 @@ func (o *ProjectOps) NarrowForEnrolment(
 			slog.Error("a remote narrowed its own grant but the change was not recorded in the audit log",
 				"project_id", projectID, "client_id", caller.ClientID, "error", auditErr)
 		}
-		o.notify()
 		return nil
 	})
 	if err != nil && !noop {

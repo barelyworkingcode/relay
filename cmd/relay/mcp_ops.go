@@ -125,7 +125,6 @@ type McpOps struct {
 	// funcs (bridge.SendReconcile / bridge.SendReloadMcp) wired in.
 	NotifyReconcile func(secret string) error
 	NotifyReloadMcp func(id, secret string) error
-	OnChange        func()
 	// StartFlow overrides the OAuth ceremony StartOAuth runs. Nil is the
 	// production wiring; it is a field because the real one performs network
 	// discovery, opens a browser and blocks on a callback listener, and the
@@ -169,14 +168,8 @@ func (o *McpOps) startFlow(mcpURL string, openURL func(string)) (*mcpbroker.OAut
 	return mcpbroker.StartOAuthFlow(mcpURL, openURL)
 }
 
-func (o *McpOps) notify() {
-	if o.OnChange != nil {
-		o.OnChange()
-	}
-}
-
 func (o *McpOps) List() []config.ExternalMcp {
-	m := o.Store.Get().ExternalMcps
+	m := config.DisplaySettings(o.Store).ExternalMcps
 	if m == nil {
 		return []config.ExternalMcp{}
 	}
@@ -184,7 +177,7 @@ func (o *McpOps) List() []config.ExternalMcp {
 }
 
 func (o *McpOps) Get(id string) (config.ExternalMcp, error) {
-	mcp, _ := config.FindExternalMcpByID(o.Store.Get(), id)
+	mcp, _ := config.FindExternalMcpByID(config.FreshSettings(o.Store), id)
 	if mcp == nil {
 		return config.ExternalMcp{}, fmt.Errorf("%w: %s", errMcpNotFound, id)
 	}
@@ -281,7 +274,6 @@ func (o *McpOps) persist(cfg config.ExternalMcp, via, credID, presenceID string)
 			// back that recordEnrolmentIssued's undo pattern would improve on.
 			slog.Error("mcp registered but not recorded in the audit log", "id", cfg.ID, "error", err)
 		}
-		o.notify()
 		return nil
 	}); err != nil {
 		return err
@@ -319,7 +311,6 @@ func (o *McpOps) Remove(id, via, credID string) error {
 		if err := recordConfigChange(o.Issuance, auditCredentialExternalMcp, id, nil, via, credID, ""); err != nil {
 			slog.Error("mcp unregistered but not recorded in the audit log", "id", id, "error", err)
 		}
-		o.notify()
 		return nil
 	}); err != nil {
 		if errors.Is(err, errMcpNotFound) {
@@ -389,7 +380,6 @@ func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string)
 		if err := recordConfigChange(o.Issuance, auditCredentialExternalMcp, id, nil, via, credID, grant.ID()); err != nil {
 			slog.Error("mcp OAuth started but not recorded in the audit log", "id", id, "error", err)
 		}
-		o.notify()
 		return nil
 	}); err != nil {
 		if errors.Is(err, errMcpNotFound) {

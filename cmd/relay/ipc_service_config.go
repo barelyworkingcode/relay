@@ -57,7 +57,7 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 			return
 		}
 		allowedRoot := ""
-		if svc, _ := config.FindServiceByID(ipc.Store.Get(), msg.ServiceID); svc != nil {
+		if svc, _ := config.FindServiceByID(config.FreshSettings(ipc.Store), msg.ServiceID); svc != nil {
 			allowedRoot = svc.WorkingDir
 		}
 		ipc.GoFunc(func() {

@@ -204,7 +204,6 @@ type EnrolmentOps struct {
 	// Approve/Refuse/PendingRequests refuse instead of panicking when it is
 	// unset (errEnrolmentRequestsNotWired).
 	Requests EnrolmentRequestApprovalSink
-	OnChange func()
 }
 
 func (o *EnrolmentOps) runQueued(ctx context.Context, fn func() error) error {
@@ -214,14 +213,8 @@ func (o *EnrolmentOps) runQueued(ctx context.Context, fn func() error) error {
 	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
 }
 
-func (o *EnrolmentOps) notify() {
-	if o.OnChange != nil {
-		o.OnChange()
-	}
-}
-
 func (o *EnrolmentOps) List() []config.Enrolment {
-	e := o.Store.Get().Enrolments
+	e := config.DisplaySettings(o.Store).Enrolments
 	if e == nil {
 		return []config.Enrolment{}
 	}
@@ -229,7 +222,7 @@ func (o *EnrolmentOps) List() []config.Enrolment {
 }
 
 func (o *EnrolmentOps) Get(clientID string) (config.Enrolment, error) {
-	e := enrolment.Find(o.Store.Get(), clientID)
+	e := enrolment.Find(config.FreshSettings(o.Store), clientID)
 	if e == nil {
 		return config.Enrolment{}, fmt.Errorf("%w: %s", enrolment.ErrNotFound, clientID)
 	}
@@ -282,7 +275,6 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 	}); err != nil {
 		return EnrolmentCreated{}, err
 	}
-	o.notify()
 	if bundleErr != nil {
 		return created, bundleErr // enrolment.ErrBundle: the record landed, the bundle write didn't
 	}
@@ -350,7 +342,6 @@ func (o *EnrolmentOps) completeSigning(req enrolment.Request, csr *x509.Certific
 	if auditErr := recordEnrolmentIssued(o.auditor(), o.Store, bundle.Enrolment, via, credID, grant.ID()); auditErr != nil {
 		return EnrolmentCreated{}, fmt.Errorf("%w: %w", errEnrolmentUnrecorded, auditErr)
 	}
-	o.notify()
 	if bundleErr != nil {
 		return created, bundleErr // enrolment.ErrBundle: the record landed, the bundle write didn't
 	}
@@ -536,7 +527,7 @@ func (o *EnrolmentOps) approvedProjects(ids []string) []approvedProject {
 	if len(ids) == 0 {
 		return nil
 	}
-	s := o.Store.Get()
+	s := config.DisplaySettings(o.Store)
 	out := make([]approvedProject, 0, len(ids))
 	for _, id := range ids {
 		name := id
@@ -590,7 +581,7 @@ func suggestClientID(s *config.Settings, label string) string {
 // — a client that just collected a certificate has no other way to learn
 // where to point relayremote list/call next.
 func (o *EnrolmentOps) relayAddr() string {
-	return resolveRemoteConfig(o.Store.Get().Remote).Listen
+	return resolveRemoteConfig(config.FreshSettings(o.Store).Remote).Listen
 }
 
 // Refuse is the operator's explicit decline (spec §2, §3) — deliberately
@@ -713,7 +704,6 @@ func (o *EnrolmentOps) Update(ctx context.Context, req enrolment.UpdateRequest, 
 	if err != nil {
 		return before, after, err
 	}
-	o.notify()
 	return before, after, nil
 }
 
@@ -767,7 +757,6 @@ func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string)
 	if err != nil {
 		return config.Enrolment{}, err
 	}
-	o.notify()
 	return revoked, nil
 }
 
@@ -789,7 +778,7 @@ func (o *EnrolmentOps) auditor() IssuanceAuditor {
 }
 
 func (o *EnrolmentOps) RemoteConfig() remoteConfigView {
-	return remoteConfigViewOf(o.Store.Get(), o.auditEnabled())
+	return remoteConfigViewOf(config.DisplaySettings(o.Store), o.auditEnabled())
 }
 
 // remoteConfigChangedFields names, in a fixed order, every field whose
@@ -979,7 +968,7 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 	// The decision to prompt is made from a snapshot, before the queue: a human
 	// prompt must not hold the lane. The queued step re-derives it against the
 	// live record and refuses unless the approval obtained covers it.
-	snapshot := decideRemoteGate(o.Store.Get().Remote, f, listen, enrolListen)
+	snapshot := decideRemoteGate(config.FreshSettings(o.Store).Remote, f, listen, enrolListen)
 	var approved *presence.Digest
 	var presenceID string
 	if snapshot.needGate {
@@ -1044,14 +1033,13 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 		if auditErr := recordConfigChange(o.auditor(), auditCredentialRemote, "remote", changed, via, credID, presenceID); auditErr != nil {
 			slog.Error("remote config updated but not recorded in the audit log", "error", auditErr)
 		}
-		view = remoteConfigViewOf(o.Store.Get(), o.auditEnabled())
+		view = remoteConfigViewOf(config.DisplaySettings(o.Store), o.auditEnabled())
 		return nil
 	})
 	if err != nil {
 		return remoteConfigView{}, err
 	}
 
-	o.notify()
 	return view, nil
 }
 

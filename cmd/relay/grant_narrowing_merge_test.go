@@ -44,7 +44,7 @@ func TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant(t *testing.T) {
 		p.AllowExternal = map[string]bool{"macmcp": true, "other": true}
 	}), "widen behind the guards")
 
-	ops := &ProjectOps{Store: store, Issuance: pgwWithIssuance(t), OnChange: func() {}}
+	ops := &ProjectOps{Store: store, Issuance: pgwWithIssuance(t)}
 	surfaces := func() project.McpSurfaces { return project.McpSurfaces{"macmcp": macmcpSurface()} }
 	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
 
@@ -115,7 +115,7 @@ func TestNarrowForEnrolment_ReplaySafeUnderMergeSemantics(t *testing.T) {
 	}), "widen behind the guards")
 
 	rec := enabledIssuanceRecorder(t)
-	ops := &ProjectOps{Store: store, Issuance: issuanceAuditorOrNil(rec), OnChange: func() {}}
+	ops := &ProjectOps{Store: store, Issuance: issuanceAuditorOrNil(rec)}
 	surfaces := func() project.McpSurfaces { return project.McpSurfaces{"macmcp": macmcpSurface()} }
 	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
 

@@ -1400,6 +1400,13 @@ every control-plane credential, every enrolment and the CA that signed
 them, every passkey) — which deletes `settings.json`, the CA files, and the
 keychain item together, then re-initializes from nothing.
 
+**Hand-editing `settings.json`.** A running tray watches the file. A valid edit
+is imported through the tray's config queue, in order with other changes, and
+takes effect without a restart. An invalid edit (unparseable, or a sealed value
+that will not open) is refused: the tray logs why and keeps its current
+settings. A save the tray makes while your edit is still unimported overwrites
+it, so for a certain edit quit the tray first. There is no import command.
+
 There is deliberately **no CLI equivalent, no flag, and no offline recovery
 code** for this. A second door into the sealed store is exactly what the
 whole design spends its effort closing on the first one; see

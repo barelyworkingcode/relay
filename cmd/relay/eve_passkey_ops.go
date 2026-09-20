@@ -135,15 +135,14 @@ func evePasskeyRevocable(s *config.Settings, id string) error {
 
 // EvePasskeyOps is relay's core for the mirror and its pending revocations
 // (docs/eve-passkey-enrolment.md decisions 8-13) -- the same
-// Store/Audit/Gate/OnChange shape as EveEnrolmentOps and LoginOps. Only
+// Store/Audit/Gate shape as EveEnrolmentOps and LoginOps. Only
 // Revoke is gated; Report, List and Revocations are reads or narrowings eve
 // itself drives, and Unrevoke narrows nothing a caller widened.
 type EvePasskeyOps struct {
-	Store    config.SettingsStore
-	Queue    *config.CommandQueue
-	Audit    *audit.AuditRecorder
-	Gate     *presence.Gate
-	OnChange func()
+	Store config.SettingsStore
+	Queue *config.CommandQueue
+	Audit *audit.AuditRecorder
+	Gate  *presence.Gate
 	// Notify raises the tray's console banners for Revoke (and, from the
 	// report path, for a revocation eve confirms it applied). Nil is safe
 	// and raises nothing.
@@ -162,12 +161,6 @@ func (o *EvePasskeyOps) auditor() IssuanceAuditor {
 		return nil
 	}
 	return issuanceAuditorOrNil(o.Audit)
-}
-
-func (o *EvePasskeyOps) notify() {
-	if o != nil && o.OnChange != nil {
-		o.OnChange()
-	}
 }
 
 func (o *EvePasskeyOps) notifyConsole(title, body string) {
@@ -214,7 +207,6 @@ func (o *EvePasskeyOps) Report(list []evePasskeyReportEntry) error {
 	}); err != nil {
 		return err
 	}
-	o.notify()
 	return nil
 }
 
@@ -223,7 +215,7 @@ func (o *EvePasskeyOps) List() []evePasskeyView {
 	if o == nil || o.Store == nil {
 		return []evePasskeyView{}
 	}
-	return evePasskeyViews(o.Store.Get())
+	return evePasskeyViews(config.DisplaySettings(o.Store))
 }
 
 // Revocations is the pending id set eve polls and, decisively, checks on
@@ -232,7 +224,7 @@ func (o *EvePasskeyOps) Revocations() []string {
 	if o == nil || o.Store == nil {
 		return []string{}
 	}
-	return evePasskeyRevocationIDs(o.Store.Get())
+	return evePasskeyRevocationIDs(config.FreshSettings(o.Store))
 }
 
 // Revoke records a pending revocation. It never touches eve -- it cannot
@@ -247,7 +239,7 @@ func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (config.EveP
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
 		return config.EvePasskeyRevocation{}, err
 	}
-	if err := evePasskeyRevocable(o.Store.Get(), id); err != nil {
+	if err := evePasskeyRevocable(config.FreshSettings(o.Store), id); err != nil {
 		return config.EvePasskeyRevocation{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "eve.passkey.revoke",
@@ -284,7 +276,6 @@ func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (config.EveP
 		}
 		return config.EvePasskeyRevocation{}, err
 	}
-	o.notify()
 	o.notifyConsole("Relay", "Eve passkey revoked: it stops working on its next use")
 	return rec, nil
 }
@@ -297,23 +288,17 @@ func (o *EvePasskeyOps) Unrevoke(id string) error {
 		return errEvePasskeyOpsUnavailable
 	}
 	id = strings.TrimSpace(id)
-	changed := false
 	if err := o.runQueued(context.Background(), func() error {
 		if err := o.Store.With(func(s *config.Settings) {
-			before := len(s.EvePasskeyRevocations)
 			s.EvePasskeyRevocations = slices.DeleteFunc(s.EvePasskeyRevocations, func(r config.EvePasskeyRevocation) bool {
 				return r.ID == id
 			})
-			changed = len(s.EvePasskeyRevocations) != before
 		}); err != nil {
 			return fmt.Errorf("save settings: %w", err)
 		}
 		return nil
 	}); err != nil {
 		return err
-	}
-	if changed {
-		o.notify()
 	}
 	return nil
 }

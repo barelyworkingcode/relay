@@ -24,10 +24,9 @@ func writeHostError(w http.ResponseWriter, err error) {
 }
 
 // RegisterHostRoutes wires the host HTTP endpoints exactly as
-// docs/ssh-hosts.md's table specifies. ops.OnChange is wired to the same
-// ProjectsChangedFn a project mutation fires -- a host rename or a fresh
-// probe result changes what eve's project dialog and host chip show, the
-// same live-refresh contract ADR-004 already gives projects.
+// docs/ssh-hosts.md's table specifies. A host rename or a fresh probe result
+// changes what eve's project dialog and host chip show; the tray refreshes
+// from the config queue's post-commit event.
 func RegisterHostRoutes(rr *control.RouteRegistrar, ops *HostOps) {
 	rr.Handle(control.ClassRead, "GET /api/hosts", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, hostsToView(ops.List()))

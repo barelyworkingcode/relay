@@ -137,6 +137,17 @@ type App struct {
 	// that deletes files in this directory by name.
 	configDir string
 
+	// releaseOwnership drops the per-config-dir tray lock; cleanup calls it
+	// last, so the directory stays owned until nothing of this tray runs.
+	releaseOwnership func()
+
+	// stopSettingsWatch ends the settings.json file watch; nil if it never
+	// started.
+	stopSettingsWatch func()
+	// importFile is the store's ImportFile, the only path by which a hand edit
+	// of settings.json reaches the tray's state.
+	importFile func() (bool, error)
+
 	// sealStatus is store.SealStatus()'s reason, captured once at boot: the
 	// sealed store degrades (or not) before EnsureInitialized returns, and
 	// nothing after that point changes it in the lifetime of this process.
@@ -246,12 +257,18 @@ func runTrayApp() {
 	// depends on the CLI never asking — TestSeal_NoCLIPathReachesTheKeychain
 	// is what keeps that true.
 	configDir := bridge.ConfigDir()
+	releaseOwnership, err := config.AcquireTrayOwnership(configDir)
+	if err != nil {
+		slog.Error("relay tray cannot start", "error", err)
+		os.Exit(1)
+	}
 	keyring := sealed.NewKeychainKeyring(resolveRelayBin())
 	store, err := config.ResolveSealedStore(configDir, keyring)
 	if err != nil {
 		slog.Error("failed to resolve the sealed store", "error", err)
 		os.Exit(1)
 	}
+	store.OwnExclusively()
 
 	// Ensure admin secret is generated and persisted on first launch, run
 	// migration on first encounter with a plaintext settings.json (§4.7),
@@ -345,18 +362,20 @@ func runTrayApp() {
 	}
 
 	app := &App{
-		ctx:           ctx,
-		cancel:        cancel,
-		store:         store,
-		platform:      platform,
-		extMgr:        extMgr,
-		registry:      registry,
-		serviceQueue:  serviceQueue,
-		presenceGate:  presenceGate,
-		sealedKeyring: keyring,
-		configDir:     configDir,
-		sealStatus:    sealStatus,
-		lastHealth:    map[string]mcpbroker.HealthEvent{},
+		ctx:              ctx,
+		cancel:           cancel,
+		releaseOwnership: releaseOwnership,
+		importFile:       store.ImportFile,
+		store:            store,
+		platform:         platform,
+		extMgr:           extMgr,
+		registry:         registry,
+		serviceQueue:     serviceQueue,
+		presenceGate:     presenceGate,
+		sealedKeyring:    keyring,
+		configDir:        configDir,
+		sealStatus:       sealStatus,
+		lastHealth:       map[string]mcpbroker.HealthEvent{},
 	}
 
 	// Event-driven menu updates: rebuild tray status dots immediately when
@@ -485,9 +504,6 @@ func runTrayApp() {
 		Queue: serviceQueue,
 		Audit: rec,
 		Gate:  presenceGate,
-		OnChange: func() {
-			app.platform.DispatchToMain(app.pushFullSettings)
-		},
 	}
 	app.ipcCtx.EnrolmentOps = enrolmentOps
 	router.enrolmentOps = enrolmentOps
@@ -503,9 +519,6 @@ func runTrayApp() {
 		Queue: serviceQueue,
 		Audit: rec,
 		Gate:  presenceGate,
-		OnChange: func() {
-			app.platform.DispatchToMain(app.pushFullSettings)
-		},
 	}
 	app.loginOps = loginOps
 	app.ipcCtx.LoginOps = loginOps
@@ -518,13 +531,10 @@ func runTrayApp() {
 	// below) shares it for Status/Consume, so the menu's countdown line and
 	// eve's own poll can never disagree about whether a window is open.
 	eveEnrolmentOps := &EveEnrolmentOps{
-		Store: store,
-		Queue: serviceQueue,
-		Audit: rec,
-		Gate:  presenceGate,
-		OnChange: func() {
-			app.platform.DispatchToMain(app.updateMenu)
-		},
+		Store:  store,
+		Queue:  serviceQueue,
+		Audit:  rec,
+		Gate:   presenceGate,
 		Notify: platform.Notify,
 	}
 	app.eveEnrolmentOps = eveEnrolmentOps
@@ -534,17 +544,13 @@ func runTrayApp() {
 	// eve's own credentials (docs/eve-passkey-enrolment.md decisions 8-13):
 	// the Passkeys tab's eve section, `relay eve list|revoke`, and eve's own
 	// PUT/GET routes (RegisterEvePasskeyRoutes, wired into NewFrontendServer
-	// below) all share this exact instance. OnChange refreshes an open
-	// Settings window the same way loginOps' does -- an eve report or a
-	// revoke from a terminal must show up without a manual reload.
+	// below) all share this exact instance. A report or revoke reaches an
+	// open Settings window through the post-commit event, like loginOps'.
 	evePasskeyOps := &EvePasskeyOps{
-		Store: store,
-		Queue: serviceQueue,
-		Audit: rec,
-		Gate:  presenceGate,
-		OnChange: func() {
-			app.platform.DispatchToMain(app.pushFullSettings)
-		},
+		Store:  store,
+		Queue:  serviceQueue,
+		Audit:  rec,
+		Gate:   presenceGate,
 		Notify: platform.Notify,
 	}
 	app.evePasskeyOps = evePasskeyOps
@@ -565,9 +571,6 @@ func runTrayApp() {
 		Issuance:        issuanceAuditorOrNil(rec),
 		NotifyReconcile: bridge.SendReconcile,
 		NotifyReloadMcp: bridge.SendReloadMcp,
-		OnChange: func() {
-			app.platform.DispatchToMain(app.pushFullSettings)
-		},
 	}
 	app.ipcCtx.McpOps = mcpOps
 	router.mcpOps = mcpOps
@@ -685,10 +688,8 @@ func runTrayApp() {
 		os.Exit(1)
 	}
 	retireLegacyFrontendCredentialOnStart(store)
-	// onProjectsChanged refreshes the tray Settings webview when projects
-	// mutate via the HTTP API (Eve, scheduler, CLI). Local IPC mutations
-	// fire their own emit events; this fan-out keeps the in-tray Projects
-	// tab in sync with edits made elsewhere.
+	// onProjectsChanged is the frontend server's legacy project-refresh hook;
+	// committed project changes refresh the UI through onConfigCommitted.
 	onProjectsChanged := func() {
 		if app != nil {
 			// Fires on an HTTP-server goroutine (Eve/scheduler/CLI). pushFullProjects
@@ -702,28 +703,21 @@ func runTrayApp() {
 	// server (ADR-014) — a project created from curl and one created from
 	// the tray share the presence gate and the audit record.
 	projectOps := &ProjectOps{
-		Store:    store,
-		Queue:    serviceQueue,
-		Gate:     presenceGate,
-		Issuance: issuanceAuditorOrNil(rec),
-		OnChange: func() {
-			app.platform.DispatchToMain(app.pushFullProjects)
-		},
+		Store:          store,
+		Queue:          serviceQueue,
+		Gate:           presenceGate,
+		Issuance:       issuanceAuditorOrNil(rec),
 		SessionCleanup: sessionDeps,
 	}
 	app.ipcCtx.ProjectOps = projectOps
 	// hostOps is the one core behind both the Hosts tab (via
 	// app.ipcCtx.HostOps) and RegisterHostRoutes on the frontend server
 	// (docs/ssh-hosts.md) — a host created from curl and one created from
-	// the tray share the same probe and the same audit record. Its
-	// OnChange fires the same tray refresh a project mutation does: a host
-	// rename or a fresh probe result changes what the Projects tab's host
-	// chip and the project form's Where control show.
+	// the tray share the same probe and the same audit record.
 	hostOps := &HostOps{
-		Store:    store,
-		Queue:    serviceQueue,
-		Auditor:  rec,
-		OnChange: onProjectsChanged,
+		Store:   store,
+		Queue:   serviceQueue,
+		Auditor: rec,
 	}
 	app.ipcCtx.HostOps = hostOps
 	templateOps := &TemplateOps{Store: store, Queue: serviceQueue}
@@ -802,10 +796,7 @@ func runTrayApp() {
 	})
 	// The TCP listener stays off unless settings.json's model_endpoint block
 	// names an address; Reconcile is a no-op either way when nothing
-	// changed. statusPoller re-converges it on
-	// the same tick as the remote listener, for the same reason: a settings
-	// change made by another process (the CLI, a hand edit) must take effect
-	// without a restart.
+	// changed. onConfigCommitted re-converges it after every committed change.
 	app.modelEndpoint.Reconcile()
 	slog.Info("model endpoint socket started")
 
@@ -821,9 +812,15 @@ func runTrayApp() {
 	// settings change — a listener whose configuration only applied at startup
 	// made `remote.listen` the one setting in relay that needed a quit, and
 	// made `audit.enabled: false` a refusal that only held until the next
-	// launch. statusPoller drives the convergence from here on.
+	// launch. onConfigCommitted drives the convergence from here on.
 	app.remote = NewRemoteSupervisor(ctx, store, router, rec, projectOps, extMgr.AllMcpSurfaces, app.goFunc)
 	app.remote.Reconcile() //nolint:errcheck // logs its own failure; a listener is never fatal to the tray
+	serviceQueue.SetCommitObserver(store.Commits, app.onConfigCommitted)
+	if stop, err := config.WatchSettingsFile(configDir, app.importSettingsEdit); err != nil {
+		slog.Error("settings.json edits will not be picked up while relay runs", "error", err)
+	} else {
+		app.stopSettingsWatch = stop
+	}
 
 	// Wires the Remote Clients tab's Pending requests panel and the tray's
 	// passive count line onto the SAME pending-enrolment-request table the
@@ -868,12 +865,51 @@ func runTrayApp() {
 		}
 	}()
 
-	// Poll service status every 2s.
+	// Health poll: service status and memory; settings changes arrive as
+	// post-commit events, not through this loop.
 	app.goFunc(app.statusPoller)
 
 	// Block on the platform run loop (must be on main thread).
 	slog.Info("entering run loop")
 	platform.Run()
+}
+
+// onConfigCommitted is the one subscriber to the config queue's post-commit
+// event: every committed change refreshes the UI and converges the listeners
+// from tray-owned state. It runs on the queue worker, so it only hands work
+// off.
+func (a *App) onConfigCommitted() {
+	if a.ctx.Err() != nil {
+		return
+	}
+	a.goFunc(a.reconcileListeners)
+	a.platform.DispatchToMain(func() {
+		a.pushFullSettings()
+		a.pushFullProjects()
+		a.updateMenu()
+		a.pushServiceStatus()
+	})
+}
+
+// importSettingsEdit is the watcher's callback: a hand edit of settings.json
+// enters through the config queue like any other mutation, so it is ordered
+// with them. An edit that does not validate leaves the current settings alone.
+func (a *App) importSettingsEdit() {
+	err := a.serviceQueue.Do(a.ctx, func(context.Context) error {
+		_, err := a.importFile()
+		return err
+	})
+	if err != nil && a.ctx.Err() == nil {
+		slog.Warn("settings.json edit not applied; keeping the current settings", "error", err)
+	}
+}
+
+// reconcileListeners converges the remote and model-endpoint listeners on the
+// tray's current settings. Each Reconcile is silent when nothing changed and
+// logs its own failure; a listener is never fatal to the tray.
+func (a *App) reconcileListeners() {
+	_ = a.remote.Reconcile()
+	a.modelEndpoint.Reconcile()
 }
 
 // onExternalChange dispatches UI updates to the main thread after external
@@ -893,11 +929,12 @@ func (a *App) onExternalChange() {
 	})
 }
 
-// statusPoller periodically re-reads settings from disk (when the file's
-// modtime changes) to pick up CLI-driven changes, samples per-service memory
-// usage, and pushes service status to the settings WebView. The tray menu is
-// also rebuilt every tick so the memory readout stays fresh; updateMenu
-// short-circuits on the platform when nothing changed.
+// statusPoller is the tray's health poll: it reaps dead children, samples
+// per-service memory usage and pushes service status to the settings WebView.
+// It never reads settings.json and is not how a configuration change is
+// noticed; that is onConfigCommitted. A slower recovery tick re-converges the
+// listeners from tray-owned state in case an event was missed or a listener
+// died.
 //
 // Process-exit menu updates are still event-driven via
 // service.Registry.OnProcessExit (see runTrayApp) so a stopped service's
@@ -905,11 +942,16 @@ func (a *App) onExternalChange() {
 func (a *App) statusPoller() {
 	ticker := time.NewTicker(StatusPollInterval)
 	defer ticker.Stop()
+	recovery := time.NewTicker(RecoveryPollInterval)
+	defer recovery.Stop()
 
 	for {
 		select {
 		case <-a.ctx.Done():
 			return
+		case <-recovery.C:
+			a.reconcileListeners()
+			continue
 		case <-ticker.C:
 		}
 
@@ -929,30 +971,8 @@ func (a *App) statusPoller() {
 		}
 		a.rssByID.Store(&rssByID)
 
-		s := a.store.ReloadIfChanged()
-
-		// Converge the remote listener on the same tick that picks up settings
-		// changes, and off the main thread because it may bind a socket. This
-		// is the trigger for every out-of-process edit — `relay enrol`, a
-		// hand-edited settings.json, the Settings UI — for the same reason the
-		// poll exists at all: relay is not one process, and the tray is not the
-		// only writer. Cheap and silent when nothing changed; see
-		// RemoteSupervisor.Reconcile for what "nothing changed" means.
-		_ = a.remote.Reconcile() // logs its own failure; a listener is never fatal to the tray
-		// Same convergence discipline for the model endpoint's TCP listener
-		// (docs/model-endpoint.md): cheap and silent when settings.json's
-		// model_endpoint block hasn't changed, and this is the path that
-		// picks up an out-of-process edit without a restart.
-		a.modelEndpoint.Reconcile()
-
 		a.platform.DispatchToMain(func() {
-			// store.Get() deep-copies, so prefer the already-loaded snapshot
-			// from ReloadIfChanged when present and pay the copy only on miss.
-			cur := s
-			if cur == nil {
-				cur = a.store.Get()
-			}
-			a.updateMenuWithSettings(cur)
+			a.updateMenu()
 			a.pushServiceStatus()
 			a.pushEnrolmentRequests()
 		})
@@ -964,7 +984,7 @@ func (a *App) statusPoller() {
 
 // updateMenu rebuilds the tray menu JSON and pushes it to the platform.
 func (a *App) updateMenu() {
-	a.updateMenuWithSettings(a.store.Get())
+	a.updateMenuWithSettings(config.DisplaySettings(a.store))
 }
 
 // countUnapprovedEnrolmentRequests is the tray's "Pending enrolment
@@ -997,7 +1017,7 @@ func (a *App) pushEnrolmentRequests() {
 		return
 	}
 	a.emitSettingsEvent("onEnrolmentRequestsChanged",
-		marshalForUI(pendingEnrolmentRequestViewsOf(a.ipcCtx.EnrolmentOps.PendingRequests(), a.store.Get())))
+		marshalForUI(pendingEnrolmentRequestViewsOf(a.ipcCtx.EnrolmentOps.PendingRequests(), config.DisplaySettings(a.store))))
 }
 
 func (a *App) updateMenuWithSettings(s *config.Settings) {
@@ -1261,7 +1281,7 @@ func (a *App) showLoginCode() {
 // Unlike showLoginCode there is nothing to display beyond the notification
 // -- eve's own login screen is where the operator (or whoever taps "Add this
 // browser") sees the result -- so this has no pending/emit split and no
-// Settings window to open; EveEnrolmentOps.Open's own OnChange already
+// Settings window to open; the post-commit event already
 // rebuilds the menu so the countdown line appears without a second dispatch
 // here.
 //
@@ -1346,7 +1366,7 @@ func (a *App) toggleService(menuItemID int) {
 			if a.serviceOps != nil {
 				err = a.serviceOps.Start(svcID)
 			} else {
-				svc, _ := config.FindServiceByID(a.store.Get(), svcID)
+				svc, _ := config.FindServiceByID(config.FreshSettings(a.store), svcID)
 				if svc == nil {
 					err = fmt.Errorf("service %q not found", svcID)
 				} else {
@@ -1395,6 +1415,9 @@ func (a *App) cleanup() {
 		if a.bridgeServer != nil {
 			a.bridgeServer.Close()
 		}
+		if a.stopSettingsWatch != nil {
+			a.stopSettingsWatch()
+		}
 		if a.serviceQueue != nil {
 			a.serviceQueue.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), cleanupWaitGroupTimeout)
@@ -1431,5 +1454,8 @@ func (a *App) cleanup() {
 		// queue and close the log. Closing earlier would drop the shutdown-time
 		// events that a post-incident review is most likely to want.
 		a.audit.Close()
+		if a.releaseOwnership != nil {
+			a.releaseOwnership()
+		}
 	})
 }

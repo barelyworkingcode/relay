@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -141,11 +142,11 @@ func TestEveEnrolmentRoutes_ReachableOnBothSocketAndTCPTransports(t *testing.T) 
 	}
 }
 
-func TestEveEnrolmentRoutes_OnChangeFiresOnConsume(t *testing.T) {
+func TestEveEnrolmentRoutes_CommitEventFiresOnConsume(t *testing.T) {
 	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
-	fired := 0
-	ops := &EveEnrolmentOps{Store: store, OnChange: func() { fired++ }}
+	var fired atomic.Int64
+	ops := &EveEnrolmentOps{Store: store, Queue: commitQueueFor(t, store, &fired)}
 	mux := http.NewServeMux()
 	RegisterEveEnrolmentRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ops)
 	srv := httptest.NewServer(mux)
@@ -153,8 +154,8 @@ func TestEveEnrolmentRoutes_OnChangeFiresOnConsume(t *testing.T) {
 	eveSeedOpenWindow(t, store)
 
 	doJSON(t, "POST", srv.URL+"/api/eve/passkey-enrolment/consume", map[string]any{"ip": "10.0.1.7"})
-	if fired == 0 {
-		t.Fatal("expected OnChange to fire on a successful consume")
+	if fired.Load() != 1 {
+		t.Fatalf("expected one commit event on a successful consume, got %d", fired.Load())
 	}
 }
 

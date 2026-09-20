@@ -74,6 +74,17 @@ property, that nothing imports one, since Go links only what it imports. The
 set is discovered from that refusal rather than listed, and the scan fails if
 it finds fewer than two.
 
+**Settings read boundary** (`cmd/relay/settings_read_boundary_test.go`).
+Walks `cmd` and `internal` (except `internal/config`) for zero-argument
+`Get`/`Reload`/`ReloadIfChanged` on a receiver whose name ends in `store`, and for
+store construction (`config.NewSettingsStore*`, `config.ResolveSealedStore`, a
+`FileSettingsStore` literal). Matching is by name, so a store held in a
+differently named variable escapes it. It pins three known findings in
+`runTrayApp` and `statusPoller` so an empty scan fails, and a synthetic-source
+test proves each violation kind is reported. Writes (`With`, `WithDeclinable`)
+are covered by the two guards above. The same file checks that `runTrayApp`
+calls `AcquireTrayOwnership` before `ResolveSealedStore` and `NewBridgeServer`.
+
 When changing any of these, prove the guard still bites: introduce the
 violation it exists to catch, watch it fail by name, then revert. A passing
 guard is not evidence that it is still looking.

@@ -73,8 +73,7 @@ type HostOps struct {
 	// Auditor records a host.probe event per probe; nil is safe (probes
 	// still run, just unrecorded), matching AuditRecorder's nil-receiver
 	// methods elsewhere.
-	Auditor  *audit.AuditRecorder
-	OnChange func()
+	Auditor *audit.AuditRecorder
 }
 
 func (o *HostOps) runQueued(ctx context.Context, fn func() error) error {
@@ -84,14 +83,8 @@ func (o *HostOps) runQueued(ctx context.Context, fn func() error) error {
 	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
 }
 
-func (o *HostOps) notify() {
-	if o.OnChange != nil {
-		o.OnChange()
-	}
-}
-
 func (o *HostOps) List() []config.Host {
-	hosts := o.Store.Get().Hosts
+	hosts := config.DisplaySettings(o.Store).Hosts
 	if hosts == nil {
 		return []config.Host{}
 	}
@@ -99,7 +92,7 @@ func (o *HostOps) List() []config.Host {
 }
 
 func (o *HostOps) Get(id string) (config.Host, error) {
-	h, _ := config.FindHostByID(o.Store.Get(), id)
+	h, _ := config.FindHostByID(config.FreshSettings(o.Store), id)
 	if h == nil {
 		return config.Host{}, fmt.Errorf("%w: %s", errHostNotFound, id)
 	}
@@ -147,7 +140,6 @@ func (o *HostOps) Create(ctx context.Context, f hostFields) (config.Host, error)
 	if found {
 		created = committed
 	}
-	o.notify()
 	return created, nil
 }
 
@@ -189,7 +181,6 @@ func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (con
 			updated = committed
 		}
 	}
-	o.notify()
 	return updated, true, nil
 }
 
@@ -204,9 +195,6 @@ func (o *HostOps) Remove(ctx context.Context, id string) (found bool, refs []str
 	})
 	if err != nil {
 		return false, nil, err
-	}
-	if found && len(refs) == 0 {
-		o.notify()
 	}
 	return found, refs, nil
 }
@@ -235,7 +223,6 @@ func (o *HostOps) Probe(ctx context.Context, id string) (config.Host, bool, erro
 	if err != nil {
 		return config.Host{}, true, err
 	}
-	o.notify()
 	return updated, current, nil
 }
 

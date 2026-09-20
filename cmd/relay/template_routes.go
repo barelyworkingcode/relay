@@ -21,13 +21,13 @@ func RegisterTemplateRoutes(rr *control.RouteRegistrar, store config.SettingsSto
 		// A project is what permits a template (Project.AllowedTemplates), so
 		// a list asked for with no project, or an unknown one, is empty. The
 		// Settings window lists everything over IPC instead.
-		settings := store.Get()
+		settings := config.FreshSettings(store)
 		proj, _ := config.FindProjectByID(settings, r.URL.Query().Get("project"))
 		writeJSON(w, http.StatusOK, config.EffectiveTerminalTemplatesForProject(settings, proj))
 	})
 
 	rr.Handle(classFor("GET", "/api/terminal/templates/{id}"), "GET /api/terminal/templates/{id}", func(w http.ResponseWriter, r *http.Request) {
-		tmpl, ok := config.GetTerminalTemplate(store.Get(), r.PathValue("id"))
+		tmpl, ok := config.GetTerminalTemplate(config.FreshSettings(store), r.PathValue("id"))
 		if !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "template not found"})
 			return

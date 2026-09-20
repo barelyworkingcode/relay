@@ -1,6 +1,10 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/barelyworkingcode/relay/internal/config"
+)
 
 // The Overview tab's three "Reveal" actions. Each opens Finder on a
 // directory rather than a specific file — the same choice ipcRevealAuditLog
@@ -36,7 +40,7 @@ func ipcRevealServiceLog(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	found := false
-	for _, svc := range ctx.Store.Get().Services {
+	for _, svc := range config.DisplaySettings(ctx.Store).Services {
 		if svc.ID == msg.ID {
 			found = true
 			break

@@ -280,7 +280,6 @@ func (f *remoteFixture) configurer() RemoteConfigurer {
 	return &ProjectOps{
 		Store:    f.store,
 		Issuance: issuanceAuditorOrNil(f.audit),
-		OnChange: func() {},
 	}
 }
 

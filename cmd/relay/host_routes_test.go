@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -247,7 +248,7 @@ func TestHostRoutes_NotFound(t *testing.T) {
 	}
 }
 
-func TestHostRoutes_OnChangeFiresOnMutation(t *testing.T) {
+func TestHostRoutes_CommitEventFiresOnMutation(t *testing.T) {
 	stubSSHRunner(t, func(ctx context.Context, name string, args []string) ([]byte, []byte, error) {
 		return []byte(cannedProbeOutputForTest), nil, nil
 	})
@@ -255,24 +256,24 @@ func TestHostRoutes_OnChangeFiresOnMutation(t *testing.T) {
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	fired := 0
-	ops := &HostOps{Store: store, OnChange: func() { fired++ }}
+	var fired atomic.Int64
+	ops := &HostOps{Store: store, Queue: commitQueueFor(t, store, &fired)}
 	mux := http.NewServeMux()
 	RegisterHostRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ops)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	_, body := doJSON(t, "POST", srv.URL+"/api/hosts", map[string]any{"name": "devbox", "target": "admin@devbox.local"})
-	if fired == 0 {
-		t.Fatal("expected OnChange to fire on create")
+	if fired.Load() == 0 {
+		t.Fatal("expected a commit event on create")
 	}
 	var created hostView
 	mustUnmarshal(t, body, &created)
 
-	before := fired
+	before := fired.Load()
 	doJSON(t, "DELETE", srv.URL+"/api/hosts/"+created.ID, nil)
-	if fired <= before {
-		t.Fatal("expected OnChange to fire on delete")
+	if fired.Load() <= before {
+		t.Fatal("expected a commit event on delete")
 	}
 }
 

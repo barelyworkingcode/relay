@@ -12,7 +12,7 @@ import (
 // curl and the Settings window see the same list. Every mutation below ends
 // by emitting it, so the UI has one success path.
 func ipcListTemplates(ctx *IPCContext, raw json.RawMessage) {
-	ctx.UI.EmitEvent("onTemplatesListed", marshalForUI(config.EffectiveTerminalTemplates(ctx.Store.Get())))
+	ctx.UI.EmitEvent("onTemplatesListed", marshalForUI(config.EffectiveTerminalTemplates(config.DisplaySettings(ctx.Store))))
 }
 
 // templateOps returns the shared core; the fallback serves contexts built
@@ -39,7 +39,7 @@ func emitTemplateResult(ctx *IPCContext, err error) {
 		dispatchEmit(ctx, "onTemplateError", err.Error())
 		return
 	}
-	dispatchEmit(ctx, "onTemplatesListed", marshalForUI(config.EffectiveTerminalTemplates(ctx.Store.Get())))
+	dispatchEmit(ctx, "onTemplatesListed", marshalForUI(config.EffectiveTerminalTemplates(config.DisplaySettings(ctx.Store))))
 }
 
 func ipcCreateTemplate(ctx *IPCContext, raw json.RawMessage) {

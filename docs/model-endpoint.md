@@ -17,15 +17,16 @@ of `RegisterModelHost`).
 | Listener | Address | Default |
 |---|---|---|
 | `model.sock` | `bridge.ConfigDir()/model.sock`, mode 0600 | Always served, whether or not a model host has ever registered — "no host" is a 503 on each call, not an absent socket. |
-| TCP | `settings.json`'s `model_endpoint.listen` | Absent block → **off**. A non-loopback address is refused (logged loudly) and never bound. A failed bind is logged loudly and retried on the next settings poll or reconcile call, the same convergence discipline `RemoteSupervisor` uses for the mTLS listener. |
+| TCP | `settings.json`'s `model_endpoint.listen` | Absent block → **off**. A non-loopback address is refused (logged loudly) and never bound. A failed bind is logged loudly and retried on the next committed change, recovery tick or reconcile call, the same convergence discipline `RemoteSupervisor` uses for the mTLS listener. |
 
 `cmd/relay.SetModelListenOverrideForTest` is a package-level Go seam this
 package's own tests use instead of the `model_endpoint` block — deliberately
 not an environment variable: an env var is reachable from a production
 process's own environment, which is exactly what "test-only" needs to rule
-out. `ModelEndpointServer.Reconcile()` runs once at startup and on every
-settings-poll tick (`trayapp.go`), so an out-of-process edit (a hand-edited
-`settings.json`, a future CLI) takes effect without a restart.
+out. `ModelEndpointServer.Reconcile()` runs once at startup, after every
+committed configuration change and on the tray's slow recovery tick
+(`trayapp.go`). A hand edit of `settings.json` under a running tray is imported through the
+config queue when valid, and reaches this reconcile as a commit event.
 
 `ListenSocket` unconditionally removes any file already at `model.sock`
 before binding, the same as `bridge.NewBridgeServer` does for `relay.sock`

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -129,7 +130,6 @@ func TestProjectOps_Remove_CleansUpSkillDir(t *testing.T) {
 		t.Fatalf("seed skill dir: %v", err)
 	}
 
-	var changeFired int
 	if err := store.With(func(s *config.Settings) {
 		s.AddProject(config.Project{
 			ID:            "p_remove",
@@ -141,7 +141,8 @@ func TestProjectOps_Remove_CleansUpSkillDir(t *testing.T) {
 		t.Fatalf("seed project: %v", err)
 	}
 
-	ops := &ProjectOps{Store: store, OnChange: func() { changeFired++ }}
+	var events atomic.Int64
+	ops := &ProjectOps{Store: store, Queue: commitQueueFor(t, store, &events)}
 	removed, found, err := ops.Remove("p_remove")
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
@@ -152,8 +153,8 @@ func TestProjectOps_Remove_CleansUpSkillDir(t *testing.T) {
 	if removed.ID != "p_remove" {
 		t.Fatalf("expected removed project id p_remove, got %q", removed.ID)
 	}
-	if changeFired != 1 {
-		t.Fatalf("expected OnChange to fire once, fired %d times", changeFired)
+	if events.Load() != 1 {
+		t.Fatalf("expected one commit event, got %d", events.Load())
 	}
 	if proj, _ := config.FindProjectByID(store.Get(), "p_remove"); proj != nil {
 		t.Fatalf("expected project to be gone from settings")

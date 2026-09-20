@@ -33,6 +33,9 @@ type CommandQueue struct {
 	shutdown bool
 	active   *commandRequest
 	done     chan struct{}
+
+	commits func() uint64
+	publish func()
 }
 
 type commandRequest struct {
@@ -72,6 +75,21 @@ func (q *CommandQueue) Do(ctx context.Context, command Command) error {
 // cancellation after admission would race those values with the worker.
 func (q *CommandQueue) DoCommitted(ctx context.Context, command Command) error {
 	return q.do(ctx, command, true)
+}
+
+// SetCommitObserver publishes one event per committed command. commits is a
+// monotonic count of persisted saves; a command that advanced it publishes
+// exactly once, after it returns and before its caller is released, however
+// many saves it made. A command that persisted nothing (failed, declined,
+// runtime-only) publishes nothing; one that persisted and then failed still
+// publishes, because the committed state changed.
+//
+// publish runs on the queue worker, so it must not block or submit to the
+// queue; hand work to another goroutine. Set it before the queue is used.
+func (q *CommandQueue) SetCommitObserver(commits func() uint64, publish func()) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.commits, q.publish = commits, publish
 }
 
 // WaitForPending waits until at least minimum accepted commands are waiting
@@ -246,6 +264,7 @@ func (q *CommandQueue) run() {
 		q.pending[0] = nil
 		q.pending = q.pending[1:]
 		q.active = req
+		commits, publish := q.commits, q.publish
 		q.signalLocked()
 		q.mu.Unlock()
 
@@ -253,7 +272,14 @@ func (q *CommandQueue) run() {
 		if req.ctx.Err() != nil {
 			err = req.ctx.Err()
 		} else {
+			var before uint64
+			if commits != nil {
+				before = commits()
+			}
 			err = runCommand(req)
+			if commits != nil && publish != nil && commits() > before {
+				publishCommit(publish)
+			}
 		}
 		req.cancel()
 		req.complete(err)
@@ -272,6 +298,11 @@ func runCommand(req *commandRequest) (err error) {
 		}
 	}()
 	return req.command(req.ctx)
+}
+
+func publishCommit(publish func()) {
+	defer func() { _ = recover() }()
+	publish()
 }
 
 func (q *CommandQueue) signalLocked() {

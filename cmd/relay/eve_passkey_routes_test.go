@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -129,18 +130,18 @@ func TestEvePasskeyRoutes_ReachableOnBothSocketAndTCPTransports(t *testing.T) {
 	}
 }
 
-func TestEvePasskeyRoutes_OnChangeFiresOnReport(t *testing.T) {
+func TestEvePasskeyRoutes_CommitEventFiresOnReport(t *testing.T) {
 	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
-	fired := 0
-	ops := &EvePasskeyOps{Store: store, OnChange: func() { fired++ }}
+	var fired atomic.Int64
+	ops := &EvePasskeyOps{Store: store, Queue: commitQueueFor(t, store, &fired)}
 	mux := http.NewServeMux()
 	RegisterEvePasskeyRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ops)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	doJSON(t, "PUT", srv.URL+"/api/eve/passkeys", map[string]any{"passkeys": []map[string]any{}})
-	if fired == 0 {
-		t.Fatal("expected OnChange to fire on a successful report")
+	if fired.Load() != 1 {
+		t.Fatalf("expected one commit event on a successful report, got %d", fired.Load())
 	}
 }

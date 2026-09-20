@@ -476,7 +476,7 @@ func (o *ServiceOps) notify() {
 }
 
 func (o *ServiceOps) List() []config.ServiceConfig {
-	svcs := o.Store.Get().Services
+	svcs := config.DisplaySettings(o.Store).Services
 	if svcs == nil {
 		return []config.ServiceConfig{}
 	}
@@ -484,7 +484,7 @@ func (o *ServiceOps) List() []config.ServiceConfig {
 }
 
 func (o *ServiceOps) Get(id string) (config.ServiceConfig, error) {
-	svc, _ := config.FindServiceByID(o.Store.Get(), id)
+	svc, _ := config.FindServiceByID(config.FreshSettings(o.Store), id)
 	if svc == nil {
 		return config.ServiceConfig{}, fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
@@ -507,7 +507,7 @@ type serviceApproval struct {
 func (o *ServiceOps) Register(ctx context.Context, f serviceFields, via, credID string) (cfg config.ServiceConfig, err error) {
 	id := f.resolvedID()
 	var approval serviceApproval
-	if snapshot, _ := config.FindServiceByID(o.Store.Get(), id); snapshot != nil {
+	if snapshot, _ := config.FindServiceByID(config.FreshSettings(o.Store), id); snapshot != nil {
 		if err := o.preflightUpdate(id, f); err != nil {
 			return config.ServiceConfig{}, err
 		}
@@ -523,7 +523,7 @@ func (o *ServiceOps) Register(ctx context.Context, f serviceFields, via, credID 
 		}
 	}
 	err = o.runQueued(ctx, func() error {
-		if svc, _ := config.FindServiceByID(o.Store.Get(), id); svc != nil {
+		if svc, _ := config.FindServiceByID(config.FreshSettings(o.Store), id); svc != nil {
 			if err := o.preflightUpdate(id, f); err != nil {
 				return err
 			}
@@ -665,7 +665,7 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 	// there (TestOpsThatFindNothingWriteNothing), and this read of the
 	// snapshot is the wrong place to give it a second meaning.
 	var snapshot config.ServiceConfig
-	if e, _ := config.FindServiceByID(o.Store.Get(), id); e != nil {
+	if e, _ := config.FindServiceByID(config.FreshSettings(o.Store), id); e != nil {
 		snapshot = *e
 	}
 	approval, err := o.approveUpdate(ctx, id, f, snapshot)
@@ -832,7 +832,7 @@ func (o *ServiceOps) start(id string) error {
 		// synthesis (EnsureBuiltinRelaySessionsService), never this one.
 		return invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be started manually", id))
 	}
-	svc, _ := config.FindServiceByID(o.Store.Get(), id)
+	svc, _ := config.FindServiceByID(config.FreshSettings(o.Store), id)
 	if svc == nil {
 		return fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
@@ -858,7 +858,7 @@ func (o *ServiceOps) Stop(id string) error {
 }
 
 func (o *ServiceOps) stop(id string) error {
-	_, idx := config.FindServiceByID(o.Store.Get(), id)
+	_, idx := config.FindServiceByID(config.FreshSettings(o.Store), id)
 	if idx < 0 && !o.Registry.IsRunning(id) {
 		return fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
@@ -869,7 +869,7 @@ func (o *ServiceOps) stop(id string) error {
 
 func (o *ServiceOps) Restart(id string) error {
 	return o.runQueued(context.Background(), func() error {
-		svc, _ := config.FindServiceByID(o.Store.Get(), id)
+		svc, _ := config.FindServiceByID(config.FreshSettings(o.Store), id)
 		if svc == nil {
 			return fmt.Errorf("%w: %s", errServiceNotFound, id)
 		}
@@ -906,7 +906,7 @@ func (o *ServiceOps) saveConfigFile(id, text string) (ConfigSaveResult, error) {
 	if o.Enhanced == nil {
 		return ConfigSaveResult{}, invalidService("no enhanced registry")
 	}
-	svc, _ := config.FindServiceByID(o.Store.Get(), id)
+	svc, _ := config.FindServiceByID(config.FreshSettings(o.Store), id)
 	if svc == nil {
 		return ConfigSaveResult{}, &serviceConfigError{reason: fmt.Sprintf("service %q not registered", id), kind: errServiceNotFound}
 	}

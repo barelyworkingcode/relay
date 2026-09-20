@@ -446,8 +446,8 @@ challenge table's 64-entry, 60-second shape, because nothing on this
 listener is machine-paced.
 
 **The listener follows settings; it is not frozen at startup.**
-`RemoteSupervisor` (`remote_reconcile.go`) converges **both** listeners on
-every settings poll and on every bridge-driven reconcile: it binds each when
+`RemoteSupervisor` (`remote_reconcile.go`) converges **both** listeners after every committed
+configuration change, on every bridge-driven reconcile and on a slow recovery tick: it binds each when
 its half of the block is enabled, moves either when its own `listen` changes,
 and closes either when its half is disabled *or auditing stops being live* —
 so `audit.enabled: false` is a refusal at runtime and not only at launch, for
@@ -469,6 +469,35 @@ tray's next poll — indistinguishable from a genuine misconfiguration (issue
 #21). `RemoteServer.currentSettings` stats `settings.json` and re-reads only
 when it moved, which is what makes creation as immediate as revocation already
 was, per request and per connection.
+
+**Reads have two names, and production code uses only those.**
+`config.FreshSettings(store)` is for any decision: authorization, routing, a
+mutation's precondition, a lifecycle action. `config.DisplaySettings(store)` is
+the cached view for rendering (menus, lists, Settings-window payloads) and may
+lag the last committed change by nothing in the tray, whose store never re-reads
+the file (see below). Nothing else in production calls `Get`, `Reload`
+or `ReloadIfChanged` on a store, and only `runTrayApp` constructs one;
+`TestProductionSettingsReadsAndConstructionStayBehindTheBoundary` holds that
+line. Its allowlist is the complete exception set: `runTrayApp` (boot snapshot
+and audit recorder, taken before anything serves; the single store
+construction).
+
+**The tray owns `settings.json` while it runs.** The store never re-reads the
+file on its own; a filesystem watcher submits a hand edit as one queued import
+that is validated and applied only if valid (an invalid file keeps the current
+state). Committed changes, including an imported edit, reach the UI and both
+listeners through the queue's post-commit event (`App.onConfigCommitted`); the
+2 s poll is a health poll and a 30 s tick re-runs listener reconciliation as
+recovery, neither reading the file. Rationale and the legacy callbacks
+that remain: [`config-ownership-and-races.md`](config-ownership-and-races.md).
+
+**One tray per configuration directory.** `config.AcquireTrayOwnership` takes a
+non-blocking `flock` on `tray.lock` in the directory before the sealed store
+opens or the bridge socket is created, and the tray drops it last in `cleanup`.
+A second tray exits with `ErrOwnedByAnotherTray` without touching the first. It
+is an flock on an open descriptor so a crash frees it with the process; the
+file is never unlinked, because a second tray could then lock a fresh inode
+while the first still holds the old one.
 
 See ADR-010 (the remote listener's mTLS transport and certificate-based client identity model).
 

@@ -30,11 +30,10 @@ func eveTrayApp(t *testing.T) (*App, *recordingPlatform, config.SettingsStore) {
 		registry: &trayRegistry{},
 	}
 	app.eveEnrolmentOps = &EveEnrolmentOps{
-		Store:    store,
-		Gate:     allowGate(t),
-		Audit:    enabledIssuanceRecorder(t),
-		OnChange: func() { app.updateMenu() },
-		Notify:   p.Notify,
+		Store:  store,
+		Gate:   allowGate(t),
+		Audit:  enabledIssuanceRecorder(t),
+		Notify: p.Notify,
 	}
 	return app, p, store
 }

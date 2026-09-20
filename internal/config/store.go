@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/tidwall/jsonc"
@@ -112,7 +115,32 @@ type FileSettingsStore struct {
 	// verifyProjectTokenHashes) a project token that opened but does not
 	// hash to its own token_hash. Populated by load(); read by SealStatus().
 	sealErrors map[string]error
+
+	// owned makes the in-memory state authoritative: the file is never
+	// re-read behind the store's back, so an edit made by anything other than
+	// this store is ignored and overwritten by the next save.
+	owned bool
+	// fileHash is the digest of the bytes this store last wrote or read; an
+	// import that finds the same digest on disk is looking at its own write.
+	fileHash [sha256.Size]byte
+	// commits counts successful saves; the command queue compares it before
+	// and after a command to learn whether the command committed.
+	commits atomic.Uint64
 }
+
+// OwnExclusively is called once, by the tray, after it holds the ownership
+// lock. From then on the store never re-reads settings.json on its own:
+// ReloadIfChanged is inert and With mutates the tray's own state. The file is
+// read again only by ImportFile (a hand edit, submitted through the config
+// queue) and by the explicit Reload of the sealed reset.
+func (ss *FileSettingsStore) OwnExclusively() {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.owned = true
+}
+
+// Commits is the number of saves that have succeeded on this store.
+func (ss *FileSettingsStore) Commits() uint64 { return ss.commits.Load() }
 
 // errSettingsUnreadable is what a caller matches with errors.Is to tell a
 // refusal to write from a write that was attempted and failed.
@@ -290,19 +318,30 @@ func (ss *FileSettingsStore) load() *Settings {
 		return DefaultSettings()
 	}
 	ss.fileSeen = true
-	var s Settings
-	if err := json.Unmarshal(jsonc.ToJSON(data), &s); err != nil {
+	ss.fileHash = sha256.Sum256(data)
+	s, openErrs, err := ss.parse(data)
+	if err != nil {
 		slog.Warn("failed to parse settings file, using defaults", "error", err)
 		ss.readErr = err
 		return DefaultSettings()
 	}
 	ss.readErr = nil
+	ss.sealErrors = openErrs
+	return s
+}
+
+// parse turns settings.json bytes into settings without touching store state,
+// so an import can validate a candidate before adopting it.
+func (ss *FileSettingsStore) parse(data []byte) (*Settings, map[string]error, error) {
+	var s Settings
+	if err := json.Unmarshal(jsonc.ToJSON(data), &s); err != nil {
+		return nil, nil, err
+	}
 
 	openErrs := openAllSecrets(&s, ss.sealer)
 	for path, err := range verifyProjectTokenHashes(&s) {
 		openErrs[path] = err
 	}
-	ss.sealErrors = openErrs
 
 	for i := range s.Services {
 		s.Services[i].migrateCapabilities()
@@ -312,7 +351,7 @@ func (ss *FileSettingsStore) load() *Settings {
 		}
 	}
 	s.normalize()
-	return &s
+	return &s, openErrs, nil
 }
 
 // unreadableErrLocked reports why this store must not write, or nil if it may.
@@ -474,6 +513,8 @@ func (ss *FileSettingsStore) save(s *Settings) error {
 		return fmt.Errorf("write settings: %w", err)
 	}
 	ss.fileSeen = true
+	ss.fileHash = sha256.Sum256(data)
+	ss.commits.Add(1)
 	return nil
 }
 
@@ -580,6 +621,15 @@ func FreshSettings(store SettingsStore) *Settings {
 	return store.Get()
 }
 
+// DisplaySettings is the cached view, for rendering only: a menu, a list, a
+// Settings-window payload. It may lag the file by one poll tick. Anything that
+// decides authorization, routing, a mutation precondition or a lifecycle
+// action MUST use FreshSettings instead; keeping the two names apart is what
+// lets the structural read gate tell a display read from a decision.
+func DisplaySettings(store SettingsStore) *Settings {
+	return store.Get()
+}
+
 // Get returns a deep copy, safe for concurrent read and mutation.
 func (ss *FileSettingsStore) Get() *Settings {
 	ss.mu.Lock()
@@ -614,6 +664,9 @@ func (ss *FileSettingsStore) Reload() *Settings {
 // start has settings in hand that nothing has written out yet, and emptying
 // the cache would wipe them before they reach disk.
 func (ss *FileSettingsStore) reloadIfChangedLocked() bool {
+	if ss.owned {
+		return false
+	}
 	info, err := os.Stat(ss.path())
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -745,4 +798,46 @@ func (ss *FileSettingsStore) WithDeclinable(fn func(s *Settings) error) error {
 		ss.lastModTime = info.ModTime().UnixNano()
 	}
 	return nil
+}
+
+// ImportFile adopts a hand edit of settings.json. It reports whether the
+// tray's state changed, and it must run as a queued command so the edit takes
+// its place in the mutation order.
+//
+// Fail closed: a missing, unreadable, unparseable or unopenable file leaves the
+// current state untouched and returns the reason. Bytes identical to what this
+// store last wrote or read are its own write, and a semantically identical
+// edit (whitespace) is absorbed; neither counts as a change.
+func (ss *FileSettingsStore) ImportFile() (bool, error) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	data, err := os.ReadFile(ss.path())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read settings file: %w", err)
+	}
+	digest := sha256.Sum256(data)
+	if digest == ss.fileHash {
+		return false, nil
+	}
+	s, openErrs, err := ss.parse(data)
+	if err != nil {
+		return false, fmt.Errorf("settings file rejected: %w", err)
+	}
+	if len(openErrs) > 0 {
+		return false, fmt.Errorf("settings file rejected: %d sealed values could not be opened", len(openErrs))
+	}
+	ss.fileHash = digest
+	ss.lastModTime = 0
+	if ss.cache != nil && reflect.DeepEqual(ss.cache, s) {
+		return false, nil
+	}
+	ss.cache = s
+	ss.fileSeen = true
+	ss.readErr = nil
+	ss.sealErrors = openErrs
+	ss.commits.Add(1)
+	return true, nil
 }

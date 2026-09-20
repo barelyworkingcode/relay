@@ -147,7 +147,8 @@ what each one costs to keep:
   needs a key to consult is a weaker kind of ground truth.
 - **A hand-edit stays a real recovery path.** A human can open
   `settings.json`, see a project's MCPs and paths, and reason about what is
-  wrong with it. An opaque blob turns "the file is corrupt" into "the file is
+  wrong with it, and edit it; a running tray imports a valid edit through its
+  config queue and keeps its current state for an invalid one. An opaque blob turns "the file is corrupt" into "the file is
   corrupt, or the key is wrong, or the keychain is locked," with nothing on
   the outside to tell those apart.
 

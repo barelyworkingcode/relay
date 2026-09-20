@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -24,10 +25,10 @@ import (
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
 
-func newEnrolmentRoutesServer(t *testing.T, onChange func()) (*httptest.Server, config.SettingsStore) {
+func newEnrolmentRoutesServer(t *testing.T, events *atomic.Int64) (*httptest.Server, config.SettingsStore) {
 	t.Helper()
 	store := newCLISandboxStore(t)
-	ops := &EnrolmentOps{Store: store, OnChange: onChange, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
+	ops := &EnrolmentOps{Store: store, Queue: commitQueueFor(t, store, events), Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
 	RegisterEnrolmentRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ops)
 	return httptest.NewServer(mux), store
@@ -330,21 +331,21 @@ func TestEnrolmentRoutes_PutRemoteMalformedJSON(t *testing.T) {
 	}
 }
 
-func TestEnrolmentRoutes_OnChangeFires(t *testing.T) {
-	var changed int
-	srv, _ := newEnrolmentRoutesServer(t, func() { changed++ })
+func TestEnrolmentRoutes_CommitEventFires(t *testing.T) {
+	var events atomic.Int64
+	srv, _ := newEnrolmentRoutesServer(t, &events)
 	defer srv.Close()
 
 	doJSON(t, "POST", srv.URL+"/api/enrolments", map[string]interface{}{"client_id": "hermes-mail"})
-	if changed != 1 {
-		t.Fatalf("expected onChange after create, got %d", changed)
+	if events.Load() != 1 {
+		t.Fatalf("expected commit event after create, got %d", events.Load())
 	}
 	doJSON(t, "DELETE", srv.URL+"/api/enrolments/hermes-mail", nil)
-	if changed != 2 {
-		t.Fatalf("expected onChange after revoke, got %d", changed)
+	if events.Load() != 2 {
+		t.Fatalf("expected commit event after revoke, got %d", events.Load())
 	}
 	doJSON(t, "PUT", srv.URL+"/api/remote", map[string]interface{}{"enabled": true, "listen": "127.0.0.1:9910"})
-	if changed != 3 {
-		t.Fatalf("expected onChange after remote config update, got %d", changed)
+	if events.Load() != 3 {
+		t.Fatalf("expected commit event after remote config update, got %d", events.Load())
 	}
 }

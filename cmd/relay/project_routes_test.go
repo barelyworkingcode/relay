@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -54,7 +55,7 @@ func (fixedTokenLister) ListSkillBuckets(_ context.Context, _ string) ([]SkillBu
 	return []SkillBucket{{Key: "Files", Slug: "files", Tools: []mcp.Tool{{Name: "fs_read", Description: "read a file"}}}}, nil
 }
 
-func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister SkillLister, onChange func()) (*httptest.Server, config.SettingsStore) {
+func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister SkillLister, events *atomic.Int64) (*httptest.Server, config.SettingsStore) {
 	t.Helper()
 	store := sealedSettingsStoreAt(t.TempDir())
 	if err := store.EnsureInitialized(); err != nil {
@@ -66,9 +67,9 @@ func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister Ski
 			{ID: "macmcp", DisplayName: "macMCP"},
 		}
 	})
-	ops := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t), OnChange: onChange}
+	ops := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t), Queue: commitQueueFor(t, store, events)}
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, store, ops, schemaProviderFunc(testSchemas), tools, nil, lister, onChange)
+	RegisterProjectRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, store, ops, schemaProviderFunc(testSchemas), tools, nil, lister, nil)
 	return httptest.NewServer(mux), store
 }
 
@@ -669,10 +670,9 @@ func TestProjectRoutes_ListMcpTools_NoProvider503(t *testing.T) {
 	}
 }
 
-func TestProjectRoutes_OnChangeFires(t *testing.T) {
-	var changed int
-	onChange := func() { changed++ }
-	srv, _ := newProjectRoutesServerFull(t, nil, nil, onChange)
+func TestProjectRoutes_CommitEventFires(t *testing.T) {
+	var events atomic.Int64
+	srv, _ := newProjectRoutesServerFull(t, nil, nil, &events)
 	defer srv.Close()
 
 	tmpDir := t.TempDir()
@@ -684,25 +684,25 @@ func TestProjectRoutes_OnChangeFires(t *testing.T) {
 	var created config.Project
 	_ = json.Unmarshal(body, &created)
 
-	if changed != 1 {
-		t.Fatalf("expected onChange after create, got %d calls", changed)
+	if events.Load() != 1 {
+		t.Fatalf("expected commit event after create, got %d calls", events.Load())
 	}
 
 	_, _ = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"name": "RenamedMe",
 	})
-	if changed != 2 {
-		t.Fatalf("expected onChange after update, got %d calls total", changed)
+	if events.Load() != 2 {
+		t.Fatalf("expected commit event after update, got %d calls total", events.Load())
 	}
 
 	_, _ = doJSON(t, "POST", srv.URL+"/api/projects/"+created.ID+"/rotate_token", nil)
-	if changed != 3 {
-		t.Fatalf("expected onChange after rotate, got %d calls total", changed)
+	if events.Load() != 3 {
+		t.Fatalf("expected commit event after rotate, got %d calls total", events.Load())
 	}
 
 	_, _ = doJSON(t, "DELETE", srv.URL+"/api/projects/"+created.ID, nil)
-	if changed != 4 {
-		t.Fatalf("expected onChange after delete, got %d calls total", changed)
+	if events.Load() != 4 {
+		t.Fatalf("expected commit event after delete, got %d calls total", events.Load())
 	}
 }
 

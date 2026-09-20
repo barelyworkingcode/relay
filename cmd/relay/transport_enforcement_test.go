@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,9 +35,8 @@ import (
 // independent witness to "the real handler body ran" that does not rely on
 // reading the HTTP response back.
 type teCounters struct {
-	serviceChanges   int
-	mcpChanges       int
-	enrolmentChanges int
+	serviceChanges int
+	commits        atomic.Int64
 }
 
 type teServer struct {
@@ -63,9 +63,10 @@ func teNewServer(t *testing.T, store config.SettingsStore, authz control.Authori
 	counters := &teCounters{}
 
 	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, OnChange: func() { counters.serviceChanges++ }}
-	enrolOps := &EnrolmentOps{Store: store, OnChange: func() { counters.enrolmentChanges++ }}
+	queue := commitQueueFor(t, store, &counters.commits)
+	enrolOps := &EnrolmentOps{Store: store, Queue: queue}
 	auditOps := &audit.AuditOps{}
-	mcpOps := &McpOps{Store: store, Ctx: context.Background(), OnChange: func() { counters.mcpChanges++ }}
+	mcpOps := &McpOps{Store: store, Ctx: context.Background(), Queue: queue}
 	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	extMgr := mcpbroker.NewManager(nil)
 	enhanced := NewEnhancedServiceRegistry(nil)
@@ -371,8 +372,8 @@ func TestTCPMcpCreate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 		map[string]any{"display_name": "te-phantom-mcp", "command": teNonexistentMcpCommand}})
 
 	teAssertMuxRefused(t, resp, body)
-	if ts.counters.mcpChanges != 0 {
-		t.Fatalf("McpOps.OnChange fired %d times; the handler must never have run", ts.counters.mcpChanges)
+	if ts.counters.commits.Load() != 0 {
+		t.Fatalf("McpOps committed %d times; the handler must never have run", ts.counters.commits.Load())
 	}
 	after := store.Get().ExternalMcps
 	if len(after) != len(before) {
@@ -389,8 +390,8 @@ func TestTCPRemoteConfigPut_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 		map[string]any{"enabled": true, "listen": "127.0.0.1:9910"}})
 
 	teAssertMuxRefused(t, resp, body)
-	if ts.counters.enrolmentChanges != 0 {
-		t.Fatalf("EnrolmentOps.OnChange fired %d times; the handler must never have run", ts.counters.enrolmentChanges)
+	if ts.counters.commits.Load() != 0 {
+		t.Fatalf("EnrolmentOps committed %d times; the handler must never have run", ts.counters.commits.Load())
 	}
 	if cfg := store.Get().Remote; cfg != nil {
 		t.Fatalf("remote config = %+v, want nil; PUT /api/remote must not have reached EnrolmentOps.SetRemoteConfig", cfg)
