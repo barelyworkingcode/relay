@@ -110,6 +110,12 @@ unbounded subprocess wait must not hold the lane.
 - The IPC project disabled-tools toggle now runs through
   `ProjectOps.SetDisabledTools` on the queue; the generic IPC
   `withSettings`/`withSettingsNotify` helpers, which wrote unqueued, are gone.
+- A structural test (`cmd/relay/config_queue_structural_test.go`) parses the
+  production `cmd/relay` sources and fails on any function that calls
+  `config.WithDeclinable` or `store.With` without submitting to the queue
+  (`runQueued`, `runCommitted` or `Queue.Do`), unless it is on a small explicit
+  allowlist (startup, and helpers that run inside their caller's queued step).
+  It also asserts it still finds known queued writes, so it cannot pass empty.
 
 The remaining work is to apply the same boundary to the other configuration
 domains, route normal CLI reads through the tray, and queue service-owned config
