@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net"
 	"strings"
 
@@ -24,6 +25,30 @@ func requireService(command string) *bridge.Client {
 	return bridge.NewClient("")
 }
 
+// adminRead is every CLI read's one path to configuration: requireService
+// first, then one admin_op whose answer is decoded into T. No CLI process
+// reads settings.json for these commands; the running tray is the only
+// reader, so a stopped tray is a refusal, not a fallback.
+func adminRead[T any](command, op string, args any) T {
+	client := requireService(command)
+	var body json.RawMessage
+	if args != nil {
+		var err error
+		if body, err = json.Marshal(args); err != nil {
+			exitError("%v", err)
+		}
+	}
+	raw, err := client.AdminOp(op, body)
+	if err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
+	var out T
+	if err := json.Unmarshal(raw, &out); err != nil {
+		exitError("parse response: %v", err)
+	}
+	return out
+}
+
 func serviceReachable() bool {
 	conn, err := net.Dial("unix", bridge.SocketPath())
 	if err != nil {
@@ -36,9 +61,10 @@ func serviceReachable() bool {
 func serviceRequiredMessage(command string) string {
 	return "relay is not running; `" + command + "` requires the service.\n" +
 		"  relay is the sole broker of its own credentials: the secrets are sealed and\n" +
-		"  only the tray holds the key (ADR-017 decision 2). Start Relay and retry.\n" +
-		"  Read commands still work with relay stopped: `relay credential list`,\n" +
-		"  `relay grant`, `relay audit`."
+		"  only the tray holds the key (ADR-017 decision 2), and it is the only reader of\n" +
+		"  the configuration for `list`, `grant` and every other command that shows it.\n" +
+		"  Start Relay and retry. `relay audit` and `relay enrol ca-fingerprint` read\n" +
+		"  their own files and still work with relay stopped."
 }
 
 // sshRefusalMessage is §6.6's shared refusal text: what a human reads when a
@@ -48,7 +74,8 @@ const sshRefusalMessage = "refused: this needs your confirmation on the Mac's sc
 	"  There is no queue and no pending-approval list.\n" +
 	"  Run it from a terminal in the logged-in desktop session, or from the Relay\n" +
 	"  Settings window.\n" +
-	"  Read commands are unaffected: relay audit, relay grant, and every `list`."
+	"  Read commands never prompt (relay grant and every `list`), but they do need\n" +
+	"  Relay running."
 
 // adminOpErrorText renders an admin_op failure for a human at a terminal.
 //

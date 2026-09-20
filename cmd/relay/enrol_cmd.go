@@ -19,15 +19,13 @@ import (
 // design. Create, update and revoke are brokered (ADR-017 decision 2): this
 // process holds no sealer and cannot sign a certificate off relay's CA
 // itself (§5.4), so it dials the running tray over admin_op and lets
-// EnrolmentOps — the same core the gate lives in — do the work. `list` is
-// unaffected: it reads settings.json directly and keeps working with the
-// tray stopped.
+// EnrolmentOps — the same core the gate lives in — do the work. `list` is a
+// tray read too: the running tray is the only reader of the configuration.
 func runEnrolCommand(args []string) {
-	store := config.NewSettingsStore()
 	runSubcommands("enrol", []cliSubcommand{
 		{"create", enrolCreate},
 		{"sign", enrolSign},
-		{"list", func(_ []string) { enrolList(store) }},
+		{"list", func(_ []string) { enrolList() }},
 		{"update", enrolUpdate},
 		{"revoke", enrolRevoke},
 		{"requests", func(a []string) { enrolRequests(a) }},
@@ -267,17 +265,17 @@ func writeSignOutputFiles(dir, certPEM, caPEM string) error {
 	return nil
 }
 
-func enrolList(store config.SettingsStore) {
-	s := store.Get()
+func enrolList() {
+	enrolments := adminRead[enrolmentListResult]("relay enrol list", "enrolment.list", nil).Enrolments
 
-	if len(s.Enrolments) == 0 {
+	if len(enrolments) == 0 {
 		fmt.Println("no enrolments")
 		return
 	}
 
 	w := newTabWriter()
 	fmt.Fprintln(w, "CLIENT ID\tPROFILES\tCLI-ADMIN\tCALLS/WINDOW\tBYTES/WINDOW\tMOUNT-OPS/WINDOW\tMOUNT-READ/WINDOW\tMOUNT-WRITE/WINDOW\tCREATED\tFINGERPRINT")
-	for _, e := range s.Enrolments {
+	for _, e := range enrolments {
 		// Printed in full, and last, so all 64 hex characters cost nothing
 		// in readability: a revoked client's audit history stays legible
 		// after its enrolment is gone, and a listing that shortened it
@@ -680,9 +678,9 @@ func enrolRefuse(args []string) {
 }
 
 // enrolCAFingerprint reads ca.crt straight off disk — no store, no dial, no
-// sealer, the same "works with the tray stopped" shape `relay enrol list`
-// and `relay audit` already have, since the certificate is public and the
-// key it corresponds to is not needed to fingerprint it.
+// sealer, the same "works with the tray stopped" shape `relay audit` has, since the certificate is public and the
+// key it corresponds to is not needed to fingerprint it. It is not a read of
+// configuration, so it is the one enrol subcommand that needs no tray.
 func enrolCAFingerprint() {
 	fp, err := enrolment.CAFingerprintFromDisk()
 	if err != nil {

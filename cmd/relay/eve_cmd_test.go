@@ -39,7 +39,7 @@ func TestEveEnrol_CLIPrintsExpiryAndInstructions(t *testing.T) {
 // TestEveList_CLINeverPrintsKeyMaterial mirrors
 // TestLoginList_CLINeverPrintsKeyMaterial: the mirror carries no public key
 // at all (decision 8), so this mainly proves `eve list` reads the mirror
-// straight off disk and renders every column, including STATUS.
+// through the tray and renders every column, including STATUS.
 func TestEveList_CLINeverPrintsKeyMaterial(t *testing.T) {
 	store, _ := lcNewStore(t)
 	assertNoErr(t, store.With(func(s *config.Settings) {
@@ -50,7 +50,9 @@ func TestEveList_CLINeverPrintsKeyMaterial(t *testing.T) {
 		s.EvePasskeyRevocations = []config.EvePasskeyRevocation{{ID: "cred-id-fedcba9876543210", Requested: "2026-09-07T12:00:00Z"}}
 	}), "seed mirror")
 
-	out := lcCapture(t, func() { eveList(store) })
+	serveBroker(t, newBrokerRouter(t, store, nil))
+
+	out := lcCapture(t, func() { eveList() })
 
 	if !strings.Contains(out, "iPhone") || !strings.Contains(out, "MacBook") {
 		t.Fatalf("listing did not show both labels: %q", out)
@@ -66,7 +68,9 @@ func TestEveList_CLINeverPrintsKeyMaterial(t *testing.T) {
 func TestEveList_CLIEmptyMirror(t *testing.T) {
 	store, _ := lcNewStore(t)
 
-	out := lcCapture(t, func() { eveList(store) })
+	serveBroker(t, newBrokerRouter(t, store, nil))
+
+	out := lcCapture(t, func() { eveList() })
 	if !strings.Contains(out, "no eve passkeys reported") {
 		t.Fatalf("empty-mirror output = %q, want the no-passkeys message", out)
 	}

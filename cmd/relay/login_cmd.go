@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+
 	"github.com/barelyworkingcode/relay/internal/config"
 )
 
@@ -11,19 +12,17 @@ import (
 // config dir. `enrol` and `revoke` are brokered (ADR-017 decision 2): this
 // process holds no sealer (§5.4), so it dials the running tray over
 // admin_op and lets LoginOps — the same core the Passkeys tab and the
-// tray's own "Show Login Code..." item share — do the work. `list` is
-// unaffected: it reads settings.json directly and keeps working with the
-// tray stopped.
+// tray's own "Show Login Code..." item share — do the work. `list` is a
+// tray read too: the running tray is the only reader of the configuration.
 //
 // ADR-016 decision 2 kept this subcommand specifically because the tray's
 // menu is unreachable over SSH; ADR-017 §3.2 withdraws that affordance on
 // purpose — a session that cannot show a presence prompt refuses here
 // exactly as it does for every other gated operation, with no exemption.
 func runLoginCommand(args []string) {
-	store := config.NewSettingsStore()
 	runSubcommands("login", []cliSubcommand{
 		{"enrol", func(_ []string) { loginEnrol() }},
-		{"list", func(_ []string) { loginList(store) }},
+		{"list", func(_ []string) { loginList() }},
 		{"revoke", loginRevoke},
 	}, args)
 }
@@ -50,22 +49,22 @@ func loginEnrol() {
 	fmt.Println("  this code is shown ONCE and is not recoverable")
 }
 
-func loginList(store config.SettingsStore) {
-	s := store.Get()
+func loginList() {
+	passkeys := adminRead[loginListResult]("relay login list", "login.list", nil).Passkeys
 
-	if len(s.Passkeys) == 0 {
+	if len(passkeys) == 0 {
 		fmt.Println("no passkeys registered")
 		return
 	}
 
 	w := newTabWriter()
 	fmt.Fprintln(w, "NAME\tCREDENTIAL ID\tCREATED\tSIGN COUNT")
-	for _, p := range s.Passkeys {
-		// Neither X nor Y is printed. They are a public key, not a secret,
-		// but a listing has no legitimate use for them and printing them
-		// would be the obvious place to start treating this output as
-		// somewhere key material lives.
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", p.Name, abbreviatePasskeyID(p.ID), p.Created, p.SignCount)
+	for _, p := range passkeys {
+		// Neither X nor Y is printed, and neither crosses the bridge. They are
+		// a public key, not a secret, but a listing has no legitimate use for
+		// them and printing them would be the obvious place to start treating
+		// this output as somewhere key material lives.
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", p.Name, p.Short, p.Created, p.SignCount)
 	}
 	w.Flush()
 }

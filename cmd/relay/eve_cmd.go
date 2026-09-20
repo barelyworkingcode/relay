@@ -10,14 +10,13 @@ import (
 )
 
 // runEveCommand is `relay eve`'s dispatcher, mirroring runLoginCommand:
-// `list` reads settings.json directly, like `relay login list`, and works
-// with the tray stopped; `enrol` and `revoke` are brokered over admin_op
-// because this process holds no gate.
+// every subcommand is brokered over admin_op: `enrol` and `revoke` because
+// this process holds no gate, `list` because the running tray is the only
+// reader of the configuration.
 func runEveCommand(args []string) {
-	store := config.NewSettingsStore()
 	runSubcommands("eve", []cliSubcommand{
 		{"enrol", func(_ []string) { eveEnrol() }},
-		{"list", func(_ []string) { eveList(store) }},
+		{"list", func(_ []string) { eveList() }},
 		{"revoke", eveRevoke},
 	}, args)
 }
@@ -45,11 +44,10 @@ func eveEnrol() {
 	fmt.Println("  on the new browser, open Eve, and tap \"Add this browser\"")
 }
 
-// eveList reads relay's eve-passkey mirror straight off disk, the same
-// door `relay login list` uses for relay's own passkeys -- it needs no
-// running tray.
-func eveList(store config.SettingsStore) {
-	views := evePasskeyViews(store.Get())
+// eveList shows relay's eve-passkey mirror as the running tray holds it,
+// the same door `relay login list` uses for relay's own passkeys.
+func eveList() {
+	views := adminRead[eveListResult]("relay eve list", "eve.list", nil).Passkeys
 	if len(views) == 0 {
 		fmt.Println("no eve passkeys reported")
 		return

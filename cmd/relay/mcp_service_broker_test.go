@@ -27,7 +27,7 @@ func TestMcpRegisterAndUnregister_CLIDispatchThroughTheBroker(t *testing.T) {
 	}
 	id := mcps[0].ID
 
-	mcpUnregister(store, []string{"--id", id})
+	mcpUnregister([]string{"--id", id})
 
 	if len(store.Get().ExternalMcps) != 0 {
 		t.Fatalf("mcp %q was not removed by unregister", id)
@@ -46,5 +46,5 @@ func TestServiceRestart_CLIDispatchesThroughTheBroker(t *testing.T) {
 	// serviceRestart is not gated (§6.4) and touches no settings; the proof
 	// here is that it reaches appRouter.ReloadService rather than refusing
 	// as an unknown admin_op or an unwired core.
-	serviceRestart(store, []string{"--id", "restartable"})
+	serviceRestart([]string{"--id", "restartable"})
 }

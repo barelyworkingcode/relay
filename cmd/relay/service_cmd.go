@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
@@ -17,15 +16,15 @@ import (
 // register, unregister and restart are brokered (ADR-017 decision 2): this
 // process holds no sealer (§5.4), so it dials the running tray over
 // admin_op and lets ServiceOps — the same core the Services tab and
-// RegisterServiceRoutes share — do the work. `list` is unaffected: it reads
-// settings.json directly and keeps working with the tray stopped.
+// RegisterServiceRoutes share — do the work. `list` is a tray read too: the
+// running tray is the only reader of the configuration, and it alone knows
+// the restart-supervision state.
 func runServiceCommand(args []string) {
-	store := config.NewSettingsStore()
 	runSubcommands("service", []cliSubcommand{
 		{"register", serviceRegister},
-		{"unregister", func(a []string) { serviceUnregister(store, a) }},
-		{"restart", func(a []string) { serviceRestart(store, a) }},
-		{"list", func(_ []string) { serviceList(store) }},
+		{"unregister", serviceUnregister},
+		{"restart", serviceRestart},
+		{"list", func(_ []string) { serviceList() }},
 	}, args)
 }
 
@@ -175,7 +174,10 @@ func capabilitiesColumn(caps []config.ServiceCapability) string {
 	return strings.Join(names, ",")
 }
 
-func serviceUnregister(store config.SettingsStore, args []string) {
+// serviceUnregister sends the name as given: the tray resolves it against
+// its own snapshot inside service.unregister, so no stale read precedes the
+// mutation.
+func serviceUnregister(args []string) {
 	fs := flag.NewFlagSet("service unregister", flag.ExitOnError)
 	id := fs.String("id", "", "service ID")
 	name := fs.String("name", "", "service display name")
@@ -185,22 +187,19 @@ func serviceUnregister(store config.SettingsStore, args []string) {
 	}
 
 	client := requireService("relay service unregister")
-	resolvedID := store.Get().ResolveServiceID(*id, *name)
-	if resolvedID == "" {
-		if *id != "" {
-			exitError("no service found with id %q", *id)
-		}
-		exitError("no service found with name %q", *name)
-	}
-
-	body, err := json.Marshal(serviceUnregisterRequest{ID: resolvedID})
+	body, err := json.Marshal(serviceUnregisterRequest{ID: *id, Name: *name})
 	if err != nil {
 		exitError("%v", err)
 	}
-	if _, err := client.AdminOp("service.unregister", body); err != nil {
+	raw, err := client.AdminOp("service.unregister", body)
+	if err != nil {
 		exitError("%s", adminOpErrorText(err))
 	}
-	fmt.Printf("unregistered service %q\n", resolvedID)
+	var removed serviceUnregisterRequest
+	if err := json.Unmarshal(raw, &removed); err != nil {
+		exitError("parse response: %v", err)
+	}
+	fmt.Printf("unregistered service %q\n", removed.ID)
 }
 
 // serviceRestart is not gated (§6.4): it changes no settings, it restarts
@@ -208,7 +207,10 @@ func serviceUnregister(store config.SettingsStore, args []string) {
 // already. It is still brokered — this process cannot reach the registry
 // that owns the running process, only the tray can — but no presence
 // prompt is expected here.
-func serviceRestart(store config.SettingsStore, args []string) {
+//
+// The name is resolved tray-side, so "restarting" is announced once the
+// tray has answered rather than before the call.
+func serviceRestart(args []string) {
 	fs := flag.NewFlagSet("service restart", flag.ExitOnError)
 	id := fs.String("id", "", "service ID")
 	name := fs.String("name", "", "service display name")
@@ -218,40 +220,33 @@ func serviceRestart(store config.SettingsStore, args []string) {
 	}
 
 	client := requireService("relay service restart")
-	resolvedID := store.Get().ResolveServiceID(*id, *name)
-	if resolvedID == "" {
-		if *id != "" {
-			exitError("no service found with id %q", *id)
-		}
-		exitError("no service found with name %q", *name)
-	}
-
-	fmt.Printf("restarting service %q\n", resolvedID)
-	body, err := json.Marshal(serviceRestartRequest{ID: resolvedID})
+	body, err := json.Marshal(serviceRestartRequest{ID: *id, Name: *name})
 	if err != nil {
 		exitError("%v", err)
 	}
-	if _, err := client.AdminOp("service.restart", body); err != nil {
+	raw, err := client.AdminOp("service.restart", body)
+	if err != nil {
 		exitError("%s", adminOpErrorText(err))
 	}
+	var restarted serviceRestartRequest
+	if err := json.Unmarshal(raw, &restarted); err != nil {
+		exitError("parse response: %v", err)
+	}
+	fmt.Printf("restarting service %q\n", restarted.ID)
 }
 
-func serviceList(store config.SettingsStore) {
-	s := store.Get()
+func serviceList() {
+	listed := adminRead[serviceListResult]("relay service list", "service.list", nil)
 
-	if len(s.Services) == 0 {
+	if len(listed.Services) == 0 {
 		fmt.Println("no services registered")
 		return
 	}
-
-	// Best-effort and read-only: list keeps working with the tray stopped
-	// (unlike register/unregister/restart, which require it), so a missing
-	// or unreachable tray just means no STATE column detail beyond "-".
-	statuses := fetchServiceSupervisionStatuses()
+	statuses := listed.Statuses
 
 	w := newTabWriter()
 	fmt.Fprintln(w, "ID\tNAME\tCOMMAND\tURL\tAUTOSTART\tCAPABILITIES\tSTATE")
-	for _, svc := range s.Services {
+	for _, svc := range listed.Services {
 		cmd := svc.Command
 		if len(svc.Args) > 0 {
 			cmd += " " + strings.Join(svc.Args, " ")
@@ -269,29 +264,8 @@ func serviceList(store config.SettingsStore) {
 	w.Flush()
 }
 
-// fetchServiceSupervisionStatuses probes the running tray for restart-
-// supervision state (running/restarting/failed), which lives only in its
-// memory. Returns nil -- never exits, never prints -- when relay is not
-// running or the call fails, so `relay service list` keeps its documented
-// property of working with the tray stopped.
-func fetchServiceSupervisionStatuses() map[string]service.SupervisionStatus {
-	if !serviceReachable() {
-		return nil
-	}
-	raw, err := bridge.NewClient("").AdminOp("service.status", nil)
-	if err != nil {
-		return nil
-	}
-	var statuses map[string]service.SupervisionStatus
-	if err := json.Unmarshal(raw, &statuses); err != nil {
-		return nil
-	}
-	return statuses
-}
-
-// serviceStateColumn renders one row's STATE cell. "-" covers both "not
-// supervised" (never started this session, or the operator stopped it) and
-// "the tray wasn't reachable to ask."
+// serviceStateColumn renders one row's STATE cell. "-" means not supervised:
+// never started this session, or the operator stopped it.
 func serviceStateColumn(id string, statuses map[string]service.SupervisionStatus) string {
 	st, ok := statuses[id]
 	if !ok {

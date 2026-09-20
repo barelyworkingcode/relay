@@ -332,12 +332,11 @@ func TestEnrolList_PrintsCLIAdminColumn(t *testing.T) {
 	_, _, err = enrolment.Update(store, enrolment.UpdateRequest{ClientID: "hermes-on", CLIAdmin: &on})
 	assertNoErr(t, err, "enrolment.Update")
 
-	// Reload the store the way `relay enrol list` does: a fresh
-	// FileSettingsStore over the same directory, so this exercises the
-	// same read path the CLI process uses.
-	listStore := sealedSettingsStoreAt(dir)
+	// `relay enrol list` reads through the tray: a router over a fresh
+	// FileSettingsStore on the same directory, as the running tray would hold.
+	serveBroker(t, newBrokerRouter(t, sealedSettingsStoreAt(dir), nil))
 
-	out := aiQuiet(t, func() { enrolList(listStore) })
+	out := aiQuiet(t, func() { enrolList() })
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) < 3 {
 		t.Fatalf("expected a header and two rows, got:\n%s", out)

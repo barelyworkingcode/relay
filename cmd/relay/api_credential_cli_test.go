@@ -695,7 +695,9 @@ func TestACCListHidesExpiredUnlessAsked(t *testing.T) {
 		findAPICredential(s, dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	}), "backdate")
 
-	plain := accCapture(t, func() { credentialList(store, nil) })
+	serveBroker(t, newBrokerRouter(t, store, nil))
+
+	plain := accCapture(t, func() { credentialList(nil) })
 	if !strings.Contains(plain, "EXPIRES") {
 		t.Fatalf("`credential list` has no EXPIRES column:\n%s", plain)
 	}
@@ -709,7 +711,7 @@ func TestACCListHidesExpiredUnlessAsked(t *testing.T) {
 		t.Fatalf("`credential list` showed an expired credential without --include-expired:\n%s", plain)
 	}
 
-	withExpired := accCapture(t, func() { credentialList(store, []string{"--include-expired"}) })
+	withExpired := accCapture(t, func() { credentialList([]string{"--include-expired"}) })
 	if !strings.Contains(withExpired, dead.ID) {
 		t.Fatalf("--include-expired did not show the expired credential:\n%s", withExpired)
 	}
@@ -729,7 +731,9 @@ func TestACCListSaysSoWhenEveryCredentialHasExpired(t *testing.T) {
 		findAPICredential(s, dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	}), "backdate")
 
-	out := accCapture(t, func() { credentialList(store, nil) })
+	serveBroker(t, newBrokerRouter(t, store, nil))
+
+	out := accCapture(t, func() { credentialList(nil) })
 	if strings.Contains(out, dead.ID) {
 		t.Fatalf("an expired credential was listed by default:\n%s", out)
 	}

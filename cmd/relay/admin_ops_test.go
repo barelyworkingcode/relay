@@ -11,10 +11,11 @@ import (
 )
 
 // TestAdminOps_TableHasExactlyTheS6Operations pins §7.2's operation table:
-// every mutating CLI command S6 brokers has an entry, plus `service.status`,
-// which is ungated (ADR-015 §6.4 -- it changes nothing) but still needs a
-// live tray, since restart-supervision state exists only in its memory and
-// nowhere on disk `relay service list` could read directly. `project.rotate_token`
+// every mutating CLI command S6 brokers has an entry, plus the ungated read
+// ops (`*.list`, `grant.view`): the running tray is the only reader of the
+// configuration for a normal CLI command, and `service.list` also carries
+// restart-supervision state that exists only in its memory.
+// `project.rotate_token`
 // and `project.grant` are presence-gated (presence.GatedOps) but have no
 // admin_op entry — they have no CLI surface (§7.2: "— (IPC + HTTP
 // today)") — and `mcp.oauth.start` is IPC-only by design (ADR-014 section
@@ -38,7 +39,13 @@ func TestAdminOps_TableHasExactlyTheS6Operations(t *testing.T) {
 		"service.register",
 		"service.unregister",
 		"service.restart",
-		"service.status",
+		"service.list",
+		"credential.list",
+		"mcp.list",
+		"login.list",
+		"eve.list",
+		"enrolment.list",
+		"grant.view",
 		"eve.enrolment.open",
 		"eve.passkey.revoke",
 	}

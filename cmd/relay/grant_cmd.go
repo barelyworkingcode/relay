@@ -14,29 +14,23 @@ import (
 
 // runGrantCommand prints a project's or access profile's grant as authored.
 // `disclose` governs only what reaches the CLIENT; this always prints scope
-// values in full regardless of any field's `disclose` setting. It reads
-// settings.json directly, like `relay audit`, so the question is answerable
-// with the tray stopped — and describes the grant as authored, not as a live
-// MCP currently enforces it.
+// values in full regardless of any field's `disclose` setting. The running
+// tray builds the views from its own snapshot and this process only renders
+// them; the grant is described as authored, not as a live MCP currently
+// enforces it.
 func runGrantCommand(args []string) {
 	fs := flag.NewFlagSet("grant", flag.ExitOnError)
 	projectID := fs.String("project", "", "show one record by id or name (default: every record)")
 	asJSON := fs.Bool("json", false, "emit the grants as JSON instead of a table")
 	fs.Parse(args)
 
-	s := config.NewSettingsStore().Get()
-	records := selectGrantRecords(s.Projects, *projectID)
-	if len(records) == 0 {
+	views := adminRead[grantViewResult]("relay grant", "grant.view", grantViewRequest{Project: *projectID}).Grants
+	if len(views) == 0 {
 		if *projectID != "" {
 			exitError("no project or access profile matching %q", *projectID)
 		}
 		fmt.Println("no projects or access profiles")
 		return
-	}
-
-	views := make([]grantView, 0, len(records))
-	for _, p := range records {
-		views = append(views, newGrantView(s, p))
 	}
 
 	if *asJSON {

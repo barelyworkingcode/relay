@@ -21,8 +21,11 @@ func TestServiceRequiredMessage_NamesTheCommand(t *testing.T) {
 	if !strings.Contains(msg, "requires the service") {
 		t.Errorf("refusal does not say it requires the service: %q", msg)
 	}
-	if !strings.Contains(msg, "relay credential list") || !strings.Contains(msg, "relay audit") {
-		t.Errorf("refusal does not point at the read commands that still work: %q", msg)
+	if !strings.Contains(msg, "relay audit") {
+		t.Errorf("refusal does not point at the commands that still work stopped: %q", msg)
+	}
+	if strings.Contains(msg, "Read commands still work") {
+		t.Errorf("refusal claims configuration reads work with relay stopped: %q", msg)
 	}
 }
 

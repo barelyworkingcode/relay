@@ -44,7 +44,13 @@ var adminOps = map[string]adminOpHandler{
 	"service.register":          adminServiceRegister,
 	"service.unregister":        adminServiceUnregister,
 	"service.restart":           adminServiceRestart,
-	"service.status":            adminServiceStatus,
+	"service.list":              adminServiceList,
+	"credential.list":           adminCredentialList,
+	"mcp.list":                  adminMcpList,
+	"login.list":                adminLoginList,
+	"eve.list":                  adminEveList,
+	"enrolment.list":            adminEnrolmentList,
+	"grant.view":                adminGrantView,
 }
 
 // decodeAdminArgs unmarshals an admin_op payload into T, naming the
@@ -491,8 +497,11 @@ func adminMcpRegister(ctx context.Context, r *appRouter, args json.RawMessage) (
 	return marshalAdminResult(view)
 }
 
+// mcpUnregisterRequest names its target by id or by display name; a name is
+// resolved against the tray's own snapshot, never the caller's.
 type mcpUnregisterRequest struct {
-	ID string `json:"id"`
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 func adminMcpUnregister(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
@@ -504,12 +513,16 @@ func adminMcpUnregister(ctx context.Context, r *appRouter, args json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	if err := ops.Remove(req.ID, auditViaCLI, ""); err != nil {
+	id, err := resolveMcpRef(r, req.ID, req.Name)
+	if err != nil {
+		return nil, err
+	}
+	if err := ops.Remove(id, auditViaCLI, ""); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {
 		ID string `json:"id"`
-	}{ID: req.ID})
+	}{ID: id})
 }
 
 // adminServiceRegister dispatches to Update when the id already exists and
@@ -544,7 +557,8 @@ func adminServiceRegister(ctx context.Context, r *appRouter, args json.RawMessag
 }
 
 type serviceUnregisterRequest struct {
-	ID string `json:"id"`
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 func adminServiceUnregister(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
@@ -556,12 +570,16 @@ func adminServiceUnregister(ctx context.Context, r *appRouter, args json.RawMess
 	if err != nil {
 		return nil, err
 	}
-	if err := ops.Remove(req.ID, auditViaCLI, ""); err != nil {
+	id, err := resolveServiceRef(r, req.ID, req.Name)
+	if err != nil {
+		return nil, err
+	}
+	if err := ops.Remove(id, auditViaCLI, ""); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {
 		ID string `json:"id"`
-	}{ID: req.ID})
+	}{ID: id})
 }
 
 // service.restart is not gated (§6.4: it changes no settings, it restarts
@@ -569,7 +587,8 @@ func adminServiceUnregister(ctx context.Context, r *appRouter, args json.RawMess
 // appRouter.ReloadService is the exact Stop-then-Start-in-place the tray
 // has always done for this, reused rather than duplicated.
 type serviceRestartRequest struct {
-	ID string `json:"id"`
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 func adminServiceRestart(_ context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
@@ -580,24 +599,14 @@ func adminServiceRestart(_ context.Context, r *appRouter, args json.RawMessage) 
 	if r.serviceOps == nil {
 		return nil, errors.New("service operations are not available in this relay process")
 	}
-	if err := r.serviceOps.Restart(req.ID); err != nil {
+	id, err := resolveServiceRef(r, req.ID, req.Name)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.serviceOps.Restart(id); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {
 		ID string `json:"id"`
-	}{ID: req.ID})
-}
-
-// service.status is not gated: it changes nothing and names no secret, only
-// the restart-supervision state (internal/service.SupervisionStatus) of
-// every service id relay is currently supervising. `relay service list`
-// calls this as a best-effort extra when the tray happens to be reachable
-// (it works with the tray stopped either way, reading settings.json
-// directly), and it is the same map the Settings window's status poll reads.
-func adminServiceStatus(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
-	ops, err := requireServiceOps(r)
-	if err != nil {
-		return nil, err
-	}
-	return marshalAdminResult(ops.Registry.SupervisionStatuses())
+	}{ID: id})
 }

@@ -16,13 +16,12 @@ import (
 // config dir. Mint and revoke are brokered (ADR-017 decision 2): this
 // process holds no sealer and cannot write settings.json itself (§5.4), so
 // it dials the running tray over admin_op and lets CredentialOps — the same
-// core the gate lives in — do the work. `list` is unaffected: it reads
-// settings.json directly and keeps working with the tray stopped.
+// core the gate lives in — do the work. `list` is a tray read too: the
+// running tray is the only reader of the configuration.
 func runCredentialCommand(args []string) {
-	store := config.NewSettingsStore()
 	runSubcommands("credential", []cliSubcommand{
 		{"mint", credentialMint},
-		{"list", func(a []string) { credentialList(store, a) }},
+		{"list", credentialList},
 		{"revoke", credentialRevoke},
 	}, args)
 }
@@ -124,23 +123,23 @@ func formatCredentialExpiry(c config.APICredential, now time.Time) string {
 	return c.Expires
 }
 
-func credentialList(store config.SettingsStore, args []string) {
+func credentialList(args []string) {
 	fs := flag.NewFlagSet("credential list", flag.ExitOnError)
 	includeExpired := fs.Bool("include-expired", false, "also list credentials that have expired and are awaiting the next mint's reap")
 	fs.Parse(args)
 
-	s := store.Get()
+	listed := adminRead[credentialListResult]("relay credential list", "credential.list", nil).Credentials
 	now := time.Now()
 
-	shown := make([]config.APICredential, 0, len(s.APICredentials))
-	for _, c := range s.APICredentials {
-		if *includeExpired || !c.Expired(now) {
+	shown := make([]config.APICredential, 0, len(listed))
+	for _, item := range listed {
+		if c := item.credential(); *includeExpired || !c.Expired(now) {
 			shown = append(shown, c)
 		}
 	}
 
 	if len(shown) == 0 {
-		if !*includeExpired && len(s.APICredentials) > 0 {
+		if !*includeExpired && len(listed) > 0 {
 			fmt.Println("no live credentials (--include-expired shows the expired ones)")
 			return
 		}
@@ -151,10 +150,9 @@ func credentialList(store config.SettingsStore, args []string) {
 	w := newTabWriter()
 	fmt.Fprintln(w, "ID\tNAME\tCLASSES\tCREATED\tEXPIRES")
 	for _, c := range shown {
-		// Neither the hash nor the plaintext is printed. The hash is a
-		// verifier for a live secret, so a listing that showed it would put
-		// an offline-guessable value on any screen or scrollback that ran
-		// this command.
+		// Neither the hash nor the plaintext is printed, and the hash never
+		// leaves the tray: it verifies a live secret, so a listing that showed
+		// it would put an offline-guessable value on any screen or scrollback.
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", c.ID, c.Name, formatClasses(c.Classes), c.Created, formatCredentialExpiry(c, now))
 	}
 	w.Flush()

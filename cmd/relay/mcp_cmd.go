@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 )
 
@@ -12,14 +11,13 @@ import (
 // holds no sealer (§5.4), so it dials the running tray over admin_op and
 // lets McpOps — the same core the MCP Servers tab and RegisterMcpRoutes
 // share — do the discovery, the SSRF guard and the reconcile notify. `list`
-// is unaffected: it reads settings.json directly and keeps working with
-// the tray stopped.
+// is a tray read too: the running tray is the only reader of the
+// configuration.
 func runMcpCommand(args []string) {
-	store := config.NewSettingsStore()
 	runSubcommands("mcp", []cliSubcommand{
 		{"register", mcpRegister},
-		{"unregister", func(a []string) { mcpUnregister(store, a) }},
-		{"list", func(_ []string) { mcpList(store) }},
+		{"unregister", mcpUnregister},
+		{"list", func(_ []string) { mcpList() }},
 	}, args)
 }
 
@@ -81,7 +79,10 @@ func mcpRegister(args []string) {
 	}
 }
 
-func mcpUnregister(store config.SettingsStore, args []string) {
+// mcpUnregister sends the name as given: the tray resolves it against its
+// own snapshot inside mcp.unregister, so no stale read precedes the
+// mutation.
+func mcpUnregister(args []string) {
 	fs := flag.NewFlagSet("mcp unregister", flag.ExitOnError)
 	id := fs.String("id", "", "MCP ID")
 	name := fs.String("name", "", "MCP display name")
@@ -91,41 +92,38 @@ func mcpUnregister(store config.SettingsStore, args []string) {
 	}
 
 	client := requireService("relay mcp unregister")
-	resolvedID := store.Get().ResolveMcpID(*id, *name)
-	if resolvedID == "" {
-		if *id != "" {
-			exitError("no mcp found with id %q", *id)
-		}
-		exitError("no mcp found with name %q", *name)
-	}
-
-	body, err := json.Marshal(mcpUnregisterRequest{ID: resolvedID})
+	body, err := json.Marshal(mcpUnregisterRequest{ID: *id, Name: *name})
 	if err != nil {
 		exitError("%v", err)
 	}
-	if _, err := client.AdminOp("mcp.unregister", body); err != nil {
+	raw, err := client.AdminOp("mcp.unregister", body)
+	if err != nil {
 		exitError("%s", adminOpErrorText(err))
 	}
-	fmt.Printf("unregistered mcp %q\n", resolvedID)
+	var removed mcpUnregisterRequest
+	if err := json.Unmarshal(raw, &removed); err != nil {
+		exitError("parse response: %v", err)
+	}
+	fmt.Printf("unregistered mcp %q\n", removed.ID)
 }
 
-func mcpList(store config.SettingsStore) {
-	s := store.Get()
+func mcpList() {
+	mcps := adminRead[mcpListResult]("relay mcp list", "mcp.list", nil).Mcps
 
-	if len(s.ExternalMcps) == 0 {
+	if len(mcps) == 0 {
 		fmt.Println("no mcp servers registered")
 		return
 	}
 
 	w := newTabWriter()
 	fmt.Fprintln(w, "ID\tNAME\tTRANSPORT\tENDPOINT")
-	for _, m := range s.ExternalMcps {
+	for _, m := range mcps {
 		transport := m.Transport
 		if transport == "" {
 			transport = "stdio"
 		}
 		var endpoint string
-		if m.IsHTTP() {
+		if m.HTTP {
 			endpoint = m.URL
 		} else {
 			endpoint = m.Command

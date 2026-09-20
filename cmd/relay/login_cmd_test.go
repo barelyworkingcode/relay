@@ -112,7 +112,9 @@ func TestLoginList_CLINeverPrintsKeyMaterial(t *testing.T) {
 		t.Fatalf("store.With: %v", err)
 	}
 
-	out := lcCapture(t, func() { loginList(store) })
+	serveBroker(t, newBrokerRouter(t, store, nil))
+
+	out := lcCapture(t, func() { loginList() })
 
 	if !strings.Contains(out, "test-passkey") {
 		t.Fatalf("listing did not show the passkey's name: %q", out)
