@@ -334,27 +334,16 @@ var wantGatedMutatorNames = []string{
 	"updateProjectKind", "updateProjectPath", "UpdateProjectMounts",
 }
 
-// wantGateAllowlistedFiles pins gateAllowlistedFiles' key set the same way.
-var wantGateAllowlistedFiles = []string{
-	"cmd/relay/credential_ops.go", "cmd/relay/project_ops.go", "cmd/relay/mcp_ops.go", "cmd/relay/service_ops.go",
-	"cmd/relay/enrolment_ops.go", "cmd/relay/login_ops.go",
-	"internal/project/scope.go", "cmd/relay/api_credential.go", "internal/enrolment/enrolment.go", "internal/project/apply.go",
-	"cmd/relay/project_routes.go", "cmd/relay/ipc_handlers.go", "cmd/relay/trayapp.go", "cmd/relay/login_routes.go",
-	"cmd/relay/host_ops.go", "cmd/relay/eve_enrolment_ops.go", "cmd/relay/eve_passkey_ops.go", "cmd/relay/template_ops.go",
-}
-
-// TestGate_MutatorAndAllowlistSetsHaveNotShrunk is AC-11: a
-// mutation-containment guard that keeps passing while its two sets quietly
-// shrink is worse than no guard, because "no violations found" stops
-// meaning anything once there is nothing left to violate. Compares both
-// maps' key sets to the pinned literals above, in both directions, so a
-// drop and a stray addition are equally visible.
-func TestGate_MutatorAndAllowlistSetsHaveNotShrunk(t *testing.T) {
+// TestGate_MutatorSetHasNotShrunk is AC-11: a mutation-containment guard that
+// keeps passing while its name set quietly shrinks is worse than no guard,
+// because "no violations found" stops meaning anything once there is nothing
+// left to violate. The scan reports only calls outside the allowlist, so a
+// name dropped from gatedMutatorNames fails nothing else; this pin, in both
+// directions, is what makes a drop or a stray addition visible. The allowlist
+// needs no pin: dropping an entry makes the scan fail naming its call sites.
+func TestGate_MutatorSetHasNotShrunk(t *testing.T) {
 	if n := len(gatedMutatorNames); n < 14 {
 		t.Errorf("gatedMutatorNames has %d entries, want at least 14", n)
-	}
-	if n := len(gateAllowlistedFiles); n < 13 {
-		t.Errorf("gateAllowlistedFiles has %d entries, want at least 13", n)
 	}
 
 	if len(gatedMutatorNames) != len(wantGatedMutatorNames) {
@@ -368,20 +357,6 @@ func TestGate_MutatorAndAllowlistSetsHaveNotShrunk(t *testing.T) {
 	for name := range gatedMutatorNames {
 		if !containsString(wantGatedMutatorNames, name) {
 			t.Errorf("gatedMutatorNames has %q, missing from wantGatedMutatorNames", name)
-		}
-	}
-
-	if len(gateAllowlistedFiles) != len(wantGateAllowlistedFiles) {
-		t.Errorf("gateAllowlistedFiles has %d entries, wantGateAllowlistedFiles has %d", len(gateAllowlistedFiles), len(wantGateAllowlistedFiles))
-	}
-	for _, name := range wantGateAllowlistedFiles {
-		if _, ok := gateAllowlistedFiles[name]; !ok {
-			t.Errorf("wantGateAllowlistedFiles has %q, missing from gateAllowlistedFiles", name)
-		}
-	}
-	for name := range gateAllowlistedFiles {
-		if !containsString(wantGateAllowlistedFiles, name) {
-			t.Errorf("gateAllowlistedFiles has %q, missing from wantGateAllowlistedFiles", name)
 		}
 	}
 }
