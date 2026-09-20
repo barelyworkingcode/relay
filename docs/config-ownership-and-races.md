@@ -62,6 +62,8 @@ ordering is the primary mechanism.
 - Host create, update, remove, and probe reserve and commit persisted probe
   generations on the queue; SSH discovery remains outside it, and stale probe
   results cannot overwrite a newer connection shape or a removed host.
+- Terminal template create, update, and remove now use the same queue; the
+  Settings window (IPC) and the HTTP routes share one `TemplateOps`.
 
 The remaining work is to apply the same boundary to the other configuration
 domains, route normal CLI reads through the tray, and queue service-owned config

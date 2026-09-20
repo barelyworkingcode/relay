@@ -64,6 +64,7 @@ func TestReviewFix_B1_RealFrontendRoutesCoexistWithRelaySessionsManifest(t *test
 		nil, // mcpOps
 		nil, // projectOps
 		nil, // hostOps
+		nil, // templateOps
 		nil, // eveEnrolmentOps
 		nil, // evePasskeyOps
 		nil, // authz
@@ -381,7 +382,7 @@ func TestReviewFix_R1_SubtreePOSTsReachManifestProxyNotCreateHandler(t *testing.
 		seededEndpoint(t, store, filepath.Join(sockDir, "frontend.sock"), bearer),
 		enhanced,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil,
+		nil, nil, nil, nil,
 		sessionDeps,
 	)
 	assertNoErr(t, err, "NewFrontendServer")

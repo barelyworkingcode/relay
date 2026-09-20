@@ -19,7 +19,7 @@ func newTemplateRoutesServer(t *testing.T) (*httptest.Server, config.SettingsSto
 	}
 	seedTestTemplates(t, store)
 	mux := http.NewServeMux()
-	RegisterTemplateRoutes(&control.RouteRegistrar{Mux: mux, Transport: control.TransportSocket}, store)
+	RegisterTemplateRoutes(&control.RouteRegistrar{Mux: mux, Transport: control.TransportSocket}, store, &TemplateOps{Store: store})
 	return httptest.NewServer(mux), store
 }
 
@@ -96,7 +96,7 @@ func TestTemplateRoutes_ClassIsRead(t *testing.T) {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 	mux := http.NewServeMux()
-	RegisterTemplateRoutes(&control.RouteRegistrar{Mux: mux, Transport: control.TransportTCP}, store)
+	RegisterTemplateRoutes(&control.RouteRegistrar{Mux: mux, Transport: control.TransportTCP}, store, &TemplateOps{Store: store})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

@@ -59,7 +59,7 @@ func accNewServer(t *testing.T, store config.SettingsStore, bearer string) *accS
 		store, extMgr, extMgr, extMgr,
 		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), bearer),
 		NewEnhancedServiceRegistry(nil), nil, nil,
-		ops, enrolOps, &audit.AuditOps{}, mcpOps, projOps, nil, nil, nil,
+		ops, enrolOps, &audit.AuditOps{}, mcpOps, projOps, nil, nil, nil, nil,
 		NewCredentialAuthorizer(store), nil, nil,
 		sessionRouteDeps{},
 	)

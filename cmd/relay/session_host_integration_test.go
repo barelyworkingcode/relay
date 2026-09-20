@@ -426,7 +426,7 @@ func newSessionHostFixture(t *testing.T) *sessionHostFixture {
 		store, tools, tools, tools,
 		Endpoint{Socket: frontendSock},
 		enhanced,
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		NewCredentialAuthorizer(store),
 		nil,
 		launches,

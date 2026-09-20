@@ -87,7 +87,7 @@ func newRotateTokenTestServer(t *testing.T, store config.SettingsStore, ops *Pro
 		enhanced,
 		nil, nil, nil, nil, nil, nil,
 		ops,
-		nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil,
 		sessionRouteDeps{},
 	)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestSlowBodyUpload_StillHitsReadDeadlineOnUngatedRoute(t *testing.T) {
 		enhanced,
 		nil, nil, nil, nil,
 		auditOps,
-		nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		sessionRouteDeps{},
 	)
 	if err != nil {

@@ -378,7 +378,7 @@ func startIdentityFrontend(t *testing.T, enhanced *EnhancedServiceRegistry) (*Fr
 	extMgr := mcpbroker.NewManager(nil)
 	sock := filepath.Join(mkShortTempDir(t, "fe-id-"), "frontend.sock")
 	srv, err := NewFrontendServer(store, extMgr, extMgr, extMgr, Endpoint{Socket: sock}, enhanced,
-		nil, nil, &ServiceOps{Store: store, Registry: &svcRecorder{}}, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, &ServiceOps{Store: store, Registry: &svcRecorder{}}, nil, nil, nil, nil, nil, nil, nil, nil,
 		NewCredentialAuthorizer(store), nil, launches, sessionRouteDeps{})
 	assertNoErr(t, err, "NewFrontendServer")
 	go func() { _ = srv.Serve() }()

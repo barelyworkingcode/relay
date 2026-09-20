@@ -64,7 +64,7 @@ func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), "tok"),
-		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		sessionRouteDeps{},
 	)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestServiceAPI_UnauthenticatedIsRefused(t *testing.T) {
 		store, extMgr, extMgr, extMgr,
 		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), "tok"),
 		NewEnhancedServiceRegistry(nil), nil, nil,
-		&ServiceOps{Store: store, Registry: &svcRecorder{}}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		&ServiceOps{Store: store, Registry: &svcRecorder{}}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		sessionRouteDeps{},
 	)
 	if err != nil {
@@ -194,7 +194,7 @@ func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), "tok"),
-		NewEnhancedServiceRegistry(nil), nil, nil, ops, enrolmentOps, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		NewEnhancedServiceRegistry(nil), nil, nil, ops, enrolmentOps, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		sessionRouteDeps{},
 	)
 	if err != nil {

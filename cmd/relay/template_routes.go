@@ -15,8 +15,7 @@ import (
 // matches relayLLM's former GET /api/terminal/templates field-for-field,
 // minus useRelayToken (dropped, not ported). Writes go through TemplateOps,
 // the same core the Settings window uses.
-func RegisterTemplateRoutes(rr *control.RouteRegistrar, store config.SettingsStore) {
-	ops := &TemplateOps{Store: store}
+func RegisterTemplateRoutes(rr *control.RouteRegistrar, store config.SettingsStore, ops *TemplateOps) {
 
 	rr.Handle(classFor("GET", "/api/terminal/templates"), "GET /api/terminal/templates", func(w http.ResponseWriter, r *http.Request) {
 		// A project is what permits a template (Project.AllowedTemplates), so
@@ -43,11 +42,12 @@ func RegisterTemplateRoutes(rr *control.RouteRegistrar, store config.SettingsSto
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 				return
 			}
-			status, do := http.StatusCreated, ops.Create
+			status := http.StatusCreated
+			do := ops.Create
 			if !create {
 				t.ID, status, do = r.PathValue("id"), http.StatusOK, ops.Update
 			}
-			if err := do(t); err != nil {
+			if err := do(r.Context(), t); err != nil {
 				writeTemplateError(w, err)
 				return
 			}
@@ -57,7 +57,7 @@ func RegisterTemplateRoutes(rr *control.RouteRegistrar, store config.SettingsSto
 	rr.Handle(classFor("POST", "/api/terminal/templates"), "POST /api/terminal/templates", save(true))
 	rr.Handle(classFor("PUT", "/api/terminal/templates/{id}"), "PUT /api/terminal/templates/{id}", save(false))
 	rr.Handle(classFor("DELETE", "/api/terminal/templates/{id}"), "DELETE /api/terminal/templates/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := ops.Remove(r.PathValue("id")); err != nil {
+		if err := ops.Remove(r.Context(), r.PathValue("id")); err != nil {
 			writeTemplateError(w, err)
 			return
 		}

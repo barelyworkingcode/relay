@@ -638,6 +638,7 @@ func aiNewLoginServer(t *testing.T, rec *audit.AuditRecorder) *lrServer {
 		nil,
 		nil,
 		nil,
+		nil,
 		NewCredentialAuthorizer(store), auditor, nil,
 		sessionRouteDeps{},
 	)

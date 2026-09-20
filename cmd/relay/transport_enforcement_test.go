@@ -75,7 +75,7 @@ func teNewServer(t *testing.T, store config.SettingsStore, authz control.Authori
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		seededEndpoint(t, store, filepath.Join(sockDir, "frontend.sock"), token),
-		enhanced, nil, nil, ops, enrolOps, auditOps, mcpOps, projOps, nil, nil, nil, authz, nil, nil,
+		enhanced, nil, nil, ops, enrolOps, auditOps, mcpOps, projOps, nil, nil, nil, nil, authz, nil, nil,
 		sessionRouteDeps{},
 	)
 	assertNoErr(t, err, "NewFrontendServer")

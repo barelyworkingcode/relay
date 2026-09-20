@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -37,49 +38,65 @@ var templateIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // widen what a sandboxed session may touch; docs/session-host.md says so.
 type TemplateOps struct {
 	Store config.SettingsStore
+	Queue *config.CommandQueue
 }
 
-func (o *TemplateOps) Create(t config.TerminalTemplate) error { return o.put(t, true) }
+func (o *TemplateOps) runQueued(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
+}
 
-func (o *TemplateOps) Update(t config.TerminalTemplate) error { return o.put(t, false) }
+func (o *TemplateOps) Create(ctx context.Context, t config.TerminalTemplate) error {
+	return o.put(ctx, t, true)
+}
 
-func (o *TemplateOps) put(t config.TerminalTemplate, create bool) error {
+func (o *TemplateOps) Update(ctx context.Context, t config.TerminalTemplate) error {
+	return o.put(ctx, t, false)
+}
+
+func (o *TemplateOps) put(ctx context.Context, t config.TerminalTemplate, create bool) error {
 	if !templateIDPattern.MatchString(t.ID) {
 		return &templateError{errTemplateInvalid, "template id must be letters, digits, '.', '_' or '-'"}
 	}
 	if err := config.ValidateTerminalTemplate(t); err != nil {
 		return &templateError{errTemplateInvalid, err.Error()}
 	}
-	var opErr error
-	if err := o.Store.With(func(s *config.Settings) {
-		i := slices.IndexFunc(s.TerminalTemplates, func(x config.TerminalTemplate) bool { return x.ID == t.ID })
-		switch {
-		case create && i >= 0:
-			opErr = &templateError{errTemplateExists, fmt.Sprintf("template %q already exists", t.ID)}
-		case !create && i < 0:
-			opErr = &templateError{errTemplateNotFound, fmt.Sprintf("template %q not found", t.ID)}
-		case create:
-			s.TerminalTemplates = append(s.TerminalTemplates, t)
-		default:
-			s.TerminalTemplates[i] = t
+	return o.runQueued(ctx, func() error {
+		var opErr error
+		if err := o.Store.With(func(s *config.Settings) {
+			i := slices.IndexFunc(s.TerminalTemplates, func(x config.TerminalTemplate) bool { return x.ID == t.ID })
+			switch {
+			case create && i >= 0:
+				opErr = &templateError{errTemplateExists, fmt.Sprintf("template %q already exists", t.ID)}
+			case !create && i < 0:
+				opErr = &templateError{errTemplateNotFound, fmt.Sprintf("template %q not found", t.ID)}
+			case create:
+				s.TerminalTemplates = append(s.TerminalTemplates, t)
+			default:
+				s.TerminalTemplates[i] = t
+			}
+		}); err != nil {
+			return fmt.Errorf("save template: %w", err)
 		}
-	}); err != nil {
-		return fmt.Errorf("save template: %w", err)
-	}
-	return opErr
+		return opErr
+	})
 }
 
-func (o *TemplateOps) Remove(id string) error {
-	found := false
-	if err := o.Store.With(func(s *config.Settings) {
-		before := len(s.TerminalTemplates)
-		s.TerminalTemplates = slices.DeleteFunc(s.TerminalTemplates, func(x config.TerminalTemplate) bool { return x.ID == id })
-		found = len(s.TerminalTemplates) != before
-	}); err != nil {
-		return fmt.Errorf("save template: %w", err)
-	}
-	if !found {
-		return &templateError{errTemplateNotFound, fmt.Sprintf("template %q not found", id)}
-	}
-	return nil
+func (o *TemplateOps) Remove(ctx context.Context, id string) error {
+	return o.runQueued(ctx, func() error {
+		found := false
+		if err := o.Store.With(func(s *config.Settings) {
+			before := len(s.TerminalTemplates)
+			s.TerminalTemplates = slices.DeleteFunc(s.TerminalTemplates, func(x config.TerminalTemplate) bool { return x.ID == id })
+			found = len(s.TerminalTemplates) != before
+		}); err != nil {
+			return fmt.Errorf("save template: %w", err)
+		}
+		if !found {
+			return &templateError{errTemplateNotFound, fmt.Sprintf("template %q not found", id)}
+		}
+		return nil
+	})
 }

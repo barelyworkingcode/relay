@@ -254,7 +254,8 @@ type IPCContext struct {
 	// (docs/ssh-hosts.md) — ipc_hosts.go's handlers are thin adapters over
 	// it too, so a host created from curl and one created from the tray
 	// share the same probe and the same audit record.
-	HostOps *HostOps
+	HostOps     *HostOps
+	TemplateOps *TemplateOps
 	// ConfigDir and LogsDir back the Overview tab's "Reveal" actions
 	// (ipc_overview.go). ConfigDir is a plain string because it is fixed at
 	// boot; LogsDir is a func because resolving it can fail (directory

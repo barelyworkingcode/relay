@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -14,16 +15,31 @@ func ipcListTemplates(ctx *IPCContext, raw json.RawMessage) {
 	ctx.UI.EmitEvent("onTemplatesListed", marshalForUI(config.EffectiveTerminalTemplates(ctx.Store.Get())))
 }
 
-func ipcSaveTemplate(ctx *IPCContext, raw json.RawMessage, msgType string, save func(*TemplateOps, config.TerminalTemplate) error) {
+// templateOps returns the shared core; the fallback serves contexts built
+// without one (tests).
+func (c *IPCContext) templateOps() *TemplateOps {
+	if c.TemplateOps != nil {
+		return c.TemplateOps
+	}
+	return &TemplateOps{Store: c.Store}
+}
+
+func ipcSaveTemplate(ctx *IPCContext, raw json.RawMessage, msgType string, save func(*TemplateOps, context.Context, config.TerminalTemplate) error) {
 	t, ok := unmarshalIPC[config.TerminalTemplate](raw, msgType)
 	if !ok {
 		return
 	}
-	if err := save(&TemplateOps{Store: ctx.Store}, *t); err != nil {
-		ctx.UI.EmitEvent("onTemplateError", err.Error())
+	ctx.GoFunc(func() {
+		emitTemplateResult(ctx, save(ctx.templateOps(), ctx.Ctx, *t))
+	})
+}
+
+func emitTemplateResult(ctx *IPCContext, err error) {
+	if err != nil {
+		dispatchEmit(ctx, "onTemplateError", err.Error())
 		return
 	}
-	ipcListTemplates(ctx, nil)
+	dispatchEmit(ctx, "onTemplatesListed", marshalForUI(config.EffectiveTerminalTemplates(ctx.Store.Get())))
 }
 
 func ipcCreateTemplate(ctx *IPCContext, raw json.RawMessage) {
@@ -41,9 +57,7 @@ func ipcRemoveTemplate(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	if err := (&TemplateOps{Store: ctx.Store}).Remove(msg.ID); err != nil {
-		ctx.UI.EmitEvent("onTemplateError", err.Error())
-		return
-	}
-	ipcListTemplates(ctx, nil)
+	ctx.GoFunc(func() {
+		emitTemplateResult(ctx, ctx.templateOps().Remove(ctx.Ctx, msg.ID))
+	})
 }

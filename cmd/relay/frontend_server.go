@@ -178,6 +178,7 @@ type frontendRouteDeps struct {
 	mcpOps            *McpOps
 	projectOps        *ProjectOps
 	hostOps           *HostOps
+	templateOps       *TemplateOps
 	// eveEnrolmentOps backs eve's own status/consume door
 	// (docs/eve-passkey-enrolment.md). Unlike every other field here it has
 	// no IPC-tab counterpart: Open is reachable only from the tray menu and
@@ -217,7 +218,7 @@ type frontendRouteDeps struct {
 // class, not a call site here, decides what lands on TCP.
 func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) {
 	RegisterProjectRoutes(rr, deps.store, deps.projectOps, deps.mcps, deps.tools, deps.enum, deps.skillLister, deps.onProjectsChanged)
-	RegisterTemplateRoutes(rr, deps.store)
+	RegisterTemplateRoutes(rr, deps.store, deps.templateOps)
 	if deps.auditOps != nil {
 		RegisterAuditRoutes(rr, deps.auditOps)
 	}
@@ -343,7 +344,7 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 // constructor already has (see projectOps/hostOps/eveEnrolmentOps/
 // evePasskeyOps's own nil-fallback comments above). A caller not otherwise
 // concerned with session routes passes sessionRouteDeps{} explicitly.
-func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, eveEnrolmentOps *EveEnrolmentOps, evePasskeyOps *EvePasskeyOps, authz control.Authorizer, auditor control.ControlAuditor, launches *service.Launches, sessionHost sessionRouteDeps) (*FrontendServer, error) {
+func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, templateOps *TemplateOps, eveEnrolmentOps *EveEnrolmentOps, evePasskeyOps *EvePasskeyOps, authz control.Authorizer, auditor control.ControlAuditor, launches *service.Launches, sessionHost sessionRouteDeps) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -355,6 +356,9 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 	}
 	if hostOps == nil {
 		hostOps = &HostOps{Store: store}
+	}
+	if templateOps == nil {
+		templateOps = &TemplateOps{Store: store}
 	}
 	if eveEnrolmentOps == nil {
 		eveEnrolmentOps = &EveEnrolmentOps{Store: store}
@@ -376,6 +380,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		mcpOps:            mcpOps,
 		projectOps:        projectOps,
 		hostOps:           hostOps,
+		templateOps:       templateOps,
 		eveEnrolmentOps:   eveEnrolmentOps,
 		evePasskeyOps:     evePasskeyOps,
 		enhanced:          enhanced,
