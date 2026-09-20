@@ -28,9 +28,25 @@ This proposal is being implemented on the `feat/config-command-queue` branch.
 
 Current decision: use a FIFO command queue for configuration mutations and the
 dependent runtime action that must be ordered with them. The caller waits for a
-result. Ordinary reads use the latest committed snapshot. Revision numbers and
-stale-result checks remain useful for recovery and UI freshness, but FIFO
-ordering is the primary mechanism.
+result. Ordinary reads use the latest committed snapshot. FIFO ordering is the
+ordering mechanism. A command that does its lookup, validation, persistence and
+ordered side effect entirely inside one queued step needs no revision check.
+
+Revision or generation checks are needed only where work must leave the queue
+between reading state and committing a result. Host probes are the precedent:
+they reserve and commit a per-host probe generation on the queue
+(`internal/config/settings.go`, `host_ops.go`), so a stale probe result is
+dropped. The same rule applies to a presence approval that cannot run inside
+the queued step and to service-owned config file edits. Revisions for UI
+freshness are optional.
+
+A global monotonic revision counter and a `ConfigManager` snapshot API are not
+part of the current scope. They appear below only as a possible future
+direction.
+
+Lane-duration assumption: queued steps are expected to be fast, well under a
+second. Anything that waits on a human (a presence prompt), the network, or an
+unbounded subprocess wait must not hold the lane.
 
 ### Completed on this branch
 
@@ -165,8 +181,10 @@ The same shape exists anywhere code does this:
 4. Apply a side effect based on both observations.
 
 The file mutex cannot solve that. The operation needs an explicit command
-boundary, a revision check, or a reconciliation loop that treats the current
-configuration as the source of truth.
+boundary (one queued step that reads, validates, persists and applies the
+ordered effect), or, where work must leave the queue, a generation check at
+commit or a reconciliation loop that treats the current configuration as the
+source of truth.
 
 ### 4. File polling is being used as a coordination mechanism
 
@@ -179,7 +197,7 @@ The tray's two-second `ReloadIfChanged` poll is doing three jobs:
 That is workable while external edits are supported, but it is an awkward
 control plane. It introduces an intentional delay and makes “configuration
 changed” an observation rather than an event. If the tray owns configuration,
-the normal path should be an immediate command result plus an event or revision
+the normal path should be an immediate command result plus a change
 notification. Polling should become a recovery/compatibility mechanism, not the
 main coordination path.
 
@@ -204,9 +222,11 @@ between those two points. The first request can then commit a broader change
 under an approval decision made against older state.
 
 The rule must be: approval, current-record lookup, validation, and commit are
-one short configuration transaction. If approval necessarily happens outside
-that transaction, the approval must carry the revision it was based on and the
-commit must refuse or re-check when the revision changed.
+one short queued step, which needs no revision check. If approval necessarily
+happens outside that step (a human prompt must not hold the lane), the approval
+must carry what it was based on, such as the record's generation or a hash of
+the fields it approved, and the commit must refuse or re-check when that
+changed.
 
 ### 7. Persisted configuration and running processes can diverge
 
@@ -216,9 +236,10 @@ delete, or two updates can apply runtime changes in the opposite order from
 their commits. The result can be a service running with a configuration Relay
 no longer owns.
 
-Runtime application needs its own ordered reconciliation worker. It should
-consume committed revisions, coalesce obsolete work, and refuse to start a
-service that the latest snapshot no longer names. Report “saved,” “applied,”
+Runtime application is ordered by running it inside the same queued step as the
+commit. Where it cannot, it needs its own ordered reconciliation worker that
+consumes committed changes, coalesces obsolete work, and refuses to start a
+service that the current configuration no longer names. Report “saved,” “applied,”
 and “failed to apply” as different states.
 
 ### 8. Single ownership is not currently enforced at process startup
@@ -243,16 +264,26 @@ mid-reset.
 Also include configuration files that are not fields in `settings.json`. The
 service configuration editor writes service-owned files separately, and host
 probe results can be saved after network work against an older host record.
-Those paths need an owner, revision or generation check, and a clear definition
+Those paths need an owner, a generation check where work leaves the queue, and a clear definition
 of whether the file belongs to Relay or to the service itself. Atomic file
 replacement prevents torn bytes; it does not prevent stale content winning.
 
 ## Recommended target design
 
-Introduce a `ConfigManager` (name can change) owned by `App` and created once at
-tray startup.
+The design is the tray-owned command queue described under "Implementation
+progress": one ordered lane, complete operations inside it, and a generation
+check only where work leaves the queue. The tray owns the store and every write
+goes through the queue.
 
-Its responsibilities are deliberately narrow:
+### Possible future direction: a `ConfigManager` with revisions
+
+This subsection is not part of the current scope and is not a success
+criterion. It records what a fuller manager could add if the queue proves
+insufficient, for example if many readers need cheap consistent snapshots or
+change notifications. A `ConfigManager` (name can change) would be owned by
+`App` and created once at tray startup.
+
+Its responsibilities would be deliberately narrow:
 
 - load and validate the sealed settings file;
 - hold the current immutable snapshot and a monotonic revision;
@@ -276,7 +307,7 @@ type ConfigManager interface {
 }
 ```
 
-The exact Go types are less important than the rules:
+The exact Go types would be less important than the rules:
 
 - Callers receive a deep-copied or immutable snapshot.
 - Callers cannot call `Get`, `Reload`, or `With` directly.
@@ -290,8 +321,8 @@ The exact Go types are less important than the rules:
 - A side effect that discovers the revision changed while it was working drops
   its stale result and reconciles again.
 
-The persistence store should become an implementation detail of the manager.
-Keep its good properties—sealed fields, reload-before-write during migration,
+In such a design the persistence store would become an implementation detail of
+the manager. Keep its good properties—sealed fields, reload-before-write during migration,
 atomic rename, fsync, refusal to overwrite unreadable state—but stop injecting
 it into every operation core in production.
 
@@ -305,10 +336,10 @@ An actor-style configuration lane gives Relay one ordering point without
 serializing unrelated work. It makes the behavior easy to explain:
 
 ```text
-caller -> tray command -> validate current revision -> persist -> publish revision
+caller -> queued command -> lookup, validate, persist, ordered side effect
                                       |
                                       v
-                           async side-effect reconciliation
+                    async work that leaves the queue commits with a generation check
 ```
 
 A database would provide stronger transactions, but it is not the right first
@@ -323,14 +354,15 @@ historical transactions; it would not by itself fix stale in-memory decisions.
 
 Before a larger API migration, fix the races with the highest consequence:
 
-- Re-check approval requirements against the current revision at commit.
+- Re-check approval requirements at commit: inside the queued step when the
+  approval can run there, otherwise against what the approval was based on.
 - Add deterministic ordering for service lifecycle application; a delete must
   prevent an older delayed update from restarting the service.
 - Enforce one tray owner before store initialization and bridge socket setup.
 - Make sealed-store reset exclusive across settings, CA files, and keychain
   changes.
-- Add generation checks to service-owned configuration and delayed host-probe
-  writes.
+- Add generation checks to service-owned configuration writes. Delayed
+  host-probe writes already reserve and commit a generation on the queue.
 
 These are correctness fixes, not a reason to serialize network or subprocess
 work on the configuration lane.
@@ -343,37 +375,38 @@ Write and enforce these invariants:
 - Production code never constructs `FileSettingsStore` except at tray startup
   and in the explicitly documented offline recovery path.
 - Production code never calls `SettingsStore.Get` or `With` outside the config
-  package and manager adapter.
+  package and its queue adapter.
 - `settings.json` is not a supported live second writer.
-- Every committed configuration change has one revision and one notification.
+- Every committed configuration change produces one notification.
 
 Add a structural test that fails on new production uses of the old store API.
 Keep the existing tests, but stop treating a green `-race` run as proof of
 correct configuration ordering; race freedom and freshness are different
 properties.
 
-### Phase 2 — introduce snapshots and revisions
+### Phase 2 — snapshots for readers
 
-Wrap the existing `FileSettingsStore` in a tray-owned manager. At first, the
-manager may still use the current mutex-backed implementation internally.
+Give readers snapshots or purpose-specific query methods over the tray-owned
+store, backed by the current mutex-backed implementation.
 
 - Load once at startup.
-- Assign revision 1 to the committed startup state.
 - Replace direct reads in lifecycle and authorization paths with
   `Snapshot`/purpose-specific query methods.
-- Add a revision to listener and service reconciliation logs.
 - Keep the two-second file poll temporarily, but convert an observed external
-  change into a manager reload and a published revision.
+  change into a reload and a change notification.
+
+Monotonic global revisions, and a revision in reconciliation logs, are optional
+extras here (see the future direction above), not requirements.
 
 This phase gives visibility without changing all mutation paths at once.
 
 ### Phase 3 — move all writes behind commands
 
-Replace `Store.With` calls in operation cores with named manager commands, for
+Replace `Store.With` calls in operation cores with named queued commands, for
 example `UpdateService`, `RemoveMCP`, `SetRemoteConfig`, and
 `RotateProjectToken`.
 
-Each command must resolve the target record inside the serialized command,
+Each command must resolve the target record inside the queued step,
 which preserves the current TOCTOU lessons in `docs/tokens.md`. The command
 returns the committed record or a precise refusal. Do not let command handlers
 return success until persistence has succeeded.
@@ -387,9 +420,10 @@ the rule universal rather than operation-specific.
 Audit every production `Get()` call. Classify each one:
 
 - display-only: use a snapshot;
-- authorization or routing: use a current manager query;
+- authorization or routing: use a current purpose-specific query;
 - mutation precondition: move inside the serialized command;
-- lifecycle convergence: consume the committed revision and reconcile;
+- lifecycle convergence: run the ordered effect in the queued step, or reconcile
+  from current state;
 - offline recovery: isolate behind an explicitly named read-only API.
 
 The target is zero direct `Get()` calls outside the config implementation and
@@ -409,21 +443,22 @@ commands with hidden direct-file behavior.
 
 ### Phase 6 — replace polling with event-driven convergence
 
-Once all supported changes go through the manager, make the manager's commit
+Once all supported changes go through the queue, make the commit
 event the trigger for UI refresh, remote listener reconciliation, model endpoint
 reconciliation, and service configuration refresh.
 
 Retain a slow health/recovery poll for crashed children, external keychain/file
-repair, and missed events. It should reconcile from the manager's current
-revision; it should not be a second configuration reader.
+repair, and missed events. It should reconcile from current committed state; it
+should not be a second configuration reader.
 
 ### Phase 7 — lock down and test the ordering contract
 
 Add deterministic tests for:
 
-- two concurrent commands: both changes survive and revisions are ordered;
-- a command that waits on external work: a newer revision causes stale work to
-  be discarded or re-run;
+- two concurrent commands: both changes survive and run in admission order;
+- work that leaves the queue (host probe, out-of-step approval, service-owned
+  file edit): a changed generation causes the stale result to be discarded or
+  re-run;
 - a listener rebind racing a configuration change;
 - service removal racing start/restart;
 - a service delete racing delayed update application;
@@ -431,7 +466,7 @@ Add deterministic tests for:
 - an approval decision racing a narrowing or widening update;
 - a second tray startup racing socket setup;
 - sealed-store reset racing a write;
-- a failed persistence operation: no event and no revision advance;
+- a failed persistence operation: no event and no committed change;
 - a tray restart: the first snapshot exactly matches the last committed file;
 - direct-file edits: either rejected as unsupported or imported through one
   explicit path, never silently merged.
@@ -444,13 +479,15 @@ prove that a logically stale snapshot was not used.
 
 The migration is complete when these statements are all true:
 
-- There is one tray-owned configuration manager in a running Relay.
-- The only production persistence code is behind that manager.
-- Normal reads come from manager snapshots or manager queries.
-- Normal mutations are ordered commands, not arbitrary callbacks.
-- Every committed change has a revision and a post-commit event.
-- Listener and service side effects are revision-aware and converge from current
-  state.
+- There is one tray-owned configuration queue in a running Relay.
+- The only production persistence code is behind it.
+- Normal reads come from snapshots or purpose-specific queries.
+- Normal mutations are queued commands, not arbitrary callbacks.
+- Every committed change has a post-commit event.
+- Work that leaves the queue between reading and committing carries a
+  generation and is re-checked at commit; everything else runs whole inside one
+  queued step.
+- Listener and service side effects converge from current state.
 - A stopped tray is an explicit unavailable state for normal commands, not an
   invitation for each command to become its own configuration manager.
 - Offline recovery, if retained, is visibly separate and cannot write.
@@ -464,6 +501,7 @@ that owner.”
 
 The current implementation has already paid much of the cost, especially for
 sealed writes and brokered mutations. The remaining work is architectural
-cleanup: remove direct cached reads, move the store behind a manager API, make
-commands revision-aware, and demote file polling and offline CLI reads from
-normal behavior to recovery compatibility.
+cleanup: remove direct cached reads, move every mutation onto the queue as a
+complete step, add generation checks only where work leaves the queue, and
+demote file polling and offline CLI reads from normal behavior to recovery
+compatibility.
