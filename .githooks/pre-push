@@ -47,6 +47,19 @@ if [ "$touches_go" = false ]; then
     exit 0
 fi
 
+# Fail fast rather than burning the full suite's runtime only to trip
+# support_safety_test.go's guard at the very end: a running relay rewrites
+# the real settings.json on its own schedule, which the suite mistakes for a
+# test leaking outside its sandbox. Pushing doesn't get to stop a process you
+# may be using for something else — that's build.sh's job, not this hook's —
+# so this only checks and reports.
+if pgrep -x relay >/dev/null 2>&1; then
+    echo "✗ relay is running; the hermetic suite requires it stopped" >&2
+    echo "  a live instance rewrites the real settings.json and trips support_safety_test.go" >&2
+    echo "  stop relay and re-push (./build.sh --test stops it automatically)" >&2
+    exit 1
+fi
+
 start=$(date +%s)
 
 echo "→ go test ./..."

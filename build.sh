@@ -39,6 +39,24 @@ done
 echo "Bundling settings UI..."
 go run ./web/gen
 
+# Stop any running Relay before testing: the hermetic suite requires it
+# stopped (cmd/relay/support_safety_test.go — a live instance rewrites the
+# real settings.json and trips the sandbox-safety guard), and the build below
+# is about to replace its binary regardless. SIGTERM first, for the normal
+# clean shutdown (app.cleanup() in trayapp.go); SIGKILL only if it hasn't
+# exited within 3s.
+stop_relay() {
+    pgrep -x relay >/dev/null 2>&1 || return
+    pkill -TERM -x relay 2>/dev/null || true
+    for _ in $(seq 1 30); do
+        pgrep -x relay >/dev/null 2>&1 || { echo "Stopped running relay"; return; }
+        sleep 0.1
+    done
+    echo "relay did not exit after SIGTERM; sending SIGKILL" >&2
+    pkill -KILL -x relay 2>/dev/null || true
+}
+stop_relay
+
 # Run the hermetic test suite up front. Mirrors what .githooks/pre-push runs —
 # keeps the install path consistent with the push gate.
 if $RUN_TESTS; then
@@ -55,8 +73,6 @@ if $RUN_TESTS; then
     echo "✓ tests passed"
 fi
 
-# Kill running Relay
-pkill -x relay 2>/dev/null && echo "Killed running relay" && sleep 1 || true
 STAGE="/tmp/relay-build-$$"
 
 # Code signing -- per-binary, innermost first.
