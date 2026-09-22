@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -154,4 +156,31 @@ func (c *sessionHostClient) Terminate(ctx context.Context, sessionID, reason str
 		return fmt.Errorf("%w: /terminate returned %d", errSessionHostUnavailable, httpResp.StatusCode)
 	}
 	return nil
+}
+
+// DialWS opens a viewer connection to relay-sessions' /ws, verified exactly as
+// do verifies a request: the peer must be the bound host process, and the
+// bearer is the one the host registered. The only timeout is the upgrade
+// handshake's own; the connection has no read or write deadline afterwards, so
+// a machine that sleeps under an attached terminal does not lose it.
+func (c *sessionHostClient) DialWS(ctx context.Context) (*websocket.Conn, error) {
+	es, process, err := c.resolve()
+	if err != nil {
+		return nil, err
+	}
+	dialer := &websocket.Dialer{
+		NetDialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialVerifiedUnix(ctx, es.InternalSocket, process)
+		},
+		HandshakeTimeout: sessionHostRequestTimeout,
+	}
+	header := http.Header{"Authorization": []string{"Bearer " + es.InternalToken}}
+	conn, resp, err := dialer.DialContext(ctx, "ws://internal.relay.localsocket/ws", header)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errSessionHostUnavailable, err)
+	}
+	return conn, nil
 }

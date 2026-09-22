@@ -227,6 +227,11 @@ type appRouter struct {
 	modelKeys       *ModelKeyTable
 	sessionAccounts *sessionAccounting
 
+	// sessionDeps is the launch core SandboxAttach runs through: the same
+	// instance the HTTP session routes hold. Its zero value is not ready(),
+	// and SandboxAttach refuses.
+	sessionDeps sessionRouteDeps
+
 	// The six S5 op cores admin_op dispatches into (ADR-017 implementation
 	// spec §7.2). These are the SAME instances the IPC and HTTP doors hold
 	// (trayapp.go constructs each once and wires it here too), so a mutation

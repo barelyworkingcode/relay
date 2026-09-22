@@ -56,12 +56,24 @@ func validKind(k string) bool {
 
 // LaunchCaller is who asked relay to launch a session: a frontend launch
 // identity (eve, relayScheduler, admitted the way frontendCredentialAuth
-// admits one) or a resolved bearer control credential. R-S4b resolves
-// whichever one before calling AuthorizeLaunch — exactly one field is set,
-// and neither set is this package's job to authenticate, only to authorize.
+// admits one), a resolved bearer control credential, or the operator at the
+// bridge socket. R-S4b resolves whichever one before calling AuthorizeLaunch —
+// exactly one field is set, and neither set is this package's job to
+// authenticate, only to authorize.
 type LaunchCaller struct {
 	Identity   *service.Identity
 	Credential *config.APICredential
+	// Operator is set only by the bridge's sandbox door, for a request whose
+	// connection reached the 0600 socket and is not a member of any relay
+	// session. No other door may set it: it grants execute unconditionally.
+	Operator *OperatorCaller
+}
+
+// OperatorCaller is the audit attribution of an operator's CLI process: there
+// is no credential to name, so the peer's own process names are the record.
+type OperatorCaller struct {
+	PID          int
+	Proc, Parent string
 }
 
 // callerGrantsExecute reports whether c holds control.ClassExecute — the
@@ -77,6 +89,9 @@ type LaunchCaller struct {
 // frontendCredentialAuth, since that is exactly the assumption a bypass
 // would exploit.
 func callerGrantsExecute(c LaunchCaller) bool {
+	if c.Operator != nil {
+		return true
+	}
 	if c.Identity != nil && c.Identity.Allows(service.OpFrontendSocket) {
 		return slices.Contains(frontendConsumerClasses, control.ClassExecute)
 	}
@@ -94,6 +109,8 @@ func callerGrantsExecute(c LaunchCaller) bool {
 // control_decision would carry for the same request.
 func callerAuditActor(c LaunchCaller) audit.AuditActor {
 	switch {
+	case c.Operator != nil:
+		return audit.AuditActor{Kind: audit.AuditActorOperator, Auth: audit.AuditAuthNone, PID: c.Operator.PID, Proc: c.Operator.Proc, Parent: c.Operator.Parent}
 	case c.Identity != nil:
 		return audit.AuditActor{Kind: audit.AuditActorControl, Auth: audit.AuditAuthToken, CredID: launchIdentityCredentialID(*c.Identity)}
 	case c.Credential != nil:

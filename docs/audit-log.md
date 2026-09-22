@@ -602,7 +602,7 @@ works would misstate exactly the fact this section exists to get right.
 
 | event | written by | when |
 |---|---|---|
-| `session_launch` | *built* by `cmd/relay/session_launch.go`'s `AuthorizeLaunch`/`newSessionLaunchAuditEvent`; *written* by `cmd/relay/session_routes.go`'s `launchAndRespond` (`d.auditor.Record`) | every `POST /api/terminals` or `POST /api/sessions` create request that reaches `AuthorizeLaunch`, allowed or refused — with two exceptions: a refusal on the *resume* path is restamped `session_resume` instead (`resumeAuditEvent`), never `session_launch`; and two early refusals that never reach `AuthorizeLaunch` at all — a pre-authorize `503` when the session ledger isn't wired (`sessionRoutesUnavailable`) and a request-body decode failure (`400`/`413`, `decodeSessionBody`) — write no record of either kind |
+| `session_launch` | *built* by `cmd/relay/session_launch.go`'s `AuthorizeLaunch`/`newSessionLaunchAuditEvent`; *written* by `cmd/relay/session_routes.go`'s `launch` (`d.auditor.Record`), which `launchAndRespond` and `relay sandbox` both call | every `POST /api/terminals` or `POST /api/sessions` create request, and every `relay sandbox` launch, that reaches `AuthorizeLaunch`, allowed or refused — with two exceptions: a refusal on the *resume* path is restamped `session_resume` instead (`resumeAuditEvent`), never `session_launch`; and two early refusals that never reach `AuthorizeLaunch` at all — a pre-authorize `503` when the session ledger isn't wired (`sessionRoutesUnavailable`) and a request-body decode failure (`400`/`413`, `decodeSessionBody`) — write no record of either kind |
 | `session_bound` | **nobody.** The constant exists in `internal/audit/audit.go`; nothing in this repo constructs one. A known, real gap — see below. | — |
 | `session_end` | `cmd/relay/router_sessions.go`'s `recordSessionExited`, called from the `SessionExited` bridge handler in the same file | every time relay-sessions reports one of its sessions gone |
 | `session_resume` | `cmd/relay/session_routes.go` (`resumeAuditEvent`, `auditResume`) | every `POST /api/sessions/{id}/resume`, allowed or refused, including the two outcomes `AuthorizeLaunch` never sees at all (unknown/deleted session, already-live session) |
@@ -611,7 +611,10 @@ works would misstate exactly the fact this section exists to get right.
 (`sessionLaunchAuditArgs`, `cmd/relay/session_launch.go`) and one actor
 shape (`callerAuditActor`: `kind: "control"`, `auth: "token"`, `cred_id`
 naming the frontend launch identity or bearer credential that asked for the
-launch — this is the *caller*, e.g. eve, never the session itself):
+launch — this is the *caller*, e.g. eve, never the session itself). A launch
+from `relay sandbox` carries the `operator` actor instead (`kind: "operator"`,
+`auth: "none"`, plus the CLI's `pid`, `proc` and `parent`), because it has no
+credential to name ([`docs/sandbox-command.md`](sandbox-command.md)):
 
 ```json
 {"id":"…","ts":"…","event":"session_launch",

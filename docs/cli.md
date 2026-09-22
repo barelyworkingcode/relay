@@ -95,6 +95,7 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay service register` | yes | **yes** | no |
 | `relay service unregister` | yes | no | yes |
 | `relay service restart` | yes | no | yes |
+| `relay sandbox` | yes | no | no (needs an interactive terminal) |
 | `relay mcpExec` / `relay mcp call` | yes (dials the bridge) | no | yes |
 | `relay mcp --token TOKEN` (stdio server) | yes | no | yes |
 
@@ -1159,6 +1160,34 @@ not supervising the service (never started this session, or the operator
 stopped it). Supervision state exists only in the tray's memory, never in
 `settings.json`; `service.list` (ungated) carries it beside the records, and
 neither `env` nor `working_dir` is sent.
+
+## `relay sandbox`
+
+Runs a terminal template in your own terminal, for the project holding the
+current directory. It asks the running tray to launch the session and attaches
+this terminal to it; the tool's exit status is the command's. Design and
+rationale: [`docs/sandbox-command.md`](sandbox-command.md).
+
+```
+relay sandbox <template> [--project NAME-OR-ID]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--project` | Choose among the projects that hold the current directory, by name or id. Required only when more than one does. |
+
+Run it from the project root or any folder under it. It is not gated: there is
+no presence prompt. A template with `sandbox: true` runs under Seatbelt as it
+does from Eve; one with `sandbox: false` runs unconfined but wired to relay's
+proxies. Closing the terminal, SIGHUP or killing the command ends the session;
+sleeping the Mac does not.
+
+It refuses, with a message and a non-zero exit, when: it is run inside a relay
+session; stdin or stdout is not a terminal; relay is not running; the directory
+is in no registered project; the directory is in several projects and
+`--project` is missing (the matching projects are listed) or names one that does
+not hold it; the template does not exist; or the template is not in the
+project's allowed templates.
 
 ## `relay mcpExec` (also `relay mcp call`)
 

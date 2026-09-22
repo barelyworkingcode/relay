@@ -656,6 +656,8 @@ func runTrayApp() {
 		resumeGuard: newResumeGuard(),
 	}
 
+	router.sessionDeps = sessionDeps
+
 	frontendChannel := NewFrontendChannel()
 	app.frontendChannel = frontendChannel
 	registry.FrontendEnv = func() (map[string]string, error) {

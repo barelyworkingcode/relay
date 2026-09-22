@@ -150,6 +150,13 @@ shim's) — the provider's own `Kill()` for a provider-hosted one. Always
 `204`, including for an id neither manager recognizes: an unrecognized id
 is the same no-op `/terminate` always was.
 
+Relay is also a viewer of the `/ws` on this socket, for `relay sandbox`: it
+dials it with the same peer verification and bearer as `/launch`, joins the
+terminal it just launched, and relays its bytes to the CLI
+([`docs/sandbox-command.md`](sandbox-command.md)). Relay ends such a session
+itself with `/terminate` when the CLI disconnects, because a terminal that lost
+its last viewer would otherwise idle until the template's timeout.
+
 ## The shim: `relay-sessions exec`
 
 Every pty session, and every `claude`/`pi` session whose launch carries a

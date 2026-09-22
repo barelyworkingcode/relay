@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -375,31 +376,44 @@ func resolveLaunchCaller(r *http.Request, store config.SettingsStore) LaunchCall
 	return LaunchCaller{}
 }
 
-// launchAndRespond runs AuthorizeLaunch, dials relay-sessions on success,
-// and answers eve -- the shared tail of both create handlers.
+// launchAndRespond runs launch and answers eve -- the shared tail of both
+// create handlers.
 func (d sessionRouteDeps) launchAndRespond(ctx context.Context, w http.ResponseWriter, req LaunchRequest) {
+	_, resp, refusal, err := d.launch(ctx, req)
+	switch {
+	case refusal != nil:
+		writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
+	case err != nil:
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "launch failed"})
+	default:
+		writeCreatedBody(w, resp.Body)
+	}
+}
+
+// launch is the one create path every door shares: AuthorizeLaunch, the host
+// round trip, the ledger commit and the session_launch audit record. Exactly
+// one of refusal and err is set on failure; both are already audited, and a
+// door only decides how to phrase them.
+func (d sessionRouteDeps) launch(ctx context.Context, req LaunchRequest) (*LaunchResult, *hostapi.LaunchResponse, *LaunchRefusal, error) {
 	result, refusal := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, req)
 	if refusal != nil {
 		d.auditor.Record(refusal.Audit)
-		writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
-		return
+		return nil, nil, refusal, nil
 	}
 
 	resp, err := d.launchOnHost(ctx, result)
 	if err != nil {
 		slog.Warn("session launch: relay-sessions round trip failed", "session", result.SessionID, "kind", result.AuditFields.Kind, "error", err)
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error()))
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "launch failed"})
-		return
+		return nil, nil, nil, err
 	}
 
 	if !d.commitLaunch(ctx, result) {
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "project no longer exists"))
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "launch failed"})
-		return
+		return nil, nil, nil, errors.New("project no longer exists")
 	}
 	d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, ""))
-	writeCreatedBody(w, resp.Body)
+	return result, resp, nil, nil
 }
 
 // resumeResponseBody is C5's resume 200 body.

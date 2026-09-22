@@ -22,6 +22,7 @@ same change when behaviour moves.
 | Audit log | [`docs/audit-log.md`](docs/audit-log.md) |
 | Enhanced services, manifests, restart supervision | [`docs/service-manifest.md`](docs/service-manifest.md) |
 | Sessions (terminal, claude, pi, chat) | [`docs/session-host.md`](docs/session-host.md) |
+| `relay sandbox`, the bridge takeover seam | [`docs/sandbox-command.md`](docs/sandbox-command.md) |
 | SSH host projects | [`docs/ssh-hosts.md`](docs/ssh-hosts.md) |
 | Model endpoint, model keys | [`docs/model-endpoint.md`](docs/model-endpoint.md) |
 | Tests | [`docs/testing.md`](docs/testing.md), [`docs/testing-roadmap.md`](docs/testing-roadmap.md) |
