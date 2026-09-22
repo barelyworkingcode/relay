@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -107,11 +108,79 @@ func (c *FrameConn) Serve(ctx context.Context, handle func(ctx context.Context, 
 		reqCtx := WithProgress(ctx, func(u ProgressUpdate) {
 			_ = c.WriteFrame(BridgeResponse{Type: RespProgress, Progress: &u})
 		})
-		if err := c.WriteFrame(handle(reqCtx, line)); err != nil {
+		slot := &takeoverSlot{}
+		reqCtx = context.WithValue(reqCtx, takeoverCtxKey{}, slot)
+		err := c.WriteFrame(handle(reqCtx, line))
+		if run := slot.fn; run != nil {
+			if err != nil {
+				// The handler already committed to a stream. Closing makes
+				// the takeover's first read fail, so it cleans up rather
+				// than waiting on a peer that never saw the ack.
+				_ = c.conn.Close()
+			}
+			run(ctx, c)
+			return
+		}
+		if err != nil {
 			return
 		}
 	}
 	c.reportReadEnd(ctx)
+}
+
+// takeoverSlot is per request and touched only by that request's handler and
+// then by Serve, on one goroutine, so it needs no lock.
+type takeoverSlot struct {
+	fn func(ctx context.Context, fc *FrameConn)
+}
+
+type takeoverCtxKey struct{}
+
+// SetTakeover is called by a handler that has decided the connection stops
+// being request/response: after Serve writes the handler's response it runs fn
+// on the same goroutine and returns when fn does, so the connection is never
+// read by two loops. It reports false for a context that did not come from
+// Serve. Only a handler that calls it changes anything; every other request
+// takes exactly the path it always did.
+func SetTakeover(ctx context.Context, fn func(ctx context.Context, fc *FrameConn)) bool {
+	slot, ok := ctx.Value(takeoverCtxKey{}).(*takeoverSlot)
+	if !ok || fn == nil {
+		return false
+	}
+	slot.fn = fn
+	return true
+}
+
+// WriteValue writes v as one newline-delimited JSON frame. It shares the write
+// lock with WriteFrame, so a takeover may write from several goroutines.
+func (c *FrameConn) WriteValue(v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.touch()
+	_, err = c.conn.Write(data)
+	return err
+}
+
+// Close closes the underlying connection, which unblocks a ReadValue in
+// progress.
+func (c *FrameConn) Close() error { return c.conn.Close() }
+
+// ReadValue reads the next frame into v, through the scanner Serve was using,
+// so bytes it had already buffered are not lost. io.EOF means the peer closed.
+func (c *FrameConn) ReadValue(v any) error {
+	if !c.scanner.Scan() {
+		if err := c.scanner.Err(); err != nil {
+			return err
+		}
+		return io.EOF
+	}
+	c.touch()
+	return json.Unmarshal(c.scanner.Bytes(), v)
 }
 
 // reportReadEnd classifies why the read loop ended. An oversized line is told

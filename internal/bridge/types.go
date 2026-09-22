@@ -67,6 +67,12 @@ const (
 	// the TLS handshake fixes for the life of the connection; the request
 	// type itself is not the discriminator.
 	ReqMountAttach = "MountAttach"
+
+	// ReqSandboxAttach launches a terminal session for the project holding the
+	// caller's directory and turns the connection into that session's byte
+	// stream (docs/sandbox-command.md). It is in bridgeHandlers only:
+	// remoteHandlers and the enrolment table have no entry for it.
+	ReqSandboxAttach = "SandboxAttach"
 )
 
 const (
@@ -77,6 +83,11 @@ const (
 	RespProgress = "Progress"
 
 	RespProjectDescription = "ProjectDescription"
+
+	// RespAttached acknowledges a ReqSandboxAttach: Data is a
+	// SandboxAttachResult, and every later frame on the connection is a
+	// StreamFrame in each direction.
+	RespAttached = "Attached"
 )
 
 const (

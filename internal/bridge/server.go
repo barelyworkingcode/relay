@@ -42,6 +42,13 @@ type BridgeServer struct {
 	// (plan-broker-and-sessions.md §2 C3). nil means no caller can ever be a
 	// member: every tokenless request that reaches step 3 is unauthorized.
 	membership MembershipResolver
+
+	// peerConfined answers relay-sandbox-attach's second, independent guard:
+	// is the peer itself, right now, confined by a sandbox. nil falls back to
+	// PeerConfined in handleConn, the same style resolveSession there already
+	// uses for callerSession; a test overrides it because there is no way to
+	// put a real Seatbelt profile on a test binary from inside the test.
+	peerConfined PeerConfinedFunc
 }
 
 // SetCallerSessionResolverForTest overrides how THIS server resolves a
@@ -82,6 +89,7 @@ func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, err
 		ctx:           ctx,
 		cancel:        cancel,
 		callerSession: PeerCallerSession,
+		peerConfined:  PeerConfined,
 	}
 	// This is deliberate: the membership resolver is taken from the router
 	// by optional interface rather than passed in, so there is no wiring
@@ -104,6 +112,15 @@ func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, err
 // the only resolver a shipped relay uses.
 func (s *BridgeServer) SetMembershipResolverForTest(mr MembershipResolver) {
 	s.membership = mr
+}
+
+// SetPeerConfinedForTest overrides how THIS server answers relay-sandbox-
+// attach's confinement check, the same seam SetCallerSessionResolverForTest
+// and SetMembershipResolverForTest provide for their own per-connection
+// checks. Production never calls this; NewBridgeServer's default (the real
+// PeerConfined) is the only implementation a shipped relay uses.
+func (s *BridgeServer) SetPeerConfinedForTest(fn PeerConfinedFunc) {
+	s.peerConfined = fn
 }
 
 func (s *BridgeServer) Serve() error {
@@ -192,6 +209,17 @@ func (s *BridgeServer) handleConn(conn net.Conn, acceptedAt time.Time) {
 	// which process this connection belongs to.
 	ctx = WithConnMembership(ctx, NewConnMembership(s.membership, peer, acceptedAt))
 
+	// Resolved once per connection too, and eagerly rather than lazily like
+	// membership above: the kernel call this makes is O(1), not an ancestry
+	// walk, so there is no cost to save by deferring it to the one handler
+	// (relay-sandbox-attach) that ever reads it.
+	confinedCheck := s.peerConfined
+	if confinedCheck == nil {
+		confinedCheck = PeerConfined
+	}
+	confined, confinedOK := confinedCheck(peer)
+	ctx = withConnConfined(ctx, confined, confinedOK)
+
 	// Resolved once per connection too, beside PeerPID, and for the same
 	// reason: it can't change for the socket's lifetime. Unlike PeerPID this
 	// is a presence-gate INPUT, not audit-only — a caller whose session
@@ -238,6 +266,11 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqRegisterModelHost:     {handle: handleRegisterModelHost},
 	ReqHello:                 {handle: handleHello},
 	ReqSessionExited:         {handle: handleSessionExited},
+
+	// This is deliberate: ungated and carrying no bearer, like admin_op. The
+	// guard is handleSandboxAttach's kernel-attested membership refusal and
+	// the launch core's own authorization, not this transport.
+	ReqSandboxAttach: {handle: handleSandboxAttach},
 
 	// This is deliberate: unlike every requireAdmin entry above, admin_op
 	// carries no bearer. ADR-015 and ADR-016 both refuse to spend the 0600

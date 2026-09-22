@@ -42,6 +42,8 @@ audit_issuance.go        The gate-facing half of issuance: IssuanceAuditor, requ
                          and MUST stay an unqualified identifier in this package — gate_ast_scan_test.go matches
                          its call sites as a bare *ast.Ident), recordEnrolmentIssued/recordBootstrapIssued/etc.,
                          and the CLI's own append-only recorder
+sandbox_cmd.go           `relay sandbox` CLI (docs/sandbox-command.md): raw-mode terminal attach to a launched session
+sandbox_attach.go        Server half of `relay sandbox`: cwd -> project, the launch through sessionRouteDeps.launch, the /ws viewer pump
 grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant (rendered from `grant.view`)
 admin_read_ops.go        The ungated admin_op reads (`*.list`, `grant.view`): the running tray is the only reader of
                          configuration for a CLI command; each answers with a purpose-built view, never Settings, so
