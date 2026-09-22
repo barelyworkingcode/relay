@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -364,5 +365,30 @@ func TestControlDirFor_AvoidsWhitespaceAndLongPaths(t *testing.T) {
 	long := "/" + strings.Repeat("a", 100)
 	if got := controlDirFor(long, 7); got != "/tmp/relay-ssh-7" {
 		t.Fatalf("long dir: got %q", got)
+	}
+}
+
+// TestProbeScript_SkipsWindowsExeLoginShell runs the real probe script under
+// the local sh with $SHELL pointing at a stand-in "cmd.exe" that prints a
+// banner, as Windows OpenSSH's cmd.exe does when handed -lic. The banner
+// must never land in the login-shell sections, where it would be read back
+// as node's path.
+func TestProbeScript_SkipsWindowsExeLoginShell(t *testing.T) {
+	dir := t.TempDir()
+	fakeCmd := dir + "/cmd.exe"
+	if err := os.WriteFile(fakeCmd, []byte("#!/bin/sh\necho 'Microsoft Windows [Version 10.0]'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", probeScript())
+	cmd.Env = append(os.Environ(), "SHELL="+fakeCmd)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("probe script failed: %v", err)
+	}
+	sections := parseProbeSections(string(out))
+	for _, s := range []string{sentinelLoginNode, sentinelLoginClaude} {
+		if got := sections[s]; got != "" {
+			t.Fatalf("section %s = %q, want empty for an .exe login shell", s, got)
+		}
 	}
 }

@@ -198,13 +198,22 @@ func probeScript() string {
 	line(sentinelArch, "uname -m 2>/dev/null")
 	line(sentinelHome, `printf '%s\n' "$HOME"`)
 	line(sentinelShell, `printf '%s\n' "$SHELL"`)
-	line(sentinelLoginNode, `if [ -n "$SHELL" ]; then "$SHELL" -lic 'command -v node' 2>/dev/null; fi`)
-	line(sentinelLoginClaude, `if [ -n "$SHELL" ]; then "$SHELL" -lic 'command -v claude' 2>/dev/null; fi`)
+	line(sentinelLoginNode, loginShellLookup("node"))
+	line(sentinelLoginClaude, loginShellLookup("claude"))
 	line(sentinelPlainNode, "command -v node 2>/dev/null")
 	line(sentinelPlainClaude, "command -v claude 2>/dev/null")
 	b.WriteString("echo ")
 	b.WriteString(sentinelEnd)
 	return b.String()
+}
+
+// loginShellLookup asks $SHELL -lic where tool lives. A Windows host's
+// OpenSSH sets $SHELL to cmd.exe or powershell.exe even when the probe runs
+// under Git's sh; neither understands -lic (cmd starts an interactive session
+// and prints its banner), so any *.exe shell is skipped and the plain-PATH
+// fallback answers instead.
+func loginShellLookup(tool string) string {
+	return `case "$SHELL" in ''|*.exe|*.EXE) ;; *) "$SHELL" -lic 'command -v ` + tool + `' 2>/dev/null ;; esac`
 }
 
 // parseProbeSections splits probeScript's output into the text following
