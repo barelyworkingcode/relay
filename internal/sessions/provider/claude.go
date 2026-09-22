@@ -294,7 +294,7 @@ func buildHostExec(spec *sessionstypes.HostSpec, dir string, args []string, sess
 		return "", nil, fmt.Errorf("host %q has no ssh_argv", spec.Name)
 	}
 	env := map[string]string{"RELAY_SESSION_ID": sessionID}
-	remote := sshhost.RemoteCommand(dir, append([]string{spec.ClaudePath}, args...), env)
+	remote := sshhost.RemoteCommandForOS(spec.OS, dir, append([]string{spec.ClaudePath}, args...), env)
 	name = spec.SSHArgv[0]
 	argv = append(append([]string{}, spec.SSHArgv[1:]...), "-T", "--", remote)
 	return name, argv, nil

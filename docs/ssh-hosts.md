@@ -459,6 +459,11 @@ host with no scheduler change. The cron stays on the console, which is what
 - Windows hosts as such. One works when Git for Windows' `bin` directory is
   on the user PATH, so the launcher's `sh` and `base64` resolve from cmd.exe;
   use `C:/…` project directories so both Git's sh and node read them.
+  A host whose probed OS is `MINGW*`/`MSYS*`/`CYGWIN*` gets
+  `sh -c "set -f; IFS=; eval $(printf %s <b64> | base64 -d)"` instead of
+  decision 8's launcher (`sshhost.RemoteCommandForOS`): under `-tt` Windows
+  OpenSSH re-quotes the line through conhost, and the nested quotes of the
+  POSIX form do not survive.
   The `shell` terminal template still execs `$SHELL` (cmd.exe).
 
 ## Fixtures

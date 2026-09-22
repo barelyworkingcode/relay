@@ -392,3 +392,37 @@ func TestProbeScript_SkipsWindowsExeLoginShell(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoteCommandForOS_PicksLauncherByOS(t *testing.T) {
+	argv := []string{"echo", "hi"}
+	for _, os := range []string{"", "Linux", "Darwin"} {
+		if got, want := RemoteCommandForOS(os, "", argv, nil), RemoteCommand("", argv, nil); got != want {
+			t.Errorf("os %q: got %q, want decision 8's launcher %q", os, got, want)
+		}
+	}
+	for _, os := range []string{"MINGW64_NT-10.0-26200", "MSYS_NT-10.0", "CYGWIN_NT-10.0"} {
+		got := RemoteCommandForOS(os, "", argv, nil)
+		if !strings.HasPrefix(got, `sh -c "set -f; IFS=; eval $(printf %s `) {
+			t.Errorf("os %q: got %q, want the Windows launcher", os, got)
+		}
+	}
+}
+
+// TestWindowsLauncher_EvalPreservesScript runs the Windows launcher's sh -c
+// argument under the local sh: the unquoted $(…) must reach eval unsplit and
+// unglobbed, so a double space and a literal * in a value survive.
+func TestWindowsLauncher_EvalPreservesScript(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/match-me", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launcher := windowsLauncherFor(buildScript(dir, []string{"printf", "[%s]", "a  b", "*"}, nil))
+	arg := strings.TrimSuffix(strings.TrimPrefix(launcher, `sh -c "`), `"`)
+	out, err := exec.Command("/bin/sh", "-c", arg).Output()
+	if err != nil {
+		t.Fatalf("launcher failed: %v", err)
+	}
+	if got, want := string(out), "[a  b][*]"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}

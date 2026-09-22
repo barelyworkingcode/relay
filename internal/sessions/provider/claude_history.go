@@ -83,7 +83,7 @@ func readClaudeHistoryOverSSH(host *sessionstypes.HostSpec, directory, claudeSes
 		return nil, fmt.Errorf("host %q has no ssh_argv", host.Name)
 	}
 	path := "~/.claude/projects/" + encodeClaudeProjectDir(directory) + "/" + claudeSessionID + ".jsonl"
-	remote := sshhost.RemoteCommand("", []string{"cat", path}, nil)
+	remote := sshhost.RemoteCommandForOS(host.OS, "", []string{"cat", path}, nil)
 	argv := append([]string{host.SSHArgv[0]}, host.SSHArgv[1:]...)
 	argv = append(argv, "-T", "--", remote)
 
@@ -99,7 +99,7 @@ func deleteClaudeHistoryOverSSH(host *sessionstypes.HostSpec, directory, claudeS
 		return fmt.Errorf("host %q has no ssh_argv", host.Name)
 	}
 	path := "~/.claude/projects/" + encodeClaudeProjectDir(directory) + "/" + claudeSessionID + ".jsonl"
-	remote := sshhost.RemoteCommand("", []string{"rm", "-f", path}, nil)
+	remote := sshhost.RemoteCommandForOS(host.OS, "", []string{"rm", "-f", path}, nil)
 	argv := append([]string{host.SSHArgv[0]}, host.SSHArgv[1:]...)
 	argv = append(argv, "-T", "--", remote)
 
