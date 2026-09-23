@@ -235,14 +235,16 @@ const (
 	sentinelLoginClaude = "@@RELAY_PROBE_LOGIN_CLAUDE@@"
 	sentinelPlainNode   = "@@RELAY_PROBE_PLAIN_NODE@@"
 	sentinelPlainClaude = "@@RELAY_PROBE_PLAIN_CLAUDE@@"
+	sentinelLoginTmux   = "@@RELAY_PROBE_LOGIN_TMUX@@"
+	sentinelPlainTmux   = "@@RELAY_PROBE_PLAIN_TMUX@@"
 	sentinelEnd         = "@@RELAY_PROBE_END@@"
 )
 
 // probeScript prints uname -s / uname -m / $HOME / $SHELL, then the
-// interactive login shell's idea of where node and claude live (decision 9),
-// then the plain-PATH fallback for each — one command per sentinel so a tool
-// that isn't found (silent, no line printed) never shifts what a later
-// sentinel's line means.
+// interactive login shell's idea of where node, claude and tmux live
+// (decision 9), then the plain-PATH fallback for each — one command per
+// sentinel so a tool that isn't found (silent, no line printed) never shifts
+// what a later sentinel's line means.
 func probeScript() string {
 	var b strings.Builder
 	line := func(sentinel, cmd string) {
@@ -260,6 +262,8 @@ func probeScript() string {
 	line(sentinelLoginClaude, loginShellLookup("claude"))
 	line(sentinelPlainNode, "command -v node 2>/dev/null")
 	line(sentinelPlainClaude, "command -v claude 2>/dev/null")
+	line(sentinelLoginTmux, loginShellLookup("tmux"))
+	line(sentinelPlainTmux, plainTmuxLookup)
 	b.WriteString("echo ")
 	b.WriteString(sentinelEnd)
 	return b.String()
@@ -274,6 +278,13 @@ func loginShellLookup(tool string) string {
 	return `case "$SHELL" in ''|*.exe|*.EXE) ;; *) "$SHELL" -lic 'command -v ` + tool + `' 2>/dev/null ;; esac`
 }
 
+// plainTmuxLookup is the plain-PATH tmux lookup. On a Windows host WinGet
+// installs psmux as a Windows symlink, ...\WinGet\Links\tmux, which Git's sh
+// finds on PATH but cannot exec ("Permission denied"); readlink -f resolves
+// it to the real tmux.exe, printed in the /c/... form Git's sh can exec. If
+// readlink fails the unresolved path is printed as-is.
+const plainTmuxLookup = `t=$(command -v tmux 2>/dev/null) && case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) readlink -f "$t" 2>/dev/null || printf '%s\n' "$t" ;; *) printf '%s\n' "$t" ;; esac`
+
 // parseProbeSections splits probeScript's output into the text following
 // each sentinel line, up to (not including) the next sentinel. Robust to
 // extra noise before the first sentinel (a login MOTD) and to a section
@@ -282,7 +293,7 @@ func parseProbeSections(output string) map[string]string {
 	sentinels := []string{
 		sentinelOS, sentinelArch, sentinelHome, sentinelShell,
 		sentinelLoginNode, sentinelLoginClaude, sentinelPlainNode, sentinelPlainClaude,
-		sentinelEnd,
+		sentinelLoginTmux, sentinelPlainTmux, sentinelEnd,
 	}
 	sections := make(map[string]string, len(sentinels))
 	lines := strings.Split(output, "\n")
@@ -329,10 +340,10 @@ func firstLine(s string) string {
 	return ""
 }
 
-// Probe discovers h's OS/arch/home/shell and the absolute paths to node and
-// claude (decision 9), then the version each reports, capped at 30s total.
-// The login-shell discovery is preferred; the plain-PATH fallback fills in
-// whichever of node/claude it didn't find. A transport failure (host
+// Probe discovers h's OS/arch/home/shell and the absolute paths to node,
+// claude and tmux (decision 9), then the version node and claude report,
+// capped at 30s total. The login-shell discovery is preferred; the plain-PATH
+// fallback fills in whichever of node/claude/tmux it didn't find. A transport failure (host
 // unreachable, auth refused) returns ok:false with Error set, never a Go
 // error — Probe's contract is "always a HostProbe to store", matching how a
 // probe result is persisted on the host record regardless of outcome.
@@ -370,8 +381,13 @@ func Probe(ctx context.Context, h config.Host) (config.HostProbe, error) {
 	if claudePath == "" {
 		claudePath = firstLine(sections[sentinelPlainClaude])
 	}
+	tmuxPath := firstLine(sections[sentinelLoginTmux])
+	if tmuxPath == "" {
+		tmuxPath = firstLine(sections[sentinelPlainTmux])
+	}
 	result.NodePath = nodePath
 	result.ClaudePath = claudePath
+	result.TmuxPath = tmuxPath
 
 	if nodePath != "" {
 		if v, err := runVersion(ctx, h, controlDir, nodePath); err == nil {
