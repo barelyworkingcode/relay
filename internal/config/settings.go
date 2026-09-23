@@ -689,6 +689,18 @@ func (s *Settings) SetHostProbeIfGeneration(id string, generation uint64, probe 
 	return *h, true
 }
 
+// SetHostTemplates replaces hostID's terminal templates wholesale with a copy
+// of ts. It does not validate: callers run ValidateHostTemplate first, and
+// TemplatesForProject drops anything invalid at resolution anyway.
+func (s *Settings) SetHostTemplates(hostID string, ts []TerminalTemplate) bool {
+	h, _ := s.findHostByID(hostID)
+	if h == nil {
+		return false
+	}
+	h.TerminalTemplates = cloneTerminalTemplates(ts)
+	return true
+}
+
 func (s *Settings) findMcpByID(id string) (*ExternalMcp, int) {
 	for i := range s.ExternalMcps {
 		if s.ExternalMcps[i].ID == id {

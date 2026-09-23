@@ -322,6 +322,82 @@ func EffectiveTerminalTemplatesForProject(s *Settings, proj *Project) []Terminal
 	return slices.DeleteFunc(all, func(t TerminalTemplate) bool { return !proj.AllowsTemplate(t.ID) })
 }
 
+// ErrHostTemplateSandbox is refused at validation: a host template that opts
+// into sandboxing or names sandbox folders. The seatbelt profile is built and
+// applied on the console, so it would confine nothing on the host.
+var ErrHostTemplateSandbox = errors.New("host template cannot be sandboxed")
+
+// ErrHostTemplateEnvPassthrough is refused at validation: env_passthrough
+// copies variables from relay's own environment, which is the console's, not
+// the host's.
+var ErrHostTemplateEnvPassthrough = errors.New("host template cannot pass through console environment variables")
+
+// ErrHostTemplateModelKey is refused at validation: ${MODEL_KEY} in a host
+// template's env. A host has no console model socket to reach with the key.
+var ErrHostTemplateModelKey = errors.New("host template cannot use ${MODEL_KEY}")
+
+// ValidateHostTemplate is ValidateTerminalTemplate plus the refusals that
+// follow from a host template running on the host: no sandbox, no sandbox
+// folders, no env passthrough, and no ${MODEL_KEY}.
+func ValidateHostTemplate(t TerminalTemplate) error {
+	if err := ValidateTerminalTemplate(t); err != nil {
+		return err
+	}
+	if t.Sandbox {
+		return fmt.Errorf("terminal template %q: %w (sandbox)", t.ID, ErrHostTemplateSandbox)
+	}
+	if len(t.Read) > 0 {
+		return fmt.Errorf("terminal template %q: %w (read)", t.ID, ErrHostTemplateSandbox)
+	}
+	if len(t.ReadWrite) > 0 {
+		return fmt.Errorf("terminal template %q: %w (read_write)", t.ID, ErrHostTemplateSandbox)
+	}
+	if len(t.EnvPassthrough) > 0 {
+		return fmt.Errorf("terminal template %q: %w", t.ID, ErrHostTemplateEnvPassthrough)
+	}
+	for k, v := range t.Env {
+		if strings.Contains(v, ModelKeyMarker) {
+			return fmt.Errorf("terminal template %q: %w (in env %q)", t.ID, ErrHostTemplateModelKey, k)
+		}
+	}
+	return nil
+}
+
+// DefaultHostTemplates is what a successful probe seeds into a host that has
+// no templates: the host's login shell (empty Command), and Claude Code at
+// the probed path when the probe found one.
+func DefaultHostTemplates(p HostProbe) []TerminalTemplate {
+	out := []TerminalTemplate{{ID: "shell", Name: "Shell"}}
+	if p.ClaudePath != "" {
+		out = append(out, TerminalTemplate{ID: "claude-code", Name: "Claude Code", Command: p.ClaudePath})
+	}
+	return out
+}
+
+// TemplatesForProject is the template catalog proj may launch. A hosted
+// project gets a copy of its host's templates, sorted by id, minus any that
+// fail ValidateHostTemplate (logged) — never the console's, and none when the
+// host is gone. Project.AllowedTemplates gates console templates only. Every
+// other project gets EffectiveTerminalTemplatesForProject.
+func TemplatesForProject(s *Settings, proj *Project) []TerminalTemplate {
+	if proj == nil || !proj.IsHosted() {
+		return EffectiveTerminalTemplatesForProject(s, proj)
+	}
+	h, _ := s.findHostByID(proj.HostID)
+	if h == nil {
+		return []TerminalTemplate{}
+	}
+	byID := make(map[string]TerminalTemplate, len(h.TerminalTemplates))
+	for _, t := range h.TerminalTemplates {
+		if err := ValidateHostTemplate(t); err != nil {
+			slog.Warn("host terminal template refused at resolution", "host", h.ID, "id", t.ID, "error", err)
+			continue
+		}
+		byID[t.ID] = cloneTerminalTemplate(t)
+	}
+	return sortedTemplates(byID)
+}
+
 func sortedTemplates(byID map[string]TerminalTemplate) []TerminalTemplate {
 	ids := make([]string, 0, len(byID))
 	for id := range byID {

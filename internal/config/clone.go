@@ -201,6 +201,7 @@ func cloneHostProbe(p *HostProbe) *HostProbe {
 
 func cloneHost(h Host) Host {
 	h.Probe = cloneHostProbe(h.Probe)
+	h.TerminalTemplates = cloneTerminalTemplates(h.TerminalTemplates)
 	return h
 }
 

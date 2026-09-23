@@ -427,6 +427,12 @@ type Host struct {
 	ProbeGeneration uint64 `json:"probe_generation,omitempty"`
 	// Probe is the last probe result; nil until the first one runs.
 	Probe *HostProbe `json:"probe,omitempty"`
+	// TerminalTemplates are this host's own launch configs, run on the host:
+	// a hosted project is offered these instead of the console's
+	// (TemplatesForProject). An empty Command means the host's login shell.
+	// A successful probe seeds DefaultHostTemplates into a host that has
+	// none; nothing overwrites existing ones.
+	TerminalTemplates []TerminalTemplate `json:"terminal_templates,omitempty"`
 }
 
 type ProjectKind string
