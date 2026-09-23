@@ -104,6 +104,13 @@ An SSH that would ask for a password hangs a headless pipe forever; refusing
 to prompt turns that into an immediate, reportable error whose remedy is
 "set up a key", surfaced by the probe.
 
+**11. Terminal persistence belongs on the host.** A host terminal is an
+`ssh -tt` child of the console; when the link drops, the remote command gets
+a hangup and dies. A reverse tunnel from the host back to relay was
+considered and rejected: the remote end would still die with the link. A
+session that must survive a drop runs under a multiplexer on the host
+(tmux, psmux), launched from a host template (see *Terminals on a host*).
+
 ## The session host never sandboxes a host project's session
 
 `internal/sessions` (the `relay-sessions` binary described in
@@ -128,6 +135,9 @@ where a profile written on this disk confines nothing. Wrapping the local
 `ssh` client itself in a sandbox profile would only break the one process
 that has to reach the network, the operator's own key material, and
 whatever `~/.ssh/config` names — it would not confine the session at all.
+For the same reason a host template cannot ask for confinement:
+`config.ValidateHostTemplate` refuses `sandbox`, `read` and `read_write` on
+one (see *Terminals on a host*).
 This is the session-host system's own version of what this document's
 decision 6 says about relay-brokered tools: a host session gets none of
 relay's local confinement machinery, on the same reasoning, because none of
@@ -156,7 +166,11 @@ it describes anything running on this machine.
         "node_path": "/opt/homebrew/bin/node",  "node_version": "v24.7.0",
         "claude_path": "/opt/homebrew/bin/claude", "claude_version": "2.1.258",
         "error": ""                 // non-empty iff ok == false
-      }
+      },
+      "terminal_templates": [       // host-scoped; see Terminals on a host
+        { "id": "shell", "name": "Shell" },
+        { "id": "claude-code", "name": "Claude Code", "command": "/opt/homebrew/bin/claude" }
+      ]
     }
   ],
   "projects": [
@@ -175,8 +189,10 @@ Rules, enforced in `internal/project.ValidateShape` and a new
 - A host project may not carry `allowed_mcp_ids`, `mounts`,
   or `generate_skill` (decision 6; and the skill generator writes into the
   project directory, which is not here). `chat_templates`,
-  `allowed_templates`, `allowed_models`, `permission_policy` and
-  `session_folders` are allowed and mean what they mean locally.
+  `allowed_models`, `permission_policy` and `session_folders` are allowed
+  and mean what they mean locally. `allowed_templates` is allowed but gates
+  console templates only, which a host project is never offered; its
+  terminals come from the host's `terminal_templates`.
 - `kind: remote` and `host_id` are mutually exclusive.
 - `syncProjectToken` skips path injection for a host project: a host path must
   never become a console fsMCP `allowed_dirs` value.
@@ -240,6 +256,16 @@ document's *Fixtures* section so they cannot drift.
 | `DELETE /api/hosts/{id}` | Configure | 204; 409 `{error, projects:[names]}` if referenced |
 | `POST /api/hosts/{id}/probe` | Configure | → `hostView` with fresh `probe`; 30 s cap |
 | `POST /api/hosts/{id}/disconnect` | Configure | `ssh -O exit`; → `hostView` |
+| `GET /api/hosts/{id}/templates` | Read | the host's `terminal_templates` |
+| `POST /api/hosts/{id}/templates` | Configure | `TerminalTemplate` → the template (201); 409 if the id exists |
+| `PUT /api/hosts/{id}/templates/{tid}` | Configure | `TerminalTemplate` → the template; 404 if absent |
+| `DELETE /api/hosts/{id}/templates/{tid}` | Configure | 204; 404 if absent |
+
+The template routes go through `HostTemplateOps` (`List`, `Create`, `Update`,
+`Remove`), which validates with `config.ValidateHostTemplate` and reports the
+same not-found / exists / invalid errors as the console `TemplateOps`, plus
+host-not-found. Like the console template routes they are `configure` class
+and not presence-gated.
 
 Probe and disconnect are Configure, not Execute: they only rewrite the host
 record's own `probe` field and the local control socket. This choice was
@@ -252,7 +278,8 @@ would have. The classification itself is unchanged here and needs a fresh
 look against the current premise, not assumed still correct because it once
 was — see STATUS-relay-security.md.
 
-`hostView` is the record above plus two derived, read-only fields:
+`hostView` is the record above (including `terminal_templates`) plus two
+derived, read-only fields:
 
 ```jsonc
 { …host…, "status": "connected" | "idle" | "unreachable" | "unknown",
@@ -269,7 +296,12 @@ console; the validator rules above apply).
 
 The tray's IPC (`create_project`, `update_project`) accepts the same field,
 and gains `list_hosts`, `create_host`, `update_host`, `remove_host`,
-`probe_host`, `disconnect_host` with the same shapes.
+`probe_host`, `disconnect_host` with the same shapes, and
+`list_host_templates {host_id}`, `create_host_template {host_id, template}`,
+`update_host_template {host_id, template}` and
+`remove_host_template {host_id, id}`, whose results are emitted like the
+console template IPC's. The Settings window's Hosts tab edits a host's
+templates through them.
 
 The probe emits an audit event per run (`host.probe`, outcome ok/failed,
 target and the discovered paths) so `relay audit` shows what relay reached.
@@ -296,6 +328,69 @@ unchanged; relayLLM wraps the template for the host.
 A host whose probe never succeeded (`claude_path` empty) makes
 `ResolvePtyEnv` fail with `host "devbox" has no claude: run a probe` so the
 session refuses to start with a message that names the fix.
+
+## Terminals on a host
+
+A host carries its own templates in `hosts[].terminal_templates`, the same
+`TerminalTemplate` shape as the console's `terminal_templates`. Their
+`command` and `args` are interpreted **on the host**: nothing is resolved
+against the console's PATH, `$SHELL` or filesystem.
+
+**Seeding.** A successful probe of a host with no templates seeds
+`config.DefaultHostTemplates(probe)` in the same settings write:
+
+- `shell` / Shell, `command` empty — the host's login shell;
+- `claude-code` / Claude Code, `command` = the probed `claude_path`, only
+  when the probe found one.
+
+Existing templates are never overwritten: a re-probe leaves edits alone, and
+only a host with an empty list is seeded.
+
+**Launch.** relay-sessions execs `ssh_argv + ["-tt", "--", <remote>]` under
+the local pty; `pty.Setsize` propagates as SIGWINCH through ssh. `<remote>`
+is:
+
+- `command` empty: `sshhost.LoginShellCommandForOS(os, dir, env)`, whose
+  decoded script is `cd '<dir>' && exec env 'K'='v' … "$SHELL" -l`.
+  `"$SHELL"` is emitted in double quotes, not single, so the host expands
+  it: zsh on a Mac, cmd.exe under Windows OpenSSH.
+- otherwise: `sshhost.RemoteCommandForOS(os, dir, [command, args…], env)`,
+  the argv verbatim after `${PROJECT_PATH}` / `${PROJECT_ID}` expansion. No
+  login shell resolves it, so `command` is best an absolute path.
+
+Both use the Windows launcher when the probed OS is `MINGW*`/`MSYS*`/
+`CYGWIN*` and decision 8's launcher otherwise. `TERM=xterm-256color` and
+`COLORTERM=truecolor` are added to `env` unless the template sets them.
+`Directory` defaults to the host's `home` when the caller sends none.
+
+**Catalog and gating.** For a host project,
+`GET /api/terminal/templates?project=<id>` returns the host's templates
+(`config.TemplatesForProject`: sorted by id, invalid ones dropped and
+logged). Console templates are never offered on a host project. A host
+project may launch every template of its host; `allowed_templates` gates
+console templates only. A claude (chat) session on a host project passes
+the kind gate iff its host has a `claude-code` template, and still execs the
+probed `claude_path` (see *relayLLM*). pi stays refused on a host.
+
+**Validation.** `config.ValidateHostTemplate` is `ValidateTerminalTemplate`
+plus refusals of `sandbox`, `read` and `read_write` (see *The session host
+never sandboxes*), `env_passthrough` (it would copy the console's
+environment to another machine) and `${MODEL_KEY}` (the model endpoint
+listens on the console; the key has no business leaving it).
+
+**Example: a shell that survives an ssh drop on a Windows host.** The remote
+script runs under Git for Windows' `sh` with a non-interactive PATH, so the
+executable is named by its full path:
+
+```json
+{ "id": "psmux", "name": "psmux",
+  "command": "C:/tools/psmux/psmux.exe",
+  "args": ["new-session", "-A", "-s", "relay-${PROJECT_ID}"] }
+```
+
+`-A` attaches when the named session exists, so reopening the terminal after
+a drop resumes it (decision 11). `tmux new-session -A -s relay-${PROJECT_ID}`
+does the same on a POSIX host.
 
 ## relayLLM
 
@@ -344,20 +439,8 @@ process on the host; they are allowed (their built-in tools run locally, which
 is the same trade the console makes) but their `appendClaudeMd` read of
 `<dir>/CLAUDE.md` is skipped for a host project.
 
-**Terminals on a host.** `TerminalSession.Start` with a host execs
-`ssh_argv + ["-tt", "--", RemoteCommand(dir, cmd, env)]` under the local pty.
-`pty.Setsize` on the local side propagates as SIGWINCH through ssh. The
-remote command is:
-
-- template `shell` (or empty): `exec "$SHELL" -l` (the *host's* login shell;
-  emitted verbatim in the script, not quoted, so the host expands it);
-- template `claude`: `exec '<claude_path>' <template args…>`;
-- any other template: `exec "$SHELL" -lic '<command> <args…>'` so the host's
-  interactive PATH resolves the command.
-
-`TERM=xterm-256color` is set inside `env`. `terminal_created` gains
-`host: {id, name}` so eve can label the tab. `Directory` defaults to the
-host's `home` from the spec when the caller sends none.
+**Terminals on a host** are launched by relay-sessions, not relayLLM; see
+*Terminals on a host* above.
 
 **Idle, stop, kill** are unchanged: they act on the local `ssh` process, and
 `ssh` propagates SIGINT/SIGTERM/hangup to the remote command.
@@ -464,7 +547,8 @@ host with no scheduler change. The cron stays on the console, which is what
   decision 8's launcher (`sshhost.RemoteCommandForOS`): under `-tt` Windows
   OpenSSH re-quotes the line through conhost, and the nested quotes of the
   POSIX form do not survive.
-  The `shell` terminal template still execs `$SHELL` (cmd.exe).
+  The seeded `shell` template execs the host's `$SHELL` (cmd.exe under
+  Windows OpenSSH); a psmux template gives a shell that outlives the link.
 
 ## Fixtures
 

@@ -352,6 +352,18 @@ permitted templates, and `[]` with no project; the Settings window lists all
 of them over IPC. The list rides on the project save, so it is gated as any
 project edit already is.
 
+**A host project uses its host's templates instead.** Both the catalog route
+and the launch path pick templates with `config.TemplatesForProject`: for a
+project with a `host_id` that is the host's `terminal_templates`, and console
+templates are never offered. A host project may launch every template of its
+host; `allowed_templates` gates console templates only. A claude session on a
+host project passes the kind gate iff the host has a `claude-code` template;
+a chat session keeps the console `allowed_templates` gate; pi is refused on a
+host. A host template never sandboxes (it cannot carry `sandbox`, `read` or
+`read_write`), and an empty `command` runs the host's login shell rather
+than relay's `$SHELL`. Shape, seeding and launch argv are in
+[`docs/ssh-hosts.md`](ssh-hosts.md#terminals-on-a-host).
+
 **A template can point a client at relay's model endpoint.** `model_key: true`
 mints a per-session key, and `${MODEL_KEY}` in an `env` value delivers it.
 `${MODEL_ENDPOINT_URL}` in an `env` value becomes `http://<model_endpoint.listen>`.
