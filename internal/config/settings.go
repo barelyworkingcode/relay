@@ -564,6 +564,7 @@ type HostPatch struct {
 	Target       *string
 	Port         *int
 	IdentityFile *string
+	TmuxPath     *string
 }
 
 // UpdateHost patches name/target/port/identity_file, validated against the
@@ -588,6 +589,9 @@ func (s *Settings) UpdateHost(id string, patch HostPatch) (Host, bool, error) {
 	}
 	if patch.IdentityFile != nil {
 		candidate.IdentityFile = *patch.IdentityFile
+	}
+	if patch.TmuxPath != nil {
+		candidate.TmuxPath = *patch.TmuxPath
 	}
 	if err := ValidateHost(&candidate, s.Hosts, id); err != nil {
 		return Host{}, true, err
@@ -615,6 +619,9 @@ func (s *Settings) UpdateHostAndReserveProbe(id string, patch HostPatch) (Host, 
 	}
 	if patch.IdentityFile != nil {
 		candidate.IdentityFile = *patch.IdentityFile
+	}
+	if patch.TmuxPath != nil {
+		candidate.TmuxPath = *patch.TmuxPath
 	}
 	if err := ValidateHost(&candidate, s.Hosts, id); err != nil {
 		return Host{}, true, false, err

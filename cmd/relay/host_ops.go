@@ -36,6 +36,7 @@ type hostFields struct {
 	Target       string `json:"target"`
 	Port         int    `json:"port,omitempty"`
 	IdentityFile string `json:"identity_file,omitempty"`
+	TmuxPath     string `json:"tmux_path,omitempty"`
 }
 
 // hostPatchFields is the transport-agnostic patch body: nil means "not in
@@ -45,6 +46,7 @@ type hostPatchFields struct {
 	Target       *string `json:"target,omitempty"`
 	Port         *int    `json:"port,omitempty"`
 	IdentityFile *string `json:"identity_file,omitempty"`
+	TmuxPath     *string `json:"tmux_path,omitempty"`
 }
 
 func (f hostPatchFields) touchesConnection(before config.Host) bool {
@@ -119,7 +121,7 @@ func (o *HostOps) Create(ctx context.Context, f hostFields) (config.Host, error)
 	var createErr error
 	if err := o.runQueued(ctx, func() error {
 		if err := o.Store.With(func(s *config.Settings) {
-			created, createErr = s.AddHost(config.Host{Name: f.Name, Target: f.Target, Port: f.Port, IdentityFile: f.IdentityFile})
+			created, createErr = s.AddHost(config.Host{Name: f.Name, Target: f.Target, Port: f.Port, IdentityFile: f.IdentityFile, TmuxPath: f.TmuxPath})
 		}); err != nil {
 			return fmt.Errorf("save host: %w", err)
 		}
@@ -153,7 +155,7 @@ func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (con
 	var updateErr error
 	if err := o.runQueued(ctx, func() error {
 		if err := o.Store.With(func(s *config.Settings) {
-			updated, found, connectionChanged, updateErr = s.UpdateHostAndReserveProbe(id, config.HostPatch{Name: f.Name, Target: f.Target, Port: f.Port, IdentityFile: f.IdentityFile})
+			updated, found, connectionChanged, updateErr = s.UpdateHostAndReserveProbe(id, config.HostPatch{Name: f.Name, Target: f.Target, Port: f.Port, IdentityFile: f.IdentityFile, TmuxPath: f.TmuxPath})
 		}); err != nil {
 			return fmt.Errorf("save host: %w", err)
 		}
