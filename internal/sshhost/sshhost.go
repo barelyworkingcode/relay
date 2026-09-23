@@ -126,6 +126,41 @@ func launcherFor(script string) string {
 	return `sh -c 'eval "$(printf %s ` + encoded + ` | base64 -d)"'`
 }
 
+// windowsLauncherFor is launcherFor for a Windows host whose OpenSSH default
+// shell is cmd.exe and whose PATH has Git for Windows' sh. With -tt, Windows
+// OpenSSH hands the line to conhost, which re-splits and re-quotes it by the
+// MS C runtime rules; launcherFor's nested "…" inside '…' does not survive
+// that and cmd then sees the | unquoted. This form is one "…" argument with
+// no inner quotes, which the re-quote reproduces byte for byte. It must not
+// go to a POSIX login shell: the $(…) would expand there, not in sh. IFS=
+// and set -f stand in for the missing quotes around $(…): no field splitting,
+// no globbing, so eval sees the decoded script exactly.
+func windowsLauncherFor(script string) string {
+	encoded := base64.StdEncoding.EncodeToString([]byte(script))
+	return `sh -c "set -f; IFS=; eval $(printf %s ` + encoded + ` | base64 -d)"`
+}
+
+// IsWindowsOS reports whether a probe's `uname -s` names Git for Windows'
+// (MSYS2) or Cygwin's sh, i.e. a Windows host reached through cmd.exe.
+func IsWindowsOS(unameS string) bool {
+	for _, prefix := range []string{"MINGW", "MSYS", "CYGWIN"} {
+		if strings.HasPrefix(unameS, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// RemoteCommandForOS is RemoteCommand for a host whose probed OS is known:
+// the Windows launcher for a Windows host, decision 8's launcher otherwise
+// (including an unprobed host's empty OS).
+func RemoteCommandForOS(hostOS, cwd string, argv []string, env map[string]string) string {
+	if IsWindowsOS(hostOS) {
+		return windowsLauncherFor(buildScript(cwd, argv, env))
+	}
+	return RemoteCommand(cwd, argv, env)
+}
+
 // RemoteCommand builds the one remote command line every consumer (relay,
 // relayLLM, eve) execs after ssh_argv + ["-T"|"-tt", "--"]: cd into cwd (if
 // set), then exec argv with env set, all inside decision 8's base64+eval
@@ -198,13 +233,22 @@ func probeScript() string {
 	line(sentinelArch, "uname -m 2>/dev/null")
 	line(sentinelHome, `printf '%s\n' "$HOME"`)
 	line(sentinelShell, `printf '%s\n' "$SHELL"`)
-	line(sentinelLoginNode, `if [ -n "$SHELL" ]; then "$SHELL" -lic 'command -v node' 2>/dev/null; fi`)
-	line(sentinelLoginClaude, `if [ -n "$SHELL" ]; then "$SHELL" -lic 'command -v claude' 2>/dev/null; fi`)
+	line(sentinelLoginNode, loginShellLookup("node"))
+	line(sentinelLoginClaude, loginShellLookup("claude"))
 	line(sentinelPlainNode, "command -v node 2>/dev/null")
 	line(sentinelPlainClaude, "command -v claude 2>/dev/null")
 	b.WriteString("echo ")
 	b.WriteString(sentinelEnd)
 	return b.String()
+}
+
+// loginShellLookup asks $SHELL -lic where tool lives. A Windows host's
+// OpenSSH sets $SHELL to cmd.exe or powershell.exe even when the probe runs
+// under Git's sh; neither understands -lic (cmd starts an interactive session
+// and prints its banner), so any *.exe shell is skipped and the plain-PATH
+// fallback answers instead.
+func loginShellLookup(tool string) string {
+	return `case "$SHELL" in ''|*.exe|*.EXE) ;; *) "$SHELL" -lic 'command -v ` + tool + `' 2>/dev/null ;; esac`
 }
 
 // parseProbeSections splits probeScript's output into the text following

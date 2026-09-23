@@ -127,3 +127,15 @@ func TestBuildHostTargetArgv_NeverShellsOut(t *testing.T) {
 		t.Fatalf("buildHostTargetArgv: %v", err)
 	}
 }
+
+func TestBuildHostTargetArgv_WindowsHostUsesWindowsLauncher(t *testing.T) {
+	h := hostSpec()
+	h.OS = "MINGW64_NT-10.0-26200"
+	_, args, err := buildHostTargetArgv(h, "C:/proj", []string{"claude"}, nil)
+	if err != nil {
+		t.Fatalf("buildHostTargetArgv: %v", err)
+	}
+	if remote := args[len(args)-1]; !strings.HasPrefix(remote, `sh -c "set -f; IFS=; eval `) {
+		t.Fatalf("remote = %q, want the Windows launcher", remote)
+	}
+}

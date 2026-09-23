@@ -166,3 +166,46 @@ func TestApplyUpdate_HostProject(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateProjectPath_WindowsDrivePathOnlyForHostProjects(t *testing.T) {
+	cases := []struct {
+		path    string
+		hosted  bool
+		wantErr bool
+	}{
+		{"C:/Users/me/source/Acme/", true, false},
+		{`C:\Users\me\source\Acme`, true, false},
+		{"C:/Users/me", false, true},
+		{"C:/Users/../x", true, true},
+		{`C:\Users\..\x`, true, true},
+		{"C:relative", true, true},
+		{"/Users/me/proj", false, false},
+	}
+	for _, c := range cases {
+		err := validateProjectPath(c.path, c.hosted)
+		if (err != nil) != c.wantErr {
+			t.Errorf("validateProjectPath(%q, hosted=%v) err = %v, wantErr %v", c.path, c.hosted, err, c.wantErr)
+		}
+	}
+}
+
+// A create validates twice (ApplyCreate's full candidate, then the inner
+// create's); both must see the host, or a Windows drive path is judged by
+// the console's rules and refused.
+func TestApplyCreate_WindowsHostDrivePath(t *testing.T) {
+	var s config.Settings
+	s.Hosts = []config.Host{{ID: "h_win", Name: "winhost"}}
+
+	created, err := ApplyCreate(&s, CreateFields{
+		Name:   "Acme",
+		Path:   "C:/Users/me/source/Acme/",
+		HostID: "h_win",
+	}, McpSurfaces{})
+	if err != nil {
+		t.Fatalf("ApplyCreate: %v", err)
+	}
+	newName := "Acme2"
+	if _, _, err := ApplyUpdate(&s, created.ID, UpdateFields{Name: &newName}, func() McpSurfaces { return McpSurfaces{} }); err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+}

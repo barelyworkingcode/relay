@@ -27,6 +27,14 @@ func CreateWithToken(s *config.Settings, name, path string, mcpIDs, models []str
 // surfaces maps MCP IDs to their runtime schema + tool surface (from
 // mcpbroker.Manager) for scope derivation. Call within store.With.
 func CreateWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
+	return createWithTokenKind(s, kind, "", name, path, mcpIDs, models, templates, surfaces)
+}
+
+// createWithTokenKind is CreateWithTokenKind plus the host the project will
+// live on. hostID only informs validation (a host project's path is judged
+// by the host's rules, e.g. a Windows drive path); ApplyCreate sets the
+// project's HostID itself afterwards.
+func createWithTokenKind(s *config.Settings, kind config.ProjectKind, hostID, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
 	kind = config.NormalizeProjectKind(kind)
 	if name == "" {
 		return config.Project{}, fmt.Errorf("project name is required")
@@ -42,7 +50,7 @@ func CreateWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path
 	// only carries what this function actually knows about; a direct caller
 	// relying solely on this function (as every pre-remote test does) still
 	// gets full path/MCP/model validation.
-	candidate := config.Project{Kind: kind, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models, ChatTemplates: templates}
+	candidate := config.Project{Kind: kind, HostID: hostID, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models, ChatTemplates: templates}
 	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, err
 	}
@@ -88,20 +96,32 @@ func generateProjectToken() (string, string, error) {
 // validateProjectPath rejects a relative path (interpreted against relay's
 // CWD) or one with ".." segments, either of which could escape the
 // project's fsMCP allowed_dirs root. Shared by the create and update paths
-// (HTTP + IPC) so the rule is enforced identically everywhere.
-func validateProjectPath(path string) error {
+// (HTTP + IPC) so the rule is enforced identically everywhere. A host
+// project's path lives on the host, so a Windows host's drive-letter path
+// (C:/… or C:\…) is absolute there even though it is not on the console.
+func validateProjectPath(path string, hosted bool) error {
 	if path == "" {
 		return fmt.Errorf("project path is required")
 	}
-	if !filepath.IsAbs(path) {
+	if !filepath.IsAbs(path) && !(hosted && isWindowsAbsPath(path)) {
 		return fmt.Errorf("project path must be an absolute path: %q", path)
 	}
-	for _, seg := range strings.Split(path, string(filepath.Separator)) {
+	for _, seg := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
 		if seg == ".." {
 			return fmt.Errorf("project path must not contain '..': %q", path)
 		}
 	}
 	return nil
+}
+
+// isWindowsAbsPath reports whether path is a drive-letter absolute path:
+// a letter, a colon, then / or \.
+func isWindowsAbsPath(path string) bool {
+	if len(path) < 3 || path[1] != ':' || (path[2] != '/' && path[2] != '\\') {
+		return false
+	}
+	c := path[0]
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 // validateAllowedTemplates refuses what could not be placed: a blank entry, and
@@ -153,7 +173,7 @@ func ValidateShape(proj *config.Project) error {
 		return fmt.Errorf(`project cannot set both host_id and kind: "remote": a host project is kind: local with its directory on another machine; a remote project is a capability grant with no directory`)
 	}
 	if !proj.IsRemote() {
-		if err := validateProjectPath(proj.Path); err != nil {
+		if err := validateProjectPath(proj.Path, proj.IsHosted()); err != nil {
 			return err
 		}
 		return validateHostShape(proj)

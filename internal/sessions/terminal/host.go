@@ -20,7 +20,7 @@ func buildHostTargetArgv(host *sessionstypes.HostSpec, dir string, argv []string
 	if len(host.SSHArgv) == 0 {
 		return "", nil, fmt.Errorf("host %q has no ssh_argv", host.Name)
 	}
-	remote := sshhost.RemoteCommand(dir, argv, env)
+	remote := sshhost.RemoteCommandForOS(host.OS, dir, argv, env)
 	name = host.SSHArgv[0]
 	args = append(append([]string{}, host.SSHArgv[1:]...), "-tt", "--", remote)
 	return name, args, nil
