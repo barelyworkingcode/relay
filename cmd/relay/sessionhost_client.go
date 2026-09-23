@@ -158,6 +158,36 @@ func (c *sessionHostClient) Terminate(ctx context.Context, sessionID, reason str
 	return nil
 }
 
+// LiveTerminalNames GETs relay-sessions' /api/terminals and returns the
+// Name of every terminal still running. A persist terminal's Name is its
+// tmux session name, which is what PersistentSessionOps matches against.
+func (c *sessionHostClient) LiveTerminalNames(ctx context.Context) (map[string]bool, error) {
+	httpResp, err := c.do(ctx, http.MethodGet, "/api/terminals", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: /api/terminals returned %d", errSessionHostUnavailable, httpResp.StatusCode)
+	}
+	var body struct {
+		Terminals []struct {
+			Name  string `json:"name"`
+			State string `json:"state"`
+		} `json:"terminals"`
+	}
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("session host: decode /api/terminals: %w", err)
+	}
+	names := make(map[string]bool, len(body.Terminals))
+	for _, t := range body.Terminals {
+		if t.State == "running" && t.Name != "" {
+			names[t.Name] = true
+		}
+	}
+	return names, nil
+}
+
 // DialWS opens a viewer connection to relay-sessions' /ws, verified exactly as
 // do verifies a request: the peer must be the bound host process, and the
 // bearer is the one the host registered. The only timeout is the upgrade

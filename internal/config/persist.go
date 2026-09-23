@@ -48,6 +48,19 @@ func ParsePersistSessionName(name string) (project8, templateID string, n int, o
 	return project8, templateID, n, true
 }
 
+// ParseProjectPersistSessionName is ParsePersistSessionName narrowed to one
+// project: ok only when name parses and its prefix is projectID's, derived
+// exactly as PersistSessionName derives it. The prefix is 8 characters, so
+// two projects whose ids share them are indistinguishable here; project ids
+// are uuids, which keeps that from arising.
+func ParseProjectPersistSessionName(name, projectID string) (templateID string, n int, ok bool) {
+	project8, templateID, n, ok := ParsePersistSessionName(name)
+	if !ok || project8 != persistProject8(projectID) {
+		return "", 0, false
+	}
+	return templateID, n, true
+}
+
 // NextPersistSessionN is the n for a new persist session of templateID in
 // projectID: one more than the largest n among existing names that belong to
 // that project and template, or 1 when none do.
