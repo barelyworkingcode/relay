@@ -91,6 +91,19 @@ func shQuote(s string) string {
 // the fixture tests this shares with relayLLM's vendored copy and eve's
 // ssh-command.js (docs/ssh-hosts.md Fixtures).
 func buildScript(cwd string, argv []string, env map[string]string) string {
+	var tail strings.Builder
+	for _, a := range argv {
+		tail.WriteString(" ")
+		tail.WriteString(shQuote(a))
+	}
+	return scriptWithTail(cwd, env, tail.String())
+}
+
+// scriptWithTail renders the `cd '<cwd>' && exec env 'K'='v' …` prefix
+// buildScript and LoginShellCommandForOS share, then appends tail verbatim.
+// tail is already rendered (quoted, or deliberately not) and carries its own
+// leading space.
+func scriptWithTail(cwd string, env map[string]string, tail string) string {
 	var b strings.Builder
 	if cwd != "" {
 		b.WriteString("cd ")
@@ -109,10 +122,7 @@ func buildScript(cwd string, argv []string, env map[string]string) string {
 		b.WriteString("=")
 		b.WriteString(shQuote(env[k]))
 	}
-	for _, a := range argv {
-		b.WriteString(" ")
-		b.WriteString(shQuote(a))
-	}
+	b.WriteString(tail)
 	return b.String()
 }
 
@@ -159,6 +169,19 @@ func RemoteCommandForOS(hostOS, cwd string, argv []string, env map[string]string
 		return windowsLauncherFor(buildScript(cwd, argv, env))
 	}
 	return RemoteCommand(cwd, argv, env)
+}
+
+// LoginShellCommandForOS is RemoteCommandForOS for a host template with an
+// empty command. The script's tail is a literal `"$SHELL" -l`, double-quoted
+// rather than shQuote'd, so the host's sh expands it to the host's own login
+// shell instead of one resolved on the console. On a Windows host $SHELL is
+// cmd.exe, and `cmd.exe -l` opens an interactive cmd — the intended shell.
+func LoginShellCommandForOS(hostOS, cwd string, env map[string]string) string {
+	script := scriptWithTail(cwd, env, ` "$SHELL" -l`)
+	if IsWindowsOS(hostOS) {
+		return windowsLauncherFor(script)
+	}
+	return launcherFor(script)
 }
 
 // RemoteCommand builds the one remote command line every consumer (relay,
