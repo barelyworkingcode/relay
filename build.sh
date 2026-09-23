@@ -46,7 +46,7 @@ go run ./web/gen
 # clean shutdown (app.cleanup() in trayapp.go); SIGKILL only if it hasn't
 # exited within 3s.
 stop_relay() {
-    pgrep -x relay >/dev/null 2>&1 || return
+    pgrep -x relay >/dev/null 2>&1 || return 0
     pkill -TERM -x relay 2>/dev/null || true
     for _ in $(seq 1 30); do
         pgrep -x relay >/dev/null 2>&1 || { echo "Stopped running relay"; return; }
