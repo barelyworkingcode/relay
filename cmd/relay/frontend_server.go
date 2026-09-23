@@ -182,6 +182,10 @@ type frontendRouteDeps struct {
 	projectOps        *ProjectOps
 	hostOps           *HostOps
 	templateOps       *TemplateOps
+	// hostTemplateOps is derived from templateOps's store and queue, so the
+	// Hosts tab and these routes share one queue without widening
+	// NewFrontendServer's signature.
+	hostTemplateOps *HostTemplateOps
 	// loginOps carries the queue the login routes write through; nil leaves
 	// them writing inline.
 	loginOps *LoginOps
@@ -239,6 +243,9 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 	}
 	if deps.hostOps != nil {
 		RegisterHostRoutes(rr, deps.hostOps)
+	}
+	if deps.hostTemplateOps != nil {
+		RegisterHostTemplateRoutes(rr, deps.hostTemplateOps)
 	}
 	if deps.eveEnrolmentOps != nil {
 		RegisterEveEnrolmentRoutes(rr, deps.eveEnrolmentOps)
@@ -387,6 +394,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		projectOps:        projectOps,
 		hostOps:           hostOps,
 		templateOps:       templateOps,
+		hostTemplateOps:   &HostTemplateOps{Store: templateOps.Store, Queue: templateOps.Queue},
 		eveEnrolmentOps:   eveEnrolmentOps,
 		evePasskeyOps:     evePasskeyOps,
 		enhanced:          enhanced,

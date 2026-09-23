@@ -70,6 +70,9 @@ type hostView struct {
 	Probe        *config.HostProbe `json:"probe,omitempty"`
 	Status       string            `json:"status"`
 	SSHArgv      []string          `json:"ssh_argv"`
+	// TerminalTemplates is always an array, never null, so a client can
+	// iterate it without a nil check.
+	TerminalTemplates []config.TerminalTemplate `json:"terminal_templates"`
 }
 
 // hostStatus classifies a host for the tray and eve's host chip
@@ -94,6 +97,10 @@ func hostStatus(h config.Host) string {
 
 func hostToView(h config.Host) hostView {
 	controlDir, _ := sshhost.ControlDir()
+	templates := h.TerminalTemplates
+	if templates == nil {
+		templates = []config.TerminalTemplate{}
+	}
 	return hostView{
 		ID:           h.ID,
 		Name:         h.Name,
@@ -104,6 +111,8 @@ func hostToView(h config.Host) hostView {
 		Probe:        h.Probe,
 		Status:       hostStatus(h),
 		SSHArgv:      sshhost.SSHArgv(h, controlDir),
+
+		TerminalTemplates: templates,
 	}
 }
 
