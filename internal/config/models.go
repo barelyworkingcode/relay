@@ -400,7 +400,10 @@ type HostProbe struct {
 	NodeVersion   string `json:"node_version,omitempty"`
 	ClaudePath    string `json:"claude_path,omitempty"`
 	ClaudeVersion string `json:"claude_version,omitempty"`
-	Error         string `json:"error,omitempty"`
+	// TmuxPath is the host's tmux (psmux on Windows) that persist templates
+	// run inside; empty when the probe found none.
+	TmuxPath string `json:"tmux_path,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 // Host is a machine reached over ssh that a project's directory can live on
@@ -433,6 +436,21 @@ type Host struct {
 	// A successful probe seeds DefaultHostTemplates into a host that has
 	// none; nothing overwrites existing ones.
 	TerminalTemplates []TerminalTemplate `json:"terminal_templates,omitempty"`
+	// TmuxPath is the operator's override for the host's tmux/psmux; empty
+	// defers to the probe's (EffectiveTmuxPath).
+	TmuxPath string `json:"tmux_path,omitempty"`
+}
+
+// EffectiveTmuxPath is the tmux a persist template on h runs: the operator's
+// override when set, else the probe's, else empty (no tmux known).
+func (h Host) EffectiveTmuxPath() string {
+	if h.TmuxPath != "" {
+		return h.TmuxPath
+	}
+	if h.Probe != nil {
+		return h.Probe.TmuxPath
+	}
+	return ""
 }
 
 type ProjectKind string

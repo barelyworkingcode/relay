@@ -86,6 +86,12 @@ type TerminalTemplate struct {
 	// ANTHROPIC_CUSTOM_HEADERS: "X-Relay-Key: ${MODEL_KEY}"), expanded by
 	// relay-sessions at spawn.
 	ModelKey bool `json:"model_key,omitempty"`
+
+	// Persist is for host templates only: the command runs inside a named
+	// tmux (psmux on Windows) session on the host, so it outlives ssh and
+	// relay and can be reattached (PersistSessionName). A console template
+	// that sets it is refused (ValidateTerminalTemplate).
+	Persist bool `json:"persist,omitempty"`
 }
 
 // DefaultShellTemplate is the one template relay writes into settings.json
@@ -184,8 +190,26 @@ var ErrModelKeySubstitution = errors.New("template uses ${MODEL_KEY} outside the
 // never actually get it — it must be refused up front instead of launching
 // with the literal text still in place. ${MODEL_KEY} is the one credential
 // that is expanded, at spawn and not by ExpandTemplateVars, and is carved out
-// only where that expansion happens.
+// only where that expansion happens. It also refuses Persist, which only a
+// host template may set (ValidateHostTemplate).
 func ValidateTerminalTemplate(t TerminalTemplate) error {
+	if err := validateTemplateCommon(t); err != nil {
+		return err
+	}
+	if t.Persist {
+		return fmt.Errorf("terminal template %q: %w", t.ID, ErrConsoleTemplatePersist)
+	}
+	return nil
+}
+
+// ErrConsoleTemplatePersist is refused at validation: persist on a console
+// template. Persistence is a tmux session on an ssh host; a console pty has
+// no host to outlive relay on.
+var ErrConsoleTemplatePersist = errors.New("only a host template can persist")
+
+// validateTemplateCommon is the checks every template gets, console or host
+// (ValidateTerminalTemplate, ValidateHostTemplate).
+func validateTemplateCommon(t TerminalTemplate) error {
 	if strings.TrimSpace(t.ID) == "" {
 		return fmt.Errorf("terminal template: id is required")
 	}
@@ -337,11 +361,12 @@ var ErrHostTemplateEnvPassthrough = errors.New("host template cannot pass throug
 // the key.
 var ErrHostTemplateModelKey = errors.New("host template cannot use ${MODEL_KEY}")
 
-// ValidateHostTemplate is ValidateTerminalTemplate plus the refusals that
-// follow from a host template running on the host: no sandbox, no sandbox
-// folders, no env passthrough, and no model_key or ${MODEL_KEY}.
+// ValidateHostTemplate is ValidateTerminalTemplate, less its refusal of
+// Persist, plus the refusals that follow from a host template running on the
+// host: no sandbox, no sandbox folders, no env passthrough, and no model_key
+// or ${MODEL_KEY}.
 func ValidateHostTemplate(t TerminalTemplate) error {
-	if err := ValidateTerminalTemplate(t); err != nil {
+	if err := validateTemplateCommon(t); err != nil {
 		return err
 	}
 	if t.Sandbox {

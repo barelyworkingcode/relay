@@ -273,6 +273,9 @@ type createTerminalWireBody struct {
 	ProjectID  string `json:"projectId"`
 	Cols       int    `json:"cols"`
 	Rows       int    `json:"rows"`
+	// PersistSession is snake_case, unlike its neighbours: it is relay's own
+	// field, not one of the terminal_create keys eve has always sent.
+	PersistSession string `json:"persist_session,omitempty"`
 }
 
 func (d sessionRouteDeps) handleCreateTerminal(w http.ResponseWriter, r *http.Request) {
@@ -292,6 +295,8 @@ func (d sessionRouteDeps) handleCreateTerminal(w http.ResponseWriter, r *http.Re
 		TemplateID: body.TemplateID,
 		Cols:       body.Cols,
 		Rows:       body.Rows,
+
+		PersistSession: body.PersistSession,
 	}
 	d.launchAndRespond(r.Context(), w, req)
 }

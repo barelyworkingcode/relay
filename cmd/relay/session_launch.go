@@ -8,9 +8,11 @@ package main
 // is R-S4b's job, using the LaunchResult this file produces.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -147,6 +149,9 @@ type LaunchRequest struct {
 	// pty only.
 	TemplateID string
 	Cols, Rows int
+	// PersistSession names an existing tmux session of a hosted project's
+	// persist template to reattach to; empty mints the next name.
+	PersistSession string
 
 	// claude/pi/chat only.
 	Model          string
@@ -352,6 +357,10 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		}
 	}
 
+	if req.PersistSession != "" && (tmpl == nil || !tmpl.Persist || !proj.IsHosted()) {
+		return nil, forbidden("persist_session_invalid", "persist_session applies only to a persist template of a host project", baseFields)
+	}
+
 	// An SSH-hosted project's target runs on the far end, where a profile
 	// written on this disk confines nothing — and sandboxing the local `ssh`
 	// client instead only breaks it (SH §5.2: "SSH host terminal: off").
@@ -414,7 +423,14 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	// Spec.Identity itself.
 
 	if req.Kind == KindPTY {
-		if proj != nil && proj.IsHosted() {
+		if proj != nil && proj.IsHosted() && tmpl.Persist {
+			argv, name, refusal := resolvePersistArgv(settings, proj, *tmpl, req.PersistSession, baseFields)
+			if refusal != nil {
+				return nil, refusal
+			}
+			spec.Argv = argv
+			spec.Name = name
+		} else if proj != nil && proj.IsHosted() {
 			spec.Argv = resolveHostArgv(*tmpl, proj.Path, req.ProjectID)
 		} else {
 			spec.Argv = resolveArgv(*tmpl, projectPathOrEmpty(proj), req.ProjectID)
@@ -655,6 +671,56 @@ func resolveHostArgv(t config.TerminalTemplate, projectPath, projectID string) [
 		return nil
 	}
 	return expandArgv(t.Command, t.Args, projectPath, projectID)
+}
+
+// listPersistSessionNames is an indirection so a test can stand in for the
+// host's tmux: the real one runs ssh.
+var listPersistSessionNames = persistSessionNames
+
+// resolvePersistArgv is resolveHostArgv for a persist template: the command
+// runs inside the tmux session it names, and the session name becomes the
+// terminal's Name, which is how PersistentSessionOps tells a session is
+// attached here. requested reattaches; empty takes the host's next free n.
+//
+// -A is safe to pass unconditionally: new-session looks -s up as an exact
+// session name, unlike -t, which tmux resolves by prefix.
+//
+// Deliberate: the host listing runs ssh with no settings lock held (settings
+// is a snapshot), bounded by sshhost's own tmux timeout, so an unreachable
+// host delays only this launch.
+func resolvePersistArgv(settings *config.Settings, proj *config.Project, t config.TerminalTemplate, requested string, fields sessionLaunchAuditFields) ([]string, string, *LaunchRefusal) {
+	h, _ := config.FindHostByID(settings, proj.HostID)
+	if h == nil {
+		return nil, "", invalidRequest("host_unavailable", fmt.Sprintf("host %q not found", proj.HostID), fields)
+	}
+	tmuxPath := h.EffectiveTmuxPath()
+	if tmuxPath == "" {
+		return nil, "", forbidden("tmux_not_available", fmt.Sprintf("host %s has no tmux: install it or set tmux_path", h.Name), fields)
+	}
+
+	name := requested
+	if name != "" {
+		// Rebuilding the name from the parsed n pins both the project and the
+		// template: a session of another template in this project parses too.
+		_, n, ok := config.ParseProjectPersistSessionName(name, proj.ID)
+		if !ok || config.PersistSessionName(proj.ID, t.ID, n) != name {
+			return nil, "", forbidden("persist_session_invalid", fmt.Sprintf("%q is not a persistent session of template %q in this project", name, t.ID), fields)
+		}
+	} else {
+		names, err := listPersistSessionNames(context.Background(), *h)
+		if err != nil {
+			msg := fmt.Sprintf("cannot name a persistent session on host %s: %v", h.Name, err)
+			return nil, "", &LaunchRefusal{Status: http.StatusBadGateway, Code: "persist_list_failed", Message: msg,
+				Audit: newSessionLaunchAuditEvent(fields, audit.AuditOutcomeError, msg)}
+		}
+		name = config.PersistSessionName(proj.ID, t.ID, config.NextPersistSessionN(names, proj.ID, t.ID))
+	}
+
+	argv := []string{tmuxPath, "new-session", "-A", "-s", name}
+	if t.Command != "" {
+		argv = append(argv, expandArgv(t.Command, t.Args, proj.Path, proj.ID)...)
+	}
+	return argv, name, nil
 }
 
 func expandArgv(command string, args []string, projectPath, projectID string) []string {

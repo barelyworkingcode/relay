@@ -186,6 +186,9 @@ type frontendRouteDeps struct {
 	// Hosts tab and these routes share one queue without widening
 	// NewFrontendServer's signature.
 	hostTemplateOps *HostTemplateOps
+	// persistentSessionOps lists and kills a hosted project's tmux sessions;
+	// its ActiveNames reads relay-sessions' live terminals through sessionHost.
+	persistentSessionOps *PersistentSessionOps
 	// loginOps carries the queue the login routes write through; nil leaves
 	// them writing inline.
 	loginOps *LoginOps
@@ -246,6 +249,9 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 	}
 	if deps.hostTemplateOps != nil {
 		RegisterHostTemplateRoutes(rr, deps.hostTemplateOps)
+	}
+	if deps.persistentSessionOps != nil {
+		RegisterPersistentSessionRoutes(rr, deps.persistentSessionOps)
 	}
 	if deps.eveEnrolmentOps != nil {
 		RegisterEveEnrolmentRoutes(rr, deps.eveEnrolmentOps)
@@ -395,11 +401,15 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		hostOps:           hostOps,
 		templateOps:       templateOps,
 		hostTemplateOps:   &HostTemplateOps{Store: templateOps.Store, Queue: templateOps.Queue},
-		eveEnrolmentOps:   eveEnrolmentOps,
-		evePasskeyOps:     evePasskeyOps,
-		enhanced:          enhanced,
-		sessionHost:       sessionHost,
-		issuance:          issuanceAuditorOrNil(auditOps.Recorder()),
+		persistentSessionOps: &PersistentSessionOps{
+			Store:       store,
+			ActiveNames: liveTerminalNamesFn(sessionHost),
+		},
+		eveEnrolmentOps: eveEnrolmentOps,
+		evePasskeyOps:   evePasskeyOps,
+		enhanced:        enhanced,
+		sessionHost:     sessionHost,
+		issuance:        issuanceAuditorOrNil(auditOps.Recorder()),
 	}
 
 	socketMux := http.NewServeMux()

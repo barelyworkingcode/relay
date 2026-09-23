@@ -66,6 +66,7 @@ type hostView struct {
 	Target       string            `json:"target"`
 	Port         int               `json:"port,omitempty"`
 	IdentityFile string            `json:"identity_file,omitempty"`
+	TmuxPath     string            `json:"tmux_path,omitempty"`
 	CreatedAt    string            `json:"created_at"`
 	Probe        *config.HostProbe `json:"probe,omitempty"`
 	Status       string            `json:"status"`
@@ -107,6 +108,7 @@ func hostToView(h config.Host) hostView {
 		Target:       h.Target,
 		Port:         h.Port,
 		IdentityFile: h.IdentityFile,
+		TmuxPath:     h.TmuxPath,
 		CreatedAt:    h.CreatedAt,
 		Probe:        h.Probe,
 		Status:       hostStatus(h),

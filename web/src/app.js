@@ -4207,7 +4207,7 @@ window.onTemplateError = function(msg) {
 };
 
 function blankHostForm() {
-    return { id: null, name: '', target: '', port: '', identity_file: '' };
+    return { id: null, name: '', target: '', port: '', identity_file: '', tmux_path: '' };
 }
 
 function hostFormFromExisting(h) {
@@ -4217,6 +4217,7 @@ function hostFormFromExisting(h) {
         target: h.target || '',
         port: h.port ? String(h.port) : '',
         identity_file: h.identity_file || '',
+        tmux_path: h.tmux_path || '',
     };
 }
 
@@ -4263,6 +4264,7 @@ function captureHostFormInputs() {
     f.target = val('hostTarget') || f.target;
     f.port = val('hostPort');
     f.identity_file = val('hostIdentityFile');
+    f.tmux_path = val('hostTmuxPath');
 }
 
 function harvestHostForm() {
@@ -4270,7 +4272,10 @@ function harvestHostForm() {
     const target = (document.getElementById('hostTarget') || {}).value || '';
     const portStr = (document.getElementById('hostPort') || {}).value || '';
     const identityFile = (document.getElementById('hostIdentityFile') || {}).value || '';
-    const payload = { name: name.trim(), target: target.trim() };
+    const tmuxPath = (document.getElementById('hostTmuxPath') || {}).value || '';
+    // Always sent, even empty: on update an empty value is how the operator
+    // clears the override and falls back to the probed tmux.
+    const payload = { name: name.trim(), target: target.trim(), tmux_path: tmuxPath.trim() };
     const port = parseInt(portStr, 10);
     if (portStr.trim() && !isNaN(port)) payload.port = port;
     if (identityFile.trim()) payload.identity_file = identityFile.trim();
@@ -4356,12 +4361,17 @@ function renderHostForm() {
     html += '<input type="text" id="hostPort" value="' + esc(f.port) + '" placeholder="22" />';
     html += '<label for="hostIdentityFile">Identity file</label>';
     html += '<input type="text" id="hostIdentityFile" value="' + esc(f.identity_file) + '" placeholder="optional, absolute path" />';
-    html += '</div>';
 
     // The freshest record lives in state.hosts — onHostAdded/onHostUpdated
     // already replaced it there by the time this re-renders, so the form
     // reads the probe result from the list rather than keeping a second copy.
     const existing = !isNew ? (state.hosts || []).find(x => x.id === f.id) : null;
+    const probedTmux = existing && existing.probe && existing.probe.tmux_path;
+    html += '<label for="hostTmuxPath">tmux path</label>';
+    html += '<input type="text" id="hostTmuxPath" value="' + esc(f.tmux_path) + '" placeholder="' + esc(probedTmux || 'not found by probe') + '" />';
+    html += '<p class="proj-section-help">Used by persist templates. Leave empty to use the probed path.</p>';
+    html += '</div>';
+
     if (existing && existing.probe) {
         html += renderHostProbeCard(existing.probe, existing.target);
     }
@@ -4479,7 +4489,7 @@ function renderHostTemplates(h) {
     for (const t of templates) {
         html += '<div class="proj-card">';
         html += '<div class="proj-card-header">';
-        html += '<span class="proj-card-name">' + esc(t.name) + ' <code>' + esc(t.id) + '</code></span>';
+        html += '<span class="proj-card-name">' + esc(t.name) + ' <code>' + esc(t.id) + '</code>' + (t.persist ? ' <span class="proj-host-chip">persist</span>' : '') + '</span>';
         html += '<div style="display:flex;gap:4px">';
         html += '<button class="btn btn-sm" ' + bind(editHostTemplate, t.id) + '>Edit</button>';
         html += '<button class="btn btn-sm btn-danger" ' + bind(removeHostTemplate, t.id, t.name) + '>Remove</button>';
@@ -4506,7 +4516,7 @@ function closeHostTemplateForm() {
 
 function newHostTemplate() {
     state.editingHostTemplateId = 'new';
-    state.hostTemplateForm = { id: '', name: '', command: '', args: '', env: '' };
+    state.hostTemplateForm = { id: '', name: '', command: '', args: '', env: '', persist: false };
     state.hostTemplateFormError = null;
     render();
 }
@@ -4520,6 +4530,7 @@ function editHostTemplate(id) {
         id: t.id, name: t.name || '', command: t.command || '',
         args: (t.args || []).join('\n'),
         env: Object.keys(t.env || {}).map(k => k + '=' + t.env[k]).join('\n'),
+        persist: !!t.persist,
     };
     state.hostTemplateFormError = null;
     render();
@@ -4536,7 +4547,7 @@ function captureHostTemplateFormInputs() {
     const f = state.hostTemplateForm;
     for (const k of Object.keys(f)) {
         const el = document.getElementById('htpl_' + k);
-        if (el) f[k] = el.value;
+        if (el) f[k] = el.type === 'checkbox' ? el.checked : el.value;
     }
 }
 
@@ -4566,6 +4577,7 @@ function saveHostTemplateForm() {
     const template = {
         id: f.id.trim(), name: f.name.trim(),
         command: f.command.trim(), args: templateLines(f.args), env,
+        persist: !!f.persist,
     };
     state.hostTemplateFormError = null;
     state.hostTemplateSaving = true;
@@ -4592,6 +4604,7 @@ function renderHostTemplateForm() {
     html += input('command', 'Command', 'empty = host login shell');
     html += lines('args', 'Arguments (one per line)', '--flag&#10;${PROJECT_PATH}');
     html += lines('env', 'Environment (KEY=value per line)', 'DEBUG=true');
+    html += '<label class="proj-mcp-row"><input type="checkbox" id="htpl_persist"' + (f.persist ? ' checked' : '') + ' /> Persist (run inside tmux on the host; survives disconnects and relay restarts)</label>';
     html += '<div class="proj-form-actions">';
     html += '<button class="btn btn-primary" onclick="saveHostTemplateForm()" ' + (state.hostTemplateSaving ? 'disabled' : '') + '>Save template</button>';
     html += '<button class="btn btn-danger" onclick="cancelHostTemplateEdit()">Cancel</button>';

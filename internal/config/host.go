@@ -15,11 +15,15 @@ import (
 // injection, but there is no legitimate ssh target this pattern excludes.
 var hostTargetPattern = regexp.MustCompile(`^([A-Za-z0-9._-]+@)?[A-Za-z0-9._:-]+$`)
 
+// hostAbsPathPattern accepts an absolute path on the HOST, which may be
+// Windows: filepath.IsAbs judges by relay's own OS and would refuse C:\.
+var hostAbsPathPattern = regexp.MustCompile(`^(/|[A-Za-z]:[/\\])`)
+
 // ValidateHost enforces docs/ssh-hosts.md's host rules: name unique
 // case-insensitively (excluding excludeID, so a no-op rename of the host
 // being edited doesn't collide with itself), target non-empty and
 // shell-metacharacter-free, port 0 or 1-65535, identity_file absolute or
-// empty.
+// empty, tmux_path absolute on the host or empty.
 func ValidateHost(h *Host, existing []Host, excludeID string) error {
 	name := strings.TrimSpace(h.Name)
 	if name == "" {
@@ -63,6 +67,11 @@ func ValidateHost(h *Host, existing []Host, excludeID string) error {
 
 	if h.IdentityFile != "" && !filepath.IsAbs(h.IdentityFile) {
 		return fmt.Errorf("host identity_file must be an absolute path or empty: %q", h.IdentityFile)
+	}
+
+	h.TmuxPath = strings.TrimSpace(h.TmuxPath)
+	if h.TmuxPath != "" && !hostAbsPathPattern.MatchString(h.TmuxPath) {
+		return fmt.Errorf("host tmux_path must be an absolute path (/usr/bin/tmux or C:/...) or empty: %q", h.TmuxPath)
 	}
 
 	return nil

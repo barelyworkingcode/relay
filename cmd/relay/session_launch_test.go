@@ -6,9 +6,12 @@ package main
 // exact client/project asymmetry.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1144,4 +1147,161 @@ func TestAuthorizeLaunch_RefusesAMappedTemplateWithNoListener(t *testing.T) {
 	if entries, err := os.ReadDir(sessionProfilesDir()); err == nil && len(entries) != 0 {
 		t.Fatalf("a refused launch left %d profile(s) behind", len(entries))
 	}
+}
+
+// persistLaunchProjectID is uuid-shaped: a persist session name carries the
+// first 8 characters of the project id, and a shorter id yields a name
+// ParsePersistSessionName refuses.
+const persistLaunchProjectID = "0123abcd-1111-2222-3333-444455556666"
+
+// persistLaunchTemplates is a host's templates: one persist command, one
+// persist login shell, one ordinary command.
+func persistLaunchTemplates() []config.TerminalTemplate {
+	return []config.TerminalTemplate{
+		{ID: "claude", Name: "Claude", Command: "claude", Args: []string{"--project", "${PROJECT_ID}"}, Persist: true},
+		{ID: "shell", Name: "Shell", Persist: true},
+		{ID: "tool", Name: "Tool", Command: "/opt/tool"},
+	}
+}
+
+// addPersistLaunchTestProject is addLaunchTestHostedProject with a uuid
+// project id and a host whose tmux is hostTmux (override) or probeTmux.
+func addPersistLaunchTestProject(t *testing.T, store config.SettingsStore, hostTmux, probeTmux string) config.Project {
+	t.Helper()
+	if err := store.With(func(s *config.Settings) {
+		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example",
+			TmuxPath: hostTmux, Probe: &config.HostProbe{OK: true, TmuxPath: probeTmux},
+			TerminalTemplates: persistLaunchTemplates()})
+	}); err != nil {
+		t.Fatalf("store.With hosts: %v", err)
+	}
+	return addLaunchTestProject(t, store, func(p *config.Project) {
+		p.ID = persistLaunchProjectID
+		p.HostID = "h1"
+		p.Path = "/home/remote/project"
+	})
+}
+
+// stubPersistSessionNames replaces the host's tmux listing for one test and
+// counts the calls.
+func stubPersistSessionNames(t *testing.T, names []string, err error) *int {
+	t.Helper()
+	calls := 0
+	prev := listPersistSessionNames
+	listPersistSessionNames = func(context.Context, config.Host) ([]string, error) {
+		calls++
+		return names, err
+	}
+	t.Cleanup(func() { listPersistSessionNames = prev })
+	return &calls
+}
+
+func persistLaunch(t *testing.T, store config.SettingsStore, templateID, persistSession string) (*LaunchResult, *LaunchRefusal) {
+	t.Helper()
+	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: persistLaunchProjectID, Kind: KindPTY,
+		TemplateID: templateID, PersistSession: persistSession}
+	return AuthorizeLaunch(store, NewModelKeyTable(), newLaunchTestLedger(t), req)
+}
+
+// A fresh persist launch takes the next n among this project's and
+// template's sessions on the host, runs the command inside
+// `tmux new-session -A -s <name>`, and names the terminal after the session
+// (what attached_here matches on).
+func TestAuthorizeLaunch_PersistTemplateMintsTheNextSessionName(t *testing.T) {
+	store := newLaunchTestStore(t)
+	proj := addPersistLaunchTestProject(t, store, "", "/usr/bin/tmux")
+	stubPersistSessionNames(t, []string{
+		"relay-0123abcd-claude-1",
+		"relay-0123abcd-claude-4",
+		"relay-0123abcd-shell-9",  // other template
+		"relay-ffffffff-claude-7", // other project
+	}, nil)
+
+	result, refusal := persistLaunch(t, store, "claude", "")
+	if refusal != nil {
+		t.Fatalf("refused: %+v", refusal)
+	}
+	const wantName = "relay-0123abcd-claude-5"
+	want := []string{"/usr/bin/tmux", "new-session", "-A", "-s", wantName, "claude", "--project", proj.ID}
+	if !slices.Equal(result.Spec.Argv, want) {
+		t.Fatalf("argv = %q, want %q", result.Spec.Argv, want)
+	}
+	if result.Spec.Name != wantName {
+		t.Fatalf("spec.Name = %q, want %q", result.Spec.Name, wantName)
+	}
+
+	// An empty-command persist template runs tmux's own shell: no tail.
+	result, refusal = persistLaunch(t, store, "shell", "")
+	if refusal != nil {
+		t.Fatalf("shell: refused: %+v", refusal)
+	}
+	if want := []string{"/usr/bin/tmux", "new-session", "-A", "-s", "relay-0123abcd-shell-10"}; !slices.Equal(result.Spec.Argv, want) {
+		t.Fatalf("shell: argv = %q, want %q", result.Spec.Argv, want)
+	}
+}
+
+// persist_session reattaches by that exact name, through the host's tmux
+// override, without listing the host.
+func TestAuthorizeLaunch_PersistSessionReattachesByName(t *testing.T) {
+	store := newLaunchTestStore(t)
+	proj := addPersistLaunchTestProject(t, store, "/opt/tmux", "/usr/bin/tmux")
+	calls := stubPersistSessionNames(t, nil, errors.New("listing must not run on reattach"))
+
+	const name = "relay-0123abcd-claude-2"
+	result, refusal := persistLaunch(t, store, "claude", name)
+	if refusal != nil {
+		t.Fatalf("refused: %+v", refusal)
+	}
+	want := []string{"/opt/tmux", "new-session", "-A", "-s", name, "claude", "--project", proj.ID}
+	if !slices.Equal(result.Spec.Argv, want) || result.Spec.Name != name {
+		t.Fatalf("argv = %q name = %q, want %q name %q", result.Spec.Argv, result.Spec.Name, want, name)
+	}
+	if *calls != 0 {
+		t.Fatalf("listPersistSessionNames called %d times on reattach, want 0", *calls)
+	}
+}
+
+func TestAuthorizeLaunch_PersistSessionRefusals(t *testing.T) {
+	for name, c := range map[string]struct {
+		templateID, session string
+	}{
+		"another project's session":      {"claude", "relay-ffffffff-claude-2"},
+		"another template's session":     {"claude", "relay-0123abcd-shell-2"},
+		"malformed name":                 {"claude", "relay-0123abcd-claude-02"},
+		"foreign tmux session":           {"claude", "main"},
+		"persist_session on non-persist": {"tool", "relay-0123abcd-tool-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newLaunchTestStore(t)
+			addPersistLaunchTestProject(t, store, "", "/usr/bin/tmux")
+			stubPersistSessionNames(t, nil, nil)
+			_, refusal := persistLaunch(t, store, c.templateID, c.session)
+			if refusal == nil || refusal.Code != "persist_session_invalid" || refusal.Status != 403 {
+				t.Fatalf("refusal = %+v, want 403 persist_session_invalid", refusal)
+			}
+		})
+	}
+}
+
+func TestAuthorizeLaunch_PersistNeedsTmuxAndAListing(t *testing.T) {
+	t.Run("no tmux", func(t *testing.T) {
+		store := newLaunchTestStore(t)
+		addPersistLaunchTestProject(t, store, "", "")
+		stubPersistSessionNames(t, nil, nil)
+		if _, refusal := persistLaunch(t, store, "claude", ""); refusal == nil || refusal.Code != "tmux_not_available" {
+			t.Fatalf("refusal = %+v, want tmux_not_available", refusal)
+		}
+	})
+	t.Run("listing fails", func(t *testing.T) {
+		store := newLaunchTestStore(t)
+		addPersistLaunchTestProject(t, store, "", "/usr/bin/tmux")
+		stubPersistSessionNames(t, nil, errors.New("tmux ls on devbox: Connection refused"))
+		_, refusal := persistLaunch(t, store, "claude", "")
+		if refusal == nil || refusal.Code != "persist_list_failed" || refusal.Status != 502 {
+			t.Fatalf("refusal = %+v, want 502 persist_list_failed", refusal)
+		}
+		if !strings.Contains(refusal.Message, "Connection refused") {
+			t.Fatalf("message = %q, want the listing's reason", refusal.Message)
+		}
+	})
 }
