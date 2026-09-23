@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -423,6 +424,63 @@ func TestWindowsLauncher_EvalPreservesScript(t *testing.T) {
 		t.Fatalf("launcher failed: %v", err)
 	}
 	if got, want := string(out), "[a  b][*]"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+// decodeWindowsLauncher is decodeLauncher for windowsLauncherFor's shape.
+func decodeWindowsLauncher(t *testing.T, cmd string) string {
+	t.Helper()
+	const prefix = `sh -c "set -f; IFS=; eval $(printf %s `
+	const suffix = ` | base64 -d)"`
+	if !strings.HasPrefix(cmd, prefix) || !strings.HasSuffix(cmd, suffix) {
+		t.Fatalf("command %q does not match the Windows launcher shape", cmd)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(cmd, prefix), suffix))
+	if err != nil {
+		t.Fatalf("launcher payload is not valid base64: %v", err)
+	}
+	return string(decoded)
+}
+
+// The login-shell script's tail is a literal "$SHELL" -l, not shQuote'd, so
+// the host's sh expands it; the cd/env prefix is buildScript's.
+func TestLoginShellCommandForOS_Script(t *testing.T) {
+	env := map[string]string{"TERM": "xterm-256color"}
+	for _, c := range []struct {
+		name, os, cwd, want string
+		decode              func(*testing.T, string) string
+	}{
+		{"posix with cwd", "Linux", "/home/u/proj", `cd '/home/u/proj' && exec env 'TERM'='xterm-256color' "$SHELL" -l`, decodeLauncher},
+		{"posix no cwd", "", "", `exec env 'TERM'='xterm-256color' "$SHELL" -l`, decodeLauncher},
+		{"windows with cwd", "MINGW64_NT-10.0-26200", "/c/proj", `cd '/c/proj' && exec env 'TERM'='xterm-256color' "$SHELL" -l`, decodeWindowsLauncher},
+		{"windows no cwd", "MSYS_NT-10.0", "", `exec env 'TERM'='xterm-256color' "$SHELL" -l`, decodeWindowsLauncher},
+	} {
+		if got := c.decode(t, LoginShellCommandForOS(c.os, c.cwd, env)); got != c.want {
+			t.Errorf("%s: script = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// Runs the POSIX launcher under the local sh with SHELL pointing at a stub:
+// "$SHELL" must expand on the far side, in the cwd, with -l and the env set.
+func TestLoginShellCommand_ExpandsShellOnTheFarSide(t *testing.T) {
+	dir := t.TempDir()
+	stub := dir + "/fake-shell"
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s|%s' \"$(pwd -P)\" \"$TERM\" \"$*\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", LoginShellCommandForOS("Linux", cwd, map[string]string{"TERM": "xterm-256color"}))
+	cmd.Env = append(os.Environ(), "SHELL="+stub)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("launcher failed: %v", err)
+	}
+	if got, want := string(out), cwd+"|xterm-256color|-l"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 }

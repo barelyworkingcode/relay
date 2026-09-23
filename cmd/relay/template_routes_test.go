@@ -187,3 +187,77 @@ func TestTemplateRoutes_RefuseInvalidTemplates(t *testing.T) {
 		}
 	}
 }
+
+// --- host templates (docs/ssh-hosts.md) ---
+
+// newHostTemplateRoutesServer serves the console and host template routes
+// over one store holding host h1 (with a shell template) and project hp on it.
+func newHostTemplateRoutesServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	if err := store.EnsureInitialized(); err != nil {
+		t.Fatalf("EnsureInitialized: %v", err)
+	}
+	seedTestTemplates(t, store)
+	if err := store.With(func(s *config.Settings) {
+		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example",
+			TerminalTemplates: []config.TerminalTemplate{{ID: "shell", Name: "Shell"}}})
+		s.Projects = append(s.Projects, config.Project{ID: "hp", HostID: "h1", Path: "/home/remote/p", AllowedTemplates: []string{"*"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	rr := &control.RouteRegistrar{Mux: mux, Transport: control.TransportSocket}
+	RegisterTemplateRoutes(rr, store, &TemplateOps{Store: store})
+	RegisterHostTemplateRoutes(rr, &HostTemplateOps{Store: store})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestHostTemplateRoutes_CatalogCreateAndRefusals(t *testing.T) {
+	srv := newHostTemplateRoutesServer(t)
+	catalog := func() string {
+		t.Helper()
+		resp, body := doJSON(t, "GET", srv.URL+"/api/terminal/templates?project=hp", nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("catalog: status = %d, body = %s", resp.StatusCode, body)
+		}
+		var got []config.TerminalTemplate
+		mustUnmarshal(t, body, &got)
+		return hostTemplateIDs(got)
+	}
+	if got := catalog(); got != "shell" {
+		t.Fatalf("hosted project catalog = %q, want only the host's shell (no console templates)", got)
+	}
+
+	tool := config.TerminalTemplate{ID: "tool", Name: "Tool", Command: "/opt/tool"}
+	if resp, body := doJSON(t, "POST", srv.URL+"/api/hosts/h1/templates", tool); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status = %d, body = %s", resp.StatusCode, body)
+	}
+	resp, body := doJSON(t, "GET", srv.URL+"/api/hosts/h1/templates", nil)
+	var listed []config.TerminalTemplate
+	mustUnmarshal(t, body, &listed)
+	if resp.StatusCode != http.StatusOK || hostTemplateIDs(listed) != "shell,tool" {
+		t.Fatalf("list after create: status = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := catalog(); got != "shell,tool" {
+		t.Fatalf("catalog after create = %q, want shell,tool", got)
+	}
+
+	sandboxed := config.TerminalTemplate{ID: "boxed", Name: "Boxed", Sandbox: true}
+	if resp, body := doJSON(t, "POST", srv.URL+"/api/hosts/h1/templates", sandboxed); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("sandboxed host template: status = %d, want 400 (%s)", resp.StatusCode, body)
+	}
+	for _, c := range []struct {
+		method, path string
+		body         any
+	}{
+		{"GET", "/api/hosts/nope/templates", nil},
+		{"POST", "/api/hosts/nope/templates", tool},
+	} {
+		if resp, body := doJSON(t, c.method, srv.URL+c.path, c.body); resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s %s: status = %d, want 404 (%s)", c.method, c.path, resp.StatusCode, body)
+		}
+	}
+}

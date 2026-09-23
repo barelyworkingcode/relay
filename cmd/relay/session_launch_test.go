@@ -703,6 +703,101 @@ func TestAuthorizeLaunch_PtyTemplateWithoutModelKeyMintsNone(t *testing.T) {
 // Hosted (SSH) project
 // ---------------------------------------------------------------------------
 
+// addLaunchTestHostedProject saves host h1 with templates and a project p1
+// on it. The project allows every template, so any refusal is the host's.
+func addLaunchTestHostedProject(t *testing.T, store config.SettingsStore, templates []config.TerminalTemplate) config.Project {
+	t.Helper()
+	if err := store.With(func(s *config.Settings) {
+		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example", TerminalTemplates: templates})
+	}); err != nil {
+		t.Fatalf("store.With hosts: %v", err)
+	}
+	return addLaunchTestProject(t, store, func(p *config.Project) {
+		p.HostID = "h1"
+		p.Path = "/home/remote/project"
+	})
+}
+
+func TestAuthorizeLaunch_HostedPtyArgvComesFromTheHostTemplate(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	proj := addLaunchTestHostedProject(t, store, []config.TerminalTemplate{
+		{ID: "shell", Name: "Shell"},
+		{ID: "tool", Name: "Tool", Command: "/opt/tool", Args: []string{"--project", "${PROJECT_ID}"}},
+	})
+	t.Setenv("SHELL", "/bin/console-shell")
+
+	launch := func(tid string) []string {
+		t.Helper()
+		req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: tid}
+		result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+		if refusal != nil {
+			t.Fatalf("%s: refused: %+v", tid, refusal)
+		}
+		return result.Spec.Argv
+	}
+	if argv := launch("shell"); argv != nil {
+		t.Fatalf("hosted shell template: argv = %q, want nil (the host's login shell), never the console's $SHELL", argv)
+	}
+	if got, want := strings.Join(launch("tool"), " "), "/opt/tool --project "+proj.ID; got != want {
+		t.Fatalf("hosted command template: argv = %q, want %q", got, want)
+	}
+
+	// A console project's empty-command template still gets the console shell.
+	if err := store.With(func(s *config.Settings) {
+		s.Projects = append(s.Projects, config.Project{ID: "local", Name: "Local", Path: t.TempDir(), AllowedTemplates: []string{"*"}, AllowedModels: []string{"*"}})
+	}); err != nil {
+		t.Fatalf("store.With: %v", err)
+	}
+	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: "local", Kind: KindPTY, TemplateID: "plain"}
+	result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+	if refusal != nil {
+		t.Fatalf("console plain: refused: %+v", refusal)
+	}
+	if got := strings.Join(result.Spec.Argv, " "); got != "/bin/console-shell" {
+		t.Fatalf("console plain: argv = %q, want defaultShell()", got)
+	}
+}
+
+// A hosted project is offered its host's templates only: a console template
+// id is not allowed even though allowed_templates is "*".
+func TestAuthorizeLaunch_HostedProjectRefusesAConsoleTemplate(t *testing.T) {
+	store := newLaunchTestStore(t)
+	sessions := newLaunchTestLedger(t)
+	proj := addLaunchTestHostedProject(t, store, []config.TerminalTemplate{{ID: "shell", Name: "Shell"}})
+	req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "plain"}
+	if _, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req); refusal == nil || refusal.Code != "template_not_allowed" {
+		t.Fatalf("refusal = %+v, want template_not_allowed", refusal)
+	}
+}
+
+func TestAuthorizeLaunch_HostedKindGates(t *testing.T) {
+	for name, c := range map[string]struct {
+		templates []config.TerminalTemplate
+		kind      string
+		model     string
+		wantCode  string // "" means allowed
+	}{
+		"claude, host has claude-code": {[]config.TerminalTemplate{{ID: "claude-code", Name: "Claude Code", Command: "claude"}}, KindClaude, "claude-sonnet-4.5", ""},
+		"claude, host has only shell":  {[]config.TerminalTemplate{{ID: "shell", Name: "Shell"}}, KindClaude, "claude-sonnet-4.5", "template_not_allowed"},
+		"pi on a host":                 {[]config.TerminalTemplate{{ID: "pi", Name: "pi", Command: "pi"}}, KindPi, "gpt-5", "provider_not_available_on_host"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newLaunchTestStore(t)
+			sessions := newLaunchTestLedger(t)
+			proj := addLaunchTestHostedProject(t, store, c.templates)
+			req := LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: c.kind, Model: c.model}
+			_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), sessions, req)
+			switch {
+			case c.wantCode == "" && refusal != nil:
+				t.Fatalf("refused: %+v", refusal)
+			case c.wantCode != "" && (refusal == nil || refusal.Code != c.wantCode):
+				t.Fatalf("refusal = %+v, want %s", refusal, c.wantCode)
+			}
+		})
+	}
+}
+
 func TestAuthorizeLaunch_HostedProjectGetsHostSpecAndNoIdentity(t *testing.T) {
 	store := newLaunchTestStore(t)
 	sessions := newLaunchTestLedger(t)

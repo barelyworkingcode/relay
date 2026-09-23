@@ -285,3 +285,17 @@ func TestCloneHosts(t *testing.T) {
 		t.Fatal("clone must not share the Probe pointer")
 	}
 }
+
+func TestCloneHosts_DeepCopiesTerminalTemplates(t *testing.T) {
+	s := &Settings{Hosts: []Host{{ID: "h1", Name: "devbox", TerminalTemplates: []TerminalTemplate{
+		{ID: "t", Name: "T", Args: []string{"a"}, Env: map[string]string{"K": "v"}},
+	}}}}
+	cp := s.Clone()
+	cp.Hosts[0].TerminalTemplates[0].Name = "changed"
+	cp.Hosts[0].TerminalTemplates[0].Args[0] = "changed"
+	cp.Hosts[0].TerminalTemplates[0].Env["K"] = "changed"
+	got := s.Hosts[0].TerminalTemplates[0]
+	if got.Name != "T" || got.Args[0] != "a" || got.Env["K"] != "v" {
+		t.Fatalf("mutating the clone's host template reached the original: %+v", got)
+	}
+}

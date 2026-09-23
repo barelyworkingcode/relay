@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -274,6 +275,69 @@ func TestHostRoutes_CommitEventFiresOnMutation(t *testing.T) {
 	doJSON(t, "DELETE", srv.URL+"/api/hosts/"+created.ID, nil)
 	if fired.Load() <= before {
 		t.Fatal("expected a commit event on delete")
+	}
+}
+
+func hostTemplateIDs(ts []config.TerminalTemplate) string {
+	ids := make([]string, 0, len(ts))
+	for _, t := range ts {
+		ids = append(ids, t.ID)
+	}
+	return strings.Join(ids, ",")
+}
+
+// A good probe seeds Shell + Claude Code into a host with no templates, and
+// never touches one that has any.
+func TestHostOps_ProbeSeedsTemplatesOnlyIntoAnEmptyHost(t *testing.T) {
+	stubSSHRunner(t, func(ctx context.Context, name string, args []string) ([]byte, []byte, error) {
+		return []byte(cannedProbeOutputForTest), nil, nil
+	})
+	_, store, ops := newHostRoutesServer(t)
+
+	created, err := ops.Create(context.Background(), hostFields{Name: "devbox", Target: "admin@devbox.local"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := hostTemplateIDs(created.TerminalTemplates); got != "shell,claude-code" {
+		t.Fatalf("seeded templates = %q, want shell,claude-code", got)
+	}
+	if created.TerminalTemplates[1].Command != "/opt/homebrew/bin/claude" {
+		t.Fatalf("claude-code command = %q, want the probed claude_path", created.TerminalTemplates[1].Command)
+	}
+	h, _ := config.FindHostByID(config.FreshSettings(store), created.ID)
+	if h == nil || hostTemplateIDs(h.TerminalTemplates) != "shell,claude-code" {
+		t.Fatalf("seeded templates were not persisted: %+v", h)
+	}
+
+	custom := []config.TerminalTemplate{{ID: "zsh", Name: "Zsh", Command: "zsh"}}
+	if err := store.With(func(s *config.Settings) { s.SetHostTemplates(created.ID, custom) }); err != nil {
+		t.Fatalf("SetHostTemplates: %v", err)
+	}
+	reprobed, _, err := ops.Probe(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if got := hostTemplateIDs(reprobed.TerminalTemplates); got != "zsh" {
+		t.Fatalf("after re-probe templates = %q, want the operator's zsh left alone", got)
+	}
+}
+
+func TestHostOps_FailedProbeSeedsNothing(t *testing.T) {
+	stubSSHRunner(t, func(ctx context.Context, name string, args []string) ([]byte, []byte, error) {
+		return nil, []byte("ssh: connect to host devbox.local port 22: Connection refused"), errors.New("exit status 255")
+	})
+	_, store, ops := newHostRoutesServer(t)
+
+	created, err := ops.Create(context.Background(), hostFields{Name: "devbox", Target: "admin@devbox.local"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.Probe == nil || created.Probe.OK {
+		t.Fatalf("probe = %+v, want a failed probe", created.Probe)
+	}
+	h, _ := config.FindHostByID(config.FreshSettings(store), created.ID)
+	if len(created.TerminalTemplates) != 0 || h == nil || len(h.TerminalTemplates) != 0 {
+		t.Fatalf("a failed probe seeded templates: returned %+v, stored %+v", created.TerminalTemplates, h)
 	}
 }
 
