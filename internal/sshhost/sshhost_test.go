@@ -484,3 +484,145 @@ func TestLoginShellCommand_ExpandsShellOnTheFarSide(t *testing.T) {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 }
+
+// stubRunner swaps the exec seam for one test and records every argv.
+func stubRunner(t *testing.T, fn func(args []string) ([]byte, []byte, error)) *[][]string {
+	t.Helper()
+	var calls [][]string
+	t.Cleanup(SetRunnerForTest(func(ctx context.Context, name string, args []string) ([]byte, []byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return fn(args)
+	}))
+	return &calls
+}
+
+func TestListTmuxSessions_ParsesLines(t *testing.T) {
+	calls := stubRunner(t, func([]string) ([]byte, []byte, error) {
+		// A banner line and CRLF endings (a Windows host) must not matter.
+		return []byte("Welcome to devbox\r\n" +
+			"relay-0123abcd-shell-1|1700000000|1\r\n" +
+			"main|1700000100|0\n"), nil, nil
+	})
+	h := config.Host{Name: "devbox", Target: "admin@devbox.local"}
+	got, err := ListTmuxSessions(context.Background(), h, "/usr/bin/tmux")
+	if err != nil {
+		t.Fatalf("ListTmuxSessions: %v", err)
+	}
+	want := []TmuxSession{
+		{Name: "relay-0123abcd-shell-1", Created: 1700000000, Attached: 1},
+		{Name: "main", Created: 1700000100, Attached: 0},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sessions = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("session %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	argv := (*calls)[0]
+	wantCmd := RemoteCommandForOS("", "", []string{"/usr/bin/tmux", "ls", "-F", tmuxListFormat}, nil)
+	if argv[0] != "ssh" || argv[len(argv)-1] != wantCmd || argv[len(argv)-2] != "--" || argv[len(argv)-3] != "-T" {
+		t.Fatalf("argv = %q, want ssh … -T -- <tmux ls -F>", argv)
+	}
+}
+
+// A host nobody has persisted on yet is an empty list, not an error, in both
+// tmux's form (exit 1, "no server running") and psmux's (exit 0, no output).
+// Any other failure is an error carrying ssh's reason.
+func TestListTmuxSessions_EmptyStatesAndFailure(t *testing.T) {
+	for name, c := range map[string]struct {
+		stdout, stderr string
+		err            error
+		wantErr        string // "" means empty list, nil error
+	}{
+		"tmux no server":      {"", "no server running on /tmp/tmux-501/default\n", errors.New("exit status 1"), ""},
+		"tmux socket missing": {"", "error connecting to /tmp/tmux-501/default (No such file or directory)\n", errors.New("exit status 1"), ""},
+		"psmux empty exit 0":  {"", "", nil, ""},
+		"ssh auth failure":    {"", "admin@devbox.local: Permission denied (publickey).\n", errors.New("exit status 255"), "Permission denied"},
+		"tmux binary missing": {"", "sh: /usr/bin/tmux: not found\n", errors.New("exit status 127"), "not found"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stubRunner(t, func([]string) ([]byte, []byte, error) {
+				return []byte(c.stdout), []byte(c.stderr), c.err
+			})
+			got, err := ListTmuxSessions(context.Background(), config.Host{Name: "devbox", Target: "devbox.local"}, "/usr/bin/tmux")
+			if c.wantErr == "" {
+				if err != nil || got == nil || len(got) != 0 {
+					t.Fatalf("got (%+v, %v), want (non-nil empty, nil)", got, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("err = %v, want one containing %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestKillTmuxSession_Argv(t *testing.T) {
+	calls := stubRunner(t, func([]string) ([]byte, []byte, error) { return nil, nil, nil })
+	const winOS = "MINGW64_NT-10.0-26100"
+	h := config.Host{Name: "win", Target: "me@win.local", Probe: &config.HostProbe{OS: winOS}}
+	if err := KillTmuxSession(context.Background(), h, "/c/tools/tmux.exe", "relay-0123abcd-shell-1"); err != nil {
+		t.Fatalf("KillTmuxSession: %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(*calls))
+	}
+	argv := (*calls)[0]
+	// The probe's OS picks the launcher: a Windows host gets the Windows one.
+	wantCmd := RemoteCommandForOS(winOS, "", []string{"/c/tools/tmux.exe", "kill-session", "-t", "relay-0123abcd-shell-1"}, nil)
+	if argv[0] != "ssh" || argv[len(argv)-1] != wantCmd || argv[len(argv)-3] != "-T" {
+		t.Fatalf("argv = %q, want ssh … -T -- %q", argv, wantCmd)
+	}
+
+	stubRunner(t, func([]string) ([]byte, []byte, error) {
+		return nil, []byte("ssh: connect to host win.local port 22: Connection refused\n"), errors.New("exit status 255")
+	})
+	if err := KillTmuxSession(context.Background(), h, "/c/tools/tmux.exe", "relay-0123abcd-shell-1"); err == nil || !strings.Contains(err.Error(), "Connection refused") {
+		t.Fatalf("err = %v, want ssh's reason", err)
+	}
+}
+
+// Probe fills TmuxPath from the login shell's lookup when it found one, else
+// from the plain-PATH lookup.
+func TestProbe_TmuxPath(t *testing.T) {
+	probeOutput := func(loginTmux, plainTmux string) string {
+		out := strings.TrimSuffix(cannedProbeOutput, "@@RELAY_PROBE_END@@\n")
+		out += "@@RELAY_PROBE_LOGIN_TMUX@@\n"
+		if loginTmux != "" {
+			out += loginTmux + "\n"
+		}
+		out += "@@RELAY_PROBE_PLAIN_TMUX@@\n"
+		if plainTmux != "" {
+			out += plainTmux + "\n"
+		}
+		return out + "@@RELAY_PROBE_END@@\n"
+	}
+	for name, c := range map[string]struct {
+		login, plain, want string
+	}{
+		"login preferred": {"/opt/homebrew/bin/tmux", "/usr/bin/tmux", "/opt/homebrew/bin/tmux"},
+		"plain fallback":  {"", "/c/Users/me/AppData/Local/tmux.exe", "/c/Users/me/AppData/Local/tmux.exe"},
+		"none":            {"", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			first := true
+			stubRunner(t, func([]string) ([]byte, []byte, error) {
+				if first {
+					first = false
+					return []byte(probeOutput(c.login, c.plain)), nil, nil
+				}
+				return []byte("v1\n"), nil, nil // node/claude --version
+			})
+			probe, err := Probe(context.Background(), config.Host{Name: "devbox", Target: "devbox.local"})
+			if err != nil || !probe.OK {
+				t.Fatalf("Probe = (%+v, %v), want ok", probe, err)
+			}
+			if probe.TmuxPath != c.want {
+				t.Fatalf("TmuxPath = %q, want %q", probe.TmuxPath, c.want)
+			}
+		})
+	}
+}

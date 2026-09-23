@@ -362,3 +362,116 @@ arm64
 /opt/homebrew/bin/claude
 @@RELAY_PROBE_END@@
 `
+
+// persistRoutesProjectID is uuid-shaped: its first 8 characters prefix the
+// project's tmux session names.
+const persistRoutesProjectID = "0123abcd-1111-2222-3333-444455556666"
+
+// newPersistentSessionRoutesServer serves the persistent-session routes for
+// one hosted project whose host's tmux is tmuxPath ("" = none), with
+// ActiveNames reporting active.
+func newPersistentSessionRoutesServer(t *testing.T, tmuxPath string, active map[string]bool) *httptest.Server {
+	t.Helper()
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	if err := store.EnsureInitialized(); err != nil {
+		t.Fatalf("EnsureInitialized: %v", err)
+	}
+	if err := store.With(func(s *config.Settings) {
+		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example", TmuxPath: tmuxPath})
+		s.Projects = append(s.Projects, config.Project{ID: persistRoutesProjectID, Name: "Widget", HostID: "h1", Path: "/home/remote/project"})
+	}); err != nil {
+		t.Fatalf("store.With: %v", err)
+	}
+	ops := &PersistentSessionOps{Store: store, ActiveNames: func(string) map[string]bool { return active }}
+	mux := http.NewServeMux()
+	RegisterPersistentSessionRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ops)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// stubTmuxHost answers `tmux ls` with lsOutput and records the tmux argv of
+// every call, recovered by matching the remote command sshhost builds.
+func stubTmuxHost(t *testing.T, lsOutput string) *[]string {
+	t.Helper()
+	var ran []string
+	lsCmd := sshhost.RemoteCommandForOS("", "", []string{"/usr/bin/tmux", "ls", "-F", "#{session_name}|#{session_created}|#{session_attached}"}, nil)
+	stubSSHRunner(t, func(ctx context.Context, name string, args []string) ([]byte, []byte, error) {
+		remote := args[len(args)-1]
+		if remote == lsCmd {
+			ran = append(ran, "ls")
+			return []byte(lsOutput), nil, nil
+		}
+		ran = append(ran, remote)
+		return nil, nil, nil
+	})
+	return &ran
+}
+
+func TestPersistentSessionRoutes_ListFiltersToTheProjectAndMarksAttachedHere(t *testing.T) {
+	stubTmuxHost(t, "relay-0123abcd-claude-1|1700000000|1\n"+
+		"relay-0123abcd-shell-2|1700000100|0\n"+
+		"relay-ffffffff-claude-1|1700000200|0\n"+ // another project
+		"main|1700000300|1\n") // not relay's
+	srv := newPersistentSessionRoutesServer(t, "/usr/bin/tmux", map[string]bool{"relay-0123abcd-claude-1": true})
+
+	resp, body := doJSON(t, "GET", srv.URL+"/api/projects/"+persistRoutesProjectID+"/persistent-sessions", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var got []PersistentSession
+	mustUnmarshal(t, body, &got)
+	want := []PersistentSession{
+		{Name: "relay-0123abcd-claude-1", TemplateID: "claude", N: 1, Created: 1700000000, Attached: 1, AttachedHere: true},
+		{Name: "relay-0123abcd-shell-2", TemplateID: "shell", N: 2, Created: 1700000100, Attached: 0, AttachedHere: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sessions = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("session %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestPersistentSessionRoutes_NoTmuxIs409(t *testing.T) {
+	ran := stubTmuxHost(t, "")
+	srv := newPersistentSessionRoutesServer(t, "", nil)
+	resp, body := doJSON(t, "GET", srv.URL+"/api/projects/"+persistRoutesProjectID+"/persistent-sessions", nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s, want 409", resp.StatusCode, body)
+	}
+	if len(*ran) != 0 {
+		t.Fatalf("ssh ran %q with no tmux known, want nothing", *ran)
+	}
+}
+
+// tmux resolves kill-session -t by prefix when nothing matches exactly, so a
+// name absent from `ls` must 404 before kill-session can run: here killing
+// the gone ...-1 would otherwise end ...-10.
+func TestPersistentSessionRoutes_DeleteOfAGoneNameIs404AndNeverKills(t *testing.T) {
+	ran := stubTmuxHost(t, "relay-0123abcd-claude-10|1700000000|0\n")
+	srv := newPersistentSessionRoutesServer(t, "/usr/bin/tmux", nil)
+	resp, body := doJSON(t, "DELETE", srv.URL+"/api/projects/"+persistRoutesProjectID+"/persistent-sessions/relay-0123abcd-claude-1", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s, want 404", resp.StatusCode, body)
+	}
+	if len(*ran) != 1 || (*ran)[0] != "ls" {
+		t.Fatalf("tmux ran %q, want only ls", *ran)
+	}
+}
+
+func TestPersistentSessionRoutes_DeleteKillsTheNamedSession(t *testing.T) {
+	const name = "relay-0123abcd-claude-1"
+	ran := stubTmuxHost(t, name+"|1700000000|0\nrelay-0123abcd-claude-10|1700000100|0\n")
+	srv := newPersistentSessionRoutesServer(t, "/usr/bin/tmux", nil)
+	resp, body := doJSON(t, "DELETE", srv.URL+"/api/projects/"+persistRoutesProjectID+"/persistent-sessions/"+name, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %s, want 204", resp.StatusCode, body)
+	}
+	wantKill := sshhost.RemoteCommandForOS("", "", []string{"/usr/bin/tmux", "kill-session", "-t", name}, nil)
+	if len(*ran) != 2 || (*ran)[0] != "ls" || (*ran)[1] != wantKill {
+		t.Fatalf("tmux ran %q, want ls then kill-session -t %s", *ran, name)
+	}
+}

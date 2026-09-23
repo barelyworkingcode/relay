@@ -515,3 +515,110 @@ func TestTemplatesForProject(t *testing.T) {
 		}
 	}
 }
+
+// persistTestProject is a uuid-shaped project id: PersistSessionName carries
+// its first 8 characters.
+const persistTestProject = "0123abcd-1111-2222-3333-444455556666"
+
+// PersistSessionName and ParsePersistSessionName are inverses for every name
+// relay mints, and Parse refuses every shape Name could not have produced —
+// that refusal is what keeps a foreign tmux session out of relay's list.
+func TestPersistSessionName_RoundTripAndRefusals(t *testing.T) {
+	for _, c := range []struct {
+		projectID, templateID string
+		n                     int
+		wantName              string
+		wantProject8          string
+		wantTemplate          string
+	}{
+		{persistTestProject, "shell", 1, "relay-0123abcd-shell-1", "0123abcd", "shell"},
+		{persistTestProject, "claude-code", 12, "relay-0123abcd-claude-code-12", "0123abcd", "claude-code"},
+		// tmux refuses . and : in a session name; both become _.
+		{persistTestProject, "a.b:c", 3, "relay-0123abcd-a_b_c-3", "0123abcd", "a_b_c"},
+		{"ab.c:efgh-rest", "shell", 7, "relay-ab_c_efg-shell-7", "ab_c_efg", "shell"},
+	} {
+		name := PersistSessionName(c.projectID, c.templateID, c.n)
+		if name != c.wantName {
+			t.Errorf("PersistSessionName(%q, %q, %d) = %q, want %q", c.projectID, c.templateID, c.n, name, c.wantName)
+			continue
+		}
+		p8, tmpl, n, ok := ParsePersistSessionName(name)
+		if !ok || p8 != c.wantProject8 || tmpl != c.wantTemplate || n != c.n {
+			t.Errorf("ParsePersistSessionName(%q) = (%q, %q, %d, %v), want (%q, %q, %d, true)", name, p8, tmpl, n, ok, c.wantProject8, c.wantTemplate, c.n)
+		}
+	}
+
+	for _, bad := range []string{
+		"",
+		"main",
+		"tmux-0123abcd-shell-1",   // wrong prefix
+		"relay-p1-shell-1",        // project part shorter than 8
+		"relay-0123abcdshell-1",   // no - after project8
+		"relay-0123abcd--1",       // empty template
+		"relay-0123abcd-shell",    // no n
+		"relay-0123abcd-shell-",   // empty n
+		"relay-0123abcd-shell-0",  // n = 0
+		"relay-0123abcd-shell-01", // leading zero
+		"relay-0123abcd-shell-+1", // sign
+		"relay-0123abcd-shell-x",  // non-numeric
+		"relay-0123abcd-sh.ll-1",  // unsanitized template
+		"relay-0123ab:d-shell-1",  // unsanitized project
+	} {
+		if p8, tmpl, n, ok := ParsePersistSessionName(bad); ok {
+			t.Errorf("ParsePersistSessionName(%q) = (%q, %q, %d, true), want refused", bad, p8, tmpl, n)
+		}
+	}
+}
+
+func TestNextPersistSessionN(t *testing.T) {
+	if got := NextPersistSessionN(nil, persistTestProject, "shell"); got != 1 {
+		t.Fatalf("no sessions: n = %d, want 1", got)
+	}
+	existing := []string{
+		"relay-0123abcd-shell-1",
+		"relay-0123abcd-shell-4", // gap at 2, 3: max+1, not the first hole
+		"relay-0123abcd-shell-07",
+		"relay-0123abcd-claude-9", // other template
+		"relay-ffffffff-shell-20", // other project
+		"relay-0123abcd-shell-x",
+		"main",
+	}
+	if got := NextPersistSessionN(existing, persistTestProject, "shell"); got != 5 {
+		t.Fatalf("n = %d, want 5 (max own n + 1; other projects/templates ignored)", got)
+	}
+	if got := NextPersistSessionN(existing, persistTestProject, "claude"); got != 10 {
+		t.Fatalf("claude: n = %d, want 10", got)
+	}
+	// Matching is on the sanitized template id, as the names carry it.
+	if got := NextPersistSessionN([]string{"relay-0123abcd-a_b-2"}, persistTestProject, "a.b"); got != 3 {
+		t.Fatalf("sanitized template: n = %d, want 3", got)
+	}
+}
+
+func TestParseProjectPersistSessionName_Ownership(t *testing.T) {
+	tmpl, n, ok := ParseProjectPersistSessionName("relay-0123abcd-claude-code-3", persistTestProject)
+	if !ok || tmpl != "claude-code" || n != 3 {
+		t.Fatalf("own session: (%q, %d, %v), want (claude-code, 3, true)", tmpl, n, ok)
+	}
+	for _, name := range []string{
+		"relay-ffffffff-shell-1", // other project
+		"relay-0123abcd-shell-0", // malformed
+		"main",
+	} {
+		if _, _, ok := ParseProjectPersistSessionName(name, persistTestProject); ok {
+			t.Errorf("ParseProjectPersistSessionName(%q) accepted, want refused", name)
+		}
+	}
+}
+
+// Persist is a host-template-only flag: the console validator refuses it,
+// the host validator allows it.
+func TestValidateTemplate_PersistOnlyOnAHostTemplate(t *testing.T) {
+	tmpl := TerminalTemplate{ID: "claude", Name: "Claude", Command: "claude", Persist: true}
+	if err := ValidateTerminalTemplate(tmpl); !errors.Is(err, ErrConsoleTemplatePersist) {
+		t.Fatalf("ValidateTerminalTemplate(persist) = %v, want ErrConsoleTemplatePersist", err)
+	}
+	if err := ValidateHostTemplate(tmpl); err != nil {
+		t.Fatalf("ValidateHostTemplate(persist) = %v, want nil", err)
+	}
+}

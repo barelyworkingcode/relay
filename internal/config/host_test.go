@@ -299,3 +299,48 @@ func TestCloneHosts_DeepCopiesTerminalTemplates(t *testing.T) {
 		t.Fatalf("mutating the clone's host template reached the original: %+v", got)
 	}
 }
+
+func TestHost_EffectiveTmuxPath(t *testing.T) {
+	for name, c := range map[string]struct {
+		h    Host
+		want string
+	}{
+		"override wins":    {Host{TmuxPath: "/opt/tmux", Probe: &HostProbe{TmuxPath: "/usr/bin/tmux"}}, "/opt/tmux"},
+		"probe fallback":   {Host{Probe: &HostProbe{TmuxPath: "/usr/bin/tmux"}}, "/usr/bin/tmux"},
+		"probe found none": {Host{Probe: &HostProbe{}}, ""},
+		"never probed":     {Host{}, ""},
+	} {
+		if got := c.h.EffectiveTmuxPath(); got != c.want {
+			t.Errorf("%s: EffectiveTmuxPath() = %q, want %q", name, got, c.want)
+		}
+	}
+}
+
+// tmux_path is judged as a path on the host, which may be Windows.
+func TestValidateHost_TmuxPath(t *testing.T) {
+	for _, c := range []struct {
+		in, want string
+		ok       bool
+	}{
+		{"", "", true},
+		{"/usr/bin/tmux", "/usr/bin/tmux", true},
+		{"  /usr/bin/tmux  ", "/usr/bin/tmux", true},
+		{"C:/Users/me/tmux.exe", "C:/Users/me/tmux.exe", true},
+		{`C:\Users\me\tmux.exe`, `C:\Users\me\tmux.exe`, true},
+		{"tmux", "", false},
+		{"./bin/tmux", "", false},
+		{"C:tmux.exe", "", false},
+	} {
+		h := &Host{Name: "devbox", Target: "admin@devbox.local", TmuxPath: c.in}
+		err := ValidateHost(h, nil, "")
+		if c.ok && err != nil {
+			t.Errorf("tmux_path %q: refused: %v", c.in, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("tmux_path %q: accepted, want refused", c.in)
+		}
+		if c.ok && h.TmuxPath != c.want {
+			t.Errorf("tmux_path %q: stored as %q, want %q", c.in, h.TmuxPath, c.want)
+		}
+	}
+}
