@@ -364,6 +364,15 @@ host. A host template never sandboxes (it cannot carry `sandbox`, `read` or
 than relay's `$SHELL`. Shape, seeding and launch argv are in
 [`docs/ssh-hosts.md`](ssh-hosts.md#terminals-on-a-host).
 
+**A persistent host terminal is an ordinary host PTY.** A host template with
+`persist` differs only in its remote command, which is
+`<tmux> new-session -A -s <name> …`; relay builds that argv before launch.
+relay-sessions knows nothing new: it holds the `ssh -tt` child in memory like
+any other terminal, and closing, idling out or restarting ends that child,
+which detaches tmux on the host rather than killing it. Naming, enumeration,
+reattach and kill are in
+[`docs/ssh-hosts.md`](ssh-hosts.md#persistent-terminals).
+
 **A template can point a client at relay's model endpoint.** `model_key: true`
 mints a per-session key, and `${MODEL_KEY}` in an `env` value delivers it.
 `${MODEL_ENDPOINT_URL}` in an `env` value becomes `http://<model_endpoint.listen>`.

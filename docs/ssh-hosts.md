@@ -92,7 +92,7 @@ launches the same way, as `node -e "eval(Buffer.from('<BASE64>','base64').toStri
 **9. The probe finds absolute tool paths once.** Non-interactive `ssh` often
 has a poorer PATH than the user's terminal (nvm, Homebrew on Linux, `~/.local/bin`).
 Adding a host runs a probe that asks the *interactive login shell* where
-`node` and `claude` are (`"$SHELL" -lic 'command -v node; command -v claude'`,
+`node`, `claude` and `tmux` are (`"$SHELL" -lic 'command -v node; command -v claude'`,
 with a plain-PATH fallback) and stores absolute paths on the host record.
 Every later invocation execs those absolute paths and never depends on PATH.
 A `$SHELL` ending in `.exe` is skipped: Windows OpenSSH sets it to `cmd.exe`
@@ -109,7 +109,9 @@ to prompt turns that into an immediate, reportable error whose remedy is
 a hangup and dies. A reverse tunnel from the host back to relay was
 considered and rejected: the remote end would still die with the link. A
 session that must survive a drop runs under a multiplexer on the host
-(tmux, psmux), launched from a host template (see *Terminals on a host*).
+(tmux, psmux): a host template with `persist` set (see *Persistent
+terminals*). The host's own `tmux ls` is the durable record; relay stores
+nothing new.
 
 ## The session host never sandboxes a host project's session
 
@@ -165,8 +167,10 @@ it describes anything running on this machine.
         "shell": "/bin/zsh",
         "node_path": "/opt/homebrew/bin/node",  "node_version": "v24.7.0",
         "claude_path": "/opt/homebrew/bin/claude", "claude_version": "2.1.258",
+        "tmux_path": "/opt/homebrew/bin/tmux",  // empty when none found
         "error": ""                 // non-empty iff ok == false
       },
+      "tmux_path": "",              // optional operator override of probe.tmux_path
       "terminal_templates": [       // host-scoped; see Terminals on a host
         { "id": "shell", "name": "Shell" },
         { "id": "claude-code", "name": "Claude Code", "command": "/opt/homebrew/bin/claude" }
@@ -260,6 +264,8 @@ document's *Fixtures* section so they cannot drift.
 | `POST /api/hosts/{id}/templates` | Configure | `TerminalTemplate` → the template (201); 409 if the id exists |
 | `PUT /api/hosts/{id}/templates/{tid}` | Configure | `TerminalTemplate` → the template; 404 if absent |
 | `DELETE /api/hosts/{id}/templates/{tid}` | Configure | 204; 404 if absent |
+| `GET /api/projects/{id}/persistent-sessions` | Read | `[persistentSession]` for this project; see *Persistent terminals* |
+| `DELETE /api/projects/{id}/persistent-sessions/{name}` | Configure | `tmux kill-session -t <name>` on the host |
 
 The template routes go through `HostTemplateOps` (`List`, `Create`, `Update`,
 `Remove`), which validates with `config.ValidateHostTemplate` and reports the
@@ -383,19 +389,87 @@ never sandboxes*), `env_passthrough` (it would copy the console's
 environment to another machine), and `model_key` or `${MODEL_KEY}` (the
 model endpoint listens on the console; the key has no business leaving it).
 
-**Example: a shell that survives an ssh drop on a Windows host.** The remote
-script runs under Git for Windows' `sh` with a non-interactive PATH, so the
-executable is named by its full path:
+### Persistent terminals
+
+A host template with `"persist": true` runs inside a named tmux session on
+the host (psmux on Windows), so the remote work outlives the ssh link, the
+ControlMaster and relay itself. `persist` is valid on host templates only;
+`ValidateTerminalTemplate` refuses it on a console template, where there is
+no link to outlive.
 
 ```json
-{ "id": "psmux", "name": "psmux",
-  "command": "C:/tools/psmux/psmux.exe",
-  "args": ["new-session", "-A", "-s", "relay-${PROJECT_ID}"] }
+{ "id": "claude-code", "name": "Claude Code",
+  "command": "/opt/homebrew/bin/claude", "persist": true }
 ```
 
-`-A` attaches when the named session exists, so reopening the terminal after
-a drop resumes it (decision 11). `tmux new-session -A -s relay-${PROJECT_ID}`
-does the same on a POSIX host.
+**Argv.** The remote argv becomes
+
+    <tmux> new-session -A -s <name> [<command> <args…>]
+
+and goes through `RemoteCommandForOS` like any other template. An empty
+`command` starts tmux's own default shell. `-A` attaches when `<name>`
+already exists, so the same argv both creates and reattaches.
+
+**Naming.** `config.PersistSessionName(projectID, templateID, n)`:
+
+    relay-<first 8 of project id>-<template id>-<n>
+
+Every template-id character outside `[A-Za-z0-9_-]` becomes `_`; `.` and
+`:` are tmux target separators and would break `-t`. `<n>` is
+`NextPersistSessionN`: one more than the highest `n` among the host's
+existing names for that project and template, 1 when none. The name is
+reversible, which is the point: `ParsePersistSessionName` reads the project
+prefix as the fixed 8 characters after `relay-`, `n` after the last `-`, and
+the template id in between (so a template id may itself contain `-`). Relay
+recognises its sessions on the host without keeping a local list. A template
+id outside the safe charset comes back in its sanitised form; give persist
+templates plain ids, as the seeded ones are.
+
+**The host is the source of truth.** relay-sessions keeps terminals in memory
+only; a relay restart kills every local pty and `ssh` child. It does not
+touch the host: the tmux server there keeps running. After a restart there is
+nothing local to refresh, so relay asks the host.
+
+**Enumeration.** `GET /api/projects/{id}/persistent-sessions` (read) runs
+`<tmux> ls -F "#{session_name}|#{session_created}|#{session_attached}"` on
+the project's host over ssh, keeps the names that parse and carry this
+project's prefix, and returns
+
+```jsonc
+[{ "name": "relay-3f9a1c2e-claude-code-1",
+   "template_id": "claude-code", "n": 1,
+   "created": 1789000000,      // unix seconds, from tmux
+   "attached": 1,              // tmux clients attached, from any machine
+   "attached_here": true }]    // a live relay terminal of this project has this name
+```
+
+A host with no tmux server running (tmux's "no server running" exit) is an
+empty list, not an error.
+
+**Reattach.** `POST /api/terminals` with `{templateId, persist_session:
+<name>}` attaches to that session instead of minting a new name. The name
+must parse and carry this project's prefix; anything else is refused. The
+relay terminal's `Name` is the session name, which is how enumeration fills
+`attached_here`.
+
+**Kill.** `DELETE /api/projects/{id}/persistent-sessions/{name}` (configure)
+runs `<tmux> kill-session -t <name>`, same name checks.
+
+**Detach, never kill.** Closing a tab, the idle timeout, an ssh drop and a
+relay restart all end only the local `ssh -tt` child; the remote tmux client
+gets a hangup and detaches, and the session keeps running. Kill is the one
+path that ends a persistent session.
+
+**`tmux_path`.** The probe finds tmux like node and claude (decision 9) and
+stores `probe.tmux_path`. On a Windows host WinGet installs psmux as a
+symlink under its `Links` directory; the probe resolves it to the real
+`.exe`, so relay execs the binary, not the link. The host record's own `tmux_path`
+overrides the probe (`Host.EffectiveTmuxPath`), for a tmux the probe cannot
+see. A persist launch on a host with neither is refused
+`tmux_not_available`: `host devbox has no tmux: install it or set tmux_path`.
+
+A plain template whose args are `new-session -A -s <name>` still works; it
+gets none of the naming, enumeration or kill.
 
 ## relayLLM
 
@@ -553,7 +627,8 @@ host with no scheduler change. The cron stays on the console, which is what
   OpenSSH re-quotes the line through conhost, and the nested quotes of the
   POSIX form do not survive.
   The seeded `shell` template execs the host's `$SHELL` (cmd.exe under
-  Windows OpenSSH); a psmux template gives a shell that outlives the link.
+  Windows OpenSSH); set `persist` on it for a psmux shell that outlives the
+  link.
 
 ## Fixtures
 
