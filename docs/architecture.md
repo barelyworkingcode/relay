@@ -728,6 +728,16 @@ whole-map push) and service runtime (folded into the existing
 `onServiceStatus` push) are the two pieces of data no other tab seeds on its
 own; both ride along in `onSettingsReloaded` too.
 
+The Services tab also sets the tray menu's shape. Services appear in the menu
+in the order of the stored `services` list, and a record with `hide_from_menu`
+set (omitted when false) is left out of the menu and nowhere else: it stays
+registered, keeps running and still autostarts. The built-in session host row
+follows the same rules. Both settings are cosmetic, so reordering
+(`move_service`, `PUT /api/services/{id}/position`) and hiding
+(`update_service_menu_hidden`, `PUT /api/services/{id}/menu`) sit in the
+`configure` class with no presence prompt, no `presence.GatedOps` entry and no
+issuance record, and neither starts, stops or restarts a process.
+
 The Remote Clients tab (`ipc_enrolments.go`) lists every enrolment beside the
 grants it reaches — by project *name*, with the certificate fingerprint in full
 — and reads/writes the `remote` block. Creating an enrolment returns the bundle

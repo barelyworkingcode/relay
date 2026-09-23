@@ -17,6 +17,7 @@ type serviceView struct {
 	Env           map[string]string          `json:"env"`
 	WorkingDir    string                     `json:"working_dir,omitempty"`
 	Autostart     bool                       `json:"autostart"`
+	HideFromMenu  bool                       `json:"hide_from_menu,omitempty"`
 	URL           string                     `json:"url,omitempty"`
 	Capabilities  []config.ServiceCapability `json:"capabilities"`
 	AllowedModels []string                   `json:"allowed_models,omitempty"`
@@ -35,6 +36,7 @@ func serviceViewOf(c config.ServiceConfig, running bool) serviceView {
 		Env:           revealEnvForUI(c.Env),
 		WorkingDir:    c.WorkingDir,
 		Autostart:     c.Autostart,
+		HideFromMenu:  c.HideFromMenu,
 		URL:           c.URL,
 		Capabilities:  c.Capabilities,
 		AllowedModels: c.AllowedModels,
@@ -159,6 +161,47 @@ func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 		}
 		id := r.PathValue("id")
 		if err := ops.SetAutostart(id, body.Autostart); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		svc, _ := ops.Get(id)
+		writeJSON(w, http.StatusOK, serviceViewOf(svc, ops.Registry.IsRunning(id)))
+	})
+
+	rr.Handle(control.ClassConfigure, "PUT /api/services/{id}/position", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Index *int `json:"index"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+		if body.Index == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "index is required"})
+			return
+		}
+		if err := ops.Move(r.PathValue("id"), *body.Index); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		list := ops.List()
+		out := make([]serviceView, 0, len(list))
+		for _, c := range list {
+			out = append(out, serviceViewOf(c, ops.Registry.IsRunning(c.ID)))
+		}
+		writeJSON(w, http.StatusOK, out)
+	})
+
+	rr.Handle(control.ClassConfigure, "PUT /api/services/{id}/menu", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Hidden bool `json:"hidden"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+		id := r.PathValue("id")
+		if err := ops.SetMenuHidden(id, body.Hidden); err != nil {
 			writeServiceError(w, err)
 			return
 		}

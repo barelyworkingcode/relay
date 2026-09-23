@@ -120,6 +120,26 @@ func ipcUpdateServiceAutostart(ctx *IPCContext, raw json.RawMessage) {
 	}
 }
 
+func ipcMoveService(ctx *IPCContext, raw json.RawMessage) {
+	msg, ok := unmarshalIPC[ipcMoveServiceMsg](raw, "move_service")
+	if !ok || msg.ID == "" || msg.Index == nil {
+		return
+	}
+	if err := ctx.Ops.Move(msg.ID, *msg.Index); err != nil {
+		ctx.UI.EmitEvent("onSettingsError", err.Error())
+	}
+}
+
+func ipcUpdateServiceMenuHidden(ctx *IPCContext, raw json.RawMessage) {
+	msg, ok := unmarshalIPC[ipcUpdateServiceMenuHiddenMsg](raw, "update_service_menu_hidden")
+	if !ok || msg.ID == "" {
+		return
+	}
+	if err := ctx.Ops.SetMenuHidden(msg.ID, msg.Hidden); err != nil {
+		ctx.UI.EmitEvent("onSettingsError", err.Error())
+	}
+}
+
 // Synchronous on the IPC thread: spawning a child is fast, unlike stopping one.
 func ipcStartService(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcIDMsg](raw, "start_service")

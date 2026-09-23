@@ -27,6 +27,8 @@ func TestIPCDispatch_AllDeclaredMessageTypesHaveHandlers(t *testing.T) {
 		MsgRemoveService,
 		MsgUpdateService,
 		MsgUpdateServiceAutostart,
+		MsgMoveService,
+		MsgUpdateServiceMenuHidden,
 		MsgStartService,
 		MsgStopService,
 		MsgServiceAction,

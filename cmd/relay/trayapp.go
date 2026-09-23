@@ -1051,7 +1051,12 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 	// Build menu-item-ID -> service-ID mapping so click handlers resolve by ID,
 	// not positional index (which can go stale if services change between builds).
 	svcMap := make(map[int]string, len(s.Services))
+	emitted := 0
 	for i, svc := range s.Services {
+		if svc.HideFromMenu {
+			continue
+		}
+		emitted++
 		menuID := menuIDSvcBase + i
 		_, running := pidByID[svc.ID]
 
@@ -1089,7 +1094,7 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 	}
 	a.svcMenuMap = svcMap
 
-	if len(s.Services) > 0 {
+	if emitted > 0 {
 		items = append(items, menuItem{Title: "-", ID: 0})
 	}
 

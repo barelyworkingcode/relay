@@ -69,7 +69,7 @@ and could not be reached.
 | class | what it means | routes |
 |---|---|---|
 | `read` | discloses configuration or history | `GET /api/projects`, `/api/projects/{id}`, `/api/services`, `/api/services/{id}`, `/api/enrolments`, `/api/enrolments/{id}`, `/api/remote`, `/api/mcps`, `/api/mcps/{id}/tools`, `/api/mcps/{id}/scope_fields`, `/api/audit`, `/api/audit/log`; `POST /api/mcps/{id}/enumerate` (a POST that discloses and changes nothing) |
-| `configure` | changes relay's own state | `POST`/`PUT`/`DELETE /api/projects…`, `POST /api/projects/{id}/regen_skill`, `DELETE /api/services/{id}`, `POST /api/services/{id}/start`\|`stop`, `PUT /api/services/{id}/autostart`, `DELETE /api/mcps/{id}`, `POST /api/audit/export` |
+| `configure` | changes relay's own state | `POST`/`PUT`/`DELETE /api/projects…`, `POST /api/projects/{id}/regen_skill`, `DELETE /api/services/{id}`, `POST /api/services/{id}/start`\|`stop`, `PUT /api/services/{id}/autostart`\|`position`\|`menu`, `DELETE /api/mcps/{id}`, `POST /api/audit/export` |
 | `grant` | issues or revokes a credential another party holds | `POST /api/enrolments`, `DELETE /api/enrolments/{id}`, **`POST /api/projects/{id}/rotate_token`** |
 | `execute` | the *caller* supplies what runs or what is exposed | `POST /api/mcps`, `POST /api/services`, `PUT /api/services/{id}`, `PUT /api/remote` |
 | `proxy` | reaches a surface relay has **not** classified | the `/` catch-all — every route an enhanced service registers via its manifest, `/ws` included |
@@ -580,7 +580,7 @@ oblige every implementation to grow a method most of them have no file to
 honour it with.
 
 **Every ops core that resolves a record inside the write now declines when it
-finds nothing.** `ServiceOps.Update`/`Remove`/`SetAutostart`, `McpOps.Remove`,
+finds nothing.** `ServiceOps.Update`/`Remove`/`SetAutostart`/`SetMenuHidden`/`Move`, `McpOps.Remove`,
 `McpOps.StartOAuth`, `revokePasskey`, `createEnrolment`, `updateEnrolment`
 and `revokeEnrolment` each used to run the save
 anyway — a full rewrite of `settings.json` to record that nothing had changed,

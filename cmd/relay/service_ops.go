@@ -717,6 +717,7 @@ func (o *ServiceOps) commitUpdate(id string, f serviceFields, via, credID string
 		if f.Autostart == nil {
 			cfg.Autostart = existing.Autostart
 		}
+		cfg.HideFromMenu = existing.HideFromMenu
 		if f.Args == nil {
 			cfg.Args = existing.Args
 		}
@@ -813,6 +814,45 @@ func (o *ServiceOps) setAutostart(id string, on bool) error {
 	}
 	o.notify()
 	return nil
+}
+
+// Move and SetMenuHidden change only how the tray lists a service, so like
+// SetAutostart they run without the presence gate or an audit record.
+func (o *ServiceOps) Move(id string, index int) error {
+	return o.runQueued(context.Background(), func() error {
+		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			return s.MoveService(id, index)
+		}); err != nil {
+			switch {
+			case errors.Is(err, config.ErrServiceNotFound):
+				return fmt.Errorf("%w: %s", errServiceNotFound, id)
+			case errors.Is(err, config.ErrIndexOutOfRange):
+				return invalidService(fmt.Sprintf("index %d out of range", index))
+			}
+			return fmt.Errorf("save service: %w", err)
+		}
+		o.notify()
+		return nil
+	})
+}
+
+func (o *ServiceOps) SetMenuHidden(id string, hidden bool) error {
+	return o.runQueued(context.Background(), func() error {
+		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if _, idx := config.FindServiceByID(s, id); idx < 0 {
+				return fmt.Errorf("%w: %s", errServiceNotFound, id)
+			}
+			s.SetServiceMenuHidden(id, hidden)
+			return nil
+		}); err != nil {
+			if errors.Is(err, errServiceNotFound) {
+				return err
+			}
+			return fmt.Errorf("save service: %w", err)
+		}
+		o.notify()
+		return nil
+	})
 }
 
 func (o *ServiceOps) Start(id string) error {

@@ -201,6 +201,9 @@ type ServiceConfig struct {
 	WorkingDir string            `json:"working_dir,omitempty"`
 	Autostart  bool              `json:"autostart"`
 	URL        string            `json:"url,omitempty"`
+	// HideFromMenu is phrased as a negative so the zero value (shown) is what
+	// a record written before the field existed already means.
+	HideFromMenu bool `json:"hide_from_menu,omitempty"`
 
 	// Capabilities is what this service's launch identity may do
 	// (docs/launch-identity.md). Every record relay writes spells the empty set

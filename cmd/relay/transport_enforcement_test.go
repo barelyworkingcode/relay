@@ -163,6 +163,8 @@ func teRouteTable(ids teFixtureIDs) []teRoute {
 		{"POST", "/api/services/svc1/start", control.ClassConfigure, nil},
 		{"POST", "/api/services/svc1/stop", control.ClassConfigure, nil},
 		{"PUT", "/api/services/svc1/autostart", control.ClassConfigure, map[string]any{"autostart": true}},
+		{"PUT", "/api/services/svc1/position", control.ClassConfigure, map[string]any{"index": 0}},
+		{"PUT", "/api/services/svc1/menu", control.ClassConfigure, map[string]any{"hidden": true}},
 
 		// enrolment_routes.go
 		{"GET", "/api/enrolments", control.ClassRead, nil},
