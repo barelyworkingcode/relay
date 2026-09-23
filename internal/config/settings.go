@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ var (
 	ErrNoToken                     = errors.New("no token provided")
 	ErrInvalidToken                = errors.New("invalid token")
 	ErrHostProbeGenerationOverflow = errors.New("host probe generation exhausted")
+	ErrServiceNotFound             = errors.New("service not found")
+	ErrIndexOutOfRange             = errors.New("index out of range")
 )
 
 type Settings struct {
@@ -193,6 +196,31 @@ func (s *Settings) SetServiceAutostart(id string, autostart bool) {
 	if svc, _ := s.findServiceByID(id); svc != nil {
 		svc.Autostart = autostart
 	}
+}
+
+func (s *Settings) SetServiceMenuHidden(id string, hidden bool) {
+	if svc, _ := s.findServiceByID(id); svc != nil {
+		svc.HideFromMenu = hidden
+	}
+}
+
+// MoveService moves the service with id to position index in s.Services
+// (0-based position in the resulting slice); the others keep their relative order.
+func (s *Settings) MoveService(id string, index int) error {
+	svc, from := s.findServiceByID(id)
+	if svc == nil {
+		return fmt.Errorf("move service %s: %w", id, ErrServiceNotFound)
+	}
+	n := len(s.Services)
+	if index < 0 || index >= n {
+		return fmt.Errorf("move service %s: index %d out of range [0,%d): %w", id, index, n, ErrIndexOutOfRange)
+	}
+	if from == index {
+		return nil
+	}
+	moved := *svc
+	s.Services = slices.Insert(slices.Delete(s.Services, from, from+1), index, moved)
+	return nil
 }
 
 // MergeServiceDefaults fills zero-value fields in cfg from the existing

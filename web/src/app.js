@@ -1032,14 +1032,15 @@ function renderServices() {
     html += '<h2>Services</h2>';
     html += '<button class="btn btn-primary" onclick="newService()">+ New Service</button>';
     html += '</div>';
-    html += '<p class="page-intro">Manage background processes. These appear in the tray menu for quick start/stop.</p>';
+    html += '<p class="page-intro">Manage background processes. They appear in the tray menu in this order for quick start/stop, unless hidden from it.</p>';
 
     if (state.services.length === 0) {
         html += '<div class="empty-state">No services configured. Click <strong>+ New Service</strong> to add one.</div>';
         return html;
     }
 
-    for (const svc of state.services) {
+    const lastIdx = state.services.length - 1;
+    state.services.forEach((svc, idx) => {
         const running = !!state.runningServices[svc.id];
         const cmdBase = (svc.command || '').split('/').pop();
         const fullCmd = (svc.command || '') + (svc.args && svc.args.length > 0 ? ' ' + svc.args.join(' ') : '');
@@ -1051,6 +1052,8 @@ function renderServices() {
                     <span class="mono-inline" title="${esc(fullCmd)}">${esc(cmdBase)}</span>
                 </div>
                 <div style="display:flex;gap:4px;flex-shrink:0">
+                    <button class="btn btn-sm" aria-label="Move up" title="Move up" ${idx === 0 ? 'disabled' : ''} ${bind(moveService, svc.id, -1)}>↑</button>
+                    <button class="btn btn-sm" aria-label="Move down" title="Move down" ${idx === lastIdx ? 'disabled' : ''} ${bind(moveService, svc.id, 1)}>↓</button>
                     <button class="btn btn-sm" data-svc-startstop="${esc(svc.id)}" ${bind(toggleServiceRunning, svc.id)}>${running ? 'Stop' : 'Start'}</button>
                     <button class="btn btn-sm" ${bind(editService, svc.id)}>Edit</button>
                     <button class="btn btn-sm btn-danger" ${bind(removeService, svc.id, svc.display_name)}>Remove</button>
@@ -1068,8 +1071,15 @@ function renderServices() {
                     <span class="slider"></span>
                 </span>
             </label>
+            <label class="toggle-row" style="margin-bottom:0;padding:6px 0 0;cursor:pointer">
+                <span style="font-size:12px;color:var(--text-2)">Show in menu</span>
+                <span class="switch">
+                    <input type="checkbox" aria-label="Show in menu" ${svc.hide_from_menu ? '' : 'checked'} onchange="updateServiceMenuHidden('${esc(svc.id)}', this.checked)" />
+                    <span class="slider"></span>
+                </span>
+            </label>
         </div>`;
-    }
+    });
     return html;
 }
 
@@ -1482,6 +1492,23 @@ function updateServiceAutostart(id, checked) {
     const svc = state.services.find(s => s.id === id);
     if (svc) svc.autostart = checked;
     ipc(JSON.stringify({ type: 'update_service_autostart', id, autostart: checked }));
+}
+
+function updateServiceMenuHidden(id, checked) {
+    const svc = state.services.find(s => s.id === id);
+    if (svc) svc.hide_from_menu = !checked;
+    ipc(JSON.stringify({ type: 'update_service_menu_hidden', id, hidden: !checked }));
+}
+
+function moveService(id, delta) {
+    const from = state.services.findIndex(s => s.id === id);
+    if (from < 0) return;
+    const index = from + delta;
+    if (index < 0 || index >= state.services.length) return;
+    const [svc] = state.services.splice(from, 1);
+    state.services.splice(index, 0, svc);
+    render();
+    ipc(JSON.stringify({ type: 'move_service', id, index }));
 }
 
 window.onServiceAdded = function(config) {
@@ -7175,5 +7202,5 @@ Object.assign(window, {
     cancelHostTemplateEdit, captureHostTemplateFormInputs, closeHostTemplateForm, editHostTemplate, editingHostRecord, hostTemplateCommandLine, newHostTemplate, removeHostTemplate, renderHostTemplateForm, renderHostTemplates, saveHostTemplateForm,
     blankHostForm, cancelHostEdit, captureHostFormInputs, disconnectHost, editHost, harvestHostForm, hostFormFromExisting, hostNameFor, isHostedForm, newHost, probeHost, removeHost, renderHostForm, renderHostProbeCard, renderHostProbeSummary, renderHostStatus, renderHosts, saveHostForm, setProjWhere, testHostConnection,
     mcpHealthPillFor, toggleMcpToolsDisclosure, renderMcpToolsDisclosure, formatUptime, serviceStatusLineHTML,
-    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyToClipboard, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceEnvRows, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcEnvAddRow, svcEnvMergedForDisplay, svcEnvRemoveRow, svcEnvSetMode, svcEnvSetValue, svcEnvWireValue, svcFormValues, svcModelAddRow, svcModelRemoveRow, svcModelSetValue, svcModelsCapChanged, renderServiceModelRows, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
+    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyToClipboard, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, moveService, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceEnvRows, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcEnvAddRow, svcEnvMergedForDisplay, svcEnvRemoveRow, svcEnvSetMode, svcEnvSetValue, svcEnvWireValue, svcFormValues, svcModelAddRow, svcModelRemoveRow, svcModelSetValue, svcModelsCapChanged, renderServiceModelRows, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceMenuHidden, updateServiceStatusDOM});
 window.state = state;

@@ -322,6 +322,18 @@ type ipcUpdateServiceAutostartMsg struct {
 	Autostart bool   `json:"autostart"`
 }
 
+// Index is a pointer so a message without it is dropped rather than read as
+// a move to the top.
+type ipcMoveServiceMsg struct {
+	ID    string `json:"id"`
+	Index *int   `json:"index"`
+}
+
+type ipcUpdateServiceMenuHiddenMsg struct {
+	ID     string `json:"id"`
+	Hidden bool   `json:"hidden"`
+}
+
 // ---------------------------------------------------------------------------
 // IPC message type constants — single source of truth for the JS/Go contract.
 // ---------------------------------------------------------------------------
@@ -332,12 +344,14 @@ const (
 	MsgRemoveExternalMcp   = "remove_external_mcp"
 	MsgResetMcpPermissions = "reset_mcp_permissions"
 
-	MsgAddService             = "add_service"
-	MsgRemoveService          = "remove_service"
-	MsgUpdateService          = "update_service"
-	MsgUpdateServiceAutostart = "update_service_autostart"
-	MsgStartService           = "start_service"
-	MsgStopService            = "stop_service"
+	MsgAddService              = "add_service"
+	MsgRemoveService           = "remove_service"
+	MsgUpdateService           = "update_service"
+	MsgUpdateServiceAutostart  = "update_service_autostart"
+	MsgMoveService             = "move_service"
+	MsgUpdateServiceMenuHidden = "update_service_menu_hidden"
+	MsgStartService            = "start_service"
+	MsgStopService             = "stop_service"
 
 	// Projects (ipc_projects.go)
 	MsgCreateProject              = "create_project"
@@ -393,12 +407,14 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgResetMcpPermissions: ipcResetMcpPermissions,
 
 	// Services (ipc_services.go)
-	MsgAddService:             ipcAddService,
-	MsgRemoveService:          ipcRemoveService,
-	MsgUpdateService:          ipcUpdateService,
-	MsgUpdateServiceAutostart: ipcUpdateServiceAutostart,
-	MsgStartService:           ipcStartService,
-	MsgStopService:            ipcStopService,
+	MsgAddService:              ipcAddService,
+	MsgRemoveService:           ipcRemoveService,
+	MsgUpdateService:           ipcUpdateService,
+	MsgUpdateServiceAutostart:  ipcUpdateServiceAutostart,
+	MsgMoveService:             ipcMoveService,
+	MsgUpdateServiceMenuHidden: ipcUpdateServiceMenuHidden,
+	MsgStartService:            ipcStartService,
+	MsgStopService:             ipcStopService,
 
 	// Service Inspector (ipc_service_action.go, ipc_service_config.go)
 	MsgServiceAction: ipcServiceAction,
