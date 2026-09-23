@@ -400,6 +400,7 @@ type HostProbe struct {
 	NodeVersion   string `json:"node_version,omitempty"`
 	ClaudePath    string `json:"claude_path,omitempty"`
 	ClaudeVersion string `json:"claude_version,omitempty"`
+	TmuxPath      string `json:"tmux_path,omitempty"`
 	Error         string `json:"error,omitempty"`
 }
 
