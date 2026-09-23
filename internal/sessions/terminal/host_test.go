@@ -139,3 +139,37 @@ func TestBuildHostTargetArgv_WindowsHostUsesWindowsLauncher(t *testing.T) {
 		t.Fatalf("remote = %q, want the Windows launcher", remote)
 	}
 }
+
+// An empty argv means the host template had no command: the remote runs the
+// host's own login shell, on either launcher.
+func TestBuildHostTargetArgv_EmptyArgvRunsHostLoginShell(t *testing.T) {
+	env := map[string]string{"TERM": "xterm-256color"}
+	want := `cd '/proj' && exec env 'TERM'='xterm-256color' "$SHELL" -l`
+
+	_, args, err := buildHostTargetArgv(hostSpec(), "/proj", nil, env)
+	if err != nil {
+		t.Fatalf("buildHostTargetArgv: %v", err)
+	}
+	if got := decodeLauncher(t, args[len(args)-1]); got != want {
+		t.Fatalf("posix: decoded = %q, want %q", got, want)
+	}
+
+	h := hostSpec()
+	h.OS = "MINGW64_NT-10.0-26200"
+	_, args, err = buildHostTargetArgv(h, "/proj", []string{}, env)
+	if err != nil {
+		t.Fatalf("buildHostTargetArgv (windows): %v", err)
+	}
+	if got, wantCmd := args[len(args)-1], sshhost.LoginShellCommandForOS(h.OS, "/proj", env); got != wantCmd {
+		t.Fatalf("windows: remote = %q, want the Windows login-shell launcher %q", got, wantCmd)
+	}
+}
+
+func TestCreateSpec_Validate_EmptyArgvOnlyForAHost(t *testing.T) {
+	if err := (CreateSpec{SessionID: "s", Host: hostSpec()}).validate(); err != nil {
+		t.Fatalf("host session with empty argv refused: %v", err)
+	}
+	if err := (CreateSpec{SessionID: "s"}).validate(); err == nil {
+		t.Fatal("console session with empty argv accepted, want refused")
+	}
+}

@@ -544,7 +544,7 @@ func TestAuthorizeLaunch_NoProfileWhenNotSandboxed(t *testing.T) {
 		store := newLaunchTestStore(t)
 		proj := addLaunchTestProject(t, store, func(p *config.Project) { p.HostID = "host-1" })
 		if err := store.With(func(s *config.Settings) {
-			s.Hosts = append(s.Hosts, config.Host{ID: "host-1", Name: "far", Target: "someone@far.local"})
+			s.Hosts = append(s.Hosts, config.Host{ID: "host-1", Name: "far", Target: "someone@far.local", TerminalTemplates: []config.TerminalTemplate{{ID: "claude-code", Name: "Claude Code", Command: "claude"}}})
 		}); err != nil {
 			t.Fatalf("store.With: %v", err)
 		}

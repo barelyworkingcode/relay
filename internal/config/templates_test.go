@@ -430,3 +430,88 @@ func TestEffectiveTerminalTemplates_SkipsAModelKeyMappingWithoutOptIn(t *testing
 		t.Error("a template mapping ${MODEL_KEY} without model_key: true reached the effective list")
 	}
 }
+
+// --- host templates (docs/ssh-hosts.md) ---
+
+func TestValidateHostTemplate_RefusesWhatOnlyMeansSomethingOnTheConsole(t *testing.T) {
+	for name, c := range map[string]struct {
+		tmpl TerminalTemplate
+		want error // nil: any error will do
+	}{
+		"sandbox":         {TerminalTemplate{ID: "x", Name: "X", Sandbox: true}, ErrHostTemplateSandbox},
+		"read":            {TerminalTemplate{ID: "x", Name: "X", Read: []string{"/opt"}}, ErrHostTemplateSandbox},
+		"read_write":      {TerminalTemplate{ID: "x", Name: "X", ReadWrite: []string{"/opt"}}, ErrHostTemplateSandbox},
+		"env_passthrough": {TerminalTemplate{ID: "x", Name: "X", EnvPassthrough: []string{"PATH"}}, ErrHostTemplateEnvPassthrough},
+		"model_key":       {TerminalTemplate{ID: "x", Name: "X", ModelKey: true}, ErrHostTemplateModelKey},
+		// ValidateTerminalTemplate refuses this first (model_key is false),
+		// so the sentinel is the base one; what matters is that it's refused.
+		"${MODEL_KEY} in env": {TerminalTemplate{ID: "x", Name: "X", Env: map[string]string{"H": "X-Relay-Key: ${MODEL_KEY}"}}, nil},
+	} {
+		err := ValidateHostTemplate(c.tmpl)
+		if err == nil {
+			t.Errorf("%s: accepted, want refused", name)
+			continue
+		}
+		if c.want != nil && !errors.Is(err, c.want) {
+			t.Errorf("%s: err = %v, want %v", name, err, c.want)
+		}
+	}
+	ok := TerminalTemplate{ID: "claude-code", Name: "Claude Code", Command: "/usr/local/bin/claude", Args: []string{"${PROJECT_PATH}"}, Env: map[string]string{"DEBUG": "1"}}
+	if err := ValidateHostTemplate(ok); err != nil {
+		t.Fatalf("a plain host template was refused: %v", err)
+	}
+}
+
+func TestDefaultHostTemplates(t *testing.T) {
+	got := DefaultHostTemplates(HostProbe{OK: true})
+	if len(got) != 1 || got[0].ID != "shell" || got[0].Command != "" {
+		t.Fatalf("no claude_path: got %+v, want only the login-shell template", got)
+	}
+	got = DefaultHostTemplates(HostProbe{OK: true, ClaudePath: "/home/u/.local/bin/claude"})
+	if len(got) != 2 || got[0].ID != "shell" || got[1].ID != "claude-code" || got[1].Command != "/home/u/.local/bin/claude" {
+		t.Fatalf("with claude_path: got %+v, want shell + claude-code at the probed path", got)
+	}
+	for _, tmpl := range got {
+		if err := ValidateHostTemplate(tmpl); err != nil {
+			t.Errorf("seeded template %q fails ValidateHostTemplate: %v", tmpl.ID, err)
+		}
+	}
+}
+
+func TestTemplatesForProject(t *testing.T) {
+	s := &Settings{
+		TerminalTemplates: []TerminalTemplate{{ID: "console", Name: "Console"}},
+		Hosts: []Host{{ID: "h1", Name: "devbox", TerminalTemplates: []TerminalTemplate{
+			{ID: "zsh", Name: "Zsh", Command: "zsh"},
+			{ID: "bad", Name: "Bad", Sandbox: true},
+			{ID: "shell", Name: "Shell"},
+		}}},
+	}
+	ids := func(ts []TerminalTemplate) string {
+		var out []string
+		for _, tmpl := range ts {
+			out = append(out, tmpl.ID)
+		}
+		return strings.Join(out, ",")
+	}
+
+	hosted := &Project{HostID: "h1", AllowedTemplates: []string{"*"}}
+	if got := ids(TemplatesForProject(s, hosted)); got != "shell,zsh" {
+		t.Errorf("hosted project: got %q, want the host's valid templates sorted and no console ones", got)
+	}
+
+	gone := TemplatesForProject(s, &Project{HostID: "missing", AllowedTemplates: []string{"*"}})
+	if gone == nil || len(gone) != 0 {
+		t.Errorf("missing host: got %#v, want an empty non-nil slice", gone)
+	}
+
+	for name, p := range map[string]*Project{
+		"nil":      nil,
+		"wildcard": {AllowedTemplates: []string{"*"}},
+		"none":     {AllowedTemplates: []string{}},
+	} {
+		if got, want := ids(TemplatesForProject(s, p)), ids(EffectiveTerminalTemplatesForProject(s, p)); got != want {
+			t.Errorf("non-hosted %s: got %q, want EffectiveTerminalTemplatesForProject's %q", name, got, want)
+		}
+	}
+}

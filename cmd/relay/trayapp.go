@@ -724,6 +724,7 @@ func runTrayApp() {
 	app.ipcCtx.HostOps = hostOps
 	templateOps := &TemplateOps{Store: store, Queue: serviceQueue}
 	app.ipcCtx.TemplateOps = templateOps
+	app.ipcCtx.HostTemplateOps = &HostTemplateOps{Store: store, Queue: serviceQueue}
 	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, templateOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec), launches, sessionDeps)
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)

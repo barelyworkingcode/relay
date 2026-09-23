@@ -19,11 +19,12 @@ func RegisterTemplateRoutes(rr *control.RouteRegistrar, store config.SettingsSto
 
 	rr.Handle(classFor("GET", "/api/terminal/templates"), "GET /api/terminal/templates", func(w http.ResponseWriter, r *http.Request) {
 		// A project is what permits a template (Project.AllowedTemplates), so
-		// a list asked for with no project, or an unknown one, is empty. The
-		// Settings window lists everything over IPC instead.
+		// a list asked for with no project, or an unknown one, is empty. A
+		// host project gets its host's templates instead of the console's.
+		// The Settings window lists everything over IPC instead.
 		settings := config.FreshSettings(store)
 		proj, _ := config.FindProjectByID(settings, r.URL.Query().Get("project"))
-		writeJSON(w, http.StatusOK, config.EffectiveTerminalTemplatesForProject(settings, proj))
+		writeJSON(w, http.StatusOK, config.TemplatesForProject(settings, proj))
 	})
 
 	rr.Handle(classFor("GET", "/api/terminal/templates/{id}"), "GET /api/terminal/templates/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +71,7 @@ func writeTemplateError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errTemplateInvalid):
 		status = http.StatusBadRequest
-	case errors.Is(err, errTemplateNotFound):
+	case errors.Is(err, errTemplateNotFound), errors.Is(err, errHostNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, errTemplateExists):
 		status = http.StatusConflict

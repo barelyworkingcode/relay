@@ -150,6 +150,12 @@ let state = {
     editingHostId: null,      // null = list, 'new' = add form, '<id>' = edit form
     hostForm: null,
     hostFormError: null,
+    // A host's terminal templates (docs/ssh-hosts.md), edited inside the host
+    // form. Same null/'new'/'<id>' convention as editingTemplateId.
+    editingHostTemplateId: null,
+    hostTemplateForm: null,
+    hostTemplateFormError: null,
+    hostTemplateSaving: false,  // the next onHostTemplatesListed closes the sub-form
     hostProbePending: {},     // id -> true while a probe/create/re-probe is in flight ('new' for the add form)
     hostError: null,
 
@@ -293,6 +299,7 @@ function render(source) {
     if (state.enrolForm) captureEnrolFormInputs();
     if (state.hostForm) captureHostFormInputs();
     if (state.templateForm) captureTemplateFormInputs();
+    if (state.hostTemplateForm) captureHostTemplateFormInputs();
     const el = document.getElementById('content');
     const fromPush = source === 'push';
     if (state.page === 'overview') {
@@ -3362,6 +3369,10 @@ function renderProjectForm() {
     html += '<div class="proj-section-title">Templates</div>';
     if (isRemote) {
         html += '<p class="proj-section-help">Not applicable to an access profile — it launches nothing.</p>';
+    } else if (isHostedForm(f)) {
+        // allowed_templates gates console templates only; a host project
+        // may launch every template of its host (docs/ssh-hosts.md).
+        html += '<p class="proj-section-help">A host project uses its host\'s terminal templates — edit them on the Hosts tab.</p>';
     } else {
         const tplWild = isProjTemplatesWildcard(f);
         html += '<p class="proj-section-help">The launch templates this project may run: terminals, and the claude-code, pi and chat templates that claude, pi and chat sessions read. None selected means the project can launch nothing.</p>';
@@ -4222,13 +4233,18 @@ function editHost(id) {
     state.editingHostId = id;
     state.hostForm = hostFormFromExisting(h);
     state.hostFormError = null;
+    closeHostTemplateForm();
     render();
+    // Same reason the Templates tab re-fetches on every visit: an HTTP edit
+    // or a probe's seeding changes the list behind the UI's back.
+    ipc(JSON.stringify({ type: 'list_host_templates', host_id: id }));
 }
 
 function cancelHostEdit() {
     state.editingHostId = null;
     state.hostForm = null;
     state.hostFormError = null;
+    closeHostTemplateForm();
     render();
 }
 
@@ -4349,6 +4365,7 @@ function renderHostForm() {
     if (existing && existing.probe) {
         html += renderHostProbeCard(existing.probe, existing.target);
     }
+    if (existing) html += renderHostTemplates(existing);
 
     html += '<div class="proj-form-actions">';
     html += '<button class="btn btn-primary" onclick="saveHostForm()" ' + (pending ? 'disabled' : '') + '>Save</button>';
@@ -4432,6 +4449,174 @@ window.onHostError = function(msg) {
     state.hostProbePending = {};
     if (state.page !== 'hosts') return;
     render();
+};
+
+// ---- Host terminal templates (docs/ssh-hosts.md) ----
+//
+// A host carries its own TerminalTemplates: command and args run ON the host,
+// so there is no sandbox, env passthrough or model key to offer. Every
+// successful mutation answers with onHostTemplatesListed, which is also what
+// closes the sub-form — the Templates tab's shape, scoped to one host.
+
+function hostTemplateCommandLine(t) {
+    const parts = [t.command || '(host login shell)'].concat(t.args || []);
+    return parts.map(esc).join(' ');
+}
+
+function renderHostTemplates(h) {
+    let html = '<div class="proj-section">';
+    html += '<div class="proj-section-title">Terminal templates</div>';
+    html += '<p class="proj-section-help">Commands run on the host. Empty command opens the host\'s login shell.</p>';
+    if (state.editingHostTemplateId) {
+        html += renderHostTemplateForm();
+        html += '</div>';
+        return html;
+    }
+    const templates = h.terminal_templates || [];
+    if (templates.length === 0) {
+        html += '<div class="proj-tool-empty">No templates yet.</div>';
+    }
+    for (const t of templates) {
+        html += '<div class="proj-card">';
+        html += '<div class="proj-card-header">';
+        html += '<span class="proj-card-name">' + esc(t.name) + ' <code>' + esc(t.id) + '</code></span>';
+        html += '<div style="display:flex;gap:4px">';
+        html += '<button class="btn btn-sm" ' + bind(editHostTemplate, t.id) + '>Edit</button>';
+        html += '<button class="btn btn-sm btn-danger" ' + bind(removeHostTemplate, t.id, t.name) + '>Remove</button>';
+        html += '</div></div>';
+        html += '<div class="proj-card-path">' + hostTemplateCommandLine(t) + '</div>';
+        html += '</div>';
+    }
+    html += '<button class="btn btn-sm btn-primary" onclick="newHostTemplate()">+ Add template</button>';
+    html += '</div>';
+    return html;
+}
+
+function editingHostRecord() {
+    const f = state.hostForm;
+    return f && f.id ? (state.hosts || []).find(x => x.id === f.id) : null;
+}
+
+function closeHostTemplateForm() {
+    state.editingHostTemplateId = null;
+    state.hostTemplateForm = null;
+    state.hostTemplateFormError = null;
+    state.hostTemplateSaving = false;
+}
+
+function newHostTemplate() {
+    state.editingHostTemplateId = 'new';
+    state.hostTemplateForm = { id: '', name: '', command: '', args: '', env: '' };
+    state.hostTemplateFormError = null;
+    render();
+}
+
+function editHostTemplate(id) {
+    const h = editingHostRecord();
+    const t = h && (h.terminal_templates || []).find(x => x.id === id);
+    if (!t) return;
+    state.editingHostTemplateId = id;
+    state.hostTemplateForm = {
+        id: t.id, name: t.name || '', command: t.command || '',
+        args: (t.args || []).join('\n'),
+        env: Object.keys(t.env || {}).map(k => k + '=' + t.env[k]).join('\n'),
+    };
+    state.hostTemplateFormError = null;
+    render();
+}
+
+function cancelHostTemplateEdit() {
+    closeHostTemplateForm();
+    render();
+}
+
+// Same reason as captureTemplateFormInputs: the inputs live only in the DOM
+// between renders.
+function captureHostTemplateFormInputs() {
+    const f = state.hostTemplateForm;
+    for (const k of Object.keys(f)) {
+        const el = document.getElementById('htpl_' + k);
+        if (el) f[k] = el.value;
+    }
+}
+
+function removeHostTemplate(id, name) {
+    const h = editingHostRecord();
+    if (!h) return;
+    if (!confirm('Remove template "' + name + '" from ' + h.name + '?')) return;
+    ipc(JSON.stringify({ type: 'remove_host_template', host_id: h.id, id }));
+}
+
+function saveHostTemplateForm() {
+    const f = state.hostTemplateForm;
+    const h = editingHostRecord();
+    if (!f || !h) return;
+    captureHostTemplateFormInputs();
+    const env = {};
+    for (const line of templateLines(f.env)) {
+        const i = line.indexOf('=');
+        if (i < 1) {
+            state.hostTemplateFormError = 'Env lines must be KEY=value: ' + line;
+            render();
+            return;
+        }
+        env[line.slice(0, i).trim()] = line.slice(i + 1);
+    }
+    const isNew = state.editingHostTemplateId === 'new';
+    const template = {
+        id: f.id.trim(), name: f.name.trim(),
+        command: f.command.trim(), args: templateLines(f.args), env,
+    };
+    state.hostTemplateFormError = null;
+    state.hostTemplateSaving = true;
+    ipc(JSON.stringify({ type: isNew ? 'create_host_template' : 'update_host_template', host_id: h.id, template }));
+    render();
+}
+
+function renderHostTemplateForm() {
+    const f = state.hostTemplateForm;
+    if (!f) return '';
+    const isNew = state.editingHostTemplateId === 'new';
+    const input = (key, label, placeholder, disabled) =>
+        '<label for="htpl_' + key + '">' + label + '</label>' +
+        '<input type="text" id="htpl_' + key + '" value="' + esc(f[key]) + '" placeholder="' + esc(placeholder || '') + '"' + (disabled ? ' disabled' : '') + ' />';
+    const lines = (key, label, placeholder) =>
+        '<label for="htpl_' + key + '">' + label + '</label>' +
+        '<textarea id="htpl_' + key + '" rows="3" placeholder="' + placeholder + '">' + esc(f[key]) + '</textarea>';
+
+    let html = '<div class="proj-template-card">';
+    html += '<div class="proj-section-title">' + (isNew ? 'Add template' : 'Edit template') + '</div>';
+    if (state.hostTemplateFormError) html += '<div class="proj-error" tabindex="-1">' + esc(state.hostTemplateFormError) + '</div>';
+    html += input('id', 'ID', 'shell', !isNew);
+    html += input('name', 'Name', 'Shell');
+    html += input('command', 'Command', 'empty = host login shell');
+    html += lines('args', 'Arguments (one per line)', '--flag&#10;${PROJECT_PATH}');
+    html += lines('env', 'Environment (KEY=value per line)', 'DEBUG=true');
+    html += '<div class="proj-form-actions">';
+    html += '<button class="btn btn-primary" onclick="saveHostTemplateForm()" ' + (state.hostTemplateSaving ? 'disabled' : '') + '>Save template</button>';
+    html += '<button class="btn btn-danger" onclick="cancelHostTemplateEdit()">Cancel</button>';
+    html += '</div></div>';
+    return html;
+}
+
+// onHostTemplatesListed answers list_host_templates and every host template
+// mutation with {host_id, templates}. The list is folded into the host's
+// record in state.hosts, where renderHostTemplates reads it. Not a 'push'
+// render: the host form is open, and render() captures its inputs first.
+window.onHostTemplatesListed = function(msg) {
+    const hostId = msg && msg.host_id;
+    const templates = (msg && msg.templates) || [];
+    state.hosts = (state.hosts || []).map(x => x.id === hostId ? Object.assign({}, x, { terminal_templates: templates }) : x);
+    if (state.hostTemplateSaving) closeHostTemplateForm();
+    if (state.page === 'hosts') render();
+};
+
+window.onHostTemplateError = function(msg) {
+    state.hostTemplateSaving = false;
+    state.hostTemplateFormError = msg;
+    // With no sub-form open (a Remove), the host form's banner carries it.
+    if (!state.hostTemplateForm) state.hostFormError = msg;
+    if (state.page === 'hosts') render();
 };
 
 // ---------------------------------------------------------------------------
@@ -6410,6 +6595,7 @@ document.addEventListener('keydown', function(e) {
 document.addEventListener('keydown', function(e) {
     if (e.key !== 'Escape') return;
     if (state.editingProjectId) { cancelProjectEdit(); return; }
+    if (state.editingHostTemplateId) { cancelHostTemplateEdit(); return; }
     if (state.editingHostId) { cancelHostEdit(); return; }
     if (state.editingTemplateId) { cancelTemplateEdit(); return; }
     if (state.editingServiceId) { cancelServiceEdit(); return; }
@@ -6973,6 +7159,7 @@ Object.assign(window, {
     addProjMount, removeProjMount, setProjMountAccess,
     isProjTemplatesWildcard, setProjTemplatesWildcard, toggleProjTemplate,
     blankTemplateForm, cancelTemplateEdit, captureTemplateFormInputs, editTemplate, newTemplate, removeTemplate, renderTemplateForm, saveTemplateForm, templateFormFromExisting, templateLines,
+    cancelHostTemplateEdit, captureHostTemplateFormInputs, closeHostTemplateForm, editHostTemplate, editingHostRecord, hostTemplateCommandLine, newHostTemplate, removeHostTemplate, renderHostTemplateForm, renderHostTemplates, saveHostTemplateForm,
     blankHostForm, cancelHostEdit, captureHostFormInputs, disconnectHost, editHost, harvestHostForm, hostFormFromExisting, hostNameFor, isHostedForm, newHost, probeHost, removeHost, renderHostForm, renderHostProbeCard, renderHostProbeSummary, renderHostStatus, renderHosts, saveHostForm, setProjWhere, testHostConnection,
     mcpHealthPillFor, toggleMcpToolsDisclosure, renderMcpToolsDisclosure, formatUptime, serviceStatusLineHTML,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyToClipboard, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceEnvRows, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcEnvAddRow, svcEnvMergedForDisplay, svcEnvRemoveRow, svcEnvSetMode, svcEnvSetValue, svcEnvWireValue, svcFormValues, svcModelAddRow, svcModelRemoveRow, svcModelSetValue, svcModelsCapChanged, renderServiceModelRows, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});

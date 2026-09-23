@@ -341,7 +341,10 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		tmpl = &t
 		baseFields.TemplateID = tmpl.ID
 	} else {
-		if !proj.AllowsTemplate(kindTemplateIDs[req.Kind]) {
+		if req.Kind == KindPi && proj != nil && proj.IsHosted() {
+			return nil, forbidden("provider_not_available_on_host", `provider "pi" is not available on a host project`, baseFields)
+		}
+		if !kindAllowed(settings, proj, req.Kind) {
 			return nil, forbidden("template_not_allowed", fmt.Sprintf("template %q is not available for this project", kindTemplateIDs[req.Kind]), baseFields)
 		}
 		if req.Model != "" && !modelAllowedForProject(store, req.ProjectID, req.Model) {
@@ -411,7 +414,11 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	// Spec.Identity itself.
 
 	if req.Kind == KindPTY {
-		spec.Argv = resolveArgv(*tmpl, projectPathOrEmpty(proj), req.ProjectID)
+		if proj != nil && proj.IsHosted() {
+			spec.Argv = resolveHostArgv(*tmpl, proj.Path, req.ProjectID)
+		} else {
+			spec.Argv = resolveArgv(*tmpl, projectPathOrEmpty(proj), req.ProjectID)
+		}
 		env, err := resolveTemplateEnv(*tmpl, settings)
 		if err != nil {
 			return nil, invalidRequest("model_endpoint_unavailable", err.Error(), baseFields)
@@ -431,7 +438,11 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	}
 
 	var modelKeyLabel string
-	if wantsModelKey(req.Kind, tmpl) {
+	// A host terminal runs on the far end, which has no route to the console's
+	// model endpoint. ValidateHostTemplate already refuses model_key on a host
+	// template; this guard keeps a key from being minted if one slips through.
+	hostedPTY := req.Kind == KindPTY && proj != nil && proj.IsHosted()
+	if wantsModelKey(req.Kind, tmpl) && !hostedPTY {
 		label := "session:" + sessionID
 		key, err := mintModelKey(modelKeys, req.ProjectID, label)
 		if err != nil {
@@ -569,13 +580,31 @@ var kindTemplateIDs = map[string]string{
 	KindChat:   "chat",
 }
 
+// kindAllowed is the template gate for a claude, pi or chat session. A hosted
+// project's claude session runs the host's own Claude Code, so the host having
+// a claude-code template is what permits it; allowed_templates names console
+// templates only and says nothing about a host's. A pi session on a hosted
+// project never reaches here: AuthorizeLaunch refuses it first, since pi's
+// overlay writes into the project dir and links into the console's home.
+// Every other kind is gated by allowed_templates.
+func kindAllowed(settings *config.Settings, proj *config.Project, kind string) bool {
+	id := kindTemplateIDs[kind]
+	if kind == KindClaude && proj != nil && proj.IsHosted() {
+		_, ok := findTemplate(settings, proj, id)
+		return ok
+	}
+	return proj.AllowsTemplate(id)
+}
+
 // templateForKind is the template whose folders a non-terminal session gets,
 // or nil when settings.json holds none by that id. A missing template is not a
 // refusal: the session runs with only what every session gets, which is the
-// fail-closed direction, and the warning names what to add.
+// fail-closed direction, and the warning names what to add. A hosted project
+// gets nil without a warning: its session is never sandboxed, and its host's
+// templates carry no folders.
 func templateForKind(settings *config.Settings, proj *config.Project, kind string) *config.TerminalTemplate {
 	id := kindTemplateIDs[kind]
-	if id == "" {
+	if id == "" || (proj != nil && proj.IsHosted()) {
 		return nil
 	}
 	if t, ok := findTemplate(settings, proj, id); ok {
@@ -586,7 +615,7 @@ func templateForKind(settings *config.Settings, proj *config.Project, kind strin
 }
 
 func findTemplate(settings *config.Settings, proj *config.Project, id string) (config.TerminalTemplate, bool) {
-	for _, t := range config.EffectiveTerminalTemplatesForProject(settings, proj) {
+	for _, t := range config.TemplatesForProject(settings, proj) {
 		if t.ID == id {
 			return t, true
 		}
@@ -614,9 +643,24 @@ func resolveArgv(t config.TerminalTemplate, projectPath, projectID string) []str
 	if command == "" {
 		command = defaultShell()
 	}
-	argv := make([]string, 0, 1+len(t.Args))
+	return expandArgv(command, t.Args, projectPath, projectID)
+}
+
+// resolveHostArgv is resolveArgv for a host template, whose command is
+// interpreted on the host. An empty command stays nil rather than becoming
+// defaultShell(), which names the console's shell: relay-sessions turns nil
+// into the host's own login shell.
+func resolveHostArgv(t config.TerminalTemplate, projectPath, projectID string) []string {
+	if t.Command == "" {
+		return nil
+	}
+	return expandArgv(t.Command, t.Args, projectPath, projectID)
+}
+
+func expandArgv(command string, args []string, projectPath, projectID string) []string {
+	argv := make([]string, 0, 1+len(args))
 	argv = append(argv, config.ExpandTemplateVars(command, projectPath, projectID))
-	for _, a := range t.Args {
+	for _, a := range args {
 		argv = append(argv, config.ExpandTemplateVars(a, projectPath, projectID))
 	}
 	return argv

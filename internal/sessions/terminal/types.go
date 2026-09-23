@@ -87,7 +87,9 @@ func (s CreateSpec) validate() error {
 	if s.SessionID == "" {
 		return errors.New("terminal: session id is required")
 	}
-	if len(s.Argv) == 0 {
+	// A host session may omit argv: buildHostTargetArgv then runs the host's
+	// own login shell. A console session has no such fallback.
+	if len(s.Argv) == 0 && s.Host == nil {
 		return errors.New("terminal: argv is required")
 	}
 	if s.Host != nil && s.Identity != nil {

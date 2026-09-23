@@ -122,6 +122,9 @@ var gateAllowlistedFiles = map[string]string{
 		"record, a template can widen a sandboxed session's folders or opt it into a model key, so this is a knowing exception to the " +
 		"fail-closed default, not a claim that it is not a grant; the `configure` class the routes require and the Settings window are the " +
 		"boundary. Gating it means adding template ops to presence.GatedOps and calling Require here",
+	"cmd/relay/host_template_ops.go": "the HostTemplateOps core: deliberately UNGATED (docs/ssh-hosts.md) -- a host template runs on the host " +
+		"and config.ValidateHostTemplate refuses sandbox folders, env_passthrough and ${MODEL_KEY}, so it widens nothing on the console; " +
+		"the `configure` class the routes require and the Settings window are the boundary",
 
 	// S6 brokered every mutating CLI command over admin_op (ADR-017
 	// implementation spec §7): credential_cmd.go, mcp_cmd.go, service_cmd.go
