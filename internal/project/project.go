@@ -27,6 +27,14 @@ func CreateWithToken(s *config.Settings, name, path string, mcpIDs, models []str
 // surfaces maps MCP IDs to their runtime schema + tool surface (from
 // mcpbroker.Manager) for scope derivation. Call within store.With.
 func CreateWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
+	return createWithTokenKind(s, kind, "", name, path, mcpIDs, models, templates, surfaces)
+}
+
+// createWithTokenKind is CreateWithTokenKind plus the host the project will
+// live on. hostID only informs validation (a host project's path is judged
+// by the host's rules, e.g. a Windows drive path); ApplyCreate sets the
+// project's HostID itself afterwards.
+func createWithTokenKind(s *config.Settings, kind config.ProjectKind, hostID, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
 	kind = config.NormalizeProjectKind(kind)
 	if name == "" {
 		return config.Project{}, fmt.Errorf("project name is required")
@@ -42,7 +50,7 @@ func CreateWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path
 	// only carries what this function actually knows about; a direct caller
 	// relying solely on this function (as every pre-remote test does) still
 	// gets full path/MCP/model validation.
-	candidate := config.Project{Kind: kind, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models, ChatTemplates: templates}
+	candidate := config.Project{Kind: kind, HostID: hostID, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models, ChatTemplates: templates}
 	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, err
 	}

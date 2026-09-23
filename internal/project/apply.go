@@ -116,8 +116,8 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 		return config.Project{}, err
 	}
 
-	created, err := CreateWithTokenKind(
-		s, f.Kind, f.Name, f.Path,
+	created, err := createWithTokenKind(
+		s, f.Kind, f.HostID, f.Name, f.Path,
 		f.AllowedMcpIDs, f.AllowedModels,
 		f.ChatTemplates,
 		surfaces,
