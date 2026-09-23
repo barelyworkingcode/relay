@@ -707,7 +707,7 @@ func TestAuthorizeLaunch_HostedProjectGetsHostSpecAndNoIdentity(t *testing.T) {
 	store := newLaunchTestStore(t)
 	sessions := newLaunchTestLedger(t)
 	if err := store.With(func(s *config.Settings) {
-		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example"})
+		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example", TerminalTemplates: []config.TerminalTemplate{{ID: "shell", Name: "Shell"}}})
 	}); err != nil {
 		t.Fatalf("store.With hosts: %v", err)
 	}
@@ -733,7 +733,7 @@ func TestAuthorizeLaunch_HostedProjectDirectoryIsLexicalNotLocalRealpath(t *test
 	store := newLaunchTestStore(t)
 	sessions := newLaunchTestLedger(t)
 	if err := store.With(func(s *config.Settings) {
-		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example"})
+		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "devbox", Target: "devbox.example", TerminalTemplates: []config.TerminalTemplate{{ID: "shell", Name: "Shell"}}})
 	}); err != nil {
 		t.Fatalf("store.With hosts: %v", err)
 	}
