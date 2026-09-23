@@ -166,3 +166,25 @@ func TestApplyUpdate_HostProject(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateProjectPath_WindowsDrivePathOnlyForHostProjects(t *testing.T) {
+	cases := []struct {
+		path    string
+		hosted  bool
+		wantErr bool
+	}{
+		{"C:/Users/me/source/Acme/", true, false},
+		{`C:\Users\me\source\Acme`, true, false},
+		{"C:/Users/me", false, true},
+		{"C:/Users/../x", true, true},
+		{`C:\Users\..\x`, true, true},
+		{"C:relative", true, true},
+		{"/Users/me/proj", false, false},
+	}
+	for _, c := range cases {
+		err := validateProjectPath(c.path, c.hosted)
+		if (err != nil) != c.wantErr {
+			t.Errorf("validateProjectPath(%q, hosted=%v) err = %v, wantErr %v", c.path, c.hosted, err, c.wantErr)
+		}
+	}
+}

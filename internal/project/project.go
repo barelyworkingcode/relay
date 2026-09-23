@@ -88,20 +88,32 @@ func generateProjectToken() (string, string, error) {
 // validateProjectPath rejects a relative path (interpreted against relay's
 // CWD) or one with ".." segments, either of which could escape the
 // project's fsMCP allowed_dirs root. Shared by the create and update paths
-// (HTTP + IPC) so the rule is enforced identically everywhere.
-func validateProjectPath(path string) error {
+// (HTTP + IPC) so the rule is enforced identically everywhere. A host
+// project's path lives on the host, so a Windows host's drive-letter path
+// (C:/… or C:\…) is absolute there even though it is not on the console.
+func validateProjectPath(path string, hosted bool) error {
 	if path == "" {
 		return fmt.Errorf("project path is required")
 	}
-	if !filepath.IsAbs(path) {
+	if !filepath.IsAbs(path) && !(hosted && isWindowsAbsPath(path)) {
 		return fmt.Errorf("project path must be an absolute path: %q", path)
 	}
-	for _, seg := range strings.Split(path, string(filepath.Separator)) {
+	for _, seg := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
 		if seg == ".." {
 			return fmt.Errorf("project path must not contain '..': %q", path)
 		}
 	}
 	return nil
+}
+
+// isWindowsAbsPath reports whether path is a drive-letter absolute path:
+// a letter, a colon, then / or \.
+func isWindowsAbsPath(path string) bool {
+	if len(path) < 3 || path[1] != ':' || (path[2] != '/' && path[2] != '\\') {
+		return false
+	}
+	c := path[0]
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 // validateAllowedTemplates refuses what could not be placed: a blank entry, and
@@ -153,7 +165,7 @@ func ValidateShape(proj *config.Project) error {
 		return fmt.Errorf(`project cannot set both host_id and kind: "remote": a host project is kind: local with its directory on another machine; a remote project is a capability grant with no directory`)
 	}
 	if !proj.IsRemote() {
-		if err := validateProjectPath(proj.Path); err != nil {
+		if err := validateProjectPath(proj.Path, proj.IsHosted()); err != nil {
 			return err
 		}
 		return validateHostShape(proj)
