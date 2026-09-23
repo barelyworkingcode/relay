@@ -230,7 +230,16 @@ func (o *HostOps) commitProbe(id string, generation uint64, probe config.HostPro
 	var committed config.Host
 	var found bool
 	err := o.runQueued(context.Background(), func() error {
-		if err := o.Store.With(func(s *config.Settings) { committed, found = s.SetHostProbeIfGeneration(id, generation, probe) }); err != nil {
+		if err := o.Store.With(func(s *config.Settings) {
+			committed, found = s.SetHostProbeIfGeneration(id, generation, probe)
+			// Seed Shell + Claude Code on the first good probe, in the same
+			// mutation so no reader sees a probed host without them. Only an
+			// empty list is seeded: an operator's edits, however few, stand.
+			if found && probe.OK && len(committed.TerminalTemplates) == 0 {
+				committed.TerminalTemplates = config.DefaultHostTemplates(probe)
+				s.SetHostTemplates(id, committed.TerminalTemplates)
+			}
+		}); err != nil {
 			return fmt.Errorf("save probe result: %w", err)
 		}
 		return nil
