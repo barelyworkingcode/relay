@@ -256,6 +256,9 @@ type IPCContext struct {
 	// share the same probe and the same audit record.
 	HostOps     *HostOps
 	TemplateOps *TemplateOps
+	// HostTemplateOps backs the Hosts tab's per-host template list
+	// (ipc_host_templates.go) and shares the tray's command queue.
+	HostTemplateOps *HostTemplateOps
 	// ConfigDir and LogsDir back the Overview tab's "Reveal" actions
 	// (ipc_overview.go). ConfigDir is a plain string because it is fixed at
 	// boot; LogsDir is a func because resolving it can fail (directory
@@ -369,6 +372,12 @@ const (
 	MsgCreateTemplate = "create_template"
 	MsgUpdateTemplate = "update_template"
 	MsgRemoveTemplate = "remove_template"
+
+	// Host templates (ipc_host_templates.go)
+	MsgListHostTemplates  = "list_host_templates"
+	MsgCreateHostTemplate = "create_host_template"
+	MsgUpdateHostTemplate = "update_host_template"
+	MsgRemoveHostTemplate = "remove_host_template"
 )
 
 // ---------------------------------------------------------------------------
@@ -442,6 +451,12 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgCreateTemplate: ipcCreateTemplate,
 	MsgUpdateTemplate: ipcUpdateTemplate,
 	MsgRemoveTemplate: ipcRemoveTemplate,
+
+	// Host templates (ipc_host_templates.go)
+	MsgListHostTemplates:  ipcListHostTemplates,
+	MsgCreateHostTemplate: ipcCreateHostTemplate,
+	MsgUpdateHostTemplate: ipcUpdateHostTemplate,
+	MsgRemoveHostTemplate: ipcRemoveHostTemplate,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.
