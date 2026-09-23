@@ -341,6 +341,9 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		tmpl = &t
 		baseFields.TemplateID = tmpl.ID
 	} else {
+		if req.Kind == KindPi && proj != nil && proj.IsHosted() {
+			return nil, forbidden("provider_not_available_on_host", `provider "pi" is not available on a host project`, baseFields)
+		}
 		if !kindAllowed(settings, proj, req.Kind) {
 			return nil, forbidden("template_not_allowed", fmt.Sprintf("template %q is not available for this project", kindTemplateIDs[req.Kind]), baseFields)
 		}
@@ -436,9 +439,8 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 
 	var modelKeyLabel string
 	// A host terminal runs on the far end, which has no route to the console's
-	// model endpoint, and a host template cannot name ${MODEL_KEY}: a key
-	// minted for one, even with model_key set, would be a live credential
-	// nothing can use.
+	// model endpoint. ValidateHostTemplate already refuses model_key on a host
+	// template; this guard keeps a key from being minted if one slips through.
 	hostedPTY := req.Kind == KindPTY && proj != nil && proj.IsHosted()
 	if wantsModelKey(req.Kind, tmpl) && !hostedPTY {
 		label := "session:" + sessionID
@@ -581,8 +583,10 @@ var kindTemplateIDs = map[string]string{
 // kindAllowed is the template gate for a claude, pi or chat session. A hosted
 // project's claude session runs the host's own Claude Code, so the host having
 // a claude-code template is what permits it; allowed_templates names console
-// templates only and says nothing about a host's. Every other kind, hosted or
-// not, is gated by allowed_templates.
+// templates only and says nothing about a host's. A pi session on a hosted
+// project never reaches here: AuthorizeLaunch refuses it first, since pi's
+// overlay writes into the project dir and links into the console's home.
+// Every other kind is gated by allowed_templates.
 func kindAllowed(settings *config.Settings, proj *config.Project, kind string) bool {
 	id := kindTemplateIDs[kind]
 	if kind == KindClaude && proj != nil && proj.IsHosted() {

@@ -344,7 +344,9 @@ against the console's PATH, `$SHELL` or filesystem.
   when the probe found one.
 
 Existing templates are never overwritten: a re-probe leaves edits alone, and
-only a host with an empty list is seeded.
+only a host with an empty list is seeded. Deleting every template on a host
+therefore means the next successful probe re-seeds Shell and Claude Code;
+keep at least one template to stop that.
 
 **Launch.** relay-sessions execs `ssh_argv + ["-tt", "--", <remote>]` under
 the local pty; `pty.Setsize` propagates as SIGWINCH through ssh. `<remote>`
@@ -370,13 +372,16 @@ logged). Console templates are never offered on a host project. A host
 project may launch every template of its host; `allowed_templates` gates
 console templates only. A claude (chat) session on a host project passes
 the kind gate iff its host has a `claude-code` template, and still execs the
-probed `claude_path` (see *relayLLM*). pi stays refused on a host.
+probed `claude_path` (see *relayLLM*). A pi session on a host project is
+refused at launch (`provider_not_available_on_host`): pi's overlay writes
+into the project directory and symlinks into the console's home (see *What
+is deliberately absent*).
 
 **Validation.** `config.ValidateHostTemplate` is `ValidateTerminalTemplate`
 plus refusals of `sandbox`, `read` and `read_write` (see *The session host
 never sandboxes*), `env_passthrough` (it would copy the console's
-environment to another machine) and `${MODEL_KEY}` (the model endpoint
-listens on the console; the key has no business leaving it).
+environment to another machine), and `model_key` or `${MODEL_KEY}` (the
+model endpoint listens on the console; the key has no business leaving it).
 
 **Example: a shell that survives an ssh drop on a Windows host.** The remote
 script runs under Git for Windows' `sh` with a non-interactive PATH, so the

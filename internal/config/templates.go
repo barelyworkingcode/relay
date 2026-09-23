@@ -332,13 +332,14 @@ var ErrHostTemplateSandbox = errors.New("host template cannot be sandboxed")
 // the host's.
 var ErrHostTemplateEnvPassthrough = errors.New("host template cannot pass through console environment variables")
 
-// ErrHostTemplateModelKey is refused at validation: ${MODEL_KEY} in a host
-// template's env. A host has no console model socket to reach with the key.
+// ErrHostTemplateModelKey is refused at validation: model_key or ${MODEL_KEY}
+// in a host template's env. A host has no console model socket to reach with
+// the key.
 var ErrHostTemplateModelKey = errors.New("host template cannot use ${MODEL_KEY}")
 
 // ValidateHostTemplate is ValidateTerminalTemplate plus the refusals that
 // follow from a host template running on the host: no sandbox, no sandbox
-// folders, no env passthrough, and no ${MODEL_KEY}.
+// folders, no env passthrough, and no model_key or ${MODEL_KEY}.
 func ValidateHostTemplate(t TerminalTemplate) error {
 	if err := ValidateTerminalTemplate(t); err != nil {
 		return err
@@ -354,6 +355,9 @@ func ValidateHostTemplate(t TerminalTemplate) error {
 	}
 	if len(t.EnvPassthrough) > 0 {
 		return fmt.Errorf("terminal template %q: %w", t.ID, ErrHostTemplateEnvPassthrough)
+	}
+	if t.ModelKey {
+		return fmt.Errorf("terminal template %q: %w (model_key)", t.ID, ErrHostTemplateModelKey)
 	}
 	for k, v := range t.Env {
 		if strings.Contains(v, ModelKeyMarker) {
