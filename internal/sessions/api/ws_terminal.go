@@ -50,6 +50,7 @@ func NewTerminalHandlers(hub *Hub, mgr *terminal.Manager) *TerminalHandlers {
 	// sends this frame.
 	hub.RegisterHandler(events.WSMsgTerminalTemplates, th.handleTerminalTemplatesRetired)
 	hub.RegisterHandler(events.WSMsgJoinTerminal, th.handleJoinTerminal)
+	hub.RegisterHandler(events.WSMsgTerminalReconnect, th.handleTerminalReconnect)
 	hub.RegisterHandler(events.WSMsgLeaveTerminal, th.handleLeaveTerminal)
 	hub.RegisterHandler(events.WSMsgTerminalInput, th.handleTerminalInput)
 	hub.RegisterHandler(events.WSMsgTerminalResize, th.handleTerminalResize)
@@ -72,15 +73,50 @@ func (th *TerminalHandlers) handleJoinTerminal(c *Conn, raw []byte) {
 		TerminalID string `json:"terminalId"`
 	}
 	_ = json.Unmarshal(raw, &req)
-	if req.TerminalID == "" {
+	if sess, ok := th.lookup(c, req.TerminalID); ok {
+		th.join(c, sess)
+	}
+}
+
+// handleTerminalReconnect re-joins a terminal after a client reload: the
+// fresh connection is registered as a viewer and gets terminal_joined with
+// scrollback, exactly like join_terminal. The client's current size is
+// applied first so the scrollback it replays and the output that follows
+// match its viewport — but only when it actually differs, because a
+// same-size resize is not a no-op on Windows (ConPTY clears the screen).
+func (th *TerminalHandlers) handleTerminalReconnect(c *Conn, raw []byte) {
+	var req struct {
+		TerminalID string `json:"terminalId"`
+		Cols       uint16 `json:"cols"`
+		Rows       uint16 `json:"rows"`
+	}
+	_ = json.Unmarshal(raw, &req)
+	sess, ok := th.lookup(c, req.TerminalID)
+	if !ok {
 		return
 	}
-	sess, ok := th.mgr.Get(req.TerminalID)
-	if !ok {
-		sendWSError(c, "terminal not found: "+req.TerminalID)
-		return
+	if req.Cols > 0 && req.Rows > 0 {
+		if cols, rows := sess.Size(); cols != req.Cols || rows != req.Rows {
+			// Best-effort: a stopped terminal has no PTY to resize, and
+			// its viewer still needs the join (scrollback + terminal_exit).
+			_ = sess.Resize(req.Cols, req.Rows)
+		}
 	}
 	th.join(c, sess)
+}
+
+// lookup resolves a terminal id for join_terminal and terminal_reconnect.
+// An empty id is silently ignored; an unknown one gets an error frame.
+func (th *TerminalHandlers) lookup(c *Conn, terminalID string) (*terminal.Session, bool) {
+	if terminalID == "" {
+		return nil, false
+	}
+	sess, ok := th.mgr.Get(terminalID)
+	if !ok {
+		sendWSError(c, "terminal not found: "+terminalID)
+		return nil, false
+	}
+	return sess, true
 }
 
 func (th *TerminalHandlers) handleLeaveTerminal(c *Conn, raw []byte) {
