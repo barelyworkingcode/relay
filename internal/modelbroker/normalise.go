@@ -110,6 +110,26 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
+// hasPiGrant reports whether grant holds a pi session spelling of canon:
+// "pi/<provider>/<canon>" for any non-empty provider, "relay-router"
+// included. A pi session reaches the broker with the bare id whatever
+// provider its model id names, so the provider segment does not narrow the
+// grant. The provider is the first segment only; everything after it must
+// equal canon exactly, so an endpoint id keeps its own slash.
+func hasPiGrant(grant []string, canon string) bool {
+	for _, e := range grant {
+		rest, ok := strings.CutPrefix(e, "pi/")
+		if !ok {
+			continue
+		}
+		provider, id, ok := strings.Cut(rest, "/")
+		if ok && provider != "" && id == canon {
+			return true
+		}
+	}
+	return false
+}
+
 // granted decides whether grant covers canon (already resolved to a catalog
 // row), applying spec §6.2's per-group spellings. A modelMap row recurses
 // onto its target's own row, so allowing a modelMap key is really allowing
@@ -122,12 +142,15 @@ func granted(canon string, row Row, grant []string, rows []Row) bool {
 	}
 	switch classify(row) {
 	case groupLlama:
-		return containsString(grant, "llama/"+canon) || containsString(grant, "pi/relay-router/"+canon)
+		return containsString(grant, "llama/"+canon) || hasPiGrant(grant, canon)
 	case groupMLX:
-		return containsString(grant, "mlx/"+canon) || containsString(grant, "pi/relay-router/"+canon)
+		return containsString(grant, "mlx/"+canon) || hasPiGrant(grant, canon)
 	case groupVirtual, groupOther:
-		return containsString(grant, "pi/relay-router/"+canon)
+		return hasPiGrant(grant, canon)
 	case groupModelMap:
+		if hasPiGrant(grant, canon) {
+			return true
+		}
 		if row.Target == "" {
 			return false
 		}

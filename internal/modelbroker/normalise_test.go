@@ -51,6 +51,18 @@ func TestAllowed_SpecTableRows(t *testing.T) {
 		// --- §6.2 virtual name: pi/relay-router/<v> spelling only ---
 		{"pi-prefixed grant for virtual", "vCode", []string{"pi/relay-router/vCode"}, true, "vCode", ReasonAllowed},
 
+		// --- pi session spelling: pi/<any provider>/<id> grants <id> ---
+		{"pi session grant for llama alias", "foo", []string{"pi/acme/foo"}, true, "foo", ReasonAllowed},
+		{"pi session grant for mlx alias", "bar", []string{"pi/acme/bar"}, true, "bar", ReasonAllowed},
+		{"pi session grant for virtual", "vCode", []string{"pi/acme/vCode"}, true, "vCode", ReasonAllowed},
+		{"pi session grant for endpoint model", "myep/model1", []string{"pi/acme/myep/model1"}, true, "myep/model1", ReasonAllowed},
+		{"modelMap key allowed via pi session grant of the key", "claude-haiku", []string{"pi/acme/claude-haiku"}, true, "claude-haiku", ReasonAllowed},
+		{"modelMap allowed via pi session target grant", "claude-sonnet", []string{"pi/acme/bar"}, true, "claude-sonnet", ReasonAllowed},
+		{"pi session grant for another id denies", "foo", []string{"pi/acme/bar"}, false, "foo", ReasonDenied},
+		{"pi grant with empty provider denies", "foo", []string{"pi//foo"}, false, "foo", ReasonDenied},
+		{"pi grant with no provider segment denies", "foo", []string{"pi/foo"}, false, "foo", ReasonDenied},
+		{"pi session grant covers only the id after the provider", "myep/model1", []string{"pi/myep/model1"}, false, "myep/model1", ReasonDenied},
+
 		// --- §6.2 modelMap key: allowed iff target is allowed ---
 		{"modelMap allowed via bare target grant", "claude-haiku", []string{"foo"}, true, "claude-haiku", ReasonAllowed},
 		{"modelMap allowed via prefixed target grant", "claude-sonnet", []string{"mlx/bar"}, true, "claude-sonnet", ReasonAllowed},

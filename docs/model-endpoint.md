@@ -102,6 +102,15 @@ of those aliases is rewritten to the bare id before the request reaches
 `router.sock` — forwarding the caller's original spelling unchanged would
 have the router itself 400 it as an unknown model.
 
+On the grant side, an `allowed_models` entry `pi/<provider>/<id>` covers a
+request for `<id>` whatever the provider segment says, `relay-router`
+included. A pi session is created under that spelling but reaches the broker
+with the bare id, so the grant that let the session start must also let its
+requests through. Only the first segment is the provider: `pi/ep/m` covers
+`m`, never the endpoint id `ep/m` (that needs `pi/<provider>/ep/m`). A
+modelMap key is covered by `pi/<provider>/<key>` just as by the bare key, and
+also by any spelling that covers its target.
+
 ## Granting a service models, in Settings
 
 Settings' service editor (`web/src/app.js`'s `renderServiceForm`) shows an
