@@ -111,6 +111,7 @@ type PiProvider struct {
 	openToolArgs    strings.Builder
 	allBlocks       []map[string]any
 	toolNamesByID   map[string]string
+	pendingError    string
 
 	lastActivity atomic.Int64
 	stopIdle     chan struct{}
@@ -193,7 +194,7 @@ func (p *PiProvider) buildPiArgs(sessionDir, skillDir, sysPromptPath string) []s
 	args := []string{"--mode", "rpc"}
 
 	if p.modelID != "" {
-		args = append(args, "--provider", pioverlay.RelayProvider, "--model", p.modelID)
+		args = append(args, "--provider", pioverlay.RelayProvider, "--model", piBrokerModelID(p.modelID))
 	}
 	if p.thinkingLevel != "" {
 		args = append(args, "--thinking", p.thinkingLevel)
@@ -215,6 +216,23 @@ func (p *PiProvider) buildPiArgs(sessionDir, skillDir, sysPromptPath string) []s
 	args = append(args, p.cfg.ExtraArgs...)
 
 	return args
+}
+
+// piBrokerModelID maps a session model to the id relay's model broker
+// dispatches on. Session creation spells a pi model "pi/<provider>/<id>" so
+// the session kind can be derived from the string; the provider segment names
+// an entry in pi's own global config, which the relay overlay replaces, so
+// only <id> means anything to the broker. Any other spelling passes through.
+func piBrokerModelID(model string) string {
+	rest, ok := strings.CutPrefix(model, "pi/")
+	if !ok {
+		return model
+	}
+	provider, id, ok := strings.Cut(rest, "/")
+	if !ok || provider == "" || id == "" {
+		return model
+	}
+	return id
 }
 
 func (p *PiProvider) Start() (err error) {
@@ -291,7 +309,7 @@ func (p *PiProvider) Start() (err error) {
 		p.modelProxy = proxy
 		if baseURL != "" {
 			overlayDir, err := pioverlay.MaterializePiOverlay(p.directory, pioverlay.PiOverlayInputs{
-				ModelID:        p.modelID,
+				ModelID:        piBrokerModelID(p.modelID),
 				ModelKey:       p.cfg.ModelKey,
 				BaseURL:        baseURL + "/v1",
 				SupportsImages: true,
@@ -596,6 +614,7 @@ func (p *PiProvider) resetTurnState() {
 	p.openToolArgs.Reset()
 	p.allBlocks = nil
 	p.toolNamesByID = make(map[string]string)
+	p.pendingError = ""
 	p.streamMu.Unlock()
 }
 
@@ -655,7 +674,10 @@ func (p *PiProvider) translate(eventType string, raw json.RawMessage) {
 			p.rememberToolName(ev.ToolCallID, ev.ToolName)
 		}
 
-	case "message_start", "message_end", "turn_start", "turn_end":
+	case "message_end":
+		p.holdFailedAssistantMessage(raw)
+
+	case "message_start", "turn_start", "turn_end":
 		// Bookkeeping — already covered by the finer message_update translations.
 
 	case "auto_retry_start", "auto_retry_end":
@@ -664,6 +686,54 @@ func (p *PiProvider) translate(eventType string, raw json.RawMessage) {
 	default:
 		p.handler("raw_output", raw)
 	}
+}
+
+// holdFailedAssistantMessage records a failed model request. pi reports one
+// (an HTTP error from the model endpoint, an unknown model) only as an
+// assistant message with stopReason "error" and no content; without this the
+// turn ends as an empty reply. The failure is held until agent_end rather
+// than emitted here, because pi fails the message the same way before an
+// automatic retry that may still succeed.
+func (p *PiProvider) holdFailedAssistantMessage(raw json.RawMessage) {
+	var ev struct {
+		Message struct {
+			Role         string `json:"role"`
+			StopReason   string `json:"stopReason"`
+			ErrorMessage string `json:"errorMessage"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(raw, &ev) != nil || ev.Message.Role != "assistant" || ev.Message.StopReason != "error" {
+		return
+	}
+	msg := ev.Message.ErrorMessage
+	if msg == "" {
+		msg = "model request failed"
+	}
+	p.streamMu.Lock()
+	p.pendingError = msg
+	p.streamMu.Unlock()
+}
+
+// reportHeldFailure emits the failure held by holdFailedAssistantMessage,
+// unless pi is about to retry the run.
+func (p *PiProvider) reportHeldFailure(willRetry bool) {
+	p.streamMu.Lock()
+	msg := p.pendingError
+	p.pendingError = ""
+	p.streamMu.Unlock()
+	if msg == "" {
+		return
+	}
+	p.mu.Lock()
+	modelID := p.modelID
+	p.mu.Unlock()
+	if willRetry {
+		slog.Info("pi model request failed, retrying", "session", p.session.ID, "model", modelID, "error", msg)
+		return
+	}
+	slog.Warn("pi model request failed", "session", p.session.ID, "model", modelID, "error", msg)
+	data, _ := json.Marshal(map[string]string{"error": msg})
+	p.handler("error", data)
 }
 
 func (p *PiProvider) emitRetryNotice(eventType string, raw json.RawMessage) {
@@ -814,7 +884,8 @@ func (p *PiProvider) translateMessageUpdate(raw json.RawMessage) {
 		// Carries the model's stop reason; translateAgentEnd signals turn end.
 
 	case "error":
-		p.emitter.ResultError(ev.Reason)
+		// message_end carries the same failure with pi's full errorMessage;
+		// agent_end reports it, once, unless pi retries.
 	}
 }
 
@@ -851,6 +922,12 @@ func (p *PiProvider) translateAgentEnd(raw json.RawMessage) {
 
 	statsData, _ := json.Marshal(stats)
 	p.handler(events.HandlerStatsUpdate, statsData)
+
+	var end struct {
+		WillRetry bool `json:"willRetry"`
+	}
+	_ = json.Unmarshal(raw, &end)
+	p.reportHeldFailure(end.WillRetry)
 
 	p.streamMu.Lock()
 	blocks := p.allBlocks
