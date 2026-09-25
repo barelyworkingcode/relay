@@ -156,8 +156,9 @@ func parseBaseSettings(raw json.RawMessage) BaseChatSettings {
 // tool child is spawned through the shim (ShimSpec) to become its own
 // project_session root: that is what makes relay's own ancestry-based tool
 // auth resolve for it at all, and what gets it C7's default sandbox. A host
-// session has no local process to serve as that root, so it never spawns
-// one.
+// session never spawns one: relay mints no sandbox profile or launch
+// identity for a host project, so a local tool child would run unconfined
+// on this Mac, acting on this machine's resources instead of the host's.
 func buildChatMCPManager(cfg ChatConfig, session *sessionstypes.Session) sessionsmcp.MCPClient {
 	if !useRelayTools(session.Settings) {
 		return nil

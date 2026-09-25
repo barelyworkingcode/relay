@@ -128,9 +128,10 @@ exempt from: see [`docs/session-host.md`](session-host.md#what-is-not-built-yet)
 session's optional relay-MCP tool child runs through the shim like any other
 sandboxed child once `RelayMCPCommand` is set — except on a host project,
 where `buildChatMCPManager` declines to spawn one at all (`host_session`):
-there is no local process for the tool child to root itself on, the same
-reason a host session gets none of relay's other local confinement
-machinery. A host
+relay mints no sandbox profile or launch identity for a host project, so a
+local tool child would run unconfined on this Mac, acting on this machine's
+resources instead of the host's — the same reason a host session gets none
+of relay's other local confinement machinery. A host
 project's session is refused that confinement outright, not merely skipped
 by omission: `cmd/relay/session_launch.go`'s `AuthorizeLaunch` computes
 `sandbox := wantsSandbox(req.Kind, tmpl) && !(proj != nil &&

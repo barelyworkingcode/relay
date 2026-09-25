@@ -35,7 +35,7 @@ the one field a stored record contributes, and a fresh install defaults it to
 `true`.
 
 `Args` carries `-relay-mcp-command <relayBin>` alongside the socket flags,
-the same absolute path relay resolved for its own `Command`: relay-sessions
+the relay binary path relay derives `Command` from: relay-sessions
 learns the one binary that serves `relay mcp` this way, with no env fallback
 and no path derivation of its own, and hands it on to Claude's `--mcp-config`
 and a chat session's tool child as `RelayMCPCommand` (see [The
@@ -188,8 +188,10 @@ session's relay-MCP tool child through the shim when the session opts into
 `cmd/relaysessions/main.go` resolves `RelayMCPCommand` once at start from the
 `-relay-mcp-command` flag the built-in service record carries (see [The
 built-in service record](#the-built-in-service-record)) and sets it on both
-`ChatConfig` and `ClaudeConfig`. A host session still gets no tool child —
-there is nothing local to root it on. A session that asked for
+`ChatConfig` and `ClaudeConfig`. A host session still gets no tool child:
+relay mints no sandbox profile or launch identity for a host project, so a
+local tool child would run unconfined on this Mac, acting on this machine's
+resources instead of the host's. A session that asked for
 `useRelayTools` and got no tool server logs `relay tools requested but
 unavailable` at Warn, with a `reason` of `relay_mcp_command_unset`,
 `host_session`, `mcp_start_failed` or `relay_server_failed`.

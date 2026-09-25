@@ -107,13 +107,6 @@ type ClaudeProvider struct {
 	// process outside this session needs to keep reading after it ends.
 	spawnFiles []string
 
-	// relayMCPWritten is true once the current spawn's --mcp-config actually
-	// carries a "relay" entry — translateSystem only checks the init
-	// message's own mcp_servers against this spawn's expectation when it did.
-	relayMCPWritten bool
-	// relayInitWarned guards relay_server_failed to at most once per spawn.
-	relayInitWarned bool
-
 	// perms services a host session's control_request permission prompts —
 	// a host has no local hook binary to dial, so Claude's own
 	// --permission-prompt-tool stdio moves the same question onto its
@@ -134,6 +127,21 @@ type ClaudeProvider struct {
 	snapMu        sync.Mutex
 	snapMessageID string
 	snapNextIdx   int
+}
+
+// claudeSpawnState holds the relay-MCP init flags for one spawn of the
+// Claude child. Start builds a fresh one and hands it down through
+// readStdout to translateSystem instead of storing the flags on
+// ClaudeProvider itself: a killed spawn's readStdout goroutine can outlive
+// Kill (which waits only on cmd.Wait, not the reader), so a provider-level
+// field would let it race the next spawn's Start over the same memory.
+type claudeSpawnState struct {
+	// relayMCPWritten is true once this spawn's --mcp-config actually
+	// carries a "relay" entry — translateSystem only checks the init
+	// message's own mcp_servers against this spawn's expectation when it did.
+	relayMCPWritten bool
+	// relayInitWarned guards relay_server_failed to at most once per spawn.
+	relayInitWarned bool
 }
 
 // NewClaudeProvider constructs a provider for session. perms may be nil for
@@ -317,8 +325,7 @@ func buildHostExec(spec *sessionstypes.HostSpec, dir string, args []string, sess
 
 func (p *ClaudeProvider) Start() error {
 	p.cleanupSpawnFiles()
-	p.relayMCPWritten = false
-	p.relayInitWarned = false
+	spawn := &claudeSpawnState{}
 
 	var cmd *exec.Cmd
 	var statusR *os.File
@@ -375,7 +382,7 @@ func (p *ClaudeProvider) Start() error {
 			}
 			mcpConfigPath = path
 			p.spawnFiles = append(p.spawnFiles, path)
-			p.relayMCPWritten = true
+			spawn.relayMCPWritten = true
 		} else if useRelayTools(p.session.Settings) {
 			warnRelayToolsUnavailable(p.session.ID, "claude", "relay_mcp_command_unset")
 		}
@@ -467,7 +474,7 @@ func (p *ClaudeProvider) Start() error {
 	p.waitDone = make(chan struct{})
 	p.touchActivity()
 
-	go p.readStdout(stdout)
+	go p.readStdout(stdout, spawn)
 	go p.readStderr(stderr)
 	go p.waitForExit()
 	go p.idleWatcher()
@@ -483,7 +490,7 @@ func (p *ClaudeProvider) cleanupSpawnFiles() {
 	p.spawnFiles = nil
 }
 
-func (p *ClaudeProvider) readStdout(r io.ReadCloser) {
+func (p *ClaudeProvider) readStdout(r io.ReadCloser, spawn *claudeSpawnState) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
@@ -492,7 +499,7 @@ func (p *ClaudeProvider) readStdout(r io.ReadCloser) {
 		if len(line) == 0 {
 			continue
 		}
-		p.processLine(json.RawMessage(append([]byte(nil), line...)))
+		p.processLine(json.RawMessage(append([]byte(nil), line...)), spawn)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -529,7 +536,7 @@ func (p *ClaudeProvider) waitForExit() {
 	p.handler("process_exited", data)
 }
 
-func (p *ClaudeProvider) processLine(raw json.RawMessage) {
+func (p *ClaudeProvider) processLine(raw json.RawMessage, spawn *claudeSpawnState) {
 	p.touchActivity()
 
 	var envelope struct {
@@ -543,7 +550,7 @@ func (p *ClaudeProvider) processLine(raw json.RawMessage) {
 
 	switch envelope.Type {
 	case events.EvtSystem:
-		p.translateSystem(envelope.Subtype, raw)
+		p.translateSystem(envelope.Subtype, raw, spawn)
 	case events.EvtAssistant:
 		p.translateAssistant(raw)
 	case "user":
@@ -606,7 +613,7 @@ func claudeRelayServerStatus(entries []json.RawMessage) (status string, present 
 	return "", false
 }
 
-func (p *ClaudeProvider) translateSystem(subtype string, raw json.RawMessage) {
+func (p *ClaudeProvider) translateSystem(subtype string, raw json.RawMessage, spawn *claudeSpawnState) {
 	switch subtype {
 	case events.SystemInitSubtype:
 		var init struct {
@@ -633,9 +640,9 @@ func (p *ClaudeProvider) translateSystem(subtype string, raw json.RawMessage) {
 		if cwd == "" {
 			cwd = p.directory
 		}
-		if p.relayMCPWritten && !p.relayInitWarned {
+		if spawn.relayMCPWritten && !spawn.relayInitWarned {
 			if status, present := claudeRelayServerStatus(init.MCPServers); !present || status == "failed" {
-				p.relayInitWarned = true
+				spawn.relayInitWarned = true
 				reported := status
 				if !present {
 					reported = "absent"
