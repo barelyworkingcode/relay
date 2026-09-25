@@ -93,6 +93,9 @@ func TestRender_NothingIsDeniedByName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
+	if n := strings.Count(got, "(deny file-read*"); n != 2 {
+		t.Fatalf("profile has %d file-read deny blocks, want the bare deny and the baseline block:\n%s", n, got)
+	}
 	allowed := map[string]bool{usrLocalEtcTerm: true, usrLocalVarTerm: true}
 	for _, term := range namedFileDenyTerms(got) {
 		if !allowed[term] {

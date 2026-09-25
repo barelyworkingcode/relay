@@ -153,9 +153,9 @@ func Render(s Spec) (string, error) {
 	}
 	writeBlock(&b, "allow file-read*", baseline)
 
-	// Between the baseline and the Spec's grants on purpose: an explicit Spec
-	// grant under either subtree renders later and reopens it. That is how a
-	// provider install grant reaches its openssl.cnf.
+	// Between the baseline and the Spec's grants on purpose: any Spec grant
+	// that covers part of either subtree renders later and reopens that part,
+	// whether it names a path beneath it or an ancestor such as /usr/local.
 	baselineDenies := make([]string, 0, len(baselineDenyDirs))
 	for _, p := range baselineDenyDirs {
 		terms, _, err := subtreeTerms(p)

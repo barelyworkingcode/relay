@@ -488,9 +488,11 @@ covered here.
 File access is denied by default, in both directions. `sandboxSpecForLaunch`
 (`cmd/relay/session_sandbox.go`) names what a session is granted and
 `internal/sessions/sandbox` renders it as one Seatbelt profile: a bare
-`(deny file-read* file-write*)`, then the grants, then read-only `stat` on the
-parents of each grant so a process can reach it, then the template's `deny`
-list (below). Nothing is denied by name unless a template says so.
+`(deny file-read* file-write*)`, then the system baseline reads, then the
+baseline carve-out (`/usr/local/etc` and `/usr/local/var`, read and write),
+then the session's grants, then read-only `stat` on the parents of each grant
+so a process can reach it, then the template's `deny` list (below). Apart from
+that fixed carve-out, nothing is denied by name unless a template says so.
 Relay's own data directory, another project, eve's data and `~/.ssh` are
 unreachable unless a template grants them, so a directory nobody thought to
 protect is protected anyway. Everything that is not a file (network, process,
@@ -506,7 +508,7 @@ A session's folders come from four places, and only the third is configured:
 
 | Grant | Paths | Where it lives |
 |---|---|---|
-| **System baseline** (read-only, every sandboxed session) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves; `/usr/local/etc` and `/usr/local/var` are denied (read and write) | `sandbox.baselineReadDirs`. The smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. `sandbox.baselineDenyDirs` carves out Intel Homebrew's service config and data, which can hold credentials. The deny renders before the session's own grants, so an explicit grant under either subtree (a provider install's `openssl.cnf`, say) reopens it. |
+| **System baseline** (read-only, every sandboxed session) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves; `/usr/local/etc` and `/usr/local/var` are denied (read and write) | `sandbox.baselineReadDirs`. The smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. `sandbox.baselineDenyDirs` carves out Intel Homebrew's service config and data, which can hold credentials. The deny renders before the session's own grants, so any later grant that covers part of either subtree reopens that part: a grant beneath it (`/usr/local/etc/example.conf`, say) and an ancestor grant such as `/usr/local` alike. |
 | **Every session** | the project directory (read-write), `os.TempDir()`, `DARWIN_USER_TEMP_DIR` and `/dev` (read-write), the developer tools (read-only: `<Xcode>.app/Contents`, or `/Library/Developer/CommandLineTools`, resolved from `/var/select/developer_dir`) | `sandboxSpecForLaunch`. A pi session also gets `<config dir>/sessions/pi-sessions` for its transcript, since that path moves with `relay --config-dir` and no template can name it. |
 | **The template** | its `read` and `read_write` lists | the template's entry in `settings.json` |
 
