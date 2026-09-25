@@ -313,3 +313,25 @@ func cloneBlobs(in map[string]json.RawMessage) map[string]json.RawMessage {
 	}
 	return out
 }
+
+func TestUpdateWidensGrant_ContextComparesNumbersByTextAndRefusesTrailingData(t *testing.T) {
+	unscoped := McpSurfaces{"macmcp": {Schema: json.RawMessage(mailSchemaWithUnscopedField), SchemaVersion: 2}}
+	untyped := McpSurfaces{"macmcp": {Schema: json.RawMessage(mailSchemaWithUntypedField), SchemaVersion: 2}}
+	one := `{"mail_accounts":["Alice"]}`
+	oneThenStar := `{"mail_accounts":["Alice"]} {"mail_accounts":["*"]}`
+
+	runContextWideningRows(t, []contextWideningRow{
+		{"2^53+1 against 2^53 widens with no surfaces",
+			blobs("macmcp", `{"limit":9007199254740992}`), blobs("macmcp", `{"limit":9007199254740993}`), nil, true},
+		{"2^53+1 against 2^53 widens on a non-restrict field",
+			blobs("macmcp", `{"tags":[9007199254740992]}`), blobs("macmcp", `{"tags":[9007199254740993]}`), unscoped, true},
+		{"2^53+1 against 2^53 widens on a restrict field",
+			blobs("macmcp", `{"mail_owner":[9007199254740992]}`), blobs("macmcp", `{"mail_owner":[9007199254740993]}`), untyped, true},
+		{"a 2^53+1 element not in a stored list holding 2^53 widens",
+			blobs("macmcp", `{"mail_owner":["Alice",9007199254740992]}`), blobs("macmcp", `{"mail_owner":[9007199254740993]}`), untyped, true},
+		{"the same number spelled differently widens",
+			blobs("macmcp", `{"limit":100}`), blobs("macmcp", `{"limit":1e2}`), nil, true},
+		{"a requested blob with trailing data widens", blobs("macmcp", one), blobs("macmcp", oneThenStar), nil, true},
+		{"a stored blob with trailing data widens", blobs("macmcp", oneThenStar), blobs("macmcp", one), nil, true},
+	})
+}
