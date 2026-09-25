@@ -82,3 +82,25 @@ func TestPreflight(t *testing.T) {
 		})
 	}
 }
+
+func TestAllowedByName(t *testing.T) {
+	cases := []struct {
+		name     string
+		tool     string
+		patterns []string
+		want     bool
+	}{
+		{"bare exact match", "Bash", []string{"Read", "Bash"}, true},
+		{"Tool:arg entry never matches", "Bash", []string{`Bash:"command":"git`}, false},
+		{"different tool", "Bash", []string{"Read"}, false},
+		{"case mismatch", "Bash", []string{"bash"}, false},
+		{"empty patterns", "Bash", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AllowedByName(tc.tool, tc.patterns); got != tc.want {
+				t.Fatalf("AllowedByName(%q, %q) = %v, want %v", tc.tool, tc.patterns, got, tc.want)
+			}
+		})
+	}
+}
