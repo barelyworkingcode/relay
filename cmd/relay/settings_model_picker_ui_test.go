@@ -202,6 +202,17 @@ func TestModelPicker_RequestsCatalogOnlyForLocalForms(t *testing.T) {
 	if n := strings.Count(sentMessages(t, vm), `"type":"list_models"`); n != 1 {
 		t.Fatalf("opening a local form sent %d list_models, want 1: %s", n, sentMessages(t, vm))
 	}
+	for _, step := range []struct {
+		kinds []string
+		want  int
+	}{{[]string{"local"}, 1}, {[]string{"remote", "local"}, 2}} {
+		for _, k := range step.kinds {
+			evalString(t, vm, `(window.setProjKind('`+k+`'), true)`)
+		}
+		if n := strings.Count(sentMessages(t, vm), `"type":"list_models"`); n != step.want {
+			t.Errorf("after setProjKind %v: %d list_models sent, want %d", step.kinds, n, step.want)
+		}
+	}
 }
 
 func TestModelPicker_RendersGroupsAliasAndCollapsedOther(t *testing.T) {
@@ -305,5 +316,105 @@ func TestModelPicker_OtherToggleShowsRows(t *testing.T) {
 	html := evalString(t, vm, `(window.toggleProjModelsOther(), window.renderProjectForm())`)
 	if !strings.Contains(html, `data-model-id="acme-llm/kokoro-tts"`) {
 		t.Errorf("Other rows still hidden after toggling\n%s", html)
+	}
+}
+
+// modelRow finds id's checkbox in rendered picker HTML and the group it sits in.
+func modelRow(html, id string) (group string, checked, found bool) {
+	input := regexp.MustCompile(`<input[^>]*data-model-id="` + regexp.QuoteMeta(id) + `"[^>]*>`)
+	for _, seg := range strings.Split(html, `data-model-group="`)[1:] {
+		if in := input.FindString(seg); in != "" {
+			return seg[:strings.Index(seg, `"`)], regexp.MustCompile(`\schecked[\s/>]`).MatchString(in), true
+		}
+	}
+	return "", false, false
+}
+
+func TestModelPicker_UncheckedSavedIdsStayListed(t *testing.T) {
+	cases := []struct{ name, catalog, id, group string }{
+		{"unavailable id", pickerCatalogOK, "gone-model", "Not currently available"},
+		{"available id", pickerCatalogOK, "haiku", "Claude"},
+		{"id while the catalog is down", pickerCatalogUnavailable, "haiku", "Saved"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			vm := seedModelPickerVM(t)
+			openWithCatalog(t, vm, "p1", c.catalog)
+			clickModel(t, vm, c.id)
+			html := evalString(t, vm, `window.renderProjectForm()`)
+			if group, checked, found := modelRow(html, c.id); !found || checked || group != c.group {
+				t.Errorf("%s after unchecking: found=%v checked=%v group=%q, want listed, unchecked, in %q\n%s", c.id, found, checked, group, c.group, html)
+			}
+		})
+	}
+}
+
+func TestModelPicker_WildcardOffRestoresSelection(t *testing.T) {
+	vm := seedModelPickerVM(t)
+	openWithCatalog(t, vm, "p1", pickerCatalogOK)
+	clickModel(t, vm, "Chat")
+	evalString(t, vm, `(window.setProjModelsWildcard(true), true)`)
+	if got := harvestedModels(t, vm); got != `["*"]` {
+		t.Fatalf("wildcard on harvest = %s", got)
+	}
+	evalString(t, vm, `(window.setProjModelsWildcard(false), true)`)
+	if got := harvestedModels(t, vm); got != `["gone-model","haiku","Chat"]` {
+		t.Errorf("wildcard off harvest = %s, want the selection held before it was turned on", got)
+	}
+}
+
+// The shim's elements outlive a repaint of #content, so the content itself is
+// the marker: a full render() overwrites it, a scoped repaint does not.
+func TestModelPicker_ScopedRepaintsLeaveTheFormAlone(t *testing.T) {
+	cases := []struct{ name, act, want string }{
+		{"onModelsListed", `window.onModelsListed(` + pickerCatalogOK + `)`, `data-model-id="acme-llm/Chat"`},
+		{"toggleProjModel", `window.toggleProjModel('acme-llm/Chat')`, `data-model-id="acme-llm/Chat" checked`},
+		{"toggleProjModelsOther", `window.toggleProjModelsOther()`, `data-model-id="acme-llm/kokoro-tts"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			vm := seedModelPickerVM(t)
+			if c.name == "onModelsListed" {
+				evalString(t, vm, `(window.editProject('p1'), true)`)
+			} else {
+				openWithCatalog(t, vm, "p1", pickerCatalogOK)
+			}
+			got := evalString(t, vm, `(function(){
+				window.render();
+				var content = document.getElementById('content'), picker = document.getElementById('projModelsPicker');
+				content.innerHTML = '<!--form-->';
+				picker.innerHTML = ''; picker.outerHTML = '';
+				var before = window.state._actBind.slice();
+				`+c.act+`;
+				var kept = before.length > 0;
+				for (var i = 0; i < before.length; i++) if (window.state._actBind[i] !== before[i]) kept = false;
+				return JSON.stringify({content: content.innerHTML, kept: kept, picker: picker.innerHTML + picker.outerHTML});
+			})()`)
+			if !strings.Contains(got, `"content":"<!--form-->"`) {
+				t.Errorf("%s rebuilt #content: %s", c.name, got)
+			}
+			if !strings.Contains(got, `"kept":true`) {
+				t.Errorf("%s cleared or rewrote the form's other bindings: %s", c.name, got)
+			}
+			if !strings.Contains(strings.ReplaceAll(got, `\"`, `"`), c.want) {
+				t.Errorf("%s did not repaint #projModelsPicker with %s: %s", c.name, c.want, got)
+			}
+		})
+	}
+}
+
+func TestModelPicker_FullRenderKeepsTypedToolPolicies(t *testing.T) {
+	vm := seedModelPickerVM(t)
+	openWithCatalog(t, vm, "p1", pickerCatalogOK)
+	html := evalString(t, vm, `(function(){
+		document.getElementById('projAllowedTools').value = 'Read';
+		document.getElementById('projDeniedTools').value = 'Write';
+		window.render();
+		return window.renderProjectForm();
+	})()`)
+	for _, want := range []string{`id="projAllowedTools"`, `id="projDeniedTools"`} {
+		if !regexp.MustCompile(`<textarea[^>]*` + want + `[^>]*>(Read|Write)</textarea>`).MatchString(html) {
+			t.Errorf("text typed into %s lost across a full render\n%s", want, html)
+		}
 	}
 }

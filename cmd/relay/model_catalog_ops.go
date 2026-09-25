@@ -54,9 +54,11 @@ func unavailableModelCatalogView() ModelCatalogView {
 	}
 }
 
-// List reads relay-sessions first and the broker cache second. The order is
-// deliberate: relay-sessions' own /api/models fetch refreshes the shared
-// broker cache, so the second read matches what the host just listed.
+// List reads relay-sessions first and the broker cache second. Both reads
+// see the same *modelbroker.Cache, which is why they agree; the host's
+// /api/models fetch does not refresh it. The order matters only for a cold
+// cache: the host's request fills it, so this read does not fetch a second
+// time.
 func (o *ModelCatalogOps) List(ctx context.Context) ModelCatalogView {
 	if o == nil || o.HostModels == nil {
 		slog.Warn("model catalog: session host unavailable", "error", "no session host client")

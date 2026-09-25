@@ -6,6 +6,9 @@
 // A catalog row is { id, label, group, provider, kind, target? }. A picker
 // group is { label, kind, rows }, where kind is "unavailable" | "chat" |
 // "other" | "saved", and each row is { id, label, target, unavailable }.
+// groupModelCatalog's `saved` is every id to keep listed (app.js passes the
+// ids saved at open plus the live selection); which rows are checked comes
+// from renderModelPickerList's opts.selected alone.
 
 import { esc } from './pure.js';
 

@@ -796,7 +796,11 @@ unmarked, because with no list there is nothing to call them missing against.
 **warning** (relay-sessions answered but the broker cache did not): the
 catalog is listed with the host's own grouping, under a banner saying so. In
 every state the rule is the same: a saved id is dropped only when the operator
-unchecks it. The form holds the selection in state and saves it from there,
+unchecks it, and even then it stays listed, unchecked, until the form closes.
+Turning the wildcard off brings back the selection held before it was turned
+on. The catalog answer, a checkbox and the Other toggle repaint only the
+picker (`#projModelsPicker`), never the whole form, so the search box keeps
+focus and the list keeps its scroll position. The form holds the selection in state and saves it from there,
 never from the DOM, so an untouched form saves exactly what was stored, in the
 same order. An empty selection still means every model, and the form says so.
 

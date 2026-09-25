@@ -2126,6 +2126,10 @@ function blankProjectForm() {
         // is parsed exactly once, at harvest. Underscore-prefixed: never sent.
         _scopeText: {},                          // mcpID -> { field: text }
         _toolsText: {},                          // mcpID -> text
+        // The model picker keeps every id saved at open listed, checked or
+        // not, until the form closes; see renderProjModelList.
+        _modelsAtOpen: [],
+        _modelsBeforeWildcard: [],               // restored when the wildcard is turned off
     };
 }
 
@@ -2156,6 +2160,8 @@ function projectFormFromExisting(p) {
         mounts: JSON.parse(JSON.stringify(p.mounts || [])),
         _scopeText: {},
         _toolsText: {},
+        _modelsAtOpen: (p.allowed_models || []).slice(),
+        _modelsBeforeWildcard: [],
         token: p.token || '',
     };
 }
@@ -2281,6 +2287,7 @@ function setProjWhere(hostId) {
 function setProjKind(kind) {
     const f = state.projectForm;
     if (!f) return;
+    const wasRemote = isRemoteForm(f);
     f.kind = kind;
     if (kind === 'remote') {
         // host_id and kind:remote are mutually exclusive (docs/ssh-hosts.md)
@@ -2296,7 +2303,7 @@ function setProjKind(kind) {
         // Remote projects always carry an empty model allowlist.
         f.allowed_models = [];
         f.allowed_templates = [];
-    } else {
+    } else if (wasRemote) {
         openProjModelPicker();
     }
     render();
@@ -3126,15 +3133,23 @@ function captureProjectFormInputs() {
         state.projectFormError = null;
         state.projectFormErrorField = null;
     }
+    // Unlike the inputs above, an empty textarea is a real value: the
+    // operator cleared the list. Only an absent element means "leave it".
+    const lines = el => el.value.split('\n').map(s => s.trim()).filter(Boolean);
+    const allowedToolsTA = document.getElementById('projAllowedTools');
+    const deniedToolsTA = document.getElementById('projDeniedTools');
+    if (allowedToolsTA) f.permission_policy.allowed_tools = lines(allowedToolsTA);
+    if (deniedToolsTA) f.permission_policy.denied_tools = lines(deniedToolsTA);
 }
 
 function setProjModelsWildcard(checked) {
     const f = state.projectForm;
     if (!f) return;
     if (checked) {
+        if (!isProjModelsWildcard(f)) f._modelsBeforeWildcard = f.allowed_models.slice();
         f.allowed_models = [PROJ_MCP_WILDCARD];
     } else {
-        f.allowed_models = [];
+        f.allowed_models = (f._modelsBeforeWildcard || []).slice();
     }
     render();
 }
@@ -3163,14 +3178,26 @@ function requestModelCatalog() {
 window.onModelsListed = function(view) {
     state.modelCatalog = view || null;
     state.modelCatalogPending = false;
-    // A full repaint, not render('push'): the push guard would swallow this
-    // answer for the whole time the form it was fetched for is open.
-    if (state.page === 'projects' && state.projectForm && !isRemoteForm(state.projectForm)) render();
+    if (state.page === 'projects' && state.projectForm && !isRemoteForm(state.projectForm)) repaintProjModelPicker();
 };
 
-// setProjModelSearch repaints only the list so the search box keeps focus.
-// Its toggles append to the live _actBind table, which must not be cleared
-// here: every other control on the form still points into it.
+// repaintProjModelPicker rebuilds only #projModelsPicker, never the whole
+// form: a full render() would drop focus from the search box and throw away
+// anything half-typed elsewhere on the form. Its toggles append to the live
+// _actBind table, which must not be cleared here: every other control on the
+// form still points into it.
+function repaintProjModelPicker() {
+    const box = document.getElementById('projModelsPicker');
+    if (!box || !state.projectForm) return;
+    const oldList = document.getElementById('projModelsList');
+    const scrollTop = oldList && typeof oldList.scrollTop === 'number' ? oldList.scrollTop : 0;
+    box.innerHTML = renderProjModelPickerBody(state.projectForm);
+    const newList = document.getElementById('projModelsList');
+    if (newList && scrollTop) newList.scrollTop = scrollTop;
+}
+
+// setProjModelSearch repaints only the list so the search box keeps focus,
+// appending to _actBind for the reason repaintProjModelPicker gives.
 function setProjModelSearch(text) {
     state.projModelSearch = String(text || '');
     const list = document.getElementById('projModelsList');
@@ -3183,16 +3210,19 @@ function toggleProjModel(id) {
     f.allowed_models = f.allowed_models.includes(id)
         ? f.allowed_models.filter(x => x !== id)
         : f.allowed_models.concat(id);
-    render();
+    repaintProjModelPicker();
 }
 
 function toggleProjModelsOther() {
     state.projModelsOtherOpen = !state.projModelsOtherOpen;
-    render();
+    repaintProjModelPicker();
 }
 
+// The ids saved at open stay listed alongside the live selection, so
+// unchecking one leaves it in place, unchecked, rather than removing it.
 function renderProjModelList(f) {
-    const groups = filterModelGroups(groupModelCatalog(state.modelCatalog, f.allowed_models), state.projModelSearch);
+    const listed = (f._modelsAtOpen || []).concat(f.allowed_models);
+    const groups = filterModelGroups(groupModelCatalog(state.modelCatalog, listed), state.projModelSearch);
     return renderModelPickerList(groups, {
         selected: f.allowed_models,
         bindToggle: id => bind(toggleProjModel, id),
@@ -3201,9 +3231,16 @@ function renderProjModelList(f) {
     });
 }
 
+// The search box sits outside #projModelsPicker so a repaint of the picker
+// never takes focus away from it.
 function renderProjModelPicker(f) {
+    let html = '<input type="text" id="projModelsSearch" aria-label="Search models" placeholder="Search models" value="' + esc(state.projModelSearch) + '" oninput="setProjModelSearch(this.value)" />';
+    html += '<div id="projModelsPicker">' + renderProjModelPickerBody(f) + '</div>';
+    return html;
+}
+
+function renderProjModelPickerBody(f) {
     let html = renderModelPickerBanner(state.modelCatalog, state.modelCatalogPending);
-    html += '<input type="text" id="projModelsSearch" aria-label="Search models" placeholder="Search models" value="' + esc(state.projModelSearch) + '" oninput="setProjModelSearch(this.value)" />';
     html += '<div id="projModelsList">' + renderProjModelList(f) + '</div>';
     if (f.allowed_models.length === 0) {
         html += '<p id="projModelsEmptyNote" class="proj-section-help">Nothing selected: an empty list lets this project use every model, the same as the wildcard. Select at least one model to restrict it.</p>';
@@ -7276,7 +7313,7 @@ Object.assign(window, {
     captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addProjMount, removeProjMount, setProjMountAccess,
     isProjTemplatesWildcard, setProjTemplatesWildcard, toggleProjTemplate,
-    openProjModelPicker, requestModelCatalog, setProjModelSearch, toggleProjModel, toggleProjModelsOther, renderProjModelList, renderProjModelPicker,
+    openProjModelPicker, requestModelCatalog, repaintProjModelPicker, setProjModelSearch, toggleProjModel, toggleProjModelsOther, renderProjModelList, renderProjModelPicker, renderProjModelPickerBody,
     blankTemplateForm, cancelTemplateEdit, captureTemplateFormInputs, editTemplate, newTemplate, removeTemplate, renderTemplateForm, saveTemplateForm, templateFormFromExisting, templateLines,
     cancelHostTemplateEdit, captureHostTemplateFormInputs, closeHostTemplateForm, editHostTemplate, editingHostRecord, hostTemplateCommandLine, newHostTemplate, removeHostTemplate, renderHostTemplateForm, renderHostTemplates, saveHostTemplateForm,
     blankHostForm, cancelHostEdit, captureHostFormInputs, disconnectHost, editHost, harvestHostForm, hostFormFromExisting, hostNameFor, isHostedForm, newHost, probeHost, removeHost, renderHostForm, renderHostProbeCard, renderHostProbeSummary, renderHostStatus, renderHosts, saveHostForm, setProjWhere, testHostConnection,

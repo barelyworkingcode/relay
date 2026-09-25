@@ -2674,8 +2674,13 @@ window.__RELAY_INIT__ = {
       // is parsed exactly once, at harvest. Underscore-prefixed: never sent.
       _scopeText: {},
       // mcpID -> { field: text }
-      _toolsText: {}
+      _toolsText: {},
       // mcpID -> text
+      // The model picker keeps every id saved at open listed, checked or
+      // not, until the form closes; see renderProjModelList.
+      _modelsAtOpen: [],
+      _modelsBeforeWildcard: []
+      // restored when the wildcard is turned off
     };
   }
   function projectFormFromExisting(p) {
@@ -2704,6 +2709,8 @@ window.__RELAY_INIT__ = {
       mounts: JSON.parse(JSON.stringify(p.mounts || [])),
       _scopeText: {},
       _toolsText: {},
+      _modelsAtOpen: (p.allowed_models || []).slice(),
+      _modelsBeforeWildcard: [],
       token: p.token || ""
     };
   }
@@ -2792,13 +2799,14 @@ window.__RELAY_INIT__ = {
   function setProjKind(kind) {
     const f = state.projectForm;
     if (!f) return;
+    const wasRemote = isRemoteForm(f);
     f.kind = kind;
     if (kind === "remote") {
       f.host_id = "";
       if (isProjMcpWildcard(f)) f.allowed_mcp_ids = [];
       f.allowed_models = [];
       f.allowed_templates = [];
-    } else {
+    } else if (wasRemote) {
       openProjModelPicker();
     }
     render();
@@ -3284,14 +3292,20 @@ window.__RELAY_INIT__ = {
       state.projectFormError = null;
       state.projectFormErrorField = null;
     }
+    const lines = (el) => el.value.split("\n").map((s) => s.trim()).filter(Boolean);
+    const allowedToolsTA = document.getElementById("projAllowedTools");
+    const deniedToolsTA = document.getElementById("projDeniedTools");
+    if (allowedToolsTA) f.permission_policy.allowed_tools = lines(allowedToolsTA);
+    if (deniedToolsTA) f.permission_policy.denied_tools = lines(deniedToolsTA);
   }
   function setProjModelsWildcard(checked) {
     const f = state.projectForm;
     if (!f) return;
     if (checked) {
+      if (!isProjModelsWildcard(f)) f._modelsBeforeWildcard = f.allowed_models.slice();
       f.allowed_models = [PROJ_MCP_WILDCARD];
     } else {
-      f.allowed_models = [];
+      f.allowed_models = (f._modelsBeforeWildcard || []).slice();
     }
     render();
   }
@@ -3312,8 +3326,17 @@ window.__RELAY_INIT__ = {
   window.onModelsListed = function(view) {
     state.modelCatalog = view || null;
     state.modelCatalogPending = false;
-    if (state.page === "projects" && state.projectForm && !isRemoteForm(state.projectForm)) render();
+    if (state.page === "projects" && state.projectForm && !isRemoteForm(state.projectForm)) repaintProjModelPicker();
   };
+  function repaintProjModelPicker() {
+    const box = document.getElementById("projModelsPicker");
+    if (!box || !state.projectForm) return;
+    const oldList = document.getElementById("projModelsList");
+    const scrollTop = oldList && typeof oldList.scrollTop === "number" ? oldList.scrollTop : 0;
+    box.innerHTML = renderProjModelPickerBody(state.projectForm);
+    const newList = document.getElementById("projModelsList");
+    if (newList && scrollTop) newList.scrollTop = scrollTop;
+  }
   function setProjModelSearch(text) {
     state.projModelSearch = String(text || "");
     const list = document.getElementById("projModelsList");
@@ -3323,14 +3346,15 @@ window.__RELAY_INIT__ = {
     const f = state.projectForm;
     if (!f) return;
     f.allowed_models = f.allowed_models.includes(id) ? f.allowed_models.filter((x) => x !== id) : f.allowed_models.concat(id);
-    render();
+    repaintProjModelPicker();
   }
   function toggleProjModelsOther() {
     state.projModelsOtherOpen = !state.projModelsOtherOpen;
-    render();
+    repaintProjModelPicker();
   }
   function renderProjModelList(f) {
-    const groups = filterModelGroups(groupModelCatalog(state.modelCatalog, f.allowed_models), state.projModelSearch);
+    const listed = (f._modelsAtOpen || []).concat(f.allowed_models);
+    const groups = filterModelGroups(groupModelCatalog(state.modelCatalog, listed), state.projModelSearch);
     return renderModelPickerList(groups, {
       selected: f.allowed_models,
       bindToggle: (id) => bind(toggleProjModel, id),
@@ -3339,8 +3363,12 @@ window.__RELAY_INIT__ = {
     });
   }
   function renderProjModelPicker(f) {
+    let html = '<input type="text" id="projModelsSearch" aria-label="Search models" placeholder="Search models" value="' + esc(state.projModelSearch) + '" oninput="setProjModelSearch(this.value)" />';
+    html += '<div id="projModelsPicker">' + renderProjModelPickerBody(f) + "</div>";
+    return html;
+  }
+  function renderProjModelPickerBody(f) {
     let html = renderModelPickerBanner(state.modelCatalog, state.modelCatalogPending);
-    html += '<input type="text" id="projModelsSearch" aria-label="Search models" placeholder="Search models" value="' + esc(state.projModelSearch) + '" oninput="setProjModelSearch(this.value)" />';
     html += '<div id="projModelsList">' + renderProjModelList(f) + "</div>";
     if (f.allowed_models.length === 0) {
       html += '<p id="projModelsEmptyNote" class="proj-section-help">Nothing selected: an empty list lets this project use every model, the same as the wildcard. Select at least one model to restrict it.</p>';
@@ -6494,11 +6522,13 @@ That browser's credential stops authenticating on its next request and it has to
     toggleProjTemplate,
     openProjModelPicker,
     requestModelCatalog,
+    repaintProjModelPicker,
     setProjModelSearch,
     toggleProjModel,
     toggleProjModelsOther,
     renderProjModelList,
     renderProjModelPicker,
+    renderProjModelPickerBody,
     blankTemplateForm,
     cancelTemplateEdit,
     captureTemplateFormInputs,

@@ -147,8 +147,10 @@ has no HTTP door.
 ([session-host.md](session-host.md)). That is the same list eve's session
 picker shows: Claude aliases, pi models and broker models. It then reads this
 endpoint's own catalog cache (`modelbroker.Cache.Snapshot`) to add detail the
-host does not return. The order is deliberate. relay-sessions' fetch refreshes
-the shared cache, so the second read matches the first.
+host does not return. The two reads agree because both go through the same
+`*modelbroker.Cache`. The host's fetch does not refresh that cache. Reading the
+host first matters only when the cache is cold: the host's request fills it,
+and relay's own read then finds it filled.
 
 - Only `chat`-provider rows are matched to cache rows, by exact id. A modelMap
   key (`owned_by: anthropic-map`) is grouped under `Model broker · aliases`

@@ -17,14 +17,26 @@ import (
 // modelPickerBridge stands in for the WKWebView bridge. It records every
 // message and answers list_models from ?catalog=ok|unavailable. Answers are
 // async, as relay's are: requestModelCatalog runs before the form's render.
+// With ?hold=1 the list_models answer waits for window.__releaseModels().
 const modelPickerBridge = `<script>
 (function () {
-  var catalog = new URLSearchParams(location.search).get('catalog') === 'unavailable'
+  var params = new URLSearchParams(location.search);
+  var catalog = params.get('catalog') === 'unavailable'
     ? ` + pickerCatalogUnavailable + ` : ` + pickerCatalogOK + `;
+  var held = [];
+  window.__releaseModels = function () {
+    var q = held.splice(0);
+    q.forEach(function (answer) { answer(); });
+    return q.length;
+  };
   window.__sent = [];
   window.webkit = { messageHandlers: { ipc: { postMessage: function (raw) {
     var msg = JSON.parse(raw);
     window.__sent.push(msg);
+    if (msg.type === 'list_models' && params.get('hold') === '1') {
+      held.push(function () { window.onModelsListed(catalog); });
+      return;
+    }
     setTimeout(function () {
       if (msg.type === 'list_models') window.onModelsListed(catalog);
       if (msg.type === 'update_project') {
@@ -90,6 +102,29 @@ func editProjectP1(t *testing.T, p *chromePage) {
 	waitForJS(t, p, `window.state.projectForm && !window.state.modelCatalogPending && document.getElementById('projModelsList')`)
 }
 
+// openHeldP1 opens p1 with its list_models answer still held by the bridge.
+func openHeldP1(t *testing.T, p *chromePage) {
+	t.Helper()
+	p.eval(t, `(showPage('projects'), editProject('p1'), true)`, nil)
+	waitForJS(t, p, `window.state.modelCatalogPending && document.getElementById('projName') && document.getElementById('projModelsSearch')`)
+}
+
+// releaseCatalog delivers the held answer and waits for catalogRow, a row only
+// the catalog has, so a surviving focus or text is never measured against a
+// picker that did not repaint.
+func releaseCatalog(t *testing.T, p *chromePage, catalogRow string) {
+	t.Helper()
+	if got := evalJSON(t, p, `window.__releaseModels()`); got != "1" {
+		t.Fatalf("released %s list_models answers, want 1", got)
+	}
+	waitForJS(t, p, `!window.state.modelCatalogPending && document.querySelector('input[data-model-id="' + CSS.escape(`+jsQuote(catalogRow)+`) + '"]')`)
+}
+
+func insertText(t *testing.T, p *chromePage, text string) {
+	t.Helper()
+	p.call(t, "Input.insertText", map[string]any{"text": text}, nil)
+}
+
 func clickModelBox(t *testing.T, p *chromePage, id string) {
 	t.Helper()
 	p.eval(t, `(document.querySelector('input[data-model-id="' + CSS.escape(`+jsQuote(id)+`) + '"]').click(), true)`, nil)
@@ -116,9 +151,40 @@ func TestModelPickerBrowser(t *testing.T) {
 	cases := []struct {
 		name    string
 		catalog string
+		held    bool
 		run     func(t *testing.T, p *chromePage)
 	}{
-		{"save round-trip", "ok", func(t *testing.T, p *chromePage) {
+		{"catalog answer keeps focus and typed tools", "ok", true, func(t *testing.T, p *chromePage) {
+			p.eval(t, `(document.getElementById('projAllowedTools').focus(), true)`, nil)
+			insertText(t, p, "Read")
+			p.eval(t, `(document.getElementById('projName').focus(), true)`, nil)
+			releaseCatalog(t, p, "Chat")
+			if got := evalJSON(t, p, `[document.activeElement && document.activeElement.id, document.getElementById('projAllowedTools').value]`); got != `["projName","Read"]` {
+				t.Errorf("after the catalog answer [focus, allowed tools] = %s", got)
+			}
+		}},
+		{"catalog answer keeps search focus and query", "ok", true, func(t *testing.T, p *chromePage) {
+			p.eval(t, `(document.getElementById('projModelsSearch').focus(), true)`, nil)
+			insertText(t, p, "tts")
+			releaseCatalog(t, p, "acme-llm/kokoro-tts")
+			if got := evalJSON(t, p, `[document.activeElement && document.activeElement.id, document.getElementById('projModelsSearch').value]`); got != `["projModelsSearch","tts"]` {
+				t.Errorf("after the catalog answer [focus, search] = %s", got)
+			}
+		}},
+		{"toggle keeps the list's scroll position", "ok", false, func(t *testing.T, p *chromePage) {
+			// A style tag, not an inline style: it outlives a repaint of the list.
+			p.eval(t, `(document.head.insertAdjacentHTML('beforeend', '<style>#projModelsList{max-height:40px!important}</style>'), document.getElementById('projModelsList').scrollTop = 30, true)`, nil)
+			before := evalJSON(t, p, `document.getElementById('projModelsList').scrollTop`)
+			if before == "0" {
+				t.Fatal("the list did not scroll; the fixture is too short to measure")
+			}
+			clickModelBox(t, p, "acme-llm/Chat")
+			waitForJS(t, p, `window.state.projectForm.allowed_models.indexOf('acme-llm/Chat') >= 0`)
+			if got := evalJSON(t, p, `document.getElementById('projModelsList').scrollTop`); got != before {
+				t.Errorf("scrollTop %s after a toggle, want %s", got, before)
+			}
+		}},
+		{"save round-trip", "ok", false, func(t *testing.T, p *chromePage) {
 			clickModelBox(t, p, "Chat")
 			if got := saveAndReadModels(t, p); got != `["gone-model","haiku","Chat"]` {
 				t.Errorf("saved %s", got)
@@ -128,7 +194,7 @@ func TestModelPickerBrowser(t *testing.T) {
 				t.Errorf("reopened with %s checked", got)
 			}
 		}},
-		{"unavailable id preserved on save", "ok", func(t *testing.T, p *chromePage) {
+		{"unavailable id preserved on save", "ok", false, func(t *testing.T, p *chromePage) {
 			if got := evalJSON(t, p, `document.querySelector('input[data-model-id="gone-model"]').closest('label').textContent`); !strings.Contains(got, "not currently available") {
 				t.Errorf("gone-model row not marked: %s", got)
 			}
@@ -136,7 +202,7 @@ func TestModelPickerBrowser(t *testing.T) {
 				t.Errorf("untouched save sent %s", got)
 			}
 		}},
-		{"wildcard hides the list", "ok", func(t *testing.T, p *chromePage) {
+		{"wildcard hides the list", "ok", false, func(t *testing.T, p *chromePage) {
 			p.eval(t, `(document.querySelector('input[aria-label^="Allow all models"]').click(), true)`, nil)
 			if got := evalJSON(t, p, `[!!document.getElementById('projModelsList'), !!document.getElementById('projModelsSearch')]`); got != `[false,false]` {
 				t.Errorf("wildcard on: list/search present = %s", got)
@@ -145,7 +211,7 @@ func TestModelPickerBrowser(t *testing.T) {
 				t.Errorf("wildcard save sent %s", got)
 			}
 		}},
-		{"search filters and keeps focus", "ok", func(t *testing.T, p *chromePage) {
+		{"search filters and keeps focus", "ok", false, func(t *testing.T, p *chromePage) {
 			p.eval(t, `(document.getElementById('projModelsSearch').focus(), true)`, nil)
 			for _, ch := range "tts" {
 				p.call(t, "Input.insertText", map[string]any{"text": string(ch)}, nil)
@@ -157,7 +223,7 @@ func TestModelPickerBrowser(t *testing.T) {
 				t.Errorf("search 'tts' lists %s", got)
 			}
 		}},
-		{"Other collapsed then expands", "ok", func(t *testing.T, p *chromePage) {
+		{"Other collapsed then expands", "ok", false, func(t *testing.T, p *chromePage) {
 			const other = `!!document.querySelector('input[data-model-id="acme-llm/kokoro-tts"]')`
 			if got := evalJSON(t, p, other); got != "false" {
 				t.Fatal("Other rows visible before expanding")
@@ -167,13 +233,13 @@ func TestModelPickerBrowser(t *testing.T) {
 				t.Error("Other rows hidden after expanding")
 			}
 		}},
-		{"alias label", "ok", func(t *testing.T, p *chromePage) {
+		{"alias label", "ok", false, func(t *testing.T, p *chromePage) {
 			got := evalJSON(t, p, `(function (l) { return [l.textContent, !!l.querySelector('.model-alias-tag')]; })(document.querySelector('input[data-model-id="Chat"]').closest('label'))`)
 			if !strings.Contains(got, "Chat → acme-llm/Chat") || !strings.HasSuffix(got, "true]") {
 				t.Errorf("alias row = %s", got)
 			}
 		}},
-		{"catalog unavailable keeps saved ids", "unavailable", func(t *testing.T, p *chromePage) {
+		{"catalog unavailable keeps saved ids", "unavailable", false, func(t *testing.T, p *chromePage) {
 			if got := evalJSON(t, p, `(document.getElementById('projModelsBanner') || {}).textContent`); !strings.Contains(got, "session host unavailable") {
 				t.Errorf("banner = %s", got)
 			}
@@ -190,8 +256,13 @@ func TestModelPickerBrowser(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			openSettings(t, page, base+"/?catalog="+c.catalog)
-			editProjectP1(t, page)
+			if c.held {
+				openSettings(t, page, base+"/?hold=1&catalog="+c.catalog)
+				openHeldP1(t, page)
+			} else {
+				openSettings(t, page, base+"/?catalog="+c.catalog)
+				editProjectP1(t, page)
+			}
 			c.run(t, page)
 		})
 	}
