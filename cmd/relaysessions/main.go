@@ -117,26 +117,7 @@ func runService(args []string) int {
 	})
 	store := session.NewStore(filepath.Join(cfg.dataDir, "sessions"))
 	perms := permission.NewPermissionManager()
-	sessions := session.NewManager(session.Config{
-		Claude: provider.ClaudeConfig{
-			HookSocket:      cfg.hookSocket,
-			HookCommandPath: shimBinary,
-			BridgeSocket:    bridgeSock,
-			ModelSocket:     cfg.modelSocket,
-			ShimBinary:      shimBinary,
-		},
-		Pi: provider.PiConfig{
-			DataDir:      cfg.dataDir,
-			BridgeSocket: bridgeSock,
-			ModelSocket:  cfg.modelSocket,
-			ShimBinary:   shimBinary,
-		},
-		Chat: provider.ChatConfig{
-			ModelSocket:  cfg.modelSocket,
-			ShimBinary:   shimBinary,
-			BridgeSocket: bridgeSock,
-		},
-	}, store, perms)
+	sessions := session.NewManager(sessionConfig(cfg, shimBinary), store, perms)
 
 	// The internal bearer must never be an argv value — any same-uid
 	// process, including a sandboxed session target, can read another
@@ -210,6 +191,30 @@ func runService(args []string) int {
 	<-sigCh
 	srv.Close()
 	return 0
+}
+
+// sessionConfig is exactly the session.Config runService hands session.NewManager.
+func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
+	return session.Config{
+		Claude: provider.ClaudeConfig{
+			HookSocket:      cfg.hookSocket,
+			HookCommandPath: shimBinary,
+			BridgeSocket:    cfg.bridgeSocket,
+			ModelSocket:     cfg.modelSocket,
+			ShimBinary:      shimBinary,
+		},
+		Pi: provider.PiConfig{
+			DataDir:      cfg.dataDir,
+			BridgeSocket: cfg.bridgeSocket,
+			ModelSocket:  cfg.modelSocket,
+			ShimBinary:   shimBinary,
+		},
+		Chat: provider.ChatConfig{
+			ModelSocket:  cfg.modelSocket,
+			ShimBinary:   shimBinary,
+			BridgeSocket: cfg.bridgeSocket,
+		},
+	}
 }
 
 // reportSessionExited is hostapi.Server's exit hook: send C5's advisory,
