@@ -7,6 +7,11 @@ import (
 	"path/filepath"
 )
 
+// hookCommand is C6's hook command for a relay-sessions binary: "<binary> hook".
+func hookCommand(binary string) string {
+	return binary + " hook"
+}
+
 // resolveHookCommand returns C6's exact hook command string: the absolute
 // path to the currently-running relay-sessions binary, followed by its
 // "hook" subcommand. relayLLM resolved a separate hook binary
@@ -22,7 +27,7 @@ func resolveHookCommand() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return exe + " hook", nil
+	return hookCommand(exe), nil
 }
 
 // ensureHookConfig writes <directory>/.claude/settings.local.json to
@@ -36,13 +41,15 @@ func (p *ClaudeProvider) ensureHookConfig() error {
 	if p.cfg.HookSocket == "" {
 		return nil
 	}
-	hookCommand := p.cfg.HookCommandPath
-	if hookCommand == "" {
+	command := p.cfg.HookCommandPath
+	if command != "" {
+		command = hookCommand(command)
+	} else {
 		cmd, err := resolveHookCommand()
 		if err != nil {
 			return fmt.Errorf("resolve hook command: %w", err)
 		}
-		hookCommand = cmd
+		command = cmd
 	}
 
 	claudeDir := filepath.Join(p.directory, ".claude")
@@ -70,7 +77,7 @@ func (p *ClaudeProvider) ensureHookConfig() error {
 			"hooks": []interface{}{
 				map[string]interface{}{
 					"type":    "command",
-					"command": hookCommand,
+					"command": command,
 					"timeout": 120,
 				},
 			},
