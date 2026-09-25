@@ -177,6 +177,24 @@ func TestSettingsForm_EditedScopeValueStillPrompts(t *testing.T) {
 	}
 }
 
+func TestSettingsForm_RemovedScopeValueDoesNotPrompt(t *testing.T) {
+	surfaces := project.McpSurfaces{"macmcp": macmcpSurface()}
+	store, stored := ctxGateSeed(t, project.CreateFields{
+		Name: "Mail", Kind: config.ProjectKindLocal, Path: t.TempDir(), AllowedMcpIDs: []string{"macmcp"},
+		Context: ctxMap("macmcp", `{"mail_accounts":["Alice","Bob"]}`),
+	}, surfaces)
+	msg := ctxGateHarvest(t, store, stored, surfaces, `window.setProjScopeText('macmcp', 'mail_accounts', 'Alice');`)
+
+	if _, _, err := ctxGateOps(t, store, presencetest.Deny()).Update(context.Background(), msg.ID, msg.UpdateFields,
+		func() project.McpSurfaces { return surfaces }, auditViaIPC, ""); err != nil {
+		t.Fatalf("removing one account must not reach the gate: %v", err)
+	}
+	mac, _ := decodedContext(t, store, stored.ID)["macmcp"].(map[string]any)
+	if got := mac["mail_accounts"]; !reflect.DeepEqual(got, []any{"Alice"}) {
+		t.Fatalf("stored mail_accounts = %v, want [Alice]", got)
+	}
+}
+
 func TestProjectOps_SchemaLostBeforeWriteRefusesContextResend(t *testing.T) {
 	surfaces := project.McpSurfaces{"macmcp": macmcpSurface()}
 	store, stored := ctxGateSeed(t, project.CreateFields{

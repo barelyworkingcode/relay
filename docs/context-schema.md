@@ -190,7 +190,10 @@ thing.
   restrict field with no declared `source` is treated as operator-supplied,
   because that is the reading that leaves the value un-derivable: relay
   inventing a value for a field it does not understand is the failure this
-  mechanism exists to prevent.
+  mechanism exists to prevent. Narrowing an operator field does not raise
+  the presence gate: removing a value, clearing the field, or replacing
+  `["*"]` with a list is not a widening of `context`. Adding a value, or
+  setting one where the field was unset (`[]` included), is.
 
 A grant is refused at edit time if a `project_path` field's `applies_to` covers
 **every** tool the grant names and the record has no path — the grant would buy

@@ -86,10 +86,104 @@ func TestUpdateWidensGrant_ContextDerivedFields(t *testing.T) {
 		{"changed operator field beside a derived field still widens",
 			blobs("macmcp", `{"mail_accounts":["Alice"],"file_dirs":["/work/acme"]}`),
 			blobs("macmcp", `{"mail_accounts":["Alice","Bob"]}`), mac, true},
-		{"operator field removed beside a derived field still differs",
+		{"operator field removed beside a derived field is left unset, so it narrows",
 			blobs("macmcp", `{"mail_accounts":["Alice"],"file_dirs":["/work/acme"]}`),
-			blobs(), mac, true},
+			blobs(), mac, false},
 	})
+}
+
+const mailSchemaWithUnscopedField = `{
+  "mail_accounts": {"type": "array", "items": {"type": "string"}, "scope": "restrict", "source": "operator"},
+  "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels shown to the operator"}
+}`
+
+const mailSchemaWithMalformedField = `{
+  "mail_accounts": {"type": "array", "items": {"type": "string"}, "scope": "restrict", "source": "operator"},
+  "broken": {"type": "array", "Scope": "restrict"}
+}`
+
+func TestUpdateWidensGrant_ContextNarrowing(t *testing.T) {
+	mac := McpSurfaces{"macmcp": macmcpSurface()}
+	macV1 := McpSurfaces{"macmcp": {Schema: json.RawMessage(macmcpSchema), SchemaVersion: 1}}
+	unscoped := McpSurfaces{"macmcp": {Schema: json.RawMessage(mailSchemaWithUnscopedField), SchemaVersion: 2}}
+	malformed := McpSurfaces{"macmcp": {Schema: json.RawMessage(mailSchemaWithMalformedField), SchemaVersion: 2}}
+
+	if cs := unscoped.Schema("macmcp"); !cs.Usable() {
+		t.Fatalf("unscoped fixture is unusable: %s", cs.MalformedReason())
+	} else if f, ok := cs.Field("tags"); !ok || f.Restricts() {
+		t.Fatalf("unscoped fixture: tags declared=%v restricts=%v, want a declared non-restrict field", ok, f.Restricts())
+	}
+	if malformed.Schema("macmcp").Usable() {
+		t.Fatal("malformed fixture parsed as usable")
+	}
+
+	pair := `{"mail_accounts":["Alice","Bob"]}`
+	runContextWideningRows(t, []contextWideningRow{
+		{"removing one account narrows", blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":["Alice"]}`), mac, false},
+		{"removing the field narrows",
+			blobs("macmcp", `{"mail_accounts":["Alice"],"mail_mailboxes":["INBOX"]}`),
+			blobs("macmcp", `{"mail_accounts":["Alice"]}`), mac, false},
+		{"removing the whole MCP entry narrows", blobs("macmcp", pair), blobs(), mac, false},
+		{"requested null narrows", blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":null}`), mac, false},
+		{"requested empty string narrows", blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":""}`), mac, false},
+		{"requested empty array against a stored list narrows", blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":[]}`), mac, false},
+		{"requested empty array against an absent field widens",
+			blobs("macmcp", `{"mail_mailboxes":["INBOX"]}`),
+			blobs("macmcp", `{"mail_mailboxes":["INBOX"],"mail_accounts":[]}`), mac, true},
+		{"a value where the stored field is null widens",
+			blobs("macmcp", `{"mail_accounts":null}`), blobs("macmcp", `{"mail_accounts":["Alice"]}`), mac, true},
+		{"reordering narrows", blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":["Bob","Alice"]}`), mac, false},
+		{"de-duplicating narrows",
+			blobs("macmcp", `{"mail_accounts":["Alice","Alice"]}`), blobs("macmcp", `{"mail_accounts":["Alice"]}`), mac, false},
+		{"adding an element widens",
+			blobs("macmcp", `{"mail_accounts":["Alice"]}`), blobs("macmcp", pair), mac, true},
+		{"swapping an element for another widens",
+			blobs("macmcp", `{"mail_accounts":["Alice"]}`), blobs("macmcp", `{"mail_accounts":["Bob"]}`), mac, true},
+		{"one field narrowing beside another widening widens",
+			blobs("macmcp", `{"mail_accounts":["Alice","Bob"],"mail_mailboxes":["INBOX"]}`),
+			blobs("macmcp", `{"mail_accounts":["Alice"],"mail_mailboxes":["INBOX","Archive"]}`), mac, true},
+		{"unchanged wildcard does not widen",
+			blobs("macmcp", `{"mail_accounts":["*"]}`), blobs("macmcp", `{"mail_accounts":["*"]}`), mac, false},
+		{"a list to the wildcard widens",
+			blobs("macmcp", `{"mail_accounts":["Alice"]}`), blobs("macmcp", `{"mail_accounts":["*"]}`), mac, true},
+		{"a mixed stored list to the wildcard widens",
+			blobs("macmcp", `{"mail_accounts":["*","Bob"]}`), blobs("macmcp", `{"mail_accounts":["*"]}`), mac, true},
+		{"the wildcard to a list narrows",
+			blobs("macmcp", `{"mail_accounts":["*"]}`), blobs("macmcp", `{"mail_accounts":["Alice"]}`), mac, false},
+		{"the wildcard to an empty array narrows",
+			blobs("macmcp", `{"mail_accounts":["*"]}`), blobs("macmcp", `{"mail_accounts":[]}`), mac, false},
+		{"a non-array value against a stored list widens",
+			blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":"Alice"}`), mac, true},
+
+		{"nil surfaces compare strictly", blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":["Alice"]}`), nil, true},
+		{"a v1 schema compares strictly", blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":["Alice"]}`), macV1, true},
+		{"an unusable schema compares strictly", blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":["Alice"]}`), malformed, true},
+		{"a restrict field beside a non-restrict field still narrows",
+			blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":["Alice"]}`), unscoped, false},
+		{"a non-restrict field compares strictly",
+			blobs("macmcp", `{"tags":["a","b"]}`), blobs("macmcp", `{"tags":["a"]}`), unscoped, true},
+		{"removing a stale key compares strictly",
+			blobs("macmcp", `{"mail_accounts":["Alice"],"retired_field":["x"]}`),
+			blobs("macmcp", `{"mail_accounts":["Alice"]}`), mac, true},
+	})
+
+	for _, p := range []config.Project{
+		{ID: "p1", Name: "Acme", Kind: config.ProjectKindRemote, Path: "/work/acme"},
+		{ID: "p1", Name: "Acme", HostID: "devbox", Path: "/work/acme"},
+	} {
+		name := "remote"
+		if p.IsHosted() {
+			name = "hosted"
+		}
+		t.Run("a narrowed project_path field on a "+name+" project compares strictly", func(t *testing.T) {
+			p.Context = blobs("macmcp", `{"mail_accounts":["Alice"],"file_dirs":["/work/acme","/work/other"]}`)
+			requested := blobs("macmcp", `{"mail_accounts":["Alice"],"file_dirs":["/work/acme"]}`)
+			got := UpdateWidensGrant(p, UpdateFields{Context: &requested}, mac)
+			if want := []string{"context"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("UpdateWidensGrant = %v, want %v", got, want)
+			}
+		})
+	}
 }
 
 func TestUpdateWidensGrant_ContextDerivedFieldMustMatchDerivation(t *testing.T) {

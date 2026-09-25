@@ -5,8 +5,9 @@ package project
 // file answers "does this operator edit widen the grant at all" — the
 // question cmd/relay's presence gate needs so a rename, an unchanged resend,
 // or a pure narrowing of allowed_mcp_ids/allowed_tools/access/allow_external/
-// mounts never raises a prompt (ADR-018 decision 1: obtaining or widening a
-// capability is privileged, using or narrowing one is not).
+// mounts, or of an operator restrict field in context, never raises a prompt
+// (ADR-018 decision 1: obtaining or widening a capability is privileged,
+// using or narrowing one is not).
 
 import (
 	"bytes"
@@ -23,11 +24,12 @@ import (
 // — never merely which fields the request happens to carry. A door like the
 // Settings window that resends the whole record on every save must not
 // manufacture a prompt out of a value that came back unchanged, and a pure
-// narrowing (fewer MCPs, a smaller tool pattern, read in place of write)
-// must not prompt either: only entries in the returned slice are grounds to
-// gate, and its order is stable (matching projectUpdateGrantFieldNames' own
-// field order) so a reason string built from it reads the same way every
-// time. A nil surfaces strips nothing, the strict reading.
+// narrowing (fewer MCPs, a smaller tool pattern, read in place of write,
+// fewer values in an operator restrict field) must not prompt either: only
+// entries in the returned slice are grounds to gate, and its order is stable
+// (matching projectUpdateGrantFieldNames' own field order) so a reason string
+// built from it reads the same way every time. A nil surfaces strips nothing
+// and compares context strictly.
 func UpdateWidensGrant(stored config.Project, f UpdateFields, surfaces McpSurfaces) []string {
 	var out []string
 	if f.AllowedMcpIDs != nil && addsMcpID(stored.AllowedMcpIDs, *f.AllowedMcpIDs) {
@@ -39,7 +41,7 @@ func UpdateWidensGrant(stored config.Project, f UpdateFields, surfaces McpSurfac
 	if f.Access != nil && accessWidens(stored, *f.Access) {
 		out = append(out, "access")
 	}
-	if f.Context != nil && !contextEqual(comparableContext(stored.Context, &stored, surfaces), comparableContext(*f.Context, nil, nil)) {
+	if f.Context != nil && contextWidens(comparableContext(stored.Context, &stored, surfaces), comparableContext(*f.Context, nil, nil), surfaces) {
 		out = append(out, "context")
 	}
 	if f.AllowExternal != nil && allowExternalWidens(stored.AllowExternal, *f.AllowExternal) {
@@ -188,27 +190,105 @@ func mountsWiden(stored config.Project, requested []config.MountGrant) bool {
 	return false
 }
 
-// contextEqual compares two context maps by decoded value rather than by
-// raw bytes: whitespace or key-order differences introduced by re-encoding
-// (the Settings form round-trips every scope value through JSON) must not
-// read as a change when nothing an MCP would observe actually moved. A key
-// present on one side only, or a value that fails to decode identically, is
-// treated as a difference — the conservative direction, since context can
-// carry a resource scope and there is no narrower reading defined for it.
-func contextEqual(a, b map[string]json.RawMessage) bool {
-	if len(a) != len(b) {
+// contextWidens reports whether requested reaches anything stored does not,
+// one MCP entry at a time. An entry whose MCP has a usable v2 schema is
+// compared field by field, and only its operator restrict fields have a
+// narrowing order (scopeValueWidens); every other field, and every entry
+// without such a schema, compares strictly. Strict means a key present on
+// one side only, or a value that is not jsonValueEqual, is a widening.
+func contextWidens(stored, requested map[string]json.RawMessage, surfaces McpSurfaces) bool {
+	for _, mcpID := range unionKeys(stored, requested) {
+		storedBlob, inStored := stored[mcpID]
+		requestedBlob, inRequested := requested[mcpID]
+		schema := surfaces.Schema(mcpID)
+		if surfaces == nil || !schema.V2() || !schema.Usable() {
+			if !inStored || !inRequested || !jsonValueEqual(storedBlob, requestedBlob) {
+				return true
+			}
+			continue
+		}
+		if contextEntryWidens(storedBlob, inStored, requestedBlob, inRequested, schema) {
+			return true
+		}
+	}
+	return false
+}
+
+// contextEntryWidens reads an absent entry as an object with no fields, so
+// dropping a whole MCP entry leaves each of its restrict fields unset. An
+// entry that does not decode as an object compares strictly.
+func contextEntryWidens(storedBlob json.RawMessage, inStored bool, requestedBlob json.RawMessage, inRequested bool, schema ContextSchema) bool {
+	storedValues, storedIsObject := decodeContextObject(storedBlob)
+	requestedValues, requestedIsObject := decodeContextObject(requestedBlob)
+	if !storedIsObject || !requestedIsObject {
+		return !inStored || !inRequested || !jsonValueEqual(storedBlob, requestedBlob)
+	}
+	for _, name := range unionKeys(storedValues, requestedValues) {
+		storedValue, inStoredValues := storedValues[name]
+		requestedValue, inRequestedValues := requestedValues[name]
+		if f, ok := schema.Field(name); ok && f.Restricts() && f.FromOperator() {
+			if scopeValueWidens(storedValue, requestedValue) {
+				return true
+			}
+			continue
+		}
+		if !inStoredValues || !inRequestedValues || !jsonValueEqual(storedValue, requestedValue) {
+			return true
+		}
+	}
+	return false
+}
+
+// scopeValueWidens orders two values of one operator restrict field. A nil
+// value stands for an absent field. An unasserted field refuses every call
+// it governs, so nothing narrows below it and anything asserted widens from
+// it; that includes [], which turns a refusing field into one that accepts.
+// Arrays narrow by subset, and the wildcard counts only as the sole element.
+func scopeValueWidens(stored, requested json.RawMessage) bool {
+	if !scopeValueAsserted(requested) {
 		return false
 	}
-	for k, av := range a {
-		bv, ok := b[k]
-		if !ok {
-			return false
-		}
-		if !jsonValueEqual(av, bv) {
-			return false
+	if !scopeValueAsserted(stored) {
+		return true
+	}
+	if jsonValueEqual(stored, requested) {
+		return false
+	}
+	if ScopeValueBreadth(requested) == ScopeBreadthWildcard {
+		return true
+	}
+	var storedElems, requestedElems []json.RawMessage
+	if json.Unmarshal(requested, &requestedElems) != nil {
+		return true
+	}
+	if ScopeValueBreadth(stored) == ScopeBreadthWildcard {
+		return false
+	}
+	if json.Unmarshal(stored, &storedElems) != nil {
+		return true
+	}
+	for _, r := range requestedElems {
+		if !slices.ContainsFunc(storedElems, func(s json.RawMessage) bool { return jsonValueEqual(s, r) }) {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+// scopeValueAsserted asks HasScopeAssertion about a single value, so the
+// list of unasserted spellings stays in one place.
+func scopeValueAsserted(value json.RawMessage) bool {
+	return HasScopeAssertion(map[string]json.RawMessage{"": value}, "")
+}
+
+func unionKeys(a, b map[string]json.RawMessage) []string {
+	keys := slices.Collect(maps.Keys(a))
+	for k := range b {
+		if _, ok := a[k]; !ok {
+			keys = append(keys, k)
+		}
+	}
+	return keys
 }
 
 // jsonValueEqual compares two JSON values by decoded value; a value that
