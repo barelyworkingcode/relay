@@ -10,7 +10,11 @@
   (subpath "/System/Library")
   (subpath "/private/etc")
   (subpath "/private/var/db/timezone")
-  (subpath "/private/var/select")
+  (subpath "/private/var/select"))
+(deny file-read* file-write*
+  (subpath "/usr/local/etc")
+  (subpath "/usr/local/var"))
+(allow file-read*
   (subpath "/private/tmp/relay-sandbox-golden/opt/homebrew")
   (literal "/private/tmp/relay-sandbox-golden/home/.gitconfig"))
 (allow file-read* file-write*

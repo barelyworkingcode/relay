@@ -11,6 +11,9 @@
   (subpath "/private/etc")
   (subpath "/private/var/db/timezone")
   (subpath "/private/var/select"))
+(deny file-read* file-write*
+  (subpath "/usr/local/etc")
+  (subpath "/usr/local/var"))
 (allow file-read* file-write*
   (subpath "<PROJECT>")
   (subpath "<DARWIN_TMP>")

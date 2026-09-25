@@ -711,12 +711,13 @@ func TestSandboxTemplate_DenyCarvesAHoleOutOfAHomeGrant(t *testing.T) {
 		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "custom",
 	}, store)
 
-	denyAt := strings.Index(body, "(deny file-read* file-write*\n")
+	want := `(subpath "` + filepath.Join(sandboxRealPath(t, home), ".ssh") + `")`
+	denyAt := strings.Index(body, want)
 	if denyAt < 0 {
-		t.Fatalf("no path deny block:\n%s", body)
+		t.Fatalf("profile lacks %s\n%s", want, body)
 	}
-	if want := `(subpath "` + filepath.Join(sandboxRealPath(t, home), ".ssh") + `")`; !strings.Contains(body[denyAt:], want) {
-		t.Errorf("deny block lacks %s\n%s", want, body)
+	if head := strings.LastIndex(body[:denyAt], "\n("); !strings.HasPrefix(body[head+1:], "(deny file-read* file-write*\n") {
+		t.Errorf("%s is not under a read-and-write deny block\n%s", want, body)
 	}
 	if grantAt := strings.Index(body, "(allow file-read* file-write*"); grantAt < 0 || grantAt > denyAt {
 		t.Errorf("read-write grant is not before the deny block:\n%s", body)

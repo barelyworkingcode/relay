@@ -6,8 +6,10 @@
 // only if the Spec grants it as read-only or as read-write, or if it is in the
 // fixed system baseline below. A directory that is not granted (another
 // project, relay's own data, ~/.ssh) is unreachable because nothing names it,
-// not because someone remembered to. Spec.Deny is the one explicit deny: it
-// carves a path out of a grant that would otherwise cover it.
+// not because someone remembered to. Two kinds of explicit deny carve a path
+// out of a grant that would otherwise cover it: the fixed baseline carve-outs
+// under /usr (baselineDenyDirs), which a Spec grant reopens, and Spec.Deny,
+// which nothing reopens.
 //
 // Everything that is not a file (network, process, mach) stays `(allow
 // default)`, as SP2 measured it; only the unix-socket, loopback and setuid
@@ -65,6 +67,11 @@ var baselineReadDirs = []string{
 	"/private/var/db/timezone",
 	"/private/var/select",
 }
+
+// baselineDenyDirs are carved back out of the /usr read baseline. /usr is
+// otherwise system software, but Intel Homebrew keeps its services' config and
+// data in /usr/local/etc and /usr/local/var, and those can hold credentials.
+var baselineDenyDirs = []string{"/usr/local/etc", "/usr/local/var"}
 
 // Spec is C7's sandbox input, in the shape this package renders. Every path
 // must be absolute and already ~-expanded by relay; Render resolves symlinks
@@ -128,22 +135,38 @@ func Render(s Spec) (string, error) {
 	// ancestor metadata rule below.
 	var reachable []string
 
-	reads := make([]string, 0, len(baselineReadLiterals)+len(baselineReadDirs)+len(s.Read)+len(s.ReadFiles))
+	baseline := make([]string, 0, len(baselineReadLiterals)+len(baselineReadDirs))
 	for _, p := range baselineReadLiterals {
 		lit, err := quoted(p)
 		if err != nil {
 			return "", fmt.Errorf("baseline: %w", err)
 		}
-		reads = append(reads, "(literal "+lit+")")
+		baseline = append(baseline, "(literal "+lit+")")
 	}
 	for _, p := range baselineReadDirs {
 		terms, paths, err := subtreeTerms(p)
 		if err != nil {
 			return "", fmt.Errorf("baseline: %w", err)
 		}
-		reads = append(reads, terms...)
+		baseline = append(baseline, terms...)
 		reachable = append(reachable, paths...)
 	}
+	writeBlock(&b, "allow file-read*", baseline)
+
+	// Between the baseline and the Spec's grants on purpose: an explicit Spec
+	// grant under either subtree renders later and reopens it. That is how a
+	// provider install grant reaches its openssl.cnf.
+	baselineDenies := make([]string, 0, len(baselineDenyDirs))
+	for _, p := range baselineDenyDirs {
+		terms, _, err := subtreeTerms(p)
+		if err != nil {
+			return "", fmt.Errorf("baseline deny: %w", err)
+		}
+		baselineDenies = append(baselineDenies, terms...)
+	}
+	writeBlock(&b, "deny file-read* file-write*", baselineDenies)
+
+	reads := make([]string, 0, len(s.Read)+len(s.ReadFiles))
 	for _, p := range s.Read {
 		terms, paths, err := subtreeTerms(p)
 		if err != nil {

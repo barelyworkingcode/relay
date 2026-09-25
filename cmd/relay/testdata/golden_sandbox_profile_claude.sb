@@ -10,7 +10,11 @@
   (subpath "/System/Library")
   (subpath "/private/etc")
   (subpath "/private/var/db/timezone")
-  (subpath "/private/var/select")
+  (subpath "/private/var/select"))
+(deny file-read* file-write*
+  (subpath "/usr/local/etc")
+  (subpath "/usr/local/var"))
+(allow file-read*
   (subpath "<HOME>/Library/Keychains")
   (subpath "/opt/homebrew")
   (subpath "<HOME>/.local/bin")
