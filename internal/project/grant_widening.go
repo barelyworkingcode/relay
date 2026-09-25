@@ -11,6 +11,7 @@ package project
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"reflect"
 	"slices"
 
@@ -38,7 +39,7 @@ func UpdateWidensGrant(stored config.Project, f UpdateFields, surfaces McpSurfac
 	if f.Access != nil && accessWidens(stored, *f.Access) {
 		out = append(out, "access")
 	}
-	if f.Context != nil && !contextEqual(comparableContext(stored.Context, surfaces), comparableContext(*f.Context, nil)) {
+	if f.Context != nil && !contextEqual(comparableContext(stored.Context, &stored, surfaces), comparableContext(*f.Context, nil, nil)) {
 		out = append(out, "context")
 	}
 	if f.AllowExternal != nil && allowExternalWidens(stored.AllowExternal, *f.AllowExternal) {
@@ -203,47 +204,58 @@ func contextEqual(a, b map[string]json.RawMessage) bool {
 		if !ok {
 			return false
 		}
-		if bytes.Equal(bytes.TrimSpace(av), bytes.TrimSpace(bv)) {
-			continue
-		}
-		var da, db any
-		if err := json.Unmarshal(av, &da); err != nil {
-			return false
-		}
-		if err := json.Unmarshal(bv, &db); err != nil {
-			return false
-		}
-		if !reflect.DeepEqual(da, db) {
+		if !jsonValueEqual(av, bv) {
 			return false
 		}
 	}
 	return true
 }
 
-// comparableContext drops MCP entries with no fields and, for an MCP whose
-// live schema is v2, the fields relay derives from the project path. It
-// returns a new map and leaves ctx untouched.
+// jsonValueEqual compares two JSON values by decoded value; a value that
+// does not decode is unequal to everything but its own bytes.
+func jsonValueEqual(a, b json.RawMessage) bool {
+	if bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b)) {
+		return true
+	}
+	var da, db any
+	if err := json.Unmarshal(a, &da); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &db); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(da, db)
+}
+
+// comparableContext drops MCP entries with no fields and, when derivedFrom
+// is given and relay would derive into it, any v2 project_path field whose
+// value is exactly what relay derives from derivedFrom.Path. It returns a
+// new map and leaves ctx untouched. A nil derivedFrom strips nothing.
 //
-// Stripping derived fields is deliberate and applies to the stored side
-// only: a derived value is a pure function of Path, which is gated on its own
-// row, and the Settings form cannot resend one because validation refuses it.
-// If re-derivation does not happen, the absent v2 restrict field refuses
-// every call, so the result can only be narrower. A request that carries a
-// derived field keeps it (callers pass nil surfaces), so it still compares
+// Stripping is deliberate and applies to the stored side only: the Settings
+// form cannot resend a derived field because validation refuses it, and a
+// field stripped here holds nothing but what the write re-derives from Path,
+// which is gated on its own row. Derivation happens only for a local,
+// unhosted project, so on any other project, and for any value that differs
+// from the derivation, the field is kept and compared strictly. If
+// re-derivation does not happen, the absent v2 restrict field refuses every
+// call, so the result can only be narrower. A request that carries a derived
+// field keeps it (callers pass a nil derivedFrom), so it still compares
 // unequal. A blob that does not decode as an object is kept and compared
 // strictly.
-func comparableContext(ctx map[string]json.RawMessage, surfaces McpSurfaces) map[string]json.RawMessage {
+func comparableContext(ctx map[string]json.RawMessage, derivedFrom *config.Project, surfaces McpSurfaces) map[string]json.RawMessage {
+	derives := derivedFrom != nil && !derivedFrom.IsRemote() && !derivedFrom.IsHosted()
 	out := make(map[string]json.RawMessage, len(ctx))
 	for mcpID, blob := range ctx {
 		values, isObject := decodeContextObject(blob)
 		if isObject && len(values) == 0 {
 			continue
 		}
-		if !isObject {
+		if !isObject || !derives {
 			out[mcpID] = blob
 			continue
 		}
-		rest, changed := withoutProjectPathFields(values, surfaces.Schema(mcpID))
+		rest, changed := withoutDerivedFields(values, surfaces.Schema(mcpID), derivedFrom.Path)
 		if !changed {
 			out[mcpID] = blob
 			continue
@@ -275,21 +287,26 @@ func decodeContextObject(blob json.RawMessage) (map[string]json.RawMessage, bool
 	return values, true
 }
 
-// withoutProjectPathFields returns a copy of values without schema's
-// project_path fields, and whether any were present.
-func withoutProjectPathFields(values map[string]json.RawMessage, schema ContextSchema) (map[string]json.RawMessage, bool) {
+// withoutDerivedFields returns a copy of values without each of schema's
+// project_path fields whose value equals the derivation from path, and
+// whether any were removed.
+func withoutDerivedFields(values map[string]json.RawMessage, schema ContextSchema, path string) (map[string]json.RawMessage, bool) {
 	if !schema.V2() {
 		return values, false
 	}
-	derived := schema.ProjectPathFields()
-	rest := make(map[string]json.RawMessage, len(values))
+	rest := maps.Clone(values)
 	changed := false
-	for name, v := range values {
-		if slices.ContainsFunc(derived, func(f ContextField) bool { return f.Name == name }) {
-			changed = true
+	for _, f := range schema.ProjectPathFields() {
+		stored, ok := rest[f.Name]
+		if !ok {
 			continue
 		}
-		rest[name] = v
+		derived, err := json.Marshal(projectPathValue(f, path))
+		if err != nil || !jsonValueEqual(stored, derived) {
+			continue
+		}
+		delete(rest, f.Name)
+		changed = true
 	}
 	return rest, changed
 }

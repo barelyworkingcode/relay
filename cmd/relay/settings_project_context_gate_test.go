@@ -203,6 +203,35 @@ func TestProjectOps_SchemaLostBeforeWriteRefusesContextResend(t *testing.T) {
 	}
 }
 
+func TestProjectOps_RecheckAndWriteShareOneSurfacesFetch(t *testing.T) {
+	surfaces := project.McpSurfaces{"macmcp": macmcpSurface()}
+	store, stored := ctxGateSeed(t, project.CreateFields{
+		Name: "Mail", Kind: config.ProjectKindLocal, Path: t.TempDir(), AllowedMcpIDs: []string{"macmcp"},
+		Context: ctxMap("macmcp", `{"mail_accounts":["Alice"]}`),
+	}, surfaces)
+	before := decodedContext(t, store, stored.ID)
+	if _, ok := before["macmcp"].(map[string]any)["file_dirs"]; !ok {
+		t.Fatalf("seed did not derive file_dirs: %v", before)
+	}
+	msg := ctxGateHarvest(t, store, stored, surfaces, "")
+
+	calls := 0
+	twice := func() project.McpSurfaces {
+		calls++
+		if calls <= 2 {
+			return surfaces
+		}
+		return nil
+	}
+	if _, _, err := ctxGateOps(t, store, presencetest.Deny()).Update(context.Background(), msg.ID, msg.UpdateFields, twice, auditViaIPC, ""); err != nil {
+		t.Fatalf("an unchanged save must succeed when the schema holds for the gate and the queued step: %v", err)
+	}
+	after := decodedContext(t, store, stored.ID)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("stored context changed, so the write saw a different schema than the recheck:\nbefore %v\nafter  %v", before, after)
+	}
+}
+
 func TestProjectOps_UpdateWithoutContextFetchesNoSurfaces(t *testing.T) {
 	surfaces := project.McpSurfaces{"macmcp": macmcpSurface()}
 	store, stored := ctxGateSeed(t, project.CreateFields{

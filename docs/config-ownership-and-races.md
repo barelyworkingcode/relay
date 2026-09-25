@@ -112,7 +112,8 @@ unbounded subprocess wait must not hold the lane.
   `errProjectChangedDuringApproval` (HTTP 409, IPC `onProjectError`). When the
   request carries `context`, the recheck and the write share one surfaces
   fetch, so a schema lost between the prompt and the write surfaces as an
-  unapproved `context` widening and is refused rather than written.
+  unapproved `context` widening and is refused rather than written, unless
+  the approval already covered `context`.
 - Terminal template create, update, and remove now use the same queue; the
   Settings window (IPC) and the HTTP routes share one `TemplateOps`.
 - Service create/register/update and remote-config set no longer hold the lane

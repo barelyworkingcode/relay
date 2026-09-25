@@ -92,6 +92,49 @@ func TestUpdateWidensGrant_ContextDerivedFields(t *testing.T) {
 	})
 }
 
+func TestUpdateWidensGrant_ContextDerivedFieldMustMatchDerivation(t *testing.T) {
+	mac := McpSurfaces{"macmcp": macmcpSurface()}
+	fs := McpSurfaces{"fsmcp": fsmcpSurface()}
+	local := config.Project{ID: "p1", Name: "Acme", Path: "/work/acme"}
+	remote := config.Project{ID: "p1", Name: "Acme", Kind: config.ProjectKindRemote, Path: "/work/acme"}
+	hosted := config.Project{ID: "p1", Name: "Acme", HostID: "devbox", Path: "/work/acme"}
+
+	rows := []struct {
+		name      string
+		stored    config.Project
+		context   map[string]json.RawMessage
+		requested map[string]json.RawMessage
+		surfaces  McpSurfaces
+	}{
+		{"stored derived value that differs from the path derivation", local,
+			blobs("macmcp", `{"mail_accounts":["Alice"],"file_dirs":["/"]}`),
+			blobs("macmcp", `{"mail_accounts":["Alice"]}`), mac},
+		{"stored derived value with an extra root", local,
+			blobs("fsmcp", `{"allowed_dirs":["/work/acme","/etc"]}`),
+			blobs(), fs},
+		{"stored derived value as a bare string where a list is derived", local,
+			blobs("fsmcp", `{"allowed_dirs":"/work/acme"}`),
+			blobs(), fs},
+		{"remote project with a derived-looking field", remote,
+			blobs("macmcp", `{"mail_accounts":["Alice"],"file_dirs":["/work/acme"]}`),
+			blobs("macmcp", `{"mail_accounts":["Alice"]}`), mac},
+		{"hosted project with a derived-looking field", hosted,
+			blobs("fsmcp", `{"allowed_dirs":["/work/acme"]}`),
+			blobs(), fs},
+	}
+	for _, r := range rows {
+		t.Run(r.name, func(t *testing.T) {
+			stored := r.stored
+			stored.Context = r.context
+			requested := r.requested
+			got := UpdateWidensGrant(stored, UpdateFields{Context: &requested}, r.surfaces)
+			if want := []string{"context"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("UpdateWidensGrant = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestUpdateWidensGrant_ContextEmptyValues(t *testing.T) {
 	runContextWideningRows(t, []contextWideningRow{
 		{"null entry equals missing", blobs("macmcp", `null`), blobs(), nil, false},
@@ -132,7 +175,8 @@ func TestComparableContext_NeverMutatesItsInput(t *testing.T) {
 	storedBefore := cloneBlobs(stored)
 	requestedBefore := cloneBlobs(requested)
 
-	out := comparableContext(stored, surfaces)
+	owner := config.Project{ID: "p1", Name: "Acme", Path: "/work/acme", Context: stored}
+	out := comparableContext(stored, &owner, surfaces)
 	if out == nil {
 		t.Fatal("comparableContext returned nil, want a new map")
 	}
@@ -140,12 +184,11 @@ func TestComparableContext_NeverMutatesItsInput(t *testing.T) {
 	if _, leaked := stored["injected"]; leaked {
 		t.Fatal("comparableContext returned its input map")
 	}
-	if got := comparableContext(nil, surfaces); got == nil {
+	if got := comparableContext(nil, &owner, surfaces); got == nil {
 		t.Fatal("comparableContext(nil) returned nil, want a new map")
 	}
 
-	project := config.Project{ID: "p1", Name: "Acme", Path: "/work/acme", Context: stored}
-	UpdateWidensGrant(project, UpdateFields{Context: &requested}, surfaces)
+	UpdateWidensGrant(owner, UpdateFields{Context: &requested}, surfaces)
 
 	if !reflect.DeepEqual(stored, storedBefore) {
 		t.Fatalf("stored context mutated:\nbefore %s\nafter  %s", storedBefore, stored)

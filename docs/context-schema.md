@@ -183,8 +183,9 @@ thing.
   profile) has no path**, so such a field is absent for one and every tool it
   governs refuses. Relay never derives one for a profile, unconditionally,
   whatever validation decided earlier. Because relay owns the value, the
-  presence gate ignores a stored derived field when it asks whether a
-  project update widens `context`.
+  presence gate ignores a stored derived field on a local, unhosted project
+  when it asks whether an update widens `context`, provided the stored value
+  is exactly what relay derives from `path`.
 - **`operator`** — an operator sets it explicitly, local and remote alike. A
   restrict field with no declared `source` is treated as operator-supplied,
   because that is the reading that leaves the value un-derivable: relay

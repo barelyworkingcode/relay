@@ -270,8 +270,9 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 //
 // The recheck and ApplyUpdate deliberately share one surfaces fetch: a
 // schema lost between the prompt and the write then shows up as an
-// unapproved context widening and is refused, rather than the recheck and
-// the write each seeing a different schema.
+// unapproved context widening and is refused (unless the approval already
+// covered context), rather than the recheck and the write each seeing a
+// different schema.
 func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFields, surfaces func() project.McpSurfaces, via, credID string) (config.Project, bool, error) {
 	var stored config.Project
 	if existing, _ := config.FindProjectByID(config.FreshSettings(o.Store), id); existing != nil {
