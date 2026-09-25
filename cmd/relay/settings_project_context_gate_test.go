@@ -250,3 +250,41 @@ func TestProjectOps_UpdateWithoutContextFetchesNoSurfaces(t *testing.T) {
 		t.Fatalf("a name-only update fetched surfaces %d times, want 0", calls)
 	}
 }
+
+func TestProjectOps_ApprovedContextEditSurvivesSchemaLossWithoutDerivedField(t *testing.T) {
+	surfaces := project.McpSurfaces{"macmcp": macmcpSurface()}
+	store, stored := ctxGateSeed(t, project.CreateFields{
+		Name: "Mail", Kind: config.ProjectKindLocal, Path: t.TempDir(), AllowedMcpIDs: []string{"macmcp"},
+		Context: ctxMap("macmcp", `{"mail_accounts":["Alice"]}`),
+	}, surfaces)
+	if _, ok := decodedContext(t, store, stored.ID)["macmcp"].(map[string]any)["file_dirs"]; !ok {
+		t.Fatalf("seed did not derive file_dirs")
+	}
+	msg := ctxGateHarvest(t, store, stored, surfaces, `window.setProjScopeText('macmcp', 'mail_accounts', 'Alice\nBob');`)
+
+	calls := 0
+	gateOnly := func() project.McpSurfaces {
+		calls++
+		if calls == 1 {
+			return surfaces
+		}
+		return nil
+	}
+	rec := presencetest.NewRecording(nil)
+	if _, _, err := ctxGateOps(t, store, rec).Update(context.Background(), msg.ID, msg.UpdateFields, gateOnly, auditViaIPC, ""); err != nil {
+		t.Fatalf("an approved context edit must be written after the schema is lost: %v", err)
+	}
+	if rec.Calls() != 1 {
+		t.Fatalf("expected the edit to be approved through one prompt, got %d", rec.Calls())
+	}
+	if calls < 2 {
+		t.Fatalf("surfaces fetched %d times, so the queued step never saw the lost schema", calls)
+	}
+	mac, _ := decodedContext(t, store, stored.ID)["macmcp"].(map[string]any)
+	if got := mac["mail_accounts"]; !reflect.DeepEqual(got, []any{"Alice", "Bob"}) {
+		t.Fatalf("stored mail_accounts = %v, want [Alice Bob]", got)
+	}
+	if v, ok := mac["file_dirs"]; ok {
+		t.Fatalf("stored context kept derived file_dirs = %v without a schema to derive it", v)
+	}
+}
