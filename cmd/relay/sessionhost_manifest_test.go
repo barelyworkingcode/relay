@@ -103,6 +103,7 @@ func TestRealRelaySessionsBinary_RegistersItsManifest(t *testing.T) {
 			"service",
 			"-internal-socket", internalSock,
 			"-hook-socket", filepath.Join(sockDir, "hook.sock"),
+			"-relay-mcp-command", filepath.Join(sockDir, "relay"),
 		},
 		Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilitySessions},
 	}
