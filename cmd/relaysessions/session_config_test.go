@@ -15,7 +15,9 @@ import (
 const testRelayBin = "/opt/acme/Relay.app/Contents/MacOS/relay"
 
 func serviceArgs(extra ...string) []string {
-	return append([]string{"-internal-socket", "/tmp/i.sock", "-hook-socket", "/tmp/h.sock"}, extra...)
+	// -bridge-socket is deliberate: without it parseServiceArgs falls back to
+	// bridge.ModelSocketPath(), which creates the real config dir.
+	return append([]string{"-internal-socket", "/tmp/i.sock", "-hook-socket", "/tmp/h.sock", "-bridge-socket", "/tmp/b.sock"}, extra...)
 }
 
 func TestParseServiceArgs_RelayMCPCommand(t *testing.T) {
