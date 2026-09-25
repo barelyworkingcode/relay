@@ -56,6 +56,13 @@ func NewSessionHandlers(hub *Hub, mgr *session.Manager, perms *permission.Permis
 	return sh
 }
 
+// HasViewers reports whether any connection is currently joined to sessionID.
+func (sh *SessionHandlers) HasViewers(sessionID string) bool {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	return len(sh.viewers[sessionID]) > 0
+}
+
 // SendToSession implements sessionstypes.EventSink: broadcast msg to every
 // connection currently joined to sessionID.
 func (sh *SessionHandlers) SendToSession(sessionID string, msg map[string]any) {

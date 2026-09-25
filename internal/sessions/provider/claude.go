@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	"github.com/barelyworkingcode/relay/internal/sessions/hook"
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
@@ -96,6 +97,11 @@ type ClaudeProvider struct {
 	// session. Used by Kill's hard-kill fallback to reach the target's whole
 	// process group, not just the shim.
 	targetPID int
+
+	// root is published atomically because ProcessRoot is called from
+	// other goroutines while p.mu is held across blocking stdin writes.
+	// nil for an SSH-hosted session and whenever no spawn is running.
+	root atomic.Pointer[sessionstypes.ProcessRoot]
 
 	claudeSessionID string
 	model           string
@@ -324,6 +330,7 @@ func buildHostExec(spec *sessionstypes.HostSpec, dir string, args []string, sess
 }
 
 func (p *ClaudeProvider) Start() error {
+	p.root.Store(nil)
 	p.cleanupSpawnFiles()
 	spawn := &claudeSpawnState{}
 
@@ -443,6 +450,7 @@ func (p *ClaudeProvider) Start() error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start claude: %w", err)
 	}
+	root := p.readProcessRoot(cmd.Process.Pid)
 	// Load-bearing: without closing the parent's own copies, the status pipe
 	// (and, when present, the identity secret pipe) never reaches EOF.
 	for _, f := range extraFiles {
@@ -468,6 +476,7 @@ func (p *ClaudeProvider) Start() error {
 
 	p.cmd = cmd
 	p.stdin = stdin
+	p.root.Store(root)
 	p.alive.Store(true)
 	p.stopIdle = make(chan struct{})
 	p.stopIdleOnce = sync.Once{}
@@ -481,6 +490,31 @@ func (p *ClaudeProvider) Start() error {
 
 	slog.Info("claude process started", "session", p.session.ID, "model", p.model, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
 	return nil
+}
+
+// readProcessRoot pins pid's start time. It returns nil for an SSH-hosted
+// session, whose local process is ssh rather than anything that dials the
+// host, and when the start time is unreadable.
+func (p *ClaudeProvider) readProcessRoot(pid int) *sessionstypes.ProcessRoot {
+	if p.session.GetHost() != nil {
+		return nil
+	}
+	info, ok := membership.NewSource().Info(pid)
+	if !ok {
+		slog.Warn("claude: process start time unreadable; session has no process root", "session", p.session.ID, "pid", pid)
+		return nil
+	}
+	return &sessionstypes.ProcessRoot{PID: pid, StartSec: info.StartSec, StartUsec: info.StartUsec}
+}
+
+// ProcessRoot reports the live local process this provider spawned: the
+// shim when shimmed, otherwise claude itself.
+func (p *ClaudeProvider) ProcessRoot() (sessionstypes.ProcessRoot, bool) {
+	root := p.root.Load()
+	if root == nil || !p.alive.Load() {
+		return sessionstypes.ProcessRoot{}, false
+	}
+	return *root, true
 }
 
 func (p *ClaudeProvider) cleanupSpawnFiles() {
@@ -1150,6 +1184,8 @@ func (p *ClaudeProvider) Kill() {
 	}
 
 	p.cleanupSpawnFiles()
+
+	p.root.Store(nil)
 
 	if p.cmd == nil || p.cmd.Process == nil {
 		return

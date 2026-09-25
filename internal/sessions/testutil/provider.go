@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	"github.com/barelyworkingcode/relay/internal/sessions/types"
 )
@@ -32,6 +33,7 @@ type FakeProvider struct {
 	stopped atomic.Bool
 	killed  atomic.Bool
 	deleted atomic.Bool
+	root    atomic.Pointer[types.ProcessRoot]
 }
 
 type scriptedEvent struct {
@@ -78,6 +80,29 @@ func (p *FakeProvider) Alive() bool               { return !p.killed.Load() }
 func (p *FakeProvider) GetState() json.RawMessage { return p.state }
 func (p *FakeProvider) RestoreState(s json.RawMessage) {
 	p.state = append(json.RawMessage(nil), s...)
+}
+
+// SetProcessRoot makes the fake a types.RootReporter that reports root
+// until Kill.
+func (p *FakeProvider) SetProcessRoot(root types.ProcessRoot) { p.root.Store(&root) }
+
+// ProcessRoot implements types.RootReporter.
+func (p *FakeProvider) ProcessRoot() (types.ProcessRoot, bool) {
+	root := p.root.Load()
+	if root == nil || p.killed.Load() {
+		return types.ProcessRoot{}, false
+	}
+	return *root, true
+}
+
+// ProcessRootOf reads pid's kernel start time into a ProcessRoot, for
+// pinning a real process (typically the test's own) as a provider root.
+func ProcessRootOf(pid int) (types.ProcessRoot, bool) {
+	info, ok := membership.NewSource().Info(pid)
+	if !ok {
+		return types.ProcessRoot{}, false
+	}
+	return types.ProcessRoot{PID: pid, StartSec: info.StartSec, StartUsec: info.StartUsec}, true
 }
 
 // --- Scripting API ---
