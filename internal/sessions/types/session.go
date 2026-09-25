@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 )
 
 // Session represents an active LLM conversation.
@@ -44,6 +45,7 @@ type Session struct {
 	provider   Provider
 	processing bool
 	mu         sync.Mutex
+	deleted    atomic.Bool
 }
 
 // Lock/Unlock expose Session's mutex directly to callers that need to read or
@@ -142,6 +144,18 @@ func (s *Session) WithLockIfNotProcessing(fn func()) bool {
 	}
 	fn()
 	return true
+}
+
+// MarkDeleted records that the session is being deleted; Deleted reports it.
+// Safe for concurrent use.
+func (s *Session) MarkDeleted() {
+	s.deleted.Store(true)
+}
+
+// Deleted reports whether MarkDeleted has been called. Safe for concurrent
+// use.
+func (s *Session) Deleted() bool {
+	return s.deleted.Load()
 }
 
 // EventSink receives events from sessions and routes them to clients.

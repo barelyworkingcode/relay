@@ -688,6 +688,7 @@ func (m *Manager) EndSession(id string) {
 func (m *Manager) DeleteSession(id string) {
 	sess := m.stopSlot(id)
 	if sess != nil {
+		sess.MarkDeleted()
 		if p := sess.Provider(); p != nil {
 			if err := p.DeleteSession(); err != nil {
 				slog.Warn("session: delete provider data failed", "id", id, "error", err)
@@ -926,6 +927,11 @@ func (m *Manager) SetSessionFolder(id, folder string) error {
 }
 
 func (m *Manager) persist(sess *sessionstypes.Session) {
+	// A killed provider's exit event can arrive after DeleteSession has
+	// already removed the file; skip the write instead of resurrecting it.
+	if sess.Deleted() {
+		return
+	}
 	if p := sess.Provider(); p != nil {
 		state := p.GetState()
 		sess.Lock()
