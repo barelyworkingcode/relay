@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -244,6 +245,9 @@ func connInfoFrom(ctx context.Context) (connInfo, bool) {
 // file left by a prior process — the same convention bridge.NewBridgeServer
 // and model_endpoint.go's ListenSocket use.
 func listenSocket(path string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create socket dir %s: %w", filepath.Dir(path), err)
+	}
 	_ = os.Remove(path)
 	ln, err := net.Listen("unix", path)
 	if err != nil {

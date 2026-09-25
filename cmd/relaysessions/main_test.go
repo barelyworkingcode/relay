@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -9,6 +10,23 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 )
+
+// TestMain points HOME at a throwaway directory for the whole package, so a
+// test that resolves a default bridge or model socket path cannot reach the
+// real ~/Library/Application Support/relay. Tests that set their own config
+// dir override layer over this.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "relaysessions-test-home-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "relaysessions tests: create sandbox home:", err)
+		os.Exit(1)
+	}
+	os.Setenv("HOME", home)
+	os.Setenv("XDG_CONFIG_HOME", home+"/.config")
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
 
 // TestReportSessionExited_DialsConfiguredSocket_NotRederivedDefault: under
 // a bridge socket path this process was actually launched with — matching

@@ -373,15 +373,11 @@ func ConfigDir() string {
 }
 
 func SocketPath() string {
-	dir := ConfigDir()
-	_ = os.MkdirAll(dir, 0o700)
-	return filepath.Join(dir, "relay.sock")
+	return filepath.Join(ConfigDir(), "relay.sock")
 }
 
 // ModelSocketPath is the model endpoint's Unix socket (docs/model-endpoint.md),
 // beside relay.sock in the same directory and chmod'd 0600 the same way.
 func ModelSocketPath() string {
-	dir := ConfigDir()
-	_ = os.MkdirAll(dir, 0o700)
-	return filepath.Join(dir, "model.sock")
+	return filepath.Join(ConfigDir(), "model.sock")
 }
