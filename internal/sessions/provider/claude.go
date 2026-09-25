@@ -1078,7 +1078,7 @@ func (p *ClaudeProvider) handleControlRequest(raw json.RawMessage) {
 			p.writeControlResponse(buildControlResponseDeny(req.RequestID, "denied by project policy"))
 			return
 		}
-		if permission.MatchToolRule(req.Request.ToolName, toolInput, policy.AllowedTools) {
+		if permission.AllowedByName(req.Request.ToolName, policy.AllowedTools) {
 			p.writeControlResponse(buildControlResponseAllow(req.RequestID, req.Request.Input))
 			return
 		}

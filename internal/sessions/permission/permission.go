@@ -17,11 +17,14 @@ import (
 
 // MatchToolRule reports whether toolName/toolInput matches any of the given
 // patterns. A bare pattern like "Read" matches any use of Read. A pattern
-// of the form "ToolName:argPrefix" matches uses where the serialized
-// toolInput starts with argPrefix (after a leading "{" and any whitespace).
+// of the form "ToolName:arg" matches uses where the serialized toolInput
+// (after a leading "{" and any whitespace are trimmed) contains arg anywhere,
+// not just as a prefix.
 //
 // This intentionally accepts a small subset of Claude CLI's grammar — enough
-// for safe-tool allowlisting without re-implementing arg parsing.
+// for safe-tool allowlisting without re-implementing arg parsing. Allow
+// decisions should use AllowedByName instead: a substring match can't bound
+// a chained shell command.
 func MatchToolRule(toolName, toolInput string, patterns []string) bool {
 	for _, pat := range patterns {
 		colon := strings.IndexByte(pat, ':')

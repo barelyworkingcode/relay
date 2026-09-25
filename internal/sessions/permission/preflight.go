@@ -29,7 +29,7 @@ func Preflight(in PreflightInput) (d PermissionDecision, decided bool) {
 	if in.Mode == "bypassPermissions" {
 		return PermissionDecision{Decision: "allow", Reason: "bypassPermissions mode"}, true
 	}
-	if in.Policy != nil && allowedByName(in.ToolName, in.Policy.AllowedTools) {
+	if in.Policy != nil && AllowedByName(in.ToolName, in.Policy.AllowedTools) {
 		return PermissionDecision{Decision: "allow", Reason: "allowed by project policy"}, true
 	}
 	if in.Mode == "acceptEdits" && editsInsideDirectory(in.ToolName, in.ToolInput, in.Directory) {
@@ -38,14 +38,14 @@ func Preflight(in PreflightInput) (d PermissionDecision, decided bool) {
 	return PermissionDecision{}, false
 }
 
-// allowedByName reports whether patterns lists toolName as a bare name.
+// AllowedByName reports whether patterns lists toolName as a bare name.
 //
 // Deliberate: Tool:arg allow entries never decide here. MatchToolRule matches
 // the argument by substring on the serialized input, which cannot bound a
 // chained shell command (Bash:"command":"git also matches
 // "git status; curl … | sh"), so those calls fall through to a person.
 // Deny rules keep the substring match, where broader is safer.
-func allowedByName(toolName string, patterns []string) bool {
+func AllowedByName(toolName string, patterns []string) bool {
 	for _, pat := range patterns {
 		if !strings.Contains(pat, ":") && pat == toolName {
 			return true
