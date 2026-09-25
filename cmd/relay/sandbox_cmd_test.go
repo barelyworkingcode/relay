@@ -236,10 +236,10 @@ type sbxRun struct {
 	mode       string
 	out        string
 	// ptyReadDelay holds each terminal read back before it reaches ptyOut.
-	// It sits after the read on purpose. Measured: a delay before the read
-	// never lets the client exit first, because its exit waits for the
-	// terminal output to be read. The only window is between the read and
-	// ptyOut.
+	// It sits after the read on purpose. Measured on macOS: while the client
+	// is session leader on this pty (Setsid/Setctty in startSandboxClient),
+	// its exit does not finish until the master has read its output, so a
+	// delay before the read cannot make the client exit first.
 	ptyReadDelay time.Duration
 }
 
@@ -344,8 +344,8 @@ func (p *sbxProc) readMaster() {
 	}
 }
 
-// waitPtyOutput is needed even after wait: the client's exit orders only the
-// master read, not readMaster's write of those bytes into ptyOut.
+// waitPtyOutput is needed even after wait: cmd.Wait joins exec's own copy
+// goroutines (stderr, pipeOut) but not readMaster, which fills ptyOut.
 func (p *sbxProc) waitPtyOutput(want string) bool {
 	deadline := time.Now().Add(sbxWait)
 	for !strings.Contains(p.ptyOut.String(), want) {
