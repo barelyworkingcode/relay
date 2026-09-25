@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -45,7 +46,7 @@ func main() {
 		if !fdOpen(3) {
 			state = "EBADF"
 		}
-		_ = os.WriteFile(*fd3Check, []byte(state), 0o600)
+		_ = writeFileAtomic(*fd3Check, []byte(state), 0o600)
 	}
 
 	if *envOut != "" {
@@ -56,7 +57,7 @@ func main() {
 			}
 		}
 		b, _ := json.Marshal(env)
-		if err := os.WriteFile(*envOut, b, 0o600); err != nil {
+		if err := writeFileAtomic(*envOut, b, 0o600); err != nil {
 			fmt.Fprintln(os.Stderr, "testtarget: write env:", err)
 			os.Exit(1)
 		}
@@ -64,11 +65,13 @@ func main() {
 
 	if *writeOutside != "" {
 		result := "allowed"
+		// Deliberately a plain create: this is the sandbox probe, and the direct
+		// create at the target path is what is being tested.
 		if err := os.WriteFile(*writeOutside, []byte("sandbox probe"), 0o600); err != nil {
 			result = "denied:" + err.Error()
 		}
 		if *writeOutsideResult != "" {
-			_ = os.WriteFile(*writeOutsideResult, []byte(result), 0o600)
+			_ = writeFileAtomic(*writeOutsideResult, []byte(result), 0o600)
 		}
 	}
 
@@ -79,7 +82,7 @@ func main() {
 			"pgid": getpgrp(),
 		}
 		b, _ := json.Marshal(info)
-		if err := os.WriteFile(*markerPath, b, 0o600); err != nil {
+		if err := writeFileAtomic(*markerPath, b, 0o600); err != nil {
 			fmt.Fprintln(os.Stderr, "testtarget: write marker:", err)
 			os.Exit(1)
 		}
@@ -94,7 +97,7 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 		go func() {
 			sig := <-sigCh
-			_ = os.WriteFile(*signalMarker, []byte(sig.String()), 0o600)
+			_ = writeFileAtomic(*signalMarker, []byte(sig.String()), 0o600)
 			os.Exit(*exitCode)
 		}()
 	}
@@ -141,7 +144,35 @@ type callToolResult struct {
 
 func writeCallToolResult(path string, r callToolResult) {
 	b, _ := json.Marshal(r)
-	_ = os.WriteFile(path, b, 0o600)
+	_ = writeFileAtomic(path, b, 0o600)
+}
+
+// writeFileAtomic publishes data at path by renaming a fully written sibling
+// temp file over it, so a reader polling path never sees it empty or partial.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() {
+		if err != nil {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err = f.Write(data); err != nil {
+		return err
+	}
+	// Deliberately Chmod on the open file rather than relying on CreateTemp's
+	// mode: CreateTemp creates 0600 subject to umask, and perm must be exact.
+	if err = f.Chmod(perm); err != nil {
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // runCallTool makes a real, tokenless bridge.Client.CallTool request —
