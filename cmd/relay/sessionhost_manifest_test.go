@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
+	"github.com/barelyworkingcode/relay/internal/modelbroker"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
 
@@ -167,6 +169,29 @@ func TestRealRelaySessionsBinary_RegistersItsManifest(t *testing.T) {
 	// assertion above it already passed.
 	if err := client.Terminate(context.Background(), "no-such-session", "probe"); err != nil {
 		t.Fatalf("Terminate through the registered socket+bearer: %v", err)
+	}
+
+	// The Settings model picker's read: the real host's /api/models through
+	// the same client, then ModelCatalogOps over it with a failing broker.
+	modelsCtx, cancelModels := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelModels()
+	hostModels, err := client.ListModels(modelsCtx)
+	assertNoErr(t, err, "sessionHostClient.ListModels")
+	providers := make(map[string]string, len(hostModels))
+	for _, m := range hostModels {
+		providers[m.Value] = m.Provider
+	}
+	for _, id := range []string{"haiku", "sonnet", "opus"} {
+		if providers[id] != "claude" {
+			t.Fatalf("ListModels row %q provider = %q, want claude (rows=%+v)", id, providers[id], hostModels)
+		}
+	}
+	catalog := (&ModelCatalogOps{
+		HostModels: client.ListModels,
+		BrokerRows: func(context.Context) ([]modelbroker.Row, error) { return nil, errors.New("broker down") },
+	}).List(modelsCtx)
+	if catalog.Status != "ok" || len(catalog.Warnings) != 1 || catalog.Warnings[0] != "model broker unavailable" {
+		t.Fatalf("catalog with a failing broker = %+v, want ok with the broker warning", catalog)
 	}
 
 	// The rest of this test drives the real eve-facing surface through a
