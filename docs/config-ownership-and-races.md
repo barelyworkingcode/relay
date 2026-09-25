@@ -109,7 +109,10 @@ unbounded subprocess wait must not hold the lane.
   queue. The prompt stays outside the lane; the queued step recomputes
   `UpdateWidensGrant` on the live record and, when it names a field the
   approval did not cover, commits nothing and returns
-  `errProjectChangedDuringApproval` (HTTP 409, IPC `onProjectError`).
+  `errProjectChangedDuringApproval` (HTTP 409, IPC `onProjectError`). When the
+  request carries `context`, the recheck and the write share one surfaces
+  fetch, so a schema lost between the prompt and the write surfaces as an
+  unapproved `context` widening and is refused rather than written.
 - Terminal template create, update, and remove now use the same queue; the
   Settings window (IPC) and the HTTP routes share one `TemplateOps`.
 - Service create/register/update and remote-config set no longer hold the lane

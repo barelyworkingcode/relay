@@ -228,7 +228,16 @@ MCPs, a smaller tool pattern, write moved to read), must not gate, and the
 prompt must name only the field or fields that genuinely widen —
 `project.UpdateWidensGrant` (`internal/project/grant_widening.go`) is that
 per-field comparison, called from `ProjectOps.Update` before
-`projectUpdateDigest` and the reason string are built. The digest itself is
+`projectUpdateDigest` and the reason string are built. For `context` it
+compares decoded values, ignores MCP entries with no fields (empty, `null`,
+`{}`), and, on the stored side only, ignores the fields a v2 schema derives
+from the project path (`source: "project_path"`): the Settings form cannot
+resend them, and they are a pure function of `path`, which is gated on its
+own row. Everything else about a context value still counts as a change —
+`null` against `[]` against a missing field, reordered arrays, stale keys, v1
+fields, a blob that does not decode, and a derived field the request itself
+carries. With no live schema for the MCP (or no surfaces at all) nothing is
+stripped. The digest itself is
 unchanged by this: it still binds all ten fields' presence exactly as
 before (see `TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields`'s
 own comment for why shrinking the digest to the gating subset would be

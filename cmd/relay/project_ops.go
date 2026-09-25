@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -266,12 +267,21 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 // (errProjectChangedDuringApproval, nothing written) when it names any field
 // the approval did not cover. A live widening within the approved set commits
 // as approved; a stale snapshot that over-prompted needs no handling.
+//
+// The recheck and ApplyUpdate deliberately share one surfaces fetch: a
+// schema lost between the prompt and the write then shows up as an
+// unapproved context widening and is refused, rather than the recheck and
+// the write each seeing a different schema.
 func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFields, surfaces func() project.McpSurfaces, via, credID string) (config.Project, bool, error) {
 	var stored config.Project
 	if existing, _ := config.FindProjectByID(config.FreshSettings(o.Store), id); existing != nil {
 		stored = *existing
 	}
-	widened := project.UpdateWidensGrant(stored, f)
+	var gateSurfaces project.McpSurfaces
+	if f.Context != nil {
+		gateSurfaces = surfaces()
+	}
+	widened := project.UpdateWidensGrant(stored, f, gateSurfaces)
 	touchesGrant := len(widened) > 0
 	var presenceID string
 	if touchesGrant {
@@ -290,13 +300,18 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 	var found bool
 	var updateErr error
 	if err := o.runQueued(ctx, func() error {
+		queued := sync.OnceValue(surfaces)
 		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
 			if live, _ := config.FindProjectByID(s, id); live != nil {
-				if unapproved := project.UnapprovedWidening(project.UpdateWidensGrant(*live, f), widened); len(unapproved) > 0 {
+				var recheckSurfaces project.McpSurfaces
+				if f.Context != nil {
+					recheckSurfaces = queued()
+				}
+				if unapproved := project.UnapprovedWidening(project.UpdateWidensGrant(*live, f, recheckSurfaces), widened); len(unapproved) > 0 {
 					return fmt.Errorf("%w: %s", errProjectChangedDuringApproval, strings.Join(unapproved, ", "))
 				}
 			}
-			updated, found, updateErr = project.ApplyUpdate(s, id, f, surfaces)
+			updated, found, updateErr = project.ApplyUpdate(s, id, f, queued)
 			return nil
 		}); err != nil {
 			if errors.Is(err, errProjectChangedDuringApproval) {
