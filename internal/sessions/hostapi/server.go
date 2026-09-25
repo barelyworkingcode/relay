@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -127,8 +128,7 @@ func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Se
 // SetExitHandler installs fn to be called, on its own goroutine, whenever a
 // session this server dispatched to exits — the hook cmd/relaysessions uses
 // to send C5's SessionExited bridge report. rootPID is 0 for a claude/pi/
-// chat session (types.go's package doc: no provider.Provider pid is
-// exposed to key one on); reason is "closed" when this host's own
+// chat session; reason is "closed" when this host's own
 // /terminate caused the exit, "exit" otherwise — C5 also names "idle" and
 // "deleted", neither reachable here yet: idle-close is driven by
 // NotifyViewerChange, which nothing calls without the eve-facing manifest
@@ -584,11 +584,10 @@ func (s *Server) launchSession(w http.ResponseWriter, req LaunchRequest) {
 		return
 	}
 
-	// No membership table entry: a provider-hosted session's PreToolUse hook
-	// authenticates with a hook token, not process ancestry (types.go's
-	// package doc), and provider.Provider exposes no pid this handler could
-	// register as a root even if it wanted to — root_pid is 0 here, same as
-	// SessionExited's for this kind (server.go's SetExitHandler doc comment).
+	// No membership table entry: a provider's process root is read live from
+	// session.Manager on each /permission (rootsAdapter), because a restart
+	// that bypasses /launch would leave a registered entry stale. root_pid
+	// stays 0 here, matching SessionExited for this kind.
 	body, err := json.Marshal(sess)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, ErrSpawnFailed, err.Error())
@@ -664,29 +663,18 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 
 // maxPermissionBodyBytes bounds a /permission body. A real tool_input is
 // small (a shell command, an edit's arguments); this is generous headroom,
-// not a tuned limit — a later unit can tighten it once real tool payloads
-// are observed.
+// not a tuned limit.
 const maxPermissionBodyBytes = 1 << 20 // 1 MiB
 
-// handlePermission implements C6's `relay-sessions hook` subsection, host
-// side: admit the call iff the peer is a C3 member of the named session's
-// root, no bearer. The membership seam is real, not a placeholder: it is
-// internal/membership.Resolve (C3, already landed on main as of this unit —
-// see this package's doc comment on sessionTable) walked against this
-// host's own sessionTable via rootsAdapter, exactly as the plan's C3 section
-// names ("relay-sessions hook socket (against the host's own session
-// table)"). What is NOT real yet is the policy decision itself: no
-// PermissionManager is wired in, so an admitted call gets a fixed
-// placeholder decision.
+// handlePermission answers a `relay-sessions hook` call: admit the caller iff
+// it descends from a live session root (a pty shim or a provider's spawned
+// process), then decide the tool call from policy and mode, or by asking a
+// viewer. The decision flow is docs/session-host.md's "Tool permissions".
 //
-// Membership is resolved before the body is ever read: the peer pid and
-// accept time needed for Resolve both come from the connection itself
-// (connInfo), not the request body, so a caller that fails the membership
-// check is refused without this handler decoding a single byte it sent —
-// hook.sock is 0600 but reachable by any same-uid process, including the
-// sandboxed session target, so an unauthenticated caller must not be able
-// to drive unbounded JSON-decode allocation here the way it could if the
-// body were decoded first.
+// Membership is resolved before the body is read: hook.sock is reachable by
+// any same-uid process, including the sandboxed session target, so a caller
+// that fails the ancestry check must not be able to drive JSON-decode
+// allocation here.
 func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -698,7 +686,7 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolvedID, memberOK := membership.Resolve(membership.NewSource(), rootsAdapter{s.table}, int(info.peer.PID()), info.acceptedAt)
+	resolvedID, memberOK := membership.Resolve(membership.NewSource(), rootsAdapter{table: s.table, sessions: s.sessions}, int(info.peer.PID()), info.acceptedAt)
 	if !memberOK {
 		w.WriteHeader(http.StatusForbidden)
 		return
@@ -715,9 +703,68 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	d, answered := s.decidePermission(r.Context(), body)
+	if !answered {
+		slog.Info("permission abandoned", "session", body.SessionID, "tool", body.ToolName)
+		return
+	}
+	slog.Info("permission decided", "session", body.SessionID, "tool", body.ToolName, "decision", d.Decision, "reason", d.Reason)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(permissionResponseBody{
-		Decision: "deny",
-		Reason:   "session host: no policy engine wired yet",
+	_ = json.NewEncoder(w).Encode(permissionResponseBody{Decision: d.Decision, Reason: d.Reason})
+}
+
+// decidePermission decides an admitted hook call. answered is false only when
+// ctx ended while a viewer was being asked: the hook is gone and nothing is
+// written.
+func (s *Server) decidePermission(ctx context.Context, body permissionRequestBody) (d permission.PermissionDecision, answered bool) {
+	perms := s.cfg.Permissions
+	if perms == nil {
+		return permission.PermissionDecision{Decision: "deny", Reason: "session host: no permission manager"}, true
+	}
+	sess, ok := s.sessions.LiveSession(body.SessionID)
+	if !ok {
+		return permission.PermissionDecision{Decision: "deny", Reason: "session has no tool-permission flow"}, true
+	}
+
+	sess.Lock()
+	in := permission.PreflightInput{
+		ToolName:  body.ToolName,
+		ToolInput: body.ToolInput,
+		Mode:      sess.PermissionMode,
+		Directory: sess.Directory,
+		Policy:    sess.Policy,
+	}
+	if sess.Headless {
+		in.Mode = "bypassPermissions"
+	}
+	sess.Unlock()
+
+	if d, decided := permission.Preflight(in); decided {
+		return d, true
+	}
+	if !s.sessionWS.HasViewers(body.SessionID) {
+		return permission.PermissionDecision{Decision: "deny", Reason: "no client is viewing this session to approve the tool call"}, true
+	}
+
+	toolInput := body.ToolInput
+	if toolInput == "" {
+		toolInput = "{}"
+	}
+	pending, ch := perms.CreateRequest(body.SessionID, body.ToolName, toolInput, body.ToolUseID)
+	perms.NotifySession(body.SessionID, map[string]any{
+		"type":         "permission_request",
+		"sessionId":    body.SessionID,
+		"permissionId": pending.ID,
+		"toolName":     body.ToolName,
+		"toolInput":    toolInput,
+		"toolUseId":    body.ToolUseID,
 	})
+	d, ok = perms.WaitForDecisionContext(ctx, pending.ID, ch)
+	if !ok {
+		return permission.PermissionDecision{}, false
+	}
+	if d.Decision == "deny" && d.Reason == "" {
+		d.Reason = "Denied by user"
+	}
+	return d, true
 }

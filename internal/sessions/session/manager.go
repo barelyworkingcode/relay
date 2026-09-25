@@ -585,6 +585,67 @@ func (m *Manager) Exists(id string) bool {
 	return ok
 }
 
+// liveSessions snapshots the sessions of slots whose Create has finished.
+// Callers query providers only after m.mu is released.
+func (m *Manager) liveSessions() []*sessionstypes.Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*sessionstypes.Session, 0, len(m.slots))
+	for _, slot := range m.slots {
+		if slot.sess != nil && !slot.launching {
+			out = append(out, slot.sess)
+		}
+	}
+	return out
+}
+
+func liveProvider(sess *sessionstypes.Session) (sessionstypes.Provider, bool) {
+	p := sess.Provider()
+	if p == nil || !p.Alive() {
+		return nil, false
+	}
+	return p, true
+}
+
+// LiveSession returns id's session only when its slot is launched and its
+// provider is alive. Unlike Get, it never lazy-loads from disk and never
+// waits on an in-flight Create.
+func (m *Manager) LiveSession(id string) (*sessionstypes.Session, bool) {
+	m.mu.Lock()
+	slot, ok := m.slots[id]
+	if !ok || slot.sess == nil || slot.launching {
+		m.mu.Unlock()
+		return nil, false
+	}
+	sess := slot.sess
+	m.mu.Unlock()
+
+	if _, ok := liveProvider(sess); !ok {
+		return nil, false
+	}
+	return sess, true
+}
+
+// RootByPID finds the live session whose provider reports pid as its
+// process root.
+func (m *Manager) RootByPID(pid int) (sessionID string, root sessionstypes.ProcessRoot, ok bool) {
+	for _, sess := range m.liveSessions() {
+		p, ok := liveProvider(sess)
+		if !ok {
+			continue
+		}
+		reporter, ok := p.(sessionstypes.RootReporter)
+		if !ok {
+			continue
+		}
+		r, ok := reporter.ProcessRoot()
+		if ok && r.PID == pid {
+			return sess.ID, r, true
+		}
+	}
+	return "", sessionstypes.ProcessRoot{}, false
+}
+
 // stopSlot removes id from the live table and returns the session to tear
 // down, waiting out an in-flight launch first if necessary (mirrors
 // internal/sessions/terminal.Manager.Close). Returns nil if id names nothing

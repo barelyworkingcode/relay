@@ -1,6 +1,7 @@
 package permission
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -209,17 +210,26 @@ func (m *PermissionManager) Cleanup(permissionID string) {
 
 // WaitForDecision blocks until the pending request identified by id resolves
 // or 60s elapses, in which case it is cleaned up and denied with reason
-// "No response" — the control_request path's timeout (../relay/docs/ssh-hosts.md).
-// Shared timeout plumbing for any caller that isn't the HTTP hook handler
-// (which has its own inline select because it also needs to write the HTTP
-// response, not just a decision value).
+// "No response".
 func (m *PermissionManager) WaitForDecision(id string, ch chan PermissionDecision) PermissionDecision {
+	d, _ := m.WaitForDecisionContext(context.Background(), id, ch)
+	return d
+}
+
+// WaitForDecisionContext is WaitForDecision bounded by ctx as well. When ctx
+// ends first the pending request is cleaned up and ok is false: the caller
+// that would have delivered the decision is gone, so there is nothing to
+// answer.
+func (m *PermissionManager) WaitForDecisionContext(ctx context.Context, id string, ch chan PermissionDecision) (PermissionDecision, bool) {
 	select {
 	case d := <-ch:
-		return d
+		return d, true
 	case <-m.clock.After(60 * time.Second):
 		m.Cleanup(id)
-		return PermissionDecision{Decision: "deny", Reason: "No response"}
+		return PermissionDecision{Decision: "deny", Reason: "No response"}, true
+	case <-ctx.Done():
+		m.Cleanup(id)
+		return PermissionDecision{}, false
 	}
 }
 

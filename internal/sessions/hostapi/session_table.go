@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/barelyworkingcode/relay/internal/membership"
+	"github.com/barelyworkingcode/relay/internal/sessions/session"
 )
 
 // sessionState is deliberately just enough to answer /launch, /terminate and
@@ -34,12 +35,9 @@ type sessionEntry struct {
 	rootStart membership.ProcInfo
 }
 
-// sessionTable is the host's in-memory session table. It is also the
-// membership.Roots this package's /permission handler resolves against
-// (rootsAdapter, below): the plan's own C3 section names "the host's own
-// session table" as exactly what the hook socket checks membership against,
-// so there is no separate stub type here — the real table doubles as the
-// Roots implementation.
+// sessionTable is the host's in-memory table of pty sessions. It is the
+// first of the two root sources /permission's ancestry walk consults
+// (rootsAdapter); provider-hosted sessions are never entered here.
 type sessionTable struct {
 	mu   sync.Mutex
 	byID map[string]*sessionEntry
@@ -106,9 +104,23 @@ func (t *sessionTable) rootByPID(pid int) (membership.Root, bool) {
 	}, true
 }
 
-// rootsAdapter satisfies membership.Roots by delegating to a sessionTable
-// plus this host process's own pid, the walk's other stop condition.
-type rootsAdapter struct{ table *sessionTable }
+// rootsAdapter satisfies membership.Roots: the pty table first, then the
+// live provider roots session.Manager reports, plus this host process's own
+// pid, the walk's other stop condition.
+type rootsAdapter struct {
+	table    *sessionTable
+	sessions *session.Manager
+}
 
-func (r rootsAdapter) RootByPID(pid int) (membership.Root, bool) { return r.table.rootByPID(pid) }
-func (r rootsAdapter) HostPID() int                              { return os.Getpid() }
+func (r rootsAdapter) RootByPID(pid int) (membership.Root, bool) {
+	if root, ok := r.table.rootByPID(pid); ok {
+		return root, true
+	}
+	id, root, ok := r.sessions.RootByPID(pid)
+	if !ok {
+		return membership.Root{}, false
+	}
+	return membership.Root{SessionID: id, PID: root.PID, StartSec: root.StartSec, StartUsec: root.StartUsec}, true
+}
+
+func (r rootsAdapter) HostPID() int { return os.Getpid() }

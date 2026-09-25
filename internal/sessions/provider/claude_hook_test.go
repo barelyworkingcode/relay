@@ -47,6 +47,7 @@ func TestEnsureHookConfig_ConfiguredBinaryPathGetsHookSubcommand(t *testing.T) {
 				Hooks []struct {
 					Type    string `json:"type"`
 					Command string `json:"command"`
+					Timeout int    `json:"timeout"`
 				} `json:"hooks"`
 			} `json:"PreToolUse"`
 		} `json:"hooks"`
@@ -60,6 +61,11 @@ func TestEnsureHookConfig_ConfiguredBinaryPathGetsHookSubcommand(t *testing.T) {
 	got := settings.Hooks.PreToolUse[0].Hooks[0].Command
 	if got != "/abs/path/relay-sessions hook" {
 		t.Errorf("hook command = %q, want %q", got, "/abs/path/relay-sessions hook")
+	}
+	// Claude Code's hook timeout must outlast the hook's own 90s client
+	// timeout, or a slow approval becomes "no decision".
+	if got := settings.Hooks.PreToolUse[0].Hooks[0].Timeout; got != 120 {
+		t.Errorf("hook timeout = %d, want 120", got)
 	}
 }
 

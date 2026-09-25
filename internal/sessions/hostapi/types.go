@@ -10,23 +10,20 @@
 // launch routes to internal/sessions/terminal.Manager and a "claude"/"pi"/
 // "chat" launch routes to internal/sessions/session.Manager, each of which
 // owns its own shim-spawn (or direct-spawn) mechanics end to end, including
-// the identity Hello wait. This package's own sessionTable now exists only
-// to answer /permission's C3 membership walk for pty sessions — the shim is
-// that launch's process root, the same way it always was — and to recall a
-// terminal session's root pid at exit time for the SessionExited report;
-// provider-hosted (claude/pi/chat) sessions never populate it, since Claude
-// Code's own PreToolUse hook against those authenticates with a per-session
-// hook token (internal/sessions/permission.PermissionManager), not process
-// ancestry, and the underlying provider.Provider interface exposes no pid
-// for this package to key a membership root on even if it wanted to.
+// the identity Hello wait. This package's own sessionTable holds pty
+// sessions only: the shim is that launch's process root, and the table
+// answers /permission's C3 membership walk for it and recalls the root pid
+// at exit time for the SessionExited report. A claude session's root is
+// read live from session.Manager on each /permission instead (rootsAdapter),
+// so its PreToolUse hook authenticates by process ancestry too; pi and chat
+// sessions report no root.
 //
 // The eve-facing manifest HTTP/WS surface (internal/sessions/api's
 // Hub/handlers) is mounted on the internal socket's own mux (see
 // ListenInternal), guarded by the same checkInternalPeer mutual check
 // /launch and /terminate use — see the docs/session-host.md note on that
-// surface's trust model. Wiring /permission's actual policy decision to a
-// live PermissionManager — today every admitted call still gets a fixed
-// "deny" — is left to a later unit; that is not this package's job yet.
+// surface's trust model. /permission's decision flow is docs/session-host.md's
+// "Tool permissions".
 //
 // A "claude"/"pi" launch dispatched through this package now carries the
 // sandbox profile and launch identity relay minted for it through to the
@@ -36,11 +33,9 @@
 // the shim (internal/sessions/provider/shimspawn.go, pipe mode — no --pty)
 // whenever either is set, and refuse to spawn unconfined when a sandbox
 // profile is requested but no shim binary is configured
-// (provider.ErrShimRequired). What is still open: no provider.Provider
-// implementation exposes a pid this handler could report, so root_pid stays
-// 0 for every provider-hosted (claude/pi/chat) launch even though a real
-// root (the shim) now exists for a shim-wrapped one — see [Known
-// gaps](../../docs/session-host.md#what-is-not-built-yet).
+// (provider.ErrShimRequired). root_pid stays 0 for every provider-hosted
+// launch: a provider's root is looked up live per /permission, not pinned
+// at /launch.
 package hostapi
 
 import "encoding/json"
