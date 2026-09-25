@@ -452,6 +452,8 @@ refusals, each naming the problem:
   right is one an operator answers by guessing;
 - a value of the wrong type for the declared fragment;
 - an empty value for a `scope: "restrict"` field;
+- a blob that repeats a key, at any depth — some parsers keep the first and
+  others the last, so the gate would compare a value the MCP may not see;
 - an operator-supplied value for a `source: "project_path"` field — relay
   derives those, and one written by hand would be replaced at the next resync;
 - a context value for an MCP that declares a **v1** schema, for the same

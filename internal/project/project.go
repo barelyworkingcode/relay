@@ -1,6 +1,7 @@
 package project
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -315,6 +316,48 @@ func validateProjectPermissions(proj *config.Project, surfaces McpSurfaces) erro
 	return nil
 }
 
+// findDuplicateKey reports the first object key repeated within one object,
+// at any depth. Malformed JSON reports none; decoding refuses it elsewhere.
+func findDuplicateKey(raw json.RawMessage) (string, bool) {
+	type container struct {
+		keys          map[string]bool // nil for an array
+		awaitingValue bool
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	var stack []*container
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		var top *container
+		if len(stack) > 0 {
+			top = stack[len(stack)-1]
+		}
+		if top != nil && top.keys != nil && !top.awaitingValue {
+			if key, ok := tok.(string); ok {
+				if top.keys[key] {
+					return key, true
+				}
+				top.keys[key] = true
+				top.awaitingValue = true
+				continue
+			}
+		}
+		if top != nil {
+			top.awaitingValue = false
+		}
+		switch tok {
+		case json.Delim('{'):
+			stack = append(stack, &container{keys: map[string]bool{}})
+		case json.Delim('['):
+			stack = append(stack, &container{})
+		case json.Delim('}'), json.Delim(']'):
+			stack = stack[:len(stack)-1]
+		}
+	}
+}
+
 // validateProjectContextForMcp checks one MCP's context blob against what
 // that MCP declared. Which of three cases applies is decided by the MCP's
 // own declaration:
@@ -334,6 +377,12 @@ func validateProjectContextForMcp(mcpID string, blob json.RawMessage, surfaces M
 	trimmed := strings.TrimSpace(string(blob))
 	if trimmed == "" || trimmed == "null" {
 		return nil
+	}
+	// The gate compares Go's decode, which keeps the last of a repeated key,
+	// but relay forwards the raw bytes and other parsers keep the first. A
+	// repeated key would let the MCP see a value the gate never compared.
+	if key, dup := findDuplicateKey(blob); dup {
+		return fmt.Errorf("context for %q repeats the key %q; each field may appear once", mcpID, key)
 	}
 	var values map[string]json.RawMessage
 	if err := json.Unmarshal(blob, &values); err != nil {
