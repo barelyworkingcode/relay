@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -67,6 +68,9 @@ func (s *BridgeServer) SetCallerSessionResolverForTest(fn func(net.Conn) presenc
 
 func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, error) {
 	sockPath := SocketPath()
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
+		return nil, fmt.Errorf("create bridge socket dir %s: %w", filepath.Dir(sockPath), err)
+	}
 
 	_ = os.Remove(sockPath)
 

@@ -11,6 +11,27 @@ relay stopped: a running instance legitimately rewrites `settings.json` there
 on its own schedule and will trip this guard for a reason that has nothing to
 do with the code under test.
 
+## Config dir isolation
+
+Every package, not just `cmd/relay`, keeps its tests off the real config dir.
+Outside `cmd/relay`, a package does it once in `TestMain`: point `HOME` (and
+`XDG_CONFIG_HOME`) at a temp dir with `os.Setenv`, as
+`internal/service/main_test.go` does. A package can also call
+`bridge.SetConfigDirForTest` instead, as `internal/sshhost` does. `cmd/relay`
+isolates per test with `mkSandboxRelayHome` and relies on its end-of-run
+guard. The path getters (`bridge.ConfigDir`, `SocketPath`, `ModelSocketPath`)
+only compute paths. The code that binds or writes creates the directory.
+
+`internal/bridge/home_isolation_gate_test.go` enforces this. It finds every
+package with tests whose source mentions `bridge.ConfigDir(`,
+`bridge.SocketPath(`, `bridge.ModelSocketPath(` or `os.UserConfigDir(`, and
+requires a `TestMain` that calls `os.Setenv("HOME"`. The exemptions
+(`cmd/relay`, `internal/sshhost`) are a named list, each with its reason. The
+gate also fails if it matches no packages, so a broken scan can't pass. Its
+blind spot: it reads source text, so it can't see a package that reaches these
+helpers only through another package. Such a package still needs its own
+`TestMain` isolation. Nothing enforces that.
+
 ## Three tiers
 
 | Command | What runs | When |
