@@ -34,6 +34,13 @@ strips a stored `Command`/`Args` on load as defense in depth). `Autostart` is
 the one field a stored record contributes, and a fresh install defaults it to
 `true`.
 
+`Args` carries `-relay-mcp-command <relayBin>` alongside the socket flags,
+the same absolute path relay resolved for its own `Command`: relay-sessions
+learns the one binary that serves `relay mcp` this way, with no env fallback
+and no path derivation of its own, and hands it on to Claude's `--mcp-config`
+and a chat session's tool child as `RelayMCPCommand` (see [The
+shim](#the-shim-relay-sessions-exec)).
+
 Its capabilities are `manifest` and `sessions` — the second is refused on
 every other service record by `internal/config/models.go`'s
 `validateCapabilities`, so no other service, first-party or user-registered,
@@ -175,14 +182,17 @@ session's own provider process doesn't go through the shim either:
 `ChatProvider` is an in-process HTTP client talking
 to relay's model broker, with no external CLI child at all
 (`internal/sessions/provider/chat_base.go`'s `ChatConfig` doc comment states
-this plainly). `buildChatMCPManager` (`chat_base.go`) can in principle spawn
-a chat session's relay-MCP tool child through the shim — the code path
-exists, gated on the session opting into `useRelayTools` and `RelayMCPCommand`
-being non-empty — but `cfg.RelayMCPCommand` is never set in production:
-`cmd/relaysessions/main.go`'s own `ChatConfig` literal omits it entirely, and
-only test code ever sets it. `buildChatMCPManager` therefore always returns
-`nil` today, regardless of a session's own settings, so this tool child is
-never actually spawned, shim or otherwise.
+this plainly). `buildChatMCPManager` (`chat_base.go`) spawns a chat
+session's relay-MCP tool child through the shim when the session opts into
+`useRelayTools`:
+`cmd/relaysessions/main.go` resolves `RelayMCPCommand` once at start from the
+`-relay-mcp-command` flag the built-in service record carries (see [The
+built-in service record](#the-built-in-service-record)) and sets it on both
+`ChatConfig` and `ClaudeConfig`. A host session still gets no tool child —
+there is nothing local to root it on. A session that asked for
+`useRelayTools` and got no tool server logs `relay tools requested but
+unavailable` at Warn, with a `reason` of `relay_mcp_command_unset`,
+`host_session`, `mcp_start_failed` or `relay_server_failed`.
 
 ```
 relay-sessions exec --session-id <id> [--identity] [--pty] \
@@ -270,7 +280,12 @@ Relay's own data directory, another project, eve's data and `~/.ssh` are
 unreachable unless a template grants them, so a directory nobody thought to
 protect is protected anyway. Everything that is not a file (network, process,
 mach) stays `(allow default)`; the unix-socket, loopback and setuid rules are
-separate and unchanged.
+separate and unchanged. `relay mcp`, spawned as a chat session's tool child or
+as Claude's own `--mcp-config` child, needs no entry in `read` for the relay
+binary itself: `(deny file-read*)` blocks opening a file's contents, not
+executing a binary already named by absolute path, and `relay mcp` reaches
+relay only by dialing the bridge socket, already allowed by the unix-socket
+rule.
 
 A session's folders come from four places, and only the third is configured:
 
@@ -561,10 +576,9 @@ what works.
    A chat-kind session's own provider process is unaffected by any of this
    in the same way it is exempt from the shim entirely (see [The
    shim](#the-shim-relay-sessions-exec)) — it has no external CLI child to
-   sandbox or identify. `ChatConfig` already carried the `Sandbox` and
-   `Identity` fields its optional relay-MCP tool child would need to run
-   through the shim like a terminal (`buildChatMCPManager`), but that child
-   is never actually spawned in production today — see [The
+   sandbox or identify. `ChatConfig` carries the `Sandbox` and `Identity`
+   fields its optional relay-MCP tool child needs to run through the shim
+   like a terminal (`buildChatMCPManager`) — see [The
    shim](#the-shim-relay-sessions-exec).
 2. ~~The eve-facing session HTTP/WS surface exists but is not reachable.~~
    **Fixed.** `internal/sessions/api` (`HandleListSessions`,
