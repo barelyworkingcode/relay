@@ -235,6 +235,12 @@ type sbxRun struct {
 	stdoutPipe bool
 	mode       string
 	out        string
+	// ptyReadDelay holds each terminal read back before it reaches ptyOut.
+	// It sits after the read on purpose. Measured on macOS: while the client
+	// is session leader on this pty (Setsid/Setctty in startSandboxClient),
+	// its exit does not finish until the master has read its output, so a
+	// delay before the read cannot make the client exit first.
+	ptyReadDelay time.Duration
 }
 
 type sbxProc struct {
@@ -246,6 +252,7 @@ type sbxProc struct {
 	pipeOut       *lockedBuf
 	exited        chan struct{}
 	termBefore    unix.Termios
+	ptyReadDelay  time.Duration
 }
 
 func termiosOf(t *testing.T, f *os.File) unix.Termios {
@@ -281,7 +288,7 @@ func startSandboxClient(t *testing.T, run sbxRun) *sbxProc {
 	cmd.Env = append(env, run.env...)
 	cmd.Dir = run.dir
 
-	p := &sbxProc{t: t, cmd: cmd, master: master, slave: slave, stderr: &lockedBuf{}, ptyOut: &lockedBuf{}, exited: make(chan struct{})}
+	p := &sbxProc{t: t, cmd: cmd, master: master, slave: slave, stderr: &lockedBuf{}, ptyOut: &lockedBuf{}, exited: make(chan struct{}), ptyReadDelay: run.ptyReadDelay}
 	cmd.Stderr = p.stderr
 	if run.stdinPipe {
 		cmd.Stdin = strings.NewReader("")
@@ -327,6 +334,7 @@ func (p *sbxProc) readMaster() {
 	buf := make([]byte, 4096)
 	for {
 		n, err := p.master.Read(buf)
+		time.Sleep(p.ptyReadDelay)
 		if n > 0 {
 			_, _ = p.ptyOut.Write(buf[:n])
 		}
@@ -334,6 +342,19 @@ func (p *sbxProc) readMaster() {
 			return
 		}
 	}
+}
+
+// waitPtyOutput is needed even after wait: cmd.Wait joins exec's own copy
+// goroutines (stderr, pipeOut) but not readMaster, which fills ptyOut.
+func (p *sbxProc) waitPtyOutput(want string) bool {
+	deadline := time.Now().Add(sbxWait)
+	for !strings.Contains(p.ptyOut.String(), want) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return true
 }
 
 func (p *sbxProc) requireTerminalRestored() {
@@ -354,9 +375,10 @@ func (p *sbxProc) requireRawNow() {
 }
 
 type sbxFixture struct {
-	home string
-	rel  *sbxBridge
-	cwd  string
+	home         string
+	rel          *sbxBridge
+	cwd          string
+	ptyReadDelay time.Duration
 }
 
 func newSbxFixture(t *testing.T) *sbxFixture {
@@ -370,7 +392,7 @@ func newSbxFixture(t *testing.T) *sbxFixture {
 }
 
 func (f *sbxFixture) run(t *testing.T, args ...string) *sbxProc {
-	return startSandboxClient(t, sbxRun{home: f.home, args: args, dir: f.cwd})
+	return startSandboxClient(t, sbxRun{home: f.home, args: args, dir: f.cwd, ptyReadDelay: f.ptyReadDelay})
 }
 
 // --- 1: the request -----------------------------------------------------------
@@ -427,7 +449,27 @@ func TestSandboxClient_ExitsWithTheToolsExitCode(t *testing.T) {
 		if got := p.wait(); got != code {
 			t.Errorf("tool exit %d: client exited %d", code, got)
 		}
-		if !strings.Contains(p.ptyOut.String(), "hi") {
+		if !p.waitPtyOutput("hi") {
+			t.Errorf("tool exit %d: terminal saw %q, want the output", code, p.ptyOut.String())
+		}
+		p.requireTerminalRestored()
+	}
+}
+
+func TestSandboxClient_ExitsWithTheToolsExitCode_SlowTerminalReader(t *testing.T) {
+	for _, code := range []int{0, 1, 2, 42, 130, 255} {
+		f := newSbxFixture(t)
+		f.ptyReadDelay = 200 * time.Millisecond
+		p := f.run(t, "shell")
+		req := f.rel.expectRequest()
+		req.ack()
+		req.waitReady()
+		req.output("hi\r\n")
+		req.exit(code)
+		if got := p.wait(); got != code {
+			t.Errorf("tool exit %d: client exited %d", code, got)
+		}
+		if !p.waitPtyOutput("hi") {
 			t.Errorf("tool exit %d: terminal saw %q, want the output", code, p.ptyOut.String())
 		}
 		p.requireTerminalRestored()
