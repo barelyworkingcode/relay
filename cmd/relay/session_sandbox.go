@@ -6,11 +6,13 @@ package main
 // package decides how that is spelled in SBPL.
 //
 // File access is denied by default. A session reaches its project, the temp
-// directories and /dev every process needs, the developer tools, and the
-// `read` and `read_write` folders of the template it launches from
-// (settings.json). Nothing here lists a directory to deny: relay's own data,
-// other projects, eve's data and ~/.ssh are unreachable unless a template
-// grants them.
+// directories and /dev every process needs, the developer tools, for a claude
+// or pi session the install of the provider binary relay resolved (and
+// Claude's per-user temp directory), and the `read` and `read_write` folders
+// of the template it launches from (settings.json). The template is operator
+// policy: extra folders and deny rules, not what lets the binary start.
+// Nothing here lists a directory to deny: relay's own data, other projects,
+// eve's data and ~/.ssh are unreachable unless a template grants them.
 
 import (
 	"fmt"
@@ -87,10 +89,13 @@ func sandboxProfilePath(result *LaunchResult) string {
 // (templateForKind). A nil tmpl grants only what every session gets.
 //
 // Every path returned is a grant. What relay does not name is what a session
-// cannot reach, so a directory worth protecting needs no entry here. What a
-// tool needs to run lives in the template, not in this function: the project's
-// own directory, the temp directories and /dev every process uses, and the
-// developer tools are the only grants that do not come from one.
+// cannot reach, so a directory worth protecting needs no entry here. The
+// grants that do not come from the template are the project's own directory,
+// the temp directories and /dev every process uses, the developer tools, and
+// for claude and pi what the provider binary needs to start: its install
+// (read-only, providerInstallGrants) and Claude's temp directory. Those derive
+// from relay's own resolution of the binary, never from the launch request.
+// The template adds operator policy on top, and its deny list renders last.
 func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, directory, kind string, tmpl *config.TerminalTemplate) (sandbox.Spec, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -135,6 +140,13 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 		readWrite = append(readWrite, darwin)
 	}
 	readWrite = append(readWrite, "/dev")
+	if kind == KindClaude {
+		if dir, reason := claudeTempGrant(); dir != "" {
+			readWrite = append(readWrite, dir)
+		} else {
+			slog.Warn("session sandbox: claude temp dir not granted", "dir", claudeTempDir(), "reason", reason)
+		}
+	}
 	// pi's transcripts live under relay's own directory, which no template
 	// can name portably (it moves with `relay --config-dir`), so the one leaf a
 	// pi session writes its transcript into is granted here, for that kind
@@ -147,6 +159,15 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	var read, readFiles, readWriteFiles, deny []string
 	if dev := developerTools(); dev != "" {
 		read = append(read, dev)
+	}
+	if kind == KindClaude || kind == KindPi {
+		binary := providerBinary(kind)
+		install, err := providerInstallGrants(binary, exec.LookPath)
+		if err != nil {
+			slog.Warn("session sandbox: no install grant for the provider binary", "kind", kind, "binary", binary, "error", err)
+		}
+		read = append(read, install.Read...)
+		readFiles = append(readFiles, install.ReadFiles...)
 	}
 	if tmpl != nil {
 		var err error

@@ -143,6 +143,14 @@ func resolvePiPath(configured string) string {
 	return "pi"
 }
 
+// ResolveClaudePath is the claude binary relay-sessions launches when no path
+// is configured, which is how relay-sessions always runs. Relay calls it to
+// derive a sandbox grant for the same binary.
+func ResolveClaudePath() string { return resolveClaudePath("") }
+
+// ResolvePiPath is ResolveClaudePath for pi.
+func ResolvePiPath() string { return resolvePiPath("") }
+
 // hasArg reports whether args contains a flag matching name (case-insensitive).
 func hasArg(args []string, name string) bool {
 	for _, a := range args {

@@ -185,13 +185,18 @@ const maxInFlightBodyBytes = 64 << 20
 // indefinitely.
 const bodyBudgetWaitTimeout = 5 * time.Second
 
+// modelCatalogTTL bounds how long the catalog cache serves a fetch before
+// refreshing, since relayLLM has no change signal for the endpoint to key
+// off instead (docs/model-endpoint.md).
+const modelCatalogTTL = 30 * time.Second
+
 func NewModelEndpointServer(store config.SettingsStore, launches *service.Launches, modelKeys *ModelKeyTable, hosts *ModelHostRegistry) *ModelEndpointServer {
 	m := &ModelEndpointServer{store: store, launches: launches, modelKeys: modelKeys, hosts: hosts}
 	// Built from the same launch table the identity lookup uses, so
 	// model.sock and relay.sock can never disagree about which sessions are
 	// live. A test overrides it with SetMembershipResolverForTest.
 	m.membership = newMembershipAuth(launches)
-	m.catalog = modelbroker.NewCache(m.fetchCatalog)
+	m.catalog = modelbroker.NewCache(m.fetchCatalog, modelCatalogTTL)
 	m.bodyBudget = modelbroker.NewBodyBudget(maxInFlightBodyBytes)
 	return m
 }

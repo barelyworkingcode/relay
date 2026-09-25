@@ -87,21 +87,22 @@ func TestProviderStderr_LaunchFailureLineIsWarn(t *testing.T) {
 	noop := func(string, json.RawMessage) {}
 	cases := []struct {
 		name, id, kind string
+		holdsKey       bool // the provider was given modelKey, so it must redact it
 		start          func(t *testing.T, id string) error
 	}{
-		{"claude", "stderr-claude-1", "claude", func(t *testing.T, id string) error {
+		{"claude", "stderr-claude-1", "claude", false, func(t *testing.T, id string) error {
 			sess := &sessionstypes.Session{ID: id, Model: "sonnet", Directory: t.TempDir()}
 			p := NewClaudeProvider(sess, noop, ClaudeConfig{Binary: writeFakeCLI(t, failing)}, nil)
 			t.Cleanup(p.Kill)
 			return p.Start()
 		}},
-		{"claude host", "stderr-claude-host-1", "claude", func(t *testing.T, id string) error {
+		{"claude host", "stderr-claude-host-1", "claude", false, func(t *testing.T, id string) error {
 			sess := &sessionstypes.Session{ID: id, Model: "sonnet", Host: testHost(writeFakeCLI(t, failing))}
 			p := NewClaudeProvider(sess, noop, ClaudeConfig{}, nil)
 			t.Cleanup(p.Kill)
 			return p.Start()
 		}},
-		{"pi redacts its model key", "stderr-pi-1", "pi", func(t *testing.T, id string) error {
+		{"pi redacts its model key", "stderr-pi-1", "pi", true, func(t *testing.T, id string) error {
 			sess := &sessionstypes.Session{ID: id, Model: "m", Directory: t.TempDir()}
 			p := NewPiProvider(sess, noop, PiConfig{Binary: writeFakeCLI(t, failing), DataDir: t.TempDir(), ModelKey: modelKey})
 			t.Cleanup(p.Kill)
@@ -118,7 +119,7 @@ func TestProviderStderr_LaunchFailureLineIsWarn(t *testing.T) {
 			if r.Level != "WARN" || r.Kind != tc.kind {
 				t.Fatalf("record = %+v, want level WARN kind %s", r, tc.kind)
 			}
-			if strings.Contains(logs.all(), modelKey) {
+			if tc.holdsKey && strings.Contains(logs.all(), modelKey) {
 				t.Fatalf("model key reached the log:\n%s", logs.all())
 			}
 		})

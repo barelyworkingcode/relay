@@ -412,6 +412,34 @@ is fully closed by the time the target spawns (step 1), and fd 4 is
 `CLOSE_ON_EXEC` (set at open), so `exec(2)` closes it in the child
 automatically.
 
+## Provider stderr
+
+`logProviderStderr` (`internal/sessions/provider/stderr.go`) is the one
+function both claude and pi read their child's stderr through — a shared
+function because the redaction rule below must not drift between two copies.
+Host (SSH) claude sessions get the same treatment.
+
+A spawn's stderr lines log at `Warn` until the first non-empty line of stdout,
+so a launch failure names itself instead of leaving only an exit code behind;
+every line after that first stdout line logs at `Debug`. Warn logging is
+capped at 20 lines per spawn, and hitting the cap logs one further line
+naming the limit — everything past it still runs, at `Debug`. An empty line
+is skipped, and a trailing `\r` is dropped.
+
+Each line is redacted before it is logged, then truncated to 1024 bytes on a
+rune boundary; reading continues past an overlong line rather than stopping
+there, since a `bufio.Scanner`'s default 64 KiB limit would otherwise block
+the child. Redaction runs, in order: the exact secrets the caller passed in
+(the identity secret for claude; the model key and the identity secret for
+pi), then `rmk_[0-9a-f]{64}`, then `sk-[A-Za-z0-9_-]{20,}`, then
+`(?i)(bearer\s+)<token>`.
+
+The child's stderr is wired through a plain `os.Pipe()`, not
+`cmd.StderrPipe()`: `Wait` closes a `StderrPipe`'s read end itself, racing
+whatever is still reading from it, and that race is how the one line that
+would have named a launch failure gets lost. The write end becomes
+`cmd.Stderr`, and the parent closes it once `Start` returns.
+
 ## What a child inherits
 
 A terminal, a claude or pi session and an MCP server child each start from
@@ -454,15 +482,16 @@ executing a binary already named by absolute path, and `relay mcp` reaches
 relay only by dialing the bridge socket, already allowed by the unix-socket
 rule.
 
-A session's folders come from four places, and only the third is configured:
+A session's folders come from five places, and only the third is configured:
 
 | Grant | Paths | Where it lives |
 |---|---|---|
 | **System baseline** (read-only, every sandboxed session) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves | `sandbox.baselineReadDirs`. The smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. |
 | **Every session** | the project directory (read-write), `os.TempDir()`, `DARWIN_USER_TEMP_DIR` and `/dev` (read-write), the developer tools (read-only: `<Xcode>.app/Contents`, or `/Library/Developer/CommandLineTools`, resolved from `/var/select/developer_dir`) | `sandboxSpecForLaunch`. A pi session also gets `<config dir>/sessions/pi-sessions` for its transcript, since that path moves with `relay --config-dir` and no template can name it. |
 | **The template** | its `read` and `read_write` lists | the template's entry in `settings.json` |
+| **The provider's install** (read-only, local claude/pi launches only) and **Claude's per-uid temp dir** (read-write) | the resolved `claude`/`pi` binary itself, each symlink hop to it, and — on Homebrew — its prefix's `Cellar`/`Caskroom`/`opt` directories and any `etc/openssl@*/openssl.cnf`, or — on an npm/bun layout — the outermost `node_modules`; plus `/tmp/claude-<uid>`, created 0700 if absent | `cmd/relay/session_sandbox_provider.go`'s `providerInstallGrants`/`claudeTempGrant`, computed automatically from the binary relay itself resolves — no template entry needed for the binary to start. The temp dir is granted only once it passes a check (a real directory, not a symlink, owned by the current uid, no group-or-other write bit): `/tmp` is shared, and a session holding read-write on this directory could otherwise swap it for a link. |
 
-A fourth list, `deny`, is not a grant. It carves a path out of a grant that
+A fifth list, `deny`, is not a grant. It carves a path out of a grant that
 covers it: `{"read_write": ["~"], "deny": ["~/.ssh"]}` gives the session its
 home directory except `~/.ssh`. A denied path is rendered last, after every
 grant and after the ancestor `stat` rules, so nothing reopens it: not the
@@ -490,7 +519,7 @@ folders:
   {
     "id": "claude-code", "name": "Claude Code", "command": "claude", "sandbox": true,
     "read_write": ["~/.claude", "~/.claude.json", "~/.cache", "~/Library/Caches"],
-    "read": ["~/Library/Keychains", "~/.local/bin", "~/.local/share/claude", "~/.zshrc"]
+    "read": ["~/Library/Keychains", "~/.zshrc"]
   },
   { "id": "shell", "name": "Shell", "sandbox": true, "read_write": ["~"] }
 ]
@@ -509,9 +538,13 @@ template that should be confined says `"sandbox": true`; `read` and
 `read_write` are ignored without it.
 
 A **claude, pi or chat session** is not launched from a template, but it reads
-its folders from the template named for its kind: `claude-code`, `pi` and
-`chat` (`kindTemplateIDs`). A missing template is not a refusal; the session
-gets only what every session gets, and relay logs which template to add.
+extra folders and deny rules from the template named for its kind:
+`claude-code`, `pi` and `chat` (`kindTemplateIDs`). That template is operator
+policy — more folders, a deny list — not what lets the provider binary start:
+a claude or pi launch gets its binary's own install grant automatically (see
+the grant table above), with or without a template. A missing template is not
+a refusal; the session still starts, with only what every session and that
+automatic install grant provide, and relay logs which template to add.
 
 When `terminal_templates` is empty, relay writes one default at start: the
 shell, sandboxed, with `~` read-write. That grant includes `~/.ssh` and every
@@ -563,7 +596,7 @@ instead of leaving the placeholder or dropping only the URL, because a
 `${MODEL_KEY}` header with no relay URL would be sent to the client's real
 provider. Relay never turns the listener on for you.
 
-Three rules the measurement turned up. **Exec does not need a read grant on the
+The measurement turned up these rules. **Exec does not need a read grant on the
 binary**, so a system binary runs without one; **a symlink does**: a tool that
 lives behind a link (`~/.local/bin/claude`, `~/.bun/bin/pi`) needs the
 directory holding the link and the directory holding its target. And the
@@ -572,6 +605,14 @@ kernel matches the path *it* resolved, in the volume's own letter case, so
 project path stored as `/users/me/Proj` would otherwise match nothing and lock
 the session out of its own directory. A grant whose final component is a
 symlink also names the link itself.
+
+Homebrew adds three more. **dyld refuses a dylib from another keg**, so a
+Homebrew-installed binary needs its own prefix's `Cellar` and `opt` — the keg
+alone, or the keg plus a dependency's keg with neither `opt` symlink tree, is
+not enough. **pi needs its prefix's `etc/openssl@*/openssl.cnf`**: without it,
+pi's own OpenSSL fails to find a config and refuses to start. **`etc/` and
+`var/` are otherwise never granted**: beyond that one file, they hold service
+configs and per-install data, so a whole-prefix grant would be far too wide.
 
 ## Host data directory layout
 
@@ -866,10 +907,12 @@ what works.
 | internal API server, `/launch`/`/terminate`/`/permission`, and the mounted eve-facing surface | `internal/sessions/hostapi/{server,dispatch,types}.go` |
 | terminal (pty) sessions | `internal/sessions/terminal/` |
 | provider-hosted (claude/pi/chat) sessions | `internal/sessions/session/`, `internal/sessions/provider/` |
+| provider stderr logging (Warn until first stdout, redaction) | `internal/sessions/provider/stderr.go` |
 | eve-facing HTTP/WS handlers (mounted by `hostapi.New`/`ListenInternal`) | `internal/sessions/api/` |
 | C3 process-ancestry membership | `internal/membership/` |
 | tool-permission decisions: `Preflight`, the wait/decide flow behind `/permission` | `internal/sessions/permission/` |
 | C7 sandbox profile rendering | `internal/sessions/sandbox/`, `cmd/relay/session_sandbox.go` |
+| automatic sandbox grant for the provider's resolved binary and Claude's per-uid temp dir | `cmd/relay/session_sandbox_provider.go` |
 | relay-side launch authorization | `cmd/relay/session_launch.go` |
 | relay-side HTTP routes, resume, accounting | `cmd/relay/session_routes.go` |
 | built-in service record, helper path resolution | `internal/service/builtin_sessions.go` |
