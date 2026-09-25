@@ -14,9 +14,13 @@ import (
 // when the kernel will not say. It asks the kernel for the path of an open
 // descriptor (F_GETPATH), which is the canonical spelling Seatbelt matches
 // against; it also maps the data-volume firmlinks back to their `/Users` and
-// `/private` names. p must already be symlink-free.
+// `/private` names.
+//
+// This is deliberate: O_NOFOLLOW_ANY refuses a symlink in any component, so a
+// link swapped in after walk resolved p fails the open and p comes back as the
+// walk spelled it, rather than as the link's target.
 func onDiskPath(p string) string {
-	fd, err := unix.Open(p, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+	fd, err := unix.Open(p, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW_ANY, 0)
 	if err != nil {
 		return p
 	}
