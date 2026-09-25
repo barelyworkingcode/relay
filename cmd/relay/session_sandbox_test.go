@@ -31,6 +31,7 @@ func normalizeSandboxProfile(t *testing.T, body, projectA, projectB, home, eveDa
 		{sandboxRealPath(t, eveData), "<EVE_DATA>"},
 		{sandboxRealPath(t, home), "<HOME>"},
 		{sandboxRealPath(t, bridge.ConfigDir()), "<RELAY_DIR>"},
+		{sandboxRealPath(t, claudeTempDirUnder(claudeTempRoot)), "<CLAUDE_TMP>"},
 		{sandboxRealPath(t, os.TempDir()), "<DARWIN_TMP>"},
 	}
 	for _, s := range subs {

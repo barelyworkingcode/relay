@@ -23,6 +23,7 @@
   (subpath "<PROJECT>")
   (subpath "<DARWIN_TMP>")
   (subpath "/dev")
+  (subpath "<CLAUDE_TMP>")
   (subpath "<HOME>/.claude")
   (subpath "<HOME>/.claude.json")
   (subpath "<HOME>/.cache")

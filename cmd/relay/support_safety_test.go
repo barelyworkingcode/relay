@@ -28,7 +28,16 @@ func TestMain(m *testing.M) {
 
 	before, beforeOK := snapshotDir(realDir)
 
+	providerBinary = func(string) string { return "" }
+	claudeTmp, err := os.MkdirTemp("", "relay-claude-tmp-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create claude temp root: %v\n", err)
+		os.Exit(1)
+	}
+	claudeTempRoot = claudeTmp
+
 	code := m.Run()
+	os.RemoveAll(claudeTmp)
 
 	// Reset any override the suite may have left behind before re-reading.
 	bridge.SetConfigDirForTest("")
