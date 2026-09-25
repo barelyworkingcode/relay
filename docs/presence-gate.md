@@ -243,19 +243,20 @@ refuses every call it governs, and for the same reason any asserted value
 where it was unset widens, including `[]`: an empty array turns a refusing
 field into one that accepts calls. Between two asserted arrays, a request
 whose every element is already stored narrows, so removing a value,
-reordering, de-duplicating and `[]` do not prompt; the wildcard `["*"]`
-narrows to any array, and requesting `["*"]` widens from anything else,
-including a mixed `["*","Bob"]`. A non-array value in place of a stored one
-widens. Every other part of a context value compares strictly, by decoded
-value — `null` against a missing field, reordered arrays, stale keys,
-non-restrict fields, `project_path` fields, every field when the schema is
-v1 or unusable, a blob that does not decode, a derived field whose stored
-value differs from the derivation, a derived-looking field on a remote or
-hosted project, and a derived field the request itself carries. With no
-live schema for the MCP (or no surfaces at
-all) nothing is stripped and the entry compares strictly. The digest itself is
-unchanged by this: it still binds all ten fields' presence exactly as
-before (see `TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields`'s
+reordering, de-duplicating and `[]` do not prompt. The wildcard here is
+`["*"]` only: it narrows to any array, and requesting it widens from
+anything else, including a mixed `["*","Bob"]`. A bare string `"*"`, or any
+other non-array value, compares strictly. Outside operator restrict fields
+everything compares strictly, by decoded value: non-restrict fields,
+`project_path` fields, stale keys (so `null` against a missing key, or a
+reordered array, still counts as a change there), every field of an MCP
+whose schema is v1, unusable or not live, a blob that does not decode, a
+derived field whose stored value differs from the derivation, a
+derived-looking field on a remote or hosted project, and a derived field
+the request itself carries. With no live schema for the MCP (or no
+surfaces at all) nothing is stripped and the entry compares strictly. The
+digest itself is unchanged by this: it still binds all ten fields' presence
+exactly as before (see `TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields`'s
 own comment for why shrinking the digest to the gating subset would be
 wrong), so a grant answered for one shape still cannot be redeemed for a
 different one.

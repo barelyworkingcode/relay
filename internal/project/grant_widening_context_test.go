@@ -102,16 +102,26 @@ const mailSchemaWithMalformedField = `{
   "broken": {"type": "array", "Scope": "restrict"}
 }`
 
+const mailSchemaWithUntypedField = `{
+  "mail_owner": {"description": "Account this client acts as", "scope": "restrict", "source": "operator"}
+}`
+
 func TestUpdateWidensGrant_ContextNarrowing(t *testing.T) {
 	mac := McpSurfaces{"macmcp": macmcpSurface()}
 	macV1 := McpSurfaces{"macmcp": {Schema: json.RawMessage(macmcpSchema), SchemaVersion: 1}}
 	unscoped := McpSurfaces{"macmcp": {Schema: json.RawMessage(mailSchemaWithUnscopedField), SchemaVersion: 2}}
 	malformed := McpSurfaces{"macmcp": {Schema: json.RawMessage(mailSchemaWithMalformedField), SchemaVersion: 2}}
+	untyped := McpSurfaces{"macmcp": {Schema: json.RawMessage(mailSchemaWithUntypedField), SchemaVersion: 2}}
 
 	if cs := unscoped.Schema("macmcp"); !cs.Usable() {
 		t.Fatalf("unscoped fixture is unusable: %s", cs.MalformedReason())
 	} else if f, ok := cs.Field("tags"); !ok || f.Restricts() {
 		t.Fatalf("unscoped fixture: tags declared=%v restricts=%v, want a declared non-restrict field", ok, f.Restricts())
+	}
+	if cs := untyped.Schema("macmcp"); !cs.Usable() {
+		t.Fatalf("untyped fixture is unusable: %s", cs.MalformedReason())
+	} else if f, ok := cs.Field("mail_owner"); !ok || !f.Restricts() || !f.FromOperator() || f.Type != "" {
+		t.Fatalf("untyped fixture: mail_owner = %+v declared=%v, want an untyped operator restrict field", f, ok)
 	}
 	if malformed.Schema("macmcp").Usable() {
 		t.Fatal("malformed fixture parsed as usable")
@@ -154,6 +164,10 @@ func TestUpdateWidensGrant_ContextNarrowing(t *testing.T) {
 			blobs("macmcp", `{"mail_accounts":["*"]}`), blobs("macmcp", `{"mail_accounts":[]}`), mac, false},
 		{"a non-array value against a stored list widens",
 			blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":"Alice"}`), mac, true},
+		{"a stored bare-string star to a list widens",
+			blobs("macmcp", `{"mail_owner":"*"}`), blobs("macmcp", `{"mail_owner":["Alice","Bob"]}`), untyped, true},
+		{"the wildcard to a bare-string star widens",
+			blobs("macmcp", `{"mail_owner":["*"]}`), blobs("macmcp", `{"mail_owner":"*"}`), untyped, true},
 
 		{"nil surfaces compare strictly", blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":["Alice"]}`), nil, true},
 		{"a v1 schema compares strictly", blobs("macmcp", pair), blobs("macmcp", `{"mail_accounts":["Alice"]}`), macV1, true},

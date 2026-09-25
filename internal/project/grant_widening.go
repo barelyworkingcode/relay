@@ -190,12 +190,9 @@ func mountsWiden(stored config.Project, requested []config.MountGrant) bool {
 	return false
 }
 
-// contextWidens reports whether requested reaches anything stored does not,
-// one MCP entry at a time. An entry whose MCP has a usable v2 schema is
-// compared field by field, and only its operator restrict fields have a
-// narrowing order (scopeValueWidens); every other field, and every entry
-// without such a schema, compares strictly. Strict means a key present on
-// one side only, or a value that is not jsonValueEqual, is a widening.
+// Only operator restrict fields have a narrowing order. Every other field,
+// and every entry without a live, usable v2 schema, compares strictly on
+// purpose: nothing defines a narrower reading for them.
 func contextWidens(stored, requested map[string]json.RawMessage, surfaces McpSurfaces) bool {
 	for _, mcpID := range unionKeys(stored, requested) {
 		storedBlob, inStored := stored[mcpID]
@@ -214,9 +211,8 @@ func contextWidens(stored, requested map[string]json.RawMessage, surfaces McpSur
 	return false
 }
 
-// contextEntryWidens reads an absent entry as an object with no fields, so
-// dropping a whole MCP entry leaves each of its restrict fields unset. An
-// entry that does not decode as an object compares strictly.
+// An absent entry decodes as an object with no fields, so dropping a whole
+// entry leaves its restrict fields unset, which narrows.
 func contextEntryWidens(storedBlob json.RawMessage, inStored bool, requestedBlob json.RawMessage, inRequested bool, schema ContextSchema) bool {
 	storedValues, storedIsObject := decodeContextObject(storedBlob)
 	requestedValues, requestedIsObject := decodeContextObject(requestedBlob)
@@ -239,11 +235,8 @@ func contextEntryWidens(storedBlob json.RawMessage, inStored bool, requestedBlob
 	return false
 }
 
-// scopeValueWidens orders two values of one operator restrict field. A nil
-// value stands for an absent field. An unasserted field refuses every call
-// it governs, so nothing narrows below it and anything asserted widens from
-// it; that includes [], which turns a refusing field into one that accepts.
-// Arrays narrow by subset, and the wildcard counts only as the sole element.
+// An unasserted field refuses every call it governs, so [] against one
+// widens: it turns a refusing field into one that accepts.
 func scopeValueWidens(stored, requested json.RawMessage) bool {
 	if !scopeValueAsserted(requested) {
 		return false
@@ -254,14 +247,14 @@ func scopeValueWidens(stored, requested json.RawMessage) bool {
 	if jsonValueEqual(stored, requested) {
 		return false
 	}
-	if ScopeValueBreadth(requested) == ScopeBreadthWildcard {
+	if isScopeWildcard(requested) {
 		return true
 	}
 	var storedElems, requestedElems []json.RawMessage
 	if json.Unmarshal(requested, &requestedElems) != nil {
 		return true
 	}
-	if ScopeValueBreadth(stored) == ScopeBreadthWildcard {
+	if isScopeWildcard(stored) {
 		return false
 	}
 	if json.Unmarshal(stored, &storedElems) != nil {
@@ -275,10 +268,17 @@ func scopeValueWidens(stored, requested json.RawMessage) bool {
 	return false
 }
 
-// scopeValueAsserted asks HasScopeAssertion about a single value, so the
-// list of unasserted spellings stays in one place.
+// scopeValueAsserted wraps HasScopeAssertion so its list of unasserted
+// spellings stays in one place.
 func scopeValueAsserted(value json.RawMessage) bool {
 	return HasScopeAssertion(map[string]json.RawMessage{"": value}, "")
+}
+
+// isScopeWildcard deliberately rejects a bare string "*", which
+// ScopeValueBreadth reports as the wildcard: here it compares strictly.
+func isScopeWildcard(value json.RawMessage) bool {
+	var elems []string
+	return json.Unmarshal(value, &elems) == nil && len(elems) == 1 && elems[0] == ContextWildcardValue
 }
 
 func unionKeys(a, b map[string]json.RawMessage) []string {

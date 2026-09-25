@@ -190,10 +190,13 @@ thing.
   restrict field with no declared `source` is treated as operator-supplied,
   because that is the reading that leaves the value un-derivable: relay
   inventing a value for a field it does not understand is the failure this
-  mechanism exists to prevent. Narrowing an operator field does not raise
-  the presence gate: removing a value, clearing the field, or replacing
-  `["*"]` with a list is not a widening of `context`. Adding a value, or
-  setting one where the field was unset (`[]` included), is.
+  mechanism exists to prevent. While relay holds the MCP's live, usable v2
+  schema, narrowing an operator restrict field does not raise the presence
+  gate: removing a value, clearing the field, or replacing `["*"]` with a
+  list is not a widening of `context`. Adding a value, or setting one where
+  the field was unset (`[]` included), is. The wildcard for this purpose is
+  `["*"]` only; a bare `"*"` compares strictly. Without that schema any
+  change to the entry prompts.
 
 A grant is refused at edit time if a `project_path` field's `applies_to` covers
 **every** tool the grant names and the record has no path — the grant would buy
@@ -510,6 +513,10 @@ The reconciliation rule, so every scoping MCP implements it identically:
 - **Enumerators are scoped too.** A tool that lists accounts or mailboxes
   reports only what is in scope — otherwise it is both a disclosure and a map
   of what to try next.
+- **An array restrict field's values are a union.** Each value adds reach
+  and none removes it. Relay's presence gate treats a subset as narrower on
+  that basis, so an MCP that let one value subtract from another would let
+  an unprompted edit widen what it reaches.
 
 `_meta` being present at all is a reliable signal that a chokepoint mediated the
 call: relay injects `_meta.project_id` on every mediated call and has since
