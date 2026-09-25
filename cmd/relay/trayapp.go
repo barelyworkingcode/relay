@@ -617,6 +617,10 @@ func runTrayApp() {
 	app.modelEndpoint.AuditHook = func(ev ModelCallAudit) {
 		recordModelCall(rec, ev)
 	}
+	app.ipcCtx.ModelCatalog = &ModelCatalogOps{
+		HostModels: (&sessionHostClient{enhanced: enhancedRegistry, launches: launches}).ListModels,
+		BrokerRows: app.modelEndpoint.catalog.Snapshot,
+	}
 
 	// The session ledger (plan-broker-and-sessions.md §2 C5): relay's only
 	// on-disk record of a claude/pi/chat session, never a terminal (never

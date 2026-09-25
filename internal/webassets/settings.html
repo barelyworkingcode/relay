@@ -531,6 +531,25 @@ textarea:focus {
 .proj-scope-unrecognised { font-size: 11px; color: var(--warn); margin: 2px 0; }
 .proj-scope-failed { font-size: 11px; color: var(--danger); margin: 4px 0 2px; }
 .proj-scope-pending { font-size: 11px; color: var(--text-3); margin: 4px 0 2px; }
+/* The project model picker. A saved id the host no longer lists stays checked
+   and is flagged, never dropped, for the same reason as .unrecognised above. */
+.model-banner { font-size: 11px; margin: 4px 0 6px; }
+.model-banner.pending { color: var(--text-3); }
+.model-banner.failed { color: var(--danger); }
+.model-banner.warn { color: var(--warn); }
+.model-banner .btn { margin-left: 6px; }
+#projModelsList { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 8px; margin-top: 6px; max-height: 320px; overflow-y: auto; }
+.model-group + .model-group { margin-top: 6px; }
+.model-group-title { font-size: 11px; font-weight: 600; color: var(--text-2); margin: 2px 0; }
+.model-group-toggle { background: none; border: none; padding: 2px 0; font: inherit; font-size: 11px; font-weight: 600; color: var(--text-2); cursor: pointer; }
+.model-group-count { font-weight: normal; color: var(--text-3); }
+.model-row { display: flex; align-items: baseline; gap: 6px; font-size: 12px; padding: 2px 0; }
+.model-label { font-family: var(--mono); color: var(--text); word-break: break-all; }
+.model-id { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+.model-row.unavailable .model-label { color: var(--warn); }
+.model-unavailable { font-size: 11px; color: var(--warn); }
+.model-alias-tag { font-size: 10px; color: var(--text-2); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+.model-empty { font-size: 11px; color: var(--text-3); font-style: italic; padding: 2px 0; }
 .enrol-profile { margin-top: 6px; }
 
 .proj-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
@@ -895,6 +914,123 @@ window.__RELAY_INIT__ = {
     return String(s).replace(/\s+/g, " ").slice(0, 140);
   }
 
+  // web/src/lib/model_picker.js
+  var MODEL_WILDCARD = "*";
+  var GROUP_UNAVAILABLE = "Not currently available";
+  var GROUP_OTHER = "Other";
+  var GROUP_SAVED = "Saved";
+  function viewIsOk(view) {
+    return !!view && view.status === "ok";
+  }
+  function savedModelIds(saved) {
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const id of saved || []) {
+      if (id === MODEL_WILDCARD || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  }
+  function unavailableSavedModels(saved, view) {
+    if (!viewIsOk(view)) return [];
+    const known = new Set((view.models || []).map((m) => m.id));
+    return savedModelIds(saved).filter((id) => !known.has(id));
+  }
+  function savedOnlyRow(id, unavailable) {
+    return { id, label: id, target: "", unavailable };
+  }
+  function catalogRow(m) {
+    return { id: m.id, label: m.label || m.id, target: m.target || "", unavailable: false };
+  }
+  function groupModelCatalog(view, saved) {
+    if (!viewIsOk(view)) {
+      const rows = savedModelIds(saved).map((id) => savedOnlyRow(id, false));
+      return rows.length ? [{ label: GROUP_SAVED, kind: "saved", rows }] : [];
+    }
+    const groups = [];
+    const missing = unavailableSavedModels(saved, view);
+    if (missing.length) {
+      groups.push({ label: GROUP_UNAVAILABLE, kind: "unavailable", rows: missing.map((id) => savedOnlyRow(id, true)) });
+    }
+    const chatByLabel = {};
+    const other = [];
+    for (const m of view.models || []) {
+      if (m.kind === "other") {
+        other.push(catalogRow(m));
+        continue;
+      }
+      const label = m.group || "";
+      if (!chatByLabel[label]) {
+        chatByLabel[label] = { label, kind: "chat", rows: [] };
+        groups.push(chatByLabel[label]);
+      }
+      chatByLabel[label].rows.push(catalogRow(m));
+    }
+    if (other.length) groups.push({ label: GROUP_OTHER, kind: "other", rows: other });
+    return groups;
+  }
+  function containsFolded(haystack, needle) {
+    return String(haystack || "").toLowerCase().indexOf(needle) >= 0;
+  }
+  function filterModelGroups(groups, text) {
+    const needle = String(text || "").trim().toLowerCase();
+    const out = [];
+    for (const g of groups || []) {
+      const rows = !needle || containsFolded(g.label, needle) ? g.rows : g.rows.filter((r) => containsFolded(r.id, needle) || containsFolded(r.label, needle) || containsFolded(r.target, needle));
+      if (rows.length) out.push({ label: g.label, kind: g.kind, rows });
+    }
+    return out;
+  }
+  function renderModelPickerBanner(view, pending) {
+    if (pending) {
+      return '<div id="projModelsBanner" class="model-banner pending">Loading models\u2026</div>';
+    }
+    if (!view) return "";
+    const retry = ' <button type="button" class="btn btn-sm" onclick="requestModelCatalog()">Retry</button>';
+    if (!viewIsOk(view)) {
+      return '<div id="projModelsBanner" class="model-banner failed">Could not list models: ' + esc(view.error || "unavailable") + ". Saved models are kept." + retry + "</div>";
+    }
+    const warnings = view.warnings || [];
+    if (!warnings.length) return "";
+    return '<div id="projModelsBanner" class="model-banner warn">' + esc(warnings.join("; ")) + "." + retry + "</div>";
+  }
+  function renderModelPickerList(groups, opts) {
+    const o = opts || {};
+    if (!groups || !groups.length) {
+      return '<div class="model-empty">' + (o.searching ? "No models match." : "No models listed.") + "</div>";
+    }
+    const selected = new Set(o.selected || []);
+    let html = "";
+    for (const g of groups) {
+      html += '<div class="model-group" data-model-group="' + esc(g.label) + '" data-model-group-kind="' + esc(g.kind) + '">';
+      if (g.kind === "other") {
+        const open = !!(o.otherOpen || o.searching);
+        html += '<button type="button" id="projModelsOtherToggle" class="model-group-toggle" onclick="toggleProjModelsOther()" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "\u25BE " : "\u25B8 ") + esc(g.label) + ' <span class="model-group-count">(' + g.rows.length + ")</span></button>";
+        if (!open) {
+          html += "</div>";
+          continue;
+        }
+      } else {
+        html += '<div class="model-group-title">' + esc(g.label) + "</div>";
+      }
+      for (const r of g.rows) html += renderModelRow(r, selected.has(r.id), o.bindToggle);
+      html += "</div>";
+    }
+    return html;
+  }
+  function renderModelRow(row, checked, bindToggle) {
+    const act = bindToggle ? " " + bindToggle(row.id) : "";
+    let html = '<label class="model-row' + (row.unavailable ? " unavailable" : "") + '">';
+    html += '<input type="checkbox" data-model-id="' + esc(row.id) + '"' + (checked ? " checked" : "") + act + " />";
+    html += '<span class="model-label">' + esc(row.label) + "</span>";
+    if (row.label.indexOf(row.id) < 0) html += '<span class="model-id">' + esc(row.id) + "</span>";
+    if (row.target) html += '<span class="model-alias-tag">alias</span>';
+    if (row.unavailable) html += '<span class="model-unavailable">not currently available</span>';
+    html += "</label>";
+    return html;
+  }
+
   // web/src/app.js
   var EXTERNAL_MCPS_INIT = window.__RELAY_INIT__.externalMcps;
   var SERVICES_INIT = window.__RELAY_INIT__.services;
@@ -1121,8 +1257,17 @@ window.__RELAY_INIT__ = {
     version: VERSION_INIT,
     paths: PATHS_INIT,
     // {config, logs}
-    mcpToolsOpen: {}
+    mcpToolsOpen: {},
     // mcpId -> bool (the "N tools" disclosure)
+    // The project form's Allowed Models picker. The catalog is a live read of
+    // relay-sessions' model list, fetched once per form open and never polled;
+    // the selection itself lives in projectForm.allowed_models.
+    modelCatalog: null,
+    // ModelCatalogView from list_models, or null before the first answer
+    modelCatalogPending: false,
+    // true from requestModelCatalog until onModelsListed
+    projModelSearch: "",
+    projModelsOtherOpen: false
   };
   var AUDIT_MAX_ROWS = 500;
   function showPage(page) {
@@ -2567,6 +2712,7 @@ window.__RELAY_INIT__ = {
     state.projectForm = blankProjectForm();
     state.projectFormError = null;
     state.projectFormErrorField = null;
+    openProjModelPicker();
     render();
   }
   function editProject(id) {
@@ -2576,6 +2722,7 @@ window.__RELAY_INIT__ = {
     state.projectForm = projectFormFromExisting(p);
     state.projectFormError = null;
     state.projectFormErrorField = null;
+    openProjModelPicker();
     render();
   }
   function cancelProjectEdit() {
@@ -2651,6 +2798,8 @@ window.__RELAY_INIT__ = {
       if (isProjMcpWildcard(f)) f.allowed_mcp_ids = [];
       f.allowed_models = [];
       f.allowed_templates = [];
+    } else {
+      openProjModelPicker();
     }
     render();
   }
@@ -3149,6 +3298,55 @@ window.__RELAY_INIT__ = {
   function isProjModelsWildcard(f) {
     return f.allowed_models.length === 1 && f.allowed_models[0] === PROJ_MCP_WILDCARD;
   }
+  function openProjModelPicker() {
+    state.projModelSearch = "";
+    state.projModelsOtherOpen = false;
+    if (!isRemoteForm(state.projectForm)) requestModelCatalog();
+  }
+  function requestModelCatalog() {
+    state.modelCatalogPending = true;
+    ipc(JSON.stringify({ type: "list_models" }));
+    const banner = document.getElementById("projModelsBanner");
+    if (banner) banner.outerHTML = renderModelPickerBanner(state.modelCatalog, true);
+  }
+  window.onModelsListed = function(view) {
+    state.modelCatalog = view || null;
+    state.modelCatalogPending = false;
+    if (state.page === "projects" && state.projectForm && !isRemoteForm(state.projectForm)) render();
+  };
+  function setProjModelSearch(text) {
+    state.projModelSearch = String(text || "");
+    const list = document.getElementById("projModelsList");
+    if (list && state.projectForm) list.innerHTML = renderProjModelList(state.projectForm);
+  }
+  function toggleProjModel(id) {
+    const f = state.projectForm;
+    if (!f) return;
+    f.allowed_models = f.allowed_models.includes(id) ? f.allowed_models.filter((x) => x !== id) : f.allowed_models.concat(id);
+    render();
+  }
+  function toggleProjModelsOther() {
+    state.projModelsOtherOpen = !state.projModelsOtherOpen;
+    render();
+  }
+  function renderProjModelList(f) {
+    const groups = filterModelGroups(groupModelCatalog(state.modelCatalog, f.allowed_models), state.projModelSearch);
+    return renderModelPickerList(groups, {
+      selected: f.allowed_models,
+      bindToggle: (id) => bind(toggleProjModel, id),
+      otherOpen: state.projModelsOtherOpen,
+      searching: state.projModelSearch.trim() !== ""
+    });
+  }
+  function renderProjModelPicker(f) {
+    let html = renderModelPickerBanner(state.modelCatalog, state.modelCatalogPending);
+    html += '<input type="text" id="projModelsSearch" aria-label="Search models" placeholder="Search models" value="' + esc(state.projModelSearch) + '" oninput="setProjModelSearch(this.value)" />';
+    html += '<div id="projModelsList">' + renderProjModelList(f) + "</div>";
+    if (f.allowed_models.length === 0) {
+      html += '<p id="projModelsEmptyNote" class="proj-section-help">Nothing selected: an empty list lets this project use every model, the same as the wildcard. Select at least one model to restrict it.</p>';
+    }
+    return html;
+  }
   function isProjTemplatesWildcard(f) {
     return f.allowed_templates.length === 1 && f.allowed_templates[0] === PROJ_MCP_WILDCARD;
   }
@@ -3327,11 +3525,7 @@ window.__RELAY_INIT__ = {
       html += "<span>Allow all models (wildcard <code>*</code>)</span>";
       html += '<label class="switch"><input type="checkbox" aria-label="Allow all models (wildcard *)" ' + (modelsWild ? "checked" : "") + ' onchange="setProjModelsWildcard(this.checked)" /><span class="slider"></span></label>';
       html += "</div>";
-      if (!modelsWild) {
-        const csv = f.allowed_models.filter((m) => m !== PROJ_MCP_WILDCARD).join(", ");
-        html += '<label for="projModels">Model IDs (comma-separated)</label>';
-        html += '<input type="text" id="projModels" value="' + esc(csv) + '" placeholder="claude-opus, claude-sonnet, gpt-4" />';
-      }
+      if (!modelsWild) html += renderProjModelPicker(f);
     }
     html += "</div>";
     html += '<div class="proj-section">';
@@ -3490,12 +3684,11 @@ window.__RELAY_INIT__ = {
     const isRemote = isRemoteForm(f);
     const hosted = isHostedForm(f);
     const name = (document.getElementById("projName") || {}).value || f.name;
-    let allowedModels = f.allowed_models;
+    let allowedModels = f.allowed_models.slice();
     if (isRemote) {
       allowedModels = [];
-    } else if (!isProjModelsWildcard(f)) {
-      const csv = (document.getElementById("projModels") || {}).value || "";
-      allowedModels = csv.split(",").map((s) => s.trim()).filter(Boolean);
+    } else if (isProjModelsWildcard(f)) {
+      allowedModels = [PROJ_MCP_WILDCARD];
     }
     let policy = { default_mode: "", allowed_tools: [], denied_tools: [] };
     if (!isRemote) {
@@ -6299,6 +6492,13 @@ That browser's credential stops authenticating on its next request and it has to
     isProjTemplatesWildcard,
     setProjTemplatesWildcard,
     toggleProjTemplate,
+    openProjModelPicker,
+    requestModelCatalog,
+    setProjModelSearch,
+    toggleProjModel,
+    toggleProjModelsOther,
+    renderProjModelList,
+    renderProjModelPicker,
     blankTemplateForm,
     cancelTemplateEdit,
     captureTemplateFormInputs,

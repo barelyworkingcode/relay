@@ -73,6 +73,12 @@ enhanced_services.go     In-memory registry of enhanced services; per-service re
 log_rotate.go            RotatingWriter + serviceLogDir: shared by relay's own log, the audit log,
                          and every managed service's log via service.Registry.OpenLog
 ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit, enrolments, passkeys)
+ipc_models.go            list_models: emits the model catalog to the Settings window, off the main thread
+model_catalog_ops.go     ModelCatalogOps: the ungated, read-only core behind list_models; relay-sessions'
+                         /api/models (through sessionHostClient) joined with the broker cache's endpoint
+                         and alias-target detail
+web/src/lib/model_picker.js   The Projects form's model picker as pure functions over that catalog:
+                         grouping, search, the unavailable marker, banner and list markup
 settings_html.go         Settings WKWebView HTML/JS
 config/                  Settings (settings.go: Config, project CRUD, permission derivation),
                          SettingsStore/FileSettingsStore (store.go: atomic settings.json read/write),
@@ -776,6 +782,23 @@ same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via
 `project_routes.go`), so HTTP and IPC paths are interchangeable. Cross-process
 changes propagate live: an HTTP project mutation fires `onProjectsChanged`, which
 re-renders an open Settings window. See ADR-004.
+
+A project's Allowed Models are picked from a live list rather than typed.
+Opening a local project's form sends `list_models` once; the answer
+(`onModelsListed`) is the same catalog relay-sessions serves at
+`GET /api/models`, grouped by provider and endpoint, with broker aliases
+shown beside their target and non-chat models under a collapsed Other
+group. The wildcard switch stays; while it is on, the list is hidden. The
+picker has three states. **ok**: the catalog is listed, and any saved id not
+in it sits in a "Not currently available" group, still checked. **unavailable**
+(relay-sessions did not answer): a banner with Retry, and the saved ids listed
+unmarked, because with no list there is nothing to call them missing against.
+**warning** (relay-sessions answered but the broker cache did not): the
+catalog is listed with the host's own grouping, under a banner saying so. In
+every state the rule is the same: a saved id is dropped only when the operator
+unchecks it. The form holds the selection in state and saves it from there,
+never from the DOM, so an untouched form saves exactly what was stored, in the
+same order. An empty selection still means every model, and the form says so.
 
 ## Ecosystem
 

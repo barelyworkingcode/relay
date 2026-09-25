@@ -531,6 +531,25 @@ textarea:focus {
 .proj-scope-unrecognised { font-size: 11px; color: var(--warn); margin: 2px 0; }
 .proj-scope-failed { font-size: 11px; color: var(--danger); margin: 4px 0 2px; }
 .proj-scope-pending { font-size: 11px; color: var(--text-3); margin: 4px 0 2px; }
+/* The project model picker. A saved id the host no longer lists stays checked
+   and is flagged, never dropped, for the same reason as .unrecognised above. */
+.model-banner { font-size: 11px; margin: 4px 0 6px; }
+.model-banner.pending { color: var(--text-3); }
+.model-banner.failed { color: var(--danger); }
+.model-banner.warn { color: var(--warn); }
+.model-banner .btn { margin-left: 6px; }
+#projModelsList { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 8px; margin-top: 6px; max-height: 320px; overflow-y: auto; }
+.model-group + .model-group { margin-top: 6px; }
+.model-group-title { font-size: 11px; font-weight: 600; color: var(--text-2); margin: 2px 0; }
+.model-group-toggle { background: none; border: none; padding: 2px 0; font: inherit; font-size: 11px; font-weight: 600; color: var(--text-2); cursor: pointer; }
+.model-group-count { font-weight: normal; color: var(--text-3); }
+.model-row { display: flex; align-items: baseline; gap: 6px; font-size: 12px; padding: 2px 0; }
+.model-label { font-family: var(--mono); color: var(--text); word-break: break-all; }
+.model-id { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+.model-row.unavailable .model-label { color: var(--warn); }
+.model-unavailable { font-size: 11px; color: var(--warn); }
+.model-alias-tag { font-size: 10px; color: var(--text-2); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+.model-empty { font-size: 11px; color: var(--text-3); font-style: italic; padding: 2px 0; }
 .enrol-profile { margin-top: 6px; }
 
 .proj-error { color: var(--danger); font-size: 12px; margin-top: 8px; }

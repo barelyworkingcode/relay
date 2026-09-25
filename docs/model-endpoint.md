@@ -133,6 +133,54 @@ exactly like adding a capability does; removing ids, reordering them, or
 resending the stored list unchanged narrows or changes nothing and is never
 gated (`cmd/relay/service_ops.go`'s `serviceWidensAllowedModels`).
 
+## Choosing a project's models, in Settings
+
+The Projects tab edits a project's `allowed_models` with a searchable
+multi-select. It keeps the wildcard switch: when the switch is on, the grant
+is `["*"]` and the list is hidden. The list is fed by the `list_models` IPC
+(`cmd/relay/ipc_models.go`), a thin door over `ModelCatalogOps`
+(`cmd/relay/model_catalog_ops.go`). That core is read-only and ungated, and it
+has no HTTP door.
+
+**Where the list comes from.** `ModelCatalogOps.List` reads relay-sessions'
+`GET /api/models` through `sessionHostClient.ListModels`
+([session-host.md](session-host.md)). That is the same list eve's session
+picker shows: Claude aliases, pi models and broker models. It then reads this
+endpoint's own catalog cache (`modelbroker.Cache.Snapshot`) to add detail the
+host does not return. The order is deliberate. relay-sessions' fetch refreshes
+the shared cache, so the second read matches the first.
+
+- Only `chat`-provider rows are matched to cache rows, by exact id. A modelMap
+  key (`owned_by: anthropic-map`) is grouped under `Model broker · aliases`
+  and labelled `key → target`. A virtual model goes under
+  `Model broker · virtual`, and any other row under `Model broker · <owned_by>`.
+- Unmatched rows, and every row from another provider, keep the host's group
+  and label.
+- If relay-sessions cannot be reached, the view is `unavailable`
+  (`session host unavailable`) with no models, and the cache is not read.
+  If only the cache fails, the view is still `ok` with the host's grouping
+  and the warning `model broker unavailable`.
+
+**What the operator should know.**
+
+- **Ids match exactly.** The picker saves the catalog's own ids, so a typo
+  cannot hide a model. A saved id that is no longer listed stays selected,
+  marked "not currently available", and is never dropped unless the operator
+  unchecks it.
+- **An empty list means every model**, the same as `["*"]` (see
+  [Scoping](#scoping)). The picker says so when nothing is selected.
+- **Alias targets are shown to the operator only.** The target reaches the
+  Settings window and nowhere else. `/v1/models` callers still never see it:
+  `modelbroker.Filter` strips `target`.
+- **Non-chat models sit under a collapsed "Other" group.** The split is a
+  heuristic (`modelKind`). It takes the id's last `/` segment, lowercases it,
+  and splits it on anything that is not `a-z` or `0-9`. The model is "other"
+  when a whole token is one of `tts asr stt speech whisper parakeet kokoro
+  orpheus dia codec snac vocoder embed embedding embeddings rerank reranker`.
+  An alias is "other" if either it or its target is. `audio` is deliberately
+  not on the list, because chat model names carry it too. A wrong guess only
+  moves a row between groups; it never changes what is saved.
+
 ## Model keys
 
 Format `rmk_` + 64 lowercase hex, held in relay's memory only as a SHA-256

@@ -4,6 +4,9 @@
 import {
     esc, formatScalar, cfgParseConfigText, cfgGetAt, cfgSetAt, cfgDefaultFor, cfgCoerce, cfgKvCoerce, cfgKvDisplay, cfgScanRequired, cfgSummary, cfgFormatStringMap, cfgFormatJson, oneLineProj
 } from './lib/pure.js';
+import {
+    groupModelCatalog, filterModelGroups, renderModelPickerBanner, renderModelPickerList
+} from './lib/model_picker.js';
 
 // Initial data injected by relay's renderSettingsHTML via the shell template.
 const EXTERNAL_MCPS_INIT = window.__RELAY_INIT__.externalMcps;
@@ -240,6 +243,14 @@ let state = {
     version: VERSION_INIT,
     paths: PATHS_INIT,                    // {config, logs}
     mcpToolsOpen: {},                     // mcpId -> bool (the "N tools" disclosure)
+
+    // The project form's Allowed Models picker. The catalog is a live read of
+    // relay-sessions' model list, fetched once per form open and never polled;
+    // the selection itself lives in projectForm.allowed_models.
+    modelCatalog: null,                   // ModelCatalogView from list_models, or null before the first answer
+    modelCatalogPending: false,           // true from requestModelCatalog until onModelsListed
+    projModelSearch: '',
+    projModelsOtherOpen: false,
 };
 
 // How many live events the Tool Calls tab keeps in the DOM. The Go-side ring
@@ -2154,6 +2165,7 @@ function newProject() {
     state.projectForm = blankProjectForm();
     state.projectFormError = null;
     state.projectFormErrorField = null;
+    openProjModelPicker();
     render();
 }
 
@@ -2164,6 +2176,7 @@ function editProject(id) {
     state.projectForm = projectFormFromExisting(p);
     state.projectFormError = null;
     state.projectFormErrorField = null;
+    openProjModelPicker();
     render();
 }
 
@@ -2283,6 +2296,8 @@ function setProjKind(kind) {
         // Remote projects always carry an empty model allowlist.
         f.allowed_models = [];
         f.allowed_templates = [];
+    } else {
+        openProjModelPicker();
     }
     render();
 }
@@ -3128,6 +3143,74 @@ function isProjModelsWildcard(f) {
     return f.allowed_models.length === 1 && f.allowed_models[0] === PROJ_MCP_WILDCARD;
 }
 
+// openProjModelPicker starts the picker afresh for the form just opened. An
+// access profile carries no models, so it asks relay for nothing.
+function openProjModelPicker() {
+    state.projModelSearch = '';
+    state.projModelsOtherOpen = false;
+    if (!isRemoteForm(state.projectForm)) requestModelCatalog();
+}
+
+// requestModelCatalog swaps only the banner for its loading state, so a Retry
+// click shows progress without rebuilding the form under the operator.
+function requestModelCatalog() {
+    state.modelCatalogPending = true;
+    ipc(JSON.stringify({ type: 'list_models' }));
+    const banner = document.getElementById('projModelsBanner');
+    if (banner) banner.outerHTML = renderModelPickerBanner(state.modelCatalog, true);
+}
+
+window.onModelsListed = function(view) {
+    state.modelCatalog = view || null;
+    state.modelCatalogPending = false;
+    // A full repaint, not render('push'): the push guard would swallow this
+    // answer for the whole time the form it was fetched for is open.
+    if (state.page === 'projects' && state.projectForm && !isRemoteForm(state.projectForm)) render();
+};
+
+// setProjModelSearch repaints only the list so the search box keeps focus.
+// Its toggles append to the live _actBind table, which must not be cleared
+// here: every other control on the form still points into it.
+function setProjModelSearch(text) {
+    state.projModelSearch = String(text || '');
+    const list = document.getElementById('projModelsList');
+    if (list && state.projectForm) list.innerHTML = renderProjModelList(state.projectForm);
+}
+
+function toggleProjModel(id) {
+    const f = state.projectForm;
+    if (!f) return;
+    f.allowed_models = f.allowed_models.includes(id)
+        ? f.allowed_models.filter(x => x !== id)
+        : f.allowed_models.concat(id);
+    render();
+}
+
+function toggleProjModelsOther() {
+    state.projModelsOtherOpen = !state.projModelsOtherOpen;
+    render();
+}
+
+function renderProjModelList(f) {
+    const groups = filterModelGroups(groupModelCatalog(state.modelCatalog, f.allowed_models), state.projModelSearch);
+    return renderModelPickerList(groups, {
+        selected: f.allowed_models,
+        bindToggle: id => bind(toggleProjModel, id),
+        otherOpen: state.projModelsOtherOpen,
+        searching: state.projModelSearch.trim() !== '',
+    });
+}
+
+function renderProjModelPicker(f) {
+    let html = renderModelPickerBanner(state.modelCatalog, state.modelCatalogPending);
+    html += '<input type="text" id="projModelsSearch" aria-label="Search models" placeholder="Search models" value="' + esc(state.projModelSearch) + '" oninput="setProjModelSearch(this.value)" />';
+    html += '<div id="projModelsList">' + renderProjModelList(f) + '</div>';
+    if (f.allowed_models.length === 0) {
+        html += '<p id="projModelsEmptyNote" class="proj-section-help">Nothing selected: an empty list lets this project use every model, the same as the wildcard. Select at least one model to restrict it.</p>';
+    }
+    return html;
+}
+
 function isProjTemplatesWildcard(f) {
     return f.allowed_templates.length === 1 && f.allowed_templates[0] === PROJ_MCP_WILDCARD;
 }
@@ -3383,11 +3466,7 @@ function renderProjectForm() {
         html += '<span>Allow all models (wildcard <code>*</code>)</span>';
         html += '<label class="switch"><input type="checkbox" aria-label="Allow all models (wildcard *)" ' + (modelsWild ? 'checked' : '') + ' onchange="setProjModelsWildcard(this.checked)" /><span class="slider"></span></label>';
         html += '</div>';
-        if (!modelsWild) {
-            const csv = f.allowed_models.filter(m => m !== PROJ_MCP_WILDCARD).join(', ');
-            html += '<label for="projModels">Model IDs (comma-separated)</label>';
-            html += '<input type="text" id="projModels" value="' + esc(csv) + '" placeholder="claude-opus, claude-sonnet, gpt-4" />';
-        }
+        if (!modelsWild) html += renderProjModelPicker(f);
     }
     html += '</div>';
 
@@ -3587,12 +3666,11 @@ function harvestProjectForm() {
     // A remote project has no path control in the form (see renderProjectForm)
     // and must not send one — validateProjectShape rejects any non-empty path
     // on a remote project.
-    let allowedModels = f.allowed_models;
+    let allowedModels = f.allowed_models.slice();
     if (isRemote) {
         allowedModels = [];
-    } else if (!isProjModelsWildcard(f)) {
-        const csv = (document.getElementById('projModels') || {}).value || '';
-        allowedModels = csv.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (isProjModelsWildcard(f)) {
+        allowedModels = [PROJ_MCP_WILDCARD];
     }
     // An access profile sends an EMPTY policy rather than the one it may still
     // carry: relay refuses a policy on a remote record, and this is the form
@@ -7198,6 +7276,7 @@ Object.assign(window, {
     captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addProjMount, removeProjMount, setProjMountAccess,
     isProjTemplatesWildcard, setProjTemplatesWildcard, toggleProjTemplate,
+    openProjModelPicker, requestModelCatalog, setProjModelSearch, toggleProjModel, toggleProjModelsOther, renderProjModelList, renderProjModelPicker,
     blankTemplateForm, cancelTemplateEdit, captureTemplateFormInputs, editTemplate, newTemplate, removeTemplate, renderTemplateForm, saveTemplateForm, templateFormFromExisting, templateLines,
     cancelHostTemplateEdit, captureHostTemplateFormInputs, closeHostTemplateForm, editHostTemplate, editingHostRecord, hostTemplateCommandLine, newHostTemplate, removeHostTemplate, renderHostTemplateForm, renderHostTemplates, saveHostTemplateForm,
     blankHostForm, cancelHostEdit, captureHostFormInputs, disconnectHost, editHost, harvestHostForm, hostFormFromExisting, hostNameFor, isHostedForm, newHost, probeHost, removeHost, renderHostForm, renderHostProbeCard, renderHostProbeSummary, renderHostStatus, renderHosts, saveHostForm, setProjWhere, testHostConnection,

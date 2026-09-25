@@ -181,6 +181,7 @@ var mockBridgeScript = `<script>
   var FIXTURE_AUDIT = ` + inlineJSON(fixtureAuditEvents) + `;
   var FIXTURE_AUDIT_STATUS = ` + inlineJSON(fixtureAuditStatus) + `;
   var FIXTURE_REMOTE = ` + inlineJSON(fixtureRemote) + `;
+  var FIXTURE_MODEL_CATALOG = ` + inlineJSON(fixtureModelCatalog) + `;
   window.webkit = { messageHandlers: { ipc: { postMessage: function (raw) {
     var msg; try { msg = JSON.parse(raw); } catch (e) { console.warn('[devui] bad ipc', raw); return; }
     console.log('[devui ipc →]', msg);
@@ -192,6 +193,7 @@ var mockBridgeScript = `<script>
         if (msg.op === 'get') window.onServiceConfigResult({ serviceId: msg.serviceId, op: 'get', ok: true, text: FIXTURE_CONFIG_TEXT });
         else if (msg.op === 'save') { window.onServiceConfigResult({ serviceId: msg.serviceId, op: 'save', ok: true }); window.onServiceConfigApplied({ serviceId: msg.serviceId, mode: 'restarting' }); }
         break;
+      case 'list_models': window.onModelsListed(FIXTURE_MODEL_CATALOG); break;
       case 'list_mcp_tools': window.onMcpToolsListed(msg.mcp_id, FIXTURE_TOOLS[msg.mcp_id] || []); break;
       case 'enumerate_scope_field': window.onScopeFieldEnumerated(enumerate(msg)); break;
       case 'service_action': window.onServiceActionResult({ serviceId: msg.serviceId, actionId: msg.actionId, row: msg.row, ok: true }); break;
@@ -300,6 +302,18 @@ const fixtureAuditEvents = `[
 const fixtureAuditStatus = `{"enabled":true,"path":"/Users/you/Library/Application Support/relay/logs/audit/toolcalls.jsonl","dropped":0,"recorded":6,"log_args":true,"log_lists":false}`
 
 const fixtureMcpToolCacheTools = fixtureMcpToolCache
+
+// One row of every shape the picker groups differently: a Claude alias, a pi
+// model, a broker endpoint model, a non-chat model that lands under Other, and
+// a broker alias whose target is shown beside it.
+const fixtureModelCatalog = `{"status":"ok","models":[
+  {"id":"haiku","label":"Claude Haiku","group":"Claude","provider":"claude","kind":"chat"},
+  {"id":"sonnet","label":"Claude Sonnet","group":"Claude","provider":"claude","kind":"chat"},
+  {"id":"pi/acme/example-coder","label":"pi/acme/example-coder","group":"Pi · acme","provider":"pi","kind":"chat"},
+  {"id":"acme/Example-Chat-8B","label":"acme/Example-Chat-8B","group":"Model broker · acme","provider":"chat","kind":"chat"},
+  {"id":"acme/Example-TTS","label":"acme/Example-TTS","group":"Model broker · acme","provider":"chat","kind":"other"},
+  {"id":"Chat","label":"Chat → acme/Chat","group":"Model broker · aliases","provider":"chat","kind":"chat","target":"acme/Chat"}
+]}`
 
 // The JSONC-style comment inside this literal is deliberate: it exercises the
 // comment stripper.
