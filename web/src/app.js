@@ -2132,7 +2132,7 @@ function renderProjModeChips(p) {
     }
     for (const m of defaultModesFor(state.defaultProject, p.id)) {
         if (!isDefaultEligible(p, m)) continue;
-        html += '<span class="proj-default-chip" data-default-for="' + m + '">Default for ' + esc(modeLabel(m)) + '</span>';
+        html += '<span class="proj-default-chip" data-default-for="' + m + '">Default · ' + esc(modeLabel(m)) + '</span>';
     }
     return html;
 }
