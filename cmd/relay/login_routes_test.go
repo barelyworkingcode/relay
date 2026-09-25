@@ -630,6 +630,7 @@ func TestLoginRoutes_EveryOtherPathStillRequiresACredential(t *testing.T) {
 		"GET /relay/login/document",
 		"GET /relay/logout",
 		"GET /api/projects",
+		"PUT /api/default_project/home",
 		"GET /",
 	}
 	for _, pattern := range gated {

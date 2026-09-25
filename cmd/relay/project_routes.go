@@ -96,6 +96,14 @@ type enumerateRequest struct {
 	Values map[string]json.RawMessage `json:"values,omitempty"`
 }
 
+// setDefaultProjectRequest's ProjectID is a pointer because "" is a valid
+// request (clear the default) and a missing key is not.
+type setDefaultProjectRequest struct {
+	ProjectID *string `json:"project_id"`
+}
+
+const errDefaultProjectIDRequired = `project_id is required; send "" to clear the default`
+
 // ProjectsChangedFn is fired after any successful project mutation so the
 // tray UI can refresh. nil = no fan-out.
 type ProjectsChangedFn func()
@@ -154,21 +162,23 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj config.
 // and doc symmetry with the IPC surface.
 func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) { //nolint:unparam // deliberate: kept for doc/call-site symmetry with the IPC surface, see comment above
 	rr.Handle(control.ClassRead, "GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
-		projects := config.DisplaySettings(store).Projects
+		s := config.DisplaySettings(store)
+		projects := s.Projects
 		if projects == nil {
 			projects = []config.Project{}
 		}
 		// projectView strips the plaintext token from the frontend response.
-		writeJSON(w, http.StatusOK, projectsToView(projects))
+		writeJSON(w, http.StatusOK, projectsToView(s, projects))
 	})
 
 	rr.Handle(control.ClassRead, "GET /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
-		proj, _ := config.FindProjectByID(config.DisplaySettings(store), r.PathValue("id"))
+		s := config.DisplaySettings(store)
+		proj, _ := config.FindProjectByID(s, r.PathValue("id"))
 		if proj == nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
 		}
-		writeJSON(w, http.StatusOK, projectToView(*proj))
+		writeJSON(w, http.StatusOK, projectToView(s, *proj))
 	})
 
 	rr.Handle(control.ClassConfigure, "POST /api/projects", func(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +200,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 		if skillLister != nil {
 			reconcileProjectSkill(r.Context(), skillLister, created)
 		}
-		writeJSON(w, http.StatusCreated, projectToView(created))
+		writeJSON(w, http.StatusCreated, projectToView(config.DisplaySettings(store), created))
 	})
 
 	rr.Handle(control.ClassConfigure, "PUT /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +235,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 		if skillLister != nil {
 			reconcileProjectSkill(r.Context(), skillLister, updated)
 		}
-		writeJSON(w, http.StatusOK, projectToView(updated))
+		writeJSON(w, http.StatusOK, projectToView(config.DisplaySettings(store), updated))
 	})
 
 	rr.Handle(control.ClassConfigure, "DELETE /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +251,29 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// PUT /api/default_project/{mode} — set or clear ("") the default
+	// project for home or work. configure, not grant: a default is a label
+	// and reaches nothing the project's own grant does not already reach.
+	rr.Handle(control.ClassConfigure, "PUT /api/default_project/{mode}", func(w http.ResponseWriter, r *http.Request) {
+		var body setDefaultProjectRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+		if body.ProjectID == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": errDefaultProjectIDRequired})
+			return
+		}
+		defaults, err := ops.SetDefaultProject(r.Context(), config.ProjectMode(r.PathValue("mode")), *body.ProjectID)
+		if err != nil {
+			writeProjectGateError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, defaultProjectViewOf(defaults))
 	})
 
 	// MCP listing for the Eve project dialog's "Allowed MCPs" picker.

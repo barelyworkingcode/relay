@@ -17,6 +17,7 @@ type CreateFields struct {
 	// HostID names a Host this project's Path lives on instead of the
 	// console (docs/ssh-hosts.md). Empty means the console.
 	HostID           string                   `json:"host_id,omitempty"`
+	Mode             config.ProjectMode       `json:"mode,omitempty"`
 	AllowedMcpIDs    []string                 `json:"allowed_mcp_ids"`
 	AllowedModels    []string                 `json:"allowed_models"`
 	ChatTemplates    []config.ChatTemplate    `json:"chat_templates"`
@@ -51,6 +52,7 @@ type UpdateFields struct {
 	// HostID follows Path's nil-means-no-change discipline; a pointer to ""
 	// moves the project back to the console.
 	HostID           *string                  `json:"host_id,omitempty"`
+	Mode             *config.ProjectMode      `json:"mode,omitempty"`
 	AllowedMcpIDs    *[]string                `json:"allowed_mcp_ids,omitempty"`
 	AllowedModels    *[]string                `json:"allowed_models,omitempty"`
 	ChatTemplates    *[]config.ChatTemplate   `json:"chat_templates,omitempty"`
@@ -103,6 +105,13 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 		ChatTemplates:    f.ChatTemplates,
 		Mounts:           f.Mounts,
 	}
+	// Deliberately here and not in ValidateShape: ValidateShape checks the
+	// whole stored record on every edit, so a hand-edited unknown mode there
+	// would refuse an unrelated rename. Mode is checked only where a request
+	// names it.
+	if err := config.ValidateProjectMode(f.Mode); err != nil {
+		return config.Project{}, err
+	}
 	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, err
 	}
@@ -127,6 +136,9 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 	}
 	if f.HostID != "" {
 		s.SetProjectHostID(created.ID, f.HostID)
+	}
+	if f.Mode != "" {
+		s.SetProjectMode(created.ID, f.Mode)
 	}
 	if !permissionPolicyIsEmpty(f.PermissionPolicy) {
 		s.UpdateProjectPermissionPolicy(created.ID, f.PermissionPolicy)
@@ -234,6 +246,14 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	if f.Mounts != nil {
 		candidate.Mounts = *f.Mounts
 	}
+	// Deliberately not in ValidateShape, for the reason given in
+	// ApplyCreate: a stored unknown mode must not block this edit unless the
+	// edit names a mode.
+	if f.Mode != nil {
+		if err := config.ValidateProjectMode(*f.Mode); err != nil {
+			return config.Project{}, true, err
+		}
+	}
 	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, true, err
 	}
@@ -283,9 +303,15 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	}
 	if f.Kind != nil {
 		updateProjectKind(s, id, *f.Kind)
+		// A project that became an access profile can no longer be a
+		// default project.
+		s.PruneDefaultProjects()
 	}
 	if f.HostID != nil {
 		s.SetProjectHostID(id, *f.HostID)
+	}
+	if f.Mode != nil {
+		s.SetProjectMode(id, *f.Mode)
 	}
 	if f.Path != nil {
 		updateProjectPath(s, id, *f.Path, sc)

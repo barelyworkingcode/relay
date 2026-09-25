@@ -79,6 +79,8 @@ model_catalog_ops.go     ModelCatalogOps: the ungated, read-only core behind lis
                          and alias-target detail
 web/src/lib/model_picker.js   The Projects form's model picker as pure functions over that catalog:
                          grouping, search, the unavailable marker, banner and list markup
+web/src/lib/project_mode.js   Home|Work mode and default projects as pure functions: effective mode,
+                         default eligibility, and the Needs-attention rows for a missing default
 settings_html.go         Settings WKWebView HTML/JS
 config/                  Settings (settings.go: Config, project CRUD, permission derivation),
                          SettingsStore/FileSettingsStore (store.go: atomic settings.json read/write),
@@ -296,6 +298,85 @@ directory, an access profile has none at all. See
 contract with relayLLM and eve, and why relay-brokered tools, mounts, cwd
 auth and skill generation are all refused on a host project the same way
 they are on a remote one, for related but distinct reasons.
+
+### Mode and default projects
+
+Home|Work shows one room at a time. Each project carries a **mode**, and each
+mode may name a **default project** where new threads start. Both are labels
+that eve and the tray agree on. Neither is a grant.
+
+Schema (`internal/config/project_mode.go`):
+
+```jsonc
+{ "projects": [ { "id": "<uuid-a>", "mode": "work", ... },
+                { "id": "<uuid-b>", ... /* no mode = both */ } ],
+  "default_project": { "home": "<uuid-b>", "work": "<uuid-a>" } } // absent = never configured
+```
+
+- `Project.Mode` is `home`, `work` or `both`, stored `omitempty` with `both`
+  stored as `""`, the same pattern as `Kind`. An existing `settings.json`
+  round-trips unchanged: no version bump, no write at load.
+- `Settings.DefaultProject` (`default_project`) holds one project id per mode,
+  `home` and `work`. Absent means the operator has never configured modes.
+  An emptied block (`{}`) means they have and no default is set. Deleting the
+  block by hand opts out.
+
+Read-side rules. They are why a degraded store that refuses writes needs no
+migration:
+
+- Read a mode only through `Project.EffectiveMode()`: `home` or `work` as
+  stored, anything else (missing, `both`, a hand-edited unknown value) as
+  `both`. Nothing compares the raw string. `ProjectMode.Includes` answers
+  "does this project belong in that mode"; `both` includes every mode.
+- Read a default only through `Settings.DefaultProjectFor(mode)`. It returns
+  the stored id only while the project exists, is local (never an access
+  profile) and its mode includes that mode. Otherwise `""`.
+  `DefaultModesFor(projectID)` lists the modes a project is the valid default
+  for, home first.
+- A `both` project may be the default for both modes.
+
+Mutators:
+
+- `SetProjectMode(id, mode)` stores the normalized mode, then prunes.
+- `SetDefaultProject(mode, projectID)` sets or, with `""`, clears one mode's
+  default. Only a successful set with a non-empty id creates the block;
+  clearing on an absent block leaves it absent. It validates before mutating and refuses, wrapping
+  `ErrInvalidDefaultProject`, when the mode isn't `home`/`work`, the project
+  doesn't exist, it is an access profile, or its mode doesn't include the
+  target mode.
+- `PruneDefaultProjects()` clears every stored default that is no longer
+  valid and returns the modes it cleared. It never nils the block.
+  `RemoveProject`, `SetProjectMode` and a kind change in `ApplyUpdate` all
+  call it, so deleting a default, or editing its mode or kind so it no longer
+  fits, clears the default rather than refusing the edit.
+- `ValidateProjectMode` accepts `""`, `home`, `work` and `both`, exactly and
+  in lower case. `ApplyCreate` and `ApplyUpdate` call it only when the request
+  names a mode, never from `ValidateShape`: a hand-edited unknown mode reads
+  as `both`, every door refuses to write one, and it must not block an
+  unrelated rename.
+
+Wire shapes:
+
+- `GET /api/projects` stays a JSON array. Each item gains `mode` (always
+  `home`, `work` or `both`) and `default_for` (omitempty; the modes it is the
+  default for, home then work).
+- POST/PUT `/api/projects`, `create_project` and `update_project` accept
+  `mode` through `project.CreateFields` and `project.UpdateFields`.
+- `PUT /api/default_project/{mode}` (`ClassConfigure`) takes
+  `{"project_id":"<id>"|""}`, decoded with unknown fields refused. It answers
+  200 with the effective `{"home":"...","work":"..."}`, 400 for a bad mode,
+  a missing `project_id`, an unknown key or an invalid target, and 500 for a
+  store failure.
+- IPC `set_default_project {mode, project_id}` answers
+  `onDefaultProjectUpdated(view)` or `onProjectError`. `pushFullSettings`
+  carries `default_project`, the raw block or null.
+
+**Not a grant.** Mode and defaults change what a surface shows and where a
+thread starts, never what a project can reach. Scopes, `allowed_models` and
+tool grants stay per project. Mode and defaults get no presence gate, no
+`GatedOps` entry and no `recordConfigChange`. They stay out of the grant
+digests, `UpdateWidensGrant`, `NarrowsOnly` and `StoredToken`. Both fields are
+plain operator-visible values, so nothing about them is sealed.
 
 ### Remote client enrolment
 
@@ -727,7 +808,8 @@ file) is the landing page (`initialPage` defaults to it): one tile per other
 tab's headline state, a "Needs attention" list aggregated client-side from
 state every other tab already has (scope gaps, MCP health, unreachable hosts,
 autostart-but-not-running services, audit disabled/dropped, sealed-store
-degradation, pending enrolment requests), the last 6 audit rows, and a footer
+degradation, pending enrolment requests, a Home or Work default project that
+is unset, deleted or no longer eligible), the last 6 audit rows, and a footer
 with the version and two "Reveal" actions (`reveal_config_dir`,
 `reveal_logs_dir`, both in `ipc_overview.go`). MCP health (`onMcpHealth`,
 whole-map push) and service runtime (folded into the existing
@@ -780,8 +862,8 @@ neither reaches a fully headless install (`docs/tokens.md`).
 The Projects tab is native and co-equal with Eve's project dialog — both hit the
 same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via
 `project_routes.go`), so HTTP and IPC paths are interchangeable. Cross-process
-changes propagate live: an HTTP project mutation fires `onProjectsChanged`, which
-re-renders an open Settings window. See ADR-004.
+changes propagate live: every committed change fires `onConfigCommitted`, whose
+`pushFullSettings`/`pushFullProjects` re-render an open Settings window. See ADR-004.
 
 A project's Allowed Models are picked from a live list rather than typed.
 Opening a local project's form sends `list_models` once; the answer
@@ -803,6 +885,22 @@ picker (`#projModelsPicker`), never the whole form, so the search box keeps
 focus and the list keeps its scroll position. The form holds the selection in state and saves it from there,
 never from the DOM, so an untouched form saves exactly what was stored, in the
 same order. An empty selection still means every model, and the form says so.
+
+A project's mode and the two default projects (see "Mode and default
+projects") are edited on the same tab. The form's Mode section, between
+Identity and the MCPs, is three buttons, Home, Work and Both, saved with the
+rest of the form as `mode`. Below the cards, a Default projects panel holds
+one select per mode. It appears once any local project exists and offers None
+plus the projects eligible for that mode. A change sends
+`set_default_project` at once, not with a form, and the answer
+(`onDefaultProjectUpdated`) repaints the list. The first paint is seeded from
+`default_project` (`__DEFAULT_PROJECT_JSON__`), and `onSettingsReloaded`
+keeps it current. Each card carries a mode badge for Home or Work (Both is
+unmarked) and a chip per mode it is the valid default for. A select shows
+only a default that is still valid, so a stored id that no longer fits reads
+as None there and is named in Needs attention instead. Those rows appear only
+once a `default_project` block exists, so an install that has never used
+modes gains none.
 
 ## Ecosystem
 

@@ -7,12 +7,16 @@ import {
 import {
     groupModelCatalog, filterModelGroups, renderModelPickerBanner, renderModelPickerList
 } from './lib/model_picker.js';
+import {
+    DEFAULT_MODES, projMode, modeLabel, isDefaultEligible, eligibleDefaultProjects, effectiveDefaultId, defaultModesFor, defaultProjectAttentionRows
+} from './lib/project_mode.js';
 
 // Initial data injected by relay's renderSettingsHTML via the shell template.
 const EXTERNAL_MCPS_INIT = window.__RELAY_INIT__.externalMcps;
 const SERVICES_INIT = window.__RELAY_INIT__.services;
 const RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
 const PROJECTS_INIT = window.__RELAY_INIT__.projects;
+const DEFAULT_PROJECT_INIT = window.__RELAY_INIT__.defaultProject || null;
 // Hosts — machines reached over ssh a project's directory can live on
 // (docs/ssh-hosts.md). Seeded like projects: the list is small, and both the
 // Hosts tab and the project form's Where control need it on the first paint.
@@ -129,6 +133,7 @@ let state = {
 
     // Projects tab.
     projects: PROJECTS_INIT,
+    defaultProject: DEFAULT_PROJECT_INIT,  // the raw default_project block {home?, work?}, or null when never configured
     mcpToolCache: MCP_TOOL_CACHE_INIT,     // mcpId -> [{name, description, category}]
     mcpScopeFields: MCP_SCOPE_FIELDS_INIT, // mcpId -> [ScopeFieldView]; NO KEY = relay has never seen that MCP
     editingProjectId: null,                 // null = list, 'new' = create form, '<id>' = edit
@@ -553,6 +558,8 @@ function overviewAttentionRows() {
     if (pending > 0) {
         rows.push({ text: pluralize(pending, 'pending enrolment request') + '.', tab: 'remote' });
     }
+
+    rows.push(...defaultProjectAttentionRows(state.projects, state.defaultProject));
 
     return rows;
 }
@@ -1594,6 +1601,7 @@ window.onSettingsReloaded = function(data) {
     state.services = data.services;
     state.runningServices = data.running_ids.reduce(function(m, id) { m[id] = true; return m; }, {});
     if (data.projects) state.projects = data.projects;
+    if ('default_project' in data) state.defaultProject = data.default_project || null;
     if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
     if (data.mcp_scope_fields) state.mcpScopeFields = data.mcp_scope_fields;
     if (data.enrolments) state.enrolments = data.enrolments;
@@ -2023,6 +2031,7 @@ function renderProjects() {
             // The host chip's absence IS the design (docs/ssh-hosts.md): a
             // console project shows nothing here at all.
             if (p.host_id) html += '<span class="proj-host-chip">⌁ ' + esc(hostNameFor(p.host_id)) + '</span>';
+            html += renderProjModeChips(p);
             html += '</div>';
             html += '<div style="display:flex;gap:4px">';
             html += '<button class="btn btn-sm" ' + bind(editProject, p.id) + '>Edit</button>';
@@ -2058,6 +2067,9 @@ function renderProjects() {
             html += '</div>';
         }
     }
+    // Below the cards, not above: its options repeat every project name, and
+    // the cards are what a reader scans by name first.
+    html += renderProjDefaults();
 
     return html;
 }
@@ -2085,10 +2097,64 @@ function renderScopeGapBanner() {
     return html;
 }
 
+// The Home|Work defaults panel (docs/architecture.md, "Mode and default
+// projects"). A select shows the effective default, so a stored id that is
+// no longer valid reads as None here and is named in Needs attention instead.
+function renderProjDefaults() {
+    if (!(state.projects || []).some(p => !isRemoteProject(p))) return '';
+    let html = '<div class="proj-defaults" id="projDefaults">';
+    html += '<div class="proj-section-title">Default projects</div>';
+    html += '<p class="proj-section-help">Where a new thread starts in each mode. A label, not a grant.</p>';
+    html += '<div class="proj-defaults-row">';
+    html += renderProjDefaultSelect('home', 'projDefaultHome', 'onchange="setDefaultProject(\'home\', this.value)"');
+    html += renderProjDefaultSelect('work', 'projDefaultWork', 'onchange="setDefaultProject(\'work\', this.value)"');
+    html += '</div></div>';
+    return html;
+}
+
+function renderProjDefaultSelect(mode, id, onchange) {
+    const current = effectiveDefaultId(state.projects, state.defaultProject, mode);
+    let html = '<label for="' + id + '">' + esc(modeLabel(mode)) + '</label>';
+    html += '<select id="' + id + '" ' + onchange + '>';
+    html += '<option value=""' + (current ? '' : ' selected') + '>None</option>';
+    for (const p of eligibleDefaultProjects(state.projects, mode)) {
+        html += '<option value="' + esc(p.id) + '"' + (p.id === current ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+    }
+    html += '</select>';
+    return html;
+}
+
+function renderProjModeChips(p) {
+    let html = '';
+    const mode = projMode(p);
+    if (mode !== 'both') {
+        html += '<span class="proj-mode-badge" data-project-mode="' + mode + '">' + esc(modeLabel(mode)) + '</span>';
+    }
+    for (const m of defaultModesFor(state.defaultProject, p.id)) {
+        if (!isDefaultEligible(p, m)) continue;
+        html += '<span class="proj-default-chip" data-default-for="' + m + '">Default · ' + esc(modeLabel(m)) + '</span>';
+    }
+    return html;
+}
+
+function setDefaultProject(mode, projectId) {
+    if (!DEFAULT_MODES.includes(mode)) return;
+    state.projectError = null;
+    ipc(JSON.stringify({ type: 'set_default_project', mode: mode, project_id: projectId || '' }));
+}
+
+function setProjMode(mode) {
+    const f = state.projectForm;
+    if (!f) return;
+    f.mode = mode;
+    render();
+}
+
 function blankProjectForm() {
     return {
         id: null,
         kind: 'local',                            // 'local' | 'remote' — see setProjKind
+        mode: 'both',                             // 'home' | 'work' | 'both' — see setProjMode
         name: '',
         path: '',
         // host_id names a Host this project's Path lives on instead of this
@@ -2139,6 +2205,7 @@ function projectFormFromExisting(p) {
     return {
         id: p.id,
         kind: isRemoteProject(p) ? 'remote' : 'local',
+        mode: projMode(p),
         name: p.name || '',
         path: p.path || '',
         host_id: p.host_id || '',
@@ -3373,6 +3440,17 @@ function renderProjectForm() {
     }
     html += '</div>';
 
+    // ---- Mode ----
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Mode</div>';
+    html += '<div class="perm-btns">';
+    html += '<button class="perm-btn ' + (f.mode === 'home' ? 'active' : '') + '" data-proj-mode="home" onclick="setProjMode(\'home\')">Home</button>';
+    html += '<button class="perm-btn ' + (f.mode === 'work' ? 'active' : '') + '" data-proj-mode="work" onclick="setProjMode(\'work\')">Work</button>';
+    html += '<button class="perm-btn ' + (f.mode === 'both' ? 'active' : '') + '" data-proj-mode="both" onclick="setProjMode(\'both\')">Both</button>';
+    html += '</div>';
+    html += '<p class="proj-section-help">Which Home|Work view shows this ' + (isRemote ? 'profile' : 'project') + '. A label, not a grant: it changes nothing this ' + (isRemote ? 'profile' : 'project') + ' can reach.</p>';
+    html += '</div>';
+
     // ---- Allowed MCPs + tri-state picker ----
     // Absent (not disabled) for a hosted project, matching how this whole
     // section is already absent for an access profile below: relay-brokered
@@ -3731,6 +3809,7 @@ function harvestProjectForm() {
     const payload = {
         name: name.trim(),
         kind: isRemote ? 'remote' : 'local',
+        mode: f.mode,
         // host_id: '' moves (or keeps) the project on the console —
         // validateHostShape refuses allowed_mcp_ids and the two flags below
         // on a host project, so this harvest forces all three to the value
@@ -3978,6 +4057,13 @@ window.onProjectUpdated = function(p) {
 
 window.onProjectRemoved = function(id) {
     state.projects = state.projects.filter(x => x.id !== id);
+    // Mirrors PruneDefaultProjects so the chip and select drop at once; the
+    // next onSettingsReloaded brings the authoritative block.
+    if (state.defaultProject) {
+        for (const m of DEFAULT_MODES) {
+            if (state.defaultProject[m] === id) state.defaultProject[m] = '';
+        }
+    }
     delete state.projectTokenVisible[id];
     delete state.projectFreshToken[id];
     delete state.projectSkillRegen[id];
@@ -3986,6 +4072,12 @@ window.onProjectRemoved = function(id) {
         state.projectForm = null;
     }
     if (state.page === 'projects') render('push');
+};
+
+window.onDefaultProjectUpdated = function(view) {
+    state.defaultProject = view || {};
+    state.projectError = null;
+    if (state.page === 'projects' || state.page === 'overview') render('push');
 };
 
 window.onProjectTokenRotated = function(id, plaintext) {
@@ -7313,6 +7405,7 @@ Object.assign(window, {
     captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addProjMount, removeProjMount, setProjMountAccess,
     isProjTemplatesWildcard, setProjTemplatesWildcard, toggleProjTemplate,
+    renderProjDefaults, renderProjDefaultSelect, renderProjModeChips, setDefaultProject, setProjMode,
     openProjModelPicker, requestModelCatalog, repaintProjModelPicker, setProjModelSearch, toggleProjModel, toggleProjModelsOther, renderProjModelList, renderProjModelPicker, renderProjModelPickerBody,
     blankTemplateForm, cancelTemplateEdit, captureTemplateFormInputs, editTemplate, newTemplate, removeTemplate, renderTemplateForm, saveTemplateForm, templateFormFromExisting, templateLines,
     cancelHostTemplateEdit, captureHostTemplateFormInputs, closeHostTemplateForm, editHostTemplate, editingHostRecord, hostTemplateCommandLine, newHostTemplate, removeHostTemplate, renderHostTemplateForm, renderHostTemplates, saveHostTemplateForm,

@@ -26,6 +26,11 @@ type ipcProjectDisabledToolsMsg struct {
 	Disabled []string `json:"disabled"`
 }
 
+type ipcSetDefaultProjectMsg struct {
+	Mode      config.ProjectMode `json:"mode"`
+	ProjectID string             `json:"project_id"`
+}
+
 type ipcListMcpToolsMsg struct {
 	McpID string `json:"mcp_id"`
 }
@@ -213,6 +218,21 @@ func ipcUpdateProjectDisabledTools(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(projectToNativeView(updated)))
+}
+
+// ipcSetDefaultProject runs inline: SetDefaultProject is ungated, so nothing
+// here waits on the Cocoa run loop.
+func ipcSetDefaultProject(ctx *IPCContext, raw json.RawMessage) {
+	msg, ok := unmarshalIPC[ipcSetDefaultProjectMsg](raw, "set_default_project")
+	if !ok || ctx.ProjectOps == nil {
+		return
+	}
+	defaults, err := ctx.ProjectOps.SetDefaultProject(ctx.Ctx, msg.Mode, msg.ProjectID)
+	if err != nil {
+		ctx.UI.EmitEvent("onProjectError", err.Error())
+		return
+	}
+	ctx.UI.EmitEvent("onDefaultProjectUpdated", marshalForUI(defaultProjectViewOf(defaults)))
 }
 
 // ipcListMcpTools emits an empty list rather than an error when the MCP is

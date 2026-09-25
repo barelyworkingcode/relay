@@ -48,6 +48,7 @@ func buildPage(html string) string {
 		"__SERVICES_JSON__", fixtureServices,
 		"__RUNNING_IDS_JSON__", fixtureRunningIDs,
 		"__PROJECTS_JSON__", fixtureProjects,
+		"__DEFAULT_PROJECT_JSON__", fixtureDefaultProject,
 		"__HOSTS_JSON__", fixtureHosts,
 		"__MCP_TOOL_CACHE_JSON__", fixtureMcpToolCache,
 		"__MCP_SCOPE_FIELDS_JSON__", fixtureMcpScopeFields,
@@ -90,11 +91,14 @@ const fixtureServices = `[
 const fixtureRunningIDs = `["relay-llm","relaytts-daemon","stt-daemon"]`
 
 const fixtureProjects = `[
-  {"id":"proj-acme","name":"Acme Website","path":"/Users/you/projects/acme","allowed_mcp_ids":["*"],"allowed_models":["*"],"chat_templates":[{"id":"tpl-1","name":"Default","model":"claude-sonnet","system_prompt":"You are a helpful assistant.","append_claude_md":true,"use_relay_tools":true}],"permission_policy":{"default_mode":"acceptEdits","allowed_tools":["Read","Grep"],"denied_tools":["Bash(rm *)"]},"generate_skill":true,"token":"relay_proj_8f2a1c9d4e6b0a7f3c5d","disabled_tools":{}},
-  {"id":"proj-internal","name":"Internal Tools","path":"/Users/you/projects/internal","allowed_mcp_ids":["fsmcp"],"allowed_models":["claude-opus","claude-sonnet"],"chat_templates":[],"permission_policy":{"default_mode":""},"generate_skill":false,"token":"relay_proj_1a2b3c4d5e6f7a8b9c0d","disabled_tools":{"fsmcp":["write_file"]}},
+  {"id":"proj-acme","name":"Acme Website","mode":"work","path":"/Users/you/projects/acme","allowed_mcp_ids":["*"],"allowed_models":["*"],"chat_templates":[{"id":"tpl-1","name":"Default","model":"claude-sonnet","system_prompt":"You are a helpful assistant.","append_claude_md":true,"use_relay_tools":true}],"permission_policy":{"default_mode":"acceptEdits","allowed_tools":["Read","Grep"],"denied_tools":["Bash(rm *)"]},"generate_skill":true,"token":"relay_proj_8f2a1c9d4e6b0a7f3c5d","disabled_tools":{}},
+  {"id":"proj-internal","name":"Internal Tools","mode":"home","path":"/Users/you/projects/internal","allowed_mcp_ids":["fsmcp"],"allowed_models":["claude-opus","claude-sonnet"],"chat_templates":[],"permission_policy":{"default_mode":""},"generate_skill":false,"token":"relay_proj_1a2b3c4d5e6f7a8b9c0d","disabled_tools":{"fsmcp":["write_file"]}},
   {"id":"proj-lab","name":"Remote Lab","path":"/home/you/remote-lab","host_id":"h_devbox","allowed_mcp_ids":[],"allowed_models":["*"],"chat_templates":[],"permission_policy":{"default_mode":""},"generate_skill":false,"token":"relay_proj_9e8d7c6b5a4f3e2d1c0b","disabled_tools":{}},
   {"id":"proj-mail","name":"Mail (remote)","kind":"remote","allowed_mcp_ids":["macmcp"],"allowed_models":[],"chat_templates":[],"generate_skill":false,"token":"relay_proj_0f1e2d3c4b5a6978","disabled_tools":{}}
 ]`
+
+// The raw default_project block, as pushFullSettings carries it.
+const fixtureDefaultProject = `{"home":"proj-internal","work":"proj-acme"}`
 
 // ssh_argv is present because the real hostView carries it to the tray;
 // it never reaches eve (docs/ssh-hosts.md).
@@ -182,6 +186,7 @@ var mockBridgeScript = `<script>
   var FIXTURE_AUDIT_STATUS = ` + inlineJSON(fixtureAuditStatus) + `;
   var FIXTURE_REMOTE = ` + inlineJSON(fixtureRemote) + `;
   var FIXTURE_MODEL_CATALOG = ` + inlineJSON(fixtureModelCatalog) + `;
+  var FIXTURE_DEFAULT_PROJECT = ` + inlineJSON(fixtureDefaultProject) + `;
   window.webkit = { messageHandlers: { ipc: { postMessage: function (raw) {
     var msg; try { msg = JSON.parse(raw); } catch (e) { console.warn('[devui] bad ipc', raw); return; }
     console.log('[devui ipc →]', msg);
@@ -194,6 +199,10 @@ var mockBridgeScript = `<script>
         else if (msg.op === 'save') { window.onServiceConfigResult({ serviceId: msg.serviceId, op: 'save', ok: true }); window.onServiceConfigApplied({ serviceId: msg.serviceId, mode: 'restarting' }); }
         break;
       case 'list_models': window.onModelsListed(FIXTURE_MODEL_CATALOG); break;
+      case 'set_default_project':
+        FIXTURE_DEFAULT_PROJECT[msg.mode] = msg.project_id || '';
+        window.onDefaultProjectUpdated({ home: FIXTURE_DEFAULT_PROJECT.home || '', work: FIXTURE_DEFAULT_PROJECT.work || '' });
+        break;
       case 'list_mcp_tools': window.onMcpToolsListed(msg.mcp_id, FIXTURE_TOOLS[msg.mcp_id] || []); break;
       case 'enumerate_scope_field': window.onScopeFieldEnumerated(enumerate(msg)); break;
       case 'service_action': window.onServiceActionResult({ serviceId: msg.serviceId, actionId: msg.actionId, row: msg.row, ok: true }); break;

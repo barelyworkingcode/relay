@@ -521,7 +521,11 @@ type Project struct {
 	// exclusive with Kind == ProjectKindRemote — the two solve different
 	// problems (a host project still IS kind: local in shape) and must never
 	// be read together.
-	HostID        string         `json:"host_id,omitempty"`
+	HostID string `json:"host_id,omitempty"`
+	// Mode is the Home|Work label. Read it through EffectiveMode, never
+	// raw: "" (every project that predates modes) and "both" both mean both,
+	// and a hand-edited unknown value reads as both rather than failing load.
+	Mode          ProjectMode    `json:"mode,omitempty"`
 	AllowedMcpIDs []string       `json:"allowed_mcp_ids"`
 	AllowedModels []string       `json:"allowed_models"`
 	ChatTemplates []ChatTemplate `json:"chat_templates,omitempty"`
