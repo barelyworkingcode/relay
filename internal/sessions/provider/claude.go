@@ -148,6 +148,9 @@ type claudeSpawnState struct {
 	relayMCPWritten bool
 	// relayInitWarned guards relay_server_failed to at most once per spawn.
 	relayInitWarned bool
+	// sawStdout flips on this spawn's first non-empty stdout line; stderr
+	// before it logs at Warn (logProviderStderr).
+	sawStdout atomic.Bool
 }
 
 // NewClaudeProvider constructs a provider for session. perms may be nil for
@@ -211,13 +214,17 @@ func (p *ClaudeProvider) touchActivity() {
 	p.lastActivity.Store(time.Now().Unix())
 }
 
-func (p *ClaudeProvider) idleWatcher() {
+// idleWatcher and waitForExit take their spawn's own cmd and channels as
+// arguments: a spawn that exits on its own is restarted without Kill, so a
+// goroutine re-reading the fields would race the next Start and could close
+// that spawn's waitDone.
+func (p *ClaudeProvider) idleWatcher(stopIdle <-chan struct{}) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-p.stopIdle:
+		case <-stopIdle:
 			return
 		case <-ticker.C:
 			idle := time.Now().Unix() - p.lastActivity.Load()
@@ -441,16 +448,29 @@ func (p *ClaudeProvider) Start() error {
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 
-	stderr, err := cmd.StderrPipe()
+	stderrR, stderrW, err := newStderrPipe(cmd)
 	if err != nil {
 		_ = stdin.Close()
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start claude: %w", err)
+	startErr := cmd.Start()
+	_ = stderrW.Close()
+	if startErr != nil {
+		_ = stderrR.Close()
+		return fmt.Errorf("failed to start claude: %w", startErr)
+	}
+	logStderr := func() {
+		logProviderStderr(stderrR, p.session.ID, "claude", &spawn.sawStdout, p.identitySecret())
 	}
 	root := p.readProcessRoot(cmd.Process.Pid)
+	// drainStderr reads what the target wrote before the shim refused it.
+	// The deadline is deliberate: a target forked with Setpgid can outlive
+	// the Kill and keep the write end open, and Start must not wait on it.
+	drainStderr := func() {
+		_ = stderrR.SetReadDeadline(time.Now().Add(time.Second))
+		logStderr()
+	}
 	// Load-bearing: without closing the parent's own copies, the status pipe
 	// (and, when present, the identity secret pipe) never reaches EOF.
 	for _, f := range extraFiles {
@@ -464,10 +484,12 @@ func (p *ClaudeProvider) Start() error {
 		case outcome.identityRefused:
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
+			drainStderr()
 			return fmt.Errorf("%w: session %s", ErrIdentityRefused, p.session.ID)
 		case !outcome.started || outcome.spawnFailed:
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
+			drainStderr()
 			return fmt.Errorf("%w: errno=%d", ErrSpawnFailed, outcome.spawnErrno)
 		default:
 			p.targetPID = outcome.targetPID
@@ -484,9 +506,9 @@ func (p *ClaudeProvider) Start() error {
 	p.touchActivity()
 
 	go p.readStdout(stdout, spawn)
-	go p.readStderr(stderr)
-	go p.waitForExit()
-	go p.idleWatcher()
+	go logStderr()
+	go p.waitForExit(cmd, p.waitDone)
+	go p.idleWatcher(p.stopIdle)
 
 	slog.Info("claude process started", "session", p.session.ID, "model", p.model, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
 	return nil
@@ -533,6 +555,7 @@ func (p *ClaudeProvider) readStdout(r io.ReadCloser, spawn *claudeSpawnState) {
 		if len(line) == 0 {
 			continue
 		}
+		spawn.sawStdout.Store(true)
 		p.processLine(json.RawMessage(append([]byte(nil), line...)), spawn)
 	}
 
@@ -541,20 +564,17 @@ func (p *ClaudeProvider) readStdout(r io.ReadCloser, spawn *claudeSpawnState) {
 	}
 }
 
-func (p *ClaudeProvider) readStderr(r io.ReadCloser) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		text := scanner.Text()
-		if text != "" {
-			slog.Debug("claude stderr", "session", p.session.ID, "text", text)
-		}
+func (p *ClaudeProvider) identitySecret() string {
+	if p.cfg.Identity == nil {
+		return ""
 	}
+	return p.cfg.Identity.Secret
 }
 
-func (p *ClaudeProvider) waitForExit() {
-	err := p.cmd.Wait()
+func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}) {
+	err := cmd.Wait()
 	p.alive.Store(false)
-	close(p.waitDone)
+	close(waitDone)
 
 	exitCode := 0
 	if err != nil {

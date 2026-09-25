@@ -432,6 +432,34 @@ is fully closed by the time the target spawns (step 1), and fd 4 is
 `CLOSE_ON_EXEC` (set at open), so `exec(2)` closes it in the child
 automatically.
 
+## Provider stderr
+
+`logProviderStderr` (`internal/sessions/provider/stderr.go`) is the one
+function both claude and pi read their child's stderr through — a shared
+function because the redaction rule below must not drift between two copies.
+Host (SSH) claude sessions get the same treatment.
+
+A spawn's stderr lines log at `Warn` until the first non-empty line of stdout,
+so a launch failure names itself instead of leaving only an exit code behind;
+every line after that first stdout line logs at `Debug`. Warn logging is
+capped at 20 lines per spawn, and hitting the cap logs one further line
+naming the limit — everything past it still runs, at `Debug`. An empty line
+is skipped, and a trailing `\r` is dropped.
+
+Each line is redacted before it is logged, then truncated to 1024 bytes on a
+rune boundary; reading continues past an overlong line rather than stopping
+there, since a `bufio.Scanner`'s default 64 KiB limit would otherwise block
+the child. Redaction runs, in order: the exact secrets the caller passed in
+(the identity secret for claude; the model key and the identity secret for
+pi), then `rmk_[0-9a-f]{64}`, then `sk-[A-Za-z0-9_-]{20,}`, then
+`(?i)(bearer\s+)<token>`.
+
+The child's stderr is wired through a plain `os.Pipe()`, not
+`cmd.StderrPipe()`: `Wait` closes a `StderrPipe`'s read end itself, racing
+whatever is still reading from it, and that race is how the one line that
+would have named a launch failure gets lost. The write end becomes
+`cmd.Stderr`, and the parent closes it once `Start` returns.
+
 ## What a child inherits
 
 A terminal, a claude or pi session and an MCP server child each start from
@@ -886,6 +914,7 @@ what works.
 | internal API server, `/launch`/`/terminate`/`/permission`, and the mounted eve-facing surface | `internal/sessions/hostapi/{server,dispatch,types}.go` |
 | terminal (pty) sessions | `internal/sessions/terminal/` |
 | provider-hosted (claude/pi/chat) sessions | `internal/sessions/session/`, `internal/sessions/provider/` |
+| provider stderr logging (Warn until first stdout, redaction) | `internal/sessions/provider/stderr.go` |
 | eve-facing HTTP/WS handlers (mounted by `hostapi.New`/`ListenInternal`) | `internal/sessions/api/` |
 | C3 process-ancestry membership | `internal/membership/` |
 | tool-permission decisions: `Preflight`, the wait/decide flow behind `/permission` | `internal/sessions/permission/` |
