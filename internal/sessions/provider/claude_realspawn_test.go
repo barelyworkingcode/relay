@@ -41,7 +41,7 @@ func TestClaudeProvider_RealSpawn_NoSecretsInRealEnvOrArgv(t *testing.T) {
 	p := NewClaudeProvider(session, func(string, json.RawMessage) {}, ClaudeConfig{
 		Binary:          script,
 		HookSocket:      "/tmp/relay-sessions-hook.sock",
-		HookCommandPath: "/abs/relay-sessions hook",
+		HookCommandPath: "/abs/relay-sessions",
 		BridgeSocket:    "/tmp/relay-bridge.sock",
 		ModelSocket:     "/tmp/relay-model.sock",
 		RelayMCPCommand: "/usr/local/bin/relay",

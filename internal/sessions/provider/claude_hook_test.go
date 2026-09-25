@@ -24,11 +24,11 @@ func TestResolveHookCommand_IsExecutablePathPlusHookSubcommand(t *testing.T) {
 	}
 }
 
-func TestEnsureHookConfig_WritesPreToolUseHook(t *testing.T) {
+func TestEnsureHookConfig_ConfiguredBinaryPathGetsHookSubcommand(t *testing.T) {
 	dir := t.TempDir()
 	p := newTestClaudeProvider(&sessionstypes.Session{ID: "s1", Model: "sonnet", Directory: dir}, ClaudeConfig{
 		HookSocket:      "/tmp/hook.sock",
-		HookCommandPath: "/abs/path/relay-sessions hook",
+		HookCommandPath: "/abs/path/relay-sessions",
 	})
 	p.directory = dir
 
@@ -89,7 +89,7 @@ func TestEnsureHookConfig_PreservesExistingSettings(t *testing.T) {
 
 	p := newTestClaudeProvider(&sessionstypes.Session{ID: "s1", Model: "sonnet", Directory: dir}, ClaudeConfig{
 		HookSocket:      "/tmp/hook.sock",
-		HookCommandPath: "/abs/relay-sessions hook",
+		HookCommandPath: "/abs/relay-sessions",
 	})
 	p.directory = dir
 
