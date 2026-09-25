@@ -356,6 +356,13 @@ func (p *PiProvider) Start() (err error) {
 	logStderr := func() {
 		logProviderStderr(stderrR, p.session.ID, "pi", sawStdout, p.cfg.ModelKey, identitySecret)
 	}
+	// drainStderr reads what the target wrote before the shim refused it.
+	// The deadline is deliberate: a target forked with Setpgid can outlive
+	// the Kill and keep the write end open, and Start must not wait on it.
+	drainStderr := func() {
+		_ = stderrR.SetReadDeadline(time.Now().Add(time.Second))
+		logStderr()
+	}
 	// Load-bearing: without closing the parent's own copies, the status pipe
 	// (and, when present, the identity secret pipe) never reaches EOF.
 	for _, f := range extraFiles {
@@ -369,12 +376,12 @@ func (p *PiProvider) Start() (err error) {
 		case outcome.identityRefused:
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
-			logStderr()
+			drainStderr()
 			return fmt.Errorf("%w: session %s", ErrIdentityRefused, p.session.ID)
 		case !outcome.started || outcome.spawnFailed:
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
-			logStderr()
+			drainStderr()
 			return fmt.Errorf("%w: errno=%d", ErrSpawnFailed, outcome.spawnErrno)
 		default:
 			p.targetPID = outcome.targetPID

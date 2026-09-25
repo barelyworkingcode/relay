@@ -55,6 +55,11 @@ var envCommandName = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
 type installGrants struct {
 	Read      []string // subtrees
 	ReadFiles []string // single files; a symlink entry also emits the link literal
+	// Walked is every path the walk followed to reach the grants: the
+	// binary, each symlink hop, each resolved target and each interpreter.
+	// It is not a grant. The caller checks it against what the session can
+	// write.
+	Walked []string
 }
 
 func (g *installGrants) addRead(p string) {
@@ -66,6 +71,12 @@ func (g *installGrants) addRead(p string) {
 func (g *installGrants) addFile(p string) {
 	if !slices.Contains(g.ReadFiles, p) {
 		g.ReadFiles = append(g.ReadFiles, p)
+	}
+}
+
+func (g *installGrants) addWalked(p string) {
+	if !slices.Contains(g.Walked, p) {
+		g.Walked = append(g.Walked, p)
 	}
 }
 
@@ -93,6 +104,7 @@ func providerInstallGrants(binary string, lookPath func(string) (string, error))
 			return g, fmt.Errorf("install of %s spans more than %d files", binary, maxInstallFiles)
 		}
 		seen = append(seen, file)
+		g.addWalked(file)
 		next, err := grantInstallFile(&g, file, lookPath)
 		if err != nil {
 			return g, err
@@ -112,6 +124,7 @@ func grantInstallFile(g *installGrants, file string, lookPath func(string) (stri
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s: %w", file, err)
 	}
+	g.addWalked(target)
 	if info, err := os.Lstat(target); err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s does not resolve to a regular file", file)
 	}
@@ -135,18 +148,27 @@ func addSymlinkChain(g *installGrants, file string) error {
 				return fmt.Errorf("%s is not a regular file", cur)
 			}
 			g.addFile(cur)
+			g.addWalked(cur)
 			return nil
 		}
 		if hops == maxSymlinkHops {
 			return fmt.Errorf("%s is more than %d symlinks deep", file, maxSymlinkHops)
 		}
 		g.addFile(cur)
+		g.addWalked(cur)
 		link, err := os.Readlink(cur)
 		if err != nil {
 			return fmt.Errorf("read link %s: %w", cur, err)
 		}
 		if !filepath.IsAbs(link) {
-			link = filepath.Join(filepath.Dir(cur), link)
+			// The kernel resolves the link's own directory before it
+			// applies a relative target, so a lexical join of an
+			// unresolved parent can name a different file.
+			parent, err := filepath.EvalSymlinks(filepath.Dir(cur))
+			if err != nil {
+				return fmt.Errorf("resolve parent of %s: %w", cur, err)
+			}
+			link = filepath.Join(parent, link)
 		}
 		cur = filepath.Clean(link)
 	}
@@ -257,26 +279,106 @@ func claudeTempDir() string {
 // is shared and the session may write here, so a symlink, a directory owned by
 // someone else, or one others can write to is refused rather than granted.
 func claudeTempGrant() (dir, reason string) {
+	dir, _, reason = checkClaudeTempDir()
+	return dir, reason
+}
+
+// checkClaudeTempDir is claudeTempGrant plus the FileInfo the checks passed
+// on, so a caller can confirm later that the directory was not swapped.
+func checkClaudeTempDir() (dir string, info fs.FileInfo, reason string) {
 	path := claudeTempDir()
 	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return "", "mkdir_failed"
+		return "", nil, "mkdir_failed"
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
-		return "", "stat_failed"
+		return "", nil, "stat_failed"
 	}
 	switch {
 	case info.Mode()&fs.ModeSymlink != 0:
-		return "", "symlink"
+		return "", nil, "symlink"
 	case !info.IsDir():
-		return "", "not_dir"
+		return "", nil, "not_dir"
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || int(st.Uid) != os.Getuid() {
-		return "", "not_owner"
+		return "", nil, "not_owner"
 	}
 	if info.Mode().Perm()&0o022 != 0 {
-		return "", "group_or_other_writable"
+		return "", nil, "group_or_other_writable"
 	}
-	return path, ""
+	return path, info, ""
+}
+
+// recheckClaudeTempDir confirms that dir is still the directory checked
+// earlier as want. The profile names dir by path, and the sandbox resolves
+// that path again when it applies the profile, so a symlink swapped in after
+// the check would carry the read-write grant somewhere else.
+func recheckClaudeTempDir(dir string, want fs.FileInfo) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("claude temp dir %s: %w", dir, err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !os.SameFile(info, want) {
+		return fmt.Errorf("claude temp dir %s changed after it was checked", dir)
+	}
+	return nil
+}
+
+// errBinaryInWritableGrant is why a provider install gets no grant when a
+// path the walk followed is one the session can write.
+var errBinaryInWritableGrant = errors.New("binary_in_writable_grant")
+
+// installWalkIsWritable reports whether any path in walked lies at or under a
+// read-write directory, or is a read-write file or one of the atomic-write
+// siblings the profile allows beside it. Both sides are compared as written
+// and resolved, since /tmp and /var are links on macOS.
+func installWalkIsWritable(walked, rwDirs, rwFiles []string) bool {
+	dirs := spellings(rwDirs)
+	files := spellings(rwFiles)
+	for _, p := range spellings(walked) {
+		for _, d := range dirs {
+			if d == "/" || p == d || strings.HasPrefix(p, d+"/") {
+				return true
+			}
+		}
+		for _, f := range files {
+			if p == f || p == f+".lock" || p == f+".backup" || strings.HasPrefix(p, f+".tmp.") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// spellings is each path cleaned, at its own location with the parent
+// resolved, and fully resolved. The middle form matters for a symlink: where
+// the link itself lives is what a write replaces, not where it points. A path
+// that does not exist yet is resolved through its nearest existing ancestor.
+func spellings(paths []string) []string {
+	var out []string
+	for _, p := range paths {
+		clean := filepath.Clean(p)
+		forms := []string{clean, clean, resolveExisting(clean)}
+		if parent := filepath.Dir(clean); parent != clean {
+			forms[1] = filepath.Join(resolveExisting(parent), filepath.Base(clean))
+		}
+		for _, f := range forms {
+			if !slices.Contains(out, f) {
+				out = append(out, f)
+			}
+		}
+	}
+	return out
+}
+
+func resolveExisting(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	parent := filepath.Dir(p)
+	if parent == p {
+		return p
+	}
+	return filepath.Join(resolveExisting(parent), filepath.Base(p))
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
@@ -121,6 +122,49 @@ func TestProviderStderr_LaunchFailureLineIsWarn(t *testing.T) {
 			}
 			if tc.holdsKey && strings.Contains(logs.all(), modelKey) {
 				t.Fatalf("model key reached the log:\n%s", logs.all())
+			}
+		})
+	}
+}
+
+// The secret matches none of the generic patterns, so only the exact-secret
+// rule can remove it. Identity needs the shim and a bridge to present it to.
+func TestProviderStderr_SecretsAreRedacted(t *testing.T) {
+	secret := strings.Repeat("7", 64) // the shim accepts only a 64-hex secret
+	failing := "echo 'launch failed: " + secret + " rejected' >&2\nexit 71\n"
+	noop := func(string, json.RawMessage) {}
+	cases := []struct {
+		name, id string
+		start    func(t *testing.T, id string, identity *sessionsmcp.IdentitySpec) error
+	}{
+		{"claude", "stderr-secret-claude-1", func(t *testing.T, id string, identity *sessionsmcp.IdentitySpec) error {
+			bridge, _ := startFakeBridge(t)
+			sess := &sessionstypes.Session{ID: id, Model: "sonnet", Directory: shortTempDir(t)}
+			p := NewClaudeProvider(sess, noop, ClaudeConfig{
+				Binary: writeFakeCLI(t, failing), ShimBinary: buildRelaySessionsBinary(t), BridgeSocket: bridge, Identity: identity,
+			}, nil)
+			t.Cleanup(p.Kill)
+			return p.Start()
+		}},
+		{"pi", "stderr-secret-pi-1", func(t *testing.T, id string, identity *sessionsmcp.IdentitySpec) error {
+			bridge, _ := startFakeBridge(t)
+			sess := &sessionstypes.Session{ID: id, Model: "m", Directory: shortTempDir(t)}
+			p := NewPiProvider(sess, noop, PiConfig{
+				Binary: writeFakeCLI(t, failing), DataDir: t.TempDir(), ShimBinary: buildRelaySessionsBinary(t), BridgeSocket: bridge, Identity: identity,
+			})
+			t.Cleanup(p.Kill)
+			return p.Start()
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureDebugJSON(t)
+			if err := tc.start(t, tc.id, &sessionsmcp.IdentitySpec{Secret: secret}); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			waitStderr(t, logs, tc.id, "launch failed", 1, 10*time.Second)
+			if strings.Contains(logs.all(), secret) {
+				t.Fatalf("identity secret reached the log:\n%s", logs.all())
 			}
 		})
 	}

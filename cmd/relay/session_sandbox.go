@@ -16,6 +16,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -67,11 +68,28 @@ func sessionPiSessionsDir() string {
 // absolute path. Every failure is a refusal to launch — there is no branch
 // that returns an empty path and lets the caller spawn anyway.
 func writeSessionSandboxProfile(settings *config.Settings, proj *config.Project, directory, sessionID, kind string, tmpl *config.TerminalTemplate) (string, error) {
-	spec, err := sandboxSpecForLaunch(settings, proj, directory, kind, tmpl)
+	spec, tempDir, err := buildSandboxSpec(settings, proj, directory, kind, tmpl)
 	if err != nil {
 		return "", err
 	}
-	return sandbox.Write(sessionProfilesDir(), sessionID, spec)
+	path, err := sandbox.Write(sessionProfilesDir(), sessionID, spec)
+	if err != nil {
+		return "", err
+	}
+	if tempDir.dir != "" {
+		if err := recheckClaudeTempDir(tempDir.dir, tempDir.info); err != nil {
+			_ = sandbox.Remove(path)
+			return "", err
+		}
+	}
+	return path, nil
+}
+
+// checkedTempDir is the Claude temp directory a spec grants read-write and
+// what it was when it passed its checks.
+type checkedTempDir struct {
+	dir  string
+	info fs.FileInfo
 }
 
 // sandboxProfilePath is the profile AuthorizeLaunch wrote for result's
@@ -97,13 +115,21 @@ func sandboxProfilePath(result *LaunchResult) string {
 // from relay's own resolution of the binary, never from the launch request.
 // The template adds operator policy on top, and its deny list renders last.
 func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, directory, kind string, tmpl *config.TerminalTemplate) (sandbox.Spec, error) {
+	spec, _, err := buildSandboxSpec(settings, proj, directory, kind, tmpl)
+	return spec, err
+}
+
+// buildSandboxSpec is sandboxSpecForLaunch plus the Claude temp directory it
+// granted, which the caller must re-check once the profile is written.
+func buildSandboxSpec(settings *config.Settings, proj *config.Project, directory, kind string, tmpl *config.TerminalTemplate) (sandbox.Spec, checkedTempDir, error) {
+	var tempDir checkedTempDir
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return sandbox.Spec{}, fmt.Errorf("resolve home directory: %w", err)
+		return sandbox.Spec{}, tempDir, fmt.Errorf("resolve home directory: %w", err)
 	}
 	appSupport, err := os.UserConfigDir()
 	if err != nil {
-		return sandbox.Spec{}, fmt.Errorf("resolve application support directory: %w", err)
+		return sandbox.Spec{}, tempDir, fmt.Errorf("resolve application support directory: %w", err)
 	}
 	// relay's own directory comes from bridge.ConfigDir (which a test
 	// redirects) while its siblings come from the OS: the two are the same
@@ -141,8 +167,9 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	}
 	readWrite = append(readWrite, "/dev")
 	if kind == KindClaude {
-		if dir, reason := claudeTempGrant(); dir != "" {
+		if dir, info, reason := checkClaudeTempDir(); dir != "" {
 			readWrite = append(readWrite, dir)
+			tempDir = checkedTempDir{dir: dir, info: info}
 		} else {
 			slog.Warn("session sandbox: claude temp dir not granted", "dir", claudeTempDir(), "reason", reason)
 		}
@@ -156,36 +183,36 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 		readWrite = append(readWrite, sessionPiSessionsDir())
 	}
 
-	var read, readFiles, readWriteFiles, deny []string
-	if dev := developerTools(); dev != "" {
-		read = append(read, dev)
-	}
-	if kind == KindClaude || kind == KindPi {
-		binary := providerBinary(kind)
-		install, err := providerInstallGrants(binary, exec.LookPath)
-		if err != nil {
-			slog.Warn("session sandbox: no install grant for the provider binary", "kind", kind, "binary", binary, "error", err)
-		}
-		read = append(read, install.Read...)
-		readFiles = append(readFiles, install.ReadFiles...)
-	}
+	var tmplRead, tmplReadFiles, readWriteFiles, deny []string
 	if tmpl != nil {
 		var err error
-		if read, readFiles, err = addTemplateGrants(read, readFiles, "read", tmpl.Read, home); err != nil {
-			return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
+		if tmplRead, tmplReadFiles, err = addTemplateGrants(nil, nil, "read", tmpl.Read, home); err != nil {
+			return sandbox.Spec{}, tempDir, fmt.Errorf("template %q: %w", tmpl.ID, err)
 		}
 		if readWrite, readWriteFiles, err = addTemplateGrants(readWrite, readWriteFiles, "read_write", tmpl.ReadWrite, home); err != nil {
-			return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
+			return sandbox.Spec{}, tempDir, fmt.Errorf("template %q: %w", tmpl.ID, err)
 		}
 		// A denied file needs no separate spelling: a subtree rule on a
 		// regular file matches that file.
 		denyDirs, denyFiles, err := addTemplateGrants(nil, nil, "deny", tmpl.Deny, home)
 		if err != nil {
-			return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
+			return sandbox.Spec{}, tempDir, fmt.Errorf("template %q: %w", tmpl.ID, err)
 		}
 		deny = append(denyDirs, denyFiles...)
 	}
 	ensureGrantDirs(readWrite)
+
+	var read, readFiles []string
+	if dev := developerTools(); dev != "" {
+		read = append(read, dev)
+	}
+	if kind == KindClaude || kind == KindPi {
+		install := providerInstall(kind, readWrite, readWriteFiles)
+		read = append(read, install.Read...)
+		readFiles = append(readFiles, install.ReadFiles...)
+	}
+	read = append(read, tmplRead...)
+	readFiles = append(readFiles, tmplReadFiles...)
 
 	spec := sandbox.Spec{
 		Read:           read,
@@ -209,7 +236,28 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	if port, ok := modelEndpointLoopbackPort(settings); ok {
 		spec.TCPLoopbackAllow = []int{port}
 	}
-	return spec, nil
+	return spec, tempDir, nil
+}
+
+// providerInstall is the install grant for kind's binary, computed once every
+// read-write grant of the launch is known.
+//
+// Deliberate: the whole grant is dropped when any path the walk followed is
+// one the session can write. The walk follows symlinks and #! lines wherever
+// they point, so a session that could plant or replace one of those files
+// would choose what the next launch may read. A session must never widen its
+// own sandbox through a path it can write.
+func providerInstall(kind string, readWrite, readWriteFiles []string) installGrants {
+	binary := providerBinary(kind)
+	install, err := providerInstallGrants(binary, exec.LookPath)
+	if installWalkIsWritable(install.Walked, readWrite, readWriteFiles) {
+		slog.Warn("session sandbox: no install grant for the provider binary", "kind", kind, "binary", binary, "error", errBinaryInWritableGrant)
+		return installGrants{}
+	}
+	if err != nil {
+		slog.Warn("session sandbox: no install grant for the provider binary", "kind", kind, "binary", binary, "error", err)
+	}
+	return install
 }
 
 // addTemplateGrants expands one of a template's folder lists and sorts each

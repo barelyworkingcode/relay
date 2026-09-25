@@ -172,6 +172,18 @@ func TestProviderInstallGrants(t *testing.T) {
 			wantErr:  true,
 		},
 		{
+			name: "relative link inside a symlinked parent resolves against the real parent",
+			tree: map[string]string{
+				"alias":           "->real/bin",
+				"real/bin/claude": "->../lib/cli",
+				"real/lib/cli":    machO,
+				"lib/cli":         machO,
+			},
+			binary:   "alias/claude",
+			files:    []string{"alias/claude", "real/lib/cli"},
+			mayFiles: []string{"real/bin/claude"},
+		},
+		{
 			name: "a Cellar outside homebrewPrefixes gets no prefix grant",
 			tree: map[string]string{
 				"other/bin/claude":               "->../Cellar/claude/1.0/claude",
@@ -292,11 +304,28 @@ func TestClaudeTempGrant(t *testing.T) {
 	}
 }
 
+// unwritableFixtureRoot is a fixture directory outside every write grant a
+// session gets by default: t.TempDir() sits under $TMPDIR, which every session
+// may write.
+func unwritableFixtureRoot(t *testing.T) string {
+	t.Helper()
+	tmp, err := filepath.EvalSymlinks("/tmp")
+	if err != nil {
+		t.Fatalf("resolve /tmp: %v", err)
+	}
+	root, err := os.MkdirTemp(tmp, "relay-install-")
+	if err != nil {
+		t.Fatalf("create fixture root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	return root
+}
+
 // npmInstallFixture is a provider installed outside every template path: a
 // link in bin/ to a script inside lib/node_modules.
 func npmInstallFixture(t *testing.T) (link, target, nodeModules string) {
 	t.Helper()
-	root := realTempDir(t)
+	root := unwritableFixtureRoot(t)
 	buildTree(t, root, map[string]string{
 		"bin/claude":                        "->../lib/node_modules/@acme/cli/cli.sh",
 		"lib/node_modules/@acme/cli/cli.sh": "#!/bin/sh\necho ok\n",
@@ -398,5 +427,84 @@ func TestAuthorizeLaunch_UnresolvedProviderLaunchesWithoutInstallGrant(t *testin
 	}
 	if bare, none := profileFor("claude"), profileFor(""); bare != none {
 		t.Fatalf("a bare binary name changed the profile.\nbare:\n%s\nnone:\n%s", bare, none)
+	}
+}
+
+func TestAuthorizeLaunch_InstallGrantRefusedWhenChainIsSessionWritable(t *testing.T) {
+	noDeveloperTools(t)
+	root := unwritableFixtureRoot(t)
+	buildTree(t, root, map[string]string{
+		"bin/claude":  "->../lib/cli.sh",
+		"lib/cli.sh":  "#!$ROOT/interp/tool\n",
+		"interp/tool": machO,
+		"other/":      "",
+	})
+	setSeam(t, &providerBinary, func(string) string { return filepath.Join(root, "bin", "claude") })
+	setSeam(t, &claudeTempRoot, realTempDir(t))
+	installLines := []string{
+		`(literal "` + filepath.Join(root, "bin", "claude") + `")`,
+		`(literal "` + filepath.Join(root, "lib", "cli.sh") + `")`,
+		`(literal "` + filepath.Join(root, "interp", "tool") + `")`,
+	}
+	for _, tc := range []struct {
+		name, writable string
+		wantInstall    bool
+	}{
+		{"binary link inside a read_write grant", "bin", false},
+		{"link target inside a read_write grant", "lib", false},
+		{"interpreter inside a read_write grant", "interp", false},
+		{"no writable overlap", "other", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newLaunchTestStore(t)
+			setKindTemplates(t, store, config.TerminalTemplate{
+				ID: "claude-code", Name: "Claude Code", Command: "claude", Sandbox: true,
+				ReadWrite: []string{filepath.Join(root, tc.writable)},
+			})
+			proj := addLaunchTestProject(t, store, nil)
+
+			_, body := launchWithSandbox(t, LaunchRequest{
+				Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude,
+			}, store)
+
+			body = dropMetadataBlock(body)
+			readPart := body[:strings.Index(body, "(allow file-read* file-write*")]
+			for _, line := range installLines {
+				if got := strings.Contains(readPart, line); got != tc.wantInstall {
+					t.Errorf("read block holds %s = %v, want %v\n%s", line, got, tc.wantInstall, body)
+				}
+			}
+		})
+	}
+}
+
+func TestAuthorizeLaunch_ClaudeTempDirSwappedForSymlinkIsRefused(t *testing.T) {
+	tempRoot := realTempDir(t)
+	setSeam(t, &claudeTempRoot, tempRoot)
+	elsewhere := filepath.Join(tempRoot, "elsewhere")
+	if err := os.Mkdir(elsewhere, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// developerTools runs after the temp dir grant is checked and before the
+	// profile is written, so the swap lands inside that window.
+	setSeam(t, &developerTools, func() string {
+		dir := claudeTempDirUnder(tempRoot)
+		if err := os.Remove(dir); err != nil {
+			t.Errorf("remove temp dir: %v", err)
+		}
+		if err := os.Symlink(elsewhere, dir); err != nil {
+			t.Errorf("swap in symlink: %v", err)
+		}
+		return ""
+	})
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+
+	_, refusal := AuthorizeLaunch(store, NewModelKeyTable(), newLaunchTestLedger(t), LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude,
+	})
+
+	if refusal == nil {
+		t.Fatal("launch authorized after the claude temp dir was swapped for a symlink")
 	}
 }
