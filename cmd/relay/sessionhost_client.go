@@ -17,6 +17,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
+	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
 // errSessionHostUnavailable covers every reason relay-sessions' internal API
@@ -186,6 +187,29 @@ func (c *sessionHostClient) LiveTerminalNames(ctx context.Context) (map[string]b
 		}
 	}
 	return names, nil
+}
+
+// ListModels GETs relay-sessions' /api/models and returns its model rows in
+// the host's order: the same list eve's session picker reads.
+func (c *sessionHostClient) ListModels(ctx context.Context) ([]sessiontypes.ModelInfo, error) {
+	httpResp, err := c.do(ctx, http.MethodGet, "/api/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: /api/models returned %d", errSessionHostUnavailable, httpResp.StatusCode)
+	}
+	var body struct {
+		Models []sessiontypes.ModelInfo `json:"models"`
+	}
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("session host: decode /api/models: %w", err)
+	}
+	if body.Models == nil {
+		return []sessiontypes.ModelInfo{}, nil
+	}
+	return body.Models, nil
 }
 
 // DialWS opens a viewer connection to relay-sessions' /ws, verified exactly as

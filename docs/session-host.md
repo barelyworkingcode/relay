@@ -125,6 +125,26 @@ replaced between calls, cannot answer for `/launch` or `/terminate` either.
 Both halves are mutual: relay-sessions checks the pid making the request,
 and relay checks the pid answering it, on every call.
 
+### relay's own reads: `sessionHostClient`
+
+Besides `/launch` and `/terminate`, relay reads three routes of the eve-facing
+surface itself, not on eve's behalf. Each goes through
+`cmd/relay/sessionhost_client.go`:
+
+| Method | Route | Used by |
+|---|---|---|
+| `LiveTerminalNames` | `GET /api/terminals` | `PersistentSessionOps`, to tell a running persist terminal from a dead one |
+| `ListModels` | `GET /api/models` | `ModelCatalogOps`, the Settings model picker ([model-endpoint.md](model-endpoint.md#choosing-a-projects-models-in-settings)) |
+| `DialWS` | `/ws` | `relay sandbox`, to attach to the session it launched ([sandbox-command.md](sandbox-command.md)) |
+
+Every one of them takes the path `/launch` takes. `resolve` re-reads the bound
+launch identity fresh, `dialVerifiedUnix` checks the answering peer, and the
+request carries the bearer the host registered. A direct read is no weaker
+than a forwarded one, and the host's `guarded` check sees no difference
+between them. Non-200 answers and transport failures both collapse to
+`errSessionHostUnavailable`. Response bodies are read through
+`maxSessionHostResponseBytes`.
+
 ### `POST /launch`
 
 Body is `hostapi.LaunchRequest` (v1). `handleLaunch` is a thin dispatcher —

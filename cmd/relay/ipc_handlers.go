@@ -259,6 +259,9 @@ type IPCContext struct {
 	// HostTemplateOps backs the Hosts tab's per-host template list
 	// (ipc_host_templates.go) and shares the tray's command queue.
 	HostTemplateOps *HostTemplateOps
+	// ModelCatalog backs the Projects tab's model picker (ipc_models.go).
+	// Read-only and ungated; nil emits an unavailable catalog.
+	ModelCatalog *ModelCatalogOps
 	// ConfigDir and LogsDir back the Overview tab's "Reveal" actions
 	// (ipc_overview.go). ConfigDir is a plain string because it is fixed at
 	// boot; LogsDir is a func because resolving it can fail (directory
@@ -392,6 +395,9 @@ const (
 	MsgCreateHostTemplate = "create_host_template"
 	MsgUpdateHostTemplate = "update_host_template"
 	MsgRemoveHostTemplate = "remove_host_template"
+
+	// Models (ipc_models.go)
+	MsgListModels = "list_models"
 )
 
 // ---------------------------------------------------------------------------
@@ -473,6 +479,9 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgCreateHostTemplate: ipcCreateHostTemplate,
 	MsgUpdateHostTemplate: ipcUpdateHostTemplate,
 	MsgRemoveHostTemplate: ipcRemoveHostTemplate,
+
+	// Models (ipc_models.go)
+	MsgListModels: ipcListModels,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.

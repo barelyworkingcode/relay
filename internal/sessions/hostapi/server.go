@@ -300,10 +300,12 @@ func (s *Server) ListenInternal() error {
 
 	// The eve-facing manifest surface (internal/config's
 	// RelaySessionsManifestRoutes: /api/terminals/, /api/sessions/,
-	// /api/models, /ws), reached only through relay's front-door dispatcher
-	// forwarding on eve's behalf — never directly, since relay-sessions'
-	// OWN manifest is what relay proxies against, and /launch/ /terminate
-	// stay off that manifest (bridge.Manifest.Validate refuses them). Every
+	// /api/models, /ws). relay reaches it two ways: its front-door
+	// dispatcher forwards eve's requests here, and relay's own
+	// sessionHostClient reads /api/terminals, /api/models and /ws directly.
+	// Both dial this socket, so both pass the same peer and bearer check.
+	// /launch and /terminate stay off that manifest
+	// (bridge.Manifest.Validate refuses them). Every
 	// one of these is wrapped in guarded: the peer+bearer check must run
 	// before any of them do real work, and for /ws specifically it must run
 	// before hub.HandleUpgrade — Upgrade writes the HTTP 101 immediately,
