@@ -59,7 +59,7 @@ function defaultModesFor(defaults, projectId) {
 
 // defaultProjectGaps(projects, null) is [] on purpose: no default_project
 // block means the operator has never used modes, so there is nothing to flag
-// yet -- see the contract's "upgraded installs don't gain two rows".
+// yet (docs/architecture.md, "Mode and default projects").
 function defaultProjectGaps(projects, defaults) {
     if (!defaults) return [];
     const gaps = [];

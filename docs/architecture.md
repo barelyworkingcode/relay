@@ -889,7 +889,7 @@ same order. An empty selection still means every model, and the form says so.
 A project's mode and the two default projects (see "Mode and default
 projects") are edited on the same tab. The form's Mode section, between
 Identity and the MCPs, is three buttons, Home, Work and Both, saved with the
-rest of the form as `mode`. Above the cards, a Default projects panel holds
+rest of the form as `mode`. Below the cards, a Default projects panel holds
 one select per mode. It appears once any local project exists and offers None
 plus the projects eligible for that mode. A change sends
 `set_default_project` at once, not with a form, and the answer
