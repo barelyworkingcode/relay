@@ -13,10 +13,10 @@
 // the identity Hello wait. This package's own sessionTable holds pty
 // sessions only: the shim is that launch's process root, and the table
 // answers /permission's C3 membership walk for it and recalls the root pid
-// at exit time for the SessionExited report. A provider-hosted
-// (claude/pi/chat) session's root is read live from session.Manager on each
-// /permission instead (rootsAdapter), so its PreToolUse hook authenticates
-// by process ancestry too.
+// at exit time for the SessionExited report. A claude session's root is
+// read live from session.Manager on each /permission instead (rootsAdapter),
+// so its PreToolUse hook authenticates by process ancestry too; pi and chat
+// sessions report no root.
 //
 // The eve-facing manifest HTTP/WS surface (internal/sessions/api's
 // Hub/handlers) is mounted on the internal socket's own mux (see
