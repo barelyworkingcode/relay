@@ -236,9 +236,10 @@ type sbxRun struct {
 	mode       string
 	out        string
 	// ptyReadDelay holds each terminal read back before it reaches ptyOut.
-	// It sits after the read on purpose: the kernel holds a session leader's
-	// exit until its terminal output is read, so a delay before the read
-	// never lets the client exit ahead of the reader.
+	// It sits after the read on purpose. Measured: a delay before the read
+	// never lets the client exit first, because its exit waits for the
+	// terminal output to be read. The only window is between the read and
+	// ptyOut.
 	ptyReadDelay time.Duration
 }
 
@@ -343,6 +344,19 @@ func (p *sbxProc) readMaster() {
 	}
 }
 
+// waitPtyOutput is needed even after wait: the client's exit orders only the
+// master read, not readMaster's write of those bytes into ptyOut.
+func (p *sbxProc) waitPtyOutput(want string) bool {
+	deadline := time.Now().Add(sbxWait)
+	for !strings.Contains(p.ptyOut.String(), want) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return true
+}
+
 func (p *sbxProc) requireTerminalRestored() {
 	p.t.Helper()
 	now := termiosOf(p.t, p.master)
@@ -435,7 +449,7 @@ func TestSandboxClient_ExitsWithTheToolsExitCode(t *testing.T) {
 		if got := p.wait(); got != code {
 			t.Errorf("tool exit %d: client exited %d", code, got)
 		}
-		if !strings.Contains(p.ptyOut.String(), "hi") {
+		if !p.waitPtyOutput("hi") {
 			t.Errorf("tool exit %d: terminal saw %q, want the output", code, p.ptyOut.String())
 		}
 		p.requireTerminalRestored()
@@ -455,7 +469,7 @@ func TestSandboxClient_ExitsWithTheToolsExitCode_SlowTerminalReader(t *testing.T
 		if got := p.wait(); got != code {
 			t.Errorf("tool exit %d: client exited %d", code, got)
 		}
-		if !strings.Contains(p.ptyOut.String(), "hi") {
+		if !p.waitPtyOutput("hi") {
 			t.Errorf("tool exit %d: terminal saw %q, want the output", code, p.ptyOut.String())
 		}
 		p.requireTerminalRestored()
