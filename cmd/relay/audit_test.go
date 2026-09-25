@@ -209,6 +209,36 @@ func TestAudit_RecordsSessionMemberAuth(t *testing.T) {
 	}
 }
 
+func TestAudit_RecordsDeniedSessionMemberCall(t *testing.T) {
+	settings := makeSettings(map[string]config.Permission{"fsmcp": config.PermOn},
+		map[string][]string{"fsmcp": {"fs_bash"}}, nil)
+	mgr := mcpbroker.NewManager(nil)
+	addMockConn(mgr, "fsmcp", newMockConn("fsmcp", simpleTools("read_file", "fs_bash"), okHandler(`{}`)))
+	fx := newSessionFixture(t, settings, mgr)
+	rec := newTestAudit(t, nil)
+	fx.r.audit = rec
+
+	rootPID, _ := fx.startSession(t, "sess-denied", "test-project")
+	ctx := fx.conn(fx.spawn(rootPID, 20))
+	if _, err := fx.r.CallTool(ctx, "fs_bash", json.RawMessage(`{"cmd":"ls"}`), ""); err == nil {
+		t.Fatal("expected a session member's out-of-grant call to be refused")
+	}
+
+	ev := onlyEvent(t, readLoggedEvents(t, rec))
+	if ev.Outcome != audit.AuditOutcomeDenied {
+		t.Errorf("outcome = %q, want denied", ev.Outcome)
+	}
+	if ev.Actor.Kind != audit.AuditActorProjectSession {
+		t.Errorf("actor kind = %q, want %q", ev.Actor.Kind, audit.AuditActorProjectSession)
+	}
+	if ev.Actor.SessionID != "sess-denied" {
+		t.Errorf("actor session_id = %q, want sess-denied", ev.Actor.SessionID)
+	}
+	if ev.Tool != "fs_bash" {
+		t.Errorf("tool = %q, want fs_bash", ev.Tool)
+	}
+}
+
 // The negative half: a tokenless caller that is nobody's descendant is
 // refused and recorded as unauthenticated — never attributed to a project,
 // whatever directory it claims to be sitting in.

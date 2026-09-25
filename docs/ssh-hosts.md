@@ -121,13 +121,17 @@ nothing new.
 SBPL sandbox profiles) to a **console** project's session. Today that
 confinement is real for a `pty` launch only. Not for `claude`/`pi`, which
 run with no sandbox and no launch identity despite relay believing
-otherwise, nor for a `chat` session's own provider process or its optional
-relay-MCP tool child — the shim-based path for that tool child exists in
-code, but `RelayMCPCommand` is never set in production, only in tests, so
-it never actually spawns through it. All of this is an existing,
-documented gap, not something this document's own claim below is exempt
-from: see [`docs/session-host.md`](session-host.md#what-is-not-built-yet)
-(gap 1) and `internal/sessions/hostapi/types.go`'s own package doc. A host
+otherwise, nor for a `chat` session's own provider process — both are an
+existing, documented gap, not something this document's own claim below is
+exempt from: see [`docs/session-host.md`](session-host.md#what-is-not-built-yet)
+(gap 1) and `internal/sessions/hostapi/types.go`'s own package doc. A chat
+session's optional relay-MCP tool child runs through the shim like any other
+sandboxed child once `RelayMCPCommand` is set — except on a host project,
+where `buildChatMCPManager` declines to spawn one at all (`host_session`):
+relay mints no sandbox profile or launch identity for a host project, so a
+local tool child would run unconfined on this Mac, acting on this machine's
+resources instead of the host's — the same reason a host session gets none
+of relay's other local confinement machinery. A host
 project's session is refused that confinement outright, not merely skipped
 by omission: `cmd/relay/session_launch.go`'s `AuthorizeLaunch` computes
 `sandbox := wantsSandbox(req.Kind, tmpl) && !(proj != nil &&

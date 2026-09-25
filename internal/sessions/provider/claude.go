@@ -52,10 +52,10 @@ type ClaudeConfig struct {
 	// RelayMCPCommand is the absolute path to the command Claude's
 	// --mcp-config spawns for relay's own tools (email, calendar, ...), run
 	// as Claude's own child and therefore a C3 member of this session's
-	// root — no bearer travels in its config or env. Empty disables the
-	// relay MCP server entirely regardless of the session's own
-	// useRelayTools setting; see this package's doc comment on the
-	// judgment call this represents.
+	// root — no bearer travels in its config or env. relay-sessions sets
+	// this from its own -relay-mcp-command flag; empty disables the relay
+	// MCP server entirely regardless of the session's own useRelayTools
+	// setting.
 	RelayMCPCommand string
 
 	// ShimBinary is the absolute path to relay-sessions' own binary, run in
@@ -129,6 +129,21 @@ type ClaudeProvider struct {
 	snapNextIdx   int
 }
 
+// claudeSpawnState holds the relay-MCP init flags for one spawn of the
+// Claude child. Start builds a fresh one and hands it down through
+// readStdout to translateSystem instead of storing the flags on
+// ClaudeProvider itself: a killed spawn's readStdout goroutine can outlive
+// Kill (which waits only on cmd.Wait, not the reader), so a provider-level
+// field would let it race the next spawn's Start over the same memory.
+type claudeSpawnState struct {
+	// relayMCPWritten is true once this spawn's --mcp-config actually
+	// carries a "relay" entry — translateSystem only checks the init
+	// message's own mcp_servers against this spawn's expectation when it did.
+	relayMCPWritten bool
+	// relayInitWarned guards relay_server_failed to at most once per spawn.
+	relayInitWarned bool
+}
+
 // NewClaudeProvider constructs a provider for session. perms may be nil for
 // a session with no host-control_request path (see ClaudeProvider.perms).
 func NewClaudeProvider(session *sessionstypes.Session, handler sessionstypes.EventHandler, cfg ClaudeConfig, perms *permission.PermissionManager) *ClaudeProvider {
@@ -156,6 +171,14 @@ func useRelayTools(raw json.RawMessage) bool {
 		return false
 	}
 	return *s.UseRelayTools
+}
+
+// warnRelayToolsUnavailable is the one relay-tools-unavailable Warn shared by
+// the chat and claude providers, fired only when a session actually asked
+// for useRelayTools.
+func warnRelayToolsUnavailable(sessionID, kind, reason string, extra ...any) {
+	args := append([]any{"session", sessionID, "kind", kind, "reason", reason}, extra...)
+	slog.Warn("relay tools requested but unavailable", args...)
 }
 
 // relayMCPConfig renders the relay MCP server entry Claude's --mcp-config
@@ -302,12 +325,18 @@ func buildHostExec(spec *sessionstypes.HostSpec, dir string, args []string, sess
 
 func (p *ClaudeProvider) Start() error {
 	p.cleanupSpawnFiles()
+	spawn := &claudeSpawnState{}
 
 	var cmd *exec.Cmd
 	var statusR *os.File
 	var extraFiles []*os.File
 
 	if host := p.session.GetHost(); host != nil {
+		if useRelayTools(p.session.Settings) {
+			// v1 carries no relay MCPs onto a host at all (buildClaudeArgs
+			// never emits --mcp-config there), regardless of RelayMCPCommand.
+			warnRelayToolsUnavailable(p.session.ID, "claude", "host_session")
+		}
 		if p.cfg.SandboxProfile != "" || p.cfg.Identity != nil {
 			// relay's own launch authorization never mints a sandbox profile
 			// or launch identity for a hosted project (needsIdentity), so
@@ -353,6 +382,9 @@ func (p *ClaudeProvider) Start() error {
 			}
 			mcpConfigPath = path
 			p.spawnFiles = append(p.spawnFiles, path)
+			spawn.relayMCPWritten = true
+		} else if useRelayTools(p.session.Settings) {
+			warnRelayToolsUnavailable(p.session.ID, "claude", "relay_mcp_command_unset")
 		}
 		if p.session.SystemPrompt != "" {
 			path, err := writeSpawnFile(os.TempDir(), "claude-sysprompt-*.txt", []byte(p.session.SystemPrompt))
@@ -442,7 +474,7 @@ func (p *ClaudeProvider) Start() error {
 	p.waitDone = make(chan struct{})
 	p.touchActivity()
 
-	go p.readStdout(stdout)
+	go p.readStdout(stdout, spawn)
 	go p.readStderr(stderr)
 	go p.waitForExit()
 	go p.idleWatcher()
@@ -458,7 +490,7 @@ func (p *ClaudeProvider) cleanupSpawnFiles() {
 	p.spawnFiles = nil
 }
 
-func (p *ClaudeProvider) readStdout(r io.ReadCloser) {
+func (p *ClaudeProvider) readStdout(r io.ReadCloser, spawn *claudeSpawnState) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
@@ -467,7 +499,7 @@ func (p *ClaudeProvider) readStdout(r io.ReadCloser) {
 		if len(line) == 0 {
 			continue
 		}
-		p.processLine(json.RawMessage(append([]byte(nil), line...)))
+		p.processLine(json.RawMessage(append([]byte(nil), line...)), spawn)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -504,7 +536,7 @@ func (p *ClaudeProvider) waitForExit() {
 	p.handler("process_exited", data)
 }
 
-func (p *ClaudeProvider) processLine(raw json.RawMessage) {
+func (p *ClaudeProvider) processLine(raw json.RawMessage, spawn *claudeSpawnState) {
 	p.touchActivity()
 
 	var envelope struct {
@@ -518,7 +550,7 @@ func (p *ClaudeProvider) processLine(raw json.RawMessage) {
 
 	switch envelope.Type {
 	case events.EvtSystem:
-		p.translateSystem(envelope.Subtype, raw)
+		p.translateSystem(envelope.Subtype, raw, spawn)
 	case events.EvtAssistant:
 		p.translateAssistant(raw)
 	case "user":
@@ -555,7 +587,33 @@ func claudeMCPServerNames(entries []json.RawMessage) []string {
 	return names
 }
 
-func (p *ClaudeProvider) translateSystem(subtype string, raw json.RawMessage) {
+// claudeRelayServerStatus reports whether init's mcp_servers carries a
+// "relay" entry and, if so, its status. A bare string entry (no status
+// field) counts as present with status "".
+func claudeRelayServerStatus(entries []json.RawMessage) (status string, present bool) {
+	for _, raw := range entries {
+		if len(raw) == 0 {
+			continue
+		}
+		if raw[0] == '"' {
+			var s string
+			if json.Unmarshal(raw, &s) == nil && s == "relay" {
+				return "", true
+			}
+			continue
+		}
+		var obj struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		}
+		if json.Unmarshal(raw, &obj) == nil && obj.Name == "relay" {
+			return obj.Status, true
+		}
+	}
+	return "", false
+}
+
+func (p *ClaudeProvider) translateSystem(subtype string, raw json.RawMessage, spawn *claudeSpawnState) {
 	switch subtype {
 	case events.SystemInitSubtype:
 		var init struct {
@@ -581,6 +639,16 @@ func (p *ClaudeProvider) translateSystem(subtype string, raw json.RawMessage) {
 		cwd := init.Cwd
 		if cwd == "" {
 			cwd = p.directory
+		}
+		if spawn.relayMCPWritten && !spawn.relayInitWarned {
+			if status, present := claudeRelayServerStatus(init.MCPServers); !present || status == "failed" {
+				spawn.relayInitWarned = true
+				reported := status
+				if !present {
+					reported = "absent"
+				}
+				warnRelayToolsUnavailable(p.session.ID, "claude", "relay_server_failed", "status", reported)
+			}
 		}
 		p.emitter.SystemInit(model, cwd, init.Tools, claudeMCPServerNames(init.MCPServers))
 

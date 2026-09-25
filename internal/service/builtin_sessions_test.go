@@ -1,6 +1,7 @@
 package service
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -97,5 +98,20 @@ func TestEnsureBuiltinRelaySessionsRecord_LeavesAnExistingRecordAlone(t *testing
 	}
 	if s.Services[0].Autostart {
 		t.Fatal("an operator's own autostart=false was overwritten")
+	}
+}
+
+func TestBuiltinRelaySessionsService_PassesRelayBinaryAsMCPCommand(t *testing.T) {
+	relayBin := "/Applications/Relay.app/Contents/MacOS/relay"
+	svc := BuiltinRelaySessionsService(relayBin, "/cfg", true)
+
+	want := []string{
+		"service",
+		"-internal-socket", RelaySessionsInternalSocketPath("/cfg"),
+		"-hook-socket", RelaySessionsHookSocketPath("/cfg"),
+		"-relay-mcp-command", relayBin,
+	}
+	if !slices.Equal(svc.Args, want) {
+		t.Fatalf("Args = %q, want %q", svc.Args, want)
 	}
 }

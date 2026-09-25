@@ -68,6 +68,9 @@ func runService(args []string) int {
 		fmt.Fprintf(os.Stderr, "relay-sessions service: %v\n", err)
 		return 2
 	}
+	if cfg.relayMCPCommand == "" {
+		slog.Warn("relay-sessions: relay tools disabled for every session", "reason", "relay_mcp_command_unset")
+	}
 
 	bridgeSock := cfg.bridgeSocket
 
@@ -117,26 +120,7 @@ func runService(args []string) int {
 	})
 	store := session.NewStore(filepath.Join(cfg.dataDir, "sessions"))
 	perms := permission.NewPermissionManager()
-	sessions := session.NewManager(session.Config{
-		Claude: provider.ClaudeConfig{
-			HookSocket:      cfg.hookSocket,
-			HookCommandPath: shimBinary,
-			BridgeSocket:    bridgeSock,
-			ModelSocket:     cfg.modelSocket,
-			ShimBinary:      shimBinary,
-		},
-		Pi: provider.PiConfig{
-			DataDir:      cfg.dataDir,
-			BridgeSocket: bridgeSock,
-			ModelSocket:  cfg.modelSocket,
-			ShimBinary:   shimBinary,
-		},
-		Chat: provider.ChatConfig{
-			ModelSocket:  cfg.modelSocket,
-			ShimBinary:   shimBinary,
-			BridgeSocket: bridgeSock,
-		},
-	}, store, perms)
+	sessions := session.NewManager(sessionConfig(cfg, shimBinary), store, perms)
 
 	// The internal bearer must never be an argv value — any same-uid
 	// process, including a sandboxed session target, can read another
@@ -212,6 +196,32 @@ func runService(args []string) int {
 	return 0
 }
 
+// sessionConfig is exactly the session.Config runService hands session.NewManager.
+func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
+	return session.Config{
+		Claude: provider.ClaudeConfig{
+			HookSocket:      cfg.hookSocket,
+			HookCommandPath: shimBinary,
+			BridgeSocket:    cfg.bridgeSocket,
+			ModelSocket:     cfg.modelSocket,
+			ShimBinary:      shimBinary,
+			RelayMCPCommand: cfg.relayMCPCommand,
+		},
+		Pi: provider.PiConfig{
+			DataDir:      cfg.dataDir,
+			BridgeSocket: cfg.bridgeSocket,
+			ModelSocket:  cfg.modelSocket,
+			ShimBinary:   shimBinary,
+		},
+		Chat: provider.ChatConfig{
+			ModelSocket:     cfg.modelSocket,
+			ShimBinary:      shimBinary,
+			BridgeSocket:    cfg.bridgeSocket,
+			RelayMCPCommand: cfg.relayMCPCommand,
+		},
+	}
+}
+
 // reportSessionExited is hostapi.Server's exit hook: send C5's advisory,
 // tokenless SessionExited report over relay's bridge (bridge.Client's own
 // doc comment on NewClient("") — a tokenless caller relies entirely on C3
@@ -252,6 +262,7 @@ type serviceConfig struct {
 	relayPIDOverride int
 	dataDir          string
 	modelSocket      string
+	relayMCPCommand  string
 }
 
 // relayLLMDataDir is relayLLM's own data directory, the migration's copy
@@ -312,11 +323,15 @@ func parseServiceArgs(args []string) (serviceConfig, error) {
 	relayPID := fs.Int("relay-pid", 0, "dev/test only: relay's pid, when this process was not itself launched by relay")
 	dataDir := fs.String("data-dir", "", "override this host's own data dir (default: ~/Library/Application Support/relay/sessions)")
 	modelSocket := fs.String("model-socket", "", "override RELAY_MODEL_SOCKET for every spawned session (default: env, then relay's own model.sock)")
+	relayMCPCommand := fs.String("relay-mcp-command", "", "absolute path to the relay binary that serves `relay mcp` (default: relay tools disabled)")
 	if err := fs.Parse(args); err != nil {
 		return serviceConfig{}, err
 	}
 	if *internalSocket == "" || *hookSocket == "" {
 		return serviceConfig{}, fmt.Errorf("-internal-socket and -hook-socket are required")
+	}
+	if *relayMCPCommand != "" && !filepath.IsAbs(*relayMCPCommand) {
+		return serviceConfig{}, fmt.Errorf("-relay-mcp-command %q is not an absolute path", *relayMCPCommand)
 	}
 
 	bridgeSock := *bridgeSocket
@@ -344,6 +359,7 @@ func parseServiceArgs(args []string) (serviceConfig, error) {
 		relayPIDOverride: *relayPID,
 		dataDir:          dir,
 		modelSocket:      model,
+		relayMCPCommand:  *relayMCPCommand,
 	}, nil
 }
 

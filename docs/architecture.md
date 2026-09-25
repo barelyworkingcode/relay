@@ -537,13 +537,13 @@ service record (`internal/service/builtin_sessions.go`, capabilities
 talking to relay over a peer-verified internal API (`POST /launch`, `POST
 /terminate`) rather than the manifest dispatcher's proxied surface. Sessions
 launch under `relay-sessions exec`, a shim whose own pid is the session's
-root — true for a `pty` launch only today. A `claude`/`pi` launch, a `chat`
-session's own provider process, and even a `chat` session's optional
-relay-MCP tool child (the code path exists — `buildChatMCPManager` — but
-`cfg.RelayMCPCommand` is never set in production, only in tests, so it never
-actually spawns) all run with no shim today, a known gap (see
-[`docs/session-host.md`](session-host.md#what-is-not-built-yet), gap
-1). Where the shim is in play, its pid is what relay's launch identity
+root — true for a `pty` launch only today. A `claude`/`pi` launch and a
+`chat` session's own provider process run with no shim today, a known gap
+(see [`docs/session-host.md`](session-host.md#what-is-not-built-yet), gap
+1). A `chat` session's optional relay-MCP tool child is the one exception:
+`buildChatMCPManager` spawns it through the shim as its own `project_session`
+root, once the session has opted into `useRelayTools` and the launch isn't a
+host session. Where the shim is in play, its pid is what relay's launch identity
 binds to, and what C3's process-ancestry membership walk
 (`internal/membership`) treats as the root a caller must descend from to be
 admitted tokenlessly. A `project_session`-kind launch

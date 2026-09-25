@@ -35,7 +35,8 @@ type ChatConfig struct {
 	// loop spawns for relay's tools: unlike Claude/pi, a chat session has no
 	// other process to serve as this launch's project_session root, so this
 	// command is spawned through the shim (ShimBinary) rather than directly
-	// -- see buildChatMCPManager.
+	// -- see buildChatMCPManager. relay-sessions sets this from its own
+	// -relay-mcp-command flag.
 	RelayMCPCommand string
 
 	// ShimBinary is the absolute path to relay-sessions' own binary, run in
@@ -145,16 +146,29 @@ func parseBaseSettings(raw json.RawMessage) BaseChatSettings {
 // useRelayTools -- no tool child is ever spawned speculatively. The single
 // "relay" entry it builds is always this process's own fixed,
 // relay-controlled command (cfg.RelayMCPCommand "mcp"); nothing decoded
-// from session.Settings ever reaches it.
+// from session.Settings ever reaches it. An opted-in session that still
+// gets nil (no command configured, or an SSH-hosted session, which gets no
+// local tool child) logs why via warnRelayToolsUnavailable.
 //
 // A chat session has no target process of its own -- ChatProvider is
 // purely an in-process HTTP client -- so unlike ClaudeProvider's
 // relayMCPConfig (a plain child of an already-rooted Claude process), this
 // tool child is spawned through the shim (ShimSpec) to become its own
 // project_session root: that is what makes relay's own ancestry-based tool
-// auth resolve for it at all, and what gets it C7's default sandbox.
+// auth resolve for it at all, and what gets it C7's default sandbox. A host
+// session never spawns one: relay mints no sandbox profile or launch
+// identity for a host project, so a local tool child would run unconfined
+// on this Mac, acting on this machine's resources instead of the host's.
 func buildChatMCPManager(cfg ChatConfig, session *sessionstypes.Session) sessionsmcp.MCPClient {
-	if !useRelayTools(session.Settings) || cfg.RelayMCPCommand == "" {
+	if !useRelayTools(session.Settings) {
+		return nil
+	}
+	switch {
+	case session.GetHost() != nil:
+		warnRelayToolsUnavailable(session.ID, "chat", "host_session")
+		return nil
+	case cfg.RelayMCPCommand == "":
+		warnRelayToolsUnavailable(session.ID, "chat", "relay_mcp_command_unset")
 		return nil
 	}
 	servers := map[string]sessionsmcp.MCPServerConfig{
@@ -222,8 +236,7 @@ func (p *ChatProvider) Start() error {
 		mcpCtx, mcpCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer mcpCancel()
 		if err := p.mcpManager.Start(mcpCtx); err != nil {
-			slog.Warn("chat: MCP servers failed to start (tool calling disabled)",
-				"session", p.session.ID, "error", err)
+			warnRelayToolsUnavailable(p.session.ID, "chat", "mcp_start_failed", "error", err)
 			p.mcpManager = nil
 		}
 	}

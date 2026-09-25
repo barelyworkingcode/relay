@@ -48,6 +48,7 @@ func BuiltinRelaySessionsService(relayBin, configDir string, autostart bool) con
 			"service",
 			"-internal-socket", RelaySessionsInternalSocketPath(configDir),
 			"-hook-socket", RelaySessionsHookSocketPath(configDir),
+			"-relay-mcp-command", relayBin,
 		},
 		Autostart:    autostart,
 		Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilitySessions},
