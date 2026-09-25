@@ -3,6 +3,7 @@ package modelbroker
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // Row is one entry of the upstream /v1/models listing, trimmed to what the
@@ -26,22 +27,42 @@ type Row struct {
 // anything itself.
 type FetchFunc func(ctx context.Context) ([]Row, error)
 
-// Cache holds the last-fetched catalog and refetches on demand. It is safe
-// for concurrent use.
+// Cache holds the last-fetched catalog and refetches once ttl has elapsed
+// since the last successful fetch, or once on a Resolve miss. It is safe for
+// concurrent use.
 type Cache struct {
 	fetch FetchFunc
+	ttl   time.Duration
+	now   func() time.Time
 
-	mu      sync.Mutex
-	rows    []Row
-	index   map[string]int
-	fetched bool
+	mu        sync.Mutex
+	rows      []Row
+	index     map[string]int
+	fetched   bool
+	fetchedAt time.Time
 }
 
-// NewCache builds a Cache around fetch. The first call to Snapshot or
-// Resolve performs the first fetch; Cache never fetches eagerly at
-// construction, so building one has no side effect.
-func NewCache(fetch FetchFunc) *Cache {
-	return &Cache{fetch: fetch}
+// NewCache builds a Cache around fetch with the given expiry. The first call
+// to Snapshot or Resolve performs the first fetch; Cache never fetches
+// eagerly at construction, so building one has no side effect. ttl <= 0
+// means the cache never expires on its own — only a Resolve miss refetches.
+func NewCache(fetch FetchFunc, ttl time.Duration) *Cache {
+	return &Cache{fetch: fetch, ttl: ttl, now: time.Now}
+}
+
+// SetClock overrides the clock Cache uses to judge expiry; a test seam,
+// defaulting to time.Now.
+func (c *Cache) SetClock(now func() time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = now
+}
+
+// expiredLocked reports whether the cached rows are stale enough to refetch:
+// only once something has actually been fetched, and only when ttl is
+// positive — a ttl <= 0 cache is never expired by time alone.
+func (c *Cache) expiredLocked() bool {
+	return c.fetched && c.ttl > 0 && c.now().Sub(c.fetchedAt) >= c.ttl
 }
 
 func (c *Cache) refetchLocked(ctx context.Context) error {
@@ -56,16 +77,19 @@ func (c *Cache) refetchLocked(ctx context.Context) error {
 	c.rows = rows
 	c.index = index
 	c.fetched = true
+	c.fetchedAt = c.now()
 	return nil
 }
 
 // Snapshot returns the current catalog, fetching first if this Cache has
-// never fetched. It never refetches just because time has passed — TTL
-// policy belongs to the caller (R-M1b), not this package.
+// never fetched or if ttl has elapsed since the last successful fetch. A
+// failed refetch returns the error and serves nothing stale: the prior rows
+// and fetchedAt are left in place so the next call retries rather than
+// papering over an unreadable upstream.
 func (c *Cache) Snapshot(ctx context.Context) ([]Row, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.fetched {
+	if !c.fetched || c.expiredLocked() {
 		if err := c.refetchLocked(ctx); err != nil {
 			return nil, err
 		}
@@ -74,22 +98,25 @@ func (c *Cache) Snapshot(ctx context.Context) ([]Row, error) {
 }
 
 // Resolve returns the current catalog, guaranteeing that id has been looked
-// up against a fresh fetch at least once: if id is absent from what is
-// currently cached, Resolve fetches exactly one more time before returning.
-// This is deliberate and bounded — a model that just finished loading
-// should not need a second request to appear, but a genuinely unknown id
-// must not turn every request for it into a retry loop against the
-// upstream, so at most one extra fetch happens per call regardless of how
-// many times the miss recurs.
+// up against a fresh-enough fetch: it fetches when the cache has never
+// filled or has expired, or once more on a miss if this call hasn't already
+// fetched. This is deliberate and bounded — a model that just finished
+// loading should not need a second request to appear, but a genuinely
+// unknown id must not turn every request for it into a retry loop against
+// the upstream, so Resolve makes at most one fetch per call regardless of
+// which branch triggers it. A failed fetch returns the error and serves
+// nothing stale, exactly as Snapshot does.
 func (c *Cache) Resolve(ctx context.Context, id string) ([]Row, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.fetched {
+	fetchedThisCall := false
+	if !c.fetched || c.expiredLocked() {
 		if err := c.refetchLocked(ctx); err != nil {
 			return nil, err
 		}
+		fetchedThisCall = true
 	}
-	if _, ok := c.index[id]; !ok {
+	if _, ok := c.index[id]; !ok && !fetchedThisCall {
 		if err := c.refetchLocked(ctx); err != nil {
 			return nil, err
 		}

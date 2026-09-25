@@ -301,6 +301,22 @@ disconnects mid-stream cancels the outbound request to the upstream via the
 shared request context, the same propagation `net/http` gives any reverse
 proxy.
 
+## Catalog cache
+
+`modelbroker.Cache` (`internal/modelbroker/catalog.go`) sits in front of
+every `Snapshot` and `Resolve` call, held with a 30-second TTL
+(`modelCatalogTTL`, `cmd/relay/model_endpoint.go`). The cache counts itself
+expired once it has been filled and that TTL has elapsed since its last
+fetch. `Snapshot` fetches whenever the cache was never filled or is expired;
+`Resolve` makes at most one fetch per call — the same expiry fetch
+`Snapshot` would make, plus, only if it hasn't already fetched this call, one
+more on a miss, so a model added upstream since the last fetch is still
+found by name rather than reported missing. A miss that survives its own
+fetch is a real miss. A failed refresh is an error (503), and the prior rows
+and fetch time are kept as they were so the next call retries; a stale
+snapshot is never served in a fetch's place. `GET /api/models` reaches this
+same cache through relay-sessions rather than keeping one of its own.
+
 ## Limits
 
 R-M1b2 (`plan-broker-and-sessions.md`'s relay#116 re-review row) is required

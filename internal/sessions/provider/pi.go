@@ -336,14 +336,32 @@ func (p *PiProvider) Start() (err error) {
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 
-	stderr, err := cmd.StderrPipe()
+	stderrR, stderrW, err := newStderrPipe(cmd)
 	if err != nil {
 		_ = stdin.Close()
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start pi: %w", err)
+	startErr := cmd.Start()
+	_ = stderrW.Close()
+	if startErr != nil {
+		_ = stderrR.Close()
+		return fmt.Errorf("failed to start pi: %w", startErr)
+	}
+	sawStdout := &atomic.Bool{}
+	identitySecret := ""
+	if p.cfg.Identity != nil {
+		identitySecret = p.cfg.Identity.Secret
+	}
+	logStderr := func() {
+		logProviderStderr(stderrR, p.session.ID, "pi", sawStdout, p.cfg.ModelKey, identitySecret)
+	}
+	// drainStderr reads what the target wrote before the shim refused it.
+	// The deadline is deliberate: a target forked with Setpgid can outlive
+	// the Kill and keep the write end open, and Start must not wait on it.
+	drainStderr := func() {
+		_ = stderrR.SetReadDeadline(time.Now().Add(time.Second))
+		logStderr()
 	}
 	// Load-bearing: without closing the parent's own copies, the status pipe
 	// (and, when present, the identity secret pipe) never reaches EOF.
@@ -358,10 +376,12 @@ func (p *PiProvider) Start() (err error) {
 		case outcome.identityRefused:
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
+			drainStderr()
 			return fmt.Errorf("%w: session %s", ErrIdentityRefused, p.session.ID)
 		case !outcome.started || outcome.spawnFailed:
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
+			drainStderr()
 			return fmt.Errorf("%w: errno=%d", ErrSpawnFailed, outcome.spawnErrno)
 		default:
 			p.targetPID = outcome.targetPID
@@ -376,8 +396,8 @@ func (p *PiProvider) Start() (err error) {
 	p.waitDone = make(chan struct{})
 	p.touchActivity()
 
-	go p.readStdout(stdout)
-	go p.readStderr(stderr)
+	go p.readStdout(stdout, sawStdout)
+	go logStderr()
 	go p.waitForExit()
 	go p.idleWatcher()
 
@@ -431,7 +451,7 @@ func (p *PiProvider) fetchInitialState() {
 	}
 }
 
-func (p *PiProvider) readStdout(r io.ReadCloser) {
+func (p *PiProvider) readStdout(r io.ReadCloser, sawStdout *atomic.Bool) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
@@ -440,21 +460,12 @@ func (p *PiProvider) readStdout(r io.ReadCloser) {
 		if len(line) == 0 {
 			continue
 		}
+		sawStdout.Store(true)
 		p.processLine(json.RawMessage(append([]byte(nil), line...)))
 	}
 
 	if err := scanner.Err(); err != nil {
 		slog.Error("pi stdout read error", "session", p.session.ID, "error", err)
-	}
-}
-
-func (p *PiProvider) readStderr(r io.ReadCloser) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		text := scanner.Text()
-		if text != "" {
-			slog.Debug("pi stderr", "session", p.session.ID, "text", text)
-		}
 	}
 }
 
