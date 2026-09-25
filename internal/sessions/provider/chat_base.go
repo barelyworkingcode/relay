@@ -147,8 +147,8 @@ func parseBaseSettings(raw json.RawMessage) BaseChatSettings {
 // "relay" entry it builds is always this process's own fixed,
 // relay-controlled command (cfg.RelayMCPCommand "mcp"); nothing decoded
 // from session.Settings ever reaches it. An opted-in session that still
-// gets nil (no command configured, or an SSH-hosted session with nowhere to
-// root a tool child) logs why via warnRelayToolsUnavailable.
+// gets nil (no command configured, or an SSH-hosted session, which gets no
+// local tool child) logs why via warnRelayToolsUnavailable.
 //
 // A chat session has no target process of its own -- ChatProvider is
 // purely an in-process HTTP client -- so unlike ClaudeProvider's
