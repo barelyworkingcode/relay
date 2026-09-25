@@ -317,13 +317,17 @@ func validateProjectPermissions(proj *config.Project, surfaces McpSurfaces) erro
 }
 
 // findDuplicateKey reports the first object key repeated within one object,
-// at any depth. Malformed JSON reports none; decoding refuses it elsewhere.
+// at any depth. Pass it only bytes json.Unmarshal has accepted: a token
+// error ends the walk reporting no duplicate.
 func findDuplicateKey(raw json.RawMessage) (string, bool) {
 	type container struct {
 		keys          map[string]bool // nil for an array
 		awaitingValue bool
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
+	// Deliberate: without UseNumber, Token errors on a well-formed literal
+	// outside float64's range (1e400) and the walk would stop early.
+	dec.UseNumber()
 	var stack []*container
 	for {
 		tok, err := dec.Token()
@@ -378,15 +382,15 @@ func validateProjectContextForMcp(mcpID string, blob json.RawMessage, surfaces M
 	if trimmed == "" || trimmed == "null" {
 		return nil
 	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &values); err != nil {
+		return fmt.Errorf("context for %q must be an object of field values", mcpID)
+	}
 	// The gate compares Go's decode, which keeps the last of a repeated key,
 	// but relay forwards the raw bytes and other parsers keep the first. A
 	// repeated key would let the MCP see a value the gate never compared.
 	if key, dup := findDuplicateKey(blob); dup {
 		return fmt.Errorf("context for %q repeats the key %q; each field may appear once", mcpID, key)
-	}
-	var values map[string]json.RawMessage
-	if err := json.Unmarshal(blob, &values); err != nil {
-		return fmt.Errorf("context for %q must be an object of field values", mcpID)
 	}
 	if len(values) == 0 {
 		return nil

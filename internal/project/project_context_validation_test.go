@@ -31,6 +31,9 @@ func TestProjectContext_DuplicateKeyIsRefusedOnSave(t *testing.T) {
 		{"top-level repeat under a v2 schema", "macmcp", `{"mail_accounts":["Alice"],"mail_accounts":["*"]}`, "mail_accounts"},
 		{"top-level repeat with no schema", "notesmcp", `{"rules":["a"],"rules":["b"]}`, "rules"},
 		{"repeat inside an object in an array", "notesmcp", `{"rules":[{"account":"Alice"},{"account":"Bob","account":"*"}]}`, "account"},
+		{"repeat whose first value holds an out-of-range number", "macmcp", `{"mail_accounts":["*",1e400],"mail_accounts":["Alice"]}`, "mail_accounts"},
+		{"repeat in an array object whose first value holds an out-of-range number", "notesmcp",
+			`{"rules":[{"account":["*",1e400],"account":"Alice"}]}`, "account"},
 	}
 	for _, r := range rows {
 		requested := blobs(r.mcpID, r.blob)
