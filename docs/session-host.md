@@ -621,6 +621,49 @@ project path stored as `/users/me/Proj` would otherwise match nothing and lock
 the session out of its own directory. A grant whose final component is a
 symlink also names the link itself.
 
+**A read-write grant never follows a link the user could have made.** A
+session holding read-write on a directory can replace it, or any directory
+under it, with a symlink: `(subpath D)` covers D itself. If the next launch
+followed that link, the session would have chosen its own grant. So `Render`
+walks every `read_write` entry, directory or file, from `/` with `Lstat` on
+each component, splicing in each link's target (a relative target resolves
+against the link's already resolved directory, at most 32 links; more fails
+the render). If the walk follows any link whose directory is not *locked*,
+the final component included, the launch is refused with
+`sandbox.LinkedGrantError`: `400 sandbox_unavailable` naming the grant and the
+link, a `session_launch` error in the audit log, one refusal Warn
+(`session sandbox: read-write grant refused`; see `ensureGrantDirs` below
+for the one other line a refused launch can log), and no profile written. A link
+counts whether or not its target exists. **Locked** means root owns the
+directory and the running user cannot write it (`access(dir, W_OK)` fails).
+That exempts the `/tmp`, `/var` and `/etc` links in `/`, so `t.TempDir()`,
+`/tmp/claude-<uid>` and anything reached through them keep working, while a
+link directly in `/private/tmp` (root's, but world-writable) is refused. The
+cost is deliberate: a dotfiles-managed `~/.claude`, or a project reached
+through a link, is refused as a read-write grant; the operator names the real
+path instead. Read grants and `deny` entries still follow links as before.
+A link whose target does not exist is not followed: the walk treats it as
+the first missing component, so a read grant on it names only the link's own
+path, never a target a session could later create. Any entry, read, deny,
+read-write or unix-socket, that is relative, follows more than 32 links, or passes through a
+link that cannot be read fails the render and refuses the launch.
+
+Every term a read-write grant renders comes from that one walk: the
+`subpath` or file regex, the link literal and the ancestor `stat` paths.
+Resolving the path a second time would give a session a window to swap a link
+in after the check. The case-correcting open (`onDiskPath`) uses
+`O_NOFOLLOW_ANY`, so if a link appears between the walk and the open, the
+open fails and the profile keeps the walk's own spelling.
+
+Creating missing read-write directories (`ensureGrantDirs`) runs before
+`Render`, and its `MkdirAll` follows links. Through a planted link it can
+create an empty `0700` directory at the link's target before the render
+refuses the launch. Nothing is granted on it; the directory is left as it is.
+A read-write entry whose final component is a dangling link makes `MkdirAll`
+fail instead, since the name exists but is not a directory, and it logs
+`session sandbox: could not create a granted directory` before the refusal
+Warn. So a refused launch can log two lines.
+
 ## Host data directory layout
 
 Everything relay-sessions owns lives under one directory, resolved from the

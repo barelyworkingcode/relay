@@ -402,3 +402,30 @@ func TestLive_DenyCarvesAHoleOutOfAGrant(t *testing.T) {
 		t.Error("the denied directory could be listed")
 	}
 }
+
+// TestLive_LinkSwappedInAfterTheWalkGrantsNothingNew is the race the one-pass
+// walk closes: a granted directory replaced by a link between the walk and the
+// profile being spelled must not hand the session the link's target.
+func TestLive_LinkSwappedInAfterTheWalkGrantsNothingNew(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skip(err)
+	}
+	root := realTempDir(t)
+	proj, secret, ok := filepath.Join(root, "proj"), filepath.Join(root, "secret"), filepath.Join(root, "ok")
+	mkdirs(t, proj, secret, ok)
+	fired := swapAfterWalk(t, proj, func() { replaceWithLink(t, proj, secret) })
+
+	profile, err := Write(filepath.Join(root, "profiles"), "swap-session", Spec{ReadWrite: []string{proj, ok, "/dev"}})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !*fired {
+		t.Fatal("beforeSpell never saw the read-write grant")
+	}
+	if !runProbe(t, profile, "write "+filepath.Join(ok, "allowed.txt")) {
+		t.Fatal("a write inside a granted directory was denied; the profile does not load")
+	}
+	if runProbe(t, profile, "write "+filepath.Join(secret, "escaped.txt")) {
+		t.Error("a write reached the target of a link swapped in after the walk")
+	}
+}

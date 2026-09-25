@@ -13,6 +13,7 @@ package main
 // grants them.
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -69,7 +70,12 @@ func writeSessionSandboxProfile(settings *config.Settings, proj *config.Project,
 	if err != nil {
 		return "", err
 	}
-	return sandbox.Write(sessionProfilesDir(), sessionID, spec)
+	path, err := sandbox.Write(sessionProfilesDir(), sessionID, spec)
+	var linked *sandbox.LinkedGrantError
+	if errors.As(err, &linked) {
+		slog.Warn("session sandbox: read-write grant refused", "session", sessionID, "kind", kind, "grant", linked.Grant, "link", linked.Link)
+	}
+	return path, err
 }
 
 // sandboxProfilePath is the profile AuthorizeLaunch wrote for result's
