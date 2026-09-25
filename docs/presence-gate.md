@@ -246,7 +246,7 @@ whose every element is already stored narrows, so removing a value,
 reordering, de-duplicating and `[]` do not prompt. The wildcard here is
 `["*"]` only: it narrows to any array, and requesting it widens from
 anything else, including a mixed `["*","Bob"]`. A bare string `"*"`, or any
-other non-array value, compares strictly. Outside operator restrict fields
+other asserted non-array value, compares strictly. Outside operator restrict fields
 everything compares strictly, by decoded value: non-restrict fields,
 `project_path` fields, stale keys (so `null` against a missing key, or a
 reordered array, still counts as a change there), every field of an MCP

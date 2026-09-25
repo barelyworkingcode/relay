@@ -195,7 +195,7 @@ thing.
   gate: removing a value, clearing the field, or replacing `["*"]` with a
   list is not a widening of `context`. Adding a value, or setting one where
   the field was unset (`[]` included), is. The wildcard for this purpose is
-  `["*"]` only; a bare `"*"` compares strictly. Without that schema any
+  `["*"]` only; an asserted bare `"*"` compares strictly. Without that schema any
   change to the entry prompts.
 
 A grant is refused at edit time if a `project_path` field's `applies_to` covers
@@ -517,6 +517,13 @@ The reconciliation rule, so every scoping MCP implements it identically:
   and none removes it. Relay's presence gate treats a subset as narrower on
   that basis, so an MCP that let one value subtract from another would let
   an unprompted edit widen what it reaches.
+- **An unset operator restrict field grants nothing, on every tool that reads
+  it.** Absent, `null`, `""` and `{}` all mean unset. This holds for every
+  tool that consults the field, not only the ones its `applies_to` names:
+  relay refuses calls only for tools inside `applies_to`, and its presence
+  gate lets an operator clear a field without a prompt because unset is
+  assumed to refuse. An MCP that read an unset field as "unrestricted" on
+  some other tool would turn that unprompted clear into a widening.
 
 `_meta` being present at all is a reliable signal that a chokepoint mediated the
 call: relay injects `_meta.project_id` on every mediated call and has since
