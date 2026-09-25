@@ -631,8 +631,9 @@ against the link's already resolved directory, at most 32 links; more fails
 the render). If the walk follows any link whose directory is not *locked*,
 the final component included, the launch is refused with
 `sandbox.LinkedGrantError`: `400 sandbox_unavailable` naming the grant and the
-link, a `session_launch` error in the audit log, one Warn
-(`session sandbox: read-write grant refused`), and no profile written. A link
+link, a `session_launch` error in the audit log, one refusal Warn
+(`session sandbox: read-write grant refused`; see `ensureGrantDirs` below
+for the one other line a refused launch can log), and no profile written. A link
 counts whether or not its target exists. **Locked** means root owns the
 directory and the running user cannot write it (`access(dir, W_OK)` fails).
 That exempts the `/tmp`, `/var` and `/etc` links in `/`, so `t.TempDir()`,
@@ -643,8 +644,8 @@ through a link, is refused as a read-write grant; the operator names the real
 path instead. Read grants and `deny` entries still follow links as before.
 A link whose target does not exist is not followed: the walk treats it as
 the first missing component, so a read grant on it names only the link's own
-path, never a target a session could later create. Any entry, read, deny or
-read-write, that is relative, follows more than 32 links, or passes through a
+path, never a target a session could later create. Any entry, read, deny,
+read-write or unix-socket, that is relative, follows more than 32 links, or passes through a
 link that cannot be read fails the render and refuses the launch.
 
 Every term a read-write grant renders comes from that one walk: the
@@ -658,6 +659,10 @@ Creating missing read-write directories (`ensureGrantDirs`) runs before
 `Render`, and its `MkdirAll` follows links. Through a planted link it can
 create an empty `0700` directory at the link's target before the render
 refuses the launch. Nothing is granted on it; the directory is left as it is.
+A read-write entry whose final component is a dangling link makes `MkdirAll`
+fail instead, since the name exists but is not a directory, and it logs
+`session sandbox: could not create a granted directory` before the refusal
+Warn. So a refused launch can log two lines.
 
 ## Host data directory layout
 

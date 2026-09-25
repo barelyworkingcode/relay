@@ -221,14 +221,22 @@ func Render(s Spec) (string, error) {
 
 	unixDeny := make([]string, 0, len(s.UnixConnectDenyDirs)+len(s.UnixConnectDenyPaths))
 	for _, p := range s.UnixConnectDenyPaths {
-		lit, err := quoted(resolve(p))
+		r, err := walkedPath(p)
+		if err != nil {
+			return "", fmt.Errorf("unix_connect_deny: %w", err)
+		}
+		lit, err := quoted(r)
 		if err != nil {
 			return "", fmt.Errorf("unix_connect_deny: %w", err)
 		}
 		unixDeny = append(unixDeny, "(remote unix-socket (path-literal "+lit+"))")
 	}
 	for _, p := range s.UnixConnectDenyDirs {
-		esc, err := regexEscape(resolve(p))
+		r, err := walkedPath(p)
+		if err != nil {
+			return "", fmt.Errorf("unix_connect_deny: %w", err)
+		}
+		esc, err := regexEscape(r)
 		if err != nil {
 			return "", fmt.Errorf("unix_connect_deny: %w", err)
 		}
@@ -238,7 +246,11 @@ func Render(s Spec) (string, error) {
 
 	unixAllow := make([]string, 0, len(s.UnixConnectAllow))
 	for _, p := range s.UnixConnectAllow {
-		lit, err := quoted(resolve(p))
+		r, err := walkedPath(p)
+		if err != nil {
+			return "", fmt.Errorf("unix_connect_allow: %w", err)
+		}
+		lit, err := quoted(r)
 		if err != nil {
 			return "", fmt.Errorf("unix_connect_allow: %w", err)
 		}
@@ -448,6 +460,13 @@ func loopbackTerms(ports []int) []string {
 // later, and refusing those would deny a write the session is meant to have.
 func resolve(p string) string {
 	return walk(p).resolved
+}
+
+// walkedPath is resolve for a Render entry: a walk that fails refuses the
+// render instead of spelling a path the walk could not settle.
+func walkedPath(p string) (string, error) {
+	w := walk(p)
+	return w.resolved, w.err
 }
 
 // maxWalkLinks bounds the links one walk follows. A path past it fails

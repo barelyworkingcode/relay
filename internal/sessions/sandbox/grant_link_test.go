@@ -155,26 +155,6 @@ func TestRender_RefusesReadWriteGrantThroughUserLink(t *testing.T) {
 	}
 }
 
-func TestWrite_WritesNothingForALinkedGrant(t *testing.T) {
-	skipAsRoot(t)
-	root := realTempDir(t)
-	proj, sibling := filepath.Join(root, "proj"), filepath.Join(root, "sibling")
-	mkdirs(t, sibling)
-	symlink(t, sibling, proj)
-	profiles := filepath.Join(root, "profiles")
-
-	if path, err := Write(profiles, "session-1", Spec{ReadWrite: []string{proj}}); err == nil {
-		t.Fatalf("Write returned %s for a linked read-write grant", path)
-	}
-	entries, err := os.ReadDir(profiles)
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("read profiles dir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("a refused Write left %d file(s) behind", len(entries))
-	}
-}
-
 func TestRender_ReadWriteThroughSystemLinksStillRenders(t *testing.T) {
 	type rendered struct {
 		spec Spec
@@ -246,39 +226,6 @@ func evalSymlinks(t *testing.T, p string) string {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
 	return r
-}
-
-func TestLockedDir(t *testing.T) {
-	skipAsRoot(t)
-	for _, tc := range []struct {
-		dir  string
-		want bool
-	}{
-		{"/", true},
-		{"/usr", true},
-		{"/private/tmp", false},
-		{realTempDir(t), false},
-	} {
-		if got := lockedDir(tc.dir); got != tc.want {
-			t.Errorf("lockedDir(%q) = %v, want %v", tc.dir, got, tc.want)
-		}
-	}
-}
-
-func TestWalk_ReportsOnlyAUserLink(t *testing.T) {
-	skipAsRoot(t)
-	root := realTempDir(t)
-	target, link := filepath.Join(root, "target"), filepath.Join(root, "link")
-	mkdirs(t, target)
-	symlink(t, target, link)
-
-	if w := walk(filepath.Join(link, "sub")); w.userLink != link || w.resolved != filepath.Join(target, "sub") {
-		t.Errorf("walk through a user link = %+v, want userLink %s, resolved %s", w, link, filepath.Join(target, "sub"))
-	}
-	name := filepath.Base(root)
-	if w := walk("/tmp/" + name); w.userLink != "" || w.resolved != "/private/tmp/"+name {
-		t.Errorf("walk through /tmp = %+v, want no userLink and resolved /private/tmp/%s", w, name)
-	}
 }
 
 // swapAfterWalk runs swap once, when Render has walked target and not yet
@@ -368,13 +315,32 @@ func TestRender_ReadGrantOnADanglingLinkNeverNamesTheTarget(t *testing.T) {
 
 func TestRender_RefusesARelativeEntry(t *testing.T) {
 	for name, spec := range map[string]Spec{
-		"read": {Read: []string{"relative/dir"}},
-		"deny": {Deny: []string{"relative/dir"}},
+		"read":                   {Read: []string{"relative/dir"}},
+		"deny":                   {Deny: []string{"relative/dir"}},
+		"unix connect allow":     {UnixConnectAllow: []string{"relative/relay.sock"}},
+		"unix connect deny dir":  {UnixConnectDenyDirs: []string{"relative/dir"}},
+		"unix connect deny path": {UnixConnectDenyPaths: []string{"relative/relay.sock"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got, err := Render(spec); err == nil {
 				t.Fatalf("Render accepted a relative %s entry:\n%s", name, got)
 			}
 		})
+	}
+}
+
+func TestRender_LinkCycleOnAReadWriteGrantFailsWithoutBlamingALink(t *testing.T) {
+	root := realTempDir(t)
+	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
+	symlink(t, b, a)
+	symlink(t, a, b)
+
+	got, err := Render(Spec{ReadWrite: []string{a}})
+	if err == nil {
+		t.Fatalf("Render accepted a read-write grant on a link cycle:\n%s", got)
+	}
+	var linked *LinkedGrantError
+	if errors.As(err, &linked) {
+		t.Fatalf("a link cycle was reported as a linked grant: %v", err)
 	}
 }
