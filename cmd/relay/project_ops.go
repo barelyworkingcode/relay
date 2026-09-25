@@ -362,6 +362,7 @@ func (o *ProjectOps) RegenSkill(ctx context.Context, lister SkillLister, id stri
 // /api/projects/{id} and IPC delete_project share, so removal and its
 // skill cleanup cannot drift between the two doors.
 func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err error) {
+	var clearedDefaults []config.ProjectMode
 	if err := o.runQueued(context.Background(), func() error {
 		return o.Store.With(func(s *config.Settings) {
 			proj, _ := config.FindProjectByID(s, id)
@@ -370,6 +371,7 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 			}
 			found = true
 			removed = *proj
+			clearedDefaults = s.DefaultModesFor(id)
 			s.RemoveProject(id)
 		})
 	}); err != nil {
@@ -377,6 +379,9 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 	}
 	if !found {
 		return config.Project{}, false, nil
+	}
+	if len(clearedDefaults) > 0 {
+		slog.Info("project removed; default cleared", "project_id", id, "modes", clearedDefaults)
 	}
 	if dir := projectSkillDir(removed); dir != "" {
 		if err := RemoveSkill(dir); err != nil {
@@ -391,6 +396,39 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 	// is a no-op, guarded by sessionRouteDeps.ready() inside cleanupProject.
 	o.SessionCleanup.cleanupProject(id)
 	return removed, true, nil
+}
+
+// SetDefaultProject makes projectID the default project for mode, or clears
+// it when projectID is "", and returns the effective defaults afterwards. Not
+// gated and not audited: a default is a label, never a grant. A refusal
+// declines the write so settings.json stays byte-identical, and comes back
+// as config.ErrInvalidDefaultProject, never errProjectSaveFailed, so a door
+// can tell it from a store failure.
+func (o *ProjectOps) SetDefaultProject(ctx context.Context, mode config.ProjectMode, projectID string) (config.DefaultProjects, error) {
+	var refusal error
+	var effective config.DefaultProjects
+	if err := o.runCommitted(ctx, func() error {
+		return config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if refusal = s.SetDefaultProject(mode, projectID); refusal != nil {
+				return refusal
+			}
+			effective = effectiveDefaultProjects(s)
+			return nil
+		})
+	}); err != nil {
+		if refusal != nil {
+			return config.DefaultProjects{}, refusal
+		}
+		return config.DefaultProjects{}, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
+	}
+	return effective, nil
+}
+
+func effectiveDefaultProjects(s *config.Settings) config.DefaultProjects {
+	return config.DefaultProjects{
+		Home: s.DefaultProjectFor(config.ProjectModeHome),
+		Work: s.DefaultProjectFor(config.ProjectModeWork),
+	}
 }
 
 // SetDisabledTools replaces the disabled-tool list one MCP has on a project.

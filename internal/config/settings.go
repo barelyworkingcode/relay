@@ -29,6 +29,11 @@ type Settings struct {
 	// this is always a non-nil slice, so an install with no hosts still
 	// serializes "hosts": [].
 	Hosts []Host `json:"hosts"`
+	// DefaultProject is the default project per mode (project_mode.go).
+	// omitempty: absent means the operator has never configured modes, so
+	// an upgraded install stays byte-identical and raises no Needs-attention
+	// row. Read a default through DefaultProjectFor, never the raw id.
+	DefaultProject *DefaultProjects `json:"default_project,omitempty"`
 	// AdminSecret is sealed (§4.1): it is a plaintext bearer the bridge
 	// accepts for a handful of admin ops, not a value relay only checks.
 	AdminSecret Secret `json:"admin_secret,omitempty"`
@@ -277,6 +282,7 @@ func (s *Settings) AddProject(p Project) {
 
 func (s *Settings) RemoveProject(id string) {
 	s.Projects = slices.DeleteFunc(s.Projects, func(p Project) bool { return p.ID == id })
+	s.PruneDefaultProjects()
 }
 
 func (s *Settings) UpdateProjectModels(id string, models []string) {

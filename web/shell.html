@@ -423,6 +423,13 @@ textarea:focus {
 .host-status-dot.idle { background: var(--text-3); }
 .host-status-dot.unreachable { background: var(--danger); }
 .host-status-dot.unknown { background: transparent; border: 1px solid var(--text-3); }
+/* Home|Work labels on a project card: the mode badge for home/work only
+   (both is the unmarked default), and one chip per mode it is the default for. */
+.proj-mode-badge { display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 600; border-radius: 4px; color: var(--text-2); border: 1px solid var(--border); }
+.proj-default-chip { display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 600; border-radius: 4px; color: var(--on-accent); background: var(--accent); }
+.proj-defaults { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 10px; }
+.proj-defaults-row { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 8px 10px; align-items: center; }
+.proj-defaults-row label { margin: 0; }
 .proj-kind-label { font-size: 13px; color: var(--text); padding: 4px 0; }
 .proj-card-path { color: var(--text-2); font-size: 11px; font-family: var(--mono); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-card-meta { color: var(--text-3); font-size: 11px; margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -693,6 +700,7 @@ window.__RELAY_INIT__ = {
   services: __SERVICES_JSON__,
   runningIds: __RUNNING_IDS_JSON__,
   projects: __PROJECTS_JSON__,
+  defaultProject: __DEFAULT_PROJECT_JSON__,
   hosts: __HOSTS_JSON__,
   templates: __TEMPLATES_JSON__,
   mcpToolCache: __MCP_TOOL_CACHE_JSON__,

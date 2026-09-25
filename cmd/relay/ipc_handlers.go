@@ -108,6 +108,7 @@ func (a *App) pushFullSettings() {
 		"services":         serviceConfigsToNativeView(s.Services),
 		"running_ids":      a.registry.RunningIDs(),
 		"projects":         s.Projects,
+		"default_project":  s.DefaultProject,
 		"mcp_tool_cache":   a.buildToolCache(s),
 		"mcp_scope_fields": a.buildScopeFields(),
 		// Enrolments and the remote block ride along so the Remote Clients tab
@@ -365,6 +366,7 @@ const (
 	MsgUpdateProjectDisabledTools = "update_project_disabled_tools"
 	MsgListMcpTools               = "list_mcp_tools"
 	MsgEnumerateScopeField        = "enumerate_scope_field"
+	MsgSetDefaultProject          = "set_default_project"
 
 	// Tool Calls / audit log (ipc_audit.go)
 	MsgQueryAudit     = "query_audit"
@@ -435,6 +437,7 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgUpdateProjectDisabledTools: ipcUpdateProjectDisabledTools,
 	MsgListMcpTools:               ipcListMcpTools,
 	MsgEnumerateScopeField:        ipcEnumerateScopeField,
+	MsgSetDefaultProject:          ipcSetDefaultProject,
 
 	// Tool Calls (ipc_audit.go)
 	MsgQueryAudit:     ipcQueryAudit,

@@ -423,6 +423,13 @@ textarea:focus {
 .host-status-dot.idle { background: var(--text-3); }
 .host-status-dot.unreachable { background: var(--danger); }
 .host-status-dot.unknown { background: transparent; border: 1px solid var(--text-3); }
+/* Home|Work labels on a project card: the mode badge for home/work only
+   (both is the unmarked default), and one chip per mode it is the default for. */
+.proj-mode-badge { display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 600; border-radius: 4px; color: var(--text-2); border: 1px solid var(--border); }
+.proj-default-chip { display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 600; border-radius: 4px; color: var(--on-accent); background: var(--accent); }
+.proj-defaults { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 10px; }
+.proj-defaults-row { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 8px 10px; align-items: center; }
+.proj-defaults-row label { margin: 0; }
 .proj-kind-label { font-size: 13px; color: var(--text); padding: 4px 0; }
 .proj-card-path { color: var(--text-2); font-size: 11px; font-family: var(--mono); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-card-meta { color: var(--text-3); font-size: 11px; margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -693,6 +700,7 @@ window.__RELAY_INIT__ = {
   services: __SERVICES_JSON__,
   runningIds: __RUNNING_IDS_JSON__,
   projects: __PROJECTS_JSON__,
+  defaultProject: __DEFAULT_PROJECT_JSON__,
   hosts: __HOSTS_JSON__,
   templates: __TEMPLATES_JSON__,
   mcpToolCache: __MCP_TOOL_CACHE_JSON__,
@@ -1031,11 +1039,85 @@ window.__RELAY_INIT__ = {
     return html;
   }
 
+  // web/src/lib/project_mode.js
+  var MODE_HOME = "home";
+  var MODE_WORK = "work";
+  var MODE_BOTH = "both";
+  var DEFAULT_MODES = [MODE_HOME, MODE_WORK];
+  var MODE_LABELS = { home: "Home", work: "Work", both: "Both" };
+  function normalizeMode(mode) {
+    return mode === MODE_HOME || mode === MODE_WORK ? mode : MODE_BOTH;
+  }
+  function projMode(p) {
+    return normalizeMode(p && p.mode);
+  }
+  function modeIncludes(mode, target) {
+    const m = normalizeMode(mode);
+    return m === MODE_BOTH || m === target;
+  }
+  function modeLabel(mode) {
+    return MODE_LABELS[mode] || MODE_LABELS[MODE_BOTH];
+  }
+  function isDefaultEligible(project, mode) {
+    if (!project || project.kind === "remote") return false;
+    return modeIncludes(projMode(project), mode);
+  }
+  function eligibleDefaultProjects(projects, mode) {
+    return (projects || []).filter((p) => isDefaultEligible(p, mode));
+  }
+  function effectiveDefaultId(projects, defaults, mode) {
+    const id = defaults && defaults[mode];
+    if (!id) return "";
+    const p = (projects || []).find((pr) => pr.id === id);
+    return isDefaultEligible(p, mode) ? id : "";
+  }
+  function defaultModesFor(defaults, projectId) {
+    if (!defaults || !projectId) return [];
+    return DEFAULT_MODES.filter((mode) => defaults[mode] === projectId);
+  }
+  function defaultProjectGaps(projects, defaults) {
+    if (!defaults) return [];
+    const gaps = [];
+    for (const mode of DEFAULT_MODES) {
+      const id = defaults[mode];
+      if (!id) {
+        gaps.push({ mode, reason: "unset", projectId: "", projectName: "" });
+        continue;
+      }
+      const p = (projects || []).find((pr) => pr.id === id);
+      if (!p) {
+        gaps.push({ mode, reason: "missing", projectId: id, projectName: "" });
+        continue;
+      }
+      if (!isDefaultEligible(p, mode)) {
+        gaps.push({ mode, reason: "ineligible", projectId: id, projectName: p.name || "" });
+      }
+    }
+    return gaps;
+  }
+  function gapText(gap) {
+    const label = modeLabel(gap.mode);
+    switch (gap.reason) {
+      case "unset":
+        return "No default project for " + label + ".";
+      case "missing":
+        return "The default project for " + label + " no longer exists.";
+      case "ineligible":
+        return esc(gap.projectName) + " can't be the default project for " + label + ".";
+      default:
+        return "";
+    }
+  }
+  function defaultProjectAttentionRows(projects, defaults) {
+    return defaultProjectGaps(projects, defaults).map((gap) => ({ text: gapText(gap), tab: "projects" }));
+  }
+
   // web/src/app.js
   var EXTERNAL_MCPS_INIT = window.__RELAY_INIT__.externalMcps;
   var SERVICES_INIT = window.__RELAY_INIT__.services;
   var RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
   var PROJECTS_INIT = window.__RELAY_INIT__.projects;
+  var DEFAULT_PROJECT_INIT = window.__RELAY_INIT__.defaultProject || null;
   var HOSTS_INIT = window.__RELAY_INIT__.hosts || [];
   var TEMPLATES_INIT = window.__RELAY_INIT__.templates || [];
   var MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
@@ -1119,6 +1201,8 @@ window.__RELAY_INIT__ = {
     _cfgBadJson: {},
     // Projects tab.
     projects: PROJECTS_INIT,
+    defaultProject: DEFAULT_PROJECT_INIT,
+    // the raw default_project block {home?, work?}, or null when never configured
     mcpToolCache: MCP_TOOL_CACHE_INIT,
     // mcpId -> [{name, description, category}]
     mcpScopeFields: MCP_SCOPE_FIELDS_INIT,
@@ -1499,6 +1583,7 @@ window.__RELAY_INIT__ = {
     if (pending > 0) {
       rows.push({ text: pluralize(pending, "pending enrolment request") + ".", tab: "remote" });
     }
+    rows.push(...defaultProjectAttentionRows(state.projects, state.defaultProject));
     return rows;
   }
   function renderOverviewAttention() {
@@ -2318,6 +2403,7 @@ window.__RELAY_INIT__ = {
       return m;
     }, {});
     if (data.projects) state.projects = data.projects;
+    if ("default_project" in data) state.defaultProject = data.default_project || null;
     if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
     if (data.mcp_scope_fields) state.mcpScopeFields = data.mcp_scope_fields;
     if (data.enrolments) state.enrolments = data.enrolments;
@@ -2581,6 +2667,7 @@ window.__RELAY_INIT__ = {
         html += '<span class="proj-card-name">' + esc(p.name) + "</span>";
         if (remote) html += '<span class="proj-badge-remote">Access profile</span>';
         if (p.host_id) html += '<span class="proj-host-chip">\u2301 ' + esc(hostNameFor(p.host_id)) + "</span>";
+        html += renderProjModeChips(p);
         html += "</div>";
         html += '<div style="display:flex;gap:4px">';
         html += '<button class="btn btn-sm" ' + bind(editProject, p.id) + ">Edit</button>";
@@ -2605,6 +2692,7 @@ window.__RELAY_INIT__ = {
         html += "</div>";
       }
     }
+    html += renderProjDefaults();
     return html;
   }
   function renderScopeGapBanner() {
@@ -2625,11 +2713,58 @@ window.__RELAY_INIT__ = {
     html += "</ul></div>";
     return html;
   }
+  function renderProjDefaults() {
+    if (!(state.projects || []).some((p) => !isRemoteProject(p))) return "";
+    let html = '<div class="proj-defaults" id="projDefaults">';
+    html += '<div class="proj-section-title">Default projects</div>';
+    html += '<p class="proj-section-help">Where a new thread starts in each mode. A label, not a grant.</p>';
+    html += '<div class="proj-defaults-row">';
+    html += renderProjDefaultSelect("home", "projDefaultHome", `onchange="setDefaultProject('home', this.value)"`);
+    html += renderProjDefaultSelect("work", "projDefaultWork", `onchange="setDefaultProject('work', this.value)"`);
+    html += "</div></div>";
+    return html;
+  }
+  function renderProjDefaultSelect(mode, id, onchange) {
+    const current = effectiveDefaultId(state.projects, state.defaultProject, mode);
+    let html = '<label for="' + id + '">' + esc(modeLabel(mode)) + "</label>";
+    html += '<select id="' + id + '" ' + onchange + ">";
+    html += '<option value=""' + (current ? "" : " selected") + ">None</option>";
+    for (const p of eligibleDefaultProjects(state.projects, mode)) {
+      html += '<option value="' + esc(p.id) + '"' + (p.id === current ? " selected" : "") + ">" + esc(p.name) + "</option>";
+    }
+    html += "</select>";
+    return html;
+  }
+  function renderProjModeChips(p) {
+    let html = "";
+    const mode = projMode(p);
+    if (mode !== "both") {
+      html += '<span class="proj-mode-badge" data-project-mode="' + mode + '">' + esc(modeLabel(mode)) + "</span>";
+    }
+    for (const m of defaultModesFor(state.defaultProject, p.id)) {
+      if (!isDefaultEligible(p, m)) continue;
+      html += '<span class="proj-default-chip" data-default-for="' + m + '">Default for ' + esc(modeLabel(m)) + "</span>";
+    }
+    return html;
+  }
+  function setDefaultProject(mode, projectId) {
+    if (!DEFAULT_MODES.includes(mode)) return;
+    state.projectError = null;
+    ipc(JSON.stringify({ type: "set_default_project", mode, project_id: projectId || "" }));
+  }
+  function setProjMode(mode) {
+    const f = state.projectForm;
+    if (!f) return;
+    f.mode = mode;
+    render();
+  }
   function blankProjectForm() {
     return {
       id: null,
       kind: "local",
       // 'local' | 'remote' — see setProjKind
+      mode: "both",
+      // 'home' | 'work' | 'both' — see setProjMode
       name: "",
       path: "",
       // host_id names a Host this project's Path lives on instead of this
@@ -2688,6 +2823,7 @@ window.__RELAY_INIT__ = {
     return {
       id: p.id,
       kind: isRemoteProject(p) ? "remote" : "local",
+      mode: projMode(p),
       name: p.name || "",
       path: p.path || "",
       host_id: p.host_id || "",
@@ -3453,6 +3589,15 @@ window.__RELAY_INIT__ = {
       html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, skills, shell templates and models do not apply \u2014 what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
     }
     html += "</div>";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Mode</div>';
+    html += '<div class="perm-btns">';
+    html += '<button class="perm-btn ' + (f.mode === "home" ? "active" : "") + `" data-proj-mode="home" onclick="setProjMode('home')">Home</button>`;
+    html += '<button class="perm-btn ' + (f.mode === "work" ? "active" : "") + `" data-proj-mode="work" onclick="setProjMode('work')">Work</button>`;
+    html += '<button class="perm-btn ' + (f.mode === "both" ? "active" : "") + `" data-proj-mode="both" onclick="setProjMode('both')">Both</button>`;
+    html += "</div>";
+    html += '<p class="proj-section-help">Which Home|Work view shows this ' + (isRemote ? "profile" : "project") + ". A label, not a grant: it changes nothing this " + (isRemote ? "profile" : "project") + " can reach.</p>";
+    html += "</div>";
     if (isHostedForm(f)) {
       html += '<div class="proj-section">';
       html += '<div class="proj-section-title">MCPs, Tools, Operations, External Access &amp; Resources</div>';
@@ -3731,6 +3876,7 @@ window.__RELAY_INIT__ = {
     const payload = {
       name: name.trim(),
       kind: isRemote ? "remote" : "local",
+      mode: f.mode,
       // host_id: '' moves (or keeps) the project on the console —
       // validateHostShape refuses allowed_mcp_ids and the two flags below
       // on a host project, so this harvest forces all three to the value
@@ -3889,6 +4035,11 @@ window.__RELAY_INIT__ = {
   };
   window.onProjectRemoved = function(id) {
     state.projects = state.projects.filter((x) => x.id !== id);
+    if (state.defaultProject) {
+      for (const m of DEFAULT_MODES) {
+        if (state.defaultProject[m] === id) state.defaultProject[m] = "";
+      }
+    }
     delete state.projectTokenVisible[id];
     delete state.projectFreshToken[id];
     delete state.projectSkillRegen[id];
@@ -3897,6 +4048,11 @@ window.__RELAY_INIT__ = {
       state.projectForm = null;
     }
     if (state.page === "projects") render("push");
+  };
+  window.onDefaultProjectUpdated = function(view) {
+    state.defaultProject = view || {};
+    state.projectError = null;
+    if (state.page === "projects" || state.page === "overview") render("push");
   };
   window.onProjectTokenRotated = function(id, plaintext) {
     state.rotatingProjectId = null;
@@ -6520,6 +6676,11 @@ That browser's credential stops authenticating on its next request and it has to
     isProjTemplatesWildcard,
     setProjTemplatesWildcard,
     toggleProjTemplate,
+    renderProjDefaults,
+    renderProjDefaultSelect,
+    renderProjModeChips,
+    setDefaultProject,
+    setProjMode,
     openProjModelPicker,
     requestModelCatalog,
     repaintProjModelPicker,

@@ -16,6 +16,7 @@ func (s *Settings) Clone() *Settings {
 	cp.Services = cloneServiceConfigs(s.Services)
 	cp.Projects = cloneProjects(s.Projects)
 	cp.Hosts = cloneHosts(s.Hosts)
+	cp.DefaultProject = cloneDefaultProjects(s.DefaultProject)
 	cp.Enrolments = cloneEnrolments(s.Enrolments)
 	cp.Audit = cloneAuditConfig(s.Audit)
 	cp.Remote = cloneRemoteConfig(s.Remote)
@@ -189,6 +190,14 @@ func cloneProjects(s []Project) []Project {
 		out[i] = cloneProject(p)
 	}
 	return out
+}
+
+func cloneDefaultProjects(d *DefaultProjects) *DefaultProjects {
+	if d == nil {
+		return nil
+	}
+	cp := *d
+	return &cp
 }
 
 func cloneHostProbe(p *HostProbe) *HostProbe {

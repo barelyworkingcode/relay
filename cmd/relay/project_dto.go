@@ -27,6 +27,8 @@ type projectView struct {
 	Path             string                     `json:"path"`
 	Kind             config.ProjectKind         `json:"kind,omitempty"`
 	HostID           string                     `json:"host_id,omitempty"`
+	Mode             config.ProjectMode         `json:"mode"`
+	DefaultFor       []config.ProjectMode       `json:"default_for,omitempty"`
 	AllowedMcpIDs    []string                   `json:"allowed_mcp_ids"`
 	AllowedModels    []string                   `json:"allowed_models"`
 	ChatTemplates    []config.ChatTemplate      `json:"chat_templates,omitempty"`
@@ -43,13 +45,17 @@ type projectView struct {
 	Mounts           []config.MountGrant        `json:"mounts,omitempty"`
 }
 
-func projectToView(p config.Project) projectView {
+// projectToView reads s for the project's defaults, so s must be the snapshot
+// p came from or a later one.
+func projectToView(s *config.Settings, p config.Project) projectView {
 	return projectView{
 		ID:               p.ID,
 		Name:             p.Name,
 		Path:             p.Path,
 		Kind:             p.Kind,
 		HostID:           p.HostID,
+		Mode:             p.EffectiveMode(),
+		DefaultFor:       s.DefaultModesFor(p.ID),
 		AllowedMcpIDs:    p.AllowedMcpIDs,
 		AllowedModels:    p.AllowedModels,
 		ChatTemplates:    p.ChatTemplates,
@@ -67,10 +73,21 @@ func projectToView(p config.Project) projectView {
 	}
 }
 
-func projectsToView(ps []config.Project) []projectView {
+func projectsToView(s *config.Settings, ps []config.Project) []projectView {
 	out := make([]projectView, 0, len(ps))
 	for _, p := range ps {
-		out = append(out, projectToView(p))
+		out = append(out, projectToView(s, p))
 	}
 	return out
+}
+
+// defaultProjectView always carries both keys, "" meaning no default, so a
+// reader never has to tell a missing key from a cleared one.
+type defaultProjectView struct {
+	Home string `json:"home"`
+	Work string `json:"work"`
+}
+
+func defaultProjectViewOf(d config.DefaultProjects) defaultProjectView {
+	return defaultProjectView{Home: d.Home, Work: d.Work}
 }
