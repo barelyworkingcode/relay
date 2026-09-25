@@ -440,6 +440,8 @@ func TestSaveProjectForm_RefusedCreateNamesTheFieldAndFocusesIt(t *testing.T) {
 		window.webkit = { messageHandlers: { ipc: { postMessage: function(m){ window.__sent.push(String(m)); } } } };
 		window.state.page = 'projects';
 		window.newProject();
+		// Opening the form requests the model catalog; only the save must send nothing.
+		window.__sent = [];
 		document.getElementById('projName').value = '';
 		document.getElementById('projPath').value = '/tmp/whatever';
 		var focused = null;
