@@ -103,7 +103,7 @@ func TestDefaultProject_ApplyUpdateThatInvalidatesItClearsIt(t *testing.T) {
 func TestProjectMode_NotAGrant(t *testing.T) {
 	home := config.ProjectMode(config.ProjectModeHome)
 	stored := config.Project{ID: "p1", Name: "Acme", Mode: config.ProjectModeWork, AllowedMcpIDs: []string{"fsmcp"}}
-	if got := UpdateWidensGrant(stored, UpdateFields{Mode: &home}); len(got) != 0 {
+	if got := UpdateWidensGrant(stored, UpdateFields{Mode: &home}, nil); len(got) != 0 {
 		t.Errorf("a mode change widens %v, want nothing", got)
 	}
 	if _, err := DecodeNarrowFields([]byte(`{"mode":"home"}`)); err == nil {

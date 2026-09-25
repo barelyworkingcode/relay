@@ -11,6 +11,7 @@ package project
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"reflect"
 	"slices"
 
@@ -26,8 +27,8 @@ import (
 // must not prompt either: only entries in the returned slice are grounds to
 // gate, and its order is stable (matching projectUpdateGrantFieldNames' own
 // field order) so a reason string built from it reads the same way every
-// time.
-func UpdateWidensGrant(stored config.Project, f UpdateFields) []string {
+// time. A nil surfaces strips nothing, the strict reading.
+func UpdateWidensGrant(stored config.Project, f UpdateFields, surfaces McpSurfaces) []string {
 	var out []string
 	if f.AllowedMcpIDs != nil && addsMcpID(stored.AllowedMcpIDs, *f.AllowedMcpIDs) {
 		out = append(out, "allowed_mcp_ids")
@@ -38,7 +39,7 @@ func UpdateWidensGrant(stored config.Project, f UpdateFields) []string {
 	if f.Access != nil && accessWidens(stored, *f.Access) {
 		out = append(out, "access")
 	}
-	if f.Context != nil && !contextEqual(stored.Context, *f.Context) {
+	if f.Context != nil && !contextEqual(comparableContext(stored.Context, &stored, surfaces), comparableContext(*f.Context, nil, nil)) {
 		out = append(out, "context")
 	}
 	if f.AllowExternal != nil && allowExternalWidens(stored.AllowExternal, *f.AllowExternal) {
@@ -203,19 +204,109 @@ func contextEqual(a, b map[string]json.RawMessage) bool {
 		if !ok {
 			return false
 		}
-		if bytes.Equal(bytes.TrimSpace(av), bytes.TrimSpace(bv)) {
-			continue
-		}
-		var da, db any
-		if err := json.Unmarshal(av, &da); err != nil {
-			return false
-		}
-		if err := json.Unmarshal(bv, &db); err != nil {
-			return false
-		}
-		if !reflect.DeepEqual(da, db) {
+		if !jsonValueEqual(av, bv) {
 			return false
 		}
 	}
 	return true
+}
+
+// jsonValueEqual compares two JSON values by decoded value; a value that
+// does not decode is unequal to everything but its own bytes.
+func jsonValueEqual(a, b json.RawMessage) bool {
+	if bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b)) {
+		return true
+	}
+	var da, db any
+	if err := json.Unmarshal(a, &da); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &db); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(da, db)
+}
+
+// comparableContext drops MCP entries with no fields and, when derivedFrom
+// is given and relay would derive into it, any v2 project_path field whose
+// value is exactly what relay derives from derivedFrom.Path. It returns a
+// new map and leaves ctx untouched. A nil derivedFrom strips nothing.
+//
+// Stripping is deliberate and applies to the stored side only: the Settings
+// form cannot resend a derived field because validation refuses it, and a
+// field stripped here holds nothing but what the write re-derives from Path,
+// which is gated on its own row. Derivation happens only for a local,
+// unhosted project, so on any other project, and for any value that differs
+// from the derivation, the field is kept and compared strictly. If
+// re-derivation does not happen, the absent v2 restrict field refuses every
+// call, so the result can only be narrower. A request that carries a derived
+// field keeps it (callers pass a nil derivedFrom), so it still compares
+// unequal. A blob that does not decode as an object is kept and compared
+// strictly.
+func comparableContext(ctx map[string]json.RawMessage, derivedFrom *config.Project, surfaces McpSurfaces) map[string]json.RawMessage {
+	derives := derivedFrom != nil && !derivedFrom.IsRemote() && !derivedFrom.IsHosted()
+	out := make(map[string]json.RawMessage, len(ctx))
+	for mcpID, blob := range ctx {
+		values, isObject := decodeContextObject(blob)
+		if isObject && len(values) == 0 {
+			continue
+		}
+		if !isObject || !derives {
+			out[mcpID] = blob
+			continue
+		}
+		rest, changed := withoutDerivedFields(values, surfaces.Schema(mcpID), derivedFrom.Path)
+		if !changed {
+			out[mcpID] = blob
+			continue
+		}
+		if len(rest) == 0 {
+			continue
+		}
+		encoded, err := json.Marshal(rest)
+		if err != nil {
+			out[mcpID] = blob
+			continue
+		}
+		out[mcpID] = encoded
+	}
+	return out
+}
+
+// decodeContextObject treats an empty or null blob as an object with no
+// fields; anything that is not a JSON object reports isObject false.
+func decodeContextObject(blob json.RawMessage) (map[string]json.RawMessage, bool) {
+	trimmed := bytes.TrimSpace(blob)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil, true
+	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &values); err != nil {
+		return nil, false
+	}
+	return values, true
+}
+
+// withoutDerivedFields returns a copy of values without each of schema's
+// project_path fields whose value equals the derivation from path, and
+// whether any were removed.
+func withoutDerivedFields(values map[string]json.RawMessage, schema ContextSchema, path string) (map[string]json.RawMessage, bool) {
+	if !schema.V2() {
+		return values, false
+	}
+	rest := maps.Clone(values)
+	changed := false
+	for _, f := range schema.ProjectPathFields() {
+		stored, ok := rest[f.Name]
+		if !ok {
+			continue
+		}
+		derived, err := json.Marshal(projectPathValue(f, path))
+		if err != nil || !jsonValueEqual(stored, derived) {
+			continue
+		}
+		delete(rest, f.Name)
+		changed = true
+	}
+	return rest, changed
 }
