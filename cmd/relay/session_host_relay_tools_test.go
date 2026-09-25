@@ -67,6 +67,12 @@ func newRelayToolsFixture(t *testing.T) *relayToolsFixture {
 	assertNoErr(t, err, "resolve temp home")
 	configDir := filepath.Join(home, "Library", "Application Support", "relay")
 	assertNoErr(t, os.MkdirAll(configDir, 0o700), "mkdir config dir")
+	claudeBin := filepath.Join(home, ".local", "bin", "claude")
+	assertNoErr(t, os.MkdirAll(filepath.Dir(claudeBin), 0o700), "mkdir local bin")
+	buildClaude := exec.Command("go", "build", "-o", claudeBin, "./cmd/testclaude")
+	buildClaude.Dir = repoRoot(t)
+	buildClaude.Stderr = os.Stderr
+	assertNoErr(t, buildClaude.Run(), "build testclaude as the session's claude")
 	bridge.SetConfigDirForTest(configDir)
 	t.Cleanup(func() { bridge.SetConfigDirForTest("") })
 	t.Setenv("HOME", home)

@@ -25,28 +25,45 @@ import (
 func startMountedServer(t *testing.T, relayPID int) (srv *hostapi.Server, internalSock, bearer string, terminals *terminal.Manager, sessions *session.Manager) {
 	t.Helper()
 	terminals, sessions = buildManagers(t)
-	dir := mkShortTempDir(t, "hostapi-mount-")
-	internalSock = filepath.Join(dir, "internal.sock")
-	hookSock := filepath.Join(dir, "hook.sock")
-	bearer = "test-mount-bearer-secret"
+	hookSock := filepath.Join(mkShortTempDir(t, "hostapi-mount-"), "hook.sock")
+	h := startMountedHost(t, relayPID, hookSock, terminals, sessions, permission.NewPermissionManager())
+	return h.srv, h.internalSock, h.bearer, terminals, sessions
+}
 
-	srv = hostapi.New(hostapi.Config{
-		InternalSocket: internalSock,
-		InternalBearer: bearer,
+type mountedHost struct {
+	srv                            *hostapi.Server
+	internalSock, hookSock, bearer string
+	perms                          *permission.PermissionManager
+}
+
+// startMountedHost is startMountedServer with the hook socket, the managers
+// and the PermissionManager chosen by the caller, so a real ClaudeProvider
+// can be pointed at the same hook socket and share the PermissionManager.
+func startMountedHost(t *testing.T, relayPID int, hookSock string, terminals *terminal.Manager, sessions *session.Manager, perms *permission.PermissionManager) *mountedHost {
+	t.Helper()
+	h := &mountedHost{
+		internalSock: filepath.Join(mkShortTempDir(t, "hostapi-mount-"), "internal.sock"),
+		hookSock:     hookSock,
+		bearer:       "test-mount-bearer-secret",
+		perms:        perms,
+	}
+	h.srv = hostapi.New(hostapi.Config{
+		InternalSocket: h.internalSock,
+		InternalBearer: h.bearer,
 		RelayPID:       relayPID,
 		HookSocket:     hookSock,
-		Permissions:    permission.NewPermissionManager(),
+		Permissions:    perms,
 	}, terminals, sessions)
-	if err := srv.ListenInternal(); err != nil {
+	if err := h.srv.ListenInternal(); err != nil {
 		t.Fatalf("ListenInternal: %v", err)
 	}
-	if err := srv.ListenHook(); err != nil {
+	if err := h.srv.ListenHook(); err != nil {
 		t.Fatalf("ListenHook: %v", err)
 	}
-	go func() { _ = srv.ServeInternal() }()
-	go func() { _ = srv.ServeHook() }()
-	t.Cleanup(srv.Close)
-	return srv, internalSock, bearer, terminals, sessions
+	go func() { _ = h.srv.ServeInternal() }()
+	go func() { _ = h.srv.ServeHook() }()
+	t.Cleanup(h.srv.Close)
+	return h
 }
 
 func getWithBearer(t *testing.T, client *http.Client, url, bearer string) *http.Response {

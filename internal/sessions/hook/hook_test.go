@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -38,23 +40,30 @@ func TestRun_NoHookSocket_NoOp(t *testing.T) {
 	}
 }
 
-// TestRun_InteractiveTool_SkipsRoundTrip covers ExitPlanMode/AskUserQuestion:
-// no permission round trip at all, matching relayLLM's cmd/hook.
+// TestRun_InteractiveTool_SkipsRoundTrip: these tools get no round trip and
+// no output, leaving the decision to Claude Code.
 func TestRun_InteractiveTool_SkipsRoundTrip(t *testing.T) {
-	for _, tool := range []string{"ExitPlanMode", "AskUserQuestion"} {
+	for _, tool := range []string{"ExitPlanMode", "AskUserQuestion", "ToolSearch"} {
 		t.Run(tool, func(t *testing.T) {
+			var dialed bool
 			var out bytes.Buffer
 			code := hook.Run(hook.Deps{
 				Stdin:   strings.NewReader(`{"tool_name":"` + tool + `","tool_input":{}}`),
 				Stdout:  &out,
-				Environ: envFunc(map[string]string{hook.EnvHookSocket: "/some/sock"}),
+				Environ: envFunc(map[string]string{hook.EnvHookSocket: "/some/sock", hook.EnvSessionID: "s1"}),
 				Dial: func(ctx context.Context) (net.Conn, error) {
-					t.Fatal("must not dial for an interactive tool")
-					return nil, nil
+					dialed = true
+					return nil, errors.New("must not dial for an interactive tool")
 				},
 			})
 			if code != 0 {
 				t.Fatalf("exit code = %d, want 0", code)
+			}
+			if dialed {
+				t.Fatal("dialed the host for an interactive tool")
+			}
+			if out.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty", out.String())
 			}
 		})
 	}
@@ -168,74 +177,104 @@ func TestRun_NoAuthorizationHeader(t *testing.T) {
 	}
 }
 
-// TestRun_RefusedOrUnreachable_FailsOpen covers every local/network failure
-// mode: the hook must exit 0 either way (Claude Code falls back to its own
-// checks), matching relayLLM's hook's own fail-open posture — and, per C6,
-// a membership refusal on /permission is just another network-shaped
-// failure to this client (it never inspects the status code specially).
-func TestRun_RefusedOrUnreachable_FailsOpen(t *testing.T) {
-	t.Run("connection refused", func(t *testing.T) {
-		var out bytes.Buffer
-		code := hook.Run(hook.Deps{
-			Stdin:  strings.NewReader(`{"tool_name":"Bash","tool_input":{}}`),
-			Stdout: &out,
-			Environ: envFunc(map[string]string{
-				hook.EnvHookSocket: "/no/such/socket",
-				hook.EnvSessionID:  "s1",
-			}),
-			Dial: func(ctx context.Context) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", "/no/such/socket")
-			},
-		})
-		if code != 0 {
-			t.Fatalf("exit code = %d, want 0", code)
-		}
-		if out.Len() != 0 {
-			t.Fatalf("stdout = %q, want empty on failure", out.String())
-		}
-	})
+// TestRun_FailureModes_FailClosedWithDeny: any failure after the hook
+// socket is configured must print an explicit deny, never exit silently,
+// because silence lets Claude Code's own check refuse MCP tools anyway.
+func TestRun_FailureModes_FailClosedWithDeny(t *testing.T) {
+	const bashStdin = `{"tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"tu-1"}`
+	withSession := map[string]string{hook.EnvHookSocket: "unused", hook.EnvSessionID: "s1"}
 
-	t.Run("host refuses (403)", func(t *testing.T) {
+	cases := []struct {
+		name  string
+		stdin string
+		env   map[string]string
+		dial  func(t *testing.T) func(ctx context.Context) (net.Conn, error)
+	}{
+		{"host answers 403", bashStdin, withSession, statusServer(http.StatusForbidden, "")},
+		{"host answers 500", bashStdin, withSession, statusServer(http.StatusInternalServerError, `{"decision":"allow"}`)},
+		{"body is not JSON", bashStdin, withSession, statusServer(http.StatusOK, "not json")},
+		{"decision is ask", bashStdin, withSession, statusServer(http.StatusOK, `{"decision":"ask","reason":"x"}`)},
+		{"decision is empty", bashStdin, withSession, statusServer(http.StatusOK, `{"decision":"","reason":"x"}`)},
+		{"dial refused", bashStdin, withSession, func(t *testing.T) func(ctx context.Context) (net.Conn, error) {
+			sock := filepath.Join(t.TempDir(), "absent.sock")
+			return func(ctx context.Context) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+			}
+		}},
+		{"malformed stdin", "not json", withSession, statusServer(http.StatusOK, `{"decision":"allow","reason":"x"}`)},
+		{"empty session id", bashStdin, map[string]string{hook.EnvHookSocket: "unused"}, statusServer(http.StatusOK, `{"decision":"allow","reason":"x"}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			code := hook.Run(hook.Deps{
+				Stdin:   strings.NewReader(tc.stdin),
+				Stdout:  &out,
+				Environ: envFunc(tc.env),
+				Dial:    tc.dial(t),
+			})
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0", code)
+			}
+			hso := singleDecisionLine(t, out.String())
+			if hso["hookEventName"] != "PreToolUse" || hso["permissionDecision"] != "deny" {
+				t.Fatalf("hookSpecificOutput = %v, want a PreToolUse deny", hso)
+			}
+			reason, _ := hso["permissionDecisionReason"].(string)
+			if !strings.HasPrefix(reason, "relay-sessions hook: ") {
+				t.Fatalf("reason = %q, want prefix %q", reason, "relay-sessions hook: ")
+			}
+		})
+	}
+}
+
+// TestRun_HostDeny_PassedThrough: a 200 deny reaches Claude Code verbatim.
+func TestRun_HostDeny_PassedThrough(t *testing.T) {
+	dial, _ := fakePermissionServer(t, "deny", "Denied by user")
+	var out bytes.Buffer
+	code := hook.Run(hook.Deps{
+		Stdin:   strings.NewReader(`{"tool_name":"mcp__relay__fs_list","tool_input":{}}`),
+		Stdout:  &out,
+		Environ: envFunc(map[string]string{hook.EnvHookSocket: "unused", hook.EnvSessionID: "s1"}),
+		Dial:    dial,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	hso := singleDecisionLine(t, out.String())
+	if hso["permissionDecision"] != "deny" || hso["permissionDecisionReason"] != "Denied by user" {
+		t.Fatalf("hookSpecificOutput = %v, want the host's deny verbatim", hso)
+	}
+}
+
+func statusServer(status int, body string) func(t *testing.T) func(ctx context.Context) (net.Conn, error) {
+	return func(t *testing.T) func(ctx context.Context) (net.Conn, error) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusForbidden)
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
 		}))
 		t.Cleanup(srv.Close)
+		return func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", strings.TrimPrefix(srv.URL, "http://"))
+		}
+	}
+}
 
-		var out bytes.Buffer
-		code := hook.Run(hook.Deps{
-			Stdin:  strings.NewReader(`{"tool_name":"Bash","tool_input":{}}`),
-			Stdout: &out,
-			Environ: envFunc(map[string]string{
-				hook.EnvHookSocket: "unused",
-				hook.EnvSessionID:  "s1",
-			}),
-			Dial: func(ctx context.Context) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "tcp", strings.TrimPrefix(srv.URL, "http://"))
-			},
-		})
-		if code != 0 {
-			t.Fatalf("exit code = %d, want 0", code)
-		}
-		if out.Len() != 0 {
-			t.Fatalf("stdout = %q, want empty on a refusal", out.String())
-		}
-	})
-
-	t.Run("malformed stdin", func(t *testing.T) {
-		var out bytes.Buffer
-		code := hook.Run(hook.Deps{
-			Stdin:  strings.NewReader(`not json`),
-			Stdout: &out,
-			Environ: envFunc(map[string]string{
-				hook.EnvHookSocket: "unused",
-			}),
-			Dial: func(ctx context.Context) (net.Conn, error) {
-				t.Fatal("must not dial on unparseable stdin")
-				return nil, nil
-			},
-		})
-		if code != 0 {
-			t.Fatalf("exit code = %d, want 0", code)
-		}
-	})
+// singleDecisionLine asserts stdout is exactly one JSON line and returns its
+// hookSpecificOutput object.
+func singleDecisionLine(t *testing.T, stdout string) map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if stdout == "" || len(lines) != 1 {
+		t.Fatalf("stdout = %q, want exactly one line", stdout)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &decoded); err != nil {
+		t.Fatalf("stdout is not JSON: %v (%q)", err, stdout)
+	}
+	hso, ok := decoded["hookSpecificOutput"].(map[string]any)
+	if !ok {
+		t.Fatalf("stdout missing hookSpecificOutput: %v", decoded)
+	}
+	return hso
 }

@@ -19,7 +19,7 @@ selected by `os.Args[1]`:
 |---|---|---|
 | `service` | relay, once, as a launched service (`Command: RelaySessionsHelperPath(relayBin)`, `internal/service/builtin_sessions.go`) | Says a plain `service`-kind Hello (unmodified `bridge.SendHello`), runs the one-time relayLLM data migration, builds a real `terminal.Manager`/`session.Manager`, serves C5's internal API and C6's hook socket, and registers its manifest. |
 | `exec` | `relay-sessions service`, once per terminal or provider-hosted session it spawns | The shim (C6): becomes the session's root process, optionally proves a launch identity, execs the real target, forwards signals, and reports status. See [The shim](#the-shim-relay-sessions-exec). |
-| `hook` | Claude Code, as its own configured `PreToolUse` hook, once per tool call | Dials the host's hook socket and asks `/permission` whether the call may proceed. |
+| `hook` | Claude Code, as its own configured `PreToolUse` hook, once per tool call | Dials the host's hook socket and asks `/permission` whether the call may proceed; denies the call itself, rather than staying silent, whenever it can't get a clear answer — see [Tool permissions](#tool-permissions-post-permission). |
 
 Only `service` mode is a long-lived process; `exec` and `hook` both exit when
 their one job is done.
@@ -163,6 +163,161 @@ terminal it just launched, and relays its bytes to the CLI
 ([`docs/sandbox-command.md`](sandbox-command.md)). Relay ends such a session
 itself with `/terminate` when the CLI disconnects, because a terminal that lost
 its last viewer would otherwise idle until the template's timeout.
+
+## Tool permissions (`POST /permission`)
+
+`POST /permission` arrives on the hook socket, dialed by a `relay-sessions
+hook` process running as Claude Code's own `PreToolUse` hook (see [The binary
+and its three modes](#the-binary-and-its-three-modes)). `handlePermission`
+(`internal/sessions/hostapi/server.go`) never trusts the request body for who
+is calling: it resolves the connecting pid to a session id first, the same
+way `checkInternalPeer` resolves the internal socket's callers, and only then
+reads the body.
+
+### Identity: whose call is this
+
+`internal/membership.Resolve` walks the requester's own process ancestry up
+to a known root. A pty session's root has always been the shim's own pid,
+recorded as `root_pid` at `/launch` time (see [The
+shim](#the-shim-relay-sessions-exec)). A provider-hosted (claude/pi/chat)
+session has no `/launch`-time entry at all, so the walk's set of roots is
+extended with **live provider roots, read from `session.Manager` on every
+`/permission` request**:
+
+- A local claude session's root is the pid the provider actually spawned:
+  `relay-sessions exec`'s own pid when the session runs shimmed (every
+  production local launch that carries a sandbox profile or a launch
+  identity), or `claude` itself when the launch has neither.
+- The root's start time is read immediately after `cmd.Start()` returns, and
+  the walk requires an exact match on pid *and* start time — a bare pid
+  match would also match whatever unrelated process the kernel later
+  recycles that pid to.
+- An SSH session reports no root; `handleControlRequest`'s own path does not
+  go through this walk at all.
+- A provider that has already exited reports no root.
+
+Every walk failure — no root, a start-time mismatch, a pid that isn't a
+descendant — is a `403`, before the request body is even decoded. This is
+deliberate: a `403` becomes a hook `deny` (see "The hook fails closed"
+below), so a caller the walk can't place is refused the tool call, not
+granted it. Treating an unresolvable session as unrestricted, or defaulting
+to allow when the walk errors, would let any process that merely knows the
+hook socket's path answer for a session it isn't.
+
+Roots are read live rather than written once at `/launch` because a launch-time
+entry goes stale the moment a provider restarts a process outside `/launch` —
+`SetPermissionMode`'s Kill-then-Start cycle chief among them (see [gap
+1](#what-is-not-built-yet)) — leaving a stale entry pointing at a pid the
+kernel may since have reused. Reading `session.Manager` fresh on each request
+means a restarted provider's new pid is what the walk actually sees, and a
+torn-down session reports no root instead of a dangling one.
+
+### Decision order
+
+Once the ancestry walk resolves a session id, and the decoded body's own
+`sessionId` matches it (a mismatch is also a `403`), `handlePermission` runs:
+
+1. A malformed body or an empty `sessionId`: `400`.
+2. `cfg.Permissions == nil`: `200` deny, `session host: no permission manager`.
+3. No live session for the id (`sessions.LiveSession`): `200` deny, `session
+   has no tool-permission flow`.
+4. A snapshot of the session's `PermissionMode`, `Headless` (bypassPermissions),
+   `Policy` and `Directory`, taken under the session lock, goes through
+   `permission.Preflight`. First match wins:
+
+   | # | Condition | Decision |
+   |---|---|---|
+   | 1 | `Policy.DeniedTools` matches | deny — denied by project policy |
+   | 2 | mode `bypassPermissions` | allow — bypassPermissions mode |
+   | 3 | `Policy.AllowedTools` matches | allow — allowed by project policy |
+   | 4 | mode `acceptEdits`; tool is `Edit`, `MultiEdit`, `Write` or `NotebookEdit`; its `file_path`/`notebook_path` is an absolute path lexically under the cleaned session `Directory` | allow — acceptEdits mode: edit inside the session directory |
+   | 5 | anything else (`default`, `plan`, an unknown mode) | ask a person |
+
+5. `Preflight` deciding without asking ends the request there: no
+   `permission_request` frame, no wait.
+6. `Preflight` says ask, but no viewer has joined the session (`HasViewers`):
+   `200` deny, `no client is viewing this session to approve the tool call`.
+   No request is created — nothing is queued to replay if a viewer joins
+   later.
+7. A viewer is present: `CreateRequest` mints a permission id and
+   `NotifySession` sends every viewer of the session a `permission_request`
+   frame (`sessionId`, `permissionId`, `toolName`, `toolInput`, `toolUseId`).
+8. `WaitForDecisionContext` returns the person's decision as given (an
+   empty-reason deny becomes `Denied by user`), denies with `No response`
+   after 60 seconds with no decision, and — on a hook-side disconnect —
+   cleans up the pending request and writes nothing back.
+
+Every path from step 2 on logs `slog.Info("permission decided", …)` with the
+session, tool and decision — never the tool's input.
+
+### Timeout ordering
+
+Three timeouts nest, each looser than the one it wraps: the host's 60-second
+wait for a person to answer, inside the hook client's 90-second HTTP timeout
+for the whole round trip, inside Claude Code's own 120-second timeout on the
+hook process. The ordering exists so a slow decision degrades in the host's
+favor before it ever reaches Claude Code's timeout — a Claude Code hook
+timeout counts as "no decision" exactly like exit 0 with no output (see the
+outcome table below), which falls through to Claude Code's own, weaker rules.
+60 < 90 < 120 means the host always answers before its own client gives up,
+and the client always answers before Claude Code would, so a Claude Code hook
+timeout is a configuration bug, never an expected outcome.
+
+### The hook fails closed (`hook.Run`, `internal/sessions/hook/`)
+
+In the ordinary case the hook writes exactly one line to stdout and exits 0:
+a `hookSpecificOutput` naming `permissionDecision: "allow"` or `"deny"`. Two
+cases skip the round trip entirely — exit 0, no output, and no `/permission`
+call — because they aren't tool-call decisions at all:
+
+- `RELAY_SESSIONS_HOOK_SOCKET` is unset: an operator's own `claude` running
+  in a project directory relay didn't launch.
+- The tool is `ExitPlanMode`, `AskUserQuestion` or `ToolSearch`: Claude
+  Code's own built-ins, never routed through a relay decision.
+
+Every other failure denies, with a reason prefixed `relay-sessions hook:`
+naming what failed, rather than staying silent: an empty
+`RELAY_SESSION_ID`, unreadable stdin, a dial failure, a transport error, the
+90-second client timeout firing, a non-`200` response from the host, an
+undecodable body, or a decision value that's neither `allow` nor `deny`. A
+hook that can't reach the host, or gets an answer it doesn't understand, no
+longer means "no decision" — indistinguishable, before this fix, from the two
+legitimate skip cases above. Every failure that isn't one of those two skips
+now produces an explicit `deny`, so a host outage refuses tool calls instead
+of quietly deferring to Claude Code's own rules.
+
+pty terminals, SSH sessions, pi sessions and chat sessions never run this
+hook; only a local Claude Code session configures it.
+
+### Claude Code's own hook-outcome table
+
+Measured on Claude Code 2.1.281 with relay's flags (`--print`, stream-json,
+`--mcp-config`):
+
+| Hook result | Claude Code |
+|---|---|
+| `permissionDecision: "allow"` | runs the tool |
+| `"deny"` | refuses; Claude sees the reason |
+| `"ask"` | refuses, under `--print` |
+| exit 2 | refuses; stderr is the reason |
+| exit 0 with no output, exit 1, or a hook timeout | no decision — Claude Code's own permission check runs. Under `--print` with no matching allow rule, that check refuses MCP tools, `Bash` and edits, and allows only read-only built-ins |
+| `"deny"` under `bypassPermissions` mode | refuses — a hook deny beats bypass, so the host itself answers `allow` explicitly whenever the session's mode is `bypassPermissions` (Preflight rule 2), rather than relying on Claude Code to apply bypass on the hook's behalf |
+
+### Why a hook, not `--permission-prompt-tool stdio`
+
+`stdio` hands the decision to Claude Code's own permission engine: its
+`allowed_tools`/`disallowedTools` rules would approve a call before relay's
+host process ever sees it. A `PreToolUse` hook means every tool call — MCP or
+built-in — reaches `/permission`, and the session's own policy and viewers,
+first; Claude Code's own rules run only as the fallback for the two
+deliberate skips above or an actual hook failure, and a hook failure now
+denies rather than falling through silently. A session that wants Claude
+Code's own allow rules to also apply sets them via `allowed_tools` in its
+policy, or eve's "Allow all" — read by `Preflight` rule 3 — rather than
+widening what the hook itself lets through.
+
+The SSH control path (`handleControlRequest`) is unrelated to any of this and
+unchanged.
 
 ## The shim: `relay-sessions exec`
 
@@ -666,8 +821,8 @@ what works.
    SIGKILL }`, and `waitDone` is already closed for a process that already
    exited, so that branch wins immediately. The recycled-pid hazard here is
    a stray `SIGTERM`, not a `SIGKILL`. This is not fixed here.
-6. **`/permission` is a hard-coded refusal, and a provider-hosted session
-   has no membership entry to even reach it.** `handlePermission`
+6. ~~`/permission` is a hard-coded refusal, and a provider-hosted session
+   has no membership entry to even reach it.~~ `handlePermission`
    (`internal/sessions/hostapi/server.go`) answers every admitted call
    `{"decision":"deny","reason":"session host: no policy engine wired
    yet"}` — a fixed placeholder, not a policy engine. Worse, `launchSession`
@@ -677,11 +832,20 @@ what works.
    (`internal/membership.Resolve`) no pid to ever resolve a root from, even
    once a real policy engine exists. A Claude Code hook call for one of
    these sessions is therefore refused with a `403` before it ever reaches
-   the hard-coded deny, and `internal/sessions/hook.Run` fails open on that
-   `403` — a non-`200` response returns exit code `0`, the same as an
-   explicit allow. The net effect: every `PreToolUse` hook call from a
+   the hard-coded deny. ~~The net effect: every `PreToolUse` hook call from a
    claude/pi/chat session today is silently allowed through, gated by
-   nothing at all.
+   nothing at all.~~ **Fixed.** See [Tool
+   permissions](#tool-permissions-post-permission) for the real decision
+   flow, including the live provider roots that let the ancestry walk
+   resolve a claude/pi/chat session at all. One correction to the claim
+   struck above: a hook call that got no decision was never "silently
+   allowed" — the `403` sent it to Claude Code's own permission check
+   instead, and under `--print` with no matching allow rule, that check
+   refused MCP tools, `Bash` and edits, and allowed only read-only
+   built-ins. The live bug was Claude Code refusing calls relay never got a
+   chance to approve, not an open gate; `internal/sessions/hook.Run` denies
+   on a non-`200` response now, rather than the exit-0, no-output "no
+   decision" that produced that refusal.
 
 ## Code map
 
@@ -695,6 +859,7 @@ what works.
 | provider-hosted (claude/pi/chat) sessions | `internal/sessions/session/`, `internal/sessions/provider/` |
 | eve-facing HTTP/WS handlers (mounted by `hostapi.New`/`ListenInternal`) | `internal/sessions/api/` |
 | C3 process-ancestry membership | `internal/membership/` |
+| tool-permission decisions: `Preflight`, the wait/decide flow behind `/permission` | `internal/sessions/permission/` |
 | C7 sandbox profile rendering | `internal/sessions/sandbox/`, `cmd/relay/session_sandbox.go` |
 | relay-side launch authorization | `cmd/relay/session_launch.go` |
 | relay-side HTTP routes, resume, accounting | `cmd/relay/session_routes.go` |

@@ -145,40 +145,106 @@ func postJSON(t *testing.T, client *http.Client, url, bearer string, body any) *
 // registration happens before the real connection attempt.
 func postAsChildProcess(t *testing.T, sockPath, path string, body any) (pid int, wait func() (status int)) {
 	t.Helper()
+	c := startChildPost(t, sockPath, path, body)
+	return c.PID(), func() int {
+		t.Helper()
+		status, _ := c.Wait()
+		return status
+	}
+}
+
+// childPost is postAsChildProcess's request, kept so a caller can also read
+// the response body or kill the client mid-request.
+type childPost struct {
+	t                    *testing.T
+	cmd                  *exec.Cmd
+	statusFile, bodyFile string
+}
+
+func startChildPost(t *testing.T, sockPath, path string, body any) *childPost {
+	t.Helper()
 	dir := mkShortTempDir(t, "curl-")
-	bodyFile := filepath.Join(dir, "body.json")
-	outFile := filepath.Join(dir, "status.txt")
+	reqFile := filepath.Join(dir, "body.json")
+	c := &childPost{t: t, statusFile: filepath.Join(dir, "status.txt"), bodyFile: filepath.Join(dir, "resp.json")}
 
 	b, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal body: %v", err)
 	}
-	if err := os.WriteFile(bodyFile, b, 0o600); err != nil {
+	if err := os.WriteFile(reqFile, b, 0o600); err != nil {
 		t.Fatalf("write body file: %v", err)
 	}
 
 	script := fmt.Sprintf(
-		"sleep 0.2; exec curl --unix-socket %q -s -o /dev/null -w '%%{http_code}' -X POST -H 'Content-Type: application/json' --data-binary @%q http://h%s > %q",
-		sockPath, bodyFile, path, outFile,
+		"sleep 0.2; exec curl --unix-socket %q -s -o %q -w '%%{http_code}' -X POST -H 'Content-Type: application/json' --data-binary @%q http://h%s > %q",
+		sockPath, c.bodyFile, reqFile, path, c.statusFile,
 	)
-	cmd := exec.Command("sh", "-c", script)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
+	c.cmd = exec.Command("sh", "-c", script)
+	c.cmd.Stderr = os.Stderr
+	if err := c.cmd.Start(); err != nil {
 		t.Fatalf("start curl helper: %v", err)
 	}
-	return cmd.Process.Pid, func() int {
-		t.Helper()
-		if err := cmd.Wait(); err != nil {
-			t.Fatalf("curl helper: %v", err)
-		}
-		raw, err := os.ReadFile(outFile)
-		if err != nil {
-			t.Fatalf("read status file: %v", err)
-		}
-		var code int
-		if _, err := fmt.Sscanf(string(raw), "%d", &code); err != nil {
-			t.Fatalf("parse status %q: %v", raw, err)
-		}
-		return code
+	return c
+}
+
+func (c *childPost) PID() int { return c.cmd.Process.Pid }
+
+// Kill drops the connection mid-request, the way a hook dies.
+func (c *childPost) Kill() {
+	_ = c.cmd.Process.Kill()
+	_ = c.cmd.Wait()
+}
+
+func (c *childPost) Wait() (status int, body []byte) {
+	c.t.Helper()
+	if err := c.cmd.Wait(); err != nil {
+		c.t.Fatalf("curl helper: %v", err)
 	}
+	raw, err := os.ReadFile(c.statusFile)
+	if err != nil {
+		c.t.Fatalf("read status file: %v", err)
+	}
+	if _, err := fmt.Sscanf(string(raw), "%d", &status); err != nil {
+		c.t.Fatalf("parse status %q: %v", raw, err)
+	}
+	body, _ = os.ReadFile(c.bodyFile) // curl writes no file for an empty body
+	return status, body
+}
+
+var (
+	testClaudeOnce            sync.Once
+	testClaudeBin, testMCPBin string
+	testClaudeErr             error
+)
+
+// buildTestClaude builds cmd/testclaude and cmd/testmcp once per run. Its own
+// Once, apart from buildBinaries, so the tests that don't drive a Claude
+// session never depend on the stand-in building.
+func buildTestClaude(t *testing.T) (testClaude, testMCP string) {
+	t.Helper()
+	testClaudeOnce.Do(func() {
+		dir, err := os.MkdirTemp("/tmp", "hostapi-claude-bin-")
+		if err != nil {
+			testClaudeErr = err
+			return
+		}
+		testClaudeBin = filepath.Join(dir, "testclaude")
+		testMCPBin = filepath.Join(dir, "testmcp")
+		for _, b := range []struct{ out, pkg string }{
+			{testClaudeBin, "./cmd/testclaude"},
+			{testMCPBin, "./cmd/testmcp"},
+		} {
+			cmd := exec.Command("go", "build", "-o", b.out, b.pkg)
+			cmd.Dir = repoRoot(t)
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				testClaudeErr = fmt.Errorf("build %s: %w", b.pkg, err)
+				return
+			}
+		}
+	})
+	if testClaudeErr != nil {
+		t.Fatalf("build testclaude: %v", testClaudeErr)
+	}
+	return testClaudeBin, testMCPBin
 }
