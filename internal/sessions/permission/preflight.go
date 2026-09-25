@@ -20,8 +20,8 @@ type PreflightInput struct {
 
 // Preflight decides a tool call from policy and mode alone. decided is false
 // when a person has to answer. The rules are checked in order and the first
-// match wins: a denied tool, bypassPermissions, an allowed tool, then an
-// acceptEdits edit inside the session directory.
+// match wins: a denied tool, bypassPermissions, a tool allowed by bare name,
+// then an acceptEdits edit inside the session directory.
 func Preflight(in PreflightInput) (d PermissionDecision, decided bool) {
 	if in.Policy != nil && MatchToolRule(in.ToolName, in.ToolInput, in.Policy.DeniedTools) {
 		return PermissionDecision{Decision: "deny", Reason: "denied by project policy"}, true
@@ -29,13 +29,29 @@ func Preflight(in PreflightInput) (d PermissionDecision, decided bool) {
 	if in.Mode == "bypassPermissions" {
 		return PermissionDecision{Decision: "allow", Reason: "bypassPermissions mode"}, true
 	}
-	if in.Policy != nil && MatchToolRule(in.ToolName, in.ToolInput, in.Policy.AllowedTools) {
+	if in.Policy != nil && allowedByName(in.ToolName, in.Policy.AllowedTools) {
 		return PermissionDecision{Decision: "allow", Reason: "allowed by project policy"}, true
 	}
 	if in.Mode == "acceptEdits" && editsInsideDirectory(in.ToolName, in.ToolInput, in.Directory) {
 		return PermissionDecision{Decision: "allow", Reason: "acceptEdits mode: edit inside the session directory"}, true
 	}
 	return PermissionDecision{}, false
+}
+
+// allowedByName reports whether patterns lists toolName as a bare name.
+//
+// Deliberate: Tool:arg allow entries never decide here. MatchToolRule matches
+// the argument by substring on the serialized input, which cannot bound a
+// chained shell command (Bash:"command":"git also matches
+// "git status; curl … | sh"), so those calls fall through to a person.
+// Deny rules keep the substring match, where broader is safer.
+func allowedByName(toolName string, patterns []string) bool {
+	for _, pat := range patterns {
+		if !strings.Contains(pat, ":") && pat == toolName {
+			return true
+		}
+	}
+	return false
 }
 
 // editsInsideDirectory reports whether toolName is a file-editing tool whose

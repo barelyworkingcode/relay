@@ -133,9 +133,9 @@ Body is `hostapi.LaunchRequest` (v1). `handleLaunch` is a thin dispatcher —
 which owns its own shim-spawn (or direct-spawn) mechanics end to end,
 including the identity Hello wait. On success: `201` with
 `{session_id, root_pid, body}`. `root_pid` is the shim's pid for a `pty`
-launch and `0` for a provider-hosted (claude/pi/chat) launch — no
-`provider.Provider` implementation exposes a pid this handler could report
-(see [Known gaps](#what-is-not-built-yet)).
+launch and `0` for a provider-hosted (claude/pi/chat) launch. `ClaudeProvider`
+reports a process root, but only to `/permission`'s ancestry walk; `/launch`
+does not report it (see [Known gaps](#what-is-not-built-yet)).
 
 Error codes C5 names explicitly, each mapped from a manager error:
 
@@ -179,10 +179,11 @@ reads the body.
 `internal/membership.Resolve` walks the requester's own process ancestry up
 to a known root. A pty session's root has always been the shim's own pid,
 recorded as `root_pid` at `/launch` time (see [The
-shim](#the-shim-relay-sessions-exec)). A provider-hosted (claude/pi/chat)
-session has no `/launch`-time entry at all, so the walk's set of roots is
-extended with **live provider roots, read from `session.Manager` on every
-`/permission` request**:
+shim](#the-shim-relay-sessions-exec)). A provider-hosted session has no
+`/launch`-time entry at all, so the walk's set of roots is extended with
+**live provider roots, read from `session.Manager` on every `/permission`
+request**. Only claude sessions have one; pi and chat sessions report no
+root and never run the hook:
 
 - A local claude session's root is the pid the provider actually spawned:
   `relay-sessions exec`'s own pid when the session runs shimmed (every
@@ -229,9 +230,19 @@ Once the ancestry walk resolves a session id, and the decoded body's own
    |---|---|---|
    | 1 | `Policy.DeniedTools` matches | deny — denied by project policy |
    | 2 | mode `bypassPermissions` | allow — bypassPermissions mode |
-   | 3 | `Policy.AllowedTools` matches | allow — allowed by project policy |
+   | 3 | `Policy.AllowedTools` lists the tool by bare name | allow — allowed by project policy |
    | 4 | mode `acceptEdits`; tool is `Edit`, `MultiEdit`, `Write` or `NotebookEdit`; its `file_path`/`notebook_path` is an absolute path lexically under the cleaned session `Directory` | allow — acceptEdits mode: edit inside the session directory |
    | 5 | anything else (`default`, `plan`, an unknown mode) | ask a person |
+
+   Rule 3 auto-approves only bare tool names in `allowed_tools`. A
+   `Tool:arg` allow rule still prompts: the argument is matched by substring
+   on the serialized input, which can't bound a chained command
+   (`Bash:"command":"git` would also match `git status; curl … | sh`). Deny
+   rules (rule 1) do match arguments, where broader matching is the safe
+   direction.
+
+   Rule 4's check is lexical: an in-tree symlink pointing outside the
+   directory is auto-approved, and the sandbox is the file boundary.
 
 5. `Preflight` deciding without asking ends the request there: no
    `permission_request` frame, no wait.
@@ -279,12 +290,11 @@ Every other failure denies, with a reason prefixed `relay-sessions hook:`
 naming what failed, rather than staying silent: an empty
 `RELAY_SESSION_ID`, unreadable stdin, a dial failure, a transport error, the
 90-second client timeout firing, a non-`200` response from the host, an
-undecodable body, or a decision value that's neither `allow` nor `deny`. A
-hook that can't reach the host, or gets an answer it doesn't understand, no
-longer means "no decision" — indistinguishable, before this fix, from the two
-legitimate skip cases above. Every failure that isn't one of those two skips
-now produces an explicit `deny`, so a host outage refuses tool calls instead
-of quietly deferring to Claude Code's own rules.
+undecodable body, or a decision value that's neither `allow` nor `deny`.
+This is deliberate: exit 0 with no output is reserved for the two skip cases
+above. A hook that can't reach the host, or gets an answer it doesn't
+understand, denies explicitly, so a host outage refuses tool calls instead of
+quietly deferring to Claude Code's own rules.
 
 pty terminals, SSH sessions, pi sessions and chat sessions never run this
 hook; only a local Claude Code session configures it.
@@ -309,12 +319,12 @@ Measured on Claude Code 2.1.281 with relay's flags (`--print`, stream-json,
 `allowed_tools`/`disallowedTools` rules would approve a call before relay's
 host process ever sees it. A `PreToolUse` hook means every tool call — MCP or
 built-in — reaches `/permission`, and the session's own policy and viewers,
-first; Claude Code's own rules run only as the fallback for the two
-deliberate skips above or an actual hook failure, and a hook failure now
-denies rather than falling through silently. A session that wants Claude
-Code's own allow rules to also apply sets them via `allowed_tools` in its
-policy, or eve's "Allow all" — read by `Preflight` rule 3 — rather than
-widening what the hook itself lets through.
+first. Claude Code's own rules run only as the fallback for the two
+deliberate skips above; a hook failure denies rather than falling through. A
+session that wants Claude Code's own allow rules to also apply sets them via
+`allowed_tools` in its policy by bare tool name, or eve's "Allow all" — read
+by `Preflight` rule 3 — rather than widening what the hook itself lets
+through.
 
 The SSH control path (`handleControlRequest`) is unrelated to any of this and
 unchanged.
@@ -704,10 +714,9 @@ what works.
    binary is configured (`provider.ErrShimRequired`); a launch with neither
    set still spawns directly, unchanged. What is still open, on purpose:
    - `root_pid` stays `0` for every provider-hosted (claude/pi/chat) launch
-     in `hostapi`'s `201` response — a real root (the shim's own pid) now
-     exists for a shim-wrapped claude/pi launch, but no
-     `provider.Provider` implementation exposes a pid this handler could
-     report, and wiring that through is a separate piece of work.
+     in `hostapi`'s `201` response. `ClaudeProvider` reports a process root
+     (the shim's pid, or claude's own), but only `/permission`'s ancestry
+     walk reads it; reporting it from `/launch` is a separate piece of work.
    - `ClaudeProvider.SetPermissionMode`'s existing Kill-then-Start restart
      is unsound once a launch's identity and sandbox profile are real: the
      identity secret is single-use, and `Kill` fires `process_exited`,
@@ -837,7 +846,7 @@ what works.
    nothing at all.~~ **Fixed.** See [Tool
    permissions](#tool-permissions-post-permission) for the real decision
    flow, including the live provider roots that let the ancestry walk
-   resolve a claude/pi/chat session at all. One correction to the claim
+   resolve a claude session at all. One correction to the claim
    struck above: a hook call that got no decision was never "silently
    allowed" — the `403` sent it to Claude Code's own permission check
    instead, and under `--print` with no matching allow rule, that check

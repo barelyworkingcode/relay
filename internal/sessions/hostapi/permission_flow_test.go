@@ -1,11 +1,14 @@
 package hostapi_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -238,7 +241,42 @@ func TestPermissionFlow_UnresolvedCaller_Forbidden(t *testing.T) {
 	}
 }
 
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) linesWith(substr string) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []string
+	for _, l := range strings.Split(b.buf.String(), "\n") {
+		if strings.Contains(l, substr) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// captureLogs swaps the process-wide default logger, so its caller must not
+// run in parallel.
+func captureLogs(t *testing.T) *logBuffer {
+	t.Helper()
+	b := &logBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(b, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return b
+}
+
 func TestPermissionFlow_HookDisconnect_CleansUp(t *testing.T) {
+	logs := captureLogs(t)
 	f := startFlowHost(t)
 	const id = "aaaaaaaa-0000-0000-0000-000000000004"
 	f.create(t, id, `{}`)
@@ -258,6 +296,23 @@ func TestPermissionFlow_HookDisconnect_CleansUp(t *testing.T) {
 	for f.perms.PendingCount() != 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("pending request survived the hook's disconnect: %v", f.perms.PendingIDs())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		var found bool
+		for _, l := range logs.linesWith("permission abandoned") {
+			if strings.Contains(l, "session="+id) && strings.Contains(l, "tool="+flowTool) {
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no \"permission abandoned\" log with session=%s tool=%s; got %q", id, flowTool, logs.linesWith("permission"))
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

@@ -705,6 +705,7 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 
 	d, answered := s.decidePermission(r.Context(), body)
 	if !answered {
+		slog.Info("permission abandoned", "session", body.SessionID, "tool", body.ToolName)
 		return
 	}
 	slog.Info("permission decided", "session", body.SessionID, "tool", body.ToolName, "decision", d.Decision, "reason", d.Reason)

@@ -54,10 +54,19 @@ func TestWaitForDecisionContext(t *testing.T) {
 		m := NewPermissionManager()
 		clock := testutil.NewFakeClock(time.Time{})
 		m.SetClock(clock)
-		_, done := startWait(context.Background(), m)
+		req, done := startWait(context.Background(), m)
 
 		testutil.WaitFor(t, 2*time.Second, func() bool { return clock.Waiters() == 1 })
-		clock.Advance(60 * time.Second)
+		clock.Advance(59 * time.Second)
+		select {
+		case r := <-done:
+			t.Fatalf("decided after 59s: (%+v, %v), want still waiting", r.d, r.ok)
+		case <-time.After(50 * time.Millisecond):
+		}
+		if ids := m.PendingIDs(); len(ids) != 1 || ids[0] != req.ID {
+			t.Fatalf("PendingIDs after 59s = %v, want [%s]", ids, req.ID)
+		}
+		clock.Advance(1 * time.Second)
 
 		r := awaitResult(t, done)
 		want := PermissionDecision{Decision: "deny", Reason: "No response"}
@@ -78,6 +87,9 @@ func TestWaitForDecisionContext(t *testing.T) {
 		cancel()
 		if r := awaitResult(t, done); r.ok {
 			t.Fatalf("got (%+v, true), want ok=false once the context ends", r.d)
+		}
+		if n := m.PendingCount(); n != 0 {
+			t.Fatalf("PendingCount = %d, want 0 after the context ends", n)
 		}
 	})
 }

