@@ -14,6 +14,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -1323,6 +1324,9 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 // prior process the way bridge.NewBridgeServer does for relay.sock.
 func (m *ModelEndpointServer) ListenSocket() error {
 	path := bridge.ModelSocketPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create model socket dir %s: %w", filepath.Dir(path), err)
+	}
 	_ = os.Remove(path)
 	ln, err := net.Listen("unix", path)
 	if err != nil {

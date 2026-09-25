@@ -53,6 +53,9 @@ func startMountedHost(t *testing.T, relayPID int, hookSock string, terminals *te
 		RelayPID:       relayPID,
 		HookSocket:     hookSock,
 		Permissions:    perms,
+		// Deliberate: an empty PiBinary resolves the installed pi, and
+		// `pi --list-models` writes the real ~/.pi/agent.
+		PiBinary: filepath.Join(t.TempDir(), "no-pi"),
 	}, terminals, sessions)
 	if err := h.srv.ListenInternal(); err != nil {
 		t.Fatalf("ListenInternal: %v", err)
