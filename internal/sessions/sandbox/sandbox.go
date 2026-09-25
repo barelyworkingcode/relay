@@ -77,6 +77,21 @@ var baselineReadDirs = []string{
 // data in /usr/local/etc and /usr/local/var, and those can hold credentials.
 var baselineDenyDirs = []string{"/usr/local/etc", "/usr/local/var"}
 
+// baselineReopenedFiles are read back out of baselineDenyDirs for every
+// session: Intel Homebrew's curl, python and git need their CA bundle and the
+// system gitconfig, or they lose TLS verification and git config. They are
+// single files; nothing else beneath the carve-out is reopened.
+//
+// Deliberately fixed literals, never resolved on the host: /usr/local/etc is
+// user-owned, so resolving would let a planted link steer how far a default
+// reaches, and would make the profile depend on the host. The CA bundle is
+// listed as both the link Homebrew's openssl@3 ships and the file it points at.
+var baselineReopenedFiles = []string{
+	"/usr/local/etc/openssl@3/cert.pem",
+	"/usr/local/etc/ca-certificates/cert.pem",
+	"/usr/local/etc/gitconfig",
+}
+
 // Spec is C7's sandbox input, in the shape this package renders. Every path
 // must be absolute and already ~-expanded by relay; Render resolves symlinks
 // and letter case itself (SP2: Seatbelt matches the kernel's resolved path).
@@ -169,6 +184,17 @@ func Render(s Spec) (string, error) {
 		baselineDenies = append(baselineDenies, terms...)
 	}
 	writeBlock(&b, "deny file-read* file-write*", baselineDenies)
+
+	reopened := make([]string, 0, len(baselineReopenedFiles))
+	for _, p := range baselineReopenedFiles {
+		lit, err := quoted(p)
+		if err != nil {
+			return "", fmt.Errorf("baseline reopen: %w", err)
+		}
+		reopened = append(reopened, "(literal "+lit+")")
+		reachable = append(reachable, p)
+	}
+	writeBlock(&b, "allow file-read*", reopened)
 
 	reads := make([]string, 0, len(s.Read)+len(s.ReadFiles))
 	for _, p := range s.Read {

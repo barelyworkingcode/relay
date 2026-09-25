@@ -15,6 +15,10 @@
   (subpath "/usr/local/etc")
   (subpath "/usr/local/var"))
 (allow file-read*
+  (literal "/usr/local/etc/openssl@3/cert.pem")
+  (literal "/usr/local/etc/ca-certificates/cert.pem")
+  (literal "/usr/local/etc/gitconfig"))
+(allow file-read*
   (subpath "<HOME>/Library/Keychains")
   (subpath "/opt/homebrew")
   (subpath "<HOME>/.local/bin")

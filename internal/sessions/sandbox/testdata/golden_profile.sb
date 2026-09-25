@@ -15,6 +15,10 @@
   (subpath "/usr/local/etc")
   (subpath "/usr/local/var"))
 (allow file-read*
+  (literal "/usr/local/etc/openssl@3/cert.pem")
+  (literal "/usr/local/etc/ca-certificates/cert.pem")
+  (literal "/usr/local/etc/gitconfig"))
+(allow file-read*
   (subpath "/private/tmp/relay-sandbox-golden/opt/homebrew")
   (literal "/private/tmp/relay-sandbox-golden/home/.gitconfig"))
 (allow file-read* file-write*
@@ -34,7 +38,12 @@
   (literal "/private/tmp/relay-sandbox-golden/opt")
   (literal "/private/tmp/relay-sandbox-golden/projects")
   (literal "/private/var")
-  (literal "/private/var/db"))
+  (literal "/private/var/db")
+  (literal "/usr")
+  (literal "/usr/local")
+  (literal "/usr/local/etc")
+  (literal "/usr/local/etc/ca-certificates")
+  (literal "/usr/local/etc/openssl@3"))
 (deny network-outbound
   (remote unix-socket (path-literal "/private/tmp/relay-sandbox-golden/relayllm/router.sock"))
   (remote unix-socket (path-regex #"^/private/tmp/relay-sandbox-golden/relay/")))

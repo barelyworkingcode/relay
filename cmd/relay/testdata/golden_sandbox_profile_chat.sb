@@ -14,6 +14,10 @@
 (deny file-read* file-write*
   (subpath "/usr/local/etc")
   (subpath "/usr/local/var"))
+(allow file-read*
+  (literal "/usr/local/etc/openssl@3/cert.pem")
+  (literal "/usr/local/etc/ca-certificates/cert.pem")
+  (literal "/usr/local/etc/gitconfig"))
 (allow file-read* file-write*
   (subpath "<PROJECT>")
   (subpath "<DARWIN_TMP>")

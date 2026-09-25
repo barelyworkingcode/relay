@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -116,17 +117,26 @@ func namedFileDenyTerms(profile string) []string {
 		if at < 0 {
 			return terms
 		}
-		rest = rest[at+len(head):]
-		for strings.HasPrefix(rest, "  ") {
-			line, after, _ := strings.Cut(rest, "\n")
-			term := strings.TrimSpace(line)
-			if !strings.HasPrefix(after, "  ") {
-				term = strings.TrimSuffix(term, ")")
-			}
-			terms = append(terms, term)
-			rest = after
-		}
+		var block []string
+		block, rest = blockTerms(rest[at+len(head):])
+		terms = append(terms, block...)
 	}
+}
+
+// blockTerms reads the indented terms at the start of body, the text after a
+// block's head line, and returns them with the text that follows the block.
+func blockTerms(body string) (terms []string, rest string) {
+	rest = body
+	for strings.HasPrefix(rest, "  ") {
+		line, after, _ := strings.Cut(rest, "\n")
+		term := strings.TrimSpace(line)
+		if !strings.HasPrefix(after, "  ") {
+			term = strings.TrimSuffix(term, ")")
+		}
+		terms = append(terms, term)
+		rest = after
+	}
+	return terms, rest
 }
 
 const (
@@ -157,6 +167,49 @@ func TestRender_BaselineDeniesUsrLocalConfigAndData(t *testing.T) {
 		}
 		if at < usr {
 			t.Errorf("baseline deny %s precedes the /usr allow (%d < %d), so /usr reopens it:\n%s", term, at, usr, got)
+		}
+	}
+}
+
+// TestRender_BaselineReopensOnlyTheHomebrewCABundleAndGitconfig pins the files
+// every session may still read under the /usr/local deny, without which Intel
+// Homebrew's curl, python and git lose TLS verification and their system
+// gitconfig. The CA bundle is named at both its link and its target, as fixed
+// literals: nothing else beneath the deny reopens.
+func TestRender_BaselineReopensOnlyTheHomebrewCABundleAndGitconfig(t *testing.T) {
+	const specGrant = `(literal "/private/tmp/relay-sandbox-golden/home/.gitconfig")`
+	got, err := Render(Spec{ReadFiles: []string{"/private/tmp/relay-sandbox-golden/home/.gitconfig"}})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	const denyHead, reopenHead = "(deny file-read* file-write*\n", "(allow file-read*\n"
+	at := strings.Index(got, denyHead)
+	if at < 0 {
+		t.Fatalf("no baseline deny block:\n%s", got)
+	}
+	denied, after := blockTerms(got[at+len(denyHead):])
+	if !slices.Contains(denied, usrLocalEtcTerm) || !slices.Contains(denied, usrLocalVarTerm) {
+		t.Fatalf("first path deny block is not the baseline deny: %q\n%s", denied, got)
+	}
+	if !strings.HasPrefix(after, reopenHead) {
+		t.Fatalf("no read-only allow block right after the baseline deny:\n%s", got)
+	}
+	reopened, rest := blockTerms(after[len(reopenHead):])
+	want := []string{
+		`(literal "/usr/local/etc/ca-certificates/cert.pem")`,
+		`(literal "/usr/local/etc/gitconfig")`,
+		`(literal "/usr/local/etc/openssl@3/cert.pem")`,
+	}
+	slices.Sort(reopened)
+	if !slices.Equal(reopened, want) {
+		t.Errorf("reopen block = %q, want exactly %q\n%s", reopened, want, got)
+	}
+	if !strings.Contains(rest, specGrant) {
+		t.Errorf("Spec grant %s does not follow the reopen block:\n%s", specGrant, got)
+	}
+	for _, dir := range []string{"/usr/local/etc", "/usr/local/var"} {
+		if n := strings.Count(got, `(subpath "`+dir); n != 1 {
+			t.Errorf("%d subpath terms name %s or beneath it, want only its deny:\n%s", n, dir, got)
 		}
 	}
 }
