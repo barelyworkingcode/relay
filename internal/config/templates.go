@@ -63,7 +63,8 @@ type TerminalTemplate struct {
 	// directory, which is always read-write, or the fixed system baseline in
 	// internal/sessions/sandbox) is unreachable. Each entry is an absolute
 	// path or starts with `~`. A directory grants its whole subtree; a
-	// regular file grants that file, and a read-write file also grants the
+	// regular file grants that file, and a read-write file whose name looks
+	// like a file (a dot after its first character) also grants the
 	// atomic-write siblings a CLI leaves beside it (`.lock`, `.tmp.*`,
 	// `.backup`). Ignored when Sandbox is explicitly false.
 	Read      []string `json:"read,omitempty"`
