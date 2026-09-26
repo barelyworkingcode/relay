@@ -111,6 +111,21 @@ func profileBlockTerms(body string) (terms []string, rest string) {
 	return terms, rest
 }
 
+// allowBlocks is every allow block in a profile, heads and terms, and nothing
+// else: the text a grant can appear in.
+func allowBlocks(body string) string {
+	var b strings.Builder
+	for rest := body; ; {
+		at := strings.Index(rest, "\n(allow ")
+		if at < 0 {
+			return b.String()
+		}
+		head, after, _ := strings.Cut(rest[at+1:], "\n")
+		_, rest = profileBlockTerms(after)
+		b.WriteString(head + "\n" + after[:len(after)-len(rest)])
+	}
+}
+
 // dropBlock removes the block whose head line is head, if the profile has one.
 func dropBlock(body, head string) string {
 	at := strings.Index(body, head)
@@ -394,7 +409,7 @@ func TestSandboxSpecForLaunch_PiSessionsIsReadWriteAllowed(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	relayReal := sandboxRealPath(t, relayDir)
-	if strings.Contains(body, `(subpath "`+relayReal+`")`) {
+	if strings.Contains(allowBlocks(body), `(subpath "`+relayReal+`")`) {
 		t.Fatalf("rendered profile grants the whole config dir:\n%s", body)
 	}
 	// pi-sessions/ itself never exists on disk in this test, so it is
