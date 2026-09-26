@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -38,11 +38,18 @@ func sandboxWritableRoots(settings *config.Settings, home string) ([]string, err
 		if !t.Sandboxed() && !kindTemplates[t.ID] {
 			continue
 		}
-		dirs, files, err := addTemplateGrants(nil, nil, "read_write", t.ReadWrite, home)
-		if err != nil {
-			return nil, fmt.Errorf("template %q: %w", t.ID, err)
+		for _, entry := range t.ReadWrite {
+			// Deliberate: an entry no launch can grant is skipped, not fatal.
+			// The template's own launch refuses at the same check, so no
+			// session ever writes it, and refusing here would refuse every
+			// unrelated launch too.
+			dirs, files, err := addTemplateGrants(nil, nil, "read_write", []string{entry}, home)
+			if err != nil {
+				slog.Warn("session sandbox: writable root skipped", "template", t.ID, "entry", entry, "error", err)
+				continue
+			}
+			roots = append(append(roots, dirs...), files...)
 		}
-		roots = append(append(roots, dirs...), files...)
 	}
 
 	for i := range settings.Projects {

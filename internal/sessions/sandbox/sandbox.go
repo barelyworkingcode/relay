@@ -16,8 +16,9 @@
 // path, not the inode: a session that renames an ancestor away reaches the
 // denied bytes under a name no rule mentions, and file-clone is outside
 // file-write*, so a grant that denies writes still lets a directory be cloned.
-// A deny reached through a symlink the running user could have made is
-// refused, as a read-write grant is. A read grant is refused only when a link
+// A read-write grant reached through any symlink but the /tmp, /var and /etc
+// links in `/` is refused, and so is a deny reached through a symlink the
+// running user could have made. A read grant is refused only when a link
 // it follows is one a sandboxed session could have made: one the Spec's
 // writable roots cover.
 //
@@ -384,17 +385,18 @@ func walkedTerms(w walked, kind string) (terms, paths []string, err error) {
 	return terms, paths, nil
 }
 
-// LinkedGrantError refuses a read-write grant whose path passes through a
-// symlink in a directory the running user can write. A sandboxed session can
-// write there too, so the link may be one it planted to widen the next
-// launch's grant. Grant is the entry as the Spec names it; Link is the link's
+// LinkedGrantError refuses a read-write grant whose path passes through any
+// symlink other than the /tmp, /var and /etc links in `/`. A session holding
+// the grant could replace a link it can write to widen the next launch's
+// grant, and a writable root keyed where it is named would not cover where it
+// resolves. Grant is the entry as the Spec names it; Link is the link's
 // directory as walked plus the link's own name.
 type LinkedGrantError struct {
 	Grant, Link string
 }
 
 func (e *LinkedGrantError) Error() string {
-	return `grant "` + e.Grant + `" follows symlink "` + e.Link + `", which a sandboxed session could have made`
+	return `grant "` + e.Grant + `" follows symlink "` + e.Link + `"; use the real path`
 }
 
 // LinkedReadError refuses a read grant whose walk follows a symlink in a
@@ -437,7 +439,7 @@ func readWalk(p string, writable WritableSet) (walked, error) {
 }
 
 // readWriteWalk walks a read-write grant and refuses it when the walk followed
-// a link a session could have made.
+// any link but a system one (systemLink).
 //
 // This is subtle: every term Render emits for the grant must come from this
 // one walk. Resolving the path again (EvalSymlinks, then an open that follows
@@ -448,8 +450,8 @@ func readWriteWalk(p string) (walked, error) {
 	if w.err != nil {
 		return w, w.err
 	}
-	if w.userLink != "" {
-		return w, &LinkedGrantError{Grant: p, Link: w.userLink}
+	if w.grantLink != "" {
+		return w, &LinkedGrantError{Grant: p, Link: w.grantLink}
 	}
 	return w, nil
 }
@@ -704,39 +706,34 @@ func (s *WritableSet) add(root string) {
 	if parent.err != nil {
 		return
 	}
-	names, complete := foldedTail(parent.tail)
-	if complete {
-		names = append(names, foldName(filepath.Base(root)))
+	key := foldedTail(parent.at, append(append([]string(nil), parent.tail...), filepath.Base(root)))
+	if w := walkIdentity(root); w.err == nil && w.settled {
+		key.file = !w.endIsDir
 	}
-	own := rootKey{anc: parent.at.ids[len(parent.at.ids)-1], names: names}
-
-	w := walkIdentity(root)
-	if w.err != nil || !w.settled || len(w.at.ids) < 2 {
-		s.keys = append(s.keys, own)
-		return
-	}
-	own.file = !w.endIsDir
-	// Where the root resolves to, as well as where it is named: the two differ
-	// when the root is reached through a link.
-	end := len(w.at.ids) - 1
-	resolved := rootKey{anc: w.at.ids[end-1], names: []string{foldName(w.at.names[end])}, file: !w.endIsDir}
-	s.keys = append(s.keys, own, resolved)
+	s.keys = append(s.keys, key)
 }
 
-// foldedTail folds the components a walk could not reach. It stops at the
-// first `..`, reporting the tail incomplete: a shorter key covers a larger
-// subtree, which refuses more, never less.
-func foldedTail(tail []string) (names []string, complete bool) {
+// foldedTail keys the components below where a walk stopped, at. Each `..`
+// cancels the name before it, or, with none left, moves the ancestor one
+// directory up the trail.
+func foldedTail(at trail, tail []string) rootKey {
+	anc := len(at.ids) - 1
+	var names []string
 	for _, n := range tail {
 		switch n {
 		case "", ".":
 			continue
 		case "..":
-			return names, false
+			if len(names) > 0 {
+				names = names[:len(names)-1]
+			} else if anc > 0 {
+				anc--
+			}
+			continue
 		}
 		names = append(names, foldName(n))
 	}
-	return names, true
+	return rootKey{anc: at.ids[anc], names: names}
 }
 
 // Covers reports whether a session writing the set's roots could have made or
@@ -851,22 +848,24 @@ func launchWritableSet(s Spec) (WritableSet, error) {
 // resolved is the link-free path in the volume's spelling. entry is where the
 // path's final component sits: its walked parent in the volume's spelling plus
 // its own name, or "" when the walk never reached it. userLink is the first
-// link whose directory is not lockedDir, dangling or not, or "". links is
+// link whose directory is not lockedDir, dangling or not, or "". grantLink is
+// the first link, dangling or not, that is not a systemLink, or "". links is
 // every link the walk spliced, in order.
 //
 // at is the trail from `/` down to where the walk ended, the final component
 // included when the walk reached it. tail is what it could not reach; settled
 // reports that there was none.
 type walked struct {
-	resolved string
-	entry    string
-	userLink string
-	links    []followedLink
-	at       trail
-	tail     []string
-	settled  bool
-	endIsDir bool
-	err      error
+	resolved  string
+	entry     string
+	userLink  string
+	grantLink string
+	links     []followedLink
+	at        trail
+	tail      []string
+	settled   bool
+	endIsDir  bool
+	err       error
 }
 
 // trail is the identity and name of each component a walk stands on, from `/`
@@ -1014,6 +1013,9 @@ walking:
 		if w.userLink == "" && !locked {
 			w.userLink = next
 		}
+		if w.grantLink == "" && !systemLink(cur, name) {
+			w.grantLink = next
+		}
 		if dangling(next) {
 			tail = append([]string{name}, pending...)
 			break walking
@@ -1047,6 +1049,12 @@ walking:
 		w.entry = filepath.Join(onDiskPath(entryDir), entryName)
 	}
 	return w
+}
+
+// systemLink reports whether the link name in dir is one of the /tmp, /var
+// and /etc links in `/`, the only links a read-write grant may follow.
+func systemLink(dir, name string) bool {
+	return dir == "/" && (name == "tmp" || name == "var" || name == "etc")
 }
 
 // dangling reports whether the link at p points at nothing.

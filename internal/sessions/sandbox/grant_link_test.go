@@ -39,7 +39,7 @@ func writeFile(t *testing.T, p string) {
 }
 
 func linkedGrantText(grant, link string) string {
-	return `read_write: grant "` + grant + `" follows symlink "` + link + `", which a sandboxed session could have made`
+	return `read_write: grant "` + grant + `" follows symlink "` + link + `"; use the real path`
 }
 
 type linkedGrantCase struct {

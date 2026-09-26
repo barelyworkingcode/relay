@@ -666,27 +666,35 @@ project path stored as `/users/me/Proj` would otherwise match nothing and lock
 the session out of its own directory. A grant whose final component is a
 symlink also names the link itself.
 
-**A read-write grant never follows a link the user could have made.** A
+**A read-write grant never follows a symlink, except the system ones.** A
 session holding read-write on a directory can replace it, or any directory
 under it, with a symlink: `(subpath D)` covers D itself. If the next launch
-followed that link, the session would have chosen its own grant. So `Render`
-walks every `read_write` entry, directory or file, from `/` with `Lstat` on
-each component, splicing in each link's target (a relative target resolves
-against the link's already resolved directory, at most 32 links; more fails
-the render). If the walk follows any link whose directory is not *locked*,
-the final component included, the launch is refused with
-`sandbox.LinkedGrantError`: `400 sandbox_unavailable` naming the grant and the
-link, a `session_launch` error in the audit log, one refusal Warn
-(`session sandbox: read-write grant refused`; see `ensureGrantDirs` below
-for the one other line a refused launch can log), and no profile written. A link
-counts whether or not its target exists. **Locked** means root owns the
-directory and the running user cannot write it (`access(dir, W_OK)` fails).
-That exempts the `/tmp`, `/var` and `/etc` links in `/`, so `t.TempDir()`,
-`/tmp/claude-<uid>` and anything reached through them keep working, while a
-link directly in `/private/tmp` (root's, but world-writable) is refused. The
-cost is deliberate: a dotfiles-managed `~/.claude`, or a project reached
-through a link, is refused as a read-write grant; the operator names the real
-path instead.
+followed that link, the session would have chosen its own grant. And a
+writable root is keyed where it is named (below), so a root reached through a
+link would leave where it resolves uncovered. So `Render` walks every
+`read_write` entry, directory or file, the project path included, from `/`
+with `Lstat` on each component, splicing in each link's target (a relative
+target resolves against the link's already resolved directory, at most 32
+links; more fails the render). If the walk follows any link other than the
+`/tmp`, `/var` and `/etc` links in `/`, the final component included and
+whoever owns it, the launch is refused with `sandbox.LinkedGrantError`
+(`grant "<entry>" follows symlink "<link>"; use the real path`): `400
+sandbox_unavailable`, a `session_launch` error in the audit log, one refusal
+Warn (`session sandbox: read-write grant refused`; see `ensureGrantDirs` below
+for the one other line a refused launch can log), and no profile written. A
+link counts whether or not its target exists. `t.TempDir()`,
+`/tmp/claude-<uid>` and anything else reached only through `/tmp`, `/var` or
+`/etc` keep working; a root-owned link such as `/var/select/sh`, or any link in
+`/private/tmp`, is refused. The cost is deliberate: a dotfiles-managed
+`~/.claude`, or a project reached through a link, is refused as a read-write
+grant; the operator names the real path instead. Only the launch's own grants
+refuse: another template's or project's symlinked root refuses at its own
+launch, not at an unrelated one.
+
+A **locked** directory, for the read and deny rules below, is one root owns
+and the running user cannot write (`access(dir, W_OK)` fails). That covers the
+`/tmp`, `/var` and `/etc` links in `/`, while a link directly in
+`/private/tmp` (root's, but world-writable) is not in a locked directory.
 
 **A read grant never follows a link a sandboxed session could have made.**
 The strict rule above cannot apply to reads: Homebrew and installer link
@@ -727,12 +735,14 @@ keeps apart; that refuses more, never less. A directory root covers a link
 anywhere beneath it. A regular-file root covers the entries directly in its
 parent directory, since the atomic-write siblings a read-write file grant
 allows let a session create names beside it. Every root also covers its own
-entry, so a root replaced with a link is caught; a root reached through a link
-is keyed where it is named and where it resolves. A root that is missing is
-keyed by its nearest existing ancestor; one whose walk fails contributes
-nothing; a relative root fails the render. W takes template entries from the
-same validated view a launch uses, so a template dropped at resolution
-contributes nothing. Unsandboxed templates and hosted or remote projects are
+entry, so a root replaced with a link is caught. A root that is missing is
+keyed by its nearest existing ancestor, and a `..` in the part the walk could
+not reach cancels the name before it or steps the ancestor up; a root whose
+walk fails contributes nothing; a relative root fails the render. W takes
+template entries from the same validated view a launch uses, so a template
+dropped at resolution contributes nothing, and an entry no launch can grant
+(`~/../..` resolving to `/`, say) is skipped with a `session sandbox: writable
+root skipped` Warn naming the template and the entry. Unsandboxed templates and hosted or remote projects are
 not in W.
 
 The cost: because home is always in W, a read entry reached through a link

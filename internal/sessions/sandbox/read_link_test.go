@@ -312,6 +312,8 @@ func TestWritableSet_Covers(t *testing.T) {
 		{"empty set", empty, filepath.Join(r, "x"), false},
 		{"parent reached through a link in the root", set, filepath.Join(r, "L", "file"), true},
 		{"parent whose walk fails", set, filepath.Join(root, "c1", "file"), true},
+		{"parent that does not exist", set, filepath.Join(root, "missing", "file"), true},
+		{"relative path", set, filepath.Join("sibling", "x"), true},
 	} {
 		if got := tc.set.Covers(tc.path); got != tc.want {
 			t.Errorf("%s: Covers(%s) = %v, want %v", tc.name, tc.path, got, tc.want)
@@ -332,5 +334,41 @@ func TestRender_GoldenIgnoresWritableRoots(t *testing.T) {
 	}
 	if got != string(want) {
 		t.Fatalf("writable roots changed the golden profile.\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A root whose walk stops at a directory it cannot search keeps the rest of
+// its path unresolved, `..` included. Each `..` there cancels the name before
+// it, or steps above the directory where the walk stopped when none is left.
+func TestWritableSet_RootWithDotDotInItsUnwalkedTail(t *testing.T) {
+	skipAsRoot(t)
+	for _, tc := range []struct {
+		name, target, covered string
+	}{
+		{"cancels the name before it", "locked/sub/../y", filepath.Join("locked", "y", "x")},
+		{"steps above the stopping point", "locked/sub/../../z", filepath.Join("z", "x")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := realTempDir(t)
+			locked := filepath.Join(a, "locked")
+			mkdirs(t, locked)
+			symlink(t, tc.target, filepath.Join(a, "L"))
+			if err := os.Chmod(locked, 0o600); err != nil {
+				t.Fatalf("chmod: %v", err)
+			}
+			set, err := NewWritableSet([]string{filepath.Join(a, "L", "x")})
+			if err != nil {
+				t.Fatalf("NewWritableSet: %v", err)
+			}
+			if err := os.Chmod(locked, 0o700); err != nil {
+				t.Fatalf("chmod: %v", err)
+			}
+			dir := filepath.Join(a, tc.covered)
+			mkdirs(t, dir)
+			writeFile(t, filepath.Join(dir, "file"))
+			if !set.Covers(filepath.Join(dir, "file")) {
+				t.Errorf("Covers(%s) = false; the root's tail folds to %s", filepath.Join(dir, "file"), dir)
+			}
+		})
 	}
 }
