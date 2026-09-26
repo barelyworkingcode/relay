@@ -1073,13 +1073,15 @@ slot is still the live one, checked under the manager lock at the moment of
 install, and checked again after it starts. If the session was ended, stopped
 or taken by a new launch in either window, the restart's own provider is
 killed, the winning launch keeps its provider, and the restart is refused. A
-provider refused after it starts, while another launch owns the id, is first
-taken out of the session (only if the session still holds it), so its exit
-event is dropped as a displaced provider's and never reaches the live
-launch's viewers or exit handler. With no launch owning the id (the session
-was ended or stopped), it stays installed while it is killed: its exit is the
-only report relay gets for that id, and relay's exit handling drives the
-cleanup. A
+provider refused after it starts, while another launch owns the id (a slot
+this process launched, or one still launching), is first taken out of the
+session (only if the session still holds it), so its exit event is dropped as
+a displaced provider's and never reaches the live launch's viewers or exit
+handler. A slot lazy-loaded from disk is not a launch and owns nothing. With
+no launch owning the id (the session was ended or stopped, or only a
+lazy-loaded slot holds it), the provider stays installed while it is killed:
+its exit is the only report relay gets for that id, and relay's exit handling
+drives the cleanup. A
 restart that loses the race does not wait for the winner. A spec
 holding only the provider kind would start claude or pi with no sandbox, no
 identity and no key, so there is no fallback to one. A migrated project-less session is therefore read-only history:

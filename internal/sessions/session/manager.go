@@ -520,9 +520,10 @@ func (m *Manager) respawnSpec(sess *sessionstypes.Session) (CreateSpec, *session
 // restartProvider starts a project-less session's provider from the spec
 // and slot respawnSpec returned. The restart acts only while m.slots[sess.ID]
 // is still that exact slot: the new provider is installed under m.mu only if
-// it is, and checked again after Start. A slot ended, stopped or replaced by
-// a new launch in either window means another launch owns the id, so the
-// provider this call built is killed and the restart is refused.
+// it is, and checked again after Start. If the slot was ended, stopped or
+// replaced in either window, the provider this call built is killed and the
+// restart is refused; after Start it is also taken out of sess first, but
+// only when a launch of this process's own now owns the id.
 func (m *Manager) restartProvider(sess *sessionstypes.Session, slot *sessionSlot, spec CreateSpec) error {
 	p, err := m.newProvider(sess, spec)
 	if err != nil {
@@ -548,6 +549,7 @@ func (m *Manager) restartProvider(sess *sessionstypes.Session, slot *sessionSlot
 	}
 	m.mu.Lock()
 	cur := m.slots[sess.ID]
+	launched := cur != nil && (cur.launching || cur.spec.SessionID != "")
 	m.mu.Unlock()
 	if cur == slot {
 		return nil
@@ -555,13 +557,14 @@ func (m *Manager) restartProvider(sess *sessionstypes.Session, slot *sessionSlot
 	// Deliberate: kill p itself, never sess.Provider(), and take p out of
 	// sess first only when another launch owns the id. Then p's exit event
 	// fails handleProviderEvent's displaced-provider guard and never reaches
-	// the live launch; the swap applies only if sess still holds p. With no
-	// owner, p's exit is the only report relay gets for the id (its
-	// SessionExited handling drives the cleanup), so p stays installed. The
-	// window between reading cur == nil and that exit's delivery is the same
-	// one an ordinary EndSession followed by a fast resume has, and is not
-	// closed here.
-	if cur != nil {
+	// the live launch; the swap applies only if sess still holds p. A slot
+	// Get filled from a disk load is not a launch (its spec is zero) and owns
+	// nothing. With no owner, p's exit is the only report relay gets for the
+	// id (its SessionExited handling drives the cleanup), so p stays
+	// installed. The window between reading an unowned slot and that exit's
+	// delivery is the same one an ordinary EndSession followed by a fast
+	// resume has, and is not closed here.
+	if launched {
 		sess.CompareAndSwapProvider(p, nil)
 	}
 	p.Kill()

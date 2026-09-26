@@ -332,9 +332,18 @@ func TestManager_RestartBuiltAfterResumePublished_KeepsResumeProvider(t *testing
 }
 
 func TestManager_RestartStoppedDuringStart_KillsItsProviderAndReportsExit(t *testing.T) {
-	stops := map[string]func(*session.Manager){
-		"EndSession": func(m *session.Manager) { m.EndSession(installSessionID) },
-		"StopAll":    func(m *session.Manager) { m.StopAll() },
+	stops := map[string]func(*testing.T, *session.Manager){
+		"EndSession": func(_ *testing.T, m *session.Manager) { m.EndSession(installSessionID) },
+		"StopAll":    func(_ *testing.T, m *session.Manager) { m.StopAll() },
+		"EndSessionThenLazyLoad": func(t *testing.T, m *session.Manager) {
+			m.EndSession(installSessionID)
+			if _, ok := m.Get(installSessionID); !ok {
+				t.Fatal("setup: Get did not load the ended session from disk")
+			}
+			if _, live := m.LiveSession(installSessionID); live {
+				t.Fatal("setup: LiveSession reports the lazy-loaded session live")
+			}
+		},
 	}
 	for name, stop := range stops {
 		t.Run(name, func(t *testing.T) {
@@ -351,7 +360,7 @@ func TestManager_RestartStoppedDuringStart_KillsItsProviderAndReportsExit(t *tes
 				_, sendDone := r.launchAndParkRestart(t)
 				r.parkRestartInStart(t, restarted)
 
-				stop(r.mgr)
+				stop(t, r.mgr)
 				close(restarted.gate)
 				sendErr := <-sendDone
 				synctest.Wait()
