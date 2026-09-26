@@ -518,8 +518,9 @@ template's grants, not the project directory, not the always-granted
 temp/`/dev`/developer-tools paths. It blocks read, write and `stat` alike.
 Denying a path that a session needs to run (the project directory, say)
 locks the session out of it; relay does not second-guess that. `deny` takes
-the same entry shape as `read` and `read_write`, and is ignored only when the
-template says `"sandbox": false`.
+the same entry shape as `read` and `read_write`, and is ignored only for a
+terminal launch of a template that says `"sandbox": false`. A claude, pi or
+chat session always applies its kind template's folders, `deny` included.
 
 **Templates live only in `settings.json`.** Nothing is computed in code, so
 every template, including the ones relay seeds, can be edited or removed. The
@@ -555,9 +556,12 @@ launch if it slips through, rather than being dropped: a dropped entry would
 leave a tool silently unreachable. A template is sandboxed unless it says
 otherwise: `sandbox` absent means sandboxed, and only an explicit
 `"sandbox": false` opts out. `read`, `read_write` and `deny` are ignored only
-with `false`. A stored template without the field is sandboxed from the
-upgrade that introduced this rule on, with the folders it already lists;
-nothing rewrites it to `false`, so an operator who wants it unconfined says so.
+for a terminal launch of a template that says `"sandbox": false`; a claude, pi
+or chat session always sandboxes and always applies its kind template's
+folders, whatever that template's `sandbox` says. A stored template without
+the field is sandboxed from the upgrade that introduced this rule on, with the
+folders it already lists; nothing rewrites it to `false`, so an operator who
+wants it unconfined says so.
 
 A **claude, pi or chat session** is not launched from a template, but it reads
 its folders from the template named for its kind: `claude-code`, `pi` and
