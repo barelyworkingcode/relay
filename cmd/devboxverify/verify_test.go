@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -10,6 +11,20 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 )
+
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "devboxverify-home-")
+	if err == nil {
+		err = os.Setenv("HOME", home)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "isolate HOME:", err)
+		os.Exit(2)
+	}
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
 
 // notPass marks a case whose exact non-PASS state the contract leaves open.
 const notPass state = ""
@@ -175,13 +190,18 @@ func TestClassifyOversized(t *testing.T) {
 }
 
 func TestClassifyReach(t *testing.T) {
-	// A PTY echoes each typed command; the markers are assembled at run time
-	// so only the command's output, never its echo, contains them.
-	const acmeCmd = "$ cat \"$ACME/PROJECT.md\" >/dev/null && printf '%s_%s\\n' ACME OK\r\n"
-	const globexCmd = "$ cat \"$GLOBEX/PROJECT.md\" >/dev/null && printf '%s_%s\\n' GLOBEX OK || printf '%s_%s\\n' GLOBEX DENIED\r\n"
+	// The PTY echoes every byte typed into the probe shell, so the transcript
+	// always holds the script itself; a marker must appear only as output.
+	script := reachScript("/w")
+	for _, m := range []string{"ACME_OK", "ACME_DENIED", "GLOBEX_OK", "GLOBEX_DENIED"} {
+		if strings.Contains(script, m) {
+			t.Fatalf("reachScript contains the literal marker %s, so its echo alone could pass", m)
+		}
+	}
+	echo := strings.ReplaceAll(script, "\n", "\r\n")
 	const denied = "cat: Globex/PROJECT.md: Operation not permitted\r\nGLOBEX_DENIED\r\n"
 	const missing = "cat: Globex/PROJECT.md: No such file or directory\r\nGLOBEX_DENIED\r\n"
-	const good = acmeCmd + "ACME_OK\r\n" + globexCmd + denied + "$ exit\r\n"
+	good := echo + "ACME_OK\r\n" + denied
 	type in struct {
 		reason, transcript string
 		exited             bool
@@ -190,10 +210,10 @@ func TestClassifyReach(t *testing.T) {
 	}
 	cases := []mutCase[in]{
 		{"acme read, globex refused", func(*in) {}, statePass},
-		{"echo only", func(c *in) { c.transcript = acmeCmd + globexCmd + "$ exit\r\n" }, notPass},
-		{"globex readable", func(c *in) { c.transcript = acmeCmd + "ACME_OK\r\n" + globexCmd + "GLOBEX_OK\r\n$ exit\r\n" }, stateFail},
-		{"acme not read", func(c *in) { c.transcript = acmeCmd + globexCmd + denied }, notPass},
-		{"globex missing, not refused", func(c *in) { c.transcript = acmeCmd + "ACME_OK\r\n" + globexCmd + missing }, notPass},
+		{"echo only", func(c *in) { c.transcript = echo }, notPass},
+		{"globex readable", func(c *in) { c.transcript = echo + "ACME_OK\r\nGLOBEX_OK\r\n" }, stateFail},
+		{"acme not read", func(c *in) { c.transcript = echo + denied }, notPass},
+		{"globex missing, not refused", func(c *in) { c.transcript = echo + "ACME_OK\r\n" + missing }, notPass},
 		{"shell never exited", func(c *in) { c.exited = false }, notPass},
 		{"nonzero exit", func(c *in) { c.code = 1 }, notPass},
 		{"no audit row", func(c *in) { c.row = nil }, notPass},
@@ -238,5 +258,12 @@ func TestRenderCommentScrubsHomeAndListsEveryJourney(t *testing.T) {
 		}) {
 			t.Errorf("no line carries %s with %s:\n%s", r.ID, r.State, out)
 		}
+	}
+}
+
+func TestFormatLineIsOneTabSeparatedLineWithoutHome(t *testing.T) {
+	got := formatLine("/Users/someone", "JOURNEY", "acme-sandbox-reach", "FAIL", "read /Users/someone/a \n then\t\t/Users/someone/b")
+	if want := "JOURNEY\tacme-sandbox-reach\tFAIL\tread ~/a then ~/b"; got != want {
+		t.Fatalf("formatLine = %q, want %q", got, want)
 	}
 }

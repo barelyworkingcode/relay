@@ -53,12 +53,15 @@ func main() { os.Exit(run()) }
 
 var home, _ = os.UserHomeDir()
 
-func emit(fields ...string) {
+func formatLine(home string, fields ...string) string {
+	out := make([]string, len(fields))
 	for i, f := range fields {
-		fields[i] = strings.Join(strings.Fields(scrub(f, home)), " ")
+		out[i] = strings.Join(strings.Fields(scrub(f, home)), " ")
 	}
-	fmt.Println(strings.Join(fields, "\t"))
+	return strings.Join(out, "\t")
 }
+
+func emit(fields ...string) { fmt.Println(formatLine(home, fields...)) }
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -79,7 +82,9 @@ func gitOut(dir string, args ...string) (string, error) {
 // when out is set. This is deliberate: our stdout carries only the tool's own
 // lines, which callers parse.
 func script(world, name string, out io.Writer, args ...string) error {
-	cmd := exec.Command(filepath.Join(world, name), args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, filepath.Join(world, name), args...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if out != nil {
 		cmd.Stdout = out
@@ -92,7 +97,13 @@ func run() int {
 	checkout := fs.String("checkout", "", "relay checkout the running app must be built from (default: this checkout)")
 	world := fs.String("world", "", "devboxWorld checkout (default: devboxWorld beside this checkout)")
 	pr := fs.Int("post", 0, "PR number to post the status and evidence comment to")
-	if err := fs.Parse(os.Args[1:]); err != nil || fs.NArg() > 0 || *pr < 0 {
+	err := fs.Parse(os.Args[1:])
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "post" && *pr < 1 {
+			err = errors.New("--post needs a PR number")
+		}
+	})
+	if err != nil || fs.NArg() > 0 {
 		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--world DIR] [--post PR]")
 		return 2
 	}
@@ -150,7 +161,10 @@ func run() int {
 		}},
 		{"pr", func() (string, error) {
 			ph, err := prHead(context.Background(), *pr)
-			if err == nil && ph != head {
+			if err != nil {
+				return "", errors.New("gh pr view failed")
+			}
+			if ph != head {
 				err = fmt.Errorf("PR head %.12s is not the checkout HEAD", ph)
 			}
 			return "PR head is HEAD", err

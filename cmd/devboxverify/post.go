@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type evidence struct {
@@ -16,13 +18,14 @@ type evidence struct {
 }
 
 func gh(ctx context.Context, stdin string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(stdin)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
+	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("gh %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("gh %s %s failed: %w", args[0], args[1], err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }

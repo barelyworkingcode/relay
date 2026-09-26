@@ -41,7 +41,7 @@ func runBlankModel(ctx context.Context, e env) result {
 		return blocked(id, "credential file missing")
 	}
 	if fi.Mode().Perm()&0o077 != 0 {
-		return blocked(id, "credential file readable by group or others")
+		return blocked(id, "credential file not mode 0600")
 	}
 	raw, err := os.ReadFile(e.CredentialFile)
 	token := strings.TrimSpace(string(raw))
@@ -57,7 +57,7 @@ func runBlankModel(ctx context.Context, e env) result {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://relay/api/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", e.FrontendSocket)
 	}}}
 	resp, err := client.Do(req)
@@ -68,7 +68,7 @@ func runBlankModel(ctx context.Context, e env) result {
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	var row *audit.AuditEvent
 	if resp.StatusCode == http.StatusBadRequest {
-		row, _ = auditRow(ctx, e, name)
+		row = auditRow(ctx, e, name)
 	}
 	return classifyBlankModel(resp.StatusCode, respBody, row, name, acmeID)
 }
@@ -126,7 +126,11 @@ func runOversized(ctx context.Context, e env) result {
 	var row *audit.AuditEvent
 	n := 0
 	if reason == bridge.SandboxReasonUnknownTemplate {
-		row, n = auditRow(ctx, e, prefix)
+		if row = auditRow(ctx, e, prefix); row != nil {
+			if n, err = auditLineBytes(ctx, e, row.ID); err != nil {
+				return result{id, stateFail, "audit row not found on disk"}
+			}
+		}
 	}
 	return classifyOversized(reason, row, n)
 }
@@ -166,12 +170,10 @@ func runReach(ctx context.Context, e env) result {
 		return classifyReach(reason, "", false, 0, nil)
 	}
 	defer func() { _ = s.Close() }()
-	// The markers are assembled by printf at run time so the terminal's echo
-	// of this input can never contain them.
-	input := "(: < PROJECT.md) && printf '%s_%s\\n' ACME OK || printf '%s_%s\\n' ACME DENIED\n" +
-		"(: < \"" + filepath.Join(root, "Globex", "PROJECT.md") + "\") && printf '%s_%s\\n' GLOBEX OK || printf '%s_%s\\n' GLOBEX DENIED\n" +
-		"exit\n"
-	if err := json.NewEncoder(s).Encode(bridge.StreamFrame{Type: bridge.StreamInput, Data: []byte(input)}); err != nil {
+	if s.SessionID == "" {
+		return result{id, stateFail, "attach answer named no session"}
+	}
+	if err := json.NewEncoder(s).Encode(bridge.StreamFrame{Type: bridge.StreamInput, Data: []byte(reachScript(root))}); err != nil {
 		return blocked(id, "could not send input")
 	}
 	var transcript strings.Builder
@@ -192,8 +194,16 @@ func runReach(ctx context.Context, e env) result {
 			exited, code = true, f.Code
 		}
 	}
-	row, _ := auditRow(ctx, e, s.SessionID)
+	row := auditRow(ctx, e, s.SessionID)
 	return classifyReach("", transcript.String(), exited, code, row)
+}
+
+// reachScript builds its markers with printf at run time so the terminal's
+// echo of this input can never contain them.
+func reachScript(root string) string {
+	return "(: < PROJECT.md) && printf '%s_%s\\n' ACME OK || printf '%s_%s\\n' ACME DENIED\n" +
+		"(: < \"" + filepath.Join(root, "Globex", "PROJECT.md") + "\") && printf '%s_%s\\n' GLOBEX OK || printf '%s_%s\\n' GLOBEX DENIED\n" +
+		"exit\n"
 }
 
 func classifyReach(reason, transcript string, exited bool, exitCode int, row *audit.AuditEvent) result {
@@ -275,19 +285,47 @@ func sandboxAttach(ctx context.Context, e env, template, cwd string) (*stream, s
 }
 
 // auditRow polls because relay records a launch asynchronously. It returns
-// the newest session_launch row matching key and its size on the wire.
-func auditRow(ctx context.Context, e env, key string) (*audit.AuditEvent, int) {
+// the newest session_launch row matching key.
+func auditRow(ctx context.Context, e env, key string) *audit.AuditEvent {
 	for deadline := time.Now().Add(5 * time.Second); ; {
 		out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--event", "session_launch", "--grep", key, "--json", "--tail", "1").Output()
 		line := bytes.TrimSpace(out)
 		var row audit.AuditEvent
 		if err == nil && len(line) > 0 && json.Unmarshal(line, &row) == nil {
-			return &row, len(line)
+			return &row
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
-			return nil, 0
+			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// auditLineBytes sizes the row as stored in the audit file, which is what
+// the cap protects; relay audit --json output is a rendering of it.
+func auditLineBytes(ctx context.Context, e env, rowID string) (int, error) {
+	out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--path").Output()
+	if err != nil || rowID == "" {
+		return 0, errors.New("no audit path or row id")
+	}
+	f, err := os.Open(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = f.Close() }()
+	r := bufio.NewReader(f)
+	for {
+		line, err := r.ReadBytes('\n')
+		line = bytes.TrimRight(line, "\n")
+		var ev struct {
+			ID string `json:"id"`
+		}
+		if bytes.Contains(line, []byte(rowID)) && json.Unmarshal(line, &ev) == nil && ev.ID == rowID {
+			return len(line), nil
+		}
+		if err != nil {
+			return 0, errors.New("row not in audit file")
+		}
 	}
 }
 
@@ -305,5 +343,5 @@ func acmeProjectID(ctx context.Context, e env) (string, error) {
 			return p.ID, nil
 		}
 	}
-	return "", errors.New(acmeName + " not in relay grant")
+	return "", errors.New("no " + acmeName + " in relay grant")
 }
