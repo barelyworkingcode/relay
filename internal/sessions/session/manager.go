@@ -111,8 +111,8 @@ type Manager struct {
 
 	// onExit mirrors internal/sessions/terminal.Manager's own field of the
 	// same name and purpose: a later unit's SessionExited bridge hook, fired
-	// from handleProviderEvent's "process_exited" case on the provider's own
-	// waitForExit goroutine — never synchronously inside a caller's request.
+	// from handleProviderEvent's "process_exited" case, usually on the
+	// provider's own waitForExit goroutine (see SetExitHandler).
 	onExit func(id string, exitCode int)
 
 	collMu     sync.Mutex
@@ -171,9 +171,10 @@ func (m *Manager) eventSink() sessionstypes.EventSink {
 // owns reports its process has exited — mirrors
 // internal/sessions/terminal.Manager.SetExitHandler's signature. For
 // claude/pi, handleProviderEvent's "process_exited" case runs on the
-// provider's own waitForExit goroutine, never inline with a caller's
-// SendMessage/Create; ChatProvider has no OS process to wait on, so its
-// Kill invokes fn synchronously on the caller's own goroutine instead — fn
+// provider's own waitForExit goroutine, except when a claude permission-mode
+// restart fails: that restart reports the killed spawn's exit on the
+// caller's goroutine. ChatProvider has no OS process to wait on, so its
+// Kill invokes fn synchronously on the caller's own goroutine too — fn
 // must tolerate either.
 func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 	m.mu.Lock()

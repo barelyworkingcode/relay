@@ -248,8 +248,8 @@ reordering, de-duplicating and `[]` do not prompt. The wildcard here is
 anything else, including a mixed `["*","Bob"]`. A bare string `"*"`, or any
 other asserted non-array value, compares strictly. Outside operator restrict fields
 everything compares strictly, by decoded value with numbers compared by
-their text (so `1e2` differs from `100`, and integers above 2^53 that differ
-stay different): non-restrict fields,
+exact decimal value (so `1.0` and `1e0` equal `1`, and integers above 2^53
+that differ stay different): non-restrict fields,
 `project_path` fields, stale keys (so `null` against a missing key, or a
 reordered array, still counts as a change there), every field of an MCP
 whose schema is v1, unusable or not live, a blob that does not decode, a

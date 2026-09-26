@@ -513,7 +513,14 @@ loses whatever backlog is still unread when it passes.
 Only the provider's current spawn emits `process_exited`. After `Kill()` then
 `Start()` on the same provider, the old spawn's drain can finish once the new
 spawn is live; that exit is logged at `Debug` (`provider exit from a
-superseded spawn dropped`) and dropped, with no crash `Warn`.
+superseded spawn dropped`) and dropped, with no crash `Warn`. A restart
+(`SetPermissionMode` on a live spawn) supersedes the spawn before it calls
+`Kill()`, so the killed spawn's exit is dropped the same way even when it
+finishes draining before `Start()` runs: a restart emits no `process_exited`.
+If the restart's `Start()` fails, the session is dead, so the restart waits
+for the killed spawn's drain and emits that spawn's `process_exited` itself.
+The manager's exit path then runs as for any exit: the WS frame, and
+`SessionExited` to relay, which audits `session_end`.
 
 `logProviderStderr` also keeps the last 10 lines it logged, redacted and
 truncated as above, and hands them back when it finishes. On a non-zero exit,
@@ -1104,10 +1111,9 @@ what works.
      walk reads it; reporting it from `/launch` is a separate piece of work.
    - `ClaudeProvider.SetPermissionMode`'s existing Kill-then-Start restart
      is unsound once a launch's identity and sandbox profile are real: the
-     identity secret is single-use, and `Kill` fires `process_exited`,
-     which ends the launch identity and deletes the sandbox profile file
-     relay wrote — so `Start` afterward would hand `--sandbox-profile` a
-     path that no longer exists. A shim-wrapped claude session's
+     identity secret is single-use, and relay mints the identity and the
+     sandbox profile per launch, not per spawn, so a second `Start` cannot
+     reuse them. A shim-wrapped claude session's
      `SetPermissionMode` now refuses with `ErrRestartNeedsResume` instead,
      surfaced over WS as the same `resume_required` frame
      `ErrResumeRequired` already produces (`internal/sessions/api/

@@ -252,6 +252,27 @@ func TestApplyUpdate_RemoteOrHostedRecordDropsStaleDerivedFieldOnAnyEdit(t *test
 				t.Errorf("the operator field did not survive: %s", after.Context["macmcp"])
 			}
 		})
+
+		t.Run("schema known: a permissions edit drops the field: "+tc.kind, func(t *testing.T) {
+			s := tc.record()
+			access := map[string]string{"macmcp": "write"}
+			_, _, err := ApplyUpdate(s, "p1", UpdateFields{Access: &access}, surfacesOf(McpSurfaces{"macmcp": macmcpSurface()}))
+			assertNoErr(t, err, "access edit")
+
+			after, _ := config.FindProjectByID(s, "p1")
+			// A hosted project cannot be granted macmcp, so its access entry
+			// is pruned on store whatever happens to the context.
+			if tc.kind == "remote" && after.Access["macmcp"] != "write" {
+				t.Errorf("access not applied: %v", after.Access)
+			}
+			values := ContextValues(after.Context["macmcp"])
+			if raw, ok := values["file_dirs"]; ok {
+				t.Fatalf("a %s record still holds file_dirs after a permissions edit: %s", tc.kind, raw)
+			}
+			if string(values["mail_accounts"]) != `["Alice"]` {
+				t.Errorf("the operator field did not survive: %s", after.Context["macmcp"])
+			}
+		})
 	}
 
 	t.Run("v1 schema known: the rename drops allowed_dirs", func(t *testing.T) {
@@ -265,6 +286,22 @@ func TestApplyUpdate_RemoteOrHostedRecordDropsStaleDerivedFieldOnAnyEdit(t *test
 		after, _ := config.FindProjectByID(s, "p1")
 		if raw, ok := ContextValues(after.Context["fsmcp"])[V1AllowedDirsField]; ok {
 			t.Fatalf("a remote record still holds allowed_dirs after an edit: %s", raw)
+		}
+	})
+
+	t.Run("schema known: a refused permissions edit leaves context untouched", func(t *testing.T) {
+		s := staleRemote(stale())
+		before := append(json.RawMessage(nil), s.Projects[0].Context["macmcp"]...)
+
+		access := map[string]string{"macmcp": "wrIte"}
+		_, _, err := ApplyUpdate(s, "p1", UpdateFields{Access: &access}, surfacesOf(McpSurfaces{"macmcp": macmcpSurface()}))
+		if err == nil {
+			t.Fatal("an access edit with an invalid level was accepted")
+		}
+
+		after, _ := config.FindProjectByID(s, "p1")
+		if !bytes.Equal(before, after.Context["macmcp"]) {
+			t.Errorf("a refused edit changed the stored context:\nbefore %s\nafter  %s", before, after.Context["macmcp"])
 		}
 	})
 
