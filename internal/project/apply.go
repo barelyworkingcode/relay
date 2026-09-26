@@ -2,6 +2,7 @@ package project
 
 import (
 	"encoding/json"
+	"maps"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
@@ -289,6 +290,13 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 		sc = surfaces()
 	}
 	if needPermissionsCheck {
+		// Validate the context the derived drop below will leave, not the
+		// stored one. Cloned: a refusal must leave the stored map untouched.
+		staysUnderived := (proj.IsRemote() || proj.IsHosted()) && (candidate.IsRemote() || candidate.IsHosted())
+		if f.Context == nil && staysUnderived {
+			candidate.Context = maps.Clone(proj.Context)
+			dropDerivedContext(&candidate, sc)
+		}
 		carry := derivedCarry{
 			derives:     !candidate.IsRemote() && !candidate.IsHosted(),
 			prior:       proj.Context,
@@ -391,7 +399,7 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 		}
 	}
 	// Deliberately on the stored record, after every mutation: candidate
-	// shares its Context map with the stored record, so a drop on it before
+	// may share its Context map with the stored record, so a drop on it before
 	// validation would change a record that a refusal must leave untouched.
 	if needDerivedDrop {
 		if stored, _ := config.FindProjectByID(s, id); stored != nil {
