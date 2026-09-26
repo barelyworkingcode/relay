@@ -867,7 +867,10 @@ nor can the `/tmp`, `/var` and `/etc` aliases: a root that is one of them is
 also keyed where it resolves, and a grant is walked to its resolution. And a
 session that removes and recreates its root, or swaps it for a link, between W
 being built and a grant being walked is still caught: the ancestor is outside
-its reach. Folding can equate names the volume
+its reach. The exception is an undotted read-write regular-file root: its
+subpath grant lets a session replace it with a directory, and a file root does
+not cover what lies beneath it, so a link planted there in that window is
+missed. Folding can equate names the volume
 keeps apart; that refuses more, never less. A directory root covers a link
 anywhere beneath it. A regular-file root covers the entries directly in its
 parent directory. A read-write file grant with a dotted name lets a session
