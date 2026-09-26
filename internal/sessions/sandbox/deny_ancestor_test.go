@@ -41,7 +41,7 @@ func TestRender_DenyAncestorBlockNamesEveryAncestorOnceAfterTheDenies(t *testing
 		t.Fatalf("Render: %v", err)
 	}
 	terms, at := denyAncestorBlock(t, got)
-	want := literals("/private", "/private/tmp", g, g+"/home", g+"/home/.config", g+"/work", g+"/work/shared", "/usr", "/usr/local", "/usr/local/relay-sandbox-golden")
+	want := literals("/private", "/private/tmp", g, g+"/home", g+"/home/.config", g+"/relay", g+"/work", g+"/work/shared", "/usr", "/usr/local", "/usr/local/relay-sandbox-golden")
 	if !slices.Equal(terms, want) {
 		t.Errorf("ancestor block = %q\nwant            %q\n%s", terms, want, got)
 	}

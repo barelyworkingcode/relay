@@ -40,7 +40,19 @@
   (subpath "/private/tmp/cc-socks"))
 (deny file-write-unlink file-clone
   (literal "/usr")
-  (literal "/usr/local"))
+  (literal "/usr/local")
+  (literal "<EVE_DATA>")
+  (literal "<HOME>")
+  (literal "<HOME>/Library")
+  (literal "<HOME>/Library/Application Support")
+  (literal "<HOME>/Library/Application Support/relay")
+  (literal "<HOME>/Library/Application Support/relayLLM")
+  (literal "<RELAY_DIR>"))
+(deny file-write-unlink
+  (require-all (subpath "<RELAY_DIR>") (vnode-type SOCKET))
+  (require-all (subpath "<HOME>/Library/Application Support/relay") (vnode-type SOCKET))
+  (require-all (subpath "<HOME>/Library/Application Support/relayLLM") (vnode-type SOCKET))
+  (require-all (subpath "<EVE_DATA>") (vnode-type SOCKET)))
 (deny network-outbound
   (remote unix-socket (path-regex #"^<RELAY_DIR>/"))
   (remote unix-socket (path-regex #"^<HOME>/Library/Application Support/relay/"))

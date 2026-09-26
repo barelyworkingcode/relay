@@ -87,9 +87,10 @@ func TestRender_GrantsComeAfterTheDeny(t *testing.T) {
 
 // TestRender_NothingIsDeniedByName is the point of the model: without
 // Spec.Deny the only paths a file deny names are the fixed baseline carve-outs
-// under /usr, and the only unlink-and-clone deny names their ancestors /usr
-// and /usr/local. Everything else is unreachable because no grant names it,
-// not because a deny list remembered it.
+// under /usr, and the only unlink deny names their ancestors and the socket
+// deny dir with its ancestors, plus that dir's socket files. Everything else
+// is unreachable because no grant names it, not because a deny list
+// remembered it.
 func TestRender_NothingIsDeniedByName(t *testing.T) {
 	got, err := Render(goldenSpec())
 	if err != nil {
@@ -107,9 +108,17 @@ func TestRender_NothingIsDeniedByName(t *testing.T) {
 	if strings.Contains(got, "(deny file-write*") {
 		t.Fatalf("profile carries a separate write deny:\n%s", got)
 	}
-	const ancestors = "(deny file-write-unlink file-clone\n  (literal \"/usr\")\n  (literal \"/usr/local\"))\n"
-	if n := strings.Count(got, "(deny file-write-unlink"); n != 1 || !strings.Contains(got, ancestors) {
-		t.Errorf("profile's unlink-and-clone deny is not exactly the /usr and /usr/local block:\n%s", got)
+	const unlinkDenies = "(deny file-write-unlink file-clone\n" +
+		"  (literal \"/private\")\n" +
+		"  (literal \"/private/tmp\")\n" +
+		"  (literal \"/private/tmp/relay-sandbox-golden\")\n" +
+		"  (literal \"/private/tmp/relay-sandbox-golden/relay\")\n" +
+		"  (literal \"/usr\")\n" +
+		"  (literal \"/usr/local\"))\n" +
+		"(deny file-write-unlink\n" +
+		"  (require-all (subpath \"/private/tmp/relay-sandbox-golden/relay\") (vnode-type SOCKET)))\n"
+	if n := strings.Count(got, "(deny file-write-unlink"); n != 2 || !strings.Contains(got, unlinkDenies) {
+		t.Errorf("profile's unlink denies are not exactly the ancestor block and the socket-file block:\n%s", got)
 	}
 }
 
