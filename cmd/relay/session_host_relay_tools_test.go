@@ -340,7 +340,9 @@ func TestSessionHost_ClaudeRelayTools_NonDefaultConfigDirReachesThatRelay(t *tes
 
 	dispatcher := httptest.NewServer(NewFrontendDispatcher(f.enhanced))
 	t.Cleanup(dispatcher.Close)
+	turnDone := make(chan struct{})
 	go func() {
+		defer close(turnDone)
 		r, err := http.Post(dispatcher.URL+"/api/sessions/"+sessionID+"/message", "application/json",
 			bytes.NewReader([]byte(`{"text":"echo something"}`)))
 		if err == nil {
@@ -352,6 +354,13 @@ func TestSessionHost_ClaudeRelayTools_NonDefaultConfigDirReachesThatRelay(t *tes
 	case <-f.echoCalled:
 	case <-time.After(rs10Timeout):
 		t.Fatal("the Claude session's relay tool server never called echo on the relay under the non-default config dir")
+	}
+	// Deliberate: echo runs before the router records call_tool, so the audit
+	// log is read only once the turn that carried the result has finished.
+	select {
+	case <-turnDone:
+	case <-time.After(rs10Timeout):
+		t.Fatal("the claude turn never finished after echo was called")
 	}
 	if ev := f.callToolEvent(t, sessionID); ev == nil || ev["tool"] != "echo" {
 		t.Fatalf("call_tool audit event for session %s = %v, want one for echo", sessionID, ev)

@@ -163,9 +163,11 @@ startup instead of failing each call. A session reports the early exit as
 `relay_server_failed` (Claude) or `mcp_start_failed` (chat).
 
 The admin subcommands (`relay mcp register`, `relay mcp call`, `relay
-mcpExec` and the rest) do not honour an inherited `RELAY_BRIDGE_SOCKET`. They
-carry secrets the operator typed, so they dial only the socket `--config-dir`
-or the default names.
+mcpExec` and the rest) do not read `RELAY_BRIDGE_SOCKET`; they dial the socket
+`--config-dir` or the default names. The stdio server honours the variable
+because it is the one command relay's own children spawn with it set to the
+socket of the relay that launched them. Whether each admin command should
+honour it is a separate decision.
 
 ## Privileged commands prompt — and here is what that looks like
 

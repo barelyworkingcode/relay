@@ -147,8 +147,9 @@ func probeBridgeSocket(path string, timeout time.Duration) error {
 	return conn.Close()
 }
 
-// runMcpOrServer's subcommands keep bridge.NewClient: they carry secrets the
-// operator typed, so they must not follow an inherited RELAY_BRIDGE_SOCKET.
+// runMcpOrServer's subcommands keep bridge.NewClient and ignore
+// RELAY_BRIDGE_SOCKET: only the stdio server is spawned by relay's own
+// children with that variable naming the relay that launched them.
 func runMcpOrServer(args []string, configDirExplicit bool) {
 	if len(args) > 0 {
 		switch args[0] {
