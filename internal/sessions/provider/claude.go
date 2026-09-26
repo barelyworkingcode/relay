@@ -129,10 +129,12 @@ type ClaudeProvider struct {
 	// killed is per spawn: a restarted spawn gets a fresh one, so an old
 	// spawn's late exit can't read the new spawn's flag.
 	killed *atomic.Bool
-	// exitMu guards spawnGen, which counts Starts. A spawn's waitForExit
-	// holds it from the generation check through the process_exited
-	// handler call, so a killed spawn whose drain outlasts a restart stays
-	// silent, and Start cannot go live between the check and the emit.
+	// exitMu guards spawnGen, which counts Starts and restarts: a restart
+	// supersedes the spawn it kills before Kill, so that spawn never emits
+	// process_exited however fast it exits. A spawn's waitForExit holds it
+	// from the generation check through the process_exited handler call,
+	// so a killed spawn whose drain outlasts a restart stays silent, and
+	// Start cannot go live between the check and the emit.
 	// Deliberate: the handler runs under the lock, so it must never call
 	// Start on this provider.
 	exitMu   sync.Mutex
@@ -1286,11 +1288,10 @@ func (p *ClaudeProvider) Alive() bool {
 
 func (p *ClaudeProvider) SetPermissionMode(mode string) error {
 	if p.cfg.Identity != nil || p.cfg.SandboxProfile != "" {
-		// This launch's identity is single-use (a second Hello is refused)
-		// and Kill fires process_exited, which tears down the sandbox
-		// profile file and ends the launch identity — a Kill-then-Start
-		// restart below would hand --sandbox-profile a path that no longer
-		// exists. The caller must drive a real resume instead, which mints
+		// This launch's identity is single-use (a second Hello is refused),
+		// and relay mints the identity and sandbox profile per launch, not
+		// per spawn, so the Kill-then-Start restart below cannot reuse
+		// them. The caller must drive a real resume instead, which mints
 		// both fresh.
 		return ErrRestartNeedsResume
 	}
@@ -1312,9 +1313,16 @@ func (p *ClaudeProvider) SetPermissionMode(mode string) error {
 	}
 
 	if p.Alive() {
+		p.supersedeSpawn()
 		p.Kill()
 	}
 	return p.Start()
+}
+
+func (p *ClaudeProvider) supersedeSpawn() {
+	p.exitMu.Lock()
+	p.spawnGen++
+	p.exitMu.Unlock()
 }
 
 func (p *ClaudeProvider) DeleteSession() error {
