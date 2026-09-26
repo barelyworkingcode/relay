@@ -303,6 +303,8 @@ func (p *PiProvider) Start() (err error) {
 	default:
 		cmd = exec.Command(piPath, args...) // unchanged direct spawn
 	}
+	fds := &spawnFDs{statusR: statusR, extraFiles: extraFiles}
+	defer fds.closeUnlessStarted()
 	cmd.Dir = p.directory
 	env := ensurePath(childBaseEnv())
 	env = append(env, "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1")
@@ -340,33 +342,32 @@ func (p *PiProvider) Start() (err error) {
 	}
 	cmd.Env = env
 
+	stdoutR, stdoutW, err := newStdoutPipe(cmd)
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	fds.pipes = append(fds.pipes, stdoutR, stdoutW)
+
+	stderrR, stderrW, err := newStderrPipe(cmd)
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+	fds.pipes = append(fds.pipes, stderrR, stderrW)
+
+	// Deliberate: StdinPipe is last so no return sits between it and Start;
+	// the Cmd holds its read end until Start, and Start closes both ends if
+	// it fails.
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)
 	}
 
-	stdoutR, stdoutW, err := newStdoutPipe(cmd)
-	if err != nil {
-		_ = stdin.Close()
-		return fmt.Errorf("stdout pipe: %w", err)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start pi: %w", err)
 	}
-
-	stderrR, stderrW, err := newStderrPipe(cmd)
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdoutR.Close()
-		_ = stdoutW.Close()
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	startErr := cmd.Start()
+	fds.started = true
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
-	if startErr != nil {
-		_ = stdoutR.Close()
-		_ = stderrR.Close()
-		return fmt.Errorf("failed to start pi: %w", startErr)
-	}
 	sawStdout := &atomic.Bool{}
 	identitySecret := ""
 	if p.cfg.Identity != nil {

@@ -448,34 +448,35 @@ func (p *ClaudeProvider) Start() error {
 		cmd.Dir = p.directory
 		cmd.Env = p.buildClaudeEnv(ensurePath(childBaseEnv()))
 	}
+	fds := &spawnFDs{statusR: statusR, extraFiles: extraFiles}
+	defer fds.closeUnlessStarted()
 
+	stdoutR, stdoutW, err := newStdoutPipe(cmd)
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	fds.pipes = append(fds.pipes, stdoutR, stdoutW)
+
+	stderrR, stderrW, err := newStderrPipe(cmd)
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+	fds.pipes = append(fds.pipes, stderrR, stderrW)
+
+	// Deliberate: StdinPipe is last so no return sits between it and Start;
+	// the Cmd holds its read end until Start, and Start closes both ends if
+	// it fails.
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)
 	}
 
-	stdoutR, stdoutW, err := newStdoutPipe(cmd)
-	if err != nil {
-		_ = stdin.Close()
-		return fmt.Errorf("stdout pipe: %w", err)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start claude: %w", err)
 	}
-
-	stderrR, stderrW, err := newStderrPipe(cmd)
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdoutR.Close()
-		_ = stdoutW.Close()
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	startErr := cmd.Start()
+	fds.started = true
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
-	if startErr != nil {
-		_ = stdoutR.Close()
-		_ = stderrR.Close()
-		return fmt.Errorf("failed to start claude: %w", startErr)
-	}
 	logStderr := func() []string {
 		return logProviderStderr(stderrR, p.session.ID, "claude", &spawn.sawStdout, p.identitySecret())
 	}
