@@ -543,6 +543,7 @@ func TestLaunch_ConcurrentCrossManagerCollision_ExactlyOneWins(t *testing.T) {
 		return testutil.NewFakeProvider(handler), nil
 	})
 	_, internalSock, _, bearer := startServerWithManagers(t, os.Getpid(), terminals, sessions)
+	t.Cleanup(terminals.StopAll)
 	client := unixClient(internalSock)
 
 	const rounds = 40
@@ -553,12 +554,11 @@ func TestLaunch_ConcurrentCrossManagerCollision_ExactlyOneWins(t *testing.T) {
 		// round's own EndSession/persist log a spurious "invalid session
 		// id" error instead of exercising the race this test is for.
 		id := fmt.Sprintf("66666666-6666-6666-6666-%012d", round)
-		// A short real -sleep gives the pty launch's own dispatch (a real
-		// spawned process, blocked in terminal.Manager.Create until the
-		// shim's Hello completes) some wall-clock width for the claude
-		// launch's dispatch to land inside it if the reservation were not
-		// held for the whole call.
-		ptyBody := launchBody(id, []string{target, "-sleep", "50ms", "-exit-code", "0"})
+		// The pty target runs until this round closes it. A fixed lifetime
+		// lets a stalled runner see the target (and its shim) exit before
+		// handleLaunch reads the shim's start time, which answers 500
+		// spawn_failed and fails the round for reasons unrelated to the race.
+		ptyBody := launchBody(id, []string{target, "-exit-code", "0"})
 		claudeBody := map[string]any{
 			"v":          1,
 			"session_id": id,
@@ -613,6 +613,7 @@ func TestLaunch_ConcurrentCrossManagerCollision_ExactlyOneWins(t *testing.T) {
 		if !inTerm && !inSess {
 			t.Fatalf("round %d (%s): neither manager holds this id even though one launch reported 201 (pty=%d, claude=%d)", round, id, ptyStatus, claudeStatus)
 		}
+		terminals.Close(id)
 	}
 }
 
