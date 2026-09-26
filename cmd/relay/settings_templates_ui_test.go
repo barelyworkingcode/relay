@@ -87,3 +87,43 @@ func TestProjectForm_AllowedTemplates(t *testing.T) {
 		}
 	}
 }
+
+// A template is sandboxed unless it says sandbox: false, so the list's pill
+// and the edit toggle both read an absent key as sandboxed.
+func TestTemplatesTab_SandboxPillAndToggle(t *testing.T) {
+	for _, c := range []struct {
+		name, tmpl string
+		want       string
+	}{
+		{"absent", `{id:'t', name:'T'}`, `{"pill":true,"toggle":true}`},
+		{"true", `{id:'t', name:'T', sandbox:true}`, `{"pill":true,"toggle":true}`},
+		{"false", `{id:'t', name:'T', sandbox:false}`, `{"pill":false,"toggle":false}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			vm := newAppVM(t)
+			got := evalString(t, vm, `(function(){
+				window.webkit = { messageHandlers: { ipc: { postMessage: function(){} } } };
+				window.state.page = 'templates';
+				window.state.editingTemplateId = null;
+				window.state.templates = [`+c.tmpl+`];
+				window.render();
+				var pill = document.getElementById('content').innerHTML.indexOf('>sandboxed<') >= 0;
+				// render() re-reads form inputs from the DOM, which the goja shim
+				// cannot hold, so the form is read straight from its builder.
+				var toggle = window.templateFormFromExisting(window.state.templates[0]).sandbox;
+				return JSON.stringify({pill: pill, toggle: toggle});
+			})()`)
+			if got != c.want {
+				t.Errorf("sandbox %s: got %s, want %s", c.name, got, c.want)
+			}
+		})
+	}
+}
+
+func TestTemplatesTab_NewTemplateStartsSandboxed(t *testing.T) {
+	vm := newAppVM(t)
+	got := evalString(t, vm, `String(window.blankTemplateForm().sandbox)`)
+	if got != "true" {
+		t.Errorf("a new template's sandbox toggle = %s, want true", got)
+	}
+}

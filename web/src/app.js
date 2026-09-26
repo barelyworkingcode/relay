@@ -4270,7 +4270,7 @@ function renderTemplates() {
         html += '<div style="display:flex;align-items:center;gap:8px">';
         html += '<span class="proj-card-name">' + esc(t.name) + '</span>';
         if (t.builtIn) html += '<span class="pill muted">built-in</span>';
-        if (t.sandbox) html += '<span class="pill ok">sandboxed</span>';
+        if (t.sandbox !== false) html += '<span class="pill ok">sandboxed</span>';
         if (t.model_key) html += '<span class="pill ok">model key</span>';
         html += '</div>';
         html += '<div style="display:flex;gap:4px">';
@@ -4289,7 +4289,7 @@ function templateLines(text) {
 }
 
 function blankTemplateForm() {
-    return { id: '', name: '', description: '', icon: '', command: '', args: '', env: '', env_passthrough: '', idleTimeout: '', sandbox: false, model_key: false, read: '', read_write: '', deny: '' };
+    return { id: '', name: '', description: '', icon: '', command: '', args: '', env: '', env_passthrough: '', idleTimeout: '', sandbox: true, model_key: false, read: '', read_write: '', deny: '' };
 }
 
 function templateFormFromExisting(t) {
@@ -4300,7 +4300,7 @@ function templateFormFromExisting(t) {
         env: Object.keys(t.env || {}).map(k => k + '=' + t.env[k]).join('\n'),
         env_passthrough: lines(t.env_passthrough),
         idleTimeout: t.idleTimeout ? String(t.idleTimeout) : '',
-        sandbox: !!t.sandbox, model_key: !!t.model_key,
+        sandbox: t.sandbox !== false, model_key: !!t.model_key,
         read: lines(t.read), read_write: lines(t.read_write), deny: lines(t.deny),
     };
 }

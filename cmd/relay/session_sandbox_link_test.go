@@ -79,7 +79,7 @@ func TestAuthorizeLaunch_RefusesReadWriteGrantThroughUserLink(t *testing.T) {
 			t.Setenv("HOME", home)
 			if err := store.With(func(s *config.Settings) {
 				s.TerminalTemplates = append(s.TerminalTemplates, config.TerminalTemplate{
-					ID: "custom", Name: "Custom", Sandbox: true, ReadWrite: []string{tc.entry},
+					ID: "custom", Name: "Custom", Sandbox: ptr(true), ReadWrite: []string{tc.entry},
 				})
 			}); err != nil {
 				t.Fatalf("store.With: %v", err)

@@ -780,14 +780,14 @@ func resolveTemplateEnv(t config.TerminalTemplate, settings *config.Settings) (m
 }
 
 // wantsSandbox is C7's default table: on for claude/pi/chat unconditionally,
-// and for a pty launch exactly what the template's own Sandbox field says
-// (this function does not special-case any template id itself).
+// and for a pty launch on unless the template explicitly opts out with
+// "sandbox": false (this function does not special-case any template id).
 func wantsSandbox(kind string, tmpl *config.TerminalTemplate) bool {
 	switch kind {
 	case KindClaude, KindPi, KindChat:
 		return true
 	default:
-		return tmpl != nil && tmpl.Sandbox
+		return tmpl == nil || tmpl.Sandboxed()
 	}
 }
 

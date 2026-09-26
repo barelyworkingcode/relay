@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -34,7 +35,7 @@ func TestEnsureDefaultTerminalTemplates(t *testing.T) {
 		t.Fatalf("seeded %d templates, want one default", len(s.TerminalTemplates))
 	}
 	def := s.TerminalTemplates[0]
-	if def.ID != "shell" || !def.Sandbox || len(def.ReadWrite) != 1 || def.ReadWrite[0] != "~" || len(def.Read) != 0 {
+	if def.ID != "shell" || def.Sandbox == nil || !*def.Sandbox || len(def.ReadWrite) != 1 || def.ReadWrite[0] != "~" || len(def.Read) != 0 {
 		t.Fatalf("default template = %+v, want a sandboxed shell with ~ read-write", def)
 	}
 	if err := ValidateTerminalTemplate(def); err != nil {
@@ -65,7 +66,7 @@ func TestEnsureDefaultTerminalTemplates(t *testing.T) {
 // The sandbox folders are a template's own: they validate as shapes, and a
 // folder relay could never place is refused when the template is read.
 func TestValidateTerminalTemplate_SandboxFolders(t *testing.T) {
-	ok := TerminalTemplate{ID: "x", Name: "X", Sandbox: true,
+	ok := TerminalTemplate{ID: "x", Name: "X", Sandbox: ptr(true),
 		Read:      []string{"~", "~/.gitconfig", "/opt/homebrew", "~/Library/Application Support/tool"},
 		ReadWrite: []string{"~/.claude", "/private/tmp/cc-socks"}}
 	if err := ValidateTerminalTemplate(ok); err != nil {
@@ -108,6 +109,96 @@ func TestValidateTerminalTemplate_ModelEndpointURLOnlyInEnv(t *testing.T) {
 		if err := ValidateTerminalTemplate(tmpl); !errors.Is(err, ErrModelEndpointSubstitution) {
 			t.Errorf("%s: err = %v, want ErrModelEndpointSubstitution", name, err)
 		}
+	}
+}
+
+// A template is sandboxed unless it says otherwise: the zero value fails closed.
+func TestTerminalTemplate_Sandboxed(t *testing.T) {
+	for name, c := range map[string]struct {
+		sandbox *bool
+		want    bool
+	}{
+		"absent": {nil, true},
+		"true":   {ptr(true), true},
+		"false":  {ptr(false), false},
+	} {
+		if got := (TerminalTemplate{ID: "x", Name: "X", Sandbox: c.sandbox}).Sandboxed(); got != c.want {
+			t.Errorf("%s: Sandboxed() = %v, want %v", name, got, c.want)
+		}
+	}
+}
+
+// settings.json keeps what the operator wrote: an absent or null sandbox stays
+// absent through a load and a save, and is never rewritten to false.
+func TestTerminalTemplate_SandboxRoundTripsThroughSettingsJSON(t *testing.T) {
+	dir := mkEmptySandboxRelayHome(t)
+	raw := `{"terminal_templates":[
+		{"id":"absent","name":"Absent"},
+		{"id":"null","name":"Null","sandbox":null},
+		{"id":"off","name":"Off","sandbox":false},
+		{"id":"on","name":"On","sandbox":true}
+	]}`
+	if err := os.WriteFile(sdSettingsPath(dir), []byte(raw), 0600); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+	want := map[string]struct {
+		stored    string // the value on disk, "" for no key
+		sandboxed bool
+	}{
+		"absent": {"", true},
+		"null":   {"", true},
+		"off":    {"false", false},
+		"on":     {"true", true},
+	}
+
+	store := sealedSettingsStoreAt(dir)
+	for id, w := range want {
+		tmpl, ok := GetTerminalTemplate(store.Get(), id)
+		if !ok {
+			t.Fatalf("template %q did not load", id)
+		}
+		if isSet := tmpl.Sandbox != nil; isSet != (w.stored != "") {
+			t.Errorf("%s: loaded Sandbox = %v, want set=%v", id, tmpl.Sandbox, w.stored != "")
+		}
+		if tmpl.Sandboxed() != w.sandboxed {
+			t.Errorf("%s: Sandboxed() = %v, want %v", id, tmpl.Sandboxed(), w.sandboxed)
+		}
+	}
+
+	if err := store.With(func(s *Settings) {
+		s.TerminalTemplates = append(s.TerminalTemplates, TerminalTemplate{ID: "other", Name: "Other", Sandbox: ptr(false)})
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	var onDisk struct {
+		TerminalTemplates []map[string]json.RawMessage `json:"terminal_templates"`
+	}
+	if err := json.Unmarshal(sdRead(t, dir), &onDisk); err != nil {
+		t.Fatalf("decode settings.json: %v", err)
+	}
+	for _, entry := range onDisk.TerminalTemplates {
+		var id string
+		_ = json.Unmarshal(entry["id"], &id)
+		w, ok := want[id]
+		if !ok {
+			continue
+		}
+		delete(want, id)
+		if v, has := entry["sandbox"]; string(v) != w.stored || has != (w.stored != "") {
+			t.Errorf("%s: saved sandbox = %q (present %v), want %q", id, v, has, w.stored)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("templates missing after save: %v", want)
+	}
+}
+
+func TestTerminalTemplate_CloneDoesNotShareSandbox(t *testing.T) {
+	orig := &Settings{TerminalTemplates: []TerminalTemplate{{ID: "x", Name: "X", Sandbox: ptr(true)}}}
+	cp := orig.Clone()
+	*cp.TerminalTemplates[0].Sandbox = false
+	if !*orig.TerminalTemplates[0].Sandbox {
+		t.Fatal("setting the clone's sandbox changed the original's")
 	}
 }
 
@@ -239,7 +330,7 @@ func TestEffectiveTerminalTemplates_SkipsInvalidEntry(t *testing.T) {
 // one, so it never reaches a launch with a grant that would be dropped.
 func TestEffectiveTerminalTemplates_SkipsARelativeFolder(t *testing.T) {
 	s := &Settings{TerminalTemplates: []TerminalTemplate{
-		{ID: "bad", Name: "Bad", Sandbox: true, ReadWrite: []string{"tools"}},
+		{ID: "bad", Name: "Bad", Sandbox: ptr(true), ReadWrite: []string{"tools"}},
 	}}
 	if got := EffectiveTerminalTemplates(s); len(got) != 0 {
 		t.Fatalf("a template with a relative folder resolved: %+v", got)
@@ -438,7 +529,7 @@ func TestValidateHostTemplate_RefusesWhatOnlyMeansSomethingOnTheConsole(t *testi
 		tmpl TerminalTemplate
 		want error // nil: any error will do
 	}{
-		"sandbox":         {TerminalTemplate{ID: "x", Name: "X", Sandbox: true}, ErrHostTemplateSandbox},
+		"sandbox":         {TerminalTemplate{ID: "x", Name: "X", Sandbox: ptr(true)}, ErrHostTemplateSandbox},
 		"read":            {TerminalTemplate{ID: "x", Name: "X", Read: []string{"/opt"}}, ErrHostTemplateSandbox},
 		"read_write":      {TerminalTemplate{ID: "x", Name: "X", ReadWrite: []string{"/opt"}}, ErrHostTemplateSandbox},
 		"env_passthrough": {TerminalTemplate{ID: "x", Name: "X", EnvPassthrough: []string{"PATH"}}, ErrHostTemplateEnvPassthrough},
@@ -459,6 +550,16 @@ func TestValidateHostTemplate_RefusesWhatOnlyMeansSomethingOnTheConsole(t *testi
 	ok := TerminalTemplate{ID: "claude-code", Name: "Claude Code", Command: "/usr/local/bin/claude", Args: []string{"${PROJECT_PATH}"}, Env: map[string]string{"DEBUG": "1"}}
 	if err := ValidateHostTemplate(ok); err != nil {
 		t.Fatalf("a plain host template was refused: %v", err)
+	}
+}
+
+// A host template never sandboxes, so leaving the key out or saying false is
+// fine; only an explicit true is refused.
+func TestValidateHostTemplate_AcceptsAnAbsentOrFalseSandbox(t *testing.T) {
+	for name, sandbox := range map[string]*bool{"absent": nil, "false": ptr(false)} {
+		if err := ValidateHostTemplate(TerminalTemplate{ID: "x", Name: "X", Sandbox: sandbox}); err != nil {
+			t.Errorf("%s: refused: %v", name, err)
+		}
 	}
 }
 
@@ -483,7 +584,7 @@ func TestTemplatesForProject(t *testing.T) {
 		TerminalTemplates: []TerminalTemplate{{ID: "console", Name: "Console"}},
 		Hosts: []Host{{ID: "h1", Name: "devbox", TerminalTemplates: []TerminalTemplate{
 			{ID: "zsh", Name: "Zsh", Command: "zsh"},
-			{ID: "bad", Name: "Bad", Sandbox: true},
+			{ID: "bad", Name: "Bad", Sandbox: ptr(true)},
 			{ID: "shell", Name: "Shell"},
 		}}},
 	}

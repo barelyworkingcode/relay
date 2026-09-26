@@ -32,16 +32,16 @@ func addKeyEnvTemplates(t *testing.T, f *sessionHostFixture) {
 		s.TerminalTemplates = append(s.TerminalTemplates,
 			// A custom template that maps the key into the child's env.
 			config.TerminalTemplate{
-				ID: "rs10-keymap", Name: "rs10 keymap", Command: f.testTargetBin, Args: args, ModelKey: true,
+				ID: "rs10-keymap", Name: "rs10 keymap", Command: f.testTargetBin, Args: args, ModelKey: true, Sandbox: ptr(false),
 				Env: map[string]string{
 					"ANTHROPIC_BASE_URL":       "http://127.0.0.1:9911",
 					"ANTHROPIC_CUSTOM_HEADERS": keyHeaderMapping,
 				},
 			},
 			// Opted in to a key, but declares no mapping: nothing is injected.
-			config.TerminalTemplate{ID: "rs10-keynomap", Name: "rs10 keynomap", Command: f.testTargetBin, Args: args, ModelKey: true},
+			config.TerminalTemplate{ID: "rs10-keynomap", Name: "rs10 keynomap", Command: f.testTargetBin, Args: args, ModelKey: true, Sandbox: ptr(false)},
 			// No key at all.
-			config.TerminalTemplate{ID: "rs10-nokey", Name: "rs10 nokey", Command: f.testTargetBin, Args: args},
+			config.TerminalTemplate{ID: "rs10-nokey", Name: "rs10 nokey", Command: f.testTargetBin, Args: args, Sandbox: ptr(false)},
 		)
 	}), "seed key templates")
 }
