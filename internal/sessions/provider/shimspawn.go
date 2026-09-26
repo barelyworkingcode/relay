@@ -152,3 +152,28 @@ func readShimStatus(f *os.File) (shimOutcome, error) {
 	}
 	return out, sc.Err()
 }
+
+// spawnFDs holds the parent-side fds a Start opens before cmd.Start. Until
+// started is set, closeUnlessStarted closes every one of them; after, the
+// post-Start code owns them. exec.Cmd never closes ExtraFiles itself.
+type spawnFDs struct {
+	statusR    *os.File
+	extraFiles []*os.File
+	pipes      []*os.File
+	started    bool
+}
+
+func (s *spawnFDs) closeUnlessStarted() {
+	if s.started {
+		return
+	}
+	if s.statusR != nil {
+		_ = s.statusR.Close()
+	}
+	for _, f := range s.extraFiles {
+		_ = f.Close()
+	}
+	for _, f := range s.pipes {
+		_ = f.Close()
+	}
+}
