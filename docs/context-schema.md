@@ -203,7 +203,7 @@ thing.
   result is local and not hosted, relay's own values pass through: with no
   `context` in the request, every stored v2 `project_path` field and every
   stored v1 blob is carried unchanged. The write keeps them as stored, and
-  re-derives them from `path` only when the same request changes `path`,
+  re-derives them from `path` only when the same request names `path`,
   `allowed_mcp_ids` or `context`. When the result is remote or hosted
   nothing is derived, so a stored derived field is judged as if it had been
   sent: an update that names a permission field while one is stored, a
