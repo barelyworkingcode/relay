@@ -309,7 +309,7 @@ func newSessionHostFixture(t *testing.T) *sessionHostFixture {
 	assertNoErr(t, store.With(func(s *config.Settings) {
 		s.TerminalTemplates = append(s.TerminalTemplates,
 			config.TerminalTemplate{
-				ID: "rs10-basic", Name: "rs10 basic", Command: testTargetBin,
+				ID: "rs10-basic", Name: "rs10 basic", Command: testTargetBin, Sandbox: ptr(false),
 				Args: []string{
 					"-marker", "${PROJECT_PATH}/rs10-marker.json",
 					"-calltool-out", "${PROJECT_PATH}/rs10-calltool.json",
@@ -318,7 +318,7 @@ func newSessionHostFixture(t *testing.T) *sessionHostFixture {
 				},
 			},
 			config.TerminalTemplate{
-				ID: "rs10-detached", Name: "rs10 detached", Command: testTargetBin,
+				ID: "rs10-detached", Name: "rs10 detached", Command: testTargetBin, Sandbox: ptr(false),
 				Args: []string{
 					"-marker", "${PROJECT_PATH}/rs10-marker.json",
 					"-calltool-out", "${PROJECT_PATH}/rs10-calltool.json",
@@ -327,7 +327,7 @@ func newSessionHostFixture(t *testing.T) *sessionHostFixture {
 				},
 			},
 			config.TerminalTemplate{
-				ID: "rs10-cross", Name: "rs10 cross", Command: testTargetBin,
+				ID: "rs10-cross", Name: "rs10 cross", Command: testTargetBin, Sandbox: ptr(false),
 				Args: []string{
 					"-marker", "${PROJECT_PATH}/rs10-marker.json",
 					"-calltool-out", "${PROJECT_PATH}/rs10-calltool.json",
@@ -336,7 +336,7 @@ func newSessionHostFixture(t *testing.T) *sessionHostFixture {
 				},
 			},
 			config.TerminalTemplate{
-				ID: "rs10-sandboxed", Name: "rs10 sandboxed", Command: testTargetBin, Sandbox: true,
+				ID: "rs10-sandboxed", Name: "rs10 sandboxed", Command: testTargetBin, Sandbox: ptr(true),
 				Args: []string{
 					"-marker", "${PROJECT_PATH}/rs10-marker.json",
 					"-write-outside", filepath.Join(homeDir, "rs10-sandbox-probe-${PROJECT_ID}.txt"),
@@ -345,7 +345,7 @@ func newSessionHostFixture(t *testing.T) *sessionHostFixture {
 				},
 			},
 			config.TerminalTemplate{
-				ID: "rs10-longlived", Name: "rs10 longlived", Command: testTargetBin,
+				ID: "rs10-longlived", Name: "rs10 longlived", Command: testTargetBin, Sandbox: ptr(false),
 				Args: []string{
 					"-marker", "${PROJECT_PATH}/rs10-marker.json",
 					"-calltool-out", "${PROJECT_PATH}/rs10-calltool.json",

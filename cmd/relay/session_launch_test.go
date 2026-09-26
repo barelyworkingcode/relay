@@ -43,22 +43,22 @@ func testTerminalTemplates() []config.TerminalTemplate {
 	return []config.TerminalTemplate{
 		{
 			ID: "shell", Name: "Shell", Icon: "shell", Description: "Default system shell",
-			Sandbox: true, ReadWrite: []string{"~"},
+			Sandbox: ptr(true), ReadWrite: []string{"~"},
 		},
 		{
 			ID: "claude-code", Name: "Claude Code", Command: "claude", Icon: "terminal", Description: "Claude Code CLI agent",
 			EnvPassthrough: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"},
-			Sandbox:        true,
+			Sandbox:        ptr(true),
 			ReadWrite:      []string{"~/.claude", "~/.claude.json", "~/.cache", "~/.npm", "~/go/pkg", "~/Library/Caches", "/private/tmp/cc-socks"},
 			Read:           append([]string{"~/Library/Keychains", "/opt/homebrew", "~/.local/bin", "~/.local/share/claude"}, dotfiles...),
 		},
 		{
 			ID: "pi", Name: "pi", Command: "pi", Icon: "terminal", Description: "pi coding agent",
-			Sandbox: true, ModelKey: true,
+			Sandbox: ptr(true), ModelKey: true,
 			ReadWrite: []string{"~/.pi", "~/.cache", "~/.npm", "~/go/pkg", "~/Library/Caches"},
 			Read:      append([]string{"/opt/homebrew", "~/.bun/bin", "~/.bun/install/global"}, dotfiles...),
 		},
-		{ID: "plain", Name: "Plain", Icon: "terminal", Description: "A template that opts out of the sandbox"},
+		{ID: "plain", Name: "Plain", Icon: "terminal", Description: "A template that opts out of the sandbox", Sandbox: ptr(false)},
 	}
 }
 
@@ -1128,7 +1128,7 @@ func TestAuthorizeLaunch_RefusesAMappedTemplateWithNoListener(t *testing.T) {
 	proj := addLaunchTestProject(t, store, nil)
 	if err := store.With(func(s *config.Settings) {
 		s.TerminalTemplates = append(s.TerminalTemplates, config.TerminalTemplate{
-			ID: "mapped", Name: "Mapped", Command: "claude", Sandbox: true, ModelKey: true,
+			ID: "mapped", Name: "Mapped", Command: "claude", Sandbox: ptr(true), ModelKey: true,
 			Env: map[string]string{"ANTHROPIC_BASE_URL": config.ModelEndpointURLMarker, "H": config.ModelKeyMarker},
 		})
 	}); err != nil {

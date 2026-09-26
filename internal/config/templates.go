@@ -50,11 +50,12 @@ type TerminalTemplate struct {
 	// that is R-S4a/R-S4b's launch path, not this package.
 	EnvPassthrough []string `json:"env_passthrough,omitempty"`
 
-	// Sandbox is the template's opt-in to C7 seatbelt confinement. When it is
-	// set, relay builds the session's profile from the launch's project and
-	// the folders below. Absent means unsandboxed, so a template that should
-	// be confined says so.
-	Sandbox bool `json:"sandbox,omitempty"`
+	// Sandbox is the template's C7 seatbelt confinement setting; read it
+	// through Sandboxed. Absent (nil) means sandboxed: relay builds the
+	// session's profile from the launch's project and the folders below. Only
+	// an explicit false opts out. It is a pointer so absent and false stay
+	// distinct on the wire and on disk.
+	Sandbox *bool `json:"sandbox,omitempty"`
 
 	// Read and ReadWrite are the folders a sandboxed launch of this template
 	// may reach, and the only ones: file access is denied by default, so a
@@ -64,7 +65,7 @@ type TerminalTemplate struct {
 	// path or starts with `~`. A directory grants its whole subtree; a
 	// regular file grants that file, and a read-write file also grants the
 	// atomic-write siblings a CLI leaves beside it (`.lock`, `.tmp.*`,
-	// `.backup`). Ignored when Sandbox is false.
+	// `.backup`). Ignored when Sandbox is explicitly false.
 	Read      []string `json:"read,omitempty"`
 	ReadWrite []string `json:"read_write,omitempty"`
 
@@ -72,7 +73,7 @@ type TerminalTemplate struct {
 	// grants above (or the project directory) say: no read, write or stat.
 	// It exists to carve a hole out of a wide grant, such as `~/.ssh` under a
 	// `~` read-write. Same entry shape as Read and ReadWrite. Ignored when
-	// Sandbox is false.
+	// Sandbox is explicitly false.
 	Deny []string `json:"deny,omitempty"`
 
 	// ModelKey opts a pty template into a minted model-broker key at launch
@@ -94,18 +95,23 @@ type TerminalTemplate struct {
 	Persist bool `json:"persist,omitempty"`
 }
 
+// Sandboxed reports whether a launch of t is confined: true unless the
+// template explicitly says "sandbox": false, so the zero value fails closed.
+func (t TerminalTemplate) Sandboxed() bool { return t.Sandbox == nil || *t.Sandbox }
+
 // DefaultShellTemplate is the one template relay writes into settings.json
 // when it holds none (EnsureDefaultTerminalTemplates): the system shell,
 // sandboxed, with read-write access to the home directory. That is a wide
 // grant on purpose, and it includes credential directories such as ~/.ssh: an
 // operator narrows it by editing the template's folders.
 func DefaultShellTemplate() TerminalTemplate {
+	sandboxed := true
 	return TerminalTemplate{
 		ID:          "shell",
 		Name:        "Shell",
 		Icon:        "shell",
 		Description: "Default system shell",
-		Sandbox:     true,
+		Sandbox:     &sandboxed,
 		ReadWrite:   []string{"~"},
 	}
 }
@@ -369,7 +375,7 @@ func ValidateHostTemplate(t TerminalTemplate) error {
 	if err := validateTemplateCommon(t); err != nil {
 		return err
 	}
-	if t.Sandbox {
+	if t.Sandbox != nil && *t.Sandbox {
 		return fmt.Errorf("terminal template %q: %w (sandbox)", t.ID, ErrHostTemplateSandbox)
 	}
 	if len(t.Read) > 0 {

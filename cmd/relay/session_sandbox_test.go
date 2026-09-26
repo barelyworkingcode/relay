@@ -342,7 +342,7 @@ func TestSandboxTemplate_FoldersBecomeGrants(t *testing.T) {
 	t.Setenv("HOME", home)
 	if err := store.With(func(s *config.Settings) {
 		s.TerminalTemplates = append(s.TerminalTemplates, config.TerminalTemplate{
-			ID: "custom", Name: "Custom", Sandbox: true,
+			ID: "custom", Name: "Custom", Sandbox: ptr(true),
 			Read:      []string{"~/.hermes/node", "/private/tmp/relay-extra-read"},
 			ReadWrite: []string{"~/scratch"},
 		})
@@ -516,9 +516,28 @@ func TestAuthorizeLaunch_ShellTemplateIsSandboxed(t *testing.T) {
 	}
 }
 
-// TestAuthorizeLaunch_NoProfileWhenNotSandboxed covers the two ways a launch
-// is deliberately unconfined: a pty template that never opted in, and an SSH
-// project whose target runs on another machine entirely.
+// A console template that never mentions the sandbox is confined: only an
+// explicit sandbox: false opts out.
+func TestAuthorizeLaunch_TemplateWithoutSandboxKeyIsSandboxed(t *testing.T) {
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+	if err := store.With(func(s *config.Settings) {
+		s.TerminalTemplates = append(s.TerminalTemplates, config.TerminalTemplate{ID: "unmarked", Name: "Unmarked"})
+	}); err != nil {
+		t.Fatalf("store.With: %v", err)
+	}
+	result, _ := launchWithSandbox(t, LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "unmarked",
+	}, store)
+	if !result.AuditFields.Sandbox {
+		t.Error("audit says a template without a sandbox key launched unsandboxed")
+	}
+}
+
+// TestAuthorizeLaunch_NoProfileWhenNotSandboxed covers the ways a launch is
+// deliberately unconfined: a pty template that says sandbox: false, and an SSH
+// project whose target runs on another machine entirely, whatever its
+// template omits.
 func TestAuthorizeLaunch_NoProfileWhenNotSandboxed(t *testing.T) {
 	t.Run("pty template with sandbox off", func(t *testing.T) {
 		store := newLaunchTestStore(t)
@@ -537,6 +556,26 @@ func TestAuthorizeLaunch_NoProfileWhenNotSandboxed(t *testing.T) {
 		}
 		if entries, err := os.ReadDir(sessionProfilesDir()); err == nil && len(entries) != 0 {
 			t.Errorf("an unsandboxed launch wrote %d profile(s)", len(entries))
+		}
+	})
+
+	t.Run("ssh-hosted pty template without a sandbox key", func(t *testing.T) {
+		store := newLaunchTestStore(t)
+		proj := addLaunchTestHostedProject(t, store, []config.TerminalTemplate{{ID: "shell", Name: "Shell"}})
+		result, refusal := AuthorizeLaunch(store, NewModelKeyTable(), newLaunchTestLedger(t), LaunchRequest{
+			Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "shell",
+		})
+		if refusal != nil {
+			t.Fatalf("refused: %+v", refusal)
+		}
+		if result.Spec.Sandbox != nil {
+			t.Fatalf("a hosted terminal got a local profile: %+v", result.Spec.Sandbox)
+		}
+		if result.AuditFields.Sandbox {
+			t.Error("audit claims a hosted terminal is sandboxed")
+		}
+		if entries, err := os.ReadDir(sessionProfilesDir()); err == nil && len(entries) != 0 {
+			t.Errorf("a hosted launch wrote %d profile(s)", len(entries))
 		}
 	})
 
@@ -699,7 +738,7 @@ func TestSandboxTemplate_DenyCarvesAHoleOutOfAHomeGrant(t *testing.T) {
 	t.Setenv("HOME", home)
 	if err := store.With(func(s *config.Settings) {
 		s.TerminalTemplates = append(s.TerminalTemplates, config.TerminalTemplate{
-			ID: "custom", Name: "Custom", Sandbox: true,
+			ID: "custom", Name: "Custom", Sandbox: ptr(true),
 			ReadWrite: []string{"~"},
 			Deny:      []string{"~/.ssh"},
 		})

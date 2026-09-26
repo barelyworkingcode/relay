@@ -518,8 +518,8 @@ template's grants, not the project directory, not the always-granted
 temp/`/dev`/developer-tools paths. It blocks read, write and `stat` alike.
 Denying a path that a session needs to run (the project directory, say)
 locks the session out of it; relay does not second-guess that. `deny` takes
-the same entry shape as `read` and `read_write`, is ignored without
-`"sandbox": true`.
+the same entry shape as `read` and `read_write`, and is ignored only when the
+template says `"sandbox": false`.
 
 **Templates live only in `settings.json`.** Nothing is computed in code, so
 every template, including the ones relay seeds, can be edited or removed. The
@@ -552,9 +552,12 @@ not exist is created at launch, because a `(subpath)` rule cannot create its
 own ancestors (`go build` with no `~/go` needs `~/go/pkg` to exist). An entry
 that cannot be placed refuses the template when settings are read, and the
 launch if it slips through, rather than being dropped: a dropped entry would
-leave a tool silently unreachable. `sandbox` absent means unsandboxed, so a
-template that should be confined says `"sandbox": true`; `read` and
-`read_write` are ignored without it.
+leave a tool silently unreachable. A template is sandboxed unless it says
+otherwise: `sandbox` absent means sandboxed, and only an explicit
+`"sandbox": false` opts out. `read`, `read_write` and `deny` are ignored only
+with `false`. A stored template without the field is sandboxed from the
+upgrade that introduced this rule on, with the folders it already lists;
+nothing rewrites it to `false`, so an operator who wants it unconfined says so.
 
 A **claude, pi or chat session** is not launched from a template, but it reads
 its folders from the template named for its kind: `claude-code`, `pi` and
@@ -589,8 +592,9 @@ templates are never offered. A host project may launch every template of its
 host; `allowed_templates` gates console templates only. A claude session on a
 host project passes the kind gate iff the host has a `claude-code` template;
 a chat session keeps the console `allowed_templates` gate; pi is refused on a
-host. A host template never sandboxes (it cannot carry `sandbox`, `read` or
-`read_write`), and an empty `command` runs the host's login shell rather
+host. A host template never sandboxes: it cannot set `"sandbox": true` or
+carry `read` or `read_write`, and one that omits `sandbox` launches
+unconfined. An empty `command` there runs the host's login shell rather
 than relay's `$SHELL`. Shape, seeding and launch argv are in
 [`docs/ssh-hosts.md`](ssh-hosts.md#terminals-on-a-host).
 

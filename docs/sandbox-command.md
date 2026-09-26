@@ -17,7 +17,8 @@ Before this command the only way to start one was from a frontend such as Eve.
 `relay sandbox` starts the same launch from a shell. A template with
 `sandbox: false` is allowed too, deliberately: the command is then the
 supported way to start a tool from a terminal wired to relay's MCP and model
-proxies. Nothing about how sandboxing works changes.
+proxies. A template that omits `sandbox` counts as `sandbox: true`; only an
+explicit `false` opts out. Nothing about how sandboxing works changes.
 
 ## Shape
 
