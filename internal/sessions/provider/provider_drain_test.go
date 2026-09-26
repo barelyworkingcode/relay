@@ -51,13 +51,14 @@ func TestProviderExit_GrandchildHoldingStdoutDoesNotBlockExit(t *testing.T) {
 
 const msgSupersededExitDropped = "provider exit from a superseded spawn dropped"
 
-// The first spawn leaves a grandchild holding its stderr, so that spawn's
-// drain runs out its deadline only after Kill has returned and the second
-// spawn is live. The second spawn is still sleeping, so any process_exited
-// after the restart belongs to the first.
+// The first spawn leaves a grandchild holding its stderr, and the drain
+// deadline is far off, so that spawn's drain can finish only when the test
+// kills the grandchild after the second Start has returned. The second spawn
+// is still sleeping, so any process_exited after the restart belongs to the
+// first.
 func TestProviderExit_RestartedSpawnGetsNoStaleProcessExited(t *testing.T) {
 	prev := providerDrainTimeout
-	providerDrainTimeout = 100 * time.Millisecond
+	providerDrainTimeout = 30 * time.Second
 	t.Cleanup(func() { providerDrainTimeout = prev })
 
 	for _, kind := range []string{"claude", "pi"} {
@@ -74,7 +75,7 @@ func TestProviderExit_RestartedSpawnGetsNoStaleProcessExited(t *testing.T) {
 			var restarted atomic.Bool
 			stale := make(chan json.RawMessage, 1)
 			script := "if [ ! -e '" + pidFile + "' ]; then\n" +
-				"sleep 30 >/dev/null &\necho $! > '" + pidFile + ".tmp'\nmv '" + pidFile + ".tmp' '" + pidFile + "'\nfi\n" +
+				"sleep 60 >/dev/null &\necho $! > '" + pidFile + ".tmp'\nmv '" + pidFile + ".tmp' '" + pidFile + "'\nfi\n" +
 				"exec sleep 30\n"
 			p := spawnFake(t, kind, id, script, func(ev string, data json.RawMessage) {
 				if ev == "process_exited" && restarted.Load() {
@@ -98,6 +99,10 @@ func TestProviderExit_RestartedSpawnGetsNoStaleProcessExited(t *testing.T) {
 				t.Fatalf("restart: %v", err)
 			}
 			restarted.Store(true)
+			if err := syscall.Kill(grandchild, syscall.SIGKILL); err != nil {
+				t.Fatalf("kill grandchild %d: %v", grandchild, err)
+			}
+			grandchild = 0
 
 			deadline := time.Now().Add(5 * time.Second)
 			for !loggedSupersededDrop(logs.all(), id, kind) {

@@ -129,10 +129,14 @@ type ClaudeProvider struct {
 	// killed is per spawn: a restarted spawn gets a fresh one, so an old
 	// spawn's late exit can't read the new spawn's flag.
 	killed *atomic.Bool
-	// spawnGen counts Starts. A spawn's waitForExit emits process_exited
-	// only while its own generation is still current, so a killed spawn
-	// whose drain outlasts a restart stays silent.
-	spawnGen atomic.Uint64
+	// exitMu guards spawnGen, which counts Starts. A spawn's waitForExit
+	// holds it from the generation check through the process_exited
+	// handler call, so a killed spawn whose drain outlasts a restart stays
+	// silent, and Start cannot go live between the check and the emit.
+	// Deliberate: the handler runs under the lock, so it must never call
+	// Start on this provider.
+	exitMu   sync.Mutex
+	spawnGen uint64
 
 	msgStartNano   atomic.Int64
 	firstTokenNano atomic.Int64
@@ -512,13 +516,16 @@ func (p *ClaudeProvider) Start() error {
 	p.cmd = cmd
 	p.stdin = stdin
 	p.root.Store(root)
+	p.exitMu.Lock()
+	p.spawnGen++
+	gen := p.spawnGen
+	p.exitMu.Unlock()
 	p.alive.Store(true)
 	p.stopIdle = make(chan struct{})
 	p.stopIdleOnce = sync.Once{}
 	p.waitDone = make(chan struct{})
 	p.drainTimeout = providerDrainTimeout
 	p.killed = &atomic.Bool{}
-	gen := p.spawnGen.Add(1)
 	p.touchActivity()
 
 	out := newSpawnOutput(stdoutR, stderrR)
@@ -604,7 +611,9 @@ func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out 
 	}
 
 	tail := out.drain(drainTimeout)
-	if p.spawnGen.Load() != gen {
+	p.exitMu.Lock()
+	defer p.exitMu.Unlock()
+	if p.spawnGen != gen {
 		slog.Debug("provider exit from a superseded spawn dropped", "session", p.session.ID, "kind", "claude", "exitCode", exitCode)
 		return
 	}
