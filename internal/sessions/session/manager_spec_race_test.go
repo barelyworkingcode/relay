@@ -48,7 +48,7 @@ func TestManager_RespawnSpec_ConcurrentLaunchWrite(t *testing.T) {
 		defer wg.Done()
 		close(started)
 		for range iterations {
-			got, err = m.respawnSpec(sess)
+			got, _, err = m.respawnSpec(sess)
 		}
 		close(readerDone)
 	}()

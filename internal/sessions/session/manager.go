@@ -418,6 +418,27 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 // process died (this package's own security framing: identity continuity
 // is "launched exactly like a fresh one", not "specially reused").
 func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) (sessionstypes.Provider, error) {
+	p, err := m.newProvider(sess, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	// SwapProvider, not SetProvider: Create's startProvider can find a
+	// provider restartProvider installed in the same session that is still
+	// inside its own Start() and therefore reports Alive() == false — that provider is not
+	// "empty", it is a reservation of its own, and overwriting sess's
+	// provider field out from under it would leave it running with nothing
+	// in the table pointing at it. Kill whatever was there before this call
+	// ever gets to claim the field.
+	if old := sess.SwapProvider(p); old != nil {
+		old.Kill()
+	}
+	return p, p.Start()
+}
+
+// newProvider constructs, but does not install or start, a provider for
+// sess wired to report its events as its own.
+func (m *Manager) newProvider(sess *sessionstypes.Session, spec CreateSpec) (sessionstypes.Provider, error) {
 	// self is read by handler only from a goroutine the provider itself
 	// spawns inside Start() (claude.go/pi.go's waitForExit, ChatProvider's
 	// runToolLoop), never before — so the write below, sequenced before any
@@ -451,19 +472,7 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) (s
 	if sess.ProviderState != nil {
 		p.RestoreState(sess.ProviderState)
 	}
-
-	// SwapProvider, not SetProvider: a second startProvider for the same
-	// session (SendMessage's ad-hoc respawn racing a Create{Resume:true})
-	// can reach here while the first provider is still inside its own
-	// Start() and therefore reports Alive() == false — that provider is not
-	// "empty", it is a reservation of its own, and overwriting sess's
-	// provider field out from under it would leave it running with nothing
-	// in the table pointing at it. Kill whatever was there before this call
-	// ever gets to claim the field.
-	if old := sess.SwapProvider(p); old != nil {
-		old.Kill()
-	}
-	return p, p.Start()
+	return p, nil
 }
 
 // errNotLaunchedHere is the refusal a user sees when a project-less session
@@ -476,7 +485,12 @@ var errNotLaunchedHere = fmt.Errorf("%w: this session cannot be restarted automa
 // launch in progress for sess's id is waited out first, then the slot is
 // read again. Kind always comes from the persisted session: sess.ProviderType
 // is the authoritative provider kind once a session exists.
-func (m *Manager) respawnSpec(sess *sessionstypes.Session) (CreateSpec, error) {
+//
+// It also returns the slot it judged owned. Every launch publishes a new
+// *sessionSlot and a published slot is never mutated, so that pointer is the
+// ownership token restartProvider checks: the restart may act only while
+// m.slots[sess.ID] is still that exact slot.
+func (m *Manager) respawnSpec(sess *sessionstypes.Session) (CreateSpec, *sessionSlot, error) {
 	m.mu.Lock()
 	if slot, ok := m.slots[sess.ID]; ok && slot.launching {
 		done := slot.done
@@ -497,33 +511,64 @@ func (m *Manager) respawnSpec(sess *sessionstypes.Session) (CreateSpec, error) {
 	}
 	m.mu.Unlock()
 	if !owned {
-		return CreateSpec{}, errNotLaunchedHere
+		return CreateSpec{}, nil, errNotLaunchedHere
 	}
 	spec.Kind = sess.ProviderType
-	return spec, nil
+	return spec, slot, nil
 }
 
 // restartProvider starts a project-less session's provider from the spec
-// respawnSpec returned, then checks the slot still holds sess. A slot ended,
-// stopped or taken by a new launch while the provider was being built no
-// longer tracks it, so the provider this call started is killed and the
-// restart is refused.
-func (m *Manager) restartProvider(sess *sessionstypes.Session, spec CreateSpec) error {
-	p, err := m.startProvider(sess, spec)
+// and slot respawnSpec returned. The restart acts only while m.slots[sess.ID]
+// is still that exact slot: the new provider is installed under m.mu only if
+// it is, and checked again after Start. If the slot was ended, stopped or
+// replaced in either window, the provider this call built is killed and the
+// restart is refused; after Start it is also taken out of sess first, but
+// only when a launch of this process's own now owns the id.
+func (m *Manager) restartProvider(sess *sessionstypes.Session, slot *sessionSlot, spec CreateSpec) error {
+	p, err := m.newProvider(sess, spec)
 	if err != nil {
 		return fmt.Errorf("session: restart provider: %w", err)
 	}
+
 	m.mu.Lock()
-	slot, ok := m.slots[sess.ID]
-	tracked := ok && !slot.launching && slot.sess == sess
-	m.mu.Unlock()
-	if !tracked {
-		// Deliberate: kill p itself, never sess.Provider(). A concurrent
-		// Create{Resume} may already have installed its own provider there.
+	if m.slots[sess.ID] != slot {
+		m.mu.Unlock()
 		p.Kill()
 		return errNotLaunchedHere
 	}
-	return nil
+	old := sess.SwapProvider(p)
+	m.mu.Unlock()
+	// Deliberate: killed outside m.mu. Kill does process I/O, and nothing
+	// may block on m.mu while a provider's Start or Kill is in flight.
+	if old != nil {
+		old.Kill()
+	}
+
+	if err := p.Start(); err != nil {
+		return fmt.Errorf("session: restart provider: %w", err)
+	}
+	m.mu.Lock()
+	cur := m.slots[sess.ID]
+	launched := cur != nil && (cur.launching || cur.spec.SessionID != "")
+	m.mu.Unlock()
+	if cur == slot {
+		return nil
+	}
+	// Deliberate: kill p itself, never sess.Provider(), and take p out of
+	// sess first only when another launch owns the id. Then p's exit event
+	// fails handleProviderEvent's displaced-provider guard and never reaches
+	// the live launch; the swap applies only if sess still holds p. A slot
+	// Get filled from a disk load is not a launch (its spec is zero) and owns
+	// nothing. With no owner, p's exit is the only report relay gets for the
+	// id (its SessionExited handling drives the cleanup), so p stays
+	// installed. The window between reading an unowned slot and that exit's
+	// delivery is the same one an ordinary EndSession followed by a fast
+	// resume has, and is not closed here.
+	if launched {
+		sess.CompareAndSwapProvider(p, nil)
+	}
+	p.Kill()
+	return errNotLaunchedHere
 }
 
 func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {
@@ -801,13 +846,13 @@ func (m *Manager) SendMessage(id, text string, files []sessionstypes.FileAttachm
 			sess.SetProcessing(false)
 			return ErrResumeRequired
 		}
-		spec, err := m.respawnSpec(sess)
+		spec, slot, err := m.respawnSpec(sess)
 		if err != nil {
 			sess.SetProcessing(false)
 			return err
 		}
 		if p = sess.Provider(); p == nil || !p.Alive() {
-			if err := m.restartProvider(sess, spec); err != nil {
+			if err := m.restartProvider(sess, slot, spec); err != nil {
 				sess.SetProcessing(false)
 				return err
 			}
@@ -936,11 +981,11 @@ func (m *Manager) ClearSession(id string) error {
 	if sess.ProjectID != "" {
 		return ErrResumeRequired
 	}
-	spec, err := m.respawnSpec(sess)
+	spec, slot, err := m.respawnSpec(sess)
 	if err != nil {
 		return err
 	}
-	return m.restartProvider(sess, spec)
+	return m.restartProvider(sess, slot, spec)
 }
 
 // RenameSession updates the session's display name and persists.
@@ -1000,7 +1045,7 @@ func (m *Manager) persist(sess *sessionstypes.Session) {
 // StopGeneration manufactures itself). source is only consulted in the
 // "process_exited" case: a provider Create already displaced via
 // CreateSpec.Resume's relaunch path can still fire its own delayed exit
-// event afterward (startProvider's own doc comment on self) — reporting
+// event afterward (newProvider's own comment on self) — reporting
 // that as sess's exit would tear down the replacement provider's own,
 // already-live credentials, not the dead one's.
 func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessionstypes.Provider, eventType string, data json.RawMessage) {

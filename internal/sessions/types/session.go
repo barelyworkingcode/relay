@@ -117,6 +117,18 @@ func (s *Session) SwapProvider(p Provider) Provider {
 	return old
 }
 
+// CompareAndSwapProvider installs next only if the session still holds old,
+// and reports whether it did.
+func (s *Session) CompareAndSwapProvider(old, next Provider) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.provider != old {
+		return false
+	}
+	s.provider = next
+	return true
+}
+
 // TryStartProcessing atomically checks-and-sets the in-flight-generation
 // flag, returning false if a generation was already running. Used to
 // serialize concurrent SendMessage calls on the same session without a
