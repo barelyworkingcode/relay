@@ -139,7 +139,7 @@ func TestAuthorizeLaunch_SandboxProfileGoldenPerKind(t *testing.T) {
 	}{
 		{"claude", "golden_sandbox_profile_claude.sb", LaunchRequest{Kind: KindClaude}},
 		{"pi", "golden_sandbox_profile_pi.sb", LaunchRequest{Kind: KindPi}},
-		{"chat", "golden_sandbox_profile_chat.sb", LaunchRequest{Kind: KindChat}},
+		{"chat", "golden_sandbox_profile_chat.sb", LaunchRequest{Kind: KindChat, Model: "gpt-5"}},
 		{"shell", "golden_sandbox_profile_shell.sb", LaunchRequest{Kind: KindPTY, TemplateID: "shell"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
