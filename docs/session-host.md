@@ -784,8 +784,26 @@ caller cannot squat a live session id or resume one project's session under
 another project's name this way.
 
 There is no project-less launch: `AuthorizeLaunch` refuses one for every kind
-(`project_required`), so every session that can exist carries a project's
+(`project_required`), so every session relay launches carries a project's
 authority and none auto-respawns.
+
+A project-less session can still reach the `Manager`: one created directly
+through its API, or one lazy-loaded from disk (a migrated relayLLM session
+file). `SendMessage` and `ClearSession` restart a project-less session only
+when this process launched it, and only with the `CreateSpec` it was launched
+with — identity, model key and sandbox profile included. If a launch for that
+session is in progress, the restart waits for it to finish and then reads the
+slot again. Anything else answers `resume_required`: a session this process
+never launched, a launch that failed or was stopped, a slot removed or
+replaced in the meantime. The slot is checked again once the new provider is
+built; if the session was ended, stopped or taken by a new launch while it was
+being built, that provider is killed and the restart is refused too. A spec
+holding only the provider kind would start claude or pi with no sandbox, no
+identity and no key, so there is no fallback to one. A migrated project-less session is therefore read-only history:
+`clear_session` still clears it, but to continue the user starts a new session
+in a project. The error text says so, and both doors pass it on beside the
+code: the WS `resume_required` frame and the HTTP 409 body each carry it as
+`message`. Clients branch on `code` or `error`, never on `message`.
 
 A resumed launch runs the whole `AuthorizeLaunch` gauntlet again, including
 re-merging the *current* project permission policy — a policy edited since

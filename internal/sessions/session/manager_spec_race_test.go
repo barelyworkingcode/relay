@@ -17,9 +17,9 @@ func TestManager_RespawnSpec_ConcurrentLaunchWrite(t *testing.T) {
 	)
 	m := NewManager(Config{}, NewStore(t.TempDir()), nil)
 	launched := CreateSpec{SessionID: sessionID, ProjectID: "p1", Kind: KindPi, ModelKey: "acme-key"}
-	slot := &sessionSlot{spec: launched, done: make(chan struct{})}
-	m.slots[sessionID] = slot
 	sess := &sessionstypes.Session{ID: sessionID, ProviderType: KindChat}
+	slot := &sessionSlot{spec: launched, sess: sess, done: make(chan struct{})}
+	m.slots[sessionID] = slot
 
 	started := make(chan struct{})
 	readerDone := make(chan struct{})
@@ -43,16 +43,20 @@ func TestManager_RespawnSpec_ConcurrentLaunchWrite(t *testing.T) {
 		}
 	}()
 	var got CreateSpec
+	var err error
 	go func() {
 		defer wg.Done()
 		close(started)
 		for range iterations {
-			got = m.respawnSpec(sess)
+			got, err = m.respawnSpec(sess)
 		}
 		close(readerDone)
 	}()
 	wg.Wait()
 
+	if err != nil {
+		t.Fatalf("respawnSpec error = %v, want nil", err)
+	}
 	if got.SessionID != sessionID || got.ModelKey != "acme-key" {
 		t.Errorf("respawnSpec = %+v, want the launched spec's SessionID and ModelKey", got)
 	}

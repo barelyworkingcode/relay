@@ -133,6 +133,22 @@ func TestSendMessage_ProjectSessionDeadProvider_SendsResumeRequiredFrame(t *test
 	}
 }
 
+func TestSendMessage_LazyLoadedAdHoc_SendsResumeRequiredWithGuidance(t *testing.T) {
+	hub := NewHub()
+	mgr := newLazyAdHocManager(t)
+	mgr.SetEventSink(NewSessionHandlers(hub, mgr, nil))
+
+	conn := dialHub(t, hub)
+	if err := conn.WriteJSON(map[string]any{"type": "send_message", "sessionId": httpTestSessionID, "text": "hello"}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := readJSONWithTimeout(t, conn, 2*time.Second)
+	if got["type"] != "error" || got["code"] != "resume_required" {
+		t.Fatalf("frame = %+v, want an error frame with code resume_required", got)
+	}
+	assertResumeGuidance(t, got["message"])
+}
+
 func TestSendMessage_AdHocDeadProvider_RespawnsAndDelivers(t *testing.T) {
 	hub, mgr, _ := newTestSessionSetup(t)
 	var built int32

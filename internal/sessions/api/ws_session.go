@@ -187,7 +187,7 @@ func (sh *SessionHandlers) handleSendMessage(c *Conn, raw []byte) {
 		return
 	}
 	if errors.Is(err, session.ErrResumeRequired) {
-		sendResumeRequired(c, req.SessionID)
+		sendResumeRequired(c, req.SessionID, err)
 		return
 	}
 	sendWSError(c, err.Error())
@@ -295,7 +295,7 @@ func (sh *SessionHandlers) handleClearSession(c *Conn, raw []byte) {
 		return
 	}
 	if errors.Is(err, session.ErrResumeRequired) {
-		sendResumeRequired(c, req.SessionID)
+		sendResumeRequired(c, req.SessionID, err)
 		return
 	}
 	sendWSError(c, err.Error())
@@ -323,7 +323,7 @@ func (sh *SessionHandlers) handleSetPermissionMode(c *Conn, raw []byte) {
 	}
 	if err := claude.SetPermissionMode(req.Mode); err != nil {
 		if errors.Is(err, provider.ErrRestartNeedsResume) {
-			sendResumeRequired(c, req.SessionID)
+			sendResumeRequired(c, req.SessionID, err)
 			return
 		}
 		sendWSError(c, err.Error())
@@ -409,11 +409,12 @@ func (sh *SessionHandlers) removeViewer(connID uint64, sessionID string) {
 // typed refusal (not a generic sendWSError string) so a client can drive
 // its own resume UI rather than parsing a message. This frame has no
 // relayLLM ancestor: relayLLM never refused to respawn, so it never needed
-// one.
-func sendResumeRequired(c *Conn, sessionID string) {
+// one. message is for the user to read, never for the client to branch on.
+func sendResumeRequired(c *Conn, sessionID string, err error) {
 	c.Write(mustJSON(map[string]any{
 		"type":      events.WSMsgError,
 		"code":      "resume_required",
 		"sessionId": sessionID,
+		"message":   err.Error(),
 	}))
 }

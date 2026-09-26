@@ -79,7 +79,7 @@ func writeSessionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, session.ErrResumeRequired):
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "resume_required"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "resume_required", "message": err.Error()})
 	case errors.Is(err, session.ErrAlreadyProcessing):
 		w.WriteHeader(http.StatusConflict)
 	default:
