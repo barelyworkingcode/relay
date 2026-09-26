@@ -125,6 +125,26 @@ func insertText(t *testing.T, p *chromePage, text string) {
 	p.call(t, "Input.insertText", map[string]any{"text": text}, nil)
 }
 
+// pressSpace activates the focused control the way a keyboard user does.
+func pressSpace(t *testing.T, p *chromePage) {
+	t.Helper()
+	key := map[string]any{"type": "keyDown", "key": " ", "code": "Space", "windowsVirtualKeyCode": 32, "text": " "}
+	p.call(t, "Input.dispatchKeyEvent", key, nil)
+	key["type"] = "keyUp"
+	delete(key, "text")
+	p.call(t, "Input.dispatchKeyEvent", key, nil)
+}
+
+// focusThenSpace focuses the control, checks it took focus, then presses Space.
+func focusThenSpace(t *testing.T, p *chromePage, control, focusedJS, want string) {
+	t.Helper()
+	p.eval(t, `(`+control+`.focus(), true)`, nil)
+	if got := evalJSON(t, p, focusedJS); got != want {
+		t.Fatalf("before Space focus is on %s, want %s", got, want)
+	}
+	pressSpace(t, p)
+}
+
 func clickModelBox(t *testing.T, p *chromePage, id string) {
 	t.Helper()
 	p.eval(t, `(document.querySelector('input[data-model-id="' + CSS.escape(`+jsQuote(id)+`) + '"]').click(), true)`, nil)
@@ -231,6 +251,22 @@ func TestModelPickerBrowser(t *testing.T) {
 			p.eval(t, `(document.getElementById('projModelsOtherToggle').click(), true)`, nil)
 			if got := evalJSON(t, p, other); got != "true" {
 				t.Error("Other rows hidden after expanding")
+			}
+		}},
+		{"Space on a model keeps focus on it", "ok", false, func(t *testing.T, p *chromePage) {
+			const focused = `(document.activeElement && document.activeElement.dataset.modelId) || null`
+			focusThenSpace(t, p, `document.querySelector('#projModelsList input[data-model-id="acme-llm/Chat"]')`, focused, `"acme-llm/Chat"`)
+			waitForJS(t, p, `window.state.projectForm.allowed_models.indexOf('acme-llm/Chat') >= 0`)
+			if got := evalJSON(t, p, focused); got != `"acme-llm/Chat"` {
+				t.Errorf("after Space focus is on model %s", got)
+			}
+		}},
+		{"Space on Other keeps focus on it", "ok", false, func(t *testing.T, p *chromePage) {
+			const focused = `document.activeElement && document.activeElement.id`
+			focusThenSpace(t, p, `document.getElementById('projModelsOtherToggle')`, focused, `"projModelsOtherToggle"`)
+			waitForJS(t, p, `document.querySelector('input[data-model-id="acme-llm/kokoro-tts"]')`)
+			if got := evalJSON(t, p, focused); got != `"projModelsOtherToggle"` {
+				t.Errorf("after Space focus is on %s", got)
 			}
 		}},
 		{"alias label", "ok", false, func(t *testing.T, p *chromePage) {
