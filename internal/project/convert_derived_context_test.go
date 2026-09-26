@@ -252,6 +252,27 @@ func TestApplyUpdate_RemoteOrHostedRecordDropsStaleDerivedFieldOnAnyEdit(t *test
 				t.Errorf("the operator field did not survive: %s", after.Context["macmcp"])
 			}
 		})
+
+		t.Run("schema known: a permissions edit drops the field: "+tc.kind, func(t *testing.T) {
+			s := tc.record()
+			access := map[string]string{"macmcp": "write"}
+			_, _, err := ApplyUpdate(s, "p1", UpdateFields{Access: &access}, surfacesOf(McpSurfaces{"macmcp": macmcpSurface()}))
+			assertNoErr(t, err, "access edit")
+
+			after, _ := config.FindProjectByID(s, "p1")
+			// A hosted project cannot be granted macmcp, so its access entry
+			// is pruned on store whatever happens to the context.
+			if tc.kind == "remote" && after.Access["macmcp"] != "write" {
+				t.Errorf("access not applied: %v", after.Access)
+			}
+			values := ContextValues(after.Context["macmcp"])
+			if raw, ok := values["file_dirs"]; ok {
+				t.Fatalf("a %s record still holds file_dirs after a permissions edit: %s", tc.kind, raw)
+			}
+			if string(values["mail_accounts"]) != `["Alice"]` {
+				t.Errorf("the operator field did not survive: %s", after.Context["macmcp"])
+			}
+		})
 	}
 
 	t.Run("v1 schema known: the rename drops allowed_dirs", func(t *testing.T) {
