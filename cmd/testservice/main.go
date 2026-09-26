@@ -32,7 +32,8 @@ func main() {
 	flag.Parse()
 
 	// Written before any work so a test can poll for the file regardless of
-	// --register/--status-after.
+	// --register/--status-after, and renamed into place so a poll that sees
+	// the file never reads it empty.
 	if *dumpEnv != "" {
 		tmp := *dumpEnv + ".tmp"
 		if err := os.WriteFile(tmp, []byte(strings.Join(os.Environ(), "\n")), 0o600); err != nil {
