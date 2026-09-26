@@ -418,3 +418,37 @@ func TestModelPicker_FullRenderKeepsTypedToolPolicies(t *testing.T) {
 		}
 	}
 }
+
+// "Chat" is a suffix of "acme-llm/Chat", so a suffix or substring match picks
+// the wrong row, as does taking the first or last row.
+func TestModelPicker_ToggleFocusesTheToggledControl(t *testing.T) {
+	cases := []struct{ name, rows, act, want string }{
+		{"model toggle focuses its own row", `['haiku','Chat','acme-llm/Chat','acme-llm/kokoro-tts']`,
+			`window.toggleProjModel('acme-llm/Chat')`, `["acme-llm/Chat"]`},
+		{"Other toggle focuses the Other toggle", `['haiku','Chat','acme-llm/Chat']`,
+			`window.toggleProjModelsOther()`, `["other"]`},
+		{"model toggle with its row absent focuses nothing", `['haiku','Chat']`,
+			`window.toggleProjModel('acme-llm/Chat')`, `[]`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			vm := seedModelPickerVM(t)
+			openWithCatalog(t, vm, "p1", pickerCatalogOK)
+			got := evalString(t, vm, `(function(){
+				window.__focused = [];
+				var rows = `+c.rows+`.map(function(id){
+					return {dataset:{modelId:id}, focus:function(){ window.__focused.push(this.dataset.modelId); }};
+				});
+				var byModelId = function(sel){ return /data-model-id/.test(String(sel)) ? rows : []; };
+				document.querySelectorAll = byModelId;
+				document.getElementById('projModelsList').querySelectorAll = byModelId;
+				document.getElementById('projModelsOtherToggle').focus = function(){ window.__focused.push('other'); };
+				`+c.act+`;
+				return JSON.stringify(window.__focused);
+			})()`)
+			if got != c.want {
+				t.Errorf("focused %s, want %s", got, c.want)
+			}
+		})
+	}
+}

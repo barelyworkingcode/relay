@@ -3487,10 +3487,14 @@ window.__RELAY_INIT__ = {
     if (!f) return;
     f.allowed_models = f.allowed_models.includes(id) ? f.allowed_models.filter((x) => x !== id) : f.allowed_models.concat(id);
     repaintProjModelPicker();
+    const box = Array.from(document.querySelectorAll("#projModelsList input[data-model-id]")).find((el) => el.dataset.modelId === id);
+    if (box) box.focus({ preventScroll: true });
   }
   function toggleProjModelsOther() {
     state.projModelsOtherOpen = !state.projModelsOtherOpen;
     repaintProjModelPicker();
+    const toggle = document.getElementById("projModelsOtherToggle");
+    if (toggle) toggle.focus({ preventScroll: true });
   }
   function renderProjModelList(f) {
     const listed = (f._modelsAtOpen || []).concat(f.allowed_models);
