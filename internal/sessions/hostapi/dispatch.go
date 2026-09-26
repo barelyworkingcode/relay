@@ -105,8 +105,8 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 			return session.CreateSpec{}, err
 		}
 	}
-	if req.Kind == session.KindChat && !req.Resume && strings.TrimSpace(sr.Model) == "" {
-		return session.CreateSpec{}, fmt.Errorf("hostapi: chat session %s has no model", req.SessionID)
+	if !req.Resume && strings.TrimSpace(sr.Model) == "" {
+		return session.CreateSpec{}, fmt.Errorf("hostapi: %s session %s has no model", req.Kind, req.SessionID)
 	}
 	directory := sr.Directory
 	if directory == "" {

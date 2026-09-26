@@ -35,46 +35,52 @@ func newChatSessions(t *testing.T) (*session.Manager, *session.Store) {
 }
 
 func chatLaunchBody(resume bool, sessionRequest map[string]any) map[string]any {
-	body := map[string]any{"v": 1, "session_id": blankModelSessionID, "kind": "chat", "resume": resume}
+	return modelSessionLaunchBody(session.KindChat, resume, sessionRequest)
+}
+
+func modelSessionLaunchBody(kind string, resume bool, sessionRequest map[string]any) map[string]any {
+	body := map[string]any{"v": 1, "session_id": blankModelSessionID, "kind": kind, "resume": resume}
 	if sessionRequest != nil {
 		body["session_request"] = sessionRequest
 	}
 	return body
 }
 
-func TestLaunch_ChatBlankModel_RefusedInvalidSpec(t *testing.T) {
-	for _, tc := range []struct {
-		name           string
-		sessionRequest map[string]any
-	}{
-		{"empty", map[string]any{"projectId": "proj-1", "directory": "/tmp/proj", "model": ""}},
-		{"whitespace", map[string]any{"projectId": "proj-1", "directory": "/tmp/proj", "model": "   "}},
-		{"no session_request", nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			sessions, _ := newChatSessions(t)
-			client, bearer, providers := startChatHost(t, sessions)
+func TestLaunch_BlankModel_RefusedInvalidSpec(t *testing.T) {
+	for _, kind := range []string{session.KindClaude, session.KindPi, session.KindChat} {
+		for _, tc := range []struct {
+			name           string
+			sessionRequest map[string]any
+		}{
+			{"empty", map[string]any{"projectId": "proj-1", "directory": "/tmp/proj", "model": ""}},
+			{"whitespace", map[string]any{"projectId": "proj-1", "directory": "/tmp/proj", "model": "   "}},
+			{"no session_request", nil},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				sessions, _ := newChatSessions(t)
+				client, bearer, providers := startChatHost(t, sessions)
 
-			resp := postJSON(t, client, "http://h/launch", bearer, chatLaunchBody(false, tc.sessionRequest))
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400 (providers started: %d)", resp.StatusCode, providers.Load())
-			}
-			var errBody hostapi.ErrorResponse
-			if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
-				t.Fatalf("decode error body: %v", err)
-			}
-			want := "hostapi: chat session " + blankModelSessionID + " has no model"
-			if errBody.Error != hostapi.ErrInvalidSpec || errBody.Message != want {
-				t.Fatalf("error body = %+v, want {%q %q}", errBody, hostapi.ErrInvalidSpec, want)
-			}
-			if n := providers.Load(); n != 0 {
-				t.Fatalf("provider factory called %d time(s) for a refused launch", n)
-			}
-			if _, ok := sessions.Get(blankModelSessionID); ok {
-				t.Fatal("session manager holds a session for a refused launch")
-			}
-		})
+				resp := postJSON(t, client, "http://h/launch", bearer, modelSessionLaunchBody(kind, false, tc.sessionRequest))
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400 (providers started: %d)", resp.StatusCode, providers.Load())
+				}
+				var errBody hostapi.ErrorResponse
+				if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+					t.Fatalf("decode error body: %v", err)
+				}
+				want := "hostapi: " + kind + " session " + blankModelSessionID + " has no model"
+				if errBody.Error != hostapi.ErrInvalidSpec || errBody.Message != want {
+					t.Fatalf("error body = %+v, want {%q %q}", errBody, hostapi.ErrInvalidSpec, want)
+				}
+				if n := providers.Load(); n != 0 {
+					t.Fatalf("provider factory called %d time(s) for a refused launch", n)
+				}
+				if _, ok := sessions.Get(blankModelSessionID); ok {
+					t.Fatal("session manager holds a session for a refused launch")
+				}
+			})
+		}
 	}
 }
 
