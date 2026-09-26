@@ -354,10 +354,6 @@ func (m *Manager) resolveSessionForCreate(spec CreateSpec, reused *sessionstypes
 }
 
 func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
-	model := spec.Model
-	if model == "" {
-		model = "sonnet"
-	}
 	name := spec.Name
 	if name == "" {
 		name = "New Session"
@@ -399,7 +395,7 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 		ProjectID:      spec.ProjectID,
 		Name:           name,
 		Directory:      spec.Directory,
-		Model:          model,
+		Model:          spec.Model,
 		ProviderType:   spec.Kind,
 		Settings:       spec.Settings,
 		SystemPrompt:   systemPrompt,
