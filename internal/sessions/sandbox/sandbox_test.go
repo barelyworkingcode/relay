@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -85,18 +86,162 @@ func TestRender_GrantsComeAfterTheDeny(t *testing.T) {
 }
 
 // TestRender_NothingIsDeniedByName is the point of the model: without
-// Spec.Deny the one file deny names no path. A profile that listed what to
-// deny by default would protect only what someone thought to list.
+// Spec.Deny the only paths a file deny names are the fixed baseline carve-outs
+// under /usr. Everything else is unreachable because no grant names it, not
+// because a deny list remembered it.
 func TestRender_NothingIsDeniedByName(t *testing.T) {
 	got, err := Render(goldenSpec())
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	if n := strings.Count(got, "(deny file-read*"); n != 1 {
-		t.Fatalf("profile has %d file-read deny blocks, want exactly the one bare deny:\n%s", n, got)
+	if n := strings.Count(got, "(deny file-read*"); n != 2 {
+		t.Fatalf("profile has %d file-read deny blocks, want the bare deny and the baseline block:\n%s", n, got)
+	}
+	allowed := map[string]bool{usrLocalEtcTerm: true, usrLocalVarTerm: true}
+	for _, term := range namedFileDenyTerms(got) {
+		if !allowed[term] {
+			t.Errorf("profile denies %s by name without a Spec.Deny:\n%s", term, got)
+		}
 	}
 	if strings.Contains(got, "(deny file-write*") {
 		t.Fatalf("profile carries a separate write deny:\n%s", got)
+	}
+}
+
+// namedFileDenyTerms is every term under a path-naming file deny block.
+func namedFileDenyTerms(profile string) []string {
+	const head = "(deny file-read* file-write*\n"
+	var terms []string
+	for rest := profile; ; {
+		at := strings.Index(rest, head)
+		if at < 0 {
+			return terms
+		}
+		var block []string
+		block, rest = blockTerms(rest[at+len(head):])
+		terms = append(terms, block...)
+	}
+}
+
+// blockTerms reads the indented terms at the start of body, the text after a
+// block's head line, and returns them with the text that follows the block.
+func blockTerms(body string) (terms []string, rest string) {
+	rest = body
+	for strings.HasPrefix(rest, "  ") {
+		line, after, _ := strings.Cut(rest, "\n")
+		term := strings.TrimSpace(line)
+		if !strings.HasPrefix(after, "  ") {
+			term = strings.TrimSuffix(term, ")")
+		}
+		terms = append(terms, term)
+		rest = after
+	}
+	return terms, rest
+}
+
+const (
+	usrLocalEtcTerm = `(subpath "/usr/local/etc")`
+	usrLocalVarTerm = `(subpath "/usr/local/var")`
+)
+
+// TestRender_BaselineDeniesUsrLocalConfigAndData pins the carve-out from the
+// /usr read baseline: Intel Homebrew keeps service config and data under
+// /usr/local/etc and /usr/local/var. The deny must follow the /usr allow or
+// it covers nothing, and must precede Spec grants so an explicit grant under
+// either subtree reopens it.
+func TestRender_BaselineDeniesUsrLocalConfigAndData(t *testing.T) {
+	got, err := Render(Spec{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	usr := strings.Index(got, `(subpath "/usr")`)
+	if usr < 0 {
+		t.Fatalf("baseline lacks /usr:\n%s", got)
+	}
+	head := strings.Index(got, "(deny file-read* file-write*\n")
+	for _, term := range []string{usrLocalEtcTerm, usrLocalVarTerm} {
+		at := strings.Index(got, term)
+		if at < 0 || head < 0 || head > at {
+			t.Errorf("no baseline read-and-write deny for %s:\n%s", term, got)
+			continue
+		}
+		if at < usr {
+			t.Errorf("baseline deny %s precedes the /usr allow (%d < %d), so /usr reopens it:\n%s", term, at, usr, got)
+		}
+	}
+}
+
+// TestRender_BaselineReopensOnlyTheHomebrewCABundleAndGitconfig pins the files
+// every session may still read under the /usr/local deny, without which Intel
+// Homebrew's curl, python and git lose TLS verification and their system
+// gitconfig. The CA bundle is named at both its link and its target, as fixed
+// literals: nothing else beneath the deny reopens.
+func TestRender_BaselineReopensOnlyTheHomebrewCABundleAndGitconfig(t *testing.T) {
+	const specGrant = `(literal "/private/tmp/relay-sandbox-golden/home/.gitconfig")`
+	got, err := Render(Spec{ReadFiles: []string{"/private/tmp/relay-sandbox-golden/home/.gitconfig"}})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	const denyHead, reopenHead = "(deny file-read* file-write*\n", "(allow file-read*\n"
+	at := strings.Index(got, denyHead)
+	if at < 0 {
+		t.Fatalf("no baseline deny block:\n%s", got)
+	}
+	denied, after := blockTerms(got[at+len(denyHead):])
+	if !slices.Contains(denied, usrLocalEtcTerm) || !slices.Contains(denied, usrLocalVarTerm) {
+		t.Fatalf("first path deny block is not the baseline deny: %q\n%s", denied, got)
+	}
+	if !strings.HasPrefix(after, reopenHead) {
+		t.Fatalf("no read-only allow block right after the baseline deny:\n%s", got)
+	}
+	reopened, rest := blockTerms(after[len(reopenHead):])
+	want := []string{
+		`(literal "/usr/local/etc/ca-certificates/cert.pem")`,
+		`(literal "/usr/local/etc/gitconfig")`,
+		`(literal "/usr/local/etc/openssl@3/cert.pem")`,
+	}
+	slices.Sort(reopened)
+	if !slices.Equal(reopened, want) {
+		t.Errorf("reopen block = %q, want exactly %q\n%s", reopened, want, got)
+	}
+	if !strings.Contains(rest, specGrant) {
+		t.Errorf("Spec grant %s does not follow the reopen block:\n%s", specGrant, got)
+	}
+	for _, dir := range []string{"/usr/local/etc", "/usr/local/var"} {
+		if n := strings.Count(got, `(subpath "`+dir); n != 1 {
+			t.Errorf("%d subpath terms name %s or beneath it, want only its deny:\n%s", n, dir, got)
+		}
+	}
+}
+
+func TestRender_SpecGrantReopensTheUsrLocalDeny(t *testing.T) {
+	cases := []struct {
+		name  string
+		spec  Spec
+		grant string
+	}{
+		{"read file", Spec{ReadFiles: []string{"/usr/local/etc/openssl@3/openssl.cnf"}}, `(literal "/usr/local/etc/openssl@3/openssl.cnf")`},
+		{"read subtree", Spec{Read: []string{"/usr/local/etc"}}, usrLocalEtcTerm},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Render(tc.spec)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			// The /usr/local/var term is unique here: it marks the baseline
+			// deny even when the grant spells the same term as the etc deny.
+			deny := strings.Index(got, usrLocalVarTerm)
+			if deny < 0 {
+				t.Fatalf("no baseline deny for /usr/local/var:\n%s", got)
+			}
+			if tc.grant == usrLocalEtcTerm && strings.Count(got, tc.grant) != 2 {
+				t.Fatalf("want %s once as the baseline deny and once as the grant:\n%s", tc.grant, got)
+			}
+			if grant := strings.LastIndex(got, tc.grant); grant < deny {
+				t.Errorf("grant %s at %d does not follow the baseline deny at %d:\n%s", tc.grant, grant, deny, got)
+			}
+		})
 	}
 }
 
@@ -416,22 +561,30 @@ func TestRender_SymlinkedParentNamesOnlyTheResolvedPath(t *testing.T) {
 
 func TestRender_DenyComesAfterEveryGrantAndNamesItsPath(t *testing.T) {
 	s := goldenSpec()
+	s.Read = append(s.Read, "/usr/local/etc")
+	s.ReadFiles = append(s.ReadFiles, "/usr/local/etc/openssl@3/openssl.cnf")
 	s.Deny = []string{"/private/tmp/relay-sandbox-golden/home/.ssh"}
 	got, err := Render(s)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	const head = "(deny file-read* file-write*\n"
-	deny := strings.Index(got, head)
+	deny := strings.Index(got, `(subpath "/private/tmp/relay-sandbox-golden/home/.ssh")`)
 	if deny < 0 {
-		t.Fatalf("no path deny block:\n%s", got)
+		t.Fatalf("no deny names the path:\n%s", got)
 	}
-	if !strings.Contains(got[deny:], `(subpath "/private/tmp/relay-sandbox-golden/home/.ssh")`) {
-		t.Errorf("deny block does not name the path:\n%s", got[deny:])
+	if head := strings.LastIndex(got[:deny], "\n("); !strings.HasPrefix(got[head+1:], "(deny file-read* file-write*\n") {
+		t.Errorf("the path is not under a read-and-write deny:\n%s", got)
 	}
-	for _, grant := range []string{"(allow file-read*\n", "(allow file-read* file-write*", "(allow file-read-metadata"} {
-		if i := strings.Index(got, grant); i < 0 || i > deny {
-			t.Errorf("%q is not before the deny block (%d, %d)", grant, i, deny)
+	for _, earlier := range []string{
+		"(allow file-read*\n",
+		"(allow file-read* file-write*",
+		"(allow file-read-metadata",
+		usrLocalEtcTerm,
+		usrLocalVarTerm,
+		`(literal "/usr/local/etc/openssl@3/openssl.cnf")`,
+	} {
+		if i := strings.LastIndex(got, earlier); i < 0 || i > deny {
+			t.Errorf("%q is not before the Spec.Deny term (%d, %d)", earlier, i, deny)
 		}
 	}
 }

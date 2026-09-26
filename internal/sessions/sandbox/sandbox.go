@@ -6,8 +6,10 @@
 // only if the Spec grants it as read-only or as read-write, or if it is in the
 // fixed system baseline below. A directory that is not granted (another
 // project, relay's own data, ~/.ssh) is unreachable because nothing names it,
-// not because someone remembered to. Spec.Deny is the one explicit deny: it
-// carves a path out of a grant that would otherwise cover it.
+// not because someone remembered to. Two kinds of explicit deny carve a path
+// out of a grant that would otherwise cover it: the fixed baseline carve-outs
+// under /usr (baselineDenyDirs), which a Spec grant reopens, and Spec.Deny,
+// which nothing reopens.
 //
 // Everything that is not a file (network, process, mach) stays `(allow
 // default)`, as SP2 measured it; only the unix-socket, loopback and setuid
@@ -68,6 +70,26 @@ var baselineReadDirs = []string{
 	"/private/etc",
 	"/private/var/db/timezone",
 	"/private/var/select",
+}
+
+// baselineDenyDirs are carved back out of the /usr read baseline. /usr is
+// otherwise system software, but Intel Homebrew keeps its services' config and
+// data in /usr/local/etc and /usr/local/var, and those can hold credentials.
+var baselineDenyDirs = []string{"/usr/local/etc", "/usr/local/var"}
+
+// baselineReopenedFiles are read back out of baselineDenyDirs for every
+// session: Intel Homebrew's curl, python and git need their CA bundle and the
+// system gitconfig, or they lose TLS verification and git config. They are
+// single files; nothing else beneath the carve-out is reopened.
+//
+// Deliberately fixed literals, never resolved on the host: /usr/local/etc is
+// user-owned, so resolving would let a planted link steer how far a default
+// reaches, and would make the profile depend on the host. The CA bundle is
+// listed as both the link Homebrew's openssl@3 ships and the file it points at.
+var baselineReopenedFiles = []string{
+	"/usr/local/etc/openssl@3/cert.pem",
+	"/usr/local/etc/ca-certificates/cert.pem",
+	"/usr/local/etc/gitconfig",
 }
 
 // Spec is C7's sandbox input, in the shape this package renders. Every path
@@ -132,22 +154,49 @@ func Render(s Spec) (string, error) {
 	// ancestor metadata rule below.
 	var reachable []string
 
-	reads := make([]string, 0, len(baselineReadLiterals)+len(baselineReadDirs)+len(s.Read)+len(s.ReadFiles))
+	baseline := make([]string, 0, len(baselineReadLiterals)+len(baselineReadDirs))
 	for _, p := range baselineReadLiterals {
 		lit, err := quoted(p)
 		if err != nil {
 			return "", fmt.Errorf("baseline: %w", err)
 		}
-		reads = append(reads, "(literal "+lit+")")
+		baseline = append(baseline, "(literal "+lit+")")
 	}
 	for _, p := range baselineReadDirs {
 		terms, paths, err := subtreeTerms(p)
 		if err != nil {
 			return "", fmt.Errorf("baseline: %w", err)
 		}
-		reads = append(reads, terms...)
+		baseline = append(baseline, terms...)
 		reachable = append(reachable, paths...)
 	}
+	writeBlock(&b, "allow file-read*", baseline)
+
+	// Between the baseline and the Spec's grants on purpose: any Spec grant
+	// that covers part of either subtree renders later and reopens that part,
+	// whether it names a path beneath it or an ancestor such as /usr/local.
+	baselineDenies := make([]string, 0, len(baselineDenyDirs))
+	for _, p := range baselineDenyDirs {
+		terms, _, err := subtreeTerms(p)
+		if err != nil {
+			return "", fmt.Errorf("baseline deny: %w", err)
+		}
+		baselineDenies = append(baselineDenies, terms...)
+	}
+	writeBlock(&b, "deny file-read* file-write*", baselineDenies)
+
+	reopened := make([]string, 0, len(baselineReopenedFiles))
+	for _, p := range baselineReopenedFiles {
+		lit, err := quoted(p)
+		if err != nil {
+			return "", fmt.Errorf("baseline reopen: %w", err)
+		}
+		reopened = append(reopened, "(literal "+lit+")")
+		reachable = append(reachable, p)
+	}
+	writeBlock(&b, "allow file-read*", reopened)
+
+	reads := make([]string, 0, len(s.Read)+len(s.ReadFiles))
 	for _, p := range s.Read {
 		terms, paths, err := subtreeTerms(p)
 		if err != nil {
