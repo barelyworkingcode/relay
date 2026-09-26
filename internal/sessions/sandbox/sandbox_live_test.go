@@ -414,6 +414,50 @@ func TestLive_OnlyTheAllowedSocketsAreReachable(t *testing.T) {
 	}
 }
 
+// TestLive_DeniedDirWithASpaceHoldsWithoutALiteral pins that a second denied
+// directory spelled like production's "Application Support" path refuses a
+// socket through its path-regex alone, while the allowed socket in the first
+// denied directory stays reachable.
+func TestLive_DeniedDirWithASpaceHoldsWithoutALiteral(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skipf("sandbox-exec unavailable: %v", err)
+	}
+	root, err := os.MkdirTemp("/tmp", "relay-sandbox-space-")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	relayDir := filepath.Join(root, "relay")
+	otherDir := filepath.Join(root, "Application Support", "relay")
+	for _, dir := range []string{relayDir, otherDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	allowSock := listenUnix(t, filepath.Join(relayDir, "relay.sock"))
+	otherSock := listenUnix(t, filepath.Join(otherDir, "relay.sock"))
+	c, err := net.Dial("unix", otherSock)
+	if err != nil {
+		t.Fatalf("setup: %s unreachable outside the sandbox: %v", otherSock, err)
+	}
+	_ = c.Close()
+
+	profile, err := Write(filepath.Join(root, "profiles"), "space-session", Spec{
+		ReadWrite:           []string{"/dev"},
+		UnixConnectDenyDirs: []string{relayDir, otherDir},
+		UnixConnectAllow:    []string{allowSock},
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !runProbe(t, profile, "connect-unix "+allowSock) {
+		t.Error("the allowed relay.sock was not reachable")
+	}
+	if runProbe(t, profile, "connect-unix "+otherSock) {
+		t.Error("relay.sock under the second denied dir was reachable")
+	}
+}
+
 // TestLive_SetIDExecIsDenied uses /bin/ps, which is setgid on macOS and is
 // the exact binary SP2 row 9 measured — an agent under this profile loses
 // ps, deliberately.

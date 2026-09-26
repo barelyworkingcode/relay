@@ -13,8 +13,8 @@ import (
 
 // defaultRelayDirUnderTempHome points HOME at a fresh temp dir and returns
 // the relay dir the OS would pick under it. Deliberate: the sandbox relay
-// home sets HOME to the override dir itself, which would nest the default
-// dir inside the override and let the override's own deny hide the defect.
+// home sets HOME to the override dir itself; a separate HOME keeps the
+// default dir outside the override, as it is in production.
 func defaultRelayDirUnderTempHome(t *testing.T) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
