@@ -3285,9 +3285,9 @@ function toggleProjModel(id) {
         ? f.allowed_models.filter(x => x !== id)
         : f.allowed_models.concat(id);
     repaintProjModelPicker();
-    // Matched on dataset, not a selector: ids carry '/' and CSS.escape is not
-    // available in every host that runs this file. preventScroll keeps the
-    // scroll position the repaint just restored.
+    // Matched on dataset, not a selector: an id may carry quotes or
+    // backslashes, and the goja test shim has no CSS.escape. preventScroll
+    // keeps the scroll position the repaint just restored.
     const box = Array.from(document.querySelectorAll('#projModelsList input[data-model-id]'))
         .find(el => el.dataset.modelId === id);
     if (box) box.focus({ preventScroll: true });
