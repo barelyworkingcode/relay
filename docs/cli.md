@@ -1179,7 +1179,8 @@ relay sandbox <template> [--project NAME-OR-ID]
 Run it from the project root or any folder under it. It is not gated: there is
 no presence prompt. A template with `sandbox: true` runs under Seatbelt as it
 does from Eve; one with `sandbox: false` runs unconfined but wired to relay's
-proxies. Closing the terminal, SIGHUP or killing the command ends the session;
+proxies. A template that omits `sandbox` is sandboxed; only `sandbox: false`
+opts out. Closing the terminal, SIGHUP or killing the command ends the session;
 sleeping the Mac does not.
 
 It refuses, with a message and a non-zero exit, when: it is run inside a relay

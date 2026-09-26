@@ -142,8 +142,8 @@ where a profile written on this disk confines nothing. Wrapping the local
 that has to reach the network, the operator's own key material, and
 whatever `~/.ssh/config` names — it would not confine the session at all.
 For the same reason a host template cannot ask for confinement:
-`config.ValidateHostTemplate` refuses `sandbox`, `read` and `read_write` on
-one (see *Terminals on a host*).
+`config.ValidateHostTemplate` refuses `"sandbox": true`, `read` and
+`read_write` on one (see *Terminals on a host*).
 This is the session-host system's own version of what this document's
 decision 6 says about relay-brokered tools: a host session gets none of
 relay's local confinement machinery, on the same reasoning, because none of
@@ -388,7 +388,7 @@ into the project directory and symlinks into the console's home (see *What
 is deliberately absent*).
 
 **Validation.** `config.ValidateHostTemplate` is `ValidateTerminalTemplate`
-plus refusals of `sandbox`, `read` and `read_write` (see *The session host
+plus refusals of `"sandbox": true`, `read` and `read_write` (see *The session host
 never sandboxes*), `env_passthrough` (it would copy the console's
 environment to another machine), and `model_key` or `${MODEL_KEY}` (the
 model endpoint listens on the console; the key has no business leaving it).

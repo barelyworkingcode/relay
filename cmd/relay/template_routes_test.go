@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -142,7 +143,7 @@ func TestTemplateRoutes_CreateUpdateDelete(t *testing.T) {
 	defer srv.Close()
 	url := srv.URL + "/api/terminal/templates"
 
-	tmpl := config.TerminalTemplate{ID: "scratch", Name: "Scratch", Sandbox: true, ReadWrite: []string{"~"}, Deny: []string{"~/.ssh"}}
+	tmpl := config.TerminalTemplate{ID: "scratch", Name: "Scratch", Sandbox: ptr(true), ReadWrite: []string{"~"}, Deny: []string{"~/.ssh"}}
 	if resp, body := doJSON(t, "POST", url, tmpl); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create: status = %d, body = %s", resp.StatusCode, body)
 	}
@@ -174,13 +175,41 @@ func TestTemplateRoutes_CreateUpdateDelete(t *testing.T) {
 	}
 }
 
+// The wire mirrors storage: a template that never set sandbox comes back
+// without the key, not as false, and an explicit value comes back as sent.
+func TestTemplateRoutes_SandboxKeyRoundTrips(t *testing.T) {
+	srv, _ := newTemplateRoutesServer(t)
+	defer srv.Close()
+	for _, c := range []struct {
+		id, field, want string // want "" means the key is absent
+	}{
+		{"unset", ``, ``},
+		{"off", `,"sandbox":false`, `false`},
+		{"on", `,"sandbox":true`, `true`},
+	} {
+		posted := json.RawMessage(`{"id":"` + c.id + `","name":"N"` + c.field + `}`)
+		if resp, body := doJSON(t, "POST", srv.URL+"/api/terminal/templates", posted); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("%s: create status = %d, body = %s", c.id, resp.StatusCode, body)
+		}
+		resp, body := doJSON(t, "GET", srv.URL+"/api/terminal/templates/"+c.id, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: get status = %d, body = %s", c.id, resp.StatusCode, body)
+		}
+		var got map[string]json.RawMessage
+		mustUnmarshal(t, body, &got)
+		if v, has := got["sandbox"]; string(v) != c.want || has != (c.want != "") {
+			t.Errorf("%s: sandbox = %q (present %v), want %q in %s", c.id, v, has, c.want, body)
+		}
+	}
+}
+
 func TestTemplateRoutes_RefuseInvalidTemplates(t *testing.T) {
 	srv, _ := newTemplateRoutesServer(t)
 	defer srv.Close()
 	for name, tmpl := range map[string]config.TerminalTemplate{
 		"bad id":          {ID: "../x", Name: "X"},
 		"relay token":     {ID: "x", Name: "X", Args: []string{"${RELAY_TOKEN}"}},
-		"relative folder": {ID: "x", Name: "X", Sandbox: true, Deny: []string{"tools"}},
+		"relative folder": {ID: "x", Name: "X", Sandbox: ptr(true), Deny: []string{"tools"}},
 	} {
 		if resp, body := doJSON(t, "POST", srv.URL+"/api/terminal/templates", tmpl); resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400 (%s)", name, resp.StatusCode, body)
@@ -245,9 +274,13 @@ func TestHostTemplateRoutes_CatalogCreateAndRefusals(t *testing.T) {
 		t.Fatalf("catalog after create = %q, want shell,tool", got)
 	}
 
-	sandboxed := config.TerminalTemplate{ID: "boxed", Name: "Boxed", Sandbox: true}
+	sandboxed := config.TerminalTemplate{ID: "boxed", Name: "Boxed", Sandbox: ptr(true)}
 	if resp, body := doJSON(t, "POST", srv.URL+"/api/hosts/h1/templates", sandboxed); resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("sandboxed host template: status = %d, want 400 (%s)", resp.StatusCode, body)
+	}
+	optedOut := json.RawMessage(`{"id":"optout","name":"Opted out","sandbox":false}`)
+	if resp, body := doJSON(t, "POST", srv.URL+"/api/hosts/h1/templates", optedOut); resp.StatusCode != http.StatusCreated {
+		t.Errorf("host template with sandbox false: status = %d, want 201 (%s)", resp.StatusCode, body)
 	}
 	for _, c := range []struct {
 		method, path string

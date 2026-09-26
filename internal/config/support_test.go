@@ -77,3 +77,5 @@ func sdRead(t *testing.T, dir string) []byte {
 	}
 	return data
 }
+
+func ptr[T any](v T) *T { return &v }
