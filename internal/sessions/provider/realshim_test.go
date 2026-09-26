@@ -253,11 +253,13 @@ func TestClaudeProvider_RealShimSpawn_KillReapsSandboxedGrandchild(t *testing.T)
 	// 3s-grace hard-kill fallback (SIGKILL -targetPID) to be what actually
 	// reaps them, which is the exact code path this test exists to
 	// exercise. Neither leg reads stdin at all, deliberately: this is a
-	// signal-delivery test, not a pipe-EOF one.
+	// signal-delivery test, not a pipe-EOF one. The pid goes to a sibling
+	// temp file and is renamed, deliberately: waitForFile returns once the
+	// file exists, and `>` creates it before echo writes.
 	body := "#!/bin/sh\n" +
 		"trap '' INT\n" +
 		"sleep 300 &\n" +
-		"echo $! > \"" + grandchildPIDFile + "\"\n" +
+		"echo $! > \"" + grandchildPIDFile + ".tmp\" && mv \"" + grandchildPIDFile + ".tmp\" \"" + grandchildPIDFile + "\"\n" +
 		"exec sleep 300\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatalf("write forksleep script: %v", err)
