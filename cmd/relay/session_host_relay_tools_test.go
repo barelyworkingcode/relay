@@ -33,7 +33,15 @@ type relayToolsFixture struct {
 	frontendSock string
 	eveBearer    string
 	firstChat    chan []byte
+	echoCalled   chan struct{}
 }
+
+type rtConfigLayout int
+
+const (
+	rtDefaultLayout rtConfigLayout = iota
+	rtConfigDirOutsideHome
+)
 
 // rtBuildBundle builds the real relay and relay-sessions binaries into a
 // bundle-shaped directory, so BuiltinRelaySessionsService resolves the helper
@@ -54,17 +62,27 @@ func rtBuildBundle(t *testing.T) (relayBin string) {
 	return relayBin
 }
 
-// newRelayToolsFixture puts relay's config dir at its default location under
-// a temp HOME: `relay mcp` takes no socket flag and dials the default bridge
-// socket, so an override the child cannot see would leave it talking to
-// nothing.
 func newRelayToolsFixture(t *testing.T) *relayToolsFixture {
+	t.Helper()
+	return newRelayToolsFixtureAt(t, rtDefaultLayout)
+}
+
+// newRelayToolsFixtureAt always uses a temp HOME; layout decides where
+// relay's config dir sits. rtDefaultLayout puts it at the default location
+// under that HOME. rtConfigDirOutsideHome puts it elsewhere, so a `relay mcp`
+// child reaches this relay only through the RELAY_BRIDGE_SOCKET its session
+// was launched with, never through the default it derives from HOME.
+func newRelayToolsFixtureAt(t *testing.T, layout rtConfigLayout) *relayToolsFixture {
 	t.Helper()
 	relayBin := rtBuildBundle(t)
 
 	home, err := filepath.EvalSymlinks(mkShortTempDir(t, "rt-home-"))
 	assertNoErr(t, err, "resolve temp home")
 	configDir := filepath.Join(home, "Library", "Application Support", "relay")
+	if layout == rtConfigDirOutsideHome {
+		configDir, err = filepath.EvalSymlinks(mkShortTempDir(t, "rt-cfg-"))
+		assertNoErr(t, err, "resolve temp config dir")
+	}
 	assertNoErr(t, os.MkdirAll(configDir, 0o700), "mkdir config dir")
 	claudeBin := filepath.Join(home, ".local", "bin", "claude")
 	assertNoErr(t, os.MkdirAll(filepath.Dir(claudeBin), 0o700), "mkdir local bin")
@@ -81,11 +99,19 @@ func newRelayToolsFixture(t *testing.T) *relayToolsFixture {
 	store := sealedSettingsStoreAt(configDir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
+	echoCalled := make(chan struct{}, 1)
 	tools := mcpbroker.NewManager(nil)
 	okResult := func(context.Context, string, any) (json.RawMessage, error) {
 		return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
 	}
-	addMockConn(tools, "rt-mcp", newMockConn("rt-mcp", localTools("echo"), okResult))
+	echoResult := func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+		select {
+		case echoCalled <- struct{}{}:
+		default:
+		}
+		return okResult(ctx, method, params)
+	}
+	addMockConn(tools, "rt-mcp", newMockConn("rt-mcp", localTools("echo"), echoResult))
 	addMockConn(tools, "rt-mcp-b", newMockConn("rt-mcp-b", localTools("b-only"), okResult))
 
 	eveBearer := "rt-eve-bearer"
@@ -125,7 +151,7 @@ func newRelayToolsFixture(t *testing.T) *relayToolsFixture {
 	t.Cleanup(bsrv.Close)
 	_ = dialUnixWithTimeout(t, bridge.SocketPath(), 2*time.Second).Close()
 
-	f := &relayToolsFixture{store: store, enhanced: enhanced, audit: rec, eveBearer: eveBearer, firstChat: make(chan []byte, 1)}
+	f := &relayToolsFixture{store: store, enhanced: enhanced, audit: rec, eveBearer: eveBearer, firstChat: make(chan []byte, 1), echoCalled: echoCalled}
 	f.startModelBroker(t)
 
 	f.frontendSock = filepath.Join(mkShortTempDir(t, "rt-fe-"), "frontend.sock")
@@ -289,5 +315,45 @@ func TestSessionHost_ChatRelayTools_OptOutSpawnsNoToolServer(t *testing.T) {
 	}
 	if ev := f.listToolsEvent(t, sessionID); ev != nil {
 		t.Fatalf("an opted-out session listed relay tools: %v", ev)
+	}
+}
+
+func TestSessionHost_ChatRelayTools_NonDefaultConfigDirReachesThatRelay(t *testing.T) {
+	f := newRelayToolsFixtureAt(t, rtConfigDirOutsideHome)
+	sessionID, tools := f.chatFirstRequest(t, map[string]any{"useRelayTools": true})
+
+	if !slices.Contains(tools, "echo") {
+		t.Fatalf("first chat request tools = %q, want the granted MCP's echo from the relay under the non-default config dir", tools)
+	}
+	if ev := f.listToolsEvent(t, sessionID); ev == nil {
+		t.Fatalf("no %s audit event for session %s", audit.AuditEventListTools, sessionID)
+	}
+}
+
+func TestSessionHost_ClaudeRelayTools_NonDefaultConfigDirReachesThatRelay(t *testing.T) {
+	f := newRelayToolsFixtureAt(t, rtConfigDirOutsideHome)
+	proj := config.Project{ID: "rt-p1", Name: "Acme", Path: t.TempDir(),
+		AllowedMcpIDs: []string{"rt-mcp"}, AllowedModels: []string{"*"}, AllowedTemplates: []string{"*"},
+		PermissionPolicy: &config.PermissionPolicy{AllowedTools: []string{"mcp__relay__echo"}}}
+	assertNoErr(t, f.store.With(func(s *config.Settings) { s.Projects = append(s.Projects, proj) }), "seed project")
+	sessionID := f.createClaudeSession(t, proj.ID)
+
+	dispatcher := httptest.NewServer(NewFrontendDispatcher(f.enhanced))
+	t.Cleanup(dispatcher.Close)
+	go func() {
+		r, err := http.Post(dispatcher.URL+"/api/sessions/"+sessionID+"/message", "application/json",
+			bytes.NewReader([]byte(`{"text":"echo something"}`)))
+		if err == nil {
+			r.Body.Close()
+		}
+	}()
+
+	select {
+	case <-f.echoCalled:
+	case <-time.After(rs10Timeout):
+		t.Fatal("the Claude session's relay tool server never called echo on the relay under the non-default config dir")
+	}
+	if ev := f.callToolEvent(t, sessionID); ev == nil || ev["tool"] != "echo" {
+		t.Fatalf("call_tool audit event for session %s = %v, want one for echo", sessionID, ev)
 	}
 }
