@@ -458,7 +458,27 @@ The child's stderr is wired through a plain `os.Pipe()`, not
 `cmd.StderrPipe()`: `Wait` closes a `StderrPipe`'s read end itself, racing
 whatever is still reading from it, and that race is how the one line that
 would have named a launch failure gets lost. The write end becomes
-`cmd.Stderr`, and the parent closes it once `Start` returns.
+`cmd.Stderr`, and the parent closes it once `Start` returns. Stdout is wired
+the same way (`newStdoutPipe`) for the same reason: the lines lost to that
+race would be the child's last events, such as a final `result`.
+
+When the child exits, `waitForExit` drains before it reports: `Wait` returns,
+both read ends get a read deadline of `providerDrainTimeout` (2s, read once at
+spawn), and it waits for the stdout and stderr readers to finish. Only then is
+`process_exited` emitted, so every line the child wrote is handled first. The
+deadline exists because a grandchild that inherited a write end can hold it
+open indefinitely; past the deadline, whatever it writes is dropped.
+
+`logProviderStderr` also keeps the last 10 lines it logged, redacted and
+truncated as above, and hands them back when it finishes. On a non-zero exit,
+`waitForExit` logs one `Warn`, `provider exited with error`, with `session`,
+`kind`, `exitCode` and `stderr_tail` (oldest first), before `process_exited`.
+This is what names a mid-session crash, whose stderr lines otherwise log only
+at `Debug`. A zero exit adds nothing, and neither does a stop relay itself
+initiates: `Kill()` marks the spawn killed before it signals, and that exit
+logs no crash `Warn` whatever its code, though `process_exited` still follows.
+The early-failure paths (identity refused, spawn failed) drain stderr
+themselves and close stdout unread.
 
 ## What a child inherits
 

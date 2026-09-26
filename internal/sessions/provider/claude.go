@@ -125,6 +125,10 @@ type ClaudeProvider struct {
 	stopIdle     chan struct{}
 	stopIdleOnce sync.Once
 	waitDone     chan struct{}
+	drainTimeout time.Duration
+	// killed is per spawn: a restarted spawn gets a fresh one, so an old
+	// spawn's late exit can't read the new spawn's flag.
+	killed *atomic.Bool
 
 	msgStartNano   atomic.Int64
 	firstTokenNano atomic.Int64
@@ -442,7 +446,7 @@ func (p *ClaudeProvider) Start() error {
 		return fmt.Errorf("stdin pipe: %w", err)
 	}
 
-	stdout, err := cmd.StdoutPipe()
+	stdoutR, stdoutW, err := newStdoutPipe(cmd)
 	if err != nil {
 		_ = stdin.Close()
 		return fmt.Errorf("stdout pipe: %w", err)
@@ -451,23 +455,28 @@ func (p *ClaudeProvider) Start() error {
 	stderrR, stderrW, err := newStderrPipe(cmd)
 	if err != nil {
 		_ = stdin.Close()
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
 	startErr := cmd.Start()
+	_ = stdoutW.Close()
 	_ = stderrW.Close()
 	if startErr != nil {
+		_ = stdoutR.Close()
 		_ = stderrR.Close()
 		return fmt.Errorf("failed to start claude: %w", startErr)
 	}
-	logStderr := func() {
-		logProviderStderr(stderrR, p.session.ID, "claude", &spawn.sawStdout, p.identitySecret())
+	logStderr := func() []string {
+		return logProviderStderr(stderrR, p.session.ID, "claude", &spawn.sawStdout, p.identitySecret())
 	}
 	root := p.readProcessRoot(cmd.Process.Pid)
 	// drainStderr reads what the target wrote before the shim refused it.
 	// The deadline is deliberate: a target forked with Setpgid can outlive
 	// the Kill and keep the write end open, and Start must not wait on it.
 	drainStderr := func() {
+		_ = stdoutR.Close()
 		_ = stderrR.SetReadDeadline(time.Now().Add(time.Second))
 		logStderr()
 	}
@@ -503,11 +512,14 @@ func (p *ClaudeProvider) Start() error {
 	p.stopIdle = make(chan struct{})
 	p.stopIdleOnce = sync.Once{}
 	p.waitDone = make(chan struct{})
+	p.drainTimeout = providerDrainTimeout
+	p.killed = &atomic.Bool{}
 	p.touchActivity()
 
-	go p.readStdout(stdout, spawn)
-	go logStderr()
-	go p.waitForExit(cmd, p.waitDone)
+	out := newSpawnOutput(stdoutR, stderrR)
+	go p.readStdout(stdoutR, spawn, out.stdoutDone)
+	go func() { out.stderrTail <- logStderr() }()
+	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed)
 	go p.idleWatcher(p.stopIdle)
 
 	slog.Info("claude process started", "session", p.session.ID, "model", p.model, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
@@ -546,7 +558,9 @@ func (p *ClaudeProvider) cleanupSpawnFiles() {
 	p.spawnFiles = nil
 }
 
-func (p *ClaudeProvider) readStdout(r io.ReadCloser, spawn *claudeSpawnState) {
+func (p *ClaudeProvider) readStdout(r io.ReadCloser, spawn *claudeSpawnState, done chan<- struct{}) {
+	defer close(done)
+	defer func() { _ = r.Close() }()
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
@@ -560,7 +574,7 @@ func (p *ClaudeProvider) readStdout(r io.ReadCloser, spawn *claudeSpawnState) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		slog.Error("claude stdout read error", "session", p.session.ID, "error", err)
+		logStdoutReadError(p.session.ID, "claude", err)
 	}
 }
 
@@ -571,7 +585,7 @@ func (p *ClaudeProvider) identitySecret() string {
 	return p.cfg.Identity.Secret
 }
 
-func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}) {
+func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool) {
 	err := cmd.Wait()
 	p.alive.Store(false)
 	close(waitDone)
@@ -584,7 +598,11 @@ func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}) {
 		}
 	}
 
+	tail := out.drain(drainTimeout)
 	slog.Info("claude process exited", "session", p.session.ID, "exitCode", exitCode)
+	if !killed.Load() {
+		warnProviderExit(p.session.ID, "claude", exitCode, tail)
+	}
 
 	data, _ := json.Marshal(map[string]interface{}{"exitCode": exitCode})
 	p.handler("process_exited", data)
@@ -1211,6 +1229,9 @@ func (p *ClaudeProvider) Kill() {
 		return
 	}
 
+	if p.killed != nil {
+		p.killed.Store(true)
+	}
 	p.alive.Store(false)
 
 	if p.stopIdle != nil {
