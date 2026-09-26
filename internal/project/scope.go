@@ -144,7 +144,9 @@ func syncProjectToken(s *config.Settings, proj *config.Project, surfaces McpSurf
 	// default), so remote projects skip derivation entirely, unconditionally,
 	// rather than only when ValidateGrants happens to catch it —
 	// this guard is what keeps a bypass of that check from silently
-	// widening scope instead of failing loudly (ADR-011 decision 5).
+	// widening scope instead of failing loudly (ADR-011 decision 5). For a
+	// record with no path the correct derived value is "absent", so any
+	// value derived before the record became remote is dropped, not kept.
 	//
 	// A host project's Path is real, but it names a directory on the HOST,
 	// not the console — deriving it into a console fsMCP's allowed_dirs
@@ -153,6 +155,7 @@ func syncProjectToken(s *config.Settings, proj *config.Project, surfaces McpSurf
 	// project any allowed_mcp_ids at all, so this is defence in depth, the
 	// same balance the remote guard above strikes.
 	if proj.IsRemote() || proj.IsHosted() {
+		dropDerivedContext(proj, surfaces)
 		return
 	}
 	for _, mcpID := range mcpIDs {
@@ -185,6 +188,65 @@ func syncProjectToken(s *config.Settings, proj *config.Project, surfaces McpSurf
 			disableToolByDefault(proj, mcpID, V1FsBashTool)
 		}
 	}
+}
+
+// dropDerivedContext removes every field derivedScopeFields names from
+// proj.Context, for each MCP whose surface is present in surfaces, and
+// deletes an entry left with no fields. An MCP absent from surfaces is left
+// untouched: without its schema a derived value cannot be told from an
+// operator's. An entry with nothing to remove keeps its original bytes.
+func dropDerivedContext(proj *config.Project, surfaces McpSurfaces) {
+	for mcpID, blob := range proj.Context {
+		surface, known := surfaces[mcpID]
+		if !known {
+			continue
+		}
+		values := ContextValues(blob)
+		removed := false
+		for _, f := range derivedScopeFields(ParseContextSchema(surface.Schema, surface.SchemaVersion)) {
+			if _, ok := values[f.Name]; ok {
+				delete(values, f.Name)
+				removed = true
+			}
+		}
+		if !removed {
+			continue
+		}
+		if len(values) == 0 {
+			delete(proj.Context, mcpID)
+			continue
+		}
+		out, err := json.Marshal(values)
+		if err != nil {
+			continue
+		}
+		proj.Context[mcpID] = out
+	}
+}
+
+// requireSchemasForCarriedContext names the first MCP, in sorted order, that
+// holds non-empty stored context, is granted by proj.AllowedMcpIDs and has no
+// entry in surfaces. A connected MCP that declares no schema is not refused:
+// relay derives nothing for it, so nothing it stores can be derived.
+func requireSchemasForCarriedContext(proj *config.Project, surfaces McpSurfaces) error {
+	mcpIDs := make([]string, 0, len(proj.Context))
+	for mcpID := range proj.Context {
+		mcpIDs = append(mcpIDs, mcpID)
+	}
+	slices.Sort(mcpIDs)
+	for _, mcpID := range mcpIDs {
+		if len(ContextValues(proj.Context[mcpID])) == 0 {
+			continue
+		}
+		if !config.IsWildcard(proj.AllowedMcpIDs) && !slices.Contains(proj.AllowedMcpIDs, mcpID) {
+			continue
+		}
+		if _, known := surfaces[mcpID]; known {
+			continue
+		}
+		return fmt.Errorf("cannot make this project remote while MCP %q is not connected: without its schema relay cannot tell which stored context values it derived from the project path — connect the MCP, or clear its context and retry", mcpID)
+	}
+	return nil
 }
 
 // projectPathValue: a string-typed field gets the bare path; anything else

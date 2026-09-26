@@ -280,7 +280,12 @@ MCP whose every tool needs the project path can't be granted to a remote
 project either (`project.ValidateGrants`) — and the package's own token sync
 independently refuses to derive any `source: "project_path"` field for one
 regardless, since an MCP's schema is discovered at runtime and could gain
-such a field after a grant was already validated. `appRouter.CallTool`
+such a field after a grant was already validated. The same sync also drops
+any such field it derived before the record became remote, where relay holds
+the MCP's schema, and a conversion is refused while a granted MCP carrying
+stored context is not connected (see
+[context-schema.md](context-schema.md#source-decides-who-fills-it-in)).
+`appRouter.CallTool`
 re-checks scope presence against the MCP's *live* schema, which is the only
 one of the three defences that catches that upgrade. Chat sessions
 (`refuseRemoteSession`) are refused at the point of use too, not just at
