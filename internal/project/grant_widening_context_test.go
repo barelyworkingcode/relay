@@ -314,7 +314,7 @@ func cloneBlobs(in map[string]json.RawMessage) map[string]json.RawMessage {
 	return out
 }
 
-func TestUpdateWidensGrant_ContextComparesNumbersByTextAndRefusesTrailingData(t *testing.T) {
+func TestUpdateWidensGrant_ContextComparesNumbersByValueAndRefusesTrailingData(t *testing.T) {
 	unscoped := McpSurfaces{"macmcp": {Schema: json.RawMessage(mailSchemaWithUnscopedField), SchemaVersion: 2}}
 	untyped := McpSurfaces{"macmcp": {Schema: json.RawMessage(mailSchemaWithUntypedField), SchemaVersion: 2}}
 	one := `{"mail_accounts":["Alice"]}`
@@ -329,9 +329,43 @@ func TestUpdateWidensGrant_ContextComparesNumbersByTextAndRefusesTrailingData(t 
 			blobs("macmcp", `{"mail_owner":[9007199254740992]}`), blobs("macmcp", `{"mail_owner":[9007199254740993]}`), untyped, true},
 		{"a 2^53+1 element not in a stored list holding 2^53 widens",
 			blobs("macmcp", `{"mail_owner":["Alice",9007199254740992]}`), blobs("macmcp", `{"mail_owner":[9007199254740993]}`), untyped, true},
-		{"the same number spelled differently widens",
-			blobs("macmcp", `{"limit":100}`), blobs("macmcp", `{"limit":1e2}`), nil, true},
+		{"the same number spelled differently does not widen",
+			blobs("macmcp", `{"limit":100}`), blobs("macmcp", `{"limit":1e2}`), nil, false},
+		{"a Settings JSON round trip rewriting 1.0 as 1 does not widen",
+			blobs("macmcp", `{"limit":1.0}`), blobs("macmcp", `{"limit":1}`), nil, false},
 		{"a requested blob with trailing data widens", blobs("macmcp", one), blobs("macmcp", oneThenStar), nil, true},
 		{"a stored blob with trailing data widens", blobs("macmcp", oneThenStar), blobs("macmcp", one), nil, true},
 	})
+}
+
+func TestJsonValueEqual_NumbersCompareByExactDecimalValue(t *testing.T) {
+	for _, r := range []struct {
+		a, b  string
+		equal bool
+	}{
+		{"1.0", "1", true},
+		{"1e2", "100", true},
+		{"0.10", "1e-1", true},
+		{"-0", "0", true},
+		{"1E+2", "100", true},
+		{"1e400", "10e399", true},
+		{"1e999999999", "1e999999999", true},
+		{"9007199254740993", "9007199254740992", false},
+		{"1", "1.00000000000000000001", false},
+		{"1", "-1", false},
+		{"1e2", "1e3", false},
+		{"1e99999999999999999999", "10e99999999999999999998", false},
+	} {
+		for _, pair := range [][2]string{
+			{r.a, r.b},
+			{`{"n":` + r.a + `}`, `{"n":` + r.b + `}`},
+			{`[` + r.a + `]`, `[` + r.b + `]`},
+		} {
+			for _, ab := range [][2]string{pair, {pair[1], pair[0]}} {
+				if got := jsonValueEqual(json.RawMessage(ab[0]), json.RawMessage(ab[1])); got != r.equal {
+					t.Errorf("jsonValueEqual(%s, %s) = %v, want %v", ab[0], ab[1], got, r.equal)
+				}
+			}
+		}
+	}
 }
