@@ -32,16 +32,9 @@ type CredentialOps struct {
 	Issuance IssuanceAuditor
 }
 
-func (o *CredentialOps) runQueued(ctx context.Context, fn func() error) error {
-	if o.Queue == nil {
-		return fn()
-	}
-	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
-}
-
-// runCommitted is runQueued for steps whose results the caller reads after
-// return: an admitted step is never abandoned on caller cancellation, so the
-// closure's outputs cannot race the worker.
+// runCommitted runs fn through the config command queue. An admitted step is
+// never abandoned on caller cancellation, so the closure's outputs cannot race
+// the worker. A nil Queue runs fn directly.
 func (o *CredentialOps) runCommitted(ctx context.Context, fn func() error) error {
 	if o.Queue == nil {
 		return fn()
