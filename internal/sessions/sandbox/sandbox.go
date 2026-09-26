@@ -17,7 +17,9 @@
 // denied bytes under a name no rule mentions, and file-clone is outside
 // file-write*, so a grant that denies writes still lets a directory be cloned.
 // A deny reached through a symlink the running user could have made is
-// refused, as a read-write grant is.
+// refused, as a read-write grant is. A read grant is refused only when a link
+// it follows is one a sandboxed session could have made: one the Spec's
+// writable roots cover.
 //
 // Everything that is not a file (network, process, mach) stays `(allow
 // default)`, as SP2 measured it; only the unix-socket, loopback and setuid
@@ -42,6 +44,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -143,6 +146,12 @@ type Spec struct {
 	// tolerates. Do not relax it — `ps` as root reads every process's
 	// environment, which is exactly what §5.1 already cannot hide.
 	DenySetIDExec bool
+
+	// Writable are the roots any sandboxed session could write, across every
+	// template and project; Render adds this launch's ReadWrite and
+	// ReadWriteFiles to them. They are never rendered: a read grant whose walk
+	// follows a link they cover refuses the render.
+	Writable []string
 }
 
 // Render produces the profile text. It fails rather than emitting a rule
@@ -161,6 +170,11 @@ func Render(s Spec) (string, error) {
 	b.WriteString("(allow default)\n")
 	b.WriteString("(deny file-read* file-write*)\n")
 
+	writable, err := launchWritableSet(s)
+	if err != nil {
+		return "", fmt.Errorf("writable: %w", err)
+	}
+
 	// reachable collects every path a grant names, in both spellings, for the
 	// ancestor metadata rule below. denied collects every path a deny names,
 	// for the ancestor unlink-and-clone rule.
@@ -175,7 +189,7 @@ func Render(s Spec) (string, error) {
 		baseline = append(baseline, "(literal "+lit+")")
 	}
 	for _, p := range baselineReadDirs {
-		terms, paths, err := subtreeTerms(p)
+		terms, paths, err := readTerms(p, "subpath", writable)
 		if err != nil {
 			return "", fmt.Errorf("baseline: %w", err)
 		}
@@ -211,7 +225,7 @@ func Render(s Spec) (string, error) {
 
 	reads := make([]string, 0, len(s.Read)+len(s.ReadFiles))
 	for _, p := range s.Read {
-		terms, paths, err := subtreeTerms(p)
+		terms, paths, err := readTerms(p, "subpath", writable)
 		if err != nil {
 			return "", fmt.Errorf("read: %w", err)
 		}
@@ -219,7 +233,7 @@ func Render(s Spec) (string, error) {
 		reachable = append(reachable, paths...)
 	}
 	for _, p := range s.ReadFiles {
-		terms, paths, err := fileTerms(p)
+		terms, paths, err := readTerms(p, "literal", writable)
 		if err != nil {
 			return "", fmt.Errorf("read: %w", err)
 		}
@@ -292,7 +306,7 @@ func Render(s Spec) (string, error) {
 
 	unixDeny := make([]string, 0, len(s.UnixConnectDenyDirs)+len(s.UnixConnectDenyPaths))
 	for _, p := range s.UnixConnectDenyPaths {
-		r, err := walkedPath(p)
+		r, err := Resolve(p)
 		if err != nil {
 			return "", fmt.Errorf("unix_connect_deny: %w", err)
 		}
@@ -303,7 +317,7 @@ func Render(s Spec) (string, error) {
 		unixDeny = append(unixDeny, "(remote unix-socket (path-literal "+lit+"))")
 	}
 	for _, p := range s.UnixConnectDenyDirs {
-		r, err := walkedPath(p)
+		r, err := Resolve(p)
 		if err != nil {
 			return "", fmt.Errorf("unix_connect_deny: %w", err)
 		}
@@ -317,7 +331,7 @@ func Render(s Spec) (string, error) {
 
 	unixAllow := make([]string, 0, len(s.UnixConnectAllow))
 	for _, p := range s.UnixConnectAllow {
-		r, err := walkedPath(p)
+		r, err := Resolve(p)
 		if err != nil {
 			return "", fmt.Errorf("unix_connect_allow: %w", err)
 		}
@@ -338,23 +352,14 @@ func Render(s Spec) (string, error) {
 	return b.String(), nil
 }
 
-// subtreeTerms renders one granted directory. The resolved path carries the
-// subtree; when the entry itself is a symlink the link is also readable as a
-// literal, because a process that follows it reads the link first.
-func subtreeTerms(p string) (terms, paths []string, err error) {
-	return grantTerms(p, "subpath")
-}
-
-// fileTerms renders one granted regular file, and the link to it when the
-// entry is a symlink, for the same reason as subtreeTerms.
-func fileTerms(p string) (terms, paths []string, err error) {
-	return grantTerms(p, "literal")
-}
-
-func grantTerms(p, kind string) (terms, paths []string, err error) {
-	w := walk(p)
-	if w.err != nil {
-		return nil, nil, w.err
+// readTerms renders one read grant, a directory as a subpath or a regular file
+// as a literal. The resolved path carries the grant; when the entry itself is a
+// symlink the link is also readable as a literal, because a process that
+// follows it reads the link first.
+func readTerms(p, kind string, writable WritableSet) (terms, paths []string, err error) {
+	w, err := readWalk(p, writable)
+	if err != nil {
+		return nil, nil, err
 	}
 	return walkedTerms(w, kind)
 }
@@ -388,6 +393,45 @@ type LinkedGrantError struct {
 
 func (e *LinkedGrantError) Error() string {
 	return `grant "` + e.Grant + `" follows symlink "` + e.Link + `", which a sandboxed session could have made`
+}
+
+// LinkedReadError refuses a read grant whose walk follows a symlink in a
+// directory a sandboxed session could write. Such a session could have
+// replaced a directory another template reads with a link to one it was
+// denied, and the next launch would grant the link's target. Grant is the
+// entry as the Spec names it; Link is the link's directory as walked plus the
+// link's own name.
+type LinkedReadError struct {
+	Grant, Link string
+}
+
+func (e *LinkedReadError) Error() string {
+	return `read grant "` + e.Grant + `" follows symlink "` + e.Link + `", which a sandboxed session could have made`
+}
+
+// readWalk walks a read grant and refuses it when the walk followed a link
+// that writable covers.
+//
+// This is deliberate: a link in a locked directory is never checked, and a
+// link the writable roots do not reach is followed as before. Homebrew and
+// installer chains run through directories the user can write but no session
+// is granted, and refusing every user-writable link would refuse them all.
+// The terms rendered for the grant come from this one walk, for the reason
+// readWriteWalk gives.
+func readWalk(p string, writable WritableSet) (walked, error) {
+	w := walk(p)
+	if w.err != nil {
+		return w, w.err
+	}
+	for _, l := range w.links {
+		if l.locked {
+			continue
+		}
+		if writable.coversLink(l) {
+			return w, &LinkedReadError{Grant: p, Link: l.path}
+		}
+	}
+	return w, nil
 }
 
 // readWriteWalk walks a read-write grant and refuses it when the walk followed
@@ -595,9 +639,9 @@ func resolve(p string) string {
 	return walk(p).resolved
 }
 
-// walkedPath is resolve for a Render entry: a walk that fails refuses the
-// render instead of spelling a path the walk could not settle.
-func walkedPath(p string) (string, error) {
+// Resolve is resolve for a Render entry: a walk that fails is an error
+// rather than a path the walk could not settle.
+func Resolve(p string) (string, error) {
 	w := walk(p)
 	return w.resolved, w.err
 }
@@ -606,17 +650,156 @@ func walkedPath(p string) (string, error) {
 // closed rather than being rendered half-resolved.
 const maxWalkLinks = 32
 
+// WritableSet is every root a sandboxed session could write, held as file
+// identities: a directory root covers every path beneath it, a regular-file
+// root covers the entries directly in its parent, and every root covers its
+// own entry, so a root replaced by a link is caught.
+type WritableSet struct {
+	dirs    map[fileID]bool
+	parents map[fileID]bool
+	selves  map[fileID]bool
+}
+
+// NewWritableSet takes each root's identities from one walk of it. A root that
+// is missing, or whose walk fails, contributes nothing; a relative root is an
+// error.
+func NewWritableSet(roots []string) (WritableSet, error) {
+	for _, r := range roots {
+		if !filepath.IsAbs(r) {
+			return WritableSet{}, fmt.Errorf("root %q is not absolute", r)
+		}
+	}
+	set := WritableSet{dirs: map[fileID]bool{}, parents: map[fileID]bool{}, selves: map[fileID]bool{}}
+	for _, r := range roots {
+		set.add(r)
+	}
+	return set, nil
+}
+
+func (s WritableSet) add(root string) {
+	w := walkIdentity(root)
+	if w.err != nil || !w.settled || len(w.chain) == 0 {
+		return
+	}
+	if w.entry != "" {
+		s.selves[w.entryID] = true
+	}
+	end := len(w.chain) - 1
+	switch {
+	case w.endIsDir:
+		s.dirs[w.chain[end]] = true
+	case end > 0:
+		s.parents[w.chain[end-1]] = true
+	}
+}
+
+// Covers reports whether a session writing the set's roots could have made or
+// replaced the entry at p.
+//
+// This is deliberate: a path whose parent cannot be walked to the end counts
+// as covered. Coverage refuses a grant, so the unknown answer is the refusing
+// one.
+func (s WritableSet) Covers(p string) bool {
+	if !filepath.IsAbs(p) {
+		return true
+	}
+	p = filepath.Clean(p)
+	w := walkIdentity(filepath.Dir(p))
+	if w.err != nil || !w.settled {
+		return true
+	}
+	l := followedLink{chain: w.chain}
+	if fi, err := os.Lstat(filepath.Join(w.resolved, filepath.Base(p))); err == nil {
+		if id, ok := idOf(fi); ok {
+			l.self = id
+		}
+	}
+	return s.coversLink(l)
+}
+
+func (s WritableSet) coversLink(l followedLink) bool {
+	if s.selves[l.self] {
+		return true
+	}
+	for _, id := range l.chain {
+		if s.dirs[id] {
+			return true
+		}
+	}
+	return len(l.chain) > 0 && s.parents[l.chain[len(l.chain)-1]]
+}
+
+// launchWritableSet is the Spec's writable roots plus the launch's own
+// read-write grants.
+//
+// This is deliberate: a relative read-write entry is left out here rather
+// than refused, so the read_write render refuses it under its own prefix.
+func launchWritableSet(s Spec) (WritableSet, error) {
+	set, err := NewWritableSet(s.Writable)
+	if err != nil {
+		return WritableSet{}, err
+	}
+	for _, grants := range [][]string{s.ReadWrite, s.ReadWriteFiles} {
+		for _, p := range grants {
+			if filepath.IsAbs(p) {
+				set.add(p)
+			}
+		}
+	}
+	return set, nil
+}
+
 // walked is one pass over a path from `/`.
 //
 // resolved is the link-free path in the volume's spelling. entry is where the
 // path's final component sits: its walked parent in the volume's spelling plus
 // its own name, or "" when the walk never reached it. userLink is the first
-// followed link whose directory is not lockedDir, or "".
+// link whose directory is not lockedDir, dangling or not, or "". links is
+// every link the walk spliced, in order.
+//
+// entryID is the identity of the final component itself, a link's own when it
+// is one. chain is the identity of every directory from `/` down to where the
+// walk ended, and of the final component when the walk reached it; settled
+// reports that every component existed.
 type walked struct {
 	resolved string
 	entry    string
 	userLink string
+	links    []followedLink
+	entryID  fileID
+	chain    []fileID
+	settled  bool
+	endIsDir bool
 	err      error
+}
+
+// followedLink is one link a walk spliced: path is its link-free directory
+// plus its own name, and locked is lockedDir of that directory. chain is the
+// identity of the directory and of every ancestor, and self is the link's own
+// identity.
+//
+// This is subtle: every field is taken while the walk stands on the link.
+// Asking again afterwards, of a path string, would follow whatever a session
+// swapped into the path in between.
+type followedLink struct {
+	path   string
+	locked bool
+	chain  []fileID
+	self   fileID
+}
+
+// fileID is a file's identity. Coverage compares identities rather than
+// spellings, so letter case, firmlinks and the /var alias cannot hide a match.
+type fileID struct {
+	dev, ino uint64
+}
+
+func idOf(fi fs.FileInfo) (fileID, bool) {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fileID{}, false
+	}
+	return fileID{dev: uint64(st.Dev), ino: st.Ino}, true
 }
 
 // linkLiteral is the entry's own path when it differs from where the walk
@@ -641,6 +824,16 @@ var beforeSpell = func(resolved string) {}
 // first component that does not exist, or at a link whose target does not,
 // and appends the rest unresolved.
 func walk(p string) walked {
+	return walkPath(p, true)
+}
+
+// walkIdentity is walk without the spelling: resolved and entry are the walk's
+// own link-free spelling, which is all an identity check needs.
+func walkIdentity(p string) walked {
+	return walkPath(p, false)
+}
+
+func walkPath(p string, spell bool) walked {
 	if p == "" {
 		return walked{}
 	}
@@ -653,6 +846,16 @@ func walk(p string) walked {
 	pending := pathComponents(p)
 	original := len(pending)
 	cur := "/"
+	rootInfo, err := os.Lstat("/")
+	if err != nil {
+		return walked{resolved: p, err: fmt.Errorf("stat /: %w", err)}
+	}
+	rootID, ok := idOf(rootInfo)
+	if !ok {
+		return walked{resolved: p, err: errors.New("stat /: no file identity")}
+	}
+	chain := []fileID{rootID}
+	endIsDir := true
 	var tail []string
 	var entryDir, entryName string
 	links := 0
@@ -669,6 +872,9 @@ walking:
 			continue
 		case "..":
 			cur = filepath.Dir(cur)
+			if len(chain) > 1 {
+				chain = chain[:len(chain)-1]
+			}
 			continue
 		}
 		next := filepath.Join(cur, name)
@@ -677,18 +883,26 @@ walking:
 			tail = append([]string{name}, pending...)
 			break walking
 		}
+		id, ok := idOf(fi)
+		if !ok {
+			return walked{resolved: p, err: fmt.Errorf("stat %q: no file identity", next)}
+		}
 		if isOriginal && original == 0 {
 			entryDir, entryName = cur, name
+			w.entryID = id
 		}
 		if fi.Mode()&fs.ModeSymlink == 0 {
 			cur = next
+			chain = append(chain, id)
+			endIsDir = fi.IsDir()
 			continue
 		}
 		links++
 		if links > maxWalkLinks {
 			return walked{resolved: p, err: fmt.Errorf("path %q follows more than %d symlinks", p, maxWalkLinks)}
 		}
-		if w.userLink == "" && !lockedDir(cur) {
+		locked := lockedDir(cur)
+		if w.userLink == "" && !locked {
 			w.userLink = next
 		}
 		if dangling(next) {
@@ -699,12 +913,24 @@ walking:
 		if err != nil {
 			return walked{resolved: p, err: fmt.Errorf("read symlink %q: %w", next, err)}
 		}
+		w.links = append(w.links, followedLink{path: next, locked: locked, chain: append([]fileID(nil), chain...), self: id})
 		if filepath.IsAbs(target) {
 			cur = "/"
+			chain = chain[:1]
 		}
 		pending = append(pathComponents(target), pending...)
 	}
 
+	w.chain = chain
+	w.settled = len(tail) == 0
+	w.endIsDir = endIsDir
+	if !spell {
+		w.resolved = filepath.Join(append([]string{cur}, tail...)...)
+		if entryName != "" {
+			w.entry = filepath.Join(entryDir, entryName)
+		}
+		return w
+	}
 	beforeSpell(filepath.Join(append([]string{cur}, tail...)...))
 	w.resolved = filepath.Join(append([]string{onDiskPath(cur)}, tail...)...)
 	if entryName != "" {

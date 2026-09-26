@@ -686,7 +686,59 @@ That exempts the `/tmp`, `/var` and `/etc` links in `/`, so `t.TempDir()`,
 link directly in `/private/tmp` (root's, but world-writable) is refused. The
 cost is deliberate: a dotfiles-managed `~/.claude`, or a project reached
 through a link, is refused as a read-write grant; the operator names the real
-path instead. Read grants still follow links as before.
+path instead.
+
+**A read grant never follows a link a sandboxed session could have made.**
+The strict rule above cannot apply to reads: Homebrew and installer link
+chains run through directories the user can write, and `/Applications` is
+admin-writable. So a read grant is refused only when the link could be a
+session's. `Render` walks every `read` entry, file or directory, and the
+system baseline dirs, the same way as a read-write grant, and one walk supplies
+both the check and the rendered terms. For every link the walk follows whose
+directory is not locked, it asks whether the **writable roots** (W) cover that
+link. If they do, the launch is refused with `sandbox.LinkedReadError`
+(`read grant "<entry>" follows symlink "<link>", which a sandboxed session
+could have made`, prefixed `read: ` or `baseline: `): the same `400
+sandbox_unavailable`, audited, with one `session sandbox: read grant refused`
+Warn and no profile written. A dangling link is not followed, so it renders as
+before, naming only the link.
+
+W is built per launch by `sandboxWritableRoots`
+(`cmd/relay/session_sandbox_writable.go`) plus the launch's own grants:
+
+- the home directory, always;
+- `os.TempDir()`, `DARWIN_USER_TEMP_DIR`, `/dev` and
+  `<config dir>/sessions/pi-sessions`, the read-write paths relay grants
+  without a template;
+- the `read_write` entries of every sandboxed console template, and of the
+  `claude-code`, `pi` and `chat` templates whatever their `sandbox` flag, since
+  a claude, pi or chat session always sandboxes;
+- every local project path (not remote, not on a host);
+- the launch's own `read_write` entries, which `Render` adds itself.
+
+Coverage is decided by file identity (device and inode), not by spelling, so
+letter case, firmlinks and the `/var` alias cannot hide a match. A directory
+root covers a link anywhere beneath it. A regular-file root covers the entries
+directly in its parent directory, since the atomic-write siblings a
+read-write file grant allows let a session create names beside it. Every root
+also covers its own entry, so a root a session replaced with a link is caught.
+A root that is missing or cannot be walked contributes nothing; a relative root
+fails the render. Unsandboxed templates and hosted or remote projects are not
+in W.
+
+The cost: because home is always in W, a read entry reached through a link
+anywhere in the home directory is refused. A dotfiles-managed `~/.zshrc` in the
+`claude-code` template's `read` list refuses every Claude launch until the
+entry is removed or names the real file; the same holds for any template read
+entry that is itself a link in home.
+
+**The gap.** W is computed from the settings of this launch, not from every
+setting that ever applied. A link planted, outside home, in a region current
+settings no longer name is not caught: a template narrowed since, a project
+deleted or moved, or a template that was sandboxed and now says
+`"sandbox": false`. Links in home are caught, since home is always in W. What a session writes
+that is not a link (rc files, scripts, provider binaries another session runs)
+and unix-socket entries are outside this rule.
 
 **A `deny` entry never follows a link the user could have made, either.** Each
 `deny`, the baseline carve-outs included, is walked the same way, and that one
@@ -1038,6 +1090,7 @@ what works.
 | C3 process-ancestry membership | `internal/membership/` |
 | tool-permission decisions: `Preflight`, the wait/decide flow behind `/permission` | `internal/sessions/permission/` |
 | C7 sandbox profile rendering | `internal/sessions/sandbox/`, `cmd/relay/session_sandbox.go` |
+| writable roots a read grant's links are checked against | `cmd/relay/session_sandbox_writable.go` |
 | relay-side launch authorization | `cmd/relay/session_launch.go` |
 | relay-side HTTP routes, resume, accounting | `cmd/relay/session_routes.go` |
 | built-in service record, helper path resolution | `internal/service/builtin_sessions.go` |
