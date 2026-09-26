@@ -32,11 +32,14 @@ type CredentialOps struct {
 	Issuance IssuanceAuditor
 }
 
-func (o *CredentialOps) runQueued(ctx context.Context, fn func() error) error {
+// runCommitted runs fn through the config command queue. An admitted step is
+// never abandoned on caller cancellation, so the closure's outputs cannot race
+// the worker. A nil Queue runs fn directly.
+func (o *CredentialOps) runCommitted(ctx context.Context, fn func() error) error {
 	if o.Queue == nil {
 		return fn()
 	}
-	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
+	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
 }
 
 // presenceDigest binds a credential.mint grant to exactly the name, class
@@ -87,7 +90,7 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 
 	var cred config.APICredential
 	var plaintext string
-	err = o.runQueued(ctx, func() error {
+	err = o.runCommitted(ctx, func() error {
 		var mintErr error
 		cred, plaintext, mintErr = mintAPICredential(o.Store, credentialMintRequest{Name: name, Classes: req.Classes, TTL: req.TTL})
 		if mintErr != nil {
@@ -131,7 +134,7 @@ func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (con
 	}
 
 	var removed config.APICredential
-	err = o.runQueued(ctx, func() error {
+	err = o.runCommitted(ctx, func() error {
 		var revokeErr error
 		removed, revokeErr = revokeAPICredential(o.Store, id)
 		if revokeErr != nil {
