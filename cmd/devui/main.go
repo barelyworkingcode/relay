@@ -50,6 +50,7 @@ func buildPage(html string) string {
 		"__PROJECTS_JSON__", fixtureProjects,
 		"__DEFAULT_PROJECT_JSON__", fixtureDefaultProject,
 		"__HOSTS_JSON__", fixtureHosts,
+		"__TEMPLATES_JSON__", fixtureTemplates,
 		"__MCP_TOOL_CACHE_JSON__", fixtureMcpToolCache,
 		"__MCP_SCOPE_FIELDS_JSON__", fixtureMcpScopeFields,
 		"__ENROLMENTS_JSON__", fixtureEnrolments,
@@ -57,6 +58,7 @@ func buildPage(html string) string {
 		"__ENROLMENT_BUDGET_DEFAULTS_JSON__", fixtureEnrolmentBudgetDefaults,
 		"__PASSKEYS_JSON__", fixturePasskeys,
 		"__LOGIN_SESSIONS_JSON__", fixtureLoginSessions,
+		"__EVE_PASSKEYS_JSON__", fixtureEvePasskeys,
 		"__LOGIN_CODE_JSON__", fixtureLoginCode,
 		"__INITIAL_PAGE_JSON__", `""`,
 		"__MCP_HEALTH_JSON__", fixtureMcpHealth,
@@ -107,6 +109,11 @@ const fixtureHosts = `[
   {"id":"h_build","name":"build-box","target":"ci@10.0.0.7","port":2222,"identity_file":"~/.ssh/id_build","created_at":"2026-08-20T09:00:00Z","status":"unreachable","ssh_argv":["ssh","ci@10.0.0.7"],"probe":{"ok":false,"at":"2026-09-05T06:00:00Z","error":"ssh: connect to host 10.0.0.7 port 2222: Connection timed out"}}
 ]`
 
+const fixtureTemplates = `[
+  {"id":"shell","name":"Shell","command":"/bin/zsh","args":["-l"],"description":"Login shell in the project directory"},
+  {"id":"claude","name":"Claude","command":"claude","description":"Claude Code session"}
+]`
+
 // The fingerprint is never truncated: after an enrolment is deleted it is the
 // only thing that names that client's calls in the audit log. No key material
 // appears here, matching production — the create response carries a bundle
@@ -129,6 +136,8 @@ const fixturePasskeys = `[
 const fixtureLoginSessions = `[
   {"id":"a3f1c8de-5b21-4f70-9e6a-2d4c81b0e957","name":"login cred_9f2a4c… 2026-08-28T08:12:04Z","created":"2026-08-28T08:12:04Z","expires":"2026-08-28T20:12:04Z"}
 ]`
+
+const fixtureEvePasskeys = `[]`
 
 // Null, which is the state on every ordinary open: a code is present only in
 // the paint the tray's "Show Login Code..." item triggered.
