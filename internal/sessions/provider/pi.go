@@ -113,6 +113,9 @@ type PiProvider struct {
 	toolNamesByID   map[string]string
 	pendingError    string
 
+	warnedMu    sync.Mutex
+	warnedTypes map[string]struct{}
+
 	lastActivity atomic.Int64
 	stopIdle     chan struct{}
 	stopIdleOnce sync.Once
@@ -727,14 +730,30 @@ func (p *PiProvider) translate(eventType string, raw json.RawMessage) {
 	case "message_end":
 		p.holdFailedAssistantMessage(raw)
 
-	case "message_start", "turn_start", "turn_end":
-		// Bookkeeping — already covered by the finer message_update translations.
+	case "message_start", "turn_start", "turn_end", "agent_settled":
+		// Bookkeeping — already covered by the message_update and agent_end translations.
 
 	case "auto_retry_start", "auto_retry_end":
 		p.emitRetryNotice(eventType, raw)
 
 	default:
+		p.warnUnrecognisedOnce(eventType)
 		p.handler("raw_output", raw)
+	}
+}
+
+func (p *PiProvider) warnUnrecognisedOnce(eventType string) {
+	p.warnedMu.Lock()
+	_, seen := p.warnedTypes[eventType]
+	if !seen {
+		if p.warnedTypes == nil {
+			p.warnedTypes = make(map[string]struct{})
+		}
+		p.warnedTypes[eventType] = struct{}{}
+	}
+	p.warnedMu.Unlock()
+	if !seen {
+		slog.Warn("pi: unrecognised event type", "session", p.session.ID, "type", eventType)
 	}
 }
 
