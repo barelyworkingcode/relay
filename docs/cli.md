@@ -134,21 +134,21 @@ For any command marked **prompts: yes** above, the tray raises a real
 example, captured on this machine's console for the request
 
 ```
-relay mcp register --id fsmcp3 --name "fsMCP v3 (testfolder)" --command /Users/admin/.local/bin/fsmcp
+relay mcp register --id fsmcp3 --name "fsMCP v3 (testfolder)" --command /Users/you/.local/bin/fsmcp
 ```
 
 — note this asks to re-point the already-registered id `fsmcp3` at a
 *different* binary, dropping its `--root` argument entirely:
 
 > **Relay** — "Relay is trying to register the MCP "fsMCP v3 (testfolder)"
-> (fsmcp3) that runs /Users/admin/.local/bin/fsmcp. Enter the password for
+> (fsmcp3) that runs /Users/you/.local/bin/fsmcp. Enter the password for
 > the user "Managed via Tart" to allow this."
 
 **The prompt describes the change being requested, not the record as it
 stands.** `fsmcp3`'s actual, stored command — unchanged, per `relay mcp
-list` — is `/Users/admin/.local/bin/fsmcp3 --root
-/Users/admin/source/barelyworkingcode/testfolder`. The command the dialog
-names, `/Users/admin/.local/bin/fsmcp` with no `--root` at all, is what the
+list` — is `/Users/you/.local/bin/fsmcp3 --root
+/Users/you/src/testfolder`. The command the dialog
+names, `/Users/you/.local/bin/fsmcp` with no `--root` at all, is what the
 record would *become* if this were approved. This is the whole reason the
 prompt spells out the command rather than just the display name: an
 operator who did not intend to re-point `fsmcp3` at a different binary sees
@@ -168,10 +168,10 @@ the same id with the same command it already runs:
 
 ```
 relay mcp register --id fsmcp3 --name "fsMCP v3 (testfolder)" \
-  --command /Users/admin/.local/bin/fsmcp3 --args --root --args /Users/admin/source/barelyworkingcode/testfolder
+  --command /Users/you/.local/bin/fsmcp3 --args --root --args /Users/you/src/testfolder
 ```
 
-That prompt would read "...that runs /Users/admin/.local/bin/fsmcp3" — the
+That prompt would read "...that runs /Users/you/.local/bin/fsmcp3" — the
 reason string names the command only, never its arguments — recognizably the
 record as it already is — and approving it changes nothing an operator did
 not already expect.
@@ -355,7 +355,7 @@ TIME      OUTCOME  PROJECT                      MCP     TOOL      MS  CALLER    
 
 ```
 $ relay audit --path
-/Users/admin/Library/Application Support/relay/logs/audit/toolcalls.jsonl
+/Users/you/Library/Application Support/relay/logs/audit/toolcalls.jsonl
 ```
 
 `--json` (one line per event, real capture):
@@ -552,7 +552,7 @@ is a mutating command:
 created enrolment "hermes"
   fingerprint: sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
   profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
-  bundle:      /Users/admin/Library/Application Support/relay/enrolments/hermes
+  bundle:      /Users/you/Library/Application Support/relay/enrolments/hermes
   copy this directory to the client machine; the private key inside it is never recoverable
   this bundle's private key was generated on this host — prefer `relay enrol sign`, where the key never leaves the client machine.
 ```
@@ -592,7 +592,7 @@ Illustrative output:
 signed enrolment "hermes"
   fingerprint: sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
   profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
-  certificate: /Users/admin/Library/Application Support/relay/enrolments/hermes
+  certificate: /Users/you/Library/Application Support/relay/enrolments/hermes
   copy client.crt and ca.crt to the client machine, beside the client.key it generated;
   no private key was written on this host
   copies also written to: ./signed
@@ -970,10 +970,10 @@ deliberately when it was first created — but its display name slugifies to
 ```
 $ relay mcp list
 ID        NAME                              TRANSPORT  ENDPOINT
-macmcp    macMCP                            stdio      /Users/admin/source/barelyworkingcode/macMCP/.build/release/macmcp
-fsmcp     fsMCP                             stdio      /Users/admin/.local/bin/fsmcp
-fsmcp3    fsMCP v3 (testfolder)             stdio      /Users/admin/.local/bin/fsmcp3 --root /Users/admin/source/barelyworkingcode/testfolder
-fsmcp3ro  fsMCP v3 (testfolder, read-only)  stdio      /Users/admin/.local/bin/fsmcp3 --root /Users/admin/source/barelyworkingcode/testfolder --read-only
+macmcp    macMCP                            stdio      /Users/you/src/macMCP/.build/release/macmcp
+fsmcp     fsMCP                             stdio      /Users/you/.local/bin/fsmcp
+fsmcp3    fsMCP v3 (testfolder)             stdio      /Users/you/.local/bin/fsmcp3 --root /Users/you/src/testfolder
+fsmcp3ro  fsMCP v3 (testfolder, read-only)  stdio      /Users/you/.local/bin/fsmcp3 --root /Users/you/src/testfolder --read-only
 ```
 
 Project and access-profile grants reference the MCP by **id**
@@ -1015,10 +1015,10 @@ Real capture, this machine's four registered MCPs:
 ```
 $ relay mcp list
 ID        NAME                              TRANSPORT  ENDPOINT
-macmcp    macMCP                            stdio      /Users/admin/source/barelyworkingcode/macMCP/.build/release/macmcp
-fsmcp     fsMCP                             stdio      /Users/admin/.local/bin/fsmcp
-fsmcp3    fsMCP v3 (testfolder)             stdio      /Users/admin/.local/bin/fsmcp3 --root /Users/admin/source/barelyworkingcode/testfolder
-fsmcp3ro  fsMCP v3 (testfolder, read-only)  stdio      /Users/admin/.local/bin/fsmcp3 --root /Users/admin/source/barelyworkingcode/testfolder --read-only
+macmcp    macMCP                            stdio      /Users/you/src/macMCP/.build/release/macmcp
+fsmcp     fsMCP                             stdio      /Users/you/.local/bin/fsmcp
+fsmcp3    fsMCP v3 (testfolder)             stdio      /Users/you/.local/bin/fsmcp3 --root /Users/you/src/testfolder
+fsmcp3ro  fsMCP v3 (testfolder, read-only)  stdio      /Users/you/.local/bin/fsmcp3 --root /Users/you/src/testfolder --read-only
 ```
 
 Needs service: yes (`mcp.list`; environment values are never sent). Prompts:
@@ -1252,11 +1252,11 @@ re-running it).
 
 ```
 relay mcp register --id macmcp --name "macMCP" \
-  --command /Users/admin/source/barelyworkingcode/macMCP/.build/release/macmcp
+  --command /Users/you/src/macMCP/.build/release/macmcp
 ```
 
 This prompts — "Relay is trying to register the MCP "macMCP" (macmcp) that
-runs /Users/admin/.../macmcp." — because the caller is choosing what relay
+runs /Users/you/.../macmcp." — because the caller is choosing what relay
 will run. `--id macmcp` is explicit here on purpose, for the same reason
 argued above: `macMCP` already slugifies to `macmcp`, so in this particular
 case the default would have matched anyway, but naming it removes the

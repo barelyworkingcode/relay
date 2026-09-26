@@ -12,6 +12,7 @@ package project
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"maps"
 	"reflect"
 	"slices"
@@ -293,18 +294,36 @@ func unionKeys(a, b map[string]json.RawMessage) []string {
 
 // jsonValueEqual compares two JSON values by decoded value; a value that
 // does not decode is unequal to everything but its own bytes.
+//
+// Numbers compare by their text, deliberately: decoding to float64 would
+// make integers above 2^53 that differ collide. 1e2 and 100 therefore
+// differ, which errs toward a prompt rather than a silent widening.
 func jsonValueEqual(a, b json.RawMessage) bool {
 	if bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b)) {
 		return true
 	}
-	var da, db any
-	if err := json.Unmarshal(a, &da); err != nil {
+	da, ok := decodeJSONValue(a)
+	if !ok {
 		return false
 	}
-	if err := json.Unmarshal(b, &db); err != nil {
+	db, ok := decodeJSONValue(b)
+	if !ok {
 		return false
 	}
 	return reflect.DeepEqual(da, db)
+}
+
+func decodeJSONValue(raw json.RawMessage) (any, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, false
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return nil, false
+	}
+	return v, true
 }
 
 // comparableContext drops MCP entries with no fields and, when derivedFrom
