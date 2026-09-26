@@ -90,7 +90,7 @@ type sessionSlot struct {
 	// respawn) reuses it via respawnSpec rather than building a spec from
 	// nothing, so a respawned process never loses the key it was launched
 	// with. Zero value for a slot Get filled from a lazy disk load — this
-	// process never authorized that session's launch.
+	// process never authorized that session's launch, so it never restarts.
 	spec CreateSpec
 }
 
@@ -469,22 +469,41 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) er
 	return p.Start()
 }
 
-// respawnSpec returns the CreateSpec Create was last called with for sess's
-// id, so a manager-internal restart (ClearSession, SendMessage's ad-hoc
-// respawn) carries forward the same identity — ModelKey included — rather
-// than launching with a zero-value CreateSpec. Kind always comes from the
-// persisted session, not the stored spec: sess.ProviderType is the
-// authoritative provider kind once a session exists, including for a
-// lazy-loaded session with no stored spec at all.
-func (m *Manager) respawnSpec(sess *sessionstypes.Session) CreateSpec {
+// errNotLaunchedHere is the refusal a user sees when a project-less session
+// has no launch of this process's own to restart from.
+var errNotLaunchedHere = fmt.Errorf("%w: this session was not started here; start a new session in a project to continue", ErrResumeRequired)
+
+// respawnSpec returns the CreateSpec this process launched sess with, so a
+// manager-internal restart (ClearSession, SendMessage's project-less
+// restart) carries forward the same identity, key and sandbox profile. A
+// launch in progress for sess's id is waited out first, then the slot is
+// read again. Kind always comes from the persisted session: sess.ProviderType
+// is the authoritative provider kind once a session exists.
+func (m *Manager) respawnSpec(sess *sessionstypes.Session) (CreateSpec, error) {
 	m.mu.Lock()
+	if slot, ok := m.slots[sess.ID]; ok && slot.launching {
+		done := slot.done
+		m.mu.Unlock()
+		<-done
+		m.mu.Lock()
+	}
+	slot, ok := m.slots[sess.ID]
+	// Deliberate: only a slot this process launched, holding exactly this
+	// session, with its stored spec, may be restarted. A lazy-loaded slot, a
+	// failed or stopped launch, or a replaced session has no spec of its own,
+	// and a spec holding only Kind starts claude or pi with no sandbox, no
+	// identity and no key.
+	owned := ok && !slot.launching && slot.sess == sess && slot.spec.SessionID != ""
 	var spec CreateSpec
-	if slot, ok := m.slots[sess.ID]; ok {
+	if owned {
 		spec = slot.spec
 	}
 	m.mu.Unlock()
+	if !owned {
+		return CreateSpec{}, errNotLaunchedHere
+	}
 	spec.Kind = sess.ProviderType
-	return spec
+	return spec, nil
 }
 
 func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {
@@ -744,8 +763,9 @@ func (m *Manager) StopAll() {
 // SendMessage sends a user message to sess's provider. SH-6: a project-bound
 // session (ProjectID != "") whose provider is not running never respawns —
 // callers must check errors.Is(err, ErrResumeRequired) and drive a real
-// resume instead. An ad-hoc session (ProjectID == "") still respawns
-// automatically, unchanged from relayLLM's own SendMessage.
+// resume instead. A project-less session (ProjectID == "") restarts only
+// if this process launched it, with the spec it was launched with (see
+// respawnSpec); anything else also answers ErrResumeRequired.
 func (m *Manager) SendMessage(id, text string, files []sessionstypes.FileAttachment) error {
 	sess, ok := m.Get(id)
 	if !ok {
@@ -761,11 +781,18 @@ func (m *Manager) SendMessage(id, text string, files []sessionstypes.FileAttachm
 			sess.SetProcessing(false)
 			return ErrResumeRequired
 		}
-		if err := m.startProvider(sess, m.respawnSpec(sess)); err != nil {
+		spec, err := m.respawnSpec(sess)
+		if err != nil {
 			sess.SetProcessing(false)
-			return fmt.Errorf("session: respawn failed: %w", err)
+			return err
 		}
-		p = sess.Provider()
+		if p = sess.Provider(); p == nil || !p.Alive() {
+			if err := m.startProvider(sess, spec); err != nil {
+				sess.SetProcessing(false)
+				return fmt.Errorf("session: respawn failed: %w", err)
+			}
+			p = sess.Provider()
+		}
 	}
 
 	contentJSON, _ := json.Marshal(text)
@@ -857,9 +884,10 @@ func (m *Manager) StopGeneration(id string) error {
 // no authorizing CreateSpec of its own to launch with, and doc.go's
 // guarantee that this package never respawns a project-bound session's dead
 // provider on its own must hold for every internal path, clear_session
-// included, not only SendMessage. An ad-hoc session (ProjectID == "") still
-// restarts fresh, same session id and directory, empty history, carrying
-// forward the ModelKey it was originally launched with.
+// included, not only SendMessage. A project-less session (ProjectID == "")
+// this process launched restarts fresh, same session id and directory, empty
+// history, with the spec it was launched with; any other project-less
+// session keeps its cleared history and answers ErrResumeRequired.
 func (m *Manager) ClearSession(id string) error {
 	sess, ok := m.Get(id)
 	if !ok {
@@ -888,7 +916,11 @@ func (m *Manager) ClearSession(id string) error {
 	if sess.ProjectID != "" {
 		return ErrResumeRequired
 	}
-	if err := m.startProvider(sess, m.respawnSpec(sess)); err != nil {
+	spec, err := m.respawnSpec(sess)
+	if err != nil {
+		return err
+	}
+	if err := m.startProvider(sess, spec); err != nil {
 		return fmt.Errorf("session: restart provider: %w", err)
 	}
 	return nil

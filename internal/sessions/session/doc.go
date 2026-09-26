@@ -14,8 +14,11 @@
 // session's dead provider on its own — SendMessage returns ErrResumeRequired
 // instead, and only a caller-supplied resume (Manager.Create with
 // CreateSpec.Resume, driven by relay's own POST /launch resume:true) brings
-// it back. Only an ad-hoc session (ProjectID == "") still respawns
-// automatically, matching the plan's own exception for that case.
+// it back. A project-less session (ProjectID == "") restarts automatically
+// only if this process launched it, only with the spec it was launched with,
+// and only after any launch in progress for it finishes. Any other
+// project-less session, a lazy-loaded one from disk included, answers
+// ErrResumeRequired and stays read-only history.
 //
 // Wiring Manager into internal/sessions/hostapi's POST /launch dispatch for
 // kind claude/pi is left to a later integration unit, the same gap R-S6's

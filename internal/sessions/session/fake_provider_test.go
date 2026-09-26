@@ -3,6 +3,7 @@ package session_test
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
@@ -159,6 +160,26 @@ func (p *syncExitProvider) Kill() {
 		data, _ := json.Marshal(map[string]any{"exitCode": 0})
 		p.handler("process_exited", data)
 	}
+}
+
+// aliveGateProvider parks its first Alive() call on aliveGate, closing
+// entered as it does. Every later call answers at once, so a second caller
+// (Create's resume check, under the manager lock) never blocks behind it.
+// The wait comes before the mutex: Kill must still get through while the
+// first caller is parked.
+type aliveGateProvider struct {
+	fakeProvider
+	aliveGate chan struct{}
+	entered   chan struct{}
+	gateTaken atomic.Bool
+}
+
+func (p *aliveGateProvider) Alive() bool {
+	if p.aliveGate != nil && p.gateTaken.CompareAndSwap(false, true) {
+		close(p.entered)
+		<-p.aliveGate
+	}
+	return p.fakeProvider.Alive()
 }
 
 type notRunningError struct{}

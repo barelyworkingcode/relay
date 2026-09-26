@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
@@ -107,6 +108,51 @@ func TestHandleSessionMessageSync_ResumeRequired(t *testing.T) {
 	if errBody["error"] != "resume_required" {
 		t.Fatalf("error body = %+v, want resume_required", errBody)
 	}
+}
+
+// newLazyAdHocManager returns a manager whose only session is a project-less
+// one on disk that this manager never launched.
+func newLazyAdHocManager(t *testing.T) *session.Manager {
+	t.Helper()
+	store := session.NewStore(t.TempDir())
+	if err := store.Save(&sessionstypes.Session{ID: httpTestSessionID, ProviderType: session.KindClaude}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	mgr := session.NewManager(session.Config{}, store, nil)
+	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+		return &wsFakeProvider{}, nil
+	})
+	return mgr
+}
+
+func assertResumeGuidance(t *testing.T, message any) {
+	t.Helper()
+	text, _ := message.(string)
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, "new session") || !strings.Contains(lower, "project") {
+		t.Errorf("message = %v, want guidance to start a new session in a project", message)
+	}
+}
+
+func TestHandleSessionMessageSync_LazyLoadedAdHoc_ResumeRequiredWithGuidance(t *testing.T) {
+	mgr := newLazyAdHocManager(t)
+
+	body, _ := json.Marshal(map[string]any{"text": "hi"})
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+httpTestSessionID+"/message", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	HandleSessionMessageSync(mgr, httpTestSessionID, w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%s)", w.Code, w.Body.String())
+	}
+	var errBody map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody["error"] != "resume_required" {
+		t.Errorf("error = %v, want resume_required", errBody["error"])
+	}
+	assertResumeGuidance(t, errBody["message"])
 }
 
 func TestHandleSessionMessageSync_NotFound(t *testing.T) {
