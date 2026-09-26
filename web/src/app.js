@@ -3285,11 +3285,19 @@ function toggleProjModel(id) {
         ? f.allowed_models.filter(x => x !== id)
         : f.allowed_models.concat(id);
     repaintProjModelPicker();
+    // Matched on dataset, not a selector: ids carry '/' and CSS.escape is not
+    // available in every host that runs this file. preventScroll keeps the
+    // scroll position the repaint just restored.
+    const box = Array.from(document.querySelectorAll('#projModelsList input[data-model-id]'))
+        .find(el => el.dataset.modelId === id);
+    if (box) box.focus({ preventScroll: true });
 }
 
 function toggleProjModelsOther() {
     state.projModelsOtherOpen = !state.projModelsOtherOpen;
     repaintProjModelPicker();
+    const toggle = document.getElementById('projModelsOtherToggle');
+    if (toggle) toggle.focus({ preventScroll: true });
 }
 
 // The ids saved at open stay listed alongside the live selection, so
