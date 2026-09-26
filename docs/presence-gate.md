@@ -258,11 +258,12 @@ derived-looking field on a remote or hosted project, and a derived field
 the request itself carries. Validation agrees with this comparison on v1:
 on a local, unhosted project it accepts a v1 blob exactly when the stored
 record has one for that MCP and the two are equal by the same decoded-value
-comparison, so an echo that validation accepts never prompts, and a v1 blob
-that would prompt is refused before the gate is reached. With no live schema for the MCP (or no
-surfaces at all) nothing is stripped and the entry compares strictly. The
-digest itself is unchanged by this: it still binds all ten fields' presence
-exactly as before (see `TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields`'s
+comparison, so an echo that validation accepts never prompts. The gate runs
+before validation, so a v1 blob that validation refuses may still prompt
+first; the refusal then follows the approval and nothing is written. With
+no live schema for the MCP (or no surfaces at all) nothing is stripped and
+the entry compares strictly. The digest itself is unchanged by this: it
+still binds all ten fields' presence exactly as before (see `TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields`'s
 own comment for why shrinking the digest to the gating subset would be
 wrong), so a grant answered for one shape still cannot be redeemed for a
 different one.

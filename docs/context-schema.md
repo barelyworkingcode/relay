@@ -202,13 +202,15 @@ thing.
   would hold, including stored context the request did not send. When the
   result is local and not hosted, relay's own values pass through: with no
   `context` in the request, every stored v2 `project_path` field and every
-  stored v1 blob is carried unchanged, and the write re-derives them from
-  `path`. When the result is remote or hosted nothing is derived, so a stored
-  derived field is judged as if it had been sent: an update that names a
-  permission field while one is stored, a conversion to remote included, is
-  refused, naming the field, and neither converts nor drops. Send an update
-  that names no permission field first, which drops the derived value, then
-  the one that does.
+  stored v1 blob is carried unchanged. The write keeps them as stored, and
+  re-derives them from `path` only when the same request changes `path`,
+  `allowed_mcp_ids` or `context`. When the result is remote or hosted
+  nothing is derived, so a stored derived field is judged as if it had been
+  sent: an update that names a permission field while one is stored, a
+  conversion to remote included, is refused, naming the field or, for a v1
+  blob, the MCP, and neither converts nor drops. Send an update that names
+  no permission field first, which drops the derived value, then the one
+  that does.
 
   An MCP that is not connected (no entry in the live surfaces, as distinct
   from connected with no schema) cannot be judged: keeping its stored value
