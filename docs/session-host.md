@@ -517,6 +517,10 @@ superseded spawn dropped`) and dropped, with no crash `Warn`. A restart
 (`SetPermissionMode` on a live spawn) supersedes the spawn before it calls
 `Kill()`, so the killed spawn's exit is dropped the same way even when it
 finishes draining before `Start()` runs: a restart emits no `process_exited`.
+If the restart's `Start()` fails, the session is dead, so the restart waits
+for the killed spawn's drain and emits that spawn's `process_exited` itself.
+The manager's exit path then runs as for any exit: the WS frame, and
+`SessionExited` to relay, which audits `session_end`.
 
 `logProviderStderr` also keeps the last 10 lines it logged, redacted and
 truncated as above, and hands them back when it finishes. On a non-zero exit,

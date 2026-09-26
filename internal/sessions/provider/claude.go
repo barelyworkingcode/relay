@@ -131,7 +131,8 @@ type ClaudeProvider struct {
 	killed *atomic.Bool
 	// exitMu guards spawnGen, which counts Starts and restarts: a restart
 	// supersedes the spawn it kills before Kill, so that spawn never emits
-	// process_exited however fast it exits. A spawn's waitForExit holds it
+	// process_exited however fast it exits; if the restart's Start fails,
+	// the restart emits that exit itself. A spawn's waitForExit holds it
 	// from the generation check through the process_exited handler call,
 	// so a killed spawn whose drain outlasts a restart stays silent, and
 	// Start cannot go live between the check and the emit.
@@ -139,6 +140,7 @@ type ClaudeProvider struct {
 	// Start on this provider.
 	exitMu   sync.Mutex
 	spawnGen uint64
+	exit     *spawnExit
 
 	msgStartNano   atomic.Int64
 	firstTokenNano atomic.Int64
@@ -529,12 +531,13 @@ func (p *ClaudeProvider) Start() error {
 	p.waitDone = make(chan struct{})
 	p.drainTimeout = providerDrainTimeout
 	p.killed = &atomic.Bool{}
+	p.exit = &spawnExit{done: make(chan struct{})}
 	p.touchActivity()
 
 	out := newSpawnOutput(stdoutR, stderrR)
 	go p.readStdout(stdoutR, spawn, out.stdoutDone)
 	go func() { out.stderrTail <- logStderr() }()
-	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, gen)
+	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, p.exit, gen)
 	go p.idleWatcher(p.stopIdle)
 
 	slog.Info("claude process started", "session", p.session.ID, "model", p.model, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
@@ -600,7 +603,15 @@ func (p *ClaudeProvider) identitySecret() string {
 	return p.cfg.Identity.Secret
 }
 
-func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool, gen uint64) {
+// spawnExit is one spawn's exit code, set before done closes. done closes
+// once that spawn's waitForExit has emitted or dropped its exit.
+type spawnExit struct {
+	done chan struct{}
+	code int
+}
+
+func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool, exit *spawnExit, gen uint64) {
+	defer close(exit.done)
 	err := cmd.Wait()
 	p.alive.Store(false)
 	close(waitDone)
@@ -612,6 +623,8 @@ func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out 
 			exitCode = exitErr.ExitCode()
 		}
 	}
+
+	exit.code = exitCode
 
 	tail := out.drain(drainTimeout)
 	p.exitMu.Lock()
@@ -1312,17 +1325,35 @@ func (p *ClaudeProvider) SetPermissionMode(mode string) error {
 		return fmt.Errorf("cannot change permission mode while session is generating; stop the response first")
 	}
 
-	if p.Alive() {
-		p.supersedeSpawn()
-		p.Kill()
+	if !p.Alive() {
+		return p.Start()
 	}
-	return p.Start()
+	killed := p.exit
+	p.supersedeSpawn()
+	p.Kill()
+	if err := p.Start(); err != nil {
+		p.emitSupersededExit(killed)
+		return err
+	}
+	return nil
 }
 
 func (p *ClaudeProvider) supersedeSpawn() {
 	p.exitMu.Lock()
 	p.spawnGen++
 	p.exitMu.Unlock()
+}
+
+// emitSupersededExit reports the exit a restart superseded, once the
+// restart has failed and nothing replaced that spawn. It waits for the
+// spawn's drain so process_exited still follows the spawn's last output.
+func (p *ClaudeProvider) emitSupersededExit(exit *spawnExit) {
+	<-exit.done
+	p.exitMu.Lock()
+	defer p.exitMu.Unlock()
+	slog.Info("claude process exited; its restart failed", "session", p.session.ID, "exitCode", exit.code)
+	data, _ := json.Marshal(map[string]interface{}{"exitCode": exit.code})
+	p.handler("process_exited", data)
 }
 
 func (p *ClaudeProvider) DeleteSession() error {
