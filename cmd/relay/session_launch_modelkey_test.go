@@ -21,11 +21,11 @@ func TestAuthorizeLaunch_ModelKeyIsMintedForTheTemplateAndNeverInjectedByRelay(t
 	assertNoErr(t, f.store.With(func(s *config.Settings) {
 		s.TerminalTemplates = append(s.TerminalTemplates,
 			config.TerminalTemplate{
-				ID: "mapped", Name: "Mapped", Command: "/bin/sh", ModelKey: true,
+				ID: "mapped", Name: "Mapped", Command: "/bin/sh", ModelKey: true, Sandbox: ptr(false),
 				Env: map[string]string{"ANTHROPIC_CUSTOM_HEADERS": "X-Relay-Key: ${MODEL_KEY}"},
 			},
-			config.TerminalTemplate{ID: "optin-nomap", Name: "Opted in, unmapped", Command: "/bin/sh", ModelKey: true},
-			config.TerminalTemplate{ID: "plain", Name: "Plain", Command: "/bin/sh"},
+			config.TerminalTemplate{ID: "optin-nomap", Name: "Opted in, unmapped", Command: "/bin/sh", ModelKey: true, Sandbox: ptr(false)},
+			config.TerminalTemplate{ID: "plain", Name: "Plain", Command: "/bin/sh", Sandbox: ptr(false)},
 		)
 	}), "seed templates")
 

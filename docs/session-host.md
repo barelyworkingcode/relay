@@ -488,9 +488,12 @@ covered here.
 File access is denied by default, in both directions. `sandboxSpecForLaunch`
 (`cmd/relay/session_sandbox.go`) names what a session is granted and
 `internal/sessions/sandbox` renders it as one Seatbelt profile: a bare
-`(deny file-read* file-write*)`, then the grants, then read-only `stat` on the
-parents of each grant so a process can reach it, then the template's `deny`
-list (below). Nothing is denied by name unless a template says so.
+`(deny file-read* file-write*)`, then the system baseline reads, then the
+baseline carve-out (`/usr/local/etc` and `/usr/local/var`, read and write),
+then the three Homebrew files the baseline reopens read-only, then the
+session's grants, then read-only `stat` on the parents of each grant
+so a process can reach it, then the template's `deny` list (below). Apart from
+that fixed carve-out, nothing is denied by name unless a template says so.
 Relay's own data directory, another project, eve's data and `~/.ssh` are
 unreachable unless a template grants them, so a directory nobody thought to
 protect is protected anyway. Everything that is not a file (network, process,
@@ -506,7 +509,7 @@ A session's folders come from four places, and only the third is configured:
 
 | Grant | Paths | Where it lives |
 |---|---|---|
-| **System baseline** (read-only, every sandboxed session) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves | `sandbox.baselineReadDirs`. The smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. |
+| **System baseline** (read-only, every sandboxed session) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves; `/usr/local/etc` and `/usr/local/var` are denied (read and write), except the files `/usr/local/etc/openssl@3/cert.pem`, `/usr/local/etc/ca-certificates/cert.pem` and `/usr/local/etc/gitconfig`, which are read-only | `sandbox.baselineReadDirs`. The smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. `sandbox.baselineDenyDirs` carves out Intel Homebrew's service config and data, which can hold credentials. `sandbox.baselineReopenedFiles` reads back its CA bundle (the `openssl@3` link and the `ca-certificates` file it points at) and system gitconfig, without which Homebrew curl, python and git lose TLS verification and their git config. They are fixed literals, never resolved on the host. Nothing else beneath the carve-out is reopened. The deny renders before the session's own grants, so any later grant that covers part of either subtree reopens that part: a grant beneath it (`/usr/local/etc/example.conf`, say) and an ancestor grant such as `/usr/local` alike. |
 | **Every session** | the project directory (read-write), `os.TempDir()`, `DARWIN_USER_TEMP_DIR` and `/dev` (read-write), the developer tools (read-only: `<Xcode>.app/Contents`, or `/Library/Developer/CommandLineTools`, resolved from `/var/select/developer_dir`) | `sandboxSpecForLaunch`. A pi session also gets `<config dir>/sessions/pi-sessions` for its transcript, since that path moves with `relay --config-dir` and no template can name it. |
 | **The template** | its `read` and `read_write` lists | the template's entry in `settings.json` |
 
@@ -518,8 +521,10 @@ template's grants, not the project directory, not the always-granted
 temp/`/dev`/developer-tools paths. It blocks read, write and `stat` alike.
 Denying a path that a session needs to run (the project directory, say)
 locks the session out of it; relay does not second-guess that. `deny` takes
-the same entry shape as `read` and `read_write`, is ignored without
-`"sandbox": true`.
+the same entry shape as `read` and `read_write`, and is ignored only for a
+terminal launch of a template that says `"sandbox": false`. A claude, pi or
+chat session on a console project always applies its kind template's folders,
+`deny` included.
 
 **Templates live only in `settings.json`.** Nothing is computed in code, so
 every template, including the ones relay seeds, can be edited or removed. The
@@ -552,9 +557,15 @@ not exist is created at launch, because a `(subpath)` rule cannot create its
 own ancestors (`go build` with no `~/go` needs `~/go/pkg` to exist). An entry
 that cannot be placed refuses the template when settings are read, and the
 launch if it slips through, rather than being dropped: a dropped entry would
-leave a tool silently unreachable. `sandbox` absent means unsandboxed, so a
-template that should be confined says `"sandbox": true`; `read` and
-`read_write` are ignored without it.
+leave a tool silently unreachable. A template is sandboxed unless it says
+otherwise: `sandbox` absent means sandboxed, and only an explicit
+`"sandbox": false` opts out. `read`, `read_write` and `deny` are ignored only
+for a terminal launch of a template that says `"sandbox": false`; a claude, pi
+or chat session on a console project always sandboxes and always applies its
+kind template's folders, whatever that template's `sandbox` says. A stored template without
+the field is sandboxed from the upgrade that introduced this rule on, with the
+folders it already lists; nothing rewrites it to `false`, so an operator who
+wants it unconfined says so.
 
 A **claude, pi or chat session** is not launched from a template, but it reads
 its folders from the template named for its kind: `claude-code`, `pi` and
@@ -589,8 +600,9 @@ templates are never offered. A host project may launch every template of its
 host; `allowed_templates` gates console templates only. A claude session on a
 host project passes the kind gate iff the host has a `claude-code` template;
 a chat session keeps the console `allowed_templates` gate; pi is refused on a
-host. A host template never sandboxes (it cannot carry `sandbox`, `read` or
-`read_write`), and an empty `command` runs the host's login shell rather
+host. A host template never sandboxes: it cannot set `"sandbox": true` or
+carry `read` or `read_write`, and one that omits `sandbox` launches
+unconfined. An empty `command` there runs the host's login shell rather
 than relay's `$SHELL`. Shape, seeding and launch argv are in
 [`docs/ssh-hosts.md`](ssh-hosts.md#terminals-on-a-host).
 

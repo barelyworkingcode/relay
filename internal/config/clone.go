@@ -151,6 +151,10 @@ func cloneTerminalTemplate(t TerminalTemplate) TerminalTemplate {
 	t.Read = cloneSlice(t.Read)
 	t.ReadWrite = cloneSlice(t.ReadWrite)
 	t.Deny = cloneSlice(t.Deny)
+	if t.Sandbox != nil {
+		sandbox := *t.Sandbox
+		t.Sandbox = &sandbox
+	}
 	return t
 }
 
