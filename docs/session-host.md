@@ -161,15 +161,15 @@ Error codes C5 names explicitly, each mapped from a manager error:
 
 | HTTP | code | meaning |
 |---|---|---|
-| 400 | `invalid_spec` | malformed or self-contradictory request, including a new `chat` launch with a blank model (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
+| 400 | `invalid_spec` | malformed or self-contradictory request, including a new `claude`, `pi` or `chat` launch with a blank model (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
 | 409 | `session_exists` | this session id is already live |
 | 502 | `identity_refused` | the shim's Hello did not bind |
 | 500 | `spawn_failed` | the target process could not be started |
 
-### A chat session names its model
+### A session names its model
 
-A new `chat` launch must name a model. Blank means empty after trimming
-whitespace, and a missing field is blank. Both sides refuse it:
+A new `claude`, `pi` or `chat` launch must name a model. Blank means empty
+after trimming whitespace, and a missing field is blank.
 
 - relay: `AuthorizeLaunch` (`cmd/relay/session_launch.go`) refuses it with
   code `model_required`. The HTTP answer is `400` with body
@@ -179,17 +179,22 @@ whitespace, and a missing field is blank. Both sides refuse it:
   before the `allowed_models` check. Nothing is minted: no model key, sandbox
   profile, launch identity, host call or ledger record. One `session_launch`
   audit record with outcome `error` is written, carrying the same message.
+  This check covers `chat` only: relay derives the kind of a
+  `POST /api/sessions` body from its model, so a blank model there is always
+  `chat`.
 - relay-sessions: `buildSessionSpec`
-  (`internal/sessions/hostapi/dispatch.go`) refuses it, and `/launch` answers
-  `400` `invalid_spec`. No provider starts and no session is created.
+  (`internal/sessions/hostapi/dispatch.go`) refuses it for every session
+  kind, and `/launch` answers `400` `invalid_spec`. No provider starts and no
+  session is created. `session.Manager` stores the model as given and never
+  substitutes one.
 
-Neither side picks a default model for a chat session. A default would run a
+Neither side picks a default model. A default would run a
 model the user never chose, and it would skip the project's `allowed_models`
 check, which only tests a named model.
 
 Resume is exempt on both sides. It sends the session's stored model back
-through the same path, and a stored model may be blank. `pty`, `claude` and
-`pi` launches are unaffected.
+through the same path, and a stored model may be blank. `pty` launches carry
+no model and are unaffected.
 
 ### `POST /terminate`
 
