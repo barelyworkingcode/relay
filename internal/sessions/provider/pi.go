@@ -117,6 +117,18 @@ type PiProvider struct {
 	stopIdle     chan struct{}
 	stopIdleOnce sync.Once
 	waitDone     chan struct{}
+	drainTimeout time.Duration
+	// killed is per spawn: a restarted spawn gets a fresh one, so an old
+	// spawn's late exit can't read the new spawn's flag.
+	killed *atomic.Bool
+	// exitMu guards spawnGen, which counts Starts. A spawn's waitForExit
+	// holds it from the generation check through the process_exited
+	// handler call, so a killed spawn whose drain outlasts a restart stays
+	// silent, and Start cannot go live between the check and the emit.
+	// Deliberate: the handler runs under the lock, so it must never call
+	// Start on this provider.
+	exitMu   sync.Mutex
+	spawnGen uint64
 
 	msgStartNano   atomic.Int64
 	firstTokenNano atomic.Int64
@@ -142,13 +154,13 @@ func (p *PiProvider) touchActivity() {
 	p.lastActivity.Store(time.Now().Unix())
 }
 
-func (p *PiProvider) idleWatcher() {
+func (p *PiProvider) idleWatcher(stopIdle <-chan struct{}) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-p.stopIdle:
+		case <-stopIdle:
 			return
 		case <-ticker.C:
 			idle := time.Now().Unix() - p.lastActivity.Load()
@@ -330,7 +342,7 @@ func (p *PiProvider) Start() (err error) {
 		return fmt.Errorf("stdin pipe: %w", err)
 	}
 
-	stdout, err := cmd.StdoutPipe()
+	stdoutR, stdoutW, err := newStdoutPipe(cmd)
 	if err != nil {
 		_ = stdin.Close()
 		return fmt.Errorf("stdout pipe: %w", err)
@@ -339,12 +351,16 @@ func (p *PiProvider) Start() (err error) {
 	stderrR, stderrW, err := newStderrPipe(cmd)
 	if err != nil {
 		_ = stdin.Close()
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
 	startErr := cmd.Start()
+	_ = stdoutW.Close()
 	_ = stderrW.Close()
 	if startErr != nil {
+		_ = stdoutR.Close()
 		_ = stderrR.Close()
 		return fmt.Errorf("failed to start pi: %w", startErr)
 	}
@@ -353,13 +369,14 @@ func (p *PiProvider) Start() (err error) {
 	if p.cfg.Identity != nil {
 		identitySecret = p.cfg.Identity.Secret
 	}
-	logStderr := func() {
-		logProviderStderr(stderrR, p.session.ID, "pi", sawStdout, p.cfg.ModelKey, identitySecret)
+	logStderr := func() []string {
+		return logProviderStderr(stderrR, p.session.ID, "pi", sawStdout, p.cfg.ModelKey, identitySecret)
 	}
 	// drainStderr reads what the target wrote before the shim refused it.
 	// The deadline is deliberate: a target forked with Setpgid can outlive
 	// the Kill and keep the write end open, and Start must not wait on it.
 	drainStderr := func() {
+		_ = stdoutR.Close()
 		_ = stderrR.SetReadDeadline(time.Now().Add(time.Second))
 		logStderr()
 	}
@@ -390,16 +407,23 @@ func (p *PiProvider) Start() (err error) {
 
 	p.cmd = cmd
 	p.stdin = stdin
+	p.exitMu.Lock()
+	p.spawnGen++
+	gen := p.spawnGen
+	p.exitMu.Unlock()
 	p.alive.Store(true)
 	p.stopIdle = make(chan struct{})
 	p.stopIdleOnce = sync.Once{}
 	p.waitDone = make(chan struct{})
+	p.drainTimeout = providerDrainTimeout
+	p.killed = &atomic.Bool{}
 	p.touchActivity()
 
-	go p.readStdout(stdout, sawStdout)
-	go logStderr()
-	go p.waitForExit()
-	go p.idleWatcher()
+	out := newSpawnOutput(stdoutR, stderrR)
+	go p.readStdout(stdoutR, sawStdout, out.stdoutDone)
+	go func() { out.stderrTail <- logStderr() }()
+	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, gen)
+	go p.idleWatcher(p.stopIdle)
 
 	slog.Info("pi process started", "session", p.session.ID, "model", p.modelID, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
 
@@ -451,7 +475,9 @@ func (p *PiProvider) fetchInitialState() {
 	}
 }
 
-func (p *PiProvider) readStdout(r io.ReadCloser, sawStdout *atomic.Bool) {
+func (p *PiProvider) readStdout(r io.ReadCloser, sawStdout *atomic.Bool, done chan<- struct{}) {
+	defer close(done)
+	defer func() { _ = r.Close() }()
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
@@ -465,14 +491,17 @@ func (p *PiProvider) readStdout(r io.ReadCloser, sawStdout *atomic.Bool) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		slog.Error("pi stdout read error", "session", p.session.ID, "error", err)
+		logStdoutReadError(p.session.ID, "pi", err)
 	}
 }
 
-func (p *PiProvider) waitForExit() {
-	err := p.cmd.Wait()
+// idleWatcher and waitForExit take their spawn's own cmd and channels as
+// arguments: after Kill then Start, a goroutine re-reading the fields would
+// race the next Start and could close that spawn's waitDone.
+func (p *PiProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool, gen uint64) {
+	err := cmd.Wait()
 	p.alive.Store(false)
-	close(p.waitDone)
+	close(waitDone)
 
 	exitCode := 0
 	if err != nil {
@@ -482,7 +511,17 @@ func (p *PiProvider) waitForExit() {
 		}
 	}
 
+	tail := out.drain(drainTimeout)
+	p.exitMu.Lock()
+	defer p.exitMu.Unlock()
+	if p.spawnGen != gen {
+		slog.Debug("provider exit from a superseded spawn dropped", "session", p.session.ID, "kind", "pi", "exitCode", exitCode)
+		return
+	}
 	slog.Info("pi process exited", "session", p.session.ID, "exitCode", exitCode)
+	if !killed.Load() {
+		warnProviderExit(p.session.ID, "pi", exitCode, tail)
+	}
 
 	data, _ := json.Marshal(map[string]interface{}{"exitCode": exitCode})
 	p.handler("process_exited", data)
@@ -1103,6 +1142,9 @@ func (p *PiProvider) Kill() {
 		return
 	}
 
+	if p.killed != nil {
+		p.killed.Store(true)
+	}
 	p.alive.Store(false)
 
 	if p.stopIdle != nil {

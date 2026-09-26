@@ -84,10 +84,12 @@ func TestSandboxProbeHelper(t *testing.T) {
 var fsShapeProbes = map[string]bool{
 	"rename": true, "swap": true, "clone": true, "fclone": true,
 	"rmdir": true, "unlink": true, "mkdir": true, "chmod": true, "utimes": true,
+	"symlink": true,
 }
 
-// runFSShapeProbe performs one rename, clone or metadata probe and exits. Its
-// arg is one path, or a source and a destination separated by a space.
+// runFSShapeProbe performs one rename, clone, symlink or metadata probe and
+// exits. Its arg is one path, or a source and a destination separated by a
+// space; for symlink, the link's target and then the link.
 //
 // This is deliberate: unix.Rename, not os.Rename, which refuses to rename
 // over a directory before the kernel is asked.
@@ -109,6 +111,8 @@ func runFSShapeProbe(action, verb, arg string) {
 		}
 		err = unix.Fclonefileat(fd, unix.AT_FDCWD, to, 0)
 		_ = unix.Close(fd)
+	case "symlink":
+		err = unix.Symlink(from, to)
 	case "rmdir":
 		err = unix.Rmdir(arg)
 	case "unlink":
@@ -701,5 +705,57 @@ func TestLive_BaselineCarveOutAncestorsCannotBeCloned(t *testing.T) {
 	}
 	if !runProbe(t, profile, "clone "+bin+" "+filepath.Join(tmp, "bin")) {
 		t.Error("cloning a directory beside the carve-out was refused")
+	}
+}
+
+// TestLive_ReadLinkPlantedByOneSessionIsRefusedForTheNext is the attack end to
+// end: a session holding read-write on a stand-in home, with a deny on the
+// secret beside it, replaces a directory another template reads with a link
+// to that secret, and the next render refuses the read grant.
+func TestLive_ReadLinkPlantedByOneSessionIsRefusedForTheNext(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skip(err)
+	}
+	root := realTempDir(t)
+	f := newReadFixture(t, root)
+	app := f.h("share", "app")
+	mkdirs(t, app)
+	planter, err := Write(filepath.Join(root, "profiles"), "planting-session", Spec{
+		ReadWrite: []string{f.home, "/dev"},
+		Deny:      []string{f.h("secret")},
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	for _, action := range []string{"rename " + app + " " + app + ".moved", "symlink " + f.h("secret") + " " + app} {
+		if !runProbe(t, planter, action) {
+			t.Fatalf("%q was refused; the plant did not happen", action)
+		}
+	}
+
+	got, err := Render(Spec{Read: []string{app}, Writable: []string{f.home}})
+	var linked *LinkedReadError
+	if !errors.As(err, &linked) {
+		t.Fatalf("Render = %v, want a *LinkedReadError; profile:\n%s", err, got)
+	}
+}
+
+func TestLive_HomebrewStyleChainStillReads(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skip(err)
+	}
+	root := realTempDir(t)
+	f := newReadFixture(t, root)
+	tool := filepath.Join(f.brew, "bin", "tool")
+	profile, err := Write(filepath.Join(root, "profiles"), "brew-session", Spec{
+		ReadFiles: []string{tool},
+		ReadWrite: []string{"/dev"},
+		Writable:  []string{f.home},
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !runProbe(t, profile, "read "+tool) {
+		t.Error("a file reached through a relative link chain outside the writable roots was unreadable")
 	}
 }

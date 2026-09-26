@@ -70,7 +70,18 @@ func writeSessionSandboxProfile(settings *config.Settings, proj *config.Project,
 	if err != nil {
 		return "", err
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	if spec.Writable, err = sandboxWritableRoots(settings, home); err != nil {
+		return "", fmt.Errorf("writable roots: %w", err)
+	}
 	path, err := sandbox.Write(sessionProfilesDir(), sessionID, spec)
+	var linkedRead *sandbox.LinkedReadError
+	if errors.As(err, &linkedRead) {
+		slog.Warn("session sandbox: read grant refused", "session", sessionID, "kind", kind, "grant", linkedRead.Grant, "link", linkedRead.Link)
+	}
 	var linked *sandbox.LinkedGrantError
 	if errors.As(err, &linked) {
 		slog.Warn("session sandbox: read-write grant refused", "session", sessionID, "kind", kind, "grant", linked.Grant, "link", linked.Link)

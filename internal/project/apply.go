@@ -283,8 +283,9 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	// it — a rename cannot invalidate a scope value, and making every edit
 	// pay for a live MCP surface fetch is what this laziness avoids.
 	needPermissionsCheck := f.Access != nil || f.AllowedTools != nil || f.Context != nil || f.AllowExternal != nil
+	needDerivedDrop := (candidate.IsRemote() || candidate.IsHosted()) && len(candidate.Context) > 0
 	var sc McpSurfaces
-	if f.Path != nil || f.AllowedMcpIDs != nil || needGrantsCheck || needPermissionsCheck {
+	if f.Path != nil || f.AllowedMcpIDs != nil || needGrantsCheck || needPermissionsCheck || needDerivedDrop {
 		sc = surfaces()
 	}
 	if needPermissionsCheck {
@@ -294,6 +295,13 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	}
 	if needGrantsCheck {
 		if err := ValidateGrants(&candidate, sc); err != nil {
+			return config.Project{}, true, err
+		}
+	}
+	// A context sent in the same request replaces the stored one wholesale,
+	// so only a conversion carrying stored context needs every schema.
+	if candidate.IsRemote() && !proj.IsRemote() && f.Context == nil {
+		if err := requireSchemasForCarriedContext(&candidate, sc); err != nil {
 			return config.Project{}, true, err
 		}
 	}
@@ -375,6 +383,14 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 		}
 		for mcpID, disabled := range *f.DisabledTools {
 			s.UpdateProjectDisabledTools(id, mcpID, disabled)
+		}
+	}
+	// Deliberately on the stored record, after every mutation: candidate
+	// shares its Context map with the stored record, so a drop on it before
+	// validation would change a record that a refusal must leave untouched.
+	if needDerivedDrop {
+		if stored, _ := config.FindProjectByID(s, id); stored != nil {
+			dropDerivedContext(stored, sc)
 		}
 	}
 
