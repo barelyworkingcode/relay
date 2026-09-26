@@ -491,8 +491,11 @@ one.
 `session_launch` and `session_resume` records carry request-supplied strings
 on a refusal too, and a launch request body may be 1 MiB.
 `newSessionLaunchAuditEvent` builds both and caps them there: `error` at 256 runes, `args.session_kind` and
-`actor.project_id` at 64 runes each. A capped value keeps its leading runes
-and ends in `…`, which never occurs in a real kind or project id.
+`actor.project_id` at 64 runes each, `args.directory` at 1024 runes. A capped
+value keeps its leading runes and ends in `…`, which never occurs in a real
+kind or project id. A real directory name can end in `…`, so a capped
+directory also sets `args.directory_truncated` `true`, the same marker shape
+as `path_truncated`.
 
 `relay audit`'s table has no columns for method, path, class or transport —
 those live in DETAIL, and CALLER shows the credential id:
