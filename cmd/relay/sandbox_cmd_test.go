@@ -59,6 +59,11 @@ func TestHelperSandboxClient(t *testing.T) {
 		_ = os.WriteFile(os.Getenv(sbxOutEnv), []byte(strconv.Itoa(int(rec.calls.Load()))), 0o600)
 		os.Exit(code)
 	case "send-then-exit":
+		probe, err := net.Dial("unix", bridge.SocketPath())
+		if err != nil {
+			os.Exit(90)
+		}
+		_ = probe.Close()
 		conn, err := net.Dial("unix", bridge.SocketPath())
 		if err != nil {
 			os.Exit(90)
@@ -831,11 +836,14 @@ func TestSandboxClient_BytesSentToSeesARequestFromAClientThatExited(t *testing.T
 		t.Fatalf("send-then-exit exited %d, want 1; stderr: %q", code, p.stderr.String())
 	}
 	sent := p.bytesSentTo(ln)
-	if len(sent) != 1 {
-		t.Fatalf("saw %d connection(s), want 1: %q", len(sent), sent)
+	if len(sent) != 2 {
+		t.Fatalf("saw %d connection(s), want 2 (probe, request): %q", len(sent), sent)
+	}
+	if len(sent[0]) != 0 {
+		t.Fatalf("the probe carried %q, want nothing", sent[0])
 	}
 	var req bridge.BridgeRequest
-	if err := json.Unmarshal(sent[0], &req); err != nil || req.Type != bridge.ReqSandboxAttach {
-		t.Fatalf("the connection carried %q, want one %s request line", sent[0], bridge.ReqSandboxAttach)
+	if err := json.Unmarshal(sent[1], &req); err != nil || req.Type != bridge.ReqSandboxAttach {
+		t.Fatalf("the second connection carried %q, want one %s request line", sent[1], bridge.ReqSandboxAttach)
 	}
 }
