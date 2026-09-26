@@ -57,7 +57,7 @@ func TestPiAgentSettledIsSwallowed(t *testing.T) {
 }
 
 func TestPiUnknownEventForwardsOriginalBytes(t *testing.T) {
-	const line = `{"type":"future_event","x":1}`
+	const line = `{"x": 1, "type": "future_event"}`
 	p, calls := recordPiCalls(t, "p1")
 
 	feedPiLines(p, line)
@@ -70,18 +70,36 @@ func TestPiUnknownEventForwardsOriginalBytes(t *testing.T) {
 	}
 }
 
-func TestPiUnknownEventLogsWarning(t *testing.T) {
+func TestPiUnknownEventWarnsOncePerTypeAndForwardsEach(t *testing.T) {
 	logs := captureDebugJSON(t)
-	p, _ := recordPiCalls(t, "p1")
+	p, calls := recordPiCalls(t, "p1")
 
-	feedPiLines(p, `{"type":"future_event","x":1}`)
+	feedPiLines(p,
+		`{"type":"future_event","x":1}`,
+		`{"type":"future_event","x":2}`,
+		`{"type":"other_event"}`,
+	)
 
-	recs := piUnrecognisedRecords(logs)
-	if len(recs) != 1 {
-		t.Fatalf("want one %q record, got %d; log:\n%s", piUnrecognisedMsg, len(recs), logs.all())
+	raw := 0
+	for _, c := range *calls {
+		if c.kind == "raw_output" {
+			raw++
+		}
 	}
-	want := piWarnRecord{Level: "WARN", Msg: piUnrecognisedMsg, Session: "p1", Type: "future_event"}
-	if recs[0] != want {
-		t.Errorf("want %+v, got %+v", want, recs[0])
+	if raw != 3 {
+		t.Errorf("want 3 raw_output calls, got %+v", *calls)
+	}
+	recs := piUnrecognisedRecords(logs)
+	want := []piWarnRecord{
+		{Level: "WARN", Msg: piUnrecognisedMsg, Session: "p1", Type: "future_event"},
+		{Level: "WARN", Msg: piUnrecognisedMsg, Session: "p1", Type: "other_event"},
+	}
+	if len(recs) != len(want) {
+		t.Fatalf("want %d %q records, got %+v; log:\n%s", len(want), piUnrecognisedMsg, recs, logs.all())
+	}
+	for i := range want {
+		if recs[i] != want[i] {
+			t.Errorf("record %d: want %+v, got %+v", i, want[i], recs[i])
+		}
 	}
 }
