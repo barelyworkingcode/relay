@@ -11,6 +11,14 @@
 // under /usr (baselineDenyDirs), which a Spec grant reopens, and Spec.Deny,
 // which nothing reopens.
 //
+// Every ancestor of a denied path, short of `/`, is also protected from
+// unlink, rename and clone, whatever grant covers it. A path rule governs the
+// path, not the inode: a session that renames an ancestor away reaches the
+// denied bytes under a name no rule mentions, and file-clone is outside
+// file-write*, so a grant that denies writes still lets a directory be cloned.
+// A deny reached through a symlink the running user could have made is
+// refused, as a read-write grant is.
+//
 // Everything that is not a file (network, process, mach) stays `(allow
 // default)`, as SP2 measured it; only the unix-socket, loopback and setuid
 // rules below narrow that.
@@ -110,7 +118,10 @@ type Spec struct {
 
 	// Deny are paths, directories or files, that are unreachable whatever the
 	// grants say: no read, write or stat. Rendered after every grant, so it
-	// wins over a grant that contains it.
+	// wins over a grant that contains it. Every ancestor of a denied path is
+	// protected from unlink, rename and clone, so the denied bytes cannot be
+	// moved or copied out to a name no rule covers. An entry reached through a
+	// symlink in a directory the running user can write refuses the render.
 	Deny []string
 
 	// UnixConnectDenyDirs denies connecting to every socket beneath a
@@ -151,8 +162,9 @@ func Render(s Spec) (string, error) {
 	b.WriteString("(deny file-read* file-write*)\n")
 
 	// reachable collects every path a grant names, in both spellings, for the
-	// ancestor metadata rule below.
-	var reachable []string
+	// ancestor metadata rule below. denied collects every path a deny names,
+	// for the ancestor unlink-and-clone rule.
+	var reachable, denied []string
 
 	baseline := make([]string, 0, len(baselineReadLiterals)+len(baselineReadDirs))
 	for _, p := range baselineReadLiterals {
@@ -177,11 +189,12 @@ func Render(s Spec) (string, error) {
 	// whether it names a path beneath it or an ancestor such as /usr/local.
 	baselineDenies := make([]string, 0, len(baselineDenyDirs))
 	for _, p := range baselineDenyDirs {
-		terms, _, err := subtreeTerms(p)
+		terms, paths, err := denyTerms(p)
 		if err != nil {
 			return "", fmt.Errorf("baseline deny: %w", err)
 		}
 		baselineDenies = append(baselineDenies, terms...)
+		denied = append(denied, paths...)
 	}
 	writeBlock(&b, "deny file-read* file-write*", baselineDenies)
 
@@ -260,13 +273,22 @@ func Render(s Spec) (string, error) {
 	// denied path is not reopened by being an ancestor of a grant.
 	denies := make([]string, 0, len(s.Deny))
 	for _, p := range s.Deny {
-		terms, _, err := subtreeTerms(p)
+		terms, paths, err := denyTerms(p)
 		if err != nil {
 			return "", fmt.Errorf("deny: %w", err)
 		}
 		denies = append(denies, terms...)
+		denied = append(denied, paths...)
 	}
 	writeBlock(&b, "deny file-read* file-write*", denies)
+
+	// After every grant, the read-write ones included, so no grant reopens an
+	// ancestor. file-clone is named because file-write* does not cover it.
+	ancestors, err := denyAncestorTerms(denied)
+	if err != nil {
+		return "", fmt.Errorf("deny: %w", err)
+	}
+	writeBlock(&b, "deny file-write-unlink file-clone", ancestors)
 
 	unixDeny := make([]string, 0, len(s.UnixConnectDenyDirs)+len(s.UnixConnectDenyPaths))
 	for _, p := range s.UnixConnectDenyPaths {
@@ -386,9 +408,77 @@ func readWriteWalk(p string) (walked, error) {
 	return w, nil
 }
 
+// LinkedDenyError refuses a deny entry whose path passes through a symlink in
+// a directory the running user can write. The ancestors protected for the
+// deny would be the link's, not the denied path's, and a session could have
+// planted the link to steer them. Deny is the entry as named; Link is the
+// link's directory as walked plus the link's own name.
+type LinkedDenyError struct {
+	Deny, Link string
+}
+
+func (e *LinkedDenyError) Error() string {
+	return `deny "` + e.Deny + `" follows symlink "` + e.Link + `", which a sandboxed session could have made`
+}
+
+// denyWalk walks a deny entry and refuses it when the walk followed a link a
+// session could have made.
+//
+// This is subtle: the deny's terms and its ancestors must all come from this
+// one walk, for the reason readWriteWalk gives.
+func denyWalk(p string) (walked, error) {
+	w := walk(p)
+	if w.err != nil {
+		return w, w.err
+	}
+	if w.userLink != "" {
+		return w, &LinkedDenyError{Deny: p, Link: w.userLink}
+	}
+	return w, nil
+}
+
+func denyTerms(p string) (terms, paths []string, err error) {
+	w, err := denyWalk(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	return walkedTerms(w, "subpath")
+}
+
 // ancestorTerms is one metadata literal for every ancestor directory of every
-// path, sorted so the profile is the same for the same Spec.
+// path. An ancestor it cannot spell is left out: the block only widens access.
 func ancestorTerms(paths []string) []string {
+	dirs := ancestorDirs(paths)
+	terms := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		if lit, err := quoted(d); err == nil {
+			terms = append(terms, "(literal "+lit+")")
+		}
+	}
+	return terms
+}
+
+// denyAncestorTerms is one literal for every ancestor directory of every
+// denied path.
+//
+// This is deliberate: unlike ancestorTerms it refuses an ancestor it cannot
+// spell, because dropping one would leave that ancestor renameable.
+func denyAncestorTerms(denied []string) ([]string, error) {
+	dirs := ancestorDirs(denied)
+	terms := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		lit, err := quoted(d)
+		if err != nil {
+			return nil, err
+		}
+		terms = append(terms, "(literal "+lit+")")
+	}
+	return terms, nil
+}
+
+// ancestorDirs is every ancestor directory of every path, short of `/`,
+// deduplicated and sorted so the profile is the same for the same Spec.
+func ancestorDirs(paths []string) []string {
 	seen := map[string]bool{}
 	for _, p := range paths {
 		for d := filepath.Dir(p); d != "/" && d != "." && !seen[d]; d = filepath.Dir(d) {
@@ -400,13 +490,7 @@ func ancestorTerms(paths []string) []string {
 		dirs = append(dirs, d)
 	}
 	sort.Strings(dirs)
-	terms := make([]string, 0, len(dirs))
-	for _, d := range dirs {
-		if lit, err := quoted(d); err == nil {
-			terms = append(terms, "(literal "+lit+")")
-		}
-	}
-	return terms
+	return dirs
 }
 
 // Write renders s and writes it to <profilesDir>/<sessionID>.sb at 0600

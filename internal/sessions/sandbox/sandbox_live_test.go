@@ -13,13 +13,18 @@ package sandbox
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // sandboxProbe is the action a re-exec of this test binary performs inside
@@ -27,12 +32,20 @@ import (
 // when the kernel refused it, which is the only thing the parent asserts on.
 const probeEnv = "RELAY_SANDBOX_PROBE"
 
+// probeUnreached is the helper's exit code when a filesystem-shape probe
+// failed for a reason other than the sandbox (a missing source, a directory
+// that is not empty), so a refusal the kernel never made is not counted as one.
+const probeUnreached = 3
+
 func TestSandboxProbeHelper(t *testing.T) {
 	action := os.Getenv(probeEnv)
 	if action == "" {
 		t.Skip("helper process only; driven by the live tests in this file")
 	}
 	verb, arg, _ := strings.Cut(action, " ")
+	if fsShapeProbes[verb] {
+		runFSShapeProbe(action, verb, arg)
+	}
 	var err error
 	switch verb {
 	case "write":
@@ -68,6 +81,58 @@ func TestSandboxProbeHelper(t *testing.T) {
 	os.Exit(0)
 }
 
+var fsShapeProbes = map[string]bool{
+	"rename": true, "swap": true, "clone": true, "fclone": true,
+	"rmdir": true, "unlink": true, "mkdir": true, "chmod": true, "utimes": true,
+}
+
+// runFSShapeProbe performs one rename, clone or metadata probe and exits. Its
+// arg is one path, or a source and a destination separated by a space.
+//
+// This is deliberate: unix.Rename, not os.Rename, which refuses to rename
+// over a directory before the kernel is asked.
+func runFSShapeProbe(action, verb, arg string) {
+	from, to, _ := strings.Cut(arg, " ")
+	var err error
+	switch verb {
+	case "rename":
+		err = unix.Rename(from, to)
+	case "swap":
+		err = unix.RenamexNp(from, to, unix.RENAME_SWAP)
+	case "clone":
+		err = unix.Clonefile(from, to, 0)
+	case "fclone":
+		fd, openErr := unix.Open(from, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+		if openErr != nil {
+			fmt.Fprintf(os.Stderr, "probe %q could not open its source: %v\n", action, openErr)
+			os.Exit(probeUnreached)
+		}
+		err = unix.Fclonefileat(fd, unix.AT_FDCWD, to, 0)
+		_ = unix.Close(fd)
+	case "rmdir":
+		err = unix.Rmdir(arg)
+	case "unlink":
+		err = unix.Unlink(arg)
+	case "mkdir":
+		err = os.Mkdir(arg, 0o700)
+	case "chmod":
+		err = os.Chmod(arg, 0o700)
+	case "utimes":
+		now := time.Now()
+		err = os.Chtimes(arg, now, now)
+	}
+	switch {
+	case err == nil:
+		os.Exit(0)
+	case errors.Is(err, unix.EPERM), errors.Is(err, unix.EACCES):
+		fmt.Fprintf(os.Stderr, "probe %q: %v\n", action, err)
+		os.Exit(1)
+	default:
+		fmt.Fprintf(os.Stderr, "probe %q failed for a reason other than the sandbox: %v\n", action, err)
+		os.Exit(probeUnreached)
+	}
+}
+
 // runProbe runs one probe inside the sandbox and reports whether the
 // operation succeeded.
 func runProbe(t *testing.T, profile, action string) bool {
@@ -79,8 +144,12 @@ func runProbe(t *testing.T, profile, action string) bool {
 	if err == nil {
 		return true
 	}
-	if _, ok := err.(*exec.ExitError); !ok {
+	exit, ok := err.(*exec.ExitError)
+	if !ok {
 		t.Fatalf("probe %q did not run: %v\n%s", action, err, out)
+	}
+	if exit.ExitCode() == probeUnreached {
+		t.Fatalf("probe %q never reached the sandbox: %s", action, out)
 	}
 	t.Logf("probe %q refused: %s", action, out)
 	return false
@@ -427,5 +496,210 @@ func TestLive_LinkSwappedInAfterTheWalkGrantsNothingNew(t *testing.T) {
 	}
 	if runProbe(t, profile, "write "+filepath.Join(secret, "escaped.txt")) {
 		t.Error("a write reached the target of a link swapped in after the walk")
+	}
+}
+
+// denyFixture is a stand-in home and project, both read-write, a read-only
+// shared directory, and a read-write directory standing in for the temp dir,
+// all under one root so a clone between them stays on one volume. Each deny
+// sits below a grant; the two under empty/ name paths that do not exist, so
+// their parents are empty ancestors.
+type denyFixture struct {
+	profile                           string
+	home, config, secret, sibling     string
+	proj, shared, readme, tmp         string
+	emptyForRmdir, emptyForRenameOver string
+}
+
+func newDenyFixture(t *testing.T) denyFixture {
+	t.Helper()
+	if err := Available(); err != nil {
+		t.Skip(err)
+	}
+	root := realTempDir(t)
+	home := filepath.Join(root, "home")
+	f := denyFixture{
+		home:               home,
+		config:             filepath.Join(home, ".config"),
+		sibling:            filepath.Join(home, "sibling"),
+		proj:               filepath.Join(root, "work", "acme"),
+		shared:             filepath.Join(root, "work", "shared"),
+		tmp:                filepath.Join(root, "tmp"),
+		emptyForRmdir:      filepath.Join(home, "empty", "a"),
+		emptyForRenameOver: filepath.Join(home, "empty", "b"),
+	}
+	gh, keys := filepath.Join(f.config, "gh"), filepath.Join(f.shared, "keys")
+	mkdirs(t, gh, filepath.Join(f.config, "other"), f.sibling, f.proj, keys, f.tmp, f.emptyForRmdir, f.emptyForRenameOver)
+	f.secret = filepath.Join(gh, "hosts.yml")
+	f.readme = filepath.Join(f.shared, "readme")
+	for _, p := range []string{f.secret, f.readme, filepath.Join(keys, "id"), filepath.Join(f.proj, ".env"),
+		filepath.Join(f.proj, "draft.txt"), filepath.Join(f.config, "other", "notes")} {
+		writeFile(t, p)
+	}
+	profile, err := Write(filepath.Join(root, "profiles"), "deny-ancestor-session", Spec{
+		ReadWrite: []string{f.home, f.proj, f.tmp, "/dev"},
+		Read:      []string{f.shared},
+		Deny: []string{gh, filepath.Join(f.proj, ".env"), keys,
+			filepath.Join(f.emptyForRmdir, "x"), filepath.Join(f.emptyForRenameOver, "x")},
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	f.profile = profile
+	return f
+}
+
+func TestLive_RenamingAnAncestorOfADenyDoesNotExposeIt(t *testing.T) {
+	f := newDenyFixture(t)
+	moved := filepath.Join(f.home, ".c2")
+	if runProbe(t, f.profile, "rename "+f.config+" "+moved) {
+		t.Error("renaming an ancestor of a deny succeeded")
+		if runProbe(t, f.profile, "read "+filepath.Join(moved, "gh", "hosts.yml")) {
+			t.Error("the denied file was readable under the ancestor's new name")
+		}
+		return
+	}
+	if _, err := os.Stat(f.secret); err != nil {
+		t.Errorf("the denied file left its path although the rename was refused: %v", err)
+	}
+}
+
+func TestLive_AncestorOfADenyCannotBeMovedRemovedOrCloned(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		action func(f denyFixture) (action, dst string)
+	}{
+		{"swap an ancestor with a sibling", func(f denyFixture) (string, string) { return "swap " + f.config + " " + f.sibling, "" }},
+		{"swap a sibling with an ancestor", func(f denyFixture) (string, string) { return "swap " + f.sibling + " " + f.config, "" }},
+		{"rmdir an empty ancestor", func(f denyFixture) (string, string) { return "rmdir " + f.emptyForRmdir, "" }},
+		{"rename a sibling over an empty ancestor", func(f denyFixture) (string, string) {
+			return "rename " + f.sibling + " " + f.emptyForRenameOver, ""
+		}},
+		{"rename the grant root into the temp dir", func(f denyFixture) (string, string) {
+			dst := filepath.Join(f.tmp, "acme")
+			return "rename " + f.proj + " " + dst, dst
+		}},
+		{"clone the grant root into the temp dir", func(f denyFixture) (string, string) {
+			dst := filepath.Join(f.tmp, "acme")
+			return "clone " + f.proj + " " + dst, dst
+		}},
+		{"clonefile a nested ancestor", func(f denyFixture) (string, string) {
+			dst := filepath.Join(f.tmp, "config")
+			return "clone " + f.config + " " + dst, dst
+		}},
+		{"fclonefileat a nested ancestor", func(f denyFixture) (string, string) {
+			dst := filepath.Join(f.tmp, "config")
+			return "fclone " + f.config + " " + dst, dst
+		}},
+		{"clonefile the home grant", func(f denyFixture) (string, string) {
+			dst := filepath.Join(f.tmp, "home")
+			return "clone " + f.home + " " + dst, dst
+		}},
+		{"fclonefileat the home grant", func(f denyFixture) (string, string) {
+			dst := filepath.Join(f.tmp, "home")
+			return "fclone " + f.home + " " + dst, dst
+		}},
+		{"clone a read-granted ancestor", func(f denyFixture) (string, string) {
+			dst := filepath.Join(f.tmp, "shared")
+			return "clone " + f.shared + " " + dst, dst
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDenyFixture(t)
+			action, dst := tc.action(f)
+			if runProbe(t, f.profile, action) {
+				t.Errorf("%q succeeded", action)
+			}
+			if dst == "" {
+				return
+			}
+			if _, err := os.Lstat(dst); err == nil {
+				t.Errorf("%s exists after the refused %q", dst, action)
+			}
+		})
+	}
+}
+
+// TestLive_DenyAncestorRuleLeavesNormalUseWorking runs its steps in order on
+// one fixture: each step works on what the one before it left.
+func TestLive_DenyAncestorRuleLeavesNormalUseWorking(t *testing.T) {
+	f := newDenyFixture(t)
+	file, renamed := filepath.Join(f.config, "new.txt"), filepath.Join(f.config, "renamed.txt")
+	dir := filepath.Join(f.config, "newdir")
+	for _, action := range []string{
+		"write " + file,
+		"write " + file,
+		"mkdir " + dir,
+		"rename " + file + " " + renamed,
+		"unlink " + renamed,
+		"rmdir " + dir,
+		"rename " + filepath.Join(f.proj, "draft.txt") + " " + filepath.Join(f.tmp, "draft.txt"),
+		"chmod " + f.config,
+		"utimes " + f.config,
+		"list " + f.config,
+		"clone " + filepath.Join(f.config, "other") + " " + filepath.Join(f.tmp, "other"),
+		"read " + f.readme,
+	} {
+		if !runProbe(t, f.profile, action) {
+			t.Errorf("%q was refused", action)
+		}
+	}
+}
+
+// useBaseline points the fixed baseline at a stand-in tree for one test. It
+// changes package state, so a test that calls it must not run in parallel.
+func useBaseline(t *testing.T, read, deny, reopened []string) {
+	t.Helper()
+	r, d, o := baselineReadDirs, baselineDenyDirs, baselineReopenedFiles
+	t.Cleanup(func() { baselineReadDirs, baselineDenyDirs, baselineReopenedFiles = r, d, o })
+	baselineReadDirs, baselineDenyDirs, baselineReopenedFiles = read, deny, reopened
+}
+
+func TestLive_BaselineCarveOutAncestorsCannotBeCloned(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skip(err)
+	}
+	root := realTempDir(t)
+	usr := filepath.Join(root, "usr")
+	local := filepath.Join(usr, "local")
+	etc, bin, tmp := filepath.Join(local, "etc"), filepath.Join(local, "bin"), filepath.Join(root, "tmp")
+	openssl := filepath.Join(etc, "openssl@3")
+	mkdirs(t, openssl, filepath.Join(etc, "ca-certificates"), filepath.Join(local, "var"), bin, tmp)
+	reopened := []string{
+		filepath.Join(openssl, "cert.pem"),
+		filepath.Join(etc, "ca-certificates", "cert.pem"),
+		filepath.Join(etc, "gitconfig"),
+	}
+	unopened := filepath.Join(etc, "service.conf")
+	for _, p := range append([]string{unopened, filepath.Join(bin, "tool")}, reopened...) {
+		writeFile(t, p)
+	}
+	// The real system baseline stays: the probe is this test binary, and it
+	// cannot start without the real /usr.
+	useBaseline(t, append(slices.Clone(baselineReadDirs), usr), []string{etc, filepath.Join(local, "var")}, reopened)
+	profile, err := Write(filepath.Join(root, "profiles"), "baseline-ancestor-session", Spec{ReadWrite: []string{tmp, "/dev"}})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	for _, src := range []string{usr, local, etc, openssl} {
+		dst := filepath.Join(tmp, filepath.Base(src))
+		if runProbe(t, profile, "clone "+src+" "+dst) {
+			t.Errorf("cloning %s succeeded", src)
+		}
+		if _, err := os.Lstat(dst); err == nil {
+			t.Errorf("%s exists after the refused clone of %s", dst, src)
+		}
+	}
+	for _, p := range reopened {
+		if !runProbe(t, profile, "read "+p) {
+			t.Errorf("reopened %s was unreadable", p)
+		}
+	}
+	if runProbe(t, profile, "read "+unopened) {
+		t.Errorf("%s under the carve-out was readable", unopened)
+	}
+	if !runProbe(t, profile, "clone "+bin+" "+filepath.Join(tmp, "bin")) {
+		t.Error("cloning a directory beside the carve-out was refused")
 	}
 }
