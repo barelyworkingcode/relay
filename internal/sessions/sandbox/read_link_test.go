@@ -42,6 +42,21 @@ func varAliasRoot(t *testing.T) (alias, real string) {
 	return alias, real
 }
 
+// tmpAliasRoot is a dir in /tmp in both spellings: through /tmp and resolved.
+func tmpAliasRoot(t *testing.T) (alias, real string) {
+	t.Helper()
+	alias, err := os.MkdirTemp("/tmp", "relay-sandbox-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(alias) })
+	real = evalSymlinks(t, alias)
+	if alias == real {
+		t.Skip("/tmp has no second spelling on this machine")
+	}
+	return alias, real
+}
+
 // withBaselineReadDirs points the fixed read baseline at dirs for one test.
 func withBaselineReadDirs(t *testing.T, dirs []string) {
 	t.Helper()
@@ -134,6 +149,22 @@ func TestRender_RefusesReadGrantThroughLinkTheWritableRootsCover(t *testing.T) {
 			symlink(t, f.h("secret"), app)
 			grant := filepath.Join(alias, "home", "share", "app")
 			return Spec{Read: []string{grant}, Writable: []string{f.home}}, grant, app
+		}},
+		{"writable root /tmp, grant spelled through it", func(t *testing.T) (Spec, string, string) {
+			alias, real := tmpAliasRoot(t)
+			f := newReadFixture(t, real)
+			app := f.h("share", "app")
+			symlink(t, f.h("secret"), app)
+			grant := filepath.Join(alias, "home", "share", "app")
+			return Spec{Read: []string{grant}, Writable: []string{"/tmp"}}, grant, app
+		}},
+		{"read-write root /tmp, grant spelled through it", func(t *testing.T) (Spec, string, string) {
+			alias, real := tmpAliasRoot(t)
+			f := newReadFixture(t, real)
+			app := f.h("share", "app")
+			symlink(t, f.h("secret"), app)
+			grant := filepath.Join(alias, "home", "share", "app")
+			return Spec{ReadWrite: []string{"/tmp"}, Read: []string{grant}}, grant, app
 		}},
 		{"a root that is itself a link", func(t *testing.T) (Spec, string, string) {
 			f := newReadFixture(t, realTempDir(t))
@@ -318,6 +349,18 @@ func TestWritableSet_Covers(t *testing.T) {
 		if got := tc.set.Covers(tc.path); got != tc.want {
 			t.Errorf("%s: Covers(%s) = %v, want %v", tc.name, tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestWritableSet_SystemLinkRootCoversItsResolvedSpelling(t *testing.T) {
+	_, real := tmpAliasRoot(t)
+	set, err := NewWritableSet([]string{"/tmp"})
+	if err != nil {
+		t.Fatalf("NewWritableSet: %v", err)
+	}
+	p := filepath.Join(real, "app")
+	if !set.Covers(p) {
+		t.Errorf("Covers(%s) = false, want true", p)
 	}
 }
 

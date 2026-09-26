@@ -670,8 +670,10 @@ symlink also names the link itself.
 session holding read-write on a directory can replace it, or any directory
 under it, with a symlink: `(subpath D)` covers D itself. If the next launch
 followed that link, the session would have chosen its own grant. And a
-writable root is keyed where it is named (below), so a root reached through a
-link would leave where it resolves uncovered. So `Render` walks every
+writable root is keyed where it is named (below), so a root reached through
+any other link would leave where it resolves uncovered; a root that is one of
+the `/tmp`, `/var` and `/etc` links is keyed both where it is named and where
+it resolves. So `Render` walks every
 `read_write` entry, directory or file, the project path included, from `/`
 with `Lstat` on each component, splicing in each link's target (a relative
 target resolves against the link's already resolved directory, at most 32
@@ -727,10 +729,12 @@ W is built per launch by `sandboxWritableRoots`
 Coverage is decided by location, not by spelling and not by the inode found
 at a root. Each root is keyed as the identity (device and inode) of its nearest
 existing ancestor plus the names from there down, compared with Unicode case
-folding and normalization. So letter case, firmlinks and the `/var` alias
-cannot hide a match, and a session that removes and recreates its root, or
-swaps it for a link, between W being built and a grant being walked is still
-caught: the ancestor is outside its reach. Folding can equate names the volume
+folding and normalization. So letter case and firmlinks cannot hide a match,
+nor can the `/tmp`, `/var` and `/etc` aliases: a root that is one of them is
+also keyed where it resolves, and a grant is walked to its resolution. And a
+session that removes and recreates its root, or swaps it for a link, between W
+being built and a grant being walked is still caught: the ancestor is outside
+its reach. Folding can equate names the volume
 keeps apart; that refuses more, never less. A directory root covers a link
 anywhere beneath it. A regular-file root covers the entries directly in its
 parent directory, since the atomic-write siblings a read-write file grant

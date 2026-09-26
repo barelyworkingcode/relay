@@ -659,7 +659,8 @@ const maxWalkLinks = 32
 // names from there down to the root. A directory root covers every path
 // beneath that location, a regular-file root covers the entries directly in
 // its parent, and every root covers its own entry, so a root replaced by a
-// link is caught.
+// link is caught. A root that is one of the /tmp, /var and /etc links in `/`
+// is keyed where it resolves as well.
 //
 // This is deliberate: a root is not keyed by the inode found there. A session
 // holding the root can remove and recreate it, or swap it for a link, between
@@ -707,10 +708,19 @@ func (s *WritableSet) add(root string) {
 		return
 	}
 	key := foldedTail(parent.at, append(append([]string(nil), parent.tail...), filepath.Base(root)))
-	if w := walkIdentity(root); w.err == nil && w.settled {
+	w := walkIdentity(root)
+	if w.err == nil && w.settled {
 		key.file = !w.endIsDir
 	}
 	s.keys = append(s.keys, key)
+	// This is subtle: a system link is the only link a read-write root may be
+	// reached through, so it is the only root whose resolved location can
+	// differ from where it is named.
+	if filepath.Dir(root) == "/" && systemLink("/", filepath.Base(root)) &&
+		w.err == nil && w.settled && len(w.at.ids) >= 2 {
+		end := len(w.at.ids) - 1
+		s.keys = append(s.keys, rootKey{anc: w.at.ids[end-1], names: []string{foldName(w.at.names[end])}, file: !w.endIsDir})
+	}
 }
 
 // foldedTail keys the components below where a walk stopped, at. Each `..`
