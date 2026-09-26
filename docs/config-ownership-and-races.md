@@ -336,10 +336,10 @@ memory. It also makes it harder to state one simple rule to future contributors.
 ### 3. The current writer is serialized, but the decision and the effect can be split
 
 `FileSettingsStore.WithDeclinable` serializes the callback and save. It does not
-serialize work that happens before or after the callback. The repository already
-has a concrete example in `ServiceOps.Start`: process-registry state and config
-state are separate resources, so a service can be removed or changed while a
-start/restart decision is in flight.
+serialize work that happens before or after the callback. `ServiceOps` shows the
+remedy: process-registry state and config state are separate resources, so
+`Start` and `Remove` both run on one queue (`runQueued`); without it a service
+could be removed or changed while a start/restart decision is in flight.
 
 The same shape exists anywhere code does this:
 

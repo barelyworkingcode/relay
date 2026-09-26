@@ -335,7 +335,7 @@ attributed to the process that requested it. macOS titles the dialog from the
 requesting process's name — never its code signature — so any local process
 capable of raising a LocalAuthentication prompt can name itself convincingly
 and phish the same password a genuine relay prompt would ask for. This is a
-known, accepted residual risk (tracked as issue #65) and it places one
+known, accepted residual risk (tracked outside this repository) and it places one
 negative requirement on every document and every string this feature writes:
 **nothing may claim a user can tell a genuine relay prompt from a fake one**,
 because they cannot.
