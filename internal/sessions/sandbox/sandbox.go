@@ -16,6 +16,12 @@
 // path, not the inode: a session that renames an ancestor away reaches the
 // denied bytes under a name no rule mentions, and file-clone is outside
 // file-write*, so a grant that denies writes still lets a directory be cloned.
+// Each unix-socket deny dir gets the same protection for itself as well as its
+// ancestors, and no socket beneath it can be unlinked or renamed: the connect
+// deny matches a path, and a socket moved elsewhere would be reachable at one
+// it does not match. A subdirectory of the dir is not pinned, so a socket
+// inside one moves with it.
+//
 // A read-write grant reached through any symlink but the /tmp, /var and /etc
 // links in `/` is refused, and so is a deny reached through a symlink the
 // running user could have made. A read grant is refused only when a link
@@ -136,7 +142,11 @@ type Spec struct {
 	// allowed socket inside a denied directory is reachable and a socket
 	// that appears there later is not (SP2 row 6). Files and sockets are
 	// separate operations: a socket is reached by connecting to it, not by
-	// reading its path.
+	// reading its path. Each deny dir and every ancestor of it is protected
+	// from unlink, rename and clone, and no socket beneath it can be unlinked
+	// or renamed, so neither the dir nor a socket can be moved to a path the
+	// connect deny does not match. Regular files inside it stay writable; a
+	// subdirectory, and a socket inside one, can still be moved.
 	UnixConnectDenyDirs  []string
 	UnixConnectDenyPaths []string
 	UnixConnectAllow     []string
@@ -299,13 +309,24 @@ func Render(s Spec) (string, error) {
 	}
 	writeBlock(&b, "deny file-read* file-write*", denies)
 
+	sockets, err := socketDenyDirs(s.UnixConnectDenyDirs)
+	if err != nil {
+		return "", fmt.Errorf("unix_connect_deny: %w", err)
+	}
+
 	// After every grant, the read-write ones included, so no grant reopens an
 	// ancestor. file-clone is named because file-write* does not cover it.
-	ancestors, err := denyAncestorTerms(denied)
+	ancestors, err := denyAncestorTerms(denied, sockets.pinned...)
 	if err != nil {
 		return "", fmt.Errorf("deny: %w", err)
 	}
 	writeBlock(&b, "deny file-write-unlink file-clone", ancestors)
+
+	// This is deliberate: a subpath covers the whole tree, but vnode-type
+	// narrows it to sockets, so the session keeps every write, rename and
+	// unlink on a regular file in the dir. A socket moved out would be
+	// connectable under a name the connect deny does not match.
+	writeBlock(&b, "deny file-write-unlink", sockets.fileTerms)
 
 	unixDeny := make([]string, 0, len(s.UnixConnectDenyDirs)+len(s.UnixConnectDenyPaths))
 	for _, p := range s.UnixConnectDenyPaths {
@@ -319,17 +340,7 @@ func Render(s Spec) (string, error) {
 		}
 		unixDeny = append(unixDeny, "(remote unix-socket (path-literal "+lit+"))")
 	}
-	for _, p := range s.UnixConnectDenyDirs {
-		r, err := Resolve(p)
-		if err != nil {
-			return "", fmt.Errorf("unix_connect_deny: %w", err)
-		}
-		esc, err := regexEscape(r)
-		if err != nil {
-			return "", fmt.Errorf("unix_connect_deny: %w", err)
-		}
-		unixDeny = append(unixDeny, `(remote unix-socket (path-regex #"^`+esc+`/"))`)
-	}
+	unixDeny = append(unixDeny, sockets.connectTerms...)
 	writeBlock(&b, "deny network-outbound", unixDeny)
 
 	unixAllow := make([]string, 0, len(s.UnixConnectAllow))
@@ -506,13 +517,69 @@ func ancestorTerms(paths []string) []string {
 	return terms
 }
 
+// socketDirs is what UnixConnectDenyDirs renders: the connect deny, the
+// socket-file rule, and the paths the ancestor block pins with their
+// ancestors.
+type socketDirs struct {
+	connectTerms, fileTerms, pinned []string
+}
+
+// socketDenyDirs walks each socket deny dir once and spells every term from
+// that walk, for the reason readWriteWalk gives. A dir reached through a link
+// is not refused: the connect deny matches the resolved path whatever link
+// led there, and the link itself is pinned beside it.
+//
+// This is subtle: checking each pinned spelling here is what keeps the
+// ancestor block from failing on one later, since an ancestor holds no
+// character its descendant lacks.
+func socketDenyDirs(dirs []string) (socketDirs, error) {
+	var out socketDirs
+	for _, p := range dirs {
+		w := walk(p)
+		if w.err != nil {
+			return socketDirs{}, w.err
+		}
+		esc, err := regexEscape(w.resolved)
+		if err != nil {
+			return socketDirs{}, err
+		}
+		lit, err := quoted(w.resolved)
+		if err != nil {
+			return socketDirs{}, err
+		}
+		out.connectTerms = append(out.connectTerms, `(remote unix-socket (path-regex #"^`+esc+`/"))`)
+		out.fileTerms = append(out.fileTerms, "(require-all (subpath "+lit+") (vnode-type SOCKET))")
+		out.pinned = append(out.pinned, w.resolved)
+		if link := w.linkLiteral(); link != "" {
+			if _, err := quoted(link); err != nil {
+				return socketDirs{}, err
+			}
+			out.pinned = append(out.pinned, link)
+		}
+	}
+	return out, nil
+}
+
 // denyAncestorTerms is one literal for every ancestor directory of every
-// denied path.
+// denied path, and for every pinned path and its ancestors.
 //
 // This is deliberate: unlike ancestorTerms it refuses an ancestor it cannot
-// spell, because dropping one would leave that ancestor renameable.
-func denyAncestorTerms(denied []string) ([]string, error) {
-	dirs := ancestorDirs(denied)
+// spell, because dropping one would leave that ancestor renameable. A pinned
+// path is named itself because no file deny covers it, and a read-write grant
+// above it would otherwise let it be renamed.
+func denyAncestorTerms(denied []string, pinned ...string) ([]string, error) {
+	dirs := ancestorDirs(append(append([]string(nil), denied...), pinned...))
+	seen := make(map[string]bool, len(dirs))
+	for _, d := range dirs {
+		seen[d] = true
+	}
+	for _, p := range pinned {
+		if p != "/" && !seen[p] {
+			seen[p] = true
+			dirs = append(dirs, p)
+		}
+	}
+	sort.Strings(dirs)
 	terms := make([]string, 0, len(dirs))
 	for _, d := range dirs {
 		lit, err := quoted(d)

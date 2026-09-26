@@ -45,8 +45,14 @@
   (literal "/usr/local/etc/ca-certificates")
   (literal "/usr/local/etc/openssl@3"))
 (deny file-write-unlink file-clone
+  (literal "/private")
+  (literal "/private/tmp")
+  (literal "/private/tmp/relay-sandbox-golden")
+  (literal "/private/tmp/relay-sandbox-golden/relay")
   (literal "/usr")
   (literal "/usr/local"))
+(deny file-write-unlink
+  (require-all (subpath "/private/tmp/relay-sandbox-golden/relay") (vnode-type SOCKET)))
 (deny network-outbound
   (remote unix-socket (path-literal "/private/tmp/relay-sandbox-golden/relayllm/router.sock"))
   (remote unix-socket (path-regex #"^/private/tmp/relay-sandbox-golden/relay/")))

@@ -554,8 +554,10 @@ baseline carve-out (`/usr/local/etc` and `/usr/local/var`, read and write),
 then the three Homebrew files the baseline reopens read-only, then the
 session's grants, then read-only `stat` on the parents of each grant
 so a process can reach it, then the template's `deny` list (below), then an
-unlink-and-clone deny on every ancestor of a denied path. Apart from that fixed
-carve-out, nothing is denied by name unless a template says so.
+unlink-and-clone deny on every ancestor of a denied path and on every
+unix-socket deny dir and its ancestors, then a deny on unlinking or renaming a
+socket inside a socket-deny dir. Apart from that fixed carve-out, nothing is
+denied by name unless a template says so.
 Relay's own data directory, another project, eve's data and `~/.ssh` are
 unreachable unless a template grants them, so a directory nobody thought to
 protect is protected anyway. Everything that is not a file (network, process,
@@ -612,6 +614,48 @@ ancestor of a denied path, its own grant root included. With `"read_write":
 place; everything inside them still works (creating, deleting and renaming
 other entries, `chmod`, `utimes`, listing, cloning a non-ancestor).
 
+The same block names every unix-socket deny dir (relay's config dir, the
+default relay dir under `--config-dir`, relayLLM's data dir, eve's data dir)
+**itself** as well as every ancestor of it. The connect deny is a path regex,
+so it has the same gap: a session that renames the dir, or any directory above
+it, connects to a socket under the new name. The dir itself is named because,
+unlike a `deny` entry, no file deny covers it, and a shell template's
+read-write `~` would otherwise let it be renamed or removed. The literals are
+deduplicated with the deny ancestors and sorted by path. Each socket-deny dir
+is walked once, and that walk supplies its connect regex, its literal and, when
+the entry's last component is a link, the link's own path as a second literal
+with its ancestors. A socket-deny dir reached through a link is not refused,
+unlike a `deny` entry: the connect rule matches the resolved path whatever link
+led there. One that cannot be spelled refuses the render with
+`unix_connect_deny: …`. The cost falls on any session whose grant covers a
+socket-deny dir or a directory above it, even with no `deny` entry: it cannot
+rename, remove, swap or clone that dir or any directory above it. For a shell
+session's read-write `~` that is `~` itself, `~/Library`,
+`~/Library/Application Support` and the socket-deny dirs. Eve's default data
+dir is `<WorkingDir>/data`, so a project rooted at eve's checkout holds it
+inside its read-write grant: every session kind there cannot rename or remove
+`data`, the project root or anything above it, and `rm -rf data` or
+`git clean -fdx` leaves the directory behind. Writing, renaming and removing
+files inside these dirs, `chmod`, `utimes` and listing still work.
+
+**A socket cannot leave its deny dir either.** Renaming a socket file out of a
+socket-deny dir, or unlinking it, would leave it connectable at a path the
+connect deny does not match. So each socket-deny dir `D` also renders
+
+```
+(deny file-write-unlink
+  (require-all (subpath "<D>") (vnode-type SOCKET)))
+```
+
+in its own block after the unlink-and-clone block and before the unix-socket
+connect rules, one term per dir, spelled from the same walk. Regular files
+in `D` are untouched. Its limit is a socket in a subdirectory of `D`: the
+subdirectory is not pinned, so renaming it carries the socket out. The layouts
+relay denies are flat. Measured on a devbox, relay's dir holds five sockets
+and relayLLM's two, all directly inside the dir; eve's holds none. So no
+subdirectory needs a deny-dir entry of its own. A service that moves its
+sockets into a subdirectory must add that subdirectory to the deny dirs.
+
 What the ancestor rule does not cover:
 
 - A hard link or clone of a denied file made before the deny was added, or
@@ -622,6 +666,14 @@ What the ancestor rule does not cover:
   the parent may create that component as a symlink; the kernel then resolves
   the denied name to the link's target, which the deny does not cover. Deny
   paths that exist at launch.
+- A socket-deny dir missing at launch, the same way. Its missing components
+  are named as written, and a session that can write the parent may create
+  the dir as a symlink before the service does; the service's sockets then
+  land at the link's target, which the connect deny does not match. The
+  default relay dir under `--config-dir`, relayLLM's dir and eve's dir can be
+  absent when a session launches.
+- A socket in a subdirectory of a socket-deny dir (above): the subdirectory
+  can be renamed, taking the socket with it.
 - A single-file deny covers that file only, not a writer's temp sibling. If a
   process outside the session saves the file atomically (`.env.tmp`, then a
   rename) while the session runs, the session can read or hard-link the temp

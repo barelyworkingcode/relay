@@ -19,6 +19,11 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sessions/sandbox"
 )
 
+const (
+	unlinkAncestorHead = "(deny file-write-unlink file-clone\n"
+	socketFileRuleHead = "(deny file-write-unlink\n"
+)
+
 // normalizeSandboxProfile replaces every machine-specific path in a
 // generated profile with a stable placeholder. Order matters: a directory
 // that contains another must be replaced after it, or it eats the prefix.
@@ -33,10 +38,87 @@ func normalizeSandboxProfile(t *testing.T, body, projectA, projectB, home, eveDa
 		{sandboxRealPath(t, bridge.ConfigDir()), "<RELAY_DIR>"},
 		{sandboxRealPath(t, os.TempDir()), "<DARWIN_TMP>"},
 	}
+	roots := make([]string, 0, len(subs))
 	for _, s := range subs {
-		body = strings.ReplaceAll(body, s.from, s.to)
+		roots = append(roots, s.from)
 	}
-	return dropMetadataBlock(body)
+	placeholders := func(p string) string {
+		for _, s := range subs {
+			p = strings.ReplaceAll(p, s.from, s.to)
+		}
+		return p
+	}
+	return dropMetadataBlock(placeholders(normalizeUnlinkAncestorBlock(body, roots, placeholders)))
+}
+
+// normalizeUnlinkAncestorBlock rewrites the ancestor unlink-and-clone block
+// into what a golden can hold. The ancestors of a fixture root are temp
+// directories with random names, so they are dropped; the rest are spelled
+// with placeholders and byte-sorted again, because a placeholder does not sort
+// where the path it replaces did.
+func normalizeUnlinkAncestorBlock(body string, roots []string, placeholders func(string) string) string {
+	at := strings.Index(body, unlinkAncestorHead)
+	if at < 0 {
+		return body
+	}
+	terms, rest := profileBlockTerms(body[at+len(unlinkAncestorHead):])
+	var kept []string
+	for _, term := range terms {
+		p := strings.TrimSuffix(strings.TrimPrefix(term, `(literal "`), `")`)
+		if !strictAncestorOfAny(p, roots) {
+			kept = append(kept, `(literal "`+placeholders(p)+`")`)
+		}
+	}
+	slices.Sort(kept)
+	var b strings.Builder
+	b.WriteString(body[:at])
+	if len(kept) > 0 {
+		b.WriteString(unlinkAncestorHead)
+		for i, term := range kept {
+			b.WriteString("  " + term)
+			if i == len(kept)-1 {
+				b.WriteString(")")
+			}
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString(rest)
+	return b.String()
+}
+
+func strictAncestorOfAny(p string, roots []string) bool {
+	for _, r := range roots {
+		if strings.HasPrefix(r, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// profileBlockTerms reads the indented terms at the start of body, the text
+// after a block's head line, and returns them with the text after the block.
+func profileBlockTerms(body string) (terms []string, rest string) {
+	rest = body
+	for strings.HasPrefix(rest, "  ") {
+		line, after, _ := strings.Cut(rest, "\n")
+		term := strings.TrimSpace(line)
+		if !strings.HasPrefix(after, "  ") {
+			term = strings.TrimSuffix(term, ")")
+		}
+		terms = append(terms, term)
+		rest = after
+	}
+	return terms, rest
+}
+
+// dropBlock removes the block whose head line is head, if the profile has one.
+func dropBlock(body, head string) string {
+	at := strings.Index(body, head)
+	if at < 0 {
+		return body
+	}
+	_, rest := profileBlockTerms(body[at+len(head):])
+	return body[:at] + rest
 }
 
 // dropMetadataBlock removes the ancestor-metadata block from a profile. Its
@@ -251,8 +333,13 @@ func TestAuthorizeLaunch_SandboxGrantsOnlyWhatItNames(t *testing.T) {
 		t.Errorf("profile lacks the one bare file deny:\n%s", body)
 	}
 	// Ancestor metadata (stat, never contents) names the home directory as the
-	// parent of ~/.cache; that is not a grant of it.
-	fileRules := dropMetadataBlock(body[:strings.Index(body, "(deny network-outbound")])
+	// parent of ~/.cache, and the unlink denies name it and the socket deny
+	// dirs; none of those is a grant.
+	fileRules := body[:strings.Index(body, "(deny network-outbound")]
+	for _, head := range []string{unlinkAncestorHead, socketFileRuleHead} {
+		fileRules = dropBlock(fileRules, head)
+	}
+	fileRules = dropMetadataBlock(fileRules)
 	homeReal := sandboxRealPath(t, home)
 	for name, path := range map[string]string{
 		"another project":    sandboxRealPath(t, other.Path),
@@ -307,7 +394,7 @@ func TestSandboxSpecForLaunch_PiSessionsIsReadWriteAllowed(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	relayReal := sandboxRealPath(t, relayDir)
-	if strings.Contains(body, `(subpath "`+relayReal+`")`) {
+	if strings.Contains(dropBlock(body, socketFileRuleHead), `(subpath "`+relayReal+`")`) {
 		t.Fatalf("rendered profile grants the whole config dir:\n%s", body)
 	}
 	// pi-sessions/ itself never exists on disk in this test, so it is
@@ -402,7 +489,7 @@ func TestSandboxTemplate_ShellHoldsTheHomeDirectory(t *testing.T) {
 	_, claude := launchWithSandbox(t, LaunchRequest{
 		Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindPTY, TemplateID: "claude-code",
 	}, store)
-	if strings.Contains(dropMetadataBlock(claude), `"`+homeReal+`"`) {
+	if strings.Contains(dropBlock(dropMetadataBlock(claude), unlinkAncestorHead), `"`+homeReal+`"`) {
 		t.Errorf("the claude-code template grants the home directory:\n%s", claude)
 	}
 }
