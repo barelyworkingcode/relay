@@ -14,8 +14,10 @@ import (
 	"encoding/json"
 	"io"
 	"maps"
-	"reflect"
+	"math"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 )
@@ -295,9 +297,9 @@ func unionKeys(a, b map[string]json.RawMessage) []string {
 // jsonValueEqual compares two JSON values by decoded value; a value that
 // does not decode is unequal to everything but its own bytes.
 //
-// Numbers compare by their text, deliberately: decoding to float64 would
-// make integers above 2^53 that differ collide. 1e2 and 100 therefore
-// differ, which errs toward a prompt rather than a silent widening.
+// Numbers compare by exact decimal value, so 1e2, 100 and 100.0 are equal.
+// They never go through float64, deliberately: that would make integers
+// above 2^53 that differ collide and hide a widening.
 func jsonValueEqual(a, b json.RawMessage) bool {
 	if bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b)) {
 		return true
@@ -310,7 +312,85 @@ func jsonValueEqual(a, b json.RawMessage) bool {
 	if !ok {
 		return false
 	}
-	return reflect.DeepEqual(da, db)
+	return decodedJSONEqual(da, db)
+}
+
+func decodedJSONEqual(a, b any) bool {
+	switch av := a.(type) {
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for k, ae := range av {
+			be, ok := bv[k]
+			if !ok || !decodedJSONEqual(ae, be) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !decodedJSONEqual(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	case json.Number:
+		bv, ok := b.(json.Number)
+		if !ok {
+			return false
+		}
+		ad, ok := normalizeDecimal(av)
+		if !ok {
+			return false
+		}
+		bd, ok := normalizeDecimal(bv)
+		return ok && ad == bd
+	default:
+		return a == b
+	}
+}
+
+// decimal is a JSON number as sign × digits × 10^exponent, with digits free
+// of leading and trailing zeros; zero is the zero value.
+type decimal struct {
+	negative bool
+	digits   string
+	exponent int64
+}
+
+// normalizeDecimal reads a literal the decoder has already validated against
+// the JSON number grammar. It works on the text alone, deliberately, so a
+// literal like 1e999999999 costs nothing. ok is false when the exponent does
+// not fit an int64.
+func normalizeDecimal(n json.Number) (d decimal, ok bool) {
+	s := string(n)
+	negative := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	var exponent int64
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		e, err := strconv.ParseInt(s[i+1:], 10, 64)
+		if err != nil {
+			return decimal{}, false
+		}
+		exponent, s = e, s[:i]
+	}
+	intPart, fracPart, _ := strings.Cut(s, ".")
+	digits := strings.TrimLeft(intPart+fracPart, "0")
+	if digits == "" {
+		return decimal{}, true
+	}
+	trimmed := strings.TrimRight(digits, "0")
+	shift := int64(len(digits)-len(trimmed)) - int64(len(fracPart))
+	if (shift > 0 && exponent > math.MaxInt64-shift) || (shift < 0 && exponent < math.MinInt64-shift) {
+		return decimal{}, false
+	}
+	return decimal{negative: negative, digits: trimmed, exponent: exponent + shift}, true
 }
 
 func decodeJSONValue(raw json.RawMessage) (any, bool) {
