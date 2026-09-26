@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/mcp"
@@ -42,7 +44,7 @@ func main() {
 	}
 
 	args := os.Args[1:]
-	args = applyConfigDirFlag(args)
+	args, configDirExplicit := applyConfigDirFlag(args)
 
 	// LaunchServices sends a GUI app's stderr to /dev/null, which would
 	// otherwise lose every slog line; tee to <config-dir>/logs/relay.log too.
@@ -63,7 +65,7 @@ func main() {
 	case "service":
 		runServiceCommand(args[1:])
 	case "mcp":
-		runMcpOrServer(args[1:])
+		runMcpOrServer(args[1:], configDirExplicit)
 	case "mcpExec":
 		runMcpExec(args[1:])
 	case "audit":
@@ -90,10 +92,11 @@ func main() {
 
 // applyConfigDirFlag must run before any subcommand's flag.Parse: each
 // subcommand owns its own flag.FlagSet, so this is the only chance to apply
-// --config-dir before anything reads ConfigDir.
-func applyConfigDirFlag(args []string) []string {
+// --config-dir before anything reads ConfigDir. explicit is false for an
+// empty value, which leaves ConfigDir at its default.
+func applyConfigDirFlag(args []string) (rest []string, explicit bool) {
 	if len(args) == 0 {
-		return args
+		return args, false
 	}
 	const eqPrefix = "--config-dir="
 	switch {
@@ -102,15 +105,52 @@ func applyConfigDirFlag(args []string) []string {
 			exitError("--config-dir requires a path argument")
 		}
 		bridge.SetConfigDir(args[1])
-		return args[2:]
+		return args[2:], args[1] != ""
 	case strings.HasPrefix(args[0], eqPrefix):
-		bridge.SetConfigDir(args[0][len(eqPrefix):])
-		return args[1:]
+		dir := args[0][len(eqPrefix):]
+		bridge.SetConfigDir(dir)
+		return args[1:], dir != ""
 	}
-	return args
+	return args, false
 }
 
-func runMcpOrServer(args []string) {
+const (
+	mcpSocketSourceConfigDir = "--config-dir"
+	mcpSocketSourceEnv       = bridge.EnvBridgeSocket
+	mcpSocketSourceDefault   = "default"
+
+	mcpBridgeProbeTimeout = 2 * time.Second
+)
+
+// resolveMcpBridgeSocket picks the socket the stdio server dials. An
+// explicit --config-dir outranks RELAY_BRIDGE_SOCKET, which outranks the
+// default; see docs/cli.md. A set env var is never second-guessed by a
+// fallback to the default socket.
+func resolveMcpBridgeSocket(configDirExplicit bool, getenv func(string) string) (path, source string, err error) {
+	if configDirExplicit {
+		return bridge.SocketPath(), mcpSocketSourceConfigDir, nil
+	}
+	if env := getenv(bridge.EnvBridgeSocket); env != "" {
+		if !filepath.IsAbs(env) {
+			return "", "", fmt.Errorf("%s must be an absolute path, got %q", bridge.EnvBridgeSocket, env)
+		}
+		return env, mcpSocketSourceEnv, nil
+	}
+	return bridge.SocketPath(), mcpSocketSourceDefault, nil
+}
+
+func probeBridgeSocket(path string, timeout time.Duration) error {
+	conn, err := net.DialTimeout("unix", path, timeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// runMcpOrServer's subcommands keep bridge.NewClient and ignore
+// RELAY_BRIDGE_SOCKET: only the stdio server is spawned by relay's own
+// children with that variable naming the relay that launched them.
+func runMcpOrServer(args []string, configDirExplicit bool) {
 	if len(args) > 0 {
 		switch args[0] {
 		case "register", "unregister", "list":
@@ -126,12 +166,22 @@ func runMcpOrServer(args []string) {
 	token := fs.String("token", "", "auth token")
 	fs.Parse(args)
 
+	sockPath, source, err := resolveMcpBridgeSocket(configDirExplicit, os.Getenv)
+	if err != nil {
+		exitError("relay mcp: %v", err)
+	}
+	// Probed before stdin is read so a wrong or dead socket fails the launch
+	// visibly instead of surfacing as a per-call error inside the client.
+	if err := probeBridgeSocket(sockPath, mcpBridgeProbeTimeout); err != nil {
+		exitError("relay mcp: bridge socket %s (from %s) is unreachable: %v", sockPath, source, err)
+	}
+
 	*token = resolveMcpToken(*token)
 	// An empty token is not fatal: a tokenless caller may still be a C3
 	// member of a live project_session (plan-broker-and-sessions.md §2 C3),
 	// which the bridge resolves on its own. Failing here would deny that
 	// path before relay can decide.
-	if err := mcp.RunMCPServer(*token); err != nil {
+	if err := mcp.RunMCPServerAt(sockPath, *token); err != nil {
 		exitError("mcp server error: %v", err)
 	}
 }
