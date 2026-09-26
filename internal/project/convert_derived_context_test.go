@@ -117,6 +117,26 @@ func TestApplyUpdate_LocalToRemoteRefusedWhileCarriedContextHasNoSchema(t *testi
 		}
 	})
 
+	t.Run("a connected MCP's derived field survives another MCP's refusal", func(t *testing.T) {
+		s, id := localWithDerivedContext(t, "macmcp", macmcpSurface(), aliceContext(), "file_dirs")
+		stored, _ := config.FindProjectByID(s, id)
+		s.ExternalMcps = append(s.ExternalMcps, config.ExternalMcp{ID: "notesmcp"})
+		stored.AllowedMcpIDs = append(stored.AllowedMcpIDs, "notesmcp")
+		stored.Context["notesmcp"] = json.RawMessage(`{"notebooks":["Acme"]}`)
+		before := storedJSON(t, s, id)
+
+		_, found, err := ApplyUpdate(s, id, toRemote(), surfacesOf(McpSurfaces{"macmcp": macmcpSurface()}))
+		if err == nil {
+			t.Fatal("conversion was not refused while notesmcp is not connected")
+		}
+		if !found || !strings.Contains(err.Error(), "notesmcp") || !strings.Contains(err.Error(), "not connected") {
+			t.Errorf("refusal must name notesmcp and say it is not connected (found=%v): %v", found, err)
+		}
+		if after := storedJSON(t, s, id); !bytes.Equal(before, after) {
+			t.Errorf("a refused conversion changed the record:\nbefore %s\nafter  %s", before, after)
+		}
+	})
+
 	for _, tc := range []struct {
 		name   string
 		escape func(*UpdateFields)
@@ -183,7 +203,7 @@ func TestApplyUpdate_ConnectedMcpWithoutSchemaDoesNotBlockConversion(t *testing.
 	}
 }
 
-func TestApplyUpdate_RemoteRecordDropsStaleDerivedFieldOnAnyEdit(t *testing.T) {
+func TestApplyUpdate_RemoteOrHostedRecordDropsStaleDerivedFieldOnAnyEdit(t *testing.T) {
 	staleRemoteGranting := func(mcpID string, ctx map[string]json.RawMessage) *config.Settings {
 		return &config.Settings{
 			ExternalMcps: []config.ExternalMcp{{ID: mcpID}},
@@ -201,20 +221,38 @@ func TestApplyUpdate_RemoteRecordDropsStaleDerivedFieldOnAnyEdit(t *testing.T) {
 	}
 	rename := "Acme renamed"
 
-	t.Run("schema known: the rename drops the field", func(t *testing.T) {
-		s := staleRemote(stale())
-		_, _, err := ApplyUpdate(s, "p1", UpdateFields{Name: &rename}, surfacesOf(McpSurfaces{"macmcp": macmcpSurface()}))
-		assertNoErr(t, err, "rename")
+	staleHosted := func() *config.Settings {
+		return &config.Settings{
+			ExternalMcps: []config.ExternalMcp{{ID: "macmcp"}},
+			Hosts:        []config.Host{{ID: "h_win", Name: "winhost"}},
+			Projects: []config.Project{{
+				ID: "p1", Name: "Acme", HostID: "h_win", Path: "/home/acme/work", Context: stale(),
+			}},
+		}
+	}
 
-		after, _ := config.FindProjectByID(s, "p1")
-		values := ContextValues(after.Context["macmcp"])
-		if raw, ok := values["file_dirs"]; ok {
-			t.Fatalf("a remote record still holds file_dirs after an edit: %s", raw)
-		}
-		if string(values["mail_accounts"]) != `["Alice"]` {
-			t.Errorf("the operator field did not survive: %s", after.Context["macmcp"])
-		}
-	})
+	for _, tc := range []struct {
+		kind   string
+		record func() *config.Settings
+	}{
+		{"remote", func() *config.Settings { return staleRemote(stale()) }},
+		{"hosted", staleHosted},
+	} {
+		t.Run("schema known: the rename drops the field: "+tc.kind, func(t *testing.T) {
+			s := tc.record()
+			_, _, err := ApplyUpdate(s, "p1", UpdateFields{Name: &rename}, surfacesOf(McpSurfaces{"macmcp": macmcpSurface()}))
+			assertNoErr(t, err, "rename")
+
+			after, _ := config.FindProjectByID(s, "p1")
+			values := ContextValues(after.Context["macmcp"])
+			if raw, ok := values["file_dirs"]; ok {
+				t.Fatalf("a %s record still holds file_dirs after an edit: %s", tc.kind, raw)
+			}
+			if string(values["mail_accounts"]) != `["Alice"]` {
+				t.Errorf("the operator field did not survive: %s", after.Context["macmcp"])
+			}
+		})
+	}
 
 	t.Run("v1 schema known: the rename drops allowed_dirs", func(t *testing.T) {
 		s := staleRemoteGranting("fsmcp", map[string]json.RawMessage{

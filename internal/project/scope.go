@@ -218,6 +218,9 @@ func dropDerivedContext(proj *config.Project, surfaces McpSurfaces) {
 		}
 		out, err := json.Marshal(values)
 		if err != nil {
+			// Deliberate: keeping the original blob would keep the derived
+			// field. Losing the operator fields beside it only narrows.
+			delete(proj.Context, mcpID)
 			continue
 		}
 		proj.Context[mcpID] = out

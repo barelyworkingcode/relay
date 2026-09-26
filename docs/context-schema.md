@@ -187,15 +187,20 @@ thing.
   when it asks whether an update widens `context`, provided the stored value
   is exactly what relay derives from `path`.
 
-  A derived value stays relay's after the record stops having a path. Any
-  update whose result is remote or hosted drops every stored derived field
+  A derived value stays relay's after the record stops having a path. An
+  update whose result is remote or hosted, and that names no permission field
+  (`access`, `allowed_tools`, `allow_external`), drops every stored derived field
   (v2 `source: "project_path"`, or v1 `allowed_dirs`) for each MCP whose
   schema relay holds, and deletes an entry left with no fields. The correct
   derived value for a record with no path is "absent", so dropping only
   narrows: an absent restrict field refuses every tool it governs. Refusing
   instead would ask the operator to remove a value no request can name.
   Operator fields beside it survive, and an entry with nothing to drop keeps
-  its bytes.
+  its bytes. An update that names a permission field validates the stored
+  context as if it had been sent, so while a derived value is stored it is
+  refused, naming the derived field, and neither converts nor drops. This is
+  a known limitation: send an update that names no permission field first,
+  which drops the derived value, then the one that does.
 
   An MCP that is not connected (no entry in the live surfaces, as distinct
   from connected with no schema) cannot be judged: keeping its stored value
@@ -205,7 +210,8 @@ thing.
   way out is to connect the MCP, remove it from `allowed_mcp_ids`, or send
   its context in the same request. The refusal applies to conversions only;
   an edit to an existing profile while an MCP is down leaves that MCP's
-  context as it is, and the next edit with the MCP connected cleans it.
+  context as it is, and the next edit with the MCP connected that names no
+  permission field cleans it.
 - **`operator`** — an operator sets it explicitly, local and remote alike. A
   restrict field with no declared `source` is treated as operator-supplied,
   because that is the reading that leaves the value un-derivable: relay
