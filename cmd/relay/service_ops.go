@@ -469,6 +469,16 @@ func (o *ServiceOps) runQueued(ctx context.Context, fn func() error) error {
 	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
+// runCommitted is runQueued for steps whose results the caller reads after
+// return: an admitted step is never abandoned on caller cancellation, so the
+// closure's outputs cannot race the worker.
+func (o *ServiceOps) runCommitted(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
+}
+
 func (o *ServiceOps) notify() {
 	if o.OnChange != nil {
 		o.OnChange()
@@ -522,7 +532,7 @@ func (o *ServiceOps) Register(ctx context.Context, f serviceFields, via, credID 
 			return config.ServiceConfig{}, err
 		}
 	}
-	err = o.runQueued(ctx, func() error {
+	err = o.runCommitted(ctx, func() error {
 		if svc, _ := config.FindServiceByID(config.FreshSettings(o.Store), id); svc != nil {
 			if err := o.preflightUpdate(id, f); err != nil {
 				return err
@@ -548,7 +558,7 @@ func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID st
 	if err != nil {
 		return config.ServiceConfig{}, err
 	}
-	err = o.runQueued(ctx, func() error {
+	err = o.runCommitted(ctx, func() error {
 		var innerErr error
 		cfg, innerErr = o.commitCreate(id, f, via, credID, approval)
 		return innerErr
@@ -672,7 +682,7 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 	if err != nil {
 		return config.ServiceConfig{}, err
 	}
-	err = o.runQueued(ctx, func() error {
+	err = o.runCommitted(ctx, func() error {
 		var innerErr error
 		cfg, innerErr = o.commitUpdate(id, f, via, credID, approval)
 		return innerErr
@@ -934,7 +944,7 @@ type ConfigSaveResult struct {
 // An error wrapping errServiceProcess means the file WAS written and only the
 // restart failed; every other error means nothing was written.
 func (o *ServiceOps) SaveConfigFile(ctx context.Context, id, text string) (res ConfigSaveResult, err error) {
-	err = o.runQueued(ctx, func() error {
+	err = o.runCommitted(ctx, func() error {
 		var innerErr error
 		res, innerErr = o.saveConfigFile(id, text)
 		return innerErr

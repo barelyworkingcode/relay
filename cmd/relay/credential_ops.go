@@ -39,6 +39,16 @@ func (o *CredentialOps) runQueued(ctx context.Context, fn func() error) error {
 	return o.Queue.Do(ctx, func(context.Context) error { return fn() })
 }
 
+// runCommitted is runQueued for steps whose results the caller reads after
+// return: an admitted step is never abandoned on caller cancellation, so the
+// closure's outputs cannot race the worker.
+func (o *CredentialOps) runCommitted(ctx context.Context, fn func() error) error {
+	if o.Queue == nil {
+		return fn()
+	}
+	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
+}
+
 // presenceDigest binds a credential.mint grant to exactly the name, class
 // set and TTL being minted (§6.4): a grant answered for `--class read`
 // must not mint `--class grant --class execute`.
@@ -87,7 +97,7 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 
 	var cred config.APICredential
 	var plaintext string
-	err = o.runQueued(ctx, func() error {
+	err = o.runCommitted(ctx, func() error {
 		var mintErr error
 		cred, plaintext, mintErr = mintAPICredential(o.Store, credentialMintRequest{Name: name, Classes: req.Classes, TTL: req.TTL})
 		if mintErr != nil {
@@ -131,7 +141,7 @@ func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (con
 	}
 
 	var removed config.APICredential
-	err = o.runQueued(ctx, func() error {
+	err = o.runCommitted(ctx, func() error {
 		var revokeErr error
 		removed, revokeErr = revokeAPICredential(o.Store, id)
 		if revokeErr != nil {

@@ -272,7 +272,7 @@ func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (loginCodeView
 		return loginCodeView{}, err
 	}
 	var plaintext, expires string
-	if err := o.runQueued(ctx, func() error {
+	if err := o.runCommitted(ctx, func() error {
 		var err error
 		plaintext, expires, err = mintLoginBootstrap(o.Store)
 		if err != nil {
@@ -364,7 +364,7 @@ func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (config.Passkey
 		return config.Passkey{}, err
 	}
 	var removed config.Passkey
-	if err := o.runQueued(ctx, func() error {
+	if err := o.runCommitted(ctx, func() error {
 		var err error
 		removed, err = revokePasskey(o.Store, id)
 		if err != nil {
