@@ -126,8 +126,8 @@ func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Se
 	return s
 }
 
-// SetExitHandler installs fn to be called, on its own goroutine, whenever a
-// session this server dispatched to exits — the hook cmd/relaysessions uses
+// SetExitHandler installs fn to be called, possibly on a request's own
+// goroutine, whenever a session this server dispatched to exits — the hook cmd/relaysessions uses
 // to send C5's SessionExited bridge report. rootPID is 0 for a claude/pi/
 // chat session; reason is "closed" when this host's own
 // /terminate caused the exit, "exit" otherwise — C5 also names "idle" and
