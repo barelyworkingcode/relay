@@ -121,16 +121,23 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	if err != nil {
 		return sandbox.Spec{}, fmt.Errorf("resolve application support directory: %w", err)
 	}
-	// relay's own directory comes from bridge.ConfigDir (which a test
-	// redirects) while its siblings come from the OS: the two are the same
-	// place in production, and a test that redirected only the first must
-	// not end up naming a directory it never created.
+	// relay's own directory comes from bridge.ConfigDir (which --config-dir
+	// or a test redirects) while its siblings come from the OS: relayLLM
+	// does not move with relay's override, and a test that redirected only
+	// the first must not end up naming a directory it never created.
 	relayDir := bridge.ConfigDir()
 	relayLLMDir := filepath.Join(appSupport, "relayLLM")
 
 	// Sockets are not files: connecting to one is a network operation the
 	// file rules do not cover, so the socket denials stay a list.
-	unixConnectDeny := []string{relayDir, relayLLMDir}
+	unixConnectDeny := []string{relayDir}
+	// Under an override the default dir still holds another relay
+	// instance's sockets; the allow rules name only relayDir's, so denying
+	// the default dir keeps a session from dialing that other relay.
+	if defaultDir := bridge.DefaultConfigDir(); filepath.Clean(defaultDir) != filepath.Clean(relayDir) {
+		unixConnectDeny = append(unixConnectDeny, defaultDir)
+	}
+	unixConnectDeny = append(unixConnectDeny, relayLLMDir)
 	if eveData := eveDataDir(settings); eveData != "" {
 		unixConnectDeny = append(unixConnectDeny, eveData)
 	}
