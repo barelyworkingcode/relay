@@ -365,6 +365,11 @@ func ConfigDir() string {
 	if configDirOverride != "" {
 		return configDirOverride
 	}
+	return DefaultConfigDir()
+}
+
+// DefaultConfigDir is where ConfigDir points when no override is set.
+func DefaultConfigDir() string {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		configDir, _ = os.UserHomeDir()

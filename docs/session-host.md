@@ -567,6 +567,14 @@ executing a binary already named by absolute path, and `relay mcp` reaches
 relay only by dialing the bridge socket, already allowed by the unix-socket
 rule.
 
+The unix-socket rule denies connecting to any socket beneath relay's config
+dir, relayLLM's data dir and eve's data dir (when set), then reopens only
+relay's own `relay.sock`, `model.sock` and `relaysessions-hook.sock`. Under
+`relay --config-dir`, the default config dir
+(`~/Library/Application Support/relay`) is denied too: another relay instance
+keeps its sockets there, and a session must reach only the relay that
+launched it.
+
 A session's folders come from four places, and only the third is configured:
 
 | Grant | Paths | Where it lives |
