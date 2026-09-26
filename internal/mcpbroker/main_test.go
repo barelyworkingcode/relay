@@ -15,6 +15,13 @@ import (
 // run in parallel, and cmd/relay's sandbox guard watches the real directory
 // for the whole run, so it cannot say which package escaped.
 func TestMain(m *testing.M) {
+	// This is deliberate: HOME is swapped below, and Go derives these caches
+	// from HOME, so an unpinned child `go build` would start from an empty
+	// module cache and hit the network.
+	if err := pinGoToolchainCaches(); err != nil {
+		fmt.Fprintln(os.Stderr, "mcpbroker tests: pin Go toolchain caches:", err)
+		os.Exit(1)
+	}
 	home, err := os.MkdirTemp("", "mcpbroker-test-home-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mcpbroker tests: create sandbox home:", err)

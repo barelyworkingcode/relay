@@ -6,6 +6,9 @@ package mcpbroker
 // copies too rather than have main export a test seam for them.
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,3 +94,31 @@ func buildTestMcpBinary(t *testing.T) string {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// pinGoToolchainCaches is a copy of cmd/relay's; test helpers do not cross
+// packages. It exports the module cache, build cache and go env file
+// resolved against the real HOME, leaving any already set in the process
+// environment untouched.
+func pinGoToolchainCaches() error {
+	out, err := exec.Command("go", "env", "-json", "GOMODCACHE", "GOCACHE", "GOENV").Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return fmt.Errorf("go env -json GOMODCACHE GOCACHE GOENV: %w: %s", err, exitErr.Stderr)
+		}
+		return fmt.Errorf("go env -json GOMODCACHE GOCACHE GOENV: %w", err)
+	}
+	var vars map[string]string
+	if err := json.Unmarshal(out, &vars); err != nil {
+		return fmt.Errorf("parse go env output %q: %w", out, err)
+	}
+	for name, value := range vars {
+		if _, set := os.LookupEnv(name); set {
+			continue
+		}
+		if err := os.Setenv(name, value); err != nil {
+			return fmt.Errorf("set %s=%s: %w", name, value, err)
+		}
+	}
+	return nil
+}

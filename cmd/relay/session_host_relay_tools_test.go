@@ -37,8 +37,7 @@ type relayToolsFixture struct {
 
 // rtBuildBundle builds the real relay and relay-sessions binaries into a
 // bundle-shaped directory, so BuiltinRelaySessionsService resolves the helper
-// exactly as it does inside Relay.app. It runs before HOME moves, because the
-// go build cache lives under HOME.
+// exactly as it does inside Relay.app.
 func rtBuildBundle(t *testing.T) (relayBin string) {
 	t.Helper()
 	contents := filepath.Join(mkShortTempDir(t, "rt-bundle-"), "Relay.app", "Contents")

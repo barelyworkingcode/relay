@@ -644,6 +644,10 @@ func ptr[T any](v T) *T { return &v }
 func pinGoToolchainCaches() error {
 	out, err := exec.Command("go", "env", "-json", "GOMODCACHE", "GOCACHE", "GOENV").Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return fmt.Errorf("go env -json GOMODCACHE GOCACHE GOENV: %w: %s", err, exitErr.Stderr)
+		}
 		return fmt.Errorf("go env -json GOMODCACHE GOCACHE GOENV: %w", err)
 	}
 	var vars map[string]string
