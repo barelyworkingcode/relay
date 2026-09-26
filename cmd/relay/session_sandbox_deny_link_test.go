@@ -25,7 +25,7 @@ func TestAuthorizeLaunch_RefusesDenyThroughUserLink(t *testing.T) {
 	t.Setenv("HOME", home)
 	if err := store.With(func(s *config.Settings) {
 		s.TerminalTemplates = append(s.TerminalTemplates, config.TerminalTemplate{
-			ID: "custom", Name: "Custom", Sandbox: true, ReadWrite: []string{"~"}, Deny: []string{"~/.config/gh"},
+			ID: "custom", Name: "Custom", Sandbox: ptr(true), ReadWrite: []string{"~"}, Deny: []string{"~/.config/gh"},
 		})
 	}); err != nil {
 		t.Fatalf("store.With: %v", err)
