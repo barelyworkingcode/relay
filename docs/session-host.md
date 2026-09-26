@@ -627,10 +627,16 @@ the entry's last component is a link, the link's own path as a second literal
 with its ancestors. A socket-deny dir reached through a link is not refused,
 unlike a `deny` entry: the connect rule matches the resolved path whatever link
 led there. One that cannot be spelled refuses the render with
-`unix_connect_deny: …`. The cost: a shell session cannot rename, remove, swap
-or clone `~` itself, `~/Library`, `~/Library/Application Support` or the
-socket-deny dirs themselves, even with no `deny` entry; writing, renaming and removing files inside them, `chmod`,
-`utimes` and listing still work.
+`unix_connect_deny: …`. The cost falls on any session whose grant covers a
+socket-deny dir or a directory above it, even with no `deny` entry: it cannot
+rename, remove, swap or clone that dir or any directory above it. For a shell
+session's read-write `~` that is `~` itself, `~/Library`,
+`~/Library/Application Support` and the socket-deny dirs. Eve's default data
+dir is `<WorkingDir>/data`, so a project rooted at eve's checkout holds it
+inside its read-write grant: every session kind there cannot rename or remove
+`data`, the project root or anything above it, and `rm -rf data` or
+`git clean -fdx` leaves the directory behind. Writing, renaming and removing
+files inside these dirs, `chmod`, `utimes` and listing still work.
 
 **A socket cannot leave its deny dir either.** Renaming a socket file out of a
 socket-deny dir, or unlinking it, would leave it connectable at a path the

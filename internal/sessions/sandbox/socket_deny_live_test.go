@@ -162,6 +162,31 @@ func TestLive_SocketFileCannotLeaveItsDenyDir(t *testing.T) {
 	}
 }
 
+func TestLive_SocketFileCannotBeSwappedReplacedOrNested(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		action func(f socketDenyFixture, file, sub string) string
+	}{
+		{"swap a file with the socket", func(f socketDenyFixture, file, _ string) string { return "swap " + file + " " + f.sock }},
+		{"rename a file over the socket", func(f socketDenyFixture, file, _ string) string { return "rename " + file + " " + f.sock }},
+		{"rename the socket into a subdirectory", func(f socketDenyFixture, _, sub string) string {
+			return "rename " + f.sock + " " + filepath.Join(sub, "x.sock")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSocketDenyFixture(t)
+			file, sub := filepath.Join(f.home, "f"), filepath.Join(f.dir, "sub")
+			writeFile(t, file)
+			mkdirs(t, sub)
+			action := tc.action(f, file, sub)
+			if runProbe(t, f.profile, action) {
+				t.Errorf("%q succeeded", action)
+			}
+			requireSocketAt(t, f.sock)
+		})
+	}
+}
+
 // TestLive_SocketDenyDirLeavesNormalUseWorking runs its steps in order on one
 // fixture: each step works on what the one before it left.
 func TestLive_SocketDenyDirLeavesNormalUseWorking(t *testing.T) {
