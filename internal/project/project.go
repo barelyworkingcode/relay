@@ -299,10 +299,11 @@ func validateProjectPermissions(proj *config.Project, surfaces McpSurfaces) erro
 // derived rather than the request supplied. derives is true when the
 // candidate is local and not hosted, the same condition under which
 // comparableContext strips derived fields; priorDerived is true when the
-// stored record is local and not hosted, so a stored v1 blob is relay's even
-// when the result is remote or hosted, where the write then drops it;
-// prior is the stored context; fromRequest reports whether the candidate's
-// context came from the request rather than from the stored record.
+// stored record is local and not hosted, and admits only the allowed_dirs
+// blob relay derived there, which on a remote or hosted result is pruned
+// with the grant or dropped, so it never lands; prior is the stored context;
+// fromRequest reports whether the candidate's context came from the request
+// rather than from the stored record.
 type derivedCarry struct {
 	derives      bool
 	priorDerived bool
@@ -313,9 +314,10 @@ type derivedCarry struct {
 // carriesV1Blob reports whether blob is the stored v1 blob for mcpID, judged
 // by jsonValueEqual, which is the presence gate's own comparison: validation
 // accepts exactly the echo the gate treats as unchanged. Not a byte compare,
-// because the Settings form's JSON round trip reorders keys.
-func (c derivedCarry) carriesV1Blob(mcpID string, blob json.RawMessage) bool {
-	if !c.derives && !c.priorDerived {
+// because the Settings form's JSON round trip reorders keys. derivable
+// reports whether the MCP's schema declares the field relay derives.
+func (c derivedCarry) carriesV1Blob(mcpID string, blob json.RawMessage, derivable bool) bool {
+	if !c.derives && !(c.priorDerived && derivable) {
 		return false
 	}
 	stored, ok := c.prior[mcpID]
@@ -450,7 +452,7 @@ func validateProjectContextForMcp(mcpID string, blob json.RawMessage, surfaces M
 
 	if !schema.V2() {
 		if len(surface.Schema) > 0 {
-			if carry.carriesV1Blob(mcpID, blob) {
+			if carry.carriesV1Blob(mcpID, blob, schemaHasField(surface.Schema, V1AllowedDirsField)) {
 				return nil
 			}
 			return fmt.Errorf("context for %q cannot be set here: it declares a v1 context schema, whose only field relay derives from the project's path — a value written here would be replaced on the next resync", mcpID)

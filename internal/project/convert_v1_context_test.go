@@ -78,6 +78,27 @@ func TestApplyUpdate_ConvertingV1GrantToRemote(t *testing.T) {
 		}
 	})
 
+	t.Run("an operator value under a v1 schema relay derives nothing for is refused", func(t *testing.T) {
+		folder := McpSurfaces{"foldermcp": {Schema: json.RawMessage(`{"folder":{"type":"string"}}`)}}
+		s := &config.Settings{ExternalMcps: []config.ExternalMcp{{ID: "foldermcp"}}}
+		created, err := ApplyCreate(s, CreateFields{
+			Name: "Acme", Path: t.TempDir(), AllowedMcpIDs: []string{"foldermcp"},
+		}, folder)
+		assertNoErr(t, err, "create local project")
+		stored, _ := config.FindProjectByID(s, created.ID)
+		// Written past the form, which cannot set a field under a v1 schema.
+		stored.Context = map[string]json.RawMessage{"foldermcp": json.RawMessage(`{"folder":"/acme"}`)}
+		before := storedJSON(t, s, created.ID)
+
+		_, _, err = ApplyUpdate(s, created.ID, formConversion(maps.Clone(stored.Context)), surfacesOf(folder))
+		if err == nil || !strings.Contains(err.Error(), "v1 context schema") {
+			t.Errorf("conversion echoing a v1 value relay did not derive must be refused by the v1 context check: %v", err)
+		}
+		if after := storedJSON(t, s, created.ID); !bytes.Equal(before, after) {
+			t.Errorf("a refused conversion changed the record:\nbefore %s\nafter  %s", before, after)
+		}
+	})
+
 	t.Run("dropping the grant converts and leaves no fsmcp context", func(t *testing.T) {
 		s, id := localGrantingV1AndPlain(t)
 		f := toRemote()

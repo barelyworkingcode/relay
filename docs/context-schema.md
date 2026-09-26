@@ -209,9 +209,10 @@ thing.
   been sent: an update that names a permission field while one is stored, a
   conversion to remote included, is refused, naming the field, and neither
   converts nor drops. Send an update that names no permission field first,
-  which drops the derived value, then the one that does. A stored v1 blob
-  is the exception: when the stored record is local and not hosted it
-  passes as relay's (see the v1 echo below).
+  which drops the derived value, then the one that does. A stored v1
+  `allowed_dirs` blob is the exception: when the stored record is local and
+  not hosted it passes as relay's and is then dropped (see the v1 echo
+  below).
 
   An MCP that is not connected (no entry in the live surfaces, as distinct
   from connected with no schema) cannot be judged: keeping its stored value
@@ -496,14 +497,18 @@ refusals, each naming the problem:
   at the next resync;
 - a context value for an MCP that declares a **v1** schema, for the same
   reason: the v1 branch replaces the whole blob. The one exception is an
-  echo: when the stored record is local and not hosted, a v1 blob is
-  accepted when that record has one for that MCP and the two are equal by
-  decoded value (the presence gate's own comparison, so reordered keys and
-  whitespace still match). That is what the Settings form resends on every
-  save. On a remote or hosted result the blob is then dropped, or pruned
-  with the MCP, so it never lands. A changed value, a new blob, any v1 blob
-  on create and any on a record that was already remote or hosted are
-  refused, and the duplicate-key check runs first;
+  echo: a v1 blob is accepted when the stored record has one for that MCP
+  and the two are equal by decoded value (the presence gate's own
+  comparison, so reordered keys and whitespace still match), provided the
+  result is local and not hosted or, for an MCP whose schema declares
+  `allowed_dirs`, the stored record is local and not hosted. That is what
+  the Settings form resends on every save. Relay's derived `allowed_dirs`
+  never lands on a remote or hosted record: the write drops it, or prunes
+  it with the grant. A changed value, a new blob and any v1 blob on create
+  are refused, as is an echo when neither the result nor the stored record
+  is local and unhosted; converting a remote or hosted record back to local
+  accepts the echo because the result is local. The duplicate-key check
+  runs first;
 - an `access` that is not `read` or `write`;
 - an `allowed_tools` pattern that will not compile, which would match no tool
   at all in *that* list (the same pattern in a field's `applies_to` governs
