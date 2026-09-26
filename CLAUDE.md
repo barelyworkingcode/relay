@@ -26,6 +26,7 @@ same change when behaviour moves.
 | SSH host projects | [`docs/ssh-hosts.md`](docs/ssh-hosts.md) |
 | Model endpoint, model keys | [`docs/model-endpoint.md`](docs/model-endpoint.md) |
 | Tests | [`docs/testing.md`](docs/testing.md), [`docs/testing-roadmap.md`](docs/testing-roadmap.md) |
+| Devbox verify (layer 2, the running app) | [`cmd/devboxverify/README.md`](cmd/devboxverify/README.md) |
 
 ADR-NNN citations in code and docs are labels for reasoning recorded in those
 documents; there is no ADR directory to look in.
