@@ -467,7 +467,14 @@ both read ends get a read deadline of `providerDrainTimeout` (2s, read once at
 spawn), and it waits for the stdout and stderr readers to finish. Only then is
 `process_exited` emitted, so every line the child wrote is handled first. The
 deadline exists because a grandchild that inherited a write end can hold it
-open indefinitely; past the deadline, whatever it writes is dropped.
+open indefinitely; past the deadline, whatever it writes is dropped. The
+deadline bounds reads, not handler time: a handler slower than the deadline
+loses whatever backlog is still unread when it passes.
+
+Only the provider's current spawn emits `process_exited`. After `Kill()` then
+`Start()` on the same provider, the old spawn's drain can finish once the new
+spawn is live; that exit is logged at `Debug` (`provider exit from a
+superseded spawn dropped`) and dropped, with no crash `Warn`.
 
 `logProviderStderr` also keeps the last 10 lines it logged, redacted and
 truncated as above, and hands them back when it finishes. On a non-zero exit,

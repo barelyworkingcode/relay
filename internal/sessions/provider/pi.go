@@ -121,6 +121,10 @@ type PiProvider struct {
 	// killed is per spawn: a restarted spawn gets a fresh one, so an old
 	// spawn's late exit can't read the new spawn's flag.
 	killed *atomic.Bool
+	// spawnGen counts Starts. A spawn's waitForExit emits process_exited
+	// only while its own generation is still current, so a killed spawn
+	// whose drain outlasts a restart stays silent.
+	spawnGen atomic.Uint64
 
 	msgStartNano   atomic.Int64
 	firstTokenNano atomic.Int64
@@ -146,13 +150,13 @@ func (p *PiProvider) touchActivity() {
 	p.lastActivity.Store(time.Now().Unix())
 }
 
-func (p *PiProvider) idleWatcher() {
+func (p *PiProvider) idleWatcher(stopIdle <-chan struct{}) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-p.stopIdle:
+		case <-stopIdle:
 			return
 		case <-ticker.C:
 			idle := time.Now().Unix() - p.lastActivity.Load()
@@ -405,13 +409,14 @@ func (p *PiProvider) Start() (err error) {
 	p.waitDone = make(chan struct{})
 	p.drainTimeout = providerDrainTimeout
 	p.killed = &atomic.Bool{}
+	gen := p.spawnGen.Add(1)
 	p.touchActivity()
 
 	out := newSpawnOutput(stdoutR, stderrR)
 	go p.readStdout(stdoutR, sawStdout, out.stdoutDone)
 	go func() { out.stderrTail <- logStderr() }()
-	go p.waitForExit(out, p.drainTimeout, p.killed)
-	go p.idleWatcher()
+	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, gen)
+	go p.idleWatcher(p.stopIdle)
 
 	slog.Info("pi process started", "session", p.session.ID, "model", p.modelID, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
 
@@ -483,10 +488,13 @@ func (p *PiProvider) readStdout(r io.ReadCloser, sawStdout *atomic.Bool, done ch
 	}
 }
 
-func (p *PiProvider) waitForExit(out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool) {
-	err := p.cmd.Wait()
+// idleWatcher and waitForExit take their spawn's own cmd and channels as
+// arguments: after Kill then Start, a goroutine re-reading the fields would
+// race the next Start and could close that spawn's waitDone.
+func (p *PiProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool, gen uint64) {
+	err := cmd.Wait()
 	p.alive.Store(false)
-	close(p.waitDone)
+	close(waitDone)
 
 	exitCode := 0
 	if err != nil {
@@ -497,6 +505,10 @@ func (p *PiProvider) waitForExit(out *spawnOutput, drainTimeout time.Duration, k
 	}
 
 	tail := out.drain(drainTimeout)
+	if p.spawnGen.Load() != gen {
+		slog.Debug("provider exit from a superseded spawn dropped", "session", p.session.ID, "kind", "pi", "exitCode", exitCode)
+		return
+	}
 	slog.Info("pi process exited", "session", p.session.ID, "exitCode", exitCode)
 	if !killed.Load() {
 		warnProviderExit(p.session.ID, "pi", exitCode, tail)

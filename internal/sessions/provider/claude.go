@@ -129,6 +129,10 @@ type ClaudeProvider struct {
 	// killed is per spawn: a restarted spawn gets a fresh one, so an old
 	// spawn's late exit can't read the new spawn's flag.
 	killed *atomic.Bool
+	// spawnGen counts Starts. A spawn's waitForExit emits process_exited
+	// only while its own generation is still current, so a killed spawn
+	// whose drain outlasts a restart stays silent.
+	spawnGen atomic.Uint64
 
 	msgStartNano   atomic.Int64
 	firstTokenNano atomic.Int64
@@ -514,12 +518,13 @@ func (p *ClaudeProvider) Start() error {
 	p.waitDone = make(chan struct{})
 	p.drainTimeout = providerDrainTimeout
 	p.killed = &atomic.Bool{}
+	gen := p.spawnGen.Add(1)
 	p.touchActivity()
 
 	out := newSpawnOutput(stdoutR, stderrR)
 	go p.readStdout(stdoutR, spawn, out.stdoutDone)
 	go func() { out.stderrTail <- logStderr() }()
-	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed)
+	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, gen)
 	go p.idleWatcher(p.stopIdle)
 
 	slog.Info("claude process started", "session", p.session.ID, "model", p.model, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
@@ -585,7 +590,7 @@ func (p *ClaudeProvider) identitySecret() string {
 	return p.cfg.Identity.Secret
 }
 
-func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool) {
+func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool, gen uint64) {
 	err := cmd.Wait()
 	p.alive.Store(false)
 	close(waitDone)
@@ -599,6 +604,10 @@ func (p *ClaudeProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out 
 	}
 
 	tail := out.drain(drainTimeout)
+	if p.spawnGen.Load() != gen {
+		slog.Debug("provider exit from a superseded spawn dropped", "session", p.session.ID, "kind", "claude", "exitCode", exitCode)
+		return
+	}
 	slog.Info("claude process exited", "session", p.session.ID, "exitCode", exitCode)
 	if !killed.Load() {
 		warnProviderExit(p.session.ID, "claude", exitCode, tail)

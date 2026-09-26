@@ -48,27 +48,36 @@ func (r *exitRecorder) waitExited(t *testing.T, within time.Duration) []string {
 	}
 }
 
-// spawnFake starts a claude or pi provider whose binary is the given script
-// and returns its Kill.
-func spawnFake(t *testing.T, kind, id, script string, handler sessionstypes.EventHandler) (kill func()) {
+type startKiller interface {
+	Start() error
+	Kill()
+}
+
+// spawnFake starts a claude or pi provider whose binary is the given script.
+func spawnFake(t *testing.T, kind, id, script string, handler sessionstypes.EventHandler) startKiller {
+	t.Helper()
+	return spawnFakeWithKey(t, kind, id, script, "", handler)
+}
+
+// spawnFakeWithKey is spawnFake with a model key for pi, which pi redacts
+// from its stderr as an exact secret.
+func spawnFakeWithKey(t *testing.T, kind, id, script, piModelKey string, handler sessionstypes.EventHandler) startKiller {
 	t.Helper()
 	sess := &sessionstypes.Session{ID: id, Model: "m", Directory: t.TempDir()}
-	var start func() error
+	var p startKiller
 	switch kind {
 	case "claude":
-		p := NewClaudeProvider(sess, handler, ClaudeConfig{Binary: writeFakeCLI(t, script)}, nil)
-		start, kill = p.Start, p.Kill
+		p = NewClaudeProvider(sess, handler, ClaudeConfig{Binary: writeFakeCLI(t, script)}, nil)
 	case "pi":
-		p := NewPiProvider(sess, handler, PiConfig{Binary: writeFakeCLI(t, script), DataDir: t.TempDir()})
-		start, kill = p.Start, p.Kill
+		p = NewPiProvider(sess, handler, PiConfig{Binary: writeFakeCLI(t, script), DataDir: t.TempDir(), ModelKey: piModelKey})
 	default:
 		t.Fatalf("unknown provider kind %q", kind)
 	}
-	t.Cleanup(kill)
-	if err := start(); err != nil {
+	t.Cleanup(p.Kill)
+	if err := p.Start(); err != nil {
 		t.Fatalf("%s Start: %v", kind, err)
 	}
-	return kill
+	return p
 }
 
 func printLine(line string) string { return "printf '%s\\n' '" + line + "'\n" }
@@ -78,20 +87,30 @@ var finalEvents = map[string]string{
 	"pi":     `{"type":"agent_end","messages":[],"willRetry":false}`,
 }
 
+// finalEventHold keeps the stdout reader inside the final event's handler
+// long enough for an exit that doesn't wait for stdout to overtake it.
+const finalEventHold = 300 * time.Millisecond
+
 func TestProviderExit_FinalStdoutEventPrecedesProcessExited(t *testing.T) {
-	const runs = 200
 	for _, kind := range []string{"claude", "pi"} {
 		t.Run(kind, func(t *testing.T) {
-			lost := 0
-			for i := 0; i < runs; i++ {
-				rec := newExitRecorder()
-				spawnFake(t, kind, fmt.Sprintf("final-%s-%d", kind, i), printLine(finalEvents[kind])+"exit 0\n", rec.handle)
-				if !slices.Contains(rec.waitExited(t, 5*time.Second), events.HandlerMessageComplete) {
-					lost++
+			rec := newExitRecorder()
+			exitSeen := make(chan struct{})
+			var once sync.Once
+			spawnFake(t, kind, "final-"+kind, printLine(finalEvents[kind])+"exit 0\n", func(ev string, data json.RawMessage) {
+				switch ev {
+				case events.HandlerMessageComplete:
+					select {
+					case <-exitSeen:
+					case <-time.After(finalEventHold):
+					}
+				case "process_exited":
+					defer once.Do(func() { close(exitSeen) })
 				}
-			}
-			if lost > 0 {
-				t.Fatalf("final event missing before process_exited in %d of %d runs", lost, runs)
+				rec.handle(ev, data)
+			})
+			if before := rec.waitExited(t, 5*time.Second); !slices.Contains(before, events.HandlerMessageComplete) {
+				t.Fatalf("process_exited arrived before the final event; events before it: %v", before)
 			}
 		})
 	}
@@ -118,23 +137,24 @@ func exitWarnRecords(log, session string) []exitWarnRecord {
 }
 
 func TestProviderExit_NonZeroExitWarnsWithStderrTail(t *testing.T) {
-	modelKey := "rmk_" + strings.Repeat("0a", 32)
+	const modelKey = "acme-model-key-p1"
 	var ringLines []string
 	for i := 1; i <= 12; i++ {
 		ringLines = append(ringLines, fmt.Sprintf("err-e%02d", i))
 	}
 	cases := []struct {
 		name, kind  string
+		piModelKey  string
 		stderrLines []string
 		exitCode    int
 		tail        [][]string // per tail entry, oldest first: substrings it must hold
 		absent      string
 	}{
-		{"claude crash", "claude", []string{"fatal: p1 crashed mid-session"}, 3, [][]string{{"fatal: p1 crashed mid-session"}}, ""},
-		{"pi crash", "pi", []string{"fatal: p1 crashed mid-session"}, 3, [][]string{{"fatal: p1 crashed mid-session"}}, ""},
-		{"tail redacts secrets", "claude", []string{"auth failed " + modelKey + " rejected"}, 3, [][]string{{"auth failed ", " rejected"}}, modelKey},
-		{"tail keeps the last ten lines", "claude", ringLines, 3, wholeLines(ringLines[2:]), ""},
-		{"zero exit logs nothing", "claude", []string{"note: p1 finished"}, 0, nil, ""},
+		{"claude crash", "claude", "", []string{"fatal: p1 crashed mid-session"}, 3, [][]string{{"fatal: p1 crashed mid-session"}}, ""},
+		{"pi crash", "pi", "", []string{"fatal: p1 crashed mid-session"}, 3, [][]string{{"fatal: p1 crashed mid-session"}}, ""},
+		{"pi tail redacts its model key", "pi", modelKey, []string{"auth failed " + modelKey + " rejected"}, 3, [][]string{{"auth failed ", " rejected"}}, modelKey},
+		{"tail keeps the last ten lines", "claude", "", ringLines, 3, wholeLines(ringLines[2:]), ""},
+		{"zero exit logs nothing", "claude", "", []string{"note: p1 finished"}, 0, nil, ""},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,7 +167,7 @@ func TestProviderExit_NonZeroExitWarnsWithStderrTail(t *testing.T) {
 			script += fmt.Sprintf("exit %d\n", tc.exitCode)
 			rec := newExitRecorder()
 			var logAtExit string
-			spawnFake(t, tc.kind, id, script, func(kind string, data json.RawMessage) {
+			spawnFakeWithKey(t, tc.kind, id, script, tc.piModelKey, func(kind string, data json.RawMessage) {
 				if kind == "process_exited" {
 					logAtExit = logs.all()
 				}
@@ -201,8 +221,7 @@ func TestProviderExit_KillIsNotACrash(t *testing.T) {
 			logs := captureDebugJSON(t)
 			id := "kill-" + kind
 			rec := newExitRecorder()
-			kill := spawnFake(t, kind, id, "exec sleep 30\n", rec.handle)
-			kill()
+			spawnFake(t, kind, id, "exec sleep 30\n", rec.handle).Kill()
 			rec.waitExited(t, 5*time.Second)
 			if got := exitWarnRecords(logs.all(), id); len(got) != 0 {
 				t.Fatalf("Kill logged %q: %+v", msgProviderExitedWithError, got)
