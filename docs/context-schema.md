@@ -209,10 +209,12 @@ thing.
   been sent: an update that names a permission field while one is stored, a
   conversion to remote included, is refused, naming the field, and neither
   converts nor drops. Send an update that names no permission field first,
-  which drops the derived value, then the one that does. A stored v1
-  `allowed_dirs` blob is the exception: when the stored record is local and
-  not hosted it passes as relay's and is then dropped (see the v1 echo
-  below).
+  which drops the derived value, then the one that does. A stored v1 blob
+  for an MCP that declares `allowed_dirs` is the exception: when the stored
+  record is local and not hosted it passes validation, the grant check then
+  refuses a kept grant, and a dropped grant takes the blob with it. A stored
+  v1 blob for an MCP that declares no `allowed_dirs` is refused, naming the
+  MCP (see the v1 echo below).
 
   An MCP that is not connected (no entry in the live surfaces, as distinct
   from connected with no schema) cannot be judged: keeping its stored value
@@ -505,8 +507,9 @@ refusals, each naming the problem:
   the Settings form resends on every save. Relay's derived `allowed_dirs`
   never lands on a remote or hosted record: the write drops it, or prunes
   it with the grant. A changed value, a new blob and any v1 blob on create
-  are refused, as is an echo when neither the result nor the stored record
-  is local and unhosted; converting a remote or hosted record back to local
+  are refused, as is an echo when the result is remote or hosted and
+  either the stored record was too or the MCP declares no `allowed_dirs`;
+  converting a remote or hosted record back to local
   accepts the echo because the result is local. The duplicate-key check
   runs first;
 - an `access` that is not `read` or `write`;

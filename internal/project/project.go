@@ -299,11 +299,11 @@ func validateProjectPermissions(proj *config.Project, surfaces McpSurfaces) erro
 // derived rather than the request supplied. derives is true when the
 // candidate is local and not hosted, the same condition under which
 // comparableContext strips derived fields; priorDerived is true when the
-// stored record is local and not hosted, and admits only the allowed_dirs
-// blob relay derived there, which on a remote or hosted result is pruned
-// with the grant or dropped, so it never lands; prior is the stored context;
-// fromRequest reports whether the candidate's context came from the request
-// rather than from the stored record.
+// stored record is local and not hosted, and admits the stored blob of an
+// MCP that declares allowed_dirs, which on a remote or hosted result is
+// pruned with the grant or dropped, so it never lands; prior is the stored
+// context; fromRequest reports whether the candidate's context came from the
+// request rather than from the stored record.
 type derivedCarry struct {
 	derives      bool
 	priorDerived bool
