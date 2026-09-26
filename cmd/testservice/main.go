@@ -34,7 +34,11 @@ func main() {
 	// Written before any work so a test can poll for the file regardless of
 	// --register/--status-after.
 	if *dumpEnv != "" {
-		if err := os.WriteFile(*dumpEnv, []byte(strings.Join(os.Environ(), "\n")), 0o600); err != nil {
+		tmp := *dumpEnv + ".tmp"
+		if err := os.WriteFile(tmp, []byte(strings.Join(os.Environ(), "\n")), 0o600); err != nil {
+			log.Fatalf("dump-env: %v", err)
+		}
+		if err := os.Rename(tmp, *dumpEnv); err != nil {
 			log.Fatalf("dump-env: %v", err)
 		}
 	}

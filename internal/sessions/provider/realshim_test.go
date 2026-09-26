@@ -257,7 +257,7 @@ func TestClaudeProvider_RealShimSpawn_KillReapsSandboxedGrandchild(t *testing.T)
 	body := "#!/bin/sh\n" +
 		"trap '' INT\n" +
 		"sleep 300 &\n" +
-		"echo $! > \"" + grandchildPIDFile + "\"\n" +
+		"echo $! > \"" + grandchildPIDFile + ".tmp\" && mv \"" + grandchildPIDFile + ".tmp\" \"" + grandchildPIDFile + "\"\n" +
 		"exec sleep 300\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatalf("write forksleep script: %v", err)
