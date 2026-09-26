@@ -180,6 +180,9 @@ func TestRender_ReadGrantsTheWritableRootsDoNotReachRenderAsBefore(t *testing.T)
 		{"/dev", func(t *testing.T) (Spec, string) {
 			return Spec{Read: []string{"/dev"}, Writable: []string{"/dev"}}, `(subpath "/dev")`
 		}},
+		{"/dev/stdin, a link in a locked directory inside a root", func(t *testing.T) (Spec, string) {
+			return Spec{ReadFiles: []string{"/dev/stdin"}, Writable: []string{"/dev"}}, `(literal "/dev/stdin")`
+		}},
 		{"dangling link in a root", func(t *testing.T) (Spec, string) {
 			f := newReadFixture(t, realTempDir(t))
 			app := f.h("share", "app")
@@ -215,6 +218,60 @@ func TestRender_ReadGrantsTheWritableRootsDoNotReachRenderAsBefore(t *testing.T)
 	}
 }
 
+// A session holding read-write on a root outside home can replace the root
+// between the moment W is built and the moment a grant is walked. Read's first
+// entry is walked in between, so the swap runs as its walk ends.
+func TestRender_RefusesReadGrantThroughARootReplacedMidRender(t *testing.T) {
+	skipAsRoot(t)
+	for _, tc := range []struct {
+		name    string
+		replace func(t *testing.T, f readFixture, r string) (link string)
+	}{
+		{"root removed and recreated with a planted link", func(t *testing.T, f readFixture, r string) string {
+			if err := os.Remove(r); err != nil {
+				t.Fatalf("rmdir: %v", err)
+			}
+			mkdirs(t, filepath.Join(r, "share"))
+			symlink(t, f.h("secret"), filepath.Join(r, "share", "app"))
+			return filepath.Join(r, "share", "app")
+		}},
+		{"root swapped for a link to another directory", func(t *testing.T, f readFixture, r string) string {
+			elsewhere := filepath.Join(f.root, "elsewhere")
+			mkdirs(t, filepath.Join(elsewhere, "share"))
+			symlink(t, f.h("secret"), filepath.Join(elsewhere, "share", "app"))
+			if err := os.Remove(r); err != nil {
+				t.Fatalf("rmdir: %v", err)
+			}
+			symlink(t, elsewhere, r)
+			return r
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newReadFixture(t, realTempDir(t))
+			r, unrelated := filepath.Join(f.root, "proj"), filepath.Join(f.root, "unrelated")
+			mkdirs(t, r, unrelated)
+			var link string
+			fired := swapAfterWalk(t, unrelated, func() { link = tc.replace(t, f, r) })
+			grant := filepath.Join(r, "share", "app")
+
+			got, err := Render(Spec{Read: []string{unrelated, grant}, Writable: []string{f.home, r}})
+			if !*fired {
+				t.Fatal("beforeSpell never saw the unrelated read grant")
+			}
+			if strings.Contains(got, f.h("secret")) {
+				t.Errorf("profile names the secret\n%s", got)
+			}
+			var linked *LinkedReadError
+			if !errors.As(err, &linked) {
+				t.Fatalf("Render = %v, want a *LinkedReadError", err)
+			}
+			if linked.Grant != grant || linked.Link != link {
+				t.Errorf("LinkedReadError = %+v, want Grant %s, Link %s", *linked, grant, link)
+			}
+		})
+	}
+}
+
 func TestRender_RefusesARelativeWritableRoot(t *testing.T) {
 	if got, err := Render(Spec{Writable: []string{"relative/dir"}}); err == nil {
 		t.Errorf("Render accepted a relative writable root:\n%s", got)
@@ -227,10 +284,13 @@ func TestRender_RefusesARelativeWritableRoot(t *testing.T) {
 func TestWritableSet_Covers(t *testing.T) {
 	root := realTempDir(t)
 	r := filepath.Join(root, "proj")
-	mkdirs(t, filepath.Join(r, "a"), r+"2", filepath.Join(root, "sibling"))
-	for _, p := range []string{filepath.Join(r, "x"), filepath.Join(r, "a", "b"), filepath.Join(r+"2", "x"), filepath.Join(root, "sibling", "x")} {
+	mkdirs(t, filepath.Join(r, "a"), r+"2", filepath.Join(root, "sibling"), filepath.Join(root, "elsewhere"))
+	for _, p := range []string{filepath.Join(r, "x"), filepath.Join(r, "a", "b"), filepath.Join(r+"2", "x"), filepath.Join(root, "sibling", "x"), filepath.Join(root, "elsewhere", "file")} {
 		writeFile(t, p)
 	}
+	symlink(t, filepath.Join(root, "elsewhere"), filepath.Join(r, "L"))
+	symlink(t, filepath.Join(root, "c2"), filepath.Join(root, "c1"))
+	symlink(t, filepath.Join(root, "c1"), filepath.Join(root, "c2"))
 	set, err := NewWritableSet([]string{r})
 	if err != nil {
 		t.Fatalf("NewWritableSet: %v", err)
@@ -250,6 +310,8 @@ func TestWritableSet_Covers(t *testing.T) {
 		{"entry in a sibling sharing the root's prefix", set, filepath.Join(r+"2", "x"), false},
 		{"entry in another sibling", set, filepath.Join(root, "sibling", "x"), false},
 		{"empty set", empty, filepath.Join(r, "x"), false},
+		{"parent reached through a link in the root", set, filepath.Join(r, "L", "file"), true},
+		{"parent whose walk fails", set, filepath.Join(root, "c1", "file"), true},
 	} {
 		if got := tc.set.Covers(tc.path); got != tc.want {
 			t.Errorf("%s: Covers(%s) = %v, want %v", tc.name, tc.path, got, tc.want)

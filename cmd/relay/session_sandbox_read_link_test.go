@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -124,4 +125,54 @@ func TestSandboxWritableRoots_Membership(t *testing.T) {
 			t.Errorf("writable roots hold %s\ngot %v", absent, got)
 		}
 	}
+}
+
+// A template the launch path drops, here for a relative read_write entry, is
+// dropped from W with it: its valid entries too, since the launch path drops
+// the whole template.
+func TestSandboxWritableRoots_TakeTheLaunchPathsTemplates(t *testing.T) {
+	noDeveloperTools(t)
+	store := newLaunchTestStore(t)
+	proj := addLaunchTestProject(t, store, nil)
+	home := sandboxRealPath(t, t.TempDir())
+	t.Setenv("HOME", home)
+	if err := store.With(func(s *config.Settings) {
+		s.TerminalTemplates = append(s.TerminalTemplates, config.TerminalTemplate{
+			ID: "broken", Name: "Broken", Sandbox: ptr(true), ReadWrite: []string{"~/broken-sibling", "relative/dir"},
+		})
+	}); err != nil {
+		t.Fatalf("store.With: %v", err)
+	}
+	settings := store.Get()
+
+	roots, err := sandboxWritableRoots(settings, home)
+	if err != nil {
+		t.Fatalf("sandboxWritableRoots: %v", err)
+	}
+	checked := 0
+	for _, tmpl := range config.EffectiveTerminalTemplates(settings) {
+		if !tmpl.Sandboxed() && !slices.Contains(slices.Collect(maps.Values(kindTemplateIDs)), tmpl.ID) {
+			continue
+		}
+		for _, e := range tmpl.ReadWrite {
+			want := filepath.Clean(e)
+			if e == "~" || strings.HasPrefix(e, "~/") {
+				want = filepath.Join(home, e[1:])
+			}
+			if !slices.Contains(roots, want) {
+				t.Errorf("writable roots lack %s from template %q\ngot %v", want, tmpl.ID, roots)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no kept template had a read_write entry to check")
+	}
+	for _, dropped := range []string{"relative/dir", filepath.Join(home, "broken-sibling")} {
+		if slices.Contains(roots, dropped) {
+			t.Errorf("writable roots hold %s from a template the launch path drops", dropped)
+		}
+	}
+
+	launchWithSandbox(t, LaunchRequest{Caller: bearerCaller(control.ClassExecute), ProjectID: proj.ID, Kind: KindClaude}, store)
 }

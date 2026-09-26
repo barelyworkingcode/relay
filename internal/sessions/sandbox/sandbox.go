@@ -47,6 +47,8 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
 )
 
 // A var rather than a const so a test can point it at a path that does not
@@ -413,7 +415,7 @@ func (e *LinkedReadError) Error() string {
 // that writable covers.
 //
 // This is deliberate: a link in a locked directory is never checked, and a
-// link the writable roots do not reach is followed as before. Homebrew and
+// link the writable roots do not reach is followed. Homebrew and
 // installer chains run through directories the user can write but no session
 // is granted, and refusing every user-writable link would refuse them all.
 // The terms rendered for the grant come from this one walk, for the reason
@@ -427,7 +429,7 @@ func readWalk(p string, writable WritableSet) (walked, error) {
 		if l.locked {
 			continue
 		}
-		if writable.coversLink(l) {
+		if writable.coversTrail(l.at) {
 			return w, &LinkedReadError{Grant: p, Link: l.path}
 		}
 	}
@@ -650,51 +652,95 @@ func Resolve(p string) (string, error) {
 // closed rather than being rendered half-resolved.
 const maxWalkLinks = 32
 
-// WritableSet is every root a sandboxed session could write, held as file
-// identities: a directory root covers every path beneath it, a regular-file
-// root covers the entries directly in its parent, and every root covers its
-// own entry, so a root replaced by a link is caught.
+// WritableSet is every root a sandboxed session could write, keyed by
+// location: the identity of the root's nearest existing ancestor, plus the
+// names from there down to the root. A directory root covers every path
+// beneath that location, a regular-file root covers the entries directly in
+// its parent, and every root covers its own entry, so a root replaced by a
+// link is caught.
+//
+// This is deliberate: a root is not keyed by the inode found there. A session
+// holding the root can remove and recreate it, or swap it for a link, between
+// the moment the set is built and the moment a grant is walked, and a new inode
+// would escape a set keyed by the old one. Its ancestor is outside the
+// session's reach, so the location stays put.
 type WritableSet struct {
-	dirs    map[fileID]bool
-	parents map[fileID]bool
-	selves  map[fileID]bool
+	keys []rootKey
 }
 
-// NewWritableSet takes each root's identities from one walk of it. A root that
-// is missing, or whose walk fails, contributes nothing; a relative root is an
-// error.
+// rootKey is one root's location. names are folded (foldName). file marks a
+// root that was a regular file when the set was built.
+type rootKey struct {
+	anc   fileID
+	names []string
+	file  bool
+}
+
+// NewWritableSet keys each root by a walk of it. A root that is missing is
+// keyed by its nearest existing ancestor; one whose walk fails contributes
+// nothing; a relative root is an error.
 func NewWritableSet(roots []string) (WritableSet, error) {
 	for _, r := range roots {
 		if !filepath.IsAbs(r) {
 			return WritableSet{}, fmt.Errorf("root %q is not absolute", r)
 		}
 	}
-	set := WritableSet{dirs: map[fileID]bool{}, parents: map[fileID]bool{}, selves: map[fileID]bool{}}
+	var set WritableSet
 	for _, r := range roots {
 		set.add(r)
 	}
 	return set, nil
 }
 
-func (s WritableSet) add(root string) {
-	w := walkIdentity(root)
-	if w.err != nil || !w.settled || len(w.chain) == 0 {
+func (s *WritableSet) add(root string) {
+	root = filepath.Clean(root)
+	if root == "/" {
+		if w := walkIdentity(root); w.err == nil {
+			s.keys = append(s.keys, rootKey{anc: w.at.ids[0]})
+		}
 		return
 	}
-	if w.entry != "" {
-		s.selves[w.entryID] = true
+	parent := walkIdentity(filepath.Dir(root))
+	if parent.err != nil {
+		return
 	}
-	end := len(w.chain) - 1
-	switch {
-	case w.endIsDir:
-		s.dirs[w.chain[end]] = true
-	case end > 0:
-		s.parents[w.chain[end-1]] = true
+	names, complete := foldedTail(parent.tail)
+	if complete {
+		names = append(names, foldName(filepath.Base(root)))
 	}
+	own := rootKey{anc: parent.at.ids[len(parent.at.ids)-1], names: names}
+
+	w := walkIdentity(root)
+	if w.err != nil || !w.settled || len(w.at.ids) < 2 {
+		s.keys = append(s.keys, own)
+		return
+	}
+	own.file = !w.endIsDir
+	// Where the root resolves to, as well as where it is named: the two differ
+	// when the root is reached through a link.
+	end := len(w.at.ids) - 1
+	resolved := rootKey{anc: w.at.ids[end-1], names: []string{foldName(w.at.names[end])}, file: !w.endIsDir}
+	s.keys = append(s.keys, own, resolved)
+}
+
+// foldedTail folds the components a walk could not reach. It stops at the
+// first `..`, reporting the tail incomplete: a shorter key covers a larger
+// subtree, which refuses more, never less.
+func foldedTail(tail []string) (names []string, complete bool) {
+	for _, n := range tail {
+		switch n {
+		case "", ".":
+			continue
+		case "..":
+			return names, false
+		}
+		names = append(names, foldName(n))
+	}
+	return names, true
 }
 
 // Covers reports whether a session writing the set's roots could have made or
-// replaced the entry at p.
+// replaced the entry at p, or a link on the way to it.
 //
 // This is deliberate: a path whose parent cannot be walked to the end counts
 // as covered. Coverage refuses a grant, so the unknown answer is the refusing
@@ -704,29 +750,80 @@ func (s WritableSet) Covers(p string) bool {
 		return true
 	}
 	p = filepath.Clean(p)
+	if p == "/" {
+		w := walkIdentity(p)
+		return w.err != nil || s.coversTrail(w.at)
+	}
 	w := walkIdentity(filepath.Dir(p))
 	if w.err != nil || !w.settled {
 		return true
 	}
-	l := followedLink{chain: w.chain}
-	if fi, err := os.Lstat(filepath.Join(w.resolved, filepath.Base(p))); err == nil {
-		if id, ok := idOf(fi); ok {
-			l.self = id
-		}
-	}
-	return s.coversLink(l)
-}
-
-func (s WritableSet) coversLink(l followedLink) bool {
-	if s.selves[l.self] {
-		return true
-	}
-	for _, id := range l.chain {
-		if s.dirs[id] {
+	for _, l := range w.links {
+		if !l.locked && s.coversTrail(l.at) {
 			return true
 		}
 	}
-	return len(l.chain) > 0 && s.parents[l.chain[len(l.chain)-1]]
+	var self fileID
+	if fi, err := os.Lstat(filepath.Join(w.resolved, filepath.Base(p))); err == nil {
+		self, _ = idOf(fi)
+	}
+	return s.coversTrail(w.at.with(self, filepath.Base(p)))
+}
+
+// coversTrail reports whether any key matches the trail's final entry, or,
+// for a directory root, any directory on the way to it.
+func (s WritableSet) coversTrail(t trail) bool {
+	folded := make([]string, len(t.names))
+	for i, n := range t.names {
+		folded[i] = foldName(n)
+	}
+	last := len(t.ids) - 1
+	for _, k := range s.keys {
+		if k.file {
+			if k.matchesAt(t.ids, folded, last) || k.parent().matchesAt(t.ids, folded, last-1) {
+				return true
+			}
+			continue
+		}
+		for j := 0; j <= last; j++ {
+			if k.matchesAt(t.ids, folded, j) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// matchesAt reports whether the trail's component j is at k's location: the
+// component len(k.names) above it is k's ancestor, and the names between match.
+func (k rootKey) matchesAt(ids []fileID, folded []string, j int) bool {
+	start := j - len(k.names)
+	if start < 0 || j >= len(ids) || ids[start] != k.anc {
+		return false
+	}
+	for i, n := range k.names {
+		if folded[start+1+i] != n {
+			return false
+		}
+	}
+	return true
+}
+
+func (k rootKey) parent() rootKey {
+	if len(k.names) == 0 {
+		return k
+	}
+	return rootKey{anc: k.anc, names: k.names[:len(k.names)-1]}
+}
+
+// foldName is a name as a case-insensitive, normalization-insensitive volume
+// compares it.
+//
+// This is deliberate: full Unicode case folding may equate names the volume
+// keeps apart. That over-matches, and over-matching refuses more grants, never
+// fewer.
+func foldName(n string) string {
+	return norm.NFD.String(cases.Fold().String(norm.NFD.String(n)))
 }
 
 // launchWritableSet is the Spec's writable roots plus the launch's own
@@ -757,35 +854,48 @@ func launchWritableSet(s Spec) (WritableSet, error) {
 // link whose directory is not lockedDir, dangling or not, or "". links is
 // every link the walk spliced, in order.
 //
-// entryID is the identity of the final component itself, a link's own when it
-// is one. chain is the identity of every directory from `/` down to where the
-// walk ended, and of the final component when the walk reached it; settled
-// reports that every component existed.
+// at is the trail from `/` down to where the walk ended, the final component
+// included when the walk reached it. tail is what it could not reach; settled
+// reports that there was none.
 type walked struct {
 	resolved string
 	entry    string
 	userLink string
 	links    []followedLink
-	entryID  fileID
-	chain    []fileID
+	at       trail
+	tail     []string
 	settled  bool
 	endIsDir bool
 	err      error
 }
 
+// trail is the identity and name of each component a walk stands on, from `/`
+// (empty name) down.
+type trail struct {
+	ids   []fileID
+	names []string
+}
+
+// with is a copy of t extended by one component.
+func (t trail) with(id fileID, name string) trail {
+	return trail{
+		ids:   append(append([]fileID(nil), t.ids...), id),
+		names: append(append([]string(nil), t.names...), name),
+	}
+}
+
 // followedLink is one link a walk spliced: path is its link-free directory
-// plus its own name, and locked is lockedDir of that directory. chain is the
-// identity of the directory and of every ancestor, and self is the link's own
-// identity.
+// plus its own name, and at is the trail down to the link itself, identities
+// taken by the walk's own Lstat calls. locked is lockedDir of the link's
+// directory.
 //
-// This is subtle: every field is taken while the walk stands on the link.
-// Asking again afterwards, of a path string, would follow whatever a session
-// swapped into the path in between.
+// This is subtle: at is taken while the walk stands on the link, but lockedDir
+// looks the directory up again by path, so a directory swapped in that instant
+// is judged as the swapped-in one. Closing that window is separate work.
 type followedLink struct {
 	path   string
 	locked bool
-	chain  []fileID
-	self   fileID
+	at     trail
 }
 
 // fileID is a file's identity. Coverage compares identities rather than
@@ -854,7 +964,7 @@ func walkPath(p string, spell bool) walked {
 	if !ok {
 		return walked{resolved: p, err: errors.New("stat /: no file identity")}
 	}
-	chain := []fileID{rootID}
+	at := trail{ids: []fileID{rootID}, names: []string{""}}
 	endIsDir := true
 	var tail []string
 	var entryDir, entryName string
@@ -872,8 +982,8 @@ walking:
 			continue
 		case "..":
 			cur = filepath.Dir(cur)
-			if len(chain) > 1 {
-				chain = chain[:len(chain)-1]
+			if len(at.ids) > 1 {
+				at.ids, at.names = at.ids[:len(at.ids)-1], at.names[:len(at.names)-1]
 			}
 			continue
 		}
@@ -889,11 +999,10 @@ walking:
 		}
 		if isOriginal && original == 0 {
 			entryDir, entryName = cur, name
-			w.entryID = id
 		}
 		if fi.Mode()&fs.ModeSymlink == 0 {
 			cur = next
-			chain = append(chain, id)
+			at.ids, at.names = append(at.ids, id), append(at.names, name)
 			endIsDir = fi.IsDir()
 			continue
 		}
@@ -913,15 +1022,16 @@ walking:
 		if err != nil {
 			return walked{resolved: p, err: fmt.Errorf("read symlink %q: %w", next, err)}
 		}
-		w.links = append(w.links, followedLink{path: next, locked: locked, chain: append([]fileID(nil), chain...), self: id})
+		w.links = append(w.links, followedLink{path: next, locked: locked, at: at.with(id, name)})
 		if filepath.IsAbs(target) {
 			cur = "/"
-			chain = chain[:1]
+			at.ids, at.names = at.ids[:1], at.names[:1]
 		}
 		pending = append(pathComponents(target), pending...)
 	}
 
-	w.chain = chain
+	w.at = at
+	w.tail = tail
 	w.settled = len(tail) == 0
 	w.endIsDir = endIsDir
 	if !spell {

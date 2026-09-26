@@ -700,8 +700,8 @@ link. If they do, the launch is refused with `sandbox.LinkedReadError`
 (`read grant "<entry>" follows symlink "<link>", which a sandboxed session
 could have made`, prefixed `read: ` or `baseline: `): the same `400
 sandbox_unavailable`, audited, with one `session sandbox: read grant refused`
-Warn and no profile written. A dangling link is not followed, so it renders as
-before, naming only the link.
+Warn and no profile written. A dangling link is not followed, so it renders
+naming only the link.
 
 W is built per launch by `sandboxWritableRoots`
 (`cmd/relay/session_sandbox_writable.go`) plus the launch's own grants:
@@ -716,15 +716,24 @@ W is built per launch by `sandboxWritableRoots`
 - every local project path (not remote, not on a host);
 - the launch's own `read_write` entries, which `Render` adds itself.
 
-Coverage is decided by file identity (device and inode), not by spelling, so
-letter case, firmlinks and the `/var` alias cannot hide a match. A directory
-root covers a link anywhere beneath it. A regular-file root covers the entries
-directly in its parent directory, since the atomic-write siblings a
-read-write file grant allows let a session create names beside it. Every root
-also covers its own entry, so a root a session replaced with a link is caught.
-A root that is missing or cannot be walked contributes nothing; a relative root
-fails the render. Unsandboxed templates and hosted or remote projects are not
-in W.
+Coverage is decided by location, not by spelling and not by the inode found
+at a root. Each root is keyed as the identity (device and inode) of its nearest
+existing ancestor plus the names from there down, compared with Unicode case
+folding and normalization. So letter case, firmlinks and the `/var` alias
+cannot hide a match, and a session that removes and recreates its root, or
+swaps it for a link, between W being built and a grant being walked is still
+caught: the ancestor is outside its reach. Folding can equate names the volume
+keeps apart; that refuses more, never less. A directory root covers a link
+anywhere beneath it. A regular-file root covers the entries directly in its
+parent directory, since the atomic-write siblings a read-write file grant
+allows let a session create names beside it. Every root also covers its own
+entry, so a root replaced with a link is caught; a root reached through a link
+is keyed where it is named and where it resolves. A root that is missing is
+keyed by its nearest existing ancestor; one whose walk fails contributes
+nothing; a relative root fails the render. W takes template entries from the
+same validated view a launch uses, so a template dropped at resolution
+contributes nothing. Unsandboxed templates and hosted or remote projects are
+not in W.
 
 The cost: because home is always in W, a read entry reached through a link
 anywhere in the home directory is refused. A dotfiles-managed `~/.zshrc` in the

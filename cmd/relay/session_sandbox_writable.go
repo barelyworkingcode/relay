@@ -16,8 +16,10 @@ import (
 //
 // This is deliberate: the kind templates count whatever their sandbox flag,
 // because a claude, pi or chat session on a console project always sandboxes
-// with its kind template's folders. Hosted and remote projects are left out;
-// no sandboxed session on this machine writes them.
+// with its kind template's folders. Templates come from the same validated
+// view a launch uses, so a template the launch path drops is absent here too.
+// Hosted and remote projects are left out; no sandboxed session on this
+// machine writes them.
 func sandboxWritableRoots(settings *config.Settings, home string) ([]string, error) {
 	roots := []string{home, os.TempDir()}
 	if darwin := darwinUserTempDir(); darwin != "" {
@@ -32,7 +34,7 @@ func sandboxWritableRoots(settings *config.Settings, home string) ([]string, err
 	for _, id := range kindTemplateIDs {
 		kindTemplates[id] = true
 	}
-	for _, t := range settings.TerminalTemplates {
+	for _, t := range config.EffectiveTerminalTemplates(settings) {
 		if !t.Sandboxed() && !kindTemplates[t.ID] {
 			continue
 		}
