@@ -422,10 +422,9 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) (s
 		return nil, err
 	}
 
-	// SwapProvider, not SetProvider: a second startProvider for the same
-	// session (SendMessage's ad-hoc respawn racing a Create{Resume:true})
-	// can reach here while the first provider is still inside its own
-	// Start() and therefore reports Alive() == false — that provider is not
+	// SwapProvider, not SetProvider: Create's startProvider can find a
+	// provider restartProvider installed in the same session that is still
+	// inside its own Start() and therefore reports Alive() == false — that provider is not
 	// "empty", it is a reservation of its own, and overwriting sess's
 	// provider field out from under it would leave it running with nothing
 	// in the table pointing at it. Kill whatever was there before this call
@@ -547,19 +546,25 @@ func (m *Manager) restartProvider(sess *sessionstypes.Session, slot *sessionSlot
 		return fmt.Errorf("session: restart provider: %w", err)
 	}
 	m.mu.Lock()
-	owned := m.slots[sess.ID] == slot
+	cur := m.slots[sess.ID]
 	m.mu.Unlock()
-	if !owned {
-		// Deliberate: take p out of sess first, then kill p itself, never
-		// sess.Provider(). A concurrent Create{Resume} may already have
-		// installed its own provider there, so the swap applies only if sess
-		// still holds p; once it is out, p's exit event fails
-		// handleProviderEvent's displaced-provider guard and is dropped.
-		sess.CompareAndSwapProvider(p, nil)
-		p.Kill()
-		return errNotLaunchedHere
+	if cur == slot {
+		return nil
 	}
-	return nil
+	// Deliberate: kill p itself, never sess.Provider(), and take p out of
+	// sess first only when another launch owns the id. Then p's exit event
+	// fails handleProviderEvent's displaced-provider guard and never reaches
+	// the live launch; the swap applies only if sess still holds p. With no
+	// owner, p's exit is the only report relay gets for the id (its
+	// SessionExited handling drives the cleanup), so p stays installed. The
+	// window between reading cur == nil and that exit's delivery is the same
+	// one an ordinary EndSession followed by a fast resume has, and is not
+	// closed here.
+	if cur != nil {
+		sess.CompareAndSwapProvider(p, nil)
+	}
+	p.Kill()
+	return errNotLaunchedHere
 }
 
 func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {

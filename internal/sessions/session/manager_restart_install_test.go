@@ -331,7 +331,7 @@ func TestManager_RestartBuiltAfterResumePublished_KeepsResumeProvider(t *testing
 	})
 }
 
-func TestManager_RestartStoppedDuringStart_KillsItsProvider(t *testing.T) {
+func TestManager_RestartStoppedDuringStart_KillsItsProviderAndReportsExit(t *testing.T) {
 	stops := map[string]func(*session.Manager){
 		"EndSession": func(m *session.Manager) { m.EndSession(installSessionID) },
 		"StopAll":    func(m *session.Manager) { m.StopAll() },
@@ -341,6 +341,13 @@ func TestManager_RestartStoppedDuringStart_KillsItsProvider(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				restarted := newPreSpawnGateProvider()
 				r := newRestartInstallRig(t, restarted, &fakeProvider{})
+				var exitMu sync.Mutex
+				var exitIDs []string
+				r.mgr.SetExitHandler(func(id string, _ int) {
+					exitMu.Lock()
+					exitIDs = append(exitIDs, id)
+					exitMu.Unlock()
+				})
 				_, sendDone := r.launchAndParkRestart(t)
 				r.parkRestartInStart(t, restarted)
 
@@ -354,6 +361,12 @@ func TestManager_RestartStoppedDuringStart_KillsItsProvider(t *testing.T) {
 				}
 				if restarted.Alive() {
 					t.Errorf("restart's provider left running after %s (kills=%d)", name, restarted.Kills())
+				}
+				exitMu.Lock()
+				gotIDs := append([]string(nil), exitIDs...)
+				exitMu.Unlock()
+				if len(gotIDs) != 1 || gotIDs[0] != installSessionID {
+					t.Errorf("exit handler calls = %q, want exactly one for %s", gotIDs, installSessionID)
 				}
 			})
 		})
