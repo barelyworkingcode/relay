@@ -11,11 +11,13 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 )
 
 const (
 	stderrWarnLineLimit    = 20
+	stderrTailLines        = 10
 	stderrLineMaxBytes     = 1024
 	msgProviderStderr      = "provider stderr"
 	msgProviderStderrLimit = "provider stderr: warn limit reached, later lines at debug"
@@ -27,6 +29,11 @@ const (
 
 	redactedPlaceholder = "[redacted]"
 )
+
+// providerDrainTimeout bounds how long waitForExit waits, after Wait returns,
+// for the stdout and stderr readers to reach EOF. Each provider reads it
+// once at spawn.
+var providerDrainTimeout = 2 * time.Second
 
 var (
 	stderrModelKeyPattern = regexp.MustCompile(`rmk_[0-9a-f]{64}`)
@@ -48,19 +55,80 @@ func newStderrPipe(cmd *exec.Cmd) (r, w *os.File, err error) {
 	return r, w, nil
 }
 
+// newStdoutPipe returns an os.Pipe whose write end becomes cmd.Stdout.
+// cmd.StdoutPipe is deliberately not used: Wait closes that pipe's read end,
+// racing the reader, and the lines lost to that race are the child's last
+// events. The caller closes w after Start; the stdout reader closes r at EOF.
+func newStdoutPipe(cmd *exec.Cmd) (r, w *os.File, err error) {
+	r, w, err = os.Pipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd.Stdout = w
+	return r, w, nil
+}
+
+// spawnOutput is one spawn's stdout and stderr read ends and the signals
+// their readers raise once they finish.
+type spawnOutput struct {
+	stdoutR, stderrR *os.File
+	stdoutDone       chan struct{}
+	stderrTail       chan []string
+}
+
+func newSpawnOutput(stdoutR, stderrR *os.File) *spawnOutput {
+	return &spawnOutput{
+		stdoutR:    stdoutR,
+		stderrR:    stderrR,
+		stdoutDone: make(chan struct{}),
+		stderrTail: make(chan []string, 1),
+	}
+}
+
+// drain waits for both readers and returns the stderr tail. The deadline is
+// deliberate: a grandchild that inherited either write end can hold it open
+// long after the child exits, and process_exited must not wait on it.
+func (o *spawnOutput) drain(timeout time.Duration) []string {
+	deadline := time.Now().Add(timeout)
+	_ = o.stdoutR.SetReadDeadline(deadline)
+	_ = o.stderrR.SetReadDeadline(deadline)
+	<-o.stdoutDone
+	return <-o.stderrTail
+}
+
+func logStdoutReadError(sessionID, kind string, err error) {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		slog.Debug("provider stdout still open after exit; stopped reading", "session", sessionID, "kind", kind)
+		return
+	}
+	slog.Error("provider stdout read error", "session", sessionID, "kind", kind, "error", err)
+}
+
+func warnProviderExit(sessionID, kind string, exitCode int, tail []string) {
+	if exitCode == 0 {
+		return
+	}
+	slog.Warn("provider exited with error", "session", sessionID, "kind", kind, "exitCode", exitCode, "stderr_tail", tail)
+}
+
 // logProviderStderr logs each non-empty stderr line of one provider spawn.
 // Lines arriving before the spawn's first stdout line log at Warn, up to
-// stderrWarnLineLimit of them; the rest log at Debug. It reads r to EOF and
-// then closes it.
-func logProviderStderr(r io.ReadCloser, sessionID, kind string, sawStdout *atomic.Bool, secrets ...string) {
+// stderrWarnLineLimit of them; the rest log at Debug. It reads r to EOF,
+// closes it, and returns the last stderrTailLines logged texts, oldest first.
+func logProviderStderr(r io.ReadCloser, sessionID, kind string, sawStdout *atomic.Bool, secrets ...string) []string {
 	defer func() { _ = r.Close() }()
 	br := bufio.NewReaderSize(r, 4096)
 	warned := 0
 	limitLogged := false
+	tail := make([]string, 0, stderrTailLines)
 	for {
 		raw, err := readBoundedLine(br)
 		if line := strings.TrimSuffix(string(raw), "\r"); line != "" {
 			text, truncated := truncateOnRune(redactStderrLine(line, secrets), stderrLineMaxBytes)
+			if len(tail) == stderrTailLines {
+				tail = append(tail[:0], tail[1:]...)
+			}
+			tail = append(tail, text)
 			attrs := []any{"session", sessionID, "kind", kind, "text", text}
 			if truncated {
 				attrs = append(attrs, "truncated", true)
@@ -83,7 +151,7 @@ func logProviderStderr(r io.ReadCloser, sessionID, kind string, sawStdout *atomi
 			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
 				slog.Debug("provider stderr read error", "session", sessionID, "kind", kind, "error", err)
 			}
-			return
+			return tail
 		}
 	}
 }
