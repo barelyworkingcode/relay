@@ -127,3 +127,45 @@ func loggedSupersededDrop(log, session, kind string) bool {
 	}
 	return false
 }
+
+// With no descendant holding a pipe, the killed spawn's drain can finish
+// before the restart's Start runs; that spawn's exit must still not reach
+// the handler.
+func TestClaudeSetPermissionMode_RestartGetsNoProcessExited(t *testing.T) {
+	logs := captureDebugJSON(t)
+	const id = "mode-restart"
+	var restarting atomic.Bool
+	stale := make(chan json.RawMessage, 1)
+	p := spawnFake(t, "claude", id, "exec sleep 30\n", func(ev string, data json.RawMessage) {
+		if ev == "process_exited" && restarting.Load() {
+			select {
+			case stale <- data:
+			default:
+			}
+		}
+	}).(*ClaudeProvider)
+
+	restarting.Store(true)
+	if err := p.SetPermissionMode("plan"); err != nil {
+		t.Fatalf("SetPermissionMode: %v", err)
+	}
+	if !p.Alive() {
+		t.Fatal("provider not alive after the permission-mode restart")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case data := <-stale:
+			t.Fatalf("the restarted session got process_exited %s from its killed spawn", data)
+		default:
+		}
+		if loggedSupersededDrop(logs.all(), id, "claude") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no %q record for %s within 5s", msgSupersededExitDropped, id)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
