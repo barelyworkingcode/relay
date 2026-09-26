@@ -1059,9 +1059,14 @@ with — identity, model key and sandbox profile included. If a launch for that
 session is in progress, the restart waits for it to finish and then reads the
 slot again. Anything else answers `resume_required`: a session this process
 never launched, a launch that failed or was stopped, a slot removed or
-replaced in the meantime. The slot is checked again once the new provider is
-built; if the session was ended, stopped or taken by a new launch while it was
-being built, that provider is killed and the restart is refused too. A spec
+replaced in the meantime. The restart remembers the exact slot it read: every
+launch publishes a new slot and a published slot never changes, so the slot
+pointer is the ownership token. The new provider is installed only if that
+slot is still the live one, checked under the manager lock at the moment of
+install, and checked again after it starts. If the session was ended, stopped
+or taken by a new launch in either window, the restart's own provider is
+killed, the winning launch keeps its provider, and the restart is refused. A
+restart that loses the race does not wait for the winner. A spec
 holding only the provider kind would start claude or pi with no sandbox, no
 identity and no key, so there is no fallback to one. A migrated project-less session is therefore read-only history:
 `clear_session` still clears it, but to continue the user starts a new session
