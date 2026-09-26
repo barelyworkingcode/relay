@@ -196,11 +196,19 @@ thing.
   narrows: an absent restrict field refuses every tool it governs. Refusing
   instead would ask the operator to remove a value no request can name.
   Operator fields beside it survive, and an entry with nothing to drop keeps
-  its bytes. An update that names a permission field validates the stored
-  context as if it had been sent, so while a derived value is stored it is
-  refused, naming the derived field, and neither converts nor drops. This is
-  a known limitation: send an update that names no permission field first,
-  which drops the derived value, then the one that does.
+  its bytes.
+
+  An update that names a permission field validates the context the result
+  would hold, including stored context the request did not send. When the
+  result is local and not hosted, relay's own values pass through: with no
+  `context` in the request, every stored v2 `project_path` field and every
+  stored v1 blob is carried unchanged, and the write re-derives them from
+  `path`. When the result is remote or hosted nothing is derived, so a stored
+  derived field is judged as if it had been sent: an update that names a
+  permission field while one is stored, a conversion to remote included, is
+  refused, naming the field, and neither converts nor drops. Send an update
+  that names no permission field first, which drops the derived value, then
+  the one that does.
 
   An MCP that is not connected (no entry in the live surfaces, as distinct
   from connected with no schema) cannot be judged: keeping its stored value
@@ -480,10 +488,17 @@ refusals, each naming the problem:
 - an empty value for a `scope: "restrict"` field;
 - a blob that repeats a key, at any depth — some parsers keep the first and
   others the last, so the gate would compare a value the MCP may not see;
-- an operator-supplied value for a `source: "project_path"` field — relay
-  derives those, and one written by hand would be replaced at the next resync;
+- a value for a `source: "project_path"` field in a request that carries
+  `context` — relay derives those, and one written by hand would be replaced
+  at the next resync;
 - a context value for an MCP that declares a **v1** schema, for the same
-  reason: the v1 branch replaces the whole blob;
+  reason: the v1 branch replaces the whole blob. The one exception is an
+  echo: on a local, unhosted project, a v1 blob is accepted when the stored
+  record has one for that MCP and the two are equal by decoded value (the
+  presence gate's own comparison, so reordered keys and whitespace still
+  match). That is what the Settings form resends on every save. A changed
+  value, a new blob, any v1 blob on create and any on a remote or hosted
+  project are refused, and the duplicate-key check runs first;
 - an `access` that is not `read` or `write`;
 - an `allowed_tools` pattern that will not compile, which would match no tool
   at all in *that* list (the same pattern in a field's `applies_to` governs
@@ -495,6 +510,13 @@ refusals, each naming the problem:
   tool registered tomorrow would join the grant unreviewed. The matcher refuses
   one at call time as well, so a record that reached `settings.json` by another
   route cannot widen a grant either.
+
+A value is judged the same whether the operator changed it or the Settings
+form sent it back as stored: an invalid stored value (a `null` restrict field,
+a string where an array is declared, an empty element) blocks the save with a
+refusal naming the MCP and the field, and the way out is to re-enter or clear
+that field. Skipping unchanged values would let an invalid one survive every
+save unseen.
 
 An MCP relay has never connected to is **permitted** with nothing but an
 emptiness check, exactly as `ValidateProjectGrants` permits a grant it cannot

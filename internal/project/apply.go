@@ -289,7 +289,12 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 		sc = surfaces()
 	}
 	if needPermissionsCheck {
-		if err := validateProjectPermissions(&candidate, sc); err != nil {
+		carry := derivedCarry{
+			derives:     !candidate.IsRemote() && !candidate.IsHosted(),
+			prior:       proj.Context,
+			fromRequest: f.Context != nil,
+		}
+		if err := validateProjectPermissionsCarrying(&candidate, sc, carry); err != nil {
 			return config.Project{}, true, err
 		}
 	}

@@ -3099,6 +3099,10 @@ window.__RELAY_INIT__ = {
     }
     return Object.prototype.hasOwnProperty.call((f.context || {})[mcpID] || {}, field.name);
   }
+  function scopeFieldTouched(f, mcpID, field) {
+    const typed = (f._scopeText || {})[mcpID];
+    return !!typed && Object.prototype.hasOwnProperty.call(typed, field.name);
+  }
   function setProjScopeText(mcpID, fieldName, text) {
     const f = state.projectForm;
     if (!f) return;
@@ -3930,7 +3934,11 @@ window.__RELAY_INIT__ = {
       if (mode === "read" || mode === "write") access[mcpID] = mode;
       const ext = (f.allow_external || {})[mcpID];
       if (ext === true || ext === false) allowExternal[mcpID] = ext;
-      if (remote) {
+      if (remote && (f._toolsText || {})[mcpID] === void 0) {
+        if (Object.prototype.hasOwnProperty.call(f.allowed_tools || {}, mcpID)) {
+          allowedTools[mcpID] = f.allowed_tools[mcpID];
+        }
+      } else if (remote) {
         const text = projAllowedToolsText(f, mcpID);
         const patterns = String(text).split("\n").map((t) => t.trim()).filter(Boolean);
         if (patterns.length) allowedTools[mcpID] = patterns;
@@ -3944,6 +3952,7 @@ window.__RELAY_INIT__ = {
           delete existing[field.name];
           continue;
         }
+        if (!scopeFieldTouched(f, mcpID, field)) continue;
         if (!scopeFieldWasEverAsserted(f, mcpID, field)) {
           delete existing[field.name];
           continue;
@@ -6663,6 +6672,7 @@ That browser's credential stops authenticating on its next request and it has to
     scopeEnumValueKey,
     scopeFieldByName,
     scopeFieldIsOpen,
+    scopeFieldTouched,
     scopeFieldWasEverAsserted,
     scopeOpenKey,
     scopeSelectedValues,
