@@ -284,14 +284,53 @@ func permissionPolicyIsEmpty(p *config.PermissionPolicy) bool {
 
 // validateProjectPermissions refuses an invalid access mode, an uncompilable
 // tool pattern, and a context value the MCP's own schema will not stand
-// behind. Called from ApplyCreate and ApplyUpdate against the
-// fully-merged candidate, so every surface is refused identically.
+// behind. Called from ApplyCreate against the full requested shape; it
+// carries nothing, so every context value is judged as operator input.
 //
 // It is separate from ValidateShape because it needs something that
 // function does not have: what the MCP declared at runtime. Shape is
 // answerable from the record alone; whether "mail_accounts" is a field
 // macMCP has is answerable only from the live surface.
 func validateProjectPermissions(proj *config.Project, surfaces McpSurfaces) error {
+	return validateProjectPermissionsCarrying(proj, surfaces, derivedCarry{})
+}
+
+// derivedCarry describes which of the candidate's context values relay
+// derived rather than the request supplied. derives is true when the
+// candidate is local and not hosted, the same condition under which
+// comparableContext strips derived fields; prior is the stored context;
+// fromRequest reports whether the candidate's context came from the request
+// rather than from the stored record.
+type derivedCarry struct {
+	derives     bool
+	prior       map[string]json.RawMessage
+	fromRequest bool
+}
+
+// carriesV1Blob reports whether blob is the stored v1 blob for mcpID, judged
+// by jsonValueEqual, which is the presence gate's own comparison: validation
+// accepts exactly the echo the gate treats as unchanged. Not a byte compare,
+// because the Settings form's JSON round trip reorders keys.
+func (c derivedCarry) carriesV1Blob(mcpID string, blob json.RawMessage) bool {
+	if !c.derives {
+		return false
+	}
+	stored, ok := c.prior[mcpID]
+	return ok && jsonValueEqual(stored, blob)
+}
+
+// carriesProjectPathFields reports whether a v2 project_path field in the
+// candidate is the stored derived value rather than one the request set.
+func (c derivedCarry) carriesProjectPathFields() bool {
+	return c.derives && !c.fromRequest
+}
+
+// validateProjectPermissionsCarrying is validateProjectPermissions for
+// ApplyUpdate's fully-merged candidate, where context the request did not
+// send is the stored context, derived values included. Those values are
+// relay's and the write re-derives them, so carry passes them through
+// instead of refusing them as if the operator had typed them.
+func validateProjectPermissionsCarrying(proj *config.Project, surfaces McpSurfaces, carry derivedCarry) error {
 	// AccessMode already reads anything but exactly "write" as read (fail
 	// closed), but a typo like "wrIte" silently narrowing was never
 	// surfaced to the operator until here.
@@ -309,7 +348,7 @@ func validateProjectPermissions(proj *config.Project, surfaces McpSurfaces) erro
 	}
 
 	for _, mcpID := range sortedKeys(proj.Context) {
-		if err := validateProjectContextForMcp(mcpID, proj.Context[mcpID], surfaces); err != nil {
+		if err := validateProjectContextForMcp(mcpID, proj.Context[mcpID], surfaces, carry); err != nil {
 			return err
 		}
 	}
@@ -366,18 +405,24 @@ func findDuplicateKey(raw json.RawMessage) (string, bool) {
 // that MCP declared. Which of three cases applies is decided by the MCP's
 // own declaration:
 //
-//   - v2 schema: every field name must be declared, every value must
-//     conform, and a source: "project_path" field is refused outright since
-//     relay derives those from the project's path and SyncProjectToken
-//     would overwrite any hand-set value on the next resync anyway.
-//   - v1 declaration: refused entirely — the v1 branch of SyncProjectToken
-//     REPLACES the whole blob with the derived allowed_dirs, so anything
-//     stored here would vanish at the next path or MCP edit.
+//   - v2 schema: every field name must be declared and every value must
+//     conform. A source: "project_path" field is refused when the request
+//     set it, since relay derives those from the project's path and
+//     SyncProjectToken would overwrite a hand-set value on the next resync;
+//     a stored one that carry passes through is skipped.
+//   - v1 declaration: refused unless carry passes it through as the stored
+//     blob. The v1 branch of SyncProjectToken REPLACES the whole blob with
+//     the derived allowed_dirs, so anything else written here would vanish
+//     at the next path or MCP edit.
 //   - No declaration (relay has never connected to the MCP, or it publishes
 //     no contextSchema): permitted with only an emptiness check. Refusing on
 //     missing information would make a merely-not-running MCP
 //     unconfigurable, and the call-time presence re-check still denies.
-func validateProjectContextForMcp(mcpID string, blob json.RawMessage, surfaces McpSurfaces) error {
+//
+// The duplicate-key check deliberately precedes the v1 carry: jsonValueEqual
+// compares Go's decode, so a blob repeating a key could equal the stored one
+// while the MCP reads the other copy.
+func validateProjectContextForMcp(mcpID string, blob json.RawMessage, surfaces McpSurfaces, carry derivedCarry) error {
 	trimmed := strings.TrimSpace(string(blob))
 	if trimmed == "" || trimmed == "null" {
 		return nil
@@ -402,6 +447,9 @@ func validateProjectContextForMcp(mcpID string, blob json.RawMessage, surfaces M
 
 	if !schema.V2() {
 		if len(surface.Schema) > 0 {
+			if carry.carriesV1Blob(mcpID, blob) {
+				return nil
+			}
 			return fmt.Errorf("context for %q cannot be set here: it declares a v1 context schema, whose only field relay derives from the project's path — a value written here would be replaced on the next resync", mcpID)
 		}
 		// Presence is the only thing checkable for an unknown MCP, and the
@@ -421,10 +469,16 @@ func validateProjectContextForMcp(mcpID string, blob json.RawMessage, surfaces M
 			return fmt.Errorf("MCP %q declares no context field named %q (it declares: %s)", mcpID, name, declaredFieldList(schema))
 		}
 		if f.FromProjectPath() {
+			if carry.carriesProjectPathFields() {
+				continue
+			}
 			return fmt.Errorf("context %q for %q is derived by relay from the project's path and cannot be set by hand", name, mcpID)
 		}
+		// Deliberately refused even when the value is unchanged from what is
+		// stored: skipping it would let an invalid stored value, such as a
+		// null restrict field, survive every save unseen.
 		if err := f.ValidateValue(values[name]); err != nil {
-			return fmt.Errorf("context for %q: %w", mcpID, err)
+			return fmt.Errorf("context for %q: %w; re-enter or clear that field", mcpID, err)
 		}
 	}
 	return nil

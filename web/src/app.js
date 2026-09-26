@@ -2632,6 +2632,13 @@ function scopeFieldWasEverAsserted(f, mcpID, field) {
     return Object.prototype.hasOwnProperty.call((f.context || {})[mcpID] || {}, field.name);
 }
 
+// The key, not its text, is the signal: clearing a field writes '' and still
+// counts as a touch.
+function scopeFieldTouched(f, mcpID, field) {
+    const typed = (f._scopeText || {})[mcpID];
+    return !!typed && Object.prototype.hasOwnProperty.call(typed, field.name);
+}
+
 function setProjScopeText(mcpID, fieldName, text) {
     const f = state.projectForm;
     if (!f) return;
@@ -3907,7 +3914,13 @@ function harvestProjectPermissions(f) {
         const ext = (f.allow_external || {})[mcpID];
         if (ext === true || ext === false) allowExternal[mcpID] = ext;
 
-        if (remote) {
+        if (remote && (f._toolsText || {})[mcpID] === undefined) {
+            // Untouched: sent as stored, so an unchanged save cannot rewrite a
+            // pattern nobody edited.
+            if (Object.prototype.hasOwnProperty.call(f.allowed_tools || {}, mcpID)) {
+                allowedTools[mcpID] = f.allowed_tools[mcpID];
+            }
+        } else if (remote) {
             const text = projAllowedToolsText(f, mcpID);
             const patterns = String(text).split('\n').map(t => t.trim()).filter(Boolean);
             if (patterns.length) allowedTools[mcpID] = patterns;
@@ -3922,10 +3935,11 @@ function harvestProjectPermissions(f) {
         const fields = mcpScopeFieldsFor(mcpID);
         for (const field of (fields || [])) {
             if (field.source === 'project_path') { delete existing[field.name]; continue; }
-            // A field this session never touched AND that was never stored
-            // stays omitted, full stop -- scopeFieldWasEverAsserted is what
-            // keeps that true now that blank text and confirmed-empty are
-            // both spelled [] (see its own comment).
+            // Untouched fields stay exactly as stored -- null, padding and all.
+            // Normalising them here would rewrite values nobody edited, and
+            // turning a stored null into [] would widen the grant; relay
+            // refuses an invalid one by name instead.
+            if (!scopeFieldTouched(f, mcpID, field)) continue;
             if (!scopeFieldWasEverAsserted(f, mcpID, field)) { delete existing[field.name]; continue; }
             const value = scopeValueFromText(field, projScopeText(f, mcpID, field));
             // scopeValueIsAsserted, not scopeValueIsSet: an explicit empty
@@ -7402,7 +7416,7 @@ Object.assign(window, {
     copyLoginCode, dismissLoginCode, pkSignCountText, refreshPasskeys, renderLoginCodeBanner, renderLoginSessions, renderPasskeys, revokePasskey, signOutLogin, renderEvePasskeys, revokeEvePasskey,
     approveEnrolmentRequestForm, cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, listEnrolmentRequests, newEnrolment, refuseEnrolmentRequest, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderCAFingerprintLine, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderPendingEnrolmentRequests, renderPendingRequestFields, renderRemoteListener, renderRequestComparison, enrolRequestApprovable, toggleEnrolNoGrant, captureEnrolFormInputs, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueIsAsserted, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
-    captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
+    captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldTouched, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addProjMount, removeProjMount, setProjMountAccess,
     isProjTemplatesWildcard, setProjTemplatesWildcard, toggleProjTemplate,
     renderProjDefaults, renderProjDefaultSelect, renderProjModeChips, setDefaultProject, setProjMode,
