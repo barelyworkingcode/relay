@@ -188,3 +188,9 @@ func TestCreateSession_NamedModel_Launches(t *testing.T) {
 		t.Fatalf("launch spec kind=%q model=%q, want chat gpt-5", spec.Kind, sr.Model)
 	}
 }
+
+func TestCreateSession_BlankModel_LongNameCapped(t *testing.T) {
+	name := strings.Repeat("Acmé日報", 1667)
+	want := `chat session "` + string([]rune(name)[:64]) + `…" has no model; choose a model and try again`
+	assertBlankModelRefused(t, "/api/sessions", name, `,"model":""`, want)
+}

@@ -600,8 +600,15 @@ var kindTemplateIDs = map[string]string{
 	KindChat:   "chat",
 }
 
+// maxRefusalNameRunes is deliberate: the refusal message becomes the audit
+// record's error, and a request body may carry a name up to 1 MiB long.
+const maxRefusalNameRunes = 64
+
 func chatModelRequiredMessage(name string) string {
 	if name = strings.TrimSpace(name); name != "" {
+		if runes := []rune(name); len(runes) > maxRefusalNameRunes {
+			name = string(runes[:maxRefusalNameRunes]) + "…"
+		}
 		return fmt.Sprintf("chat session %q has no model; choose a model and try again", name)
 	}
 	return "chat session has no model; choose a model and try again"
