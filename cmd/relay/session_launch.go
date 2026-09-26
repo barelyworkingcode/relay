@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -215,16 +216,29 @@ type sessionLaunchAuditArgs struct {
 	SessionKind string `json:"session_kind,omitempty"`
 	TemplateID  string `json:"template_id,omitempty"`
 	Directory   string `json:"directory,omitempty"`
-	Sandbox     bool   `json:"sandbox"`
+	// DirectoryTruncated is set because a real directory name may itself
+	// end in "…", so the marker alone cannot tell a capped value apart.
+	DirectoryTruncated bool `json:"directory_truncated,omitempty"`
+	Sandbox            bool `json:"sandbox"`
 }
 
+// maxAuditErrorRunes leaves room for a refusal's fixed text around one
+// maxRefusalNameRunes-long name.
+const maxAuditErrorRunes = 256
+
+// maxAuditDirectoryRunes is generously past any real working directory.
+const maxAuditDirectoryRunes = 1024
+
+// The caps in newSessionLaunchAuditEvent are deliberate: a refusal carries
+// request-supplied strings into the audit row, and a request body may be 1 MiB.
 func newSessionLaunchAuditEvent(f sessionLaunchAuditFields, outcome, errMsg string) audit.AuditEvent {
 	actor := f.Actor
-	actor.ProjectID = f.ProjectID
+	actor.ProjectID = capAuditText(f.ProjectID, maxRefusalNameRunes)
 	actor.ProjectName = f.ProjectName
+	directory := capAuditText(f.Directory, maxAuditDirectoryRunes)
 	args, _ := json.Marshal(sessionLaunchAuditArgs{
-		SessionID: f.SessionID, SessionKind: f.Kind, TemplateID: f.TemplateID,
-		Directory: f.Directory, Sandbox: f.Sandbox,
+		SessionID: f.SessionID, SessionKind: capAuditText(f.Kind, maxRefusalNameRunes), TemplateID: f.TemplateID,
+		Directory: directory, DirectoryTruncated: directory != f.Directory, Sandbox: f.Sandbox,
 	})
 	return audit.AuditEvent{
 		ID:      audit.NewAuditID(),
@@ -232,9 +246,19 @@ func newSessionLaunchAuditEvent(f sessionLaunchAuditFields, outcome, errMsg stri
 		Event:   audit.AuditEventSessionLaunch,
 		Actor:   actor,
 		Outcome: outcome,
-		Error:   errMsg,
+		Error:   capAuditText(errMsg, maxAuditErrorRunes),
 		Args:    args,
 	}
+}
+
+// capAuditText keeps the first max runes of s and marks the cut with "…",
+// which never occurs in a project id or kind, so a clipped value cannot pass
+// for a real one.
+func capAuditText(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max]) + "…"
 }
 
 // LaunchResult is what AuthorizeLaunch built once every check passed.
@@ -606,10 +630,7 @@ const maxRefusalNameRunes = 64
 
 func chatModelRequiredMessage(name string) string {
 	if name = strings.TrimSpace(name); name != "" {
-		if runes := []rune(name); len(runes) > maxRefusalNameRunes {
-			name = string(runes[:maxRefusalNameRunes]) + "…"
-		}
-		return fmt.Sprintf("chat session %q has no model; choose a model and try again", name)
+		return fmt.Sprintf("chat session %q has no model; choose a model and try again", capAuditText(name, maxRefusalNameRunes))
 	}
 	return "chat session has no model; choose a model and try again"
 }
