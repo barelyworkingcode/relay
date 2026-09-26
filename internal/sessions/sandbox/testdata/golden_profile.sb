@@ -44,6 +44,9 @@
   (literal "/usr/local/etc")
   (literal "/usr/local/etc/ca-certificates")
   (literal "/usr/local/etc/openssl@3"))
+(deny file-write-unlink file-clone
+  (literal "/usr")
+  (literal "/usr/local"))
 (deny network-outbound
   (remote unix-socket (path-literal "/private/tmp/relay-sandbox-golden/relayllm/router.sock"))
   (remote unix-socket (path-regex #"^/private/tmp/relay-sandbox-golden/relay/")))

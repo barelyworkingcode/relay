@@ -75,6 +75,10 @@ func writeSessionSandboxProfile(settings *config.Settings, proj *config.Project,
 	if errors.As(err, &linked) {
 		slog.Warn("session sandbox: read-write grant refused", "session", sessionID, "kind", kind, "grant", linked.Grant, "link", linked.Link)
 	}
+	var linkedDeny *sandbox.LinkedDenyError
+	if errors.As(err, &linkedDeny) {
+		slog.Warn("session sandbox: deny refused", "session", sessionID, "kind", kind, "deny", linkedDeny.Deny, "link", linkedDeny.Link)
+	}
 	return path, err
 }
 

@@ -23,6 +23,9 @@
   (subpath "<DARWIN_TMP>")
   (subpath "/dev")
   (subpath "<HOME>"))
+(deny file-write-unlink file-clone
+  (literal "/usr")
+  (literal "/usr/local"))
 (deny network-outbound
   (remote unix-socket (path-regex #"^<RELAY_DIR>/"))
   (remote unix-socket (path-regex #"^<HOME>/Library/Application Support/relayLLM/"))

@@ -492,8 +492,9 @@ File access is denied by default, in both directions. `sandboxSpecForLaunch`
 baseline carve-out (`/usr/local/etc` and `/usr/local/var`, read and write),
 then the three Homebrew files the baseline reopens read-only, then the
 session's grants, then read-only `stat` on the parents of each grant
-so a process can reach it, then the template's `deny` list (below). Apart from
-that fixed carve-out, nothing is denied by name unless a template says so.
+so a process can reach it, then the template's `deny` list (below), then an
+unlink-and-clone deny on every ancestor of a denied path. Apart from that fixed
+carve-out, nothing is denied by name unless a template says so.
 Relay's own data directory, another project, eve's data and `~/.ssh` are
 unreachable unless a template grants them, so a directory nobody thought to
 protect is protected anyway. Everything that is not a file (network, process,
@@ -509,7 +510,7 @@ A session's folders come from four places, and only the third is configured:
 
 | Grant | Paths | Where it lives |
 |---|---|---|
-| **System baseline** (read-only, every sandboxed session) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves; `/usr/local/etc` and `/usr/local/var` are denied (read and write), except the files `/usr/local/etc/openssl@3/cert.pem`, `/usr/local/etc/ca-certificates/cert.pem` and `/usr/local/etc/gitconfig`, which are read-only | `sandbox.baselineReadDirs`. The smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. `sandbox.baselineDenyDirs` carves out Intel Homebrew's service config and data, which can hold credentials. `sandbox.baselineReopenedFiles` reads back its CA bundle (the `openssl@3` link and the `ca-certificates` file it points at) and system gitconfig, without which Homebrew curl, python and git lose TLS verification and their git config. They are fixed literals, never resolved on the host. Nothing else beneath the carve-out is reopened. The deny renders before the session's own grants, so any later grant that covers part of either subtree reopens that part: a grant beneath it (`/usr/local/etc/example.conf`, say) and an ancestor grant such as `/usr/local` alike. |
+| **System baseline** (read-only, every sandboxed session) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves; `/usr/local/etc` and `/usr/local/var` are denied (read and write), except the files `/usr/local/etc/openssl@3/cert.pem`, `/usr/local/etc/ca-certificates/cert.pem` and `/usr/local/etc/gitconfig`, which are read-only | `sandbox.baselineReadDirs`. The smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. `sandbox.baselineDenyDirs` carves out Intel Homebrew's service config and data, which can hold credentials. `sandbox.baselineReopenedFiles` reads back its CA bundle (the `openssl@3` link and the `ca-certificates` file it points at) and system gitconfig, without which Homebrew curl, python and git lose TLS verification and their git config. They are fixed literals, never resolved on the host. Nothing else beneath the carve-out is reopened. The deny renders before the session's own grants, so any later grant that covers part of either subtree reopens that part: a grant beneath it (`/usr/local/etc/example.conf`, say) and an ancestor grant such as `/usr/local` alike. `/usr` and `/usr/local`, the carve-out's ancestors, cannot be renamed, removed or cloned (the ancestor rule below), so a session that can write `/usr/local` cannot clone it to read `etc` under a new name. |
 | **Every session** | the project directory (read-write), `os.TempDir()`, `DARWIN_USER_TEMP_DIR` and `/dev` (read-write), the developer tools (read-only: `<Xcode>.app/Contents`, or `/Library/Developer/CommandLineTools`, resolved from `/var/select/developer_dir`) | `sandboxSpecForLaunch`. A pi session also gets `<config dir>/sessions/pi-sessions` for its transcript, since that path moves with `relay --config-dir` and no template can name it. |
 | **The template** | its `read` and `read_write` lists | the template's entry in `settings.json` |
 
@@ -523,6 +524,34 @@ Denying a path that a session needs to run (the project directory, say)
 locks the session out of it; relay does not second-guess that. `deny` takes
 the same entry shape as `read` and `read_write`, is ignored without
 `"sandbox": true`.
+
+**Every ancestor of a denied path is pinned in place.** A Seatbelt path rule
+governs the path, not the inode behind it: a session holding read-write on
+`~` that renames `~/.config` to `~/c` reaches `~/c/gh`, which no rule names.
+And `file-clone` is not part of `file-write*`, so a directory can be cloned
+even where writing into it is denied. So `Render` adds one
+`(deny file-write-unlink file-clone …)` block naming, as literals, every
+directory from each denied path's parent up to but not including `/`, for the
+template's `deny` entries and the baseline carve-out alike. It renders after
+every grant, so no grant reopens it, and before the unix-socket rules. The
+spellings come from the deny's own walk (below), so an ancestor is named as the
+kernel resolves it; one that cannot be spelled refuses the render rather than
+being left out. The cost: a session cannot rename, remove, swap or clone any
+ancestor of a denied path, its own grant root included. With `"read_write":
+["~"]` and `"deny": ["~/.config/gh"]`, `~/.config` and `~` itself are fixed in
+place; everything inside them still works (creating, deleting and renaming
+other entries, `chmod`, `utimes`, listing, cloning a non-ancestor).
+
+What the ancestor rule does not cover:
+
+- A hard link or clone of a denied file made before the deny was added, or
+  outside the session's reach, is a separate name and is reachable wherever a
+  grant covers it.
+- An ancestor missing at launch. The deny and its ancestors are named as
+  written from the first missing component on, and a session that can write
+  the parent may create that component as a symlink; the kernel then resolves
+  the denied name to the link's target, which the deny does not cover. Deny
+  paths that exist at launch.
 
 **Templates live only in `settings.json`.** Nothing is computed in code, so
 every template, including the ones relay seeds, can be edited or removed. The
@@ -644,7 +673,20 @@ That exempts the `/tmp`, `/var` and `/etc` links in `/`, so `t.TempDir()`,
 link directly in `/private/tmp` (root's, but world-writable) is refused. The
 cost is deliberate: a dotfiles-managed `~/.claude`, or a project reached
 through a link, is refused as a read-write grant; the operator names the real
-path instead. Read grants and `deny` entries still follow links as before.
+path instead. Read grants still follow links as before.
+
+**A `deny` entry never follows a link the user could have made, either.** Each
+`deny`, the baseline carve-outs included, is walked the same way, and that one
+walk supplies both the deny's own terms and its ancestors. Following a link in
+a directory that is not locked, intermediate, final or dangling, refuses the
+launch with `sandbox.LinkedDenyError` (`deny "<entry>" follows symlink
+"<link>", which a sandboxed session could have made`): the same `400
+sandbox_unavailable`, audited, with one `session sandbox: deny refused` Warn
+and no profile written. Otherwise the ancestors pinned would be the link's,
+not the denied path's, and a session could have planted the link to pick
+them. Links through `/tmp`, `/var` and `/etc` still work. The baseline case
+fires only where the user can write `/usr/local` and a carve-out there is a
+link.
 A link whose target does not exist is not followed: the walk treats it as
 the first missing component, so a read grant on it names only the link's own
 path, never a target a session could later create. Any entry, read, deny,
