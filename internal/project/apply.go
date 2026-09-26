@@ -298,9 +298,10 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 			dropDerivedContext(&candidate, sc)
 		}
 		carry := derivedCarry{
-			derives:     !candidate.IsRemote() && !candidate.IsHosted(),
-			prior:       proj.Context,
-			fromRequest: f.Context != nil,
+			derives:      !candidate.IsRemote() && !candidate.IsHosted(),
+			priorDerived: !proj.IsRemote() && !proj.IsHosted(),
+			prior:        proj.Context,
+			fromRequest:  f.Context != nil,
 		}
 		if err := validateProjectPermissionsCarrying(&candidate, sc, carry); err != nil {
 			return config.Project{}, true, err

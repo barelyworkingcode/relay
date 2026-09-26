@@ -209,11 +209,15 @@ thing.
   stored v1 blob is carried unchanged. The write keeps them as stored, and
   re-derives them from `path` only when the same request names `path`,
   `allowed_mcp_ids` or `context`. A conversion from local to remote or
-  hosted derives nothing, so a stored derived field is judged as if it had
-  been sent: a conversion that names a permission field while one is stored
-  is refused, naming the field or, for a v1 blob, the MCP, and neither
-  converts nor drops. Send the conversion without a permission field first,
-  which drops the derived value, then the permission edit.
+  hosted derives nothing, so a stored v2 derived field is judged as if it
+  had been sent: a conversion that names a permission field while one is
+  stored is refused, naming the field, and neither converts nor drops. Send
+  the conversion without a permission field first, which drops the derived
+  value, then the permission edit. A stored v1 blob for an MCP that declares
+  `allowed_dirs` is the exception: it passes validation, the grant check
+  then refuses a kept grant, and a dropped grant takes the blob with it. A
+  stored v1 blob for an MCP that declares no `allowed_dirs` is refused,
+  naming the MCP (see the v1 echo below).
 
   An MCP that is not connected (no entry in the live surfaces, as distinct
   from connected with no schema) cannot be judged: keeping its stored value
@@ -498,12 +502,19 @@ refusals, each naming the problem:
   at the next resync;
 - a context value for an MCP that declares a **v1** schema, for the same
   reason: the v1 branch replaces the whole blob. The one exception is an
-  echo: on a local, unhosted project, a v1 blob is accepted when the stored
-  record has one for that MCP and the two are equal by decoded value (the
-  presence gate's own comparison, so reordered keys and whitespace still
-  match). That is what the Settings form resends on every save. A changed
-  value, a new blob, any v1 blob on create and any on a remote or hosted
-  project are refused, and the duplicate-key check runs first;
+  echo: a v1 blob is accepted when the stored record has one for that MCP
+  and the two are equal by decoded value (the presence gate's own
+  comparison, so reordered keys and whitespace still match), provided the
+  result is local and not hosted or, for an MCP whose schema declares
+  `allowed_dirs`, the stored record is local and not hosted. That is what
+  the Settings form resends on every save. Relay's derived `allowed_dirs`
+  never lands on a remote or hosted record: the write drops it, or prunes
+  it with the grant. A changed value, a new blob and any v1 blob on create
+  are refused, as is an echo when the result is remote or hosted and
+  either the stored record was too or the MCP declares no `allowed_dirs`;
+  converting a remote or hosted record back to local
+  accepts the echo because the result is local. The duplicate-key check
+  runs first;
 - an `access` that is not `read` or `write`;
 - an `allowed_tools` pattern that will not compile, which would match no tool
   at all in *that* list (the same pattern in a field's `applies_to` governs

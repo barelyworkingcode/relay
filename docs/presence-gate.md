@@ -256,9 +256,12 @@ whose schema is v1, unusable or not live, a blob that does not decode, a
 derived field whose stored value differs from the derivation, a
 derived-looking field on a remote or hosted project, and a derived field
 the request itself carries. Validation agrees with this comparison on v1:
-on a local, unhosted project it accepts a v1 blob exactly when the stored
-record has one for that MCP and the two are equal by the same decoded-value
-comparison, so an echo that validation accepts never prompts. The gate runs
+when the result is local and unhosted, or, for an MCP declaring
+`allowed_dirs`, when the stored record is, it accepts a v1 blob exactly when
+the stored record has one for that MCP and the two are equal by the same
+decoded-value comparison, so an echo that validation accepts never prompts.
+On a remote or hosted result that derived `allowed_dirs` is then dropped or
+pruned with the grant, so it never lands. The gate runs
 before validation, so a v1 blob that validation refuses may still prompt
 first; the refusal then follows the approval and nothing is written. With
 no live schema for the MCP (or no surfaces at all) nothing is stripped and
