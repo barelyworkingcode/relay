@@ -269,8 +269,9 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 		if existing.sess != nil {
 			if p := existing.sess.Provider(); p != nil && p.Alive() {
 				if existing.spec.ModelKey == spec.ModelKey {
+					live := existing.sess
 					m.mu.Unlock()
-					return existing.sess, nil // already live, same key: resume is a no-op
+					return live, nil // already live, same key: resume is a no-op
 				}
 				// C8: this resume carries a different key than the one the
 				// running provider was actually launched with — continuing
@@ -477,12 +478,11 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) er
 // lazy-loaded session with no stored spec at all.
 func (m *Manager) respawnSpec(sess *sessionstypes.Session) CreateSpec {
 	m.mu.Lock()
-	slot, ok := m.slots[sess.ID]
-	m.mu.Unlock()
 	var spec CreateSpec
-	if ok {
+	if slot, ok := m.slots[sess.ID]; ok {
 		spec = slot.spec
 	}
+	m.mu.Unlock()
 	spec.Kind = sess.ProviderType
 	return spec
 }
@@ -538,8 +538,9 @@ func (m *Manager) Get(id string) (*sessionstypes.Session, bool) {
 		m.mu.Lock()
 		slot, ok := m.slots[id]
 		if ok && slot.sess != nil {
+			sess := slot.sess
 			m.mu.Unlock()
-			return slot.sess, true
+			return sess, true
 		}
 		if ok {
 			reservation := slot.done
@@ -557,8 +558,9 @@ func (m *Manager) Get(id string) (*sessionstypes.Session, bool) {
 		m.mu.Lock()
 		if slot, ok := m.slots[id]; ok {
 			if slot.sess != nil {
+				live := slot.sess
 				m.mu.Unlock()
-				return slot.sess, true
+				return live, true
 			}
 			reservation := slot.done
 			m.mu.Unlock()
@@ -664,9 +666,10 @@ func (m *Manager) stopSlot(id string) *sessionstypes.Session {
 		<-done // Create's own goroutine kills the provider in this case.
 		return nil
 	}
+	sess := slot.sess
 	delete(m.slots, id)
 	m.mu.Unlock()
-	return slot.sess
+	return sess
 }
 
 // EndSession kills the provider (if any) and persists the session's final
