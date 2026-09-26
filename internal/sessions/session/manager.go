@@ -304,7 +304,7 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 
 	sess, err := m.resolveSessionForCreate(spec, reused)
 	if err == nil {
-		err = m.startProvider(sess, spec)
+		_, err = m.startProvider(sess, spec)
 	}
 
 	m.mu.Lock()
@@ -420,7 +420,7 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 // this call was handed, never one left over from before the previous
 // process died (this package's own security framing: identity continuity
 // is "launched exactly like a fresh one", not "specially reused").
-func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) error {
+func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) (sessionstypes.Provider, error) {
 	// self is read by handler only from a goroutine the provider itself
 	// spawns inside Start() (claude.go/pi.go's waitForExit, ChatProvider's
 	// runToolLoop), never before — so the write below, sequenced before any
@@ -443,7 +443,7 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) er
 		p, err = m.buildProvider(sess, spec, handler)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	self = p
 
@@ -466,12 +466,12 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) er
 	if old := sess.SwapProvider(p); old != nil {
 		old.Kill()
 	}
-	return p.Start()
+	return p, p.Start()
 }
 
 // errNotLaunchedHere is the refusal a user sees when a project-less session
-// has no launch of this process's own to restart from.
-var errNotLaunchedHere = fmt.Errorf("%w: this session was not started here; start a new session in a project to continue", ErrResumeRequired)
+// cannot be restarted from a launch of this process's own.
+var errNotLaunchedHere = fmt.Errorf("%w: this session cannot be restarted automatically; start a new session in a project to continue", ErrResumeRequired)
 
 // respawnSpec returns the CreateSpec this process launched sess with, so a
 // manager-internal restart (ClearSession, SendMessage's project-less
@@ -504,6 +504,29 @@ func (m *Manager) respawnSpec(sess *sessionstypes.Session) (CreateSpec, error) {
 	}
 	spec.Kind = sess.ProviderType
 	return spec, nil
+}
+
+// restartProvider starts a project-less session's provider from the spec
+// respawnSpec returned, then checks the slot still holds sess. A slot ended,
+// stopped or taken by a new launch while the provider was being built no
+// longer tracks it, so the provider this call started is killed and the
+// restart is refused.
+func (m *Manager) restartProvider(sess *sessionstypes.Session, spec CreateSpec) error {
+	p, err := m.startProvider(sess, spec)
+	if err != nil {
+		return fmt.Errorf("session: restart provider: %w", err)
+	}
+	m.mu.Lock()
+	slot, ok := m.slots[sess.ID]
+	tracked := ok && !slot.launching && slot.sess == sess
+	m.mu.Unlock()
+	if !tracked {
+		// Deliberate: kill p itself, never sess.Provider(). A concurrent
+		// Create{Resume} may already have installed its own provider there.
+		p.Kill()
+		return errNotLaunchedHere
+	}
+	return nil
 }
 
 func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {
@@ -787,9 +810,9 @@ func (m *Manager) SendMessage(id, text string, files []sessionstypes.FileAttachm
 			return err
 		}
 		if p = sess.Provider(); p == nil || !p.Alive() {
-			if err := m.startProvider(sess, spec); err != nil {
+			if err := m.restartProvider(sess, spec); err != nil {
 				sess.SetProcessing(false)
-				return fmt.Errorf("session: respawn failed: %w", err)
+				return err
 			}
 			p = sess.Provider()
 		}
@@ -920,10 +943,7 @@ func (m *Manager) ClearSession(id string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.startProvider(sess, spec); err != nil {
-		return fmt.Errorf("session: restart provider: %w", err)
-	}
-	return nil
+	return m.restartProvider(sess, spec)
 }
 
 // RenameSession updates the session's display name and persists.

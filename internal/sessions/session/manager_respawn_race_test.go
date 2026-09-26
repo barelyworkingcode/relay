@@ -28,6 +28,7 @@ func closeOnce(ch chan struct{}) func() {
 // raceRig holds a live ad-hoc session whose provider has died. Build #1 is
 // the launched provider (parks its first Alive call), build #2 is the
 // resume's provider (parks in Start), anything later is a plain fake.
+// gateSecondBuild additionally parks the factory itself on build #2.
 type raceRig struct {
 	mgr          *session.Manager
 	launched     *aliveGateProvider
@@ -35,8 +36,11 @@ type raceRig struct {
 	releaseAlive func()
 	releaseStart func()
 
-	mu    sync.Mutex
-	specs []session.CreateSpec
+	mu           sync.Mutex
+	specs        []session.CreateSpec
+	built        []sessionstypes.Provider
+	buildGate    chan struct{}
+	buildEntered chan struct{}
 }
 
 func newRaceRig(t *testing.T, resumeStartErr error) *raceRig {
@@ -50,16 +54,24 @@ func newRaceRig(t *testing.T, resumeStartErr error) *raceRig {
 	r.mgr = session.NewManager(session.Config{}, session.NewStore(t.TempDir()), nil)
 	r.mgr.SetProviderFactory(func(_ *sessionstypes.Session, spec session.CreateSpec, _ sessionstypes.EventHandler) (sessionstypes.Provider, error) {
 		r.mu.Lock()
-		defer r.mu.Unlock()
 		r.specs = append(r.specs, spec)
-		switch len(r.specs) {
-		case 1:
-			return r.launched, nil
-		case 2:
-			return r.resumed, nil
-		default:
-			return &fakeProvider{}, nil
+		n, gate, entered := len(r.specs), r.buildGate, r.buildEntered
+		r.mu.Unlock()
+		if n == 2 && gate != nil {
+			close(entered)
+			<-gate
 		}
+		var p sessionstypes.Provider = &fakeProvider{}
+		switch n {
+		case 1:
+			p = r.launched
+		case 2:
+			p = r.resumed
+		}
+		r.mu.Lock()
+		r.built = append(r.built, p)
+		r.mu.Unlock()
+		return p, nil
 	})
 	sess, err := r.mgr.Create(raceLaunchSpec)
 	if err != nil {
@@ -67,6 +79,19 @@ func newRaceRig(t *testing.T, resumeStartErr error) *raceRig {
 	}
 	sess.Provider().Kill()
 	return r
+}
+
+// gateSecondBuild must be called before any goroutine touches the manager.
+func (r *raceRig) gateSecondBuild() (release func()) {
+	r.buildGate = make(chan struct{})
+	r.buildEntered = make(chan struct{})
+	return closeOnce(r.buildGate)
+}
+
+func (r *raceRig) builtProviders() []sessionstypes.Provider {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.built)
 }
 
 func (r *raceRig) builtSpecs() []session.CreateSpec {
@@ -235,6 +260,75 @@ func TestManager_Respawn_SlotRemovedBeforeRestart_Refused(t *testing.T) {
 				}
 				if n := len(r.builtSpecs()); n != 1 {
 					t.Errorf("builds = %d, want 1 (the restart must build nothing)", n)
+				}
+			})
+		})
+	}
+}
+
+func TestManager_Respawn_SessionReplacedBeforeRestart_Refused(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newRaceRig(t, nil)
+		defer r.releaseAlive()
+		r.releaseStart()
+
+		sendDone := r.sendInBackground(t)
+		r.mgr.EndSession(raceSessionID)
+		if _, err := r.mgr.Create(raceResumeSpec); err != nil {
+			t.Errorf("resume Create = %v, want nil", err)
+		}
+		r.releaseAlive()
+		sendErr := <-sendDone
+
+		if !errors.Is(sendErr, session.ErrResumeRequired) {
+			t.Errorf("SendMessage = %v, want ErrResumeRequired", sendErr)
+		}
+		keys := []string{}
+		for _, spec := range r.builtSpecs() {
+			keys = append(keys, spec.ModelKey)
+		}
+		if want := []string{raceLaunchSpec.ModelKey, raceResumeSpec.ModelKey}; !slices.Equal(keys, want) {
+			t.Errorf("builds by ModelKey = %q, want only the launch and the resume %q", keys, want)
+		}
+	})
+}
+
+func TestManager_Respawn_SlotRemovedDuringRestartBuild_Refused(t *testing.T) {
+	cases := []struct {
+		name    string
+		restart func(*session.Manager) error
+	}{
+		{"SendMessage", func(m *session.Manager) error { return m.SendMessage(raceSessionID, "hello", nil) }},
+		{"ClearSession", func(m *session.Manager) error { return m.ClearSession(raceSessionID) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				r := newRaceRig(t, nil)
+				releaseBuild := r.gateSecondBuild()
+				defer releaseBuild()
+				r.releaseAlive()
+				r.releaseStart()
+
+				done := make(chan error, 1)
+				go func() { done <- tc.restart(r.mgr) }()
+				synctest.Wait()
+				select {
+				case <-r.buildEntered:
+				default:
+					t.Errorf("setup: %s did not park in the provider factory", tc.name)
+				}
+				r.mgr.StopAll()
+				releaseBuild()
+				err := <-done
+
+				if !errors.Is(err, session.ErrResumeRequired) {
+					t.Errorf("%s = %v, want ErrResumeRequired", tc.name, err)
+				}
+				for i, p := range r.builtProviders() {
+					if p.Alive() {
+						t.Errorf("build #%d is alive after StopAll", i+1)
+					}
 				}
 			})
 		})
