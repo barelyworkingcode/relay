@@ -520,7 +520,8 @@ Denying a path that a session needs to run (the project directory, say)
 locks the session out of it; relay does not second-guess that. `deny` takes
 the same entry shape as `read` and `read_write`, and is ignored only for a
 terminal launch of a template that says `"sandbox": false`. A claude, pi or
-chat session always applies its kind template's folders, `deny` included.
+chat session on a console project always applies its kind template's folders,
+`deny` included.
 
 **Templates live only in `settings.json`.** Nothing is computed in code, so
 every template, including the ones relay seeds, can be edited or removed. The
@@ -557,8 +558,8 @@ leave a tool silently unreachable. A template is sandboxed unless it says
 otherwise: `sandbox` absent means sandboxed, and only an explicit
 `"sandbox": false` opts out. `read`, `read_write` and `deny` are ignored only
 for a terminal launch of a template that says `"sandbox": false`; a claude, pi
-or chat session always sandboxes and always applies its kind template's
-folders, whatever that template's `sandbox` says. A stored template without
+or chat session on a console project always sandboxes and always applies its
+kind template's folders, whatever that template's `sandbox` says. A stored template without
 the field is sandboxed from the upgrade that introduced this rule on, with the
 folders it already lists; nothing rewrites it to `false`, so an operator who
 wants it unconfined says so.
