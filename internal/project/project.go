@@ -298,13 +298,16 @@ func validateProjectPermissions(proj *config.Project, surfaces McpSurfaces) erro
 // derivedCarry describes which of the candidate's context values relay
 // derived rather than the request supplied. derives is true when the
 // candidate is local and not hosted, the same condition under which
-// comparableContext strips derived fields; prior is the stored context;
-// fromRequest reports whether the candidate's context came from the request
-// rather than from the stored record.
+// comparableContext strips derived fields; priorDerived is true when the
+// stored record is local and not hosted, so a stored v1 blob is relay's even
+// when the result is remote or hosted, where the write then drops it;
+// prior is the stored context; fromRequest reports whether the candidate's
+// context came from the request rather than from the stored record.
 type derivedCarry struct {
-	derives     bool
-	prior       map[string]json.RawMessage
-	fromRequest bool
+	derives      bool
+	priorDerived bool
+	prior        map[string]json.RawMessage
+	fromRequest  bool
 }
 
 // carriesV1Blob reports whether blob is the stored v1 blob for mcpID, judged
@@ -312,7 +315,7 @@ type derivedCarry struct {
 // accepts exactly the echo the gate treats as unchanged. Not a byte compare,
 // because the Settings form's JSON round trip reorders keys.
 func (c derivedCarry) carriesV1Blob(mcpID string, blob json.RawMessage) bool {
-	if !c.derives {
+	if !c.derives && !c.priorDerived {
 		return false
 	}
 	stored, ok := c.prior[mcpID]

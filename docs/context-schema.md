@@ -205,12 +205,13 @@ thing.
   stored v1 blob is carried unchanged. The write keeps them as stored, and
   re-derives them from `path` only when the same request names `path`,
   `allowed_mcp_ids` or `context`. When the result is remote or hosted
-  nothing is derived, so a stored derived field is judged as if it had been
-  sent: an update that names a permission field while one is stored, a
-  conversion to remote included, is refused, naming the field or, for a v1
-  blob, the MCP, and neither converts nor drops. Send an update that names
-  no permission field first, which drops the derived value, then the one
-  that does.
+  nothing is derived, so a stored v2 derived field is judged as if it had
+  been sent: an update that names a permission field while one is stored, a
+  conversion to remote included, is refused, naming the field, and neither
+  converts nor drops. Send an update that names no permission field first,
+  which drops the derived value, then the one that does. A stored v1 blob
+  is the exception: when the stored record is local and not hosted it
+  passes as relay's (see the v1 echo below).
 
   An MCP that is not connected (no entry in the live surfaces, as distinct
   from connected with no schema) cannot be judged: keeping its stored value
@@ -495,12 +496,14 @@ refusals, each naming the problem:
   at the next resync;
 - a context value for an MCP that declares a **v1** schema, for the same
   reason: the v1 branch replaces the whole blob. The one exception is an
-  echo: on a local, unhosted project, a v1 blob is accepted when the stored
-  record has one for that MCP and the two are equal by decoded value (the
-  presence gate's own comparison, so reordered keys and whitespace still
-  match). That is what the Settings form resends on every save. A changed
-  value, a new blob, any v1 blob on create and any on a remote or hosted
-  project are refused, and the duplicate-key check runs first;
+  echo: when the stored record is local and not hosted, a v1 blob is
+  accepted when that record has one for that MCP and the two are equal by
+  decoded value (the presence gate's own comparison, so reordered keys and
+  whitespace still match). That is what the Settings form resends on every
+  save. On a remote or hosted result the blob is then dropped, or pruned
+  with the MCP, so it never lands. A changed value, a new blob, any v1 blob
+  on create and any on a record that was already remote or hosted are
+  refused, and the duplicate-key check runs first;
 - an `access` that is not `read` or `write`;
 - an `allowed_tools` pattern that will not compile, which would match no tool
   at all in *that* list (the same pattern in a field's `applies_to` governs
