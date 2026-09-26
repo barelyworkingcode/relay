@@ -488,9 +488,9 @@ cap, the value is truncated on a rune boundary and `path_truncated` /
 for arguments, so a truncated value is never mistaken for a short, genuine
 one.
 
-`session_launch` records carry request-supplied strings on a refusal too, and
-a launch request body may be 1 MiB. `newSessionLaunchAuditEvent` caps them
-where the record is built: `error` at 256 runes, `args.session_kind` and
+`session_launch` and `session_resume` records carry request-supplied strings
+on a refusal too, and a launch request body may be 1 MiB.
+`newSessionLaunchAuditEvent` builds both and caps them there: `error` at 256 runes, `args.session_kind` and
 `actor.project_id` at 64 runes each. A capped value keeps its leading runes
 and ends in `…`, which never occurs in a real kind or project id.
 
