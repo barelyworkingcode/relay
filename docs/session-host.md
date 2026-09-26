@@ -716,8 +716,9 @@ Two residuals follow. A read-write directory whose own name contains a dot
 read-write file whose name has no dot after its first character
 (`~/.gitconfig`) gets no siblings, so an atomic writer's `.lock` beside it is
 refused: git writing `~/.gitconfig` through `~/.gitconfig.lock` fails under a
-read-write grant of `~/.gitconfig`. Grant the parent directory read-write
-instead. A read-write directory that does
+read-write grant of `~/.gitconfig`. Keep such a file in a directory of its
+own and grant that directory instead: git's `~/.config/git/config` with
+`~/.config/git` read-write. A read-write directory that does
 not exist is created at launch, because a `(subpath)` rule cannot create its
 own ancestors (`go build` with no `~/go` needs `~/go/pkg` to exist). An entry
 that cannot be placed refuses the template when settings are read, and the
@@ -869,8 +870,10 @@ being built and a grant being walked is still caught: the ancestor is outside
 its reach. Folding can equate names the volume
 keeps apart; that refuses more, never less. A directory root covers a link
 anywhere beneath it. A regular-file root covers the entries directly in its
-parent directory, since the atomic-write siblings a read-write file grant
-allows let a session create names beside it. Every root also covers its own
+parent directory. A read-write file grant with a dotted name lets a session
+create its atomic-write siblings beside it; an undotted one does not, and
+covering its parent anyway over-covers deliberately, since refusing more is
+the fail-closed direction. Every root also covers its own
 entry, so a root replaced with a link is caught. A root that is missing is
 keyed by its nearest existing ancestor, and a `..` in the part the walk could
 not reach cancels the name before it or steps the ancestor up; a root whose

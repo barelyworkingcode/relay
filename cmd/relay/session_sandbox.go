@@ -221,12 +221,12 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 
 // addTemplateGrants expands one of a template's folder lists and sorts each
 // entry into directories and single files: an entry that exists as a regular
-// file is a file grant (a read-write one gets its atomic-write siblings, and
-// only when its name looks like a file), and anything else, including a path
-// that does not exist yet, is a subtree. An
-// entry relay cannot place refuses the launch: a grant it cannot enforce is
-// one it must not drop quietly, or the operator believes a folder is reachable
-// when it is not.
+// file is a file grant, except a read-write one whose name does not look like
+// a file, which is a subtree; a read-write file grant also gets its
+// atomic-write siblings. Anything else, including a path that does not exist
+// yet, is a subtree. An entry relay cannot place refuses the launch: a grant
+// it cannot enforce is one it must not drop quietly, or the operator believes
+// a folder is reachable when it is not.
 func addTemplateGrants(dirs, files []string, field string, entries []string, home string) ([]string, []string, error) {
 	for _, raw := range entries {
 		p := raw
