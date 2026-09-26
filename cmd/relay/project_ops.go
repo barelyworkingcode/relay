@@ -77,6 +77,10 @@ var errProjectSaveFailed = errors.New("failed to save settings")
 // retries against the current record.
 var errProjectChangedDuringApproval = errors.New("project changed while the request was being approved; retry the update")
 
+// errProjectUpdateTargetMissing declines the write when Update's id matches
+// no project. It never leaves Update: the caller sees found == false.
+var errProjectUpdateTargetMissing = errors.New("project to update not found")
+
 // errProjectTokenUnrecorded means the rotation committed and the audit
 // write then failed: the new plaintext is withheld (§7.6's rotate_token
 // withhold, unchanged) but the old token is already dead either way, so a
@@ -313,18 +317,23 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 				}
 			}
 			updated, found, updateErr = project.ApplyUpdate(s, id, f, queued)
+			if updateErr != nil {
+				return updateErr
+			}
+			if !found {
+				return errProjectUpdateTargetMissing
+			}
 			return nil
 		}); err != nil {
-			if errors.Is(err, errProjectChangedDuringApproval) {
+			switch {
+			case updateErr != nil:
+				return updateErr
+			case errors.Is(err, errProjectUpdateTargetMissing):
+				return nil
+			case errors.Is(err, errProjectChangedDuringApproval):
 				return err
 			}
 			return fmt.Errorf("%w: %w", errProjectSaveFailed, err)
-		}
-		if updateErr != nil {
-			return updateErr
-		}
-		if !found {
-			return nil
 		}
 		if touchesGrant {
 			if auditErr := recordConfigChange(o.Issuance, auditCredentialProjectGrant, id,
