@@ -167,7 +167,7 @@ it describes anything running on this machine.
         "at": "2026-09-05T06:00:04Z",
         "ok": true,
         "os": "Darwin", "arch": "arm64",
-        "home": "/Users/admin",
+        "home": "/Users/you",
         "shell": "/bin/zsh",
         "node_path": "/opt/homebrew/bin/node",  "node_version": "v24.7.0",
         "claude_path": "/opt/homebrew/bin/claude", "claude_version": "2.1.258",
