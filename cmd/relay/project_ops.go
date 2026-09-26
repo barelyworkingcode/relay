@@ -234,7 +234,7 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 
 	var created config.Project
 	var createErr error
-	if err := o.runQueued(ctx, func() error {
+	if err := o.runCommitted(ctx, func() error {
 		if err := o.Store.With(func(s *config.Settings) {
 			created, createErr = project.ApplyCreate(s, f, surfaces)
 		}); err != nil {
@@ -304,7 +304,7 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 	var updated config.Project
 	var found bool
 	var updateErr error
-	if err := o.runQueued(ctx, func() error {
+	if err := o.runCommitted(ctx, func() error {
 		queued := sync.OnceValue(surfaces)
 		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
 			if live, _ := config.FindProjectByID(s, id); live != nil {
@@ -495,7 +495,7 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (s
 	var newPlaintext string
 	var ok bool
 	var genErr error
-	if err := o.runQueued(ctx, func() error {
+	if err := o.runCommitted(ctx, func() error {
 		if err := o.Store.With(func(s *config.Settings) {
 			newPlaintext, ok, genErr = s.RotateProjectToken(id)
 		}); err != nil {
@@ -587,7 +587,7 @@ func (o *ProjectOps) NarrowForEnrolment(
 
 	var updated config.Project
 	var found, noop bool
-	err := o.runQueued(ctx, func() error {
+	err := o.runCommitted(ctx, func() error {
 		err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
 			// Resolved INSIDE the callback, not from a value the caller
 			// captured earlier: the store's lock is what makes "narrower than
