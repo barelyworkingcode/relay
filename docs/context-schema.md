@@ -188,10 +188,14 @@ thing.
   is exactly what relay derives from `path`.
 
   A derived value stays relay's after the record stops having a path. An
-  update whose result is remote or hosted, and that names no permission field
-  (`access`, `allowed_tools`, `allow_external`), drops every stored derived field
-  (v2 `source: "project_path"`, or v1 `allowed_dirs`) for each MCP whose
-  schema relay holds, and deletes an entry left with no fields. The correct
+  update to a record that is already remote or hosted, and that sends no
+  `context`, drops every stored derived field (v2 `source: "project_path"`,
+  or v1 `allowed_dirs`) for each MCP whose schema relay holds, and deletes an
+  entry left with no fields. It does so whether or not the update names a
+  permission field (`access`, `allowed_tools`, `allow_external`); one that
+  does validates the permission set against the context the drop leaves, and
+  a refusal leaves the stored context as it was. A conversion to remote or
+  hosted that names no permission field drops the same way. The correct
   derived value for a record with no path is "absent", so dropping only
   narrows: an absent restrict field refuses every tool it governs. Refusing
   instead would ask the operator to remove a value no request can name.
@@ -204,13 +208,12 @@ thing.
   `context` in the request, every stored v2 `project_path` field and every
   stored v1 blob is carried unchanged. The write keeps them as stored, and
   re-derives them from `path` only when the same request names `path`,
-  `allowed_mcp_ids` or `context`. When the result is remote or hosted
-  nothing is derived, so a stored derived field is judged as if it had been
-  sent: an update that names a permission field while one is stored, a
-  conversion to remote included, is refused, naming the field or, for a v1
-  blob, the MCP, and neither converts nor drops. Send an update that names
-  no permission field first, which drops the derived value, then the one
-  that does.
+  `allowed_mcp_ids` or `context`. A conversion from local to remote or
+  hosted derives nothing, so a stored derived field is judged as if it had
+  been sent: a conversion that names a permission field while one is stored
+  is refused, naming the field or, for a v1 blob, the MCP, and neither
+  converts nor drops. Send the conversion without a permission field first,
+  which drops the derived value, then the permission edit.
 
   An MCP that is not connected (no entry in the live surfaces, as distinct
   from connected with no schema) cannot be judged: keeping its stored value

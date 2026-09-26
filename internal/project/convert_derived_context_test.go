@@ -289,6 +289,22 @@ func TestApplyUpdate_RemoteOrHostedRecordDropsStaleDerivedFieldOnAnyEdit(t *test
 		}
 	})
 
+	t.Run("schema known: a refused permissions edit leaves context untouched", func(t *testing.T) {
+		s := staleRemote(stale())
+		before := append(json.RawMessage(nil), s.Projects[0].Context["macmcp"]...)
+
+		access := map[string]string{"macmcp": "wrIte"}
+		_, _, err := ApplyUpdate(s, "p1", UpdateFields{Access: &access}, surfacesOf(McpSurfaces{"macmcp": macmcpSurface()}))
+		if err == nil {
+			t.Fatal("an access edit with an invalid level was accepted")
+		}
+
+		after, _ := config.FindProjectByID(s, "p1")
+		if !bytes.Equal(before, after.Context["macmcp"]) {
+			t.Errorf("a refused edit changed the stored context:\nbefore %s\nafter  %s", before, after.Context["macmcp"])
+		}
+	})
+
 	t.Run("schema unknown: the rename leaves context untouched", func(t *testing.T) {
 		s := staleRemote(stale())
 		before := append(json.RawMessage(nil), s.Projects[0].Context["macmcp"]...)
