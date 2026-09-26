@@ -21,6 +21,14 @@ import (
 //   - SetConfigDirForTest("") was called too early (clearing the override
 //     mid-test) so a later write landed in the real dir.
 func TestMain(m *testing.M) {
+	// This is deliberate: tests swap HOME, and Go derives these caches from
+	// HOME, so an unpinned child `go build` would start from an empty module
+	// cache and hit the network.
+	if err := pinGoToolchainCaches(); err != nil {
+		fmt.Fprintf(os.Stderr, "pin Go toolchain caches: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Capture the REAL ConfigDir (override is empty at this point) so the
 	// snapshot is meaningful even if a stray Set call below leaks.
 	bridge.SetConfigDirForTest("")

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -636,3 +637,26 @@ func (f *fakeServiceServer) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// pinGoToolchainCaches exports the module cache, build cache and go env file
+// resolved against the real HOME, leaving any already set in the process
+// environment untouched.
+func pinGoToolchainCaches() error {
+	out, err := exec.Command("go", "env", "-json", "GOMODCACHE", "GOCACHE", "GOENV").Output()
+	if err != nil {
+		return fmt.Errorf("go env -json GOMODCACHE GOCACHE GOENV: %w", err)
+	}
+	var vars map[string]string
+	if err := json.Unmarshal(out, &vars); err != nil {
+		return fmt.Errorf("parse go env output %q: %w", out, err)
+	}
+	for name, value := range vars {
+		if _, set := os.LookupEnv(name); set {
+			continue
+		}
+		if err := os.Setenv(name, value); err != nil {
+			return fmt.Errorf("set %s=%s: %w", name, value, err)
+		}
+	}
+	return nil
+}
