@@ -400,6 +400,7 @@ func TestLaunch_SessionKind_SandboxEmptyProfilePath_Refused(t *testing.T) {
 		"kind":       "claude",
 		"sandbox":    map[string]any{"profile_path": ""},
 		"session_request": map[string]any{
+			"model":     "sonnet",
 			"projectId": "proj-1",
 			"directory": "/tmp/proj",
 		},
@@ -450,6 +451,7 @@ func TestLaunch_CrossManagerSessionIDCollision_Refused(t *testing.T) {
 		"session_id": sharedID,
 		"kind":       "claude",
 		"session_request": map[string]any{
+			"model":     "sonnet",
 			"projectId": "proj-1",
 			"directory": "/tmp/proj",
 		},
@@ -494,6 +496,7 @@ func TestLaunch_CrossManagerSessionIDCollision_Refused(t *testing.T) {
 		"session_id": sharedID,
 		"kind":       "claude",
 		"session_request": map[string]any{
+			"model":     "sonnet",
 			"projectId": "proj-1",
 			"directory": "/tmp/proj",
 		},
@@ -561,6 +564,7 @@ func TestLaunch_ConcurrentCrossManagerCollision_ExactlyOneWins(t *testing.T) {
 			"session_id": id,
 			"kind":       "claude",
 			"session_request": map[string]any{
+				"model":     "sonnet",
 				"projectId": "proj-1",
 				"directory": "/tmp/proj",
 			},
@@ -640,6 +644,7 @@ func TestLaunch_ResumeRacesInFlightLaunch_Refused(t *testing.T) {
 		"session_id": id,
 		"kind":       "claude",
 		"session_request": map[string]any{
+			"model":     "sonnet",
 			"projectId": "proj-1",
 			"directory": "/tmp/proj",
 		},
