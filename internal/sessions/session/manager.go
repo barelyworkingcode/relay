@@ -550,8 +550,12 @@ func (m *Manager) restartProvider(sess *sessionstypes.Session, slot *sessionSlot
 	owned := m.slots[sess.ID] == slot
 	m.mu.Unlock()
 	if !owned {
-		// Deliberate: kill p itself, never sess.Provider(). A concurrent
-		// Create{Resume} may already have installed its own provider there.
+		// Deliberate: take p out of sess first, then kill p itself, never
+		// sess.Provider(). A concurrent Create{Resume} may already have
+		// installed its own provider there, so the swap applies only if sess
+		// still holds p; once it is out, p's exit event fails
+		// handleProviderEvent's displaced-provider guard and is dropped.
+		sess.CompareAndSwapProvider(p, nil)
 		p.Kill()
 		return errNotLaunchedHere
 	}
@@ -1032,7 +1036,7 @@ func (m *Manager) persist(sess *sessionstypes.Session) {
 // StopGeneration manufactures itself). source is only consulted in the
 // "process_exited" case: a provider Create already displaced via
 // CreateSpec.Resume's relaunch path can still fire its own delayed exit
-// event afterward (startProvider's own doc comment on self) — reporting
+// event afterward (newProvider's own comment on self) — reporting
 // that as sess's exit would tear down the replacement provider's own,
 // already-live credentials, not the dead one's.
 func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessionstypes.Provider, eventType string, data json.RawMessage) {

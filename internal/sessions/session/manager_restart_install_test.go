@@ -36,6 +36,102 @@ func (p *spawnedGateProvider) Start() error {
 	return nil
 }
 
+// preSpawnGateProvider parks in Start before its process exists. Like the
+// real providers, Kill is a no-op until the process has spawned; after that
+// it fires process_exited on its own goroutine, as waitForExit does.
+type preSpawnGateProvider struct {
+	fakeProvider
+	handler sessionstypes.EventHandler
+	gate    chan struct{}
+	entered chan struct{}
+	spawned bool
+}
+
+func (p *preSpawnGateProvider) Start() error {
+	close(p.entered)
+	<-p.gate
+	p.fakeProvider.mu.Lock()
+	defer p.fakeProvider.mu.Unlock()
+	p.spawned = true
+	p.fakeProvider.alive = true
+	p.fakeProvider.startCount++
+	return nil
+}
+
+func (p *preSpawnGateProvider) Kill() {
+	p.fakeProvider.mu.Lock()
+	spawned := p.spawned
+	p.fakeProvider.mu.Unlock()
+	if !spawned {
+		return
+	}
+	p.fakeProvider.Kill()
+	if p.handler != nil {
+		go p.handler("process_exited", []byte(`{"exitCode":0}`))
+	}
+}
+
+func newPreSpawnGateProvider() *preSpawnGateProvider {
+	return &preSpawnGateProvider{gate: make(chan struct{}), entered: make(chan struct{})}
+}
+
+// parkRestartInStart lets the parked restart's build return and waits until
+// its provider is parked inside Start.
+func (r *restartInstallRig) parkRestartInStart(t *testing.T, restarted *preSpawnGateProvider) {
+	t.Helper()
+	close(r.restartGate)
+	synctest.Wait()
+	select {
+	case <-restarted.entered:
+	default:
+		t.Fatal("setup: restart's provider did not park in Start")
+	}
+}
+
+// liveObserver records what reaches a session's viewers and exit handler
+// once a resume has made it live again.
+type liveObserver struct {
+	sink         recordingSink
+	mu           sync.Mutex
+	exitCalls    int
+	framesBefore int
+}
+
+func observeLiveSession(mgr *session.Manager) *liveObserver {
+	o := &liveObserver{}
+	mgr.SetEventSink(&o.sink)
+	mgr.SetExitHandler(func(string, int) {
+		o.mu.Lock()
+		o.exitCalls++
+		o.mu.Unlock()
+	})
+	return o
+}
+
+func (o *liveObserver) markResumed() {
+	o.framesBefore = o.sink.count("process_exited")
+}
+
+func (o *liveObserver) assertLiveUntouched(t *testing.T, store *session.Store, live *fakeProvider, wantName string) {
+	t.Helper()
+	if got := o.sink.count("process_exited") - o.framesBefore; got != 0 {
+		t.Errorf("%d process_exited frame(s) sent to the live session's viewers (live provider alive=%v)", got, live.Alive())
+	}
+	o.mu.Lock()
+	exits := o.exitCalls
+	o.mu.Unlock()
+	if exits != 0 {
+		t.Errorf("exit handler called %d time(s) for the live session (live provider alive=%v)", exits, live.Alive())
+	}
+	onDisk, err := store.Load(installSessionID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if onDisk.Name != wantName {
+		t.Errorf("persisted name = %q, want %q", onDisk.Name, wantName)
+	}
+}
+
 type recordingSink struct {
 	mu   sync.Mutex
 	msgs []map[string]any
@@ -60,7 +156,7 @@ func (s *recordingSink) count(typ string) int {
 }
 
 // restartInstallRig builds the launched provider first, parks the second
-// build (the ad-hoc restart's) in the factory until releaseRestart, and
+// build (the ad-hoc restart's) in the factory until restartGate closes, and
 // hands every later build the resume's provider.
 type restartInstallRig struct {
 	mgr            *session.Manager
@@ -92,8 +188,11 @@ func newRestartInstallRig(t *testing.T, restarted, resumed sessionstypes.Provide
 		case 2:
 			close(r.restartEntered)
 			<-r.restartGate
-			if d, ok := restarted.(*delayedExitProvider); ok {
-				d.handler = h
+			switch p := restarted.(type) {
+			case *delayedExitProvider:
+				p.handler = h
+			case *preSpawnGateProvider:
+				p.handler = h
 			}
 			return restarted, nil
 		default:
@@ -170,15 +269,7 @@ func TestManager_RestartLosingToEndAndResume_DoesNotReachLiveSession(t *testing.
 		restarted := &delayedExitProvider{}
 		live := &fakeProvider{}
 		r := newRestartInstallRig(t, restarted, live)
-		sink := &recordingSink{}
-		r.mgr.SetEventSink(sink)
-		var exitMu sync.Mutex
-		exitCalls := 0
-		r.mgr.SetExitHandler(func(string, int) {
-			exitMu.Lock()
-			exitCalls++
-			exitMu.Unlock()
-		})
+		obs := observeLiveSession(r.mgr)
 		stale, sendDone := r.launchAndParkRestart(t)
 
 		r.mgr.EndSession(installSessionID)
@@ -192,7 +283,7 @@ func TestManager_RestartLosingToEndAndResume_DoesNotReachLiveSession(t *testing.
 		if err := r.mgr.RenameSession(installSessionID, "Acme review"); err != nil {
 			t.Fatalf("setup: RenameSession: %v", err)
 		}
-		exitsBefore := sink.count("process_exited")
+		obs.markResumed()
 
 		close(r.restartGate)
 		sendErr := <-sendDone
@@ -202,22 +293,7 @@ func TestManager_RestartLosingToEndAndResume_DoesNotReachLiveSession(t *testing.
 		if !errors.Is(sendErr, session.ErrResumeRequired) {
 			t.Errorf("SendMessage = %v, want ErrResumeRequired", sendErr)
 		}
-		if got := sink.count("process_exited") - exitsBefore; got != 0 {
-			t.Errorf("%d process_exited frame(s) sent to the live session's viewers (live provider alive=%v)", got, live.Alive())
-		}
-		exitMu.Lock()
-		gotExits := exitCalls
-		exitMu.Unlock()
-		if gotExits != 0 {
-			t.Errorf("exit handler called %d time(s) for the live session (live provider alive=%v)", gotExits, live.Alive())
-		}
-		onDisk, err := r.store.Load(installSessionID)
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-		if onDisk.Name != "Acme review" {
-			t.Errorf("persisted name = %q, want %q", onDisk.Name, "Acme review")
-		}
+		obs.assertLiveUntouched(t, r.store, live, "Acme review")
 	})
 }
 
@@ -252,5 +328,68 @@ func TestManager_RestartBuiltAfterResumePublished_KeepsResumeProvider(t *testing
 		if !resumed.Alive() {
 			t.Errorf("resume's provider is dead (kills=%d)", resumed.Kills())
 		}
+	})
+}
+
+func TestManager_RestartStoppedDuringStart_KillsItsProvider(t *testing.T) {
+	stops := map[string]func(*session.Manager){
+		"EndSession": func(m *session.Manager) { m.EndSession(installSessionID) },
+		"StopAll":    func(m *session.Manager) { m.StopAll() },
+	}
+	for name, stop := range stops {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				restarted := newPreSpawnGateProvider()
+				r := newRestartInstallRig(t, restarted, &fakeProvider{})
+				_, sendDone := r.launchAndParkRestart(t)
+				r.parkRestartInStart(t, restarted)
+
+				stop(r.mgr)
+				close(restarted.gate)
+				sendErr := <-sendDone
+				synctest.Wait()
+
+				if !errors.Is(sendErr, session.ErrResumeRequired) {
+					t.Errorf("SendMessage = %v, want ErrResumeRequired", sendErr)
+				}
+				if restarted.Alive() {
+					t.Errorf("restart's provider left running after %s (kills=%d)", name, restarted.Kills())
+				}
+			})
+		})
+	}
+}
+
+func TestManager_RestartLosingToEndAndResumeDuringStart_DoesNotReachLiveSession(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		restarted := newPreSpawnGateProvider()
+		live := &fakeProvider{}
+		r := newRestartInstallRig(t, restarted, live)
+		obs := observeLiveSession(r.mgr)
+		stale, sendDone := r.launchAndParkRestart(t)
+		r.parkRestartInStart(t, restarted)
+
+		r.mgr.EndSession(installSessionID)
+		fresh, err := r.mgr.Create(installResumeSpec)
+		if err != nil {
+			t.Fatalf("setup: resume Create: %v", err)
+		}
+		if fresh == stale {
+			t.Fatal("setup: resume reused the ended session object")
+		}
+		if err := r.mgr.RenameSession(installSessionID, "Acme review"); err != nil {
+			t.Fatalf("setup: RenameSession: %v", err)
+		}
+		obs.markResumed()
+
+		close(restarted.gate)
+		sendErr := <-sendDone
+		// Lets any process_exited the restart's provider fires land first.
+		synctest.Wait()
+
+		if !errors.Is(sendErr, session.ErrResumeRequired) {
+			t.Errorf("SendMessage = %v, want ErrResumeRequired", sendErr)
+		}
+		obs.assertLiveUntouched(t, r.store, live, "Acme review")
 	})
 }
