@@ -693,27 +693,102 @@ project path stored as `/users/me/Proj` would otherwise match nothing and lock
 the session out of its own directory. A grant whose final component is a
 symlink also names the link itself.
 
-**A read-write grant never follows a link the user could have made.** A
+**A read-write grant never follows a symlink, except the system ones.** A
 session holding read-write on a directory can replace it, or any directory
 under it, with a symlink: `(subpath D)` covers D itself. If the next launch
-followed that link, the session would have chosen its own grant. So `Render`
-walks every `read_write` entry, directory or file, from `/` with `Lstat` on
-each component, splicing in each link's target (a relative target resolves
-against the link's already resolved directory, at most 32 links; more fails
-the render). If the walk follows any link whose directory is not *locked*,
-the final component included, the launch is refused with
-`sandbox.LinkedGrantError`: `400 sandbox_unavailable` naming the grant and the
-link, a `session_launch` error in the audit log, one refusal Warn
-(`session sandbox: read-write grant refused`; see `ensureGrantDirs` below
-for the one other line a refused launch can log), and no profile written. A link
-counts whether or not its target exists. **Locked** means root owns the
-directory and the running user cannot write it (`access(dir, W_OK)` fails).
-That exempts the `/tmp`, `/var` and `/etc` links in `/`, so `t.TempDir()`,
-`/tmp/claude-<uid>` and anything reached through them keep working, while a
-link directly in `/private/tmp` (root's, but world-writable) is refused. The
-cost is deliberate: a dotfiles-managed `~/.claude`, or a project reached
-through a link, is refused as a read-write grant; the operator names the real
-path instead. Read grants still follow links as before.
+followed that link, the session would have chosen its own grant. And a
+writable root is keyed where it is named (below), so a root reached through
+any other link would leave where it resolves uncovered; a root that is one of
+the `/tmp`, `/var` and `/etc` links is keyed both where it is named and where
+it resolves. So `Render` walks every
+`read_write` entry, directory or file, the project path included, from `/`
+with `Lstat` on each component, splicing in each link's target (a relative
+target resolves against the link's already resolved directory, at most 32
+links; more fails the render). If the walk follows any link other than the
+`/tmp`, `/var` and `/etc` links in `/`, the final component included and
+whoever owns it, the launch is refused with `sandbox.LinkedGrantError`
+(`grant "<entry>" follows symlink "<link>"; use the real path`): `400
+sandbox_unavailable`, a `session_launch` error in the audit log, one refusal
+Warn (`session sandbox: read-write grant refused`; see `ensureGrantDirs` below
+for the one other line a refused launch can log), and no profile written. A
+link counts whether or not its target exists. `t.TempDir()`,
+`/tmp/claude-<uid>` and anything else reached only through `/tmp`, `/var` or
+`/etc` keep working; a root-owned link such as `/var/select/sh`, or any link in
+`/private/tmp`, is refused. The cost is deliberate: a dotfiles-managed
+`~/.claude`, or a project reached through a link, is refused as a read-write
+grant; the operator names the real path instead. Only the launch's own grants
+refuse: another template's or project's symlinked root refuses at its own
+launch, not at an unrelated one.
+
+A **locked** directory, for the read and deny rules below, is one root owns
+and the running user cannot write (`access(dir, W_OK)` fails). That covers the
+`/tmp`, `/var` and `/etc` links in `/`, while a link directly in
+`/private/tmp` (root's, but world-writable) is not in a locked directory.
+
+**A read grant never follows a link a sandboxed session could have made.**
+The strict rule above cannot apply to reads: Homebrew and installer link
+chains run through directories the user can write, and `/Applications` is
+admin-writable. So a read grant is refused only when the link could be a
+session's. `Render` walks every `read` entry, file or directory, and the
+system baseline dirs, the same way as a read-write grant, and one walk supplies
+both the check and the rendered terms. For every link the walk follows whose
+directory is not locked, it asks whether the **writable roots** (W) cover that
+link. If they do, the launch is refused with `sandbox.LinkedReadError`
+(`read grant "<entry>" follows symlink "<link>", which a sandboxed session
+could have made`, prefixed `read: ` or `baseline: `): the same `400
+sandbox_unavailable`, audited, with one `session sandbox: read grant refused`
+Warn and no profile written. A dangling link is not followed, so it renders
+naming only the link.
+
+W is built per launch by `sandboxWritableRoots`
+(`cmd/relay/session_sandbox_writable.go`) plus the launch's own grants:
+
+- the home directory, always;
+- `os.TempDir()`, `DARWIN_USER_TEMP_DIR`, `/dev` and
+  `<config dir>/sessions/pi-sessions`, the read-write paths relay grants
+  without a template;
+- the `read_write` entries of every sandboxed console template, and of the
+  `claude-code`, `pi` and `chat` templates whatever their `sandbox` flag, since
+  a claude, pi or chat session always sandboxes;
+- every local project path (not remote, not on a host);
+- the launch's own `read_write` entries, which `Render` adds itself.
+
+Coverage is decided by location, not by spelling and not by the inode found
+at a root. Each root is keyed as the identity (device and inode) of its nearest
+existing ancestor plus the names from there down, compared with Unicode case
+folding and normalization. So letter case and firmlinks cannot hide a match,
+nor can the `/tmp`, `/var` and `/etc` aliases: a root that is one of them is
+also keyed where it resolves, and a grant is walked to its resolution. And a
+session that removes and recreates its root, or swaps it for a link, between W
+being built and a grant being walked is still caught: the ancestor is outside
+its reach. Folding can equate names the volume
+keeps apart; that refuses more, never less. A directory root covers a link
+anywhere beneath it. A regular-file root covers the entries directly in its
+parent directory, since the atomic-write siblings a read-write file grant
+allows let a session create names beside it. Every root also covers its own
+entry, so a root replaced with a link is caught. A root that is missing is
+keyed by its nearest existing ancestor, and a `..` in the part the walk could
+not reach cancels the name before it or steps the ancestor up; a root whose
+walk fails contributes nothing; a relative root fails the render. W takes
+template entries from the same validated view a launch uses, so a template
+dropped at resolution contributes nothing, and an entry no launch can grant
+(`~/../..` resolving to `/`, say) is skipped with a `session sandbox: writable
+root skipped` Warn naming the template and the entry. Unsandboxed templates and hosted or remote projects are
+not in W.
+
+The cost: because home is always in W, a read entry reached through a link
+anywhere in the home directory is refused. A dotfiles-managed `~/.zshrc` in the
+`claude-code` template's `read` list refuses every Claude launch until the
+entry is removed or names the real file; the same holds for any template read
+entry that is itself a link in home.
+
+**The gap.** W is computed from the settings of this launch, not from every
+setting that ever applied. A link planted, outside home, in a region current
+settings no longer name is not caught: a template narrowed since, a project
+deleted or moved, or a template that was sandboxed and now says
+`"sandbox": false`. Links in home are caught, since home is always in W. What a session writes
+that is not a link (rc files, scripts, provider binaries another session runs)
+and unix-socket entries are outside this rule.
 
 **A `deny` entry never follows a link the user could have made, either.** Each
 `deny`, the baseline carve-outs included, is walked the same way, and that one
@@ -1065,6 +1140,7 @@ what works.
 | C3 process-ancestry membership | `internal/membership/` |
 | tool-permission decisions: `Preflight`, the wait/decide flow behind `/permission` | `internal/sessions/permission/` |
 | C7 sandbox profile rendering | `internal/sessions/sandbox/`, `cmd/relay/session_sandbox.go` |
+| writable roots a read grant's links are checked against | `cmd/relay/session_sandbox_writable.go` |
 | relay-side launch authorization | `cmd/relay/session_launch.go` |
 | relay-side HTTP routes, resume, accounting | `cmd/relay/session_routes.go` |
 | built-in service record, helper path resolution | `internal/service/builtin_sessions.go` |

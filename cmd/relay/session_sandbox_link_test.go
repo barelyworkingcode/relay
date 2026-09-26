@@ -97,7 +97,7 @@ func TestAuthorizeLaunch_RefusesReadWriteGrantThroughUserLink(t *testing.T) {
 			if refusal.Status != 400 || refusal.Code != "sandbox_unavailable" {
 				t.Errorf("refusal = %d %q, want 400 sandbox_unavailable", refusal.Status, refusal.Code)
 			}
-			if want := `grant "` + link + `" follows symlink "` + link + `"`; !strings.Contains(refusal.Message, want) {
+			if want := `grant "` + link + `" follows symlink "` + link + `"; use the real path`; !strings.Contains(refusal.Message, want) {
 				t.Errorf("refusal message %q does not name the grant and the link (%s)", refusal.Message, want)
 			}
 			if refusal.Audit.Event != audit.AuditEventSessionLaunch || refusal.Audit.Outcome != audit.AuditOutcomeError {
