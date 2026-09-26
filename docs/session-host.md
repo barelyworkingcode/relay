@@ -705,7 +705,19 @@ folders:
 Each entry is an absolute path or starts with `~`, and never `/`. A directory
 grants its subtree; an existing regular file grants that file, and a
 read-write file also grants the atomic-write siblings a CLI leaves beside it
-(`.lock`, `.tmp.*`, `.backup`; SP2 row 17). A read-write directory that does
+(`.lock`, `.tmp.*`, `.backup`; SP2 row 17). A read-write entry gets those
+siblings only when its name looks like a file (its last name, with one leading
+dot trimmed, contains a dot) **and** it is a regular file on disk; otherwise it
+renders as `(subpath …)`, which on a regular file grants that file alone. The
+name decides because a session can swap a read-write directory for a file
+before the next launch, and the disk alone would then hand it the siblings.
+Two residuals follow. A read-write directory whose own name contains a dot
+(`~/foo.d`) and is swapped for a regular file still gains its siblings. And a
+read-write file whose name has no dot after its first character
+(`~/.gitconfig`) gets no siblings, so an atomic writer's `.lock` beside it is
+refused: git writing `~/.gitconfig` through `~/.gitconfig.lock` fails under a
+read-write grant of `~/.gitconfig`. Grant the parent directory read-write
+instead. A read-write directory that does
 not exist is created at launch, because a `(subpath)` rule cannot create its
 own ancestors (`go build` with no `~/go` needs `~/go/pkg` to exist). An entry
 that cannot be placed refuses the template when settings are read, and the
