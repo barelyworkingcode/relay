@@ -381,6 +381,15 @@ resources instead of the host's. A session that asked for
 unavailable` at Warn, with a `reason` of `relay_mcp_command_unset`,
 `host_session`, `mcp_start_failed` or `relay_server_failed`.
 
+The tool child, chat or Claude alike, reaches the relay that launched this
+host through `RELAY_BRIDGE_SOCKET`, which it inherits from relay-sessions'
+environment. relay-sessions passes no `--config-dir`: it has no config dir,
+only the socket path. `relay mcp` honours the variable and dials that socket
+once before serving, so a relay under a non-default config dir gets its own
+sessions' tool calls, and an unreachable socket ends the child at startup,
+which surfaces as `relay_server_failed` or `mcp_start_failed`. The precedence
+and the error lines are in [cli.md](cli.md#which-socket-the-relay-mcp-stdio-server-dials).
+
 ```
 relay-sessions exec --session-id <id> [--identity] [--pty] \
   [--sandbox-profile <abs path>] --status-fd 4 -- <target argv…>

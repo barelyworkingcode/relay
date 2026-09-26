@@ -151,7 +151,7 @@ Set by relay on a service launch. None of it is secret.
 
 | var | meaning |
 |---|---|
-| `RELAY_BRIDGE_SOCKET` | bridge socket path |
+| `RELAY_BRIDGE_SOCKET` | bridge socket path; a `relay mcp` stdio server the service spawns dials it (see [cli.md](cli.md#which-socket-the-relay-mcp-stdio-server-dials)) |
 | `RELAY_SERVICE_ID` | the launch name Hello presents |
 | `RELAY_FRONTEND_SOCKET` | frontend socket path, set exactly when the service holds the `frontend` capability |
 | `RELAY_MCP_COMMAND` | relay binary path |

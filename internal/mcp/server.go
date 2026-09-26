@@ -25,7 +25,12 @@ const mcpShutdownGrace = 3 * time.Second
 // minutes) doesn't block other tool calls or the progress notifications it
 // streams; emit is mutex-guarded so concurrent writes never interleave.
 func RunMCPServer(token string) error {
-	client := bridge.NewClient(token)
+	return RunMCPServerAt(bridge.SocketPath(), token)
+}
+
+// RunMCPServerAt is RunMCPServer against an explicit bridge socket.
+func RunMCPServerAt(sockPath, token string) error {
+	client := bridge.NewClientAt(sockPath, token)
 
 	scanner := bridge.NewScanner(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)

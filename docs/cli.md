@@ -125,6 +125,48 @@ relay --config-dir /path/to/alt-config grant
 
 This is the only flag that is not owned by a subcommand.
 
+### Which socket the `relay mcp` stdio server dials
+
+`relay mcp --token TOKEN` (the stdio server, not its `register`, `unregister`,
+`list` or `call` subcommands) picks its bridge socket by the first rule that
+applies:
+
+1. An explicit, non-empty `--config-dir DIR`: `DIR/relay.sock`.
+2. `RELAY_BRIDGE_SOCKET`, when set and non-empty. It must be an absolute path;
+   a relative value is refused, never resolved against the working directory.
+3. The default, `<config dir>/relay.sock`.
+
+The environment variable is what makes a session's tool child reach the relay
+that launched it. relay-sessions is a separate binary with no config dir of its
+own: it learns everything from the bridge socket path it was started with, and
+that path already reaches every `relay mcp` it spawns as `RELAY_BRIDGE_SOCKET`.
+Without rule 2, a relay run under `--config-dir` would hand its sessions a tool
+child that dials the default relay instead. The path is not a credential:
+authentication is decided on relay's side, and nothing new enters any child's
+environment. An explicit flag outranks the variable because the operator typed
+it.
+
+Once the socket is chosen, and before reading stdin, the server dials it once
+and closes the connection. If that fails it exits `1` with nothing on stdout
+and one line on stderr naming the path and the rule that chose it:
+
+```
+error: relay mcp: bridge socket /tmp/acme/relay.sock (from RELAY_BRIDGE_SOCKET) is unreachable: dial unix /tmp/acme/relay.sock: connect: no such file or directory
+error: relay mcp: RELAY_BRIDGE_SOCKET must be an absolute path, got "relay.sock"
+```
+
+The source is `--config-dir`, `RELAY_BRIDGE_SOCKET` or `default`. A set
+variable never falls back to the default socket: a tool child that silently
+reached a different relay would act under that relay's grants. The same holds
+on the default path, so `relay mcp` started while relay is down exits at
+startup instead of failing each call. A session reports the early exit as
+`relay_server_failed` (Claude) or `mcp_start_failed` (chat).
+
+The admin subcommands (`relay mcp register`, `relay mcp call`, `relay
+mcpExec` and the rest) do not honour an inherited `RELAY_BRIDGE_SOCKET`. They
+carry secrets the operator typed, so they dial only the socket `--config-dir`
+or the default names.
+
 ## Privileged commands prompt — and here is what that looks like
 
 For any command marked **prompts: yes** above, the tray raises a real
