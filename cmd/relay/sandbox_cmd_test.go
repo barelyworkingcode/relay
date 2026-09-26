@@ -11,6 +11,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -56,6 +58,18 @@ func TestHelperSandboxClient(t *testing.T) {
 		code := attachTerminal(rec, bufio.NewReader(rec))
 		_ = os.WriteFile(os.Getenv(sbxOutEnv), []byte(strconv.Itoa(int(rec.calls.Load()))), 0o600)
 		os.Exit(code)
+	case "send-then-exit":
+		conn, err := net.Dial("unix", bridge.SocketPath())
+		if err != nil {
+			os.Exit(90)
+		}
+		cwd, _ := os.Getwd()
+		arg, _ := json.Marshal(bridge.SandboxAttachRequest{Template: "shell", Cwd: cwd})
+		line, _ := json.Marshal(bridge.BridgeRequest{Type: bridge.ReqSandboxAttach, Arguments: arg})
+		if _, err := conn.Write(append(line, '\n')); err != nil {
+			os.Exit(90)
+		}
+		os.Exit(1)
 	default:
 		os.Exit(sandboxMain(args))
 	}
@@ -131,15 +145,86 @@ func (b *sbxBridge) expectRequest() *sbxRequest {
 	}
 }
 
-// requireNoRequest is called after the client has exited, so an empty queue
-// is final.
-func (b *sbxBridge) requireNoRequest() {
-	b.t.Helper()
-	select {
-	case r := <-b.reqs:
-		b.t.Fatalf("the client sent a request it should have refused to send: %+v", r.Req)
-	default:
+// listenIdle listens where the client will look and never accepts, so every
+// connection the client makes stays queued for bytesSentTo.
+func listenIdle(t *testing.T, home string) *net.UnixListener {
+	t.Helper()
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(home, "relay.sock"), Net: "unix"})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
 	}
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln
+}
+
+// bytesSentTo drains ln and returns what each queued connection carried, in
+// accept order; an empty entry is a reachability probe.
+//
+// Subtle: the drain is final only because the client has exited and three
+// kernel facts hold. A Unix connect() has queued the server socket before it
+// returns; a queued connection whose peer has closed stays queued; and a
+// non-blocking accept() returning EAGAIN means the queue is empty.
+func (p *sbxProc) bytesSentTo(ln *net.UnixListener) [][]byte {
+	p.t.Helper()
+	select {
+	case <-p.exited:
+	default:
+		p.t.Fatal("bytesSentTo needs an exited client; a live one can still connect")
+	}
+	raw, err := ln.SyscallConn()
+	if err != nil {
+		p.t.Fatalf("listener SyscallConn: %v", err)
+	}
+	var sent [][]byte
+	var drainErr error
+	ctlErr := raw.Control(func(lfd uintptr) {
+		for {
+			syscall.ForkLock.RLock()
+			fd, _, err := syscall.Accept(int(lfd))
+			if err == nil {
+				syscall.CloseOnExec(fd)
+			}
+			syscall.ForkLock.RUnlock()
+			switch {
+			case errors.Is(err, syscall.EINTR):
+				continue
+			case errors.Is(err, syscall.EAGAIN):
+				return
+			case err != nil:
+				drainErr = fmt.Errorf("accept: %w", err)
+				return
+			}
+			b, err := readQueuedConn(fd)
+			if err != nil {
+				drainErr = err
+				return
+			}
+			sent = append(sent, b)
+		}
+	})
+	if ctlErr != nil {
+		p.t.Fatalf("listener Control: %v", ctlErr)
+	}
+	if drainErr != nil {
+		p.t.Fatalf("drain the idle listener: %v", drainErr)
+	}
+	return sent
+}
+
+// readQueuedConn reads an accepted connection to EOF and closes it. Darwin
+// hands out accepted sockets with the listener's O_NONBLOCK, so it is cleared
+// first; the peer has exited, so EOF comes.
+func readQueuedConn(fd int) ([]byte, error) {
+	f := os.NewFile(uintptr(fd), "queued-conn")
+	defer f.Close()
+	if err := syscall.SetNonblock(fd, false); err != nil {
+		return nil, fmt.Errorf("set blocking on accepted fd %d: %w", fd, err)
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read accepted fd %d: %w", fd, err)
+	}
+	return b, nil
 }
 
 func (r *sbxRequest) write(v any) {
@@ -645,12 +730,17 @@ func TestSandboxClient_PreflightRefusalsSendNothing(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			f := newSbxFixture(t)
+			f := &sbxFixture{home: mkEmptySandboxRelayHome(t), cwd: realDir(t, t.TempDir())}
+			ln := listenIdle(t, f.home)
 			p := startSandboxClient(t, c.run(f))
 			if code := p.wait(); code == 0 {
 				t.Fatal("exit 0 on a refused invocation")
 			}
-			f.rel.requireNoRequest()
+			for i, b := range p.bytesSentTo(ln) {
+				if len(b) != 0 {
+					t.Fatalf("connection %d carried %q; a refused invocation must send relay nothing", i, b)
+				}
+			}
 			msg := strings.ToLower(p.stderr.String())
 			if strings.TrimSpace(msg) == "" {
 				t.Fatal("refused without a message")
@@ -731,4 +821,21 @@ func TestSandboxClient_RelayHangingUpBeforeAnsweringIsAFailureWithAMessage(t *te
 		t.Fatal("no message")
 	}
 	p.requireTerminalRestored()
+}
+
+func TestSandboxClient_BytesSentToSeesARequestFromAClientThatExited(t *testing.T) {
+	home := mkEmptySandboxRelayHome(t)
+	ln := listenIdle(t, home)
+	p := startSandboxClient(t, sbxRun{home: home, dir: realDir(t, t.TempDir()), mode: "send-then-exit"})
+	if code := p.wait(); code != 1 {
+		t.Fatalf("send-then-exit exited %d, want 1; stderr: %q", code, p.stderr.String())
+	}
+	sent := p.bytesSentTo(ln)
+	if len(sent) != 1 {
+		t.Fatalf("saw %d connection(s), want 1: %q", len(sent), sent)
+	}
+	var req bridge.BridgeRequest
+	if err := json.Unmarshal(sent[0], &req); err != nil || req.Type != bridge.ReqSandboxAttach {
+		t.Fatalf("the connection carried %q, want one %s request line", sent[0], bridge.ReqSandboxAttach)
+	}
 }
