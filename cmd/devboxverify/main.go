@@ -85,6 +85,9 @@ func script(world, name string, out io.Writer, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, filepath.Join(world, name), args...)
+	// This is subtle: the timeout kills only the script, and a child it left
+	// behind would keep a captured stdout pipe open and hold Run past it.
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if out != nil {
 		cmd.Stdout = out

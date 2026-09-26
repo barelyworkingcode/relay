@@ -21,6 +21,7 @@ func gh(ctx context.Context, stdin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
