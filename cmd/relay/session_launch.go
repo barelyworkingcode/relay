@@ -352,6 +352,10 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		if !kindAllowed(settings, proj, req.Kind) {
 			return nil, forbidden("template_not_allowed", fmt.Sprintf("template %q is not available for this project", kindTemplateIDs[req.Kind]), baseFields)
 		}
+		// Resume is exempt: it sends the session's stored model back through here, and a stored model may be blank.
+		if req.Kind == KindChat && !req.Resume && strings.TrimSpace(req.Model) == "" {
+			return nil, invalidRequest("model_required", chatModelRequiredMessage(req.Name), baseFields)
+		}
 		if req.Model != "" && !modelAllowedForProject(store, req.ProjectID, req.Model) {
 			return nil, forbidden("model_not_allowed", "model is not allowed for this project", baseFields)
 		}
@@ -594,6 +598,20 @@ var kindTemplateIDs = map[string]string{
 	KindClaude: "claude-code",
 	KindPi:     "pi",
 	KindChat:   "chat",
+}
+
+// maxRefusalNameRunes is deliberate: the refusal message becomes the audit
+// record's error, and a request body may carry a name up to 1 MiB long.
+const maxRefusalNameRunes = 64
+
+func chatModelRequiredMessage(name string) string {
+	if name = strings.TrimSpace(name); name != "" {
+		if runes := []rune(name); len(runes) > maxRefusalNameRunes {
+			name = string(runes[:maxRefusalNameRunes]) + "…"
+		}
+		return fmt.Sprintf("chat session %q has no model; choose a model and try again", name)
+	}
+	return "chat session has no model; choose a model and try again"
 }
 
 // kindAllowed is the template gate for a claude, pi or chat session. A hosted

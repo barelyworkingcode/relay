@@ -161,10 +161,35 @@ Error codes C5 names explicitly, each mapped from a manager error:
 
 | HTTP | code | meaning |
 |---|---|---|
-| 400 | `invalid_spec` | malformed or self-contradictory request (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
+| 400 | `invalid_spec` | malformed or self-contradictory request, including a new `chat` launch with a blank model (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
 | 409 | `session_exists` | this session id is already live |
 | 502 | `identity_refused` | the shim's Hello did not bind |
 | 500 | `spawn_failed` | the target process could not be started |
+
+### A chat session names its model
+
+A new `chat` launch must name a model. Blank means empty after trimming
+whitespace, and a missing field is blank. Both sides refuse it:
+
+- relay: `AuthorizeLaunch` (`cmd/relay/session_launch.go`) refuses it with
+  code `model_required`. The HTTP answer is `400` with body
+  `{"error": "<message>"}`; the message names the session when the request
+  gave one, trimmed and capped at 64 runes with `…` appended when cut. The
+  check runs after the caller, project, directory and template checks and
+  before the `allowed_models` check. Nothing is minted: no model key, sandbox
+  profile, launch identity, host call or ledger record. One `session_launch`
+  audit record with outcome `error` is written, carrying the same message.
+- relay-sessions: `buildSessionSpec`
+  (`internal/sessions/hostapi/dispatch.go`) refuses it, and `/launch` answers
+  `400` `invalid_spec`. No provider starts and no session is created.
+
+Neither side picks a default model for a chat session. A default would run a
+model the user never chose, and it would skip the project's `allowed_models`
+check, which only tests a named model.
+
+Resume is exempt on both sides. It sends the session's stored model back
+through the same path, and a stored model may be blank. `pty`, `claude` and
+`pi` launches are unaffected.
 
 ### `POST /terminate`
 

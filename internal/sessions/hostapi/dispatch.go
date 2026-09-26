@@ -3,6 +3,8 @@ package hostapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
@@ -102,6 +104,9 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		if err := json.Unmarshal(req.SessionRequest, &sr); err != nil {
 			return session.CreateSpec{}, err
 		}
+	}
+	if req.Kind == session.KindChat && !req.Resume && strings.TrimSpace(sr.Model) == "" {
+		return session.CreateSpec{}, fmt.Errorf("hostapi: chat session %s has no model", req.SessionID)
 	}
 	directory := sr.Directory
 	if directory == "" {
