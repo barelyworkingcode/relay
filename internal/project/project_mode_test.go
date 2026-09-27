@@ -49,6 +49,19 @@ func TestApplyCreate_ProjectMode(t *testing.T) {
 	}
 }
 
+func TestProjectMode_ApplyUpdateRefusesInvalidModeWithoutMutation(t *testing.T) {
+	s := &config.Settings{Version: 1}
+	p := pmCreate(t, s, "Acme", config.ProjectModeHome)
+	bad := config.ProjectMode("office")
+	name := "Acme renamed"
+	if _, _, err := ApplyUpdate(s, p.ID, UpdateFields{Name: &name, Mode: &bad}, pmNoSurfaces); !errors.Is(err, config.ErrInvalidProjectMode) {
+		t.Fatalf("err = %v, want ErrInvalidProjectMode", err)
+	}
+	if got, _ := config.FindProjectByID(s, p.ID); got.Mode != config.ProjectModeHome || got.Name != "Acme" {
+		t.Errorf("a refused update mutated the record: %+v", got)
+	}
+}
+
 func TestProjectMode_StoredUnknownModeDoesNotBlockRename(t *testing.T) {
 	s := &config.Settings{Version: 1}
 	p := pmCreate(t, s, "Acme", "")
