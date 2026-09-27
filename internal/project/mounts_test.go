@@ -220,7 +220,7 @@ func TestValidateMountPath(t *testing.T) {
 func TestValidateMountPath_AcceptsHomeDirectoryPathButItIsFlaggedAsBreadth(t *testing.T) {
 	const home = "/Users/Shared"
 	if info, err := os.Lstat(home); err != nil || !info.IsDir() {
-		t.Skipf("%s is not a directory in this environment", home)
+		t.Fatalf("%s is not a directory: every macOS install has it", home)
 	}
 
 	if err := validateMountPath(home); err != nil {
