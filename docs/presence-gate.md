@@ -431,9 +431,9 @@ caller leaves mid-prompt, the caller's session cannot show a dialog at all —
 is written to the audit log as a `control_decision` row, `outcome: "denied"`.
 The actor named on that row is resolved on entry to the gate, before the
 prompt is ever shown, so a caller that disconnects mid-prompt is still named
-correctly rather than falling back to "unknown caller." Recording is
-fail-open, the same policy every other tool-call and control-plane record
-gets: the act is already refused, so there is nothing left to protect by
+correctly rather than falling back to the operator actor. Recording is
+fail-open, the same policy as other control-plane records: the act is
+already refused, so there is nothing left to protect by
 refusing it a second time over a broken audit sink, and the refusal a caller
 sees is identical whether or not the row was written. Row shape, the actor
 rules, and the full list of refusal causes are in

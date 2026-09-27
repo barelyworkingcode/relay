@@ -212,6 +212,10 @@ func TestPresenceRefusal_CallerThatLeftMidPromptIsStillNamed(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("credential.mint never reached the prompt")
 	}
+	tEntered := time.Now()
+	// Deliberate: the sleep waits on no code event. It only opens a gap
+	// between entry and refusal so ts and dur_ms can tell the two apart.
+	time.Sleep(5 * time.Millisecond)
 
 	fx.rootExits(root)
 	cancel()
@@ -231,6 +235,12 @@ func TestPresenceRefusal_CallerThatLeftMidPromptIsStillNamed(t *testing.T) {
 		t.Errorf("error = %q, want %q", ev.Error, "context canceled")
 	}
 	assertSessionActor(t, ev.Actor, "sess-p2", child)
+	if ev.TS.After(tEntered) {
+		t.Errorf("ts = %v, want the time requireGate was entered, before the prompt at %v", ev.TS, tEntered)
+	}
+	if ev.DurMs < 5 {
+		t.Errorf("dur_ms = %d, want >= 5: the prompt was held open at least 5ms", ev.DurMs)
+	}
 }
 
 func TestPresenceRefusal_EveryGatedOpIsAudited(t *testing.T) {
@@ -445,6 +455,7 @@ func TestAuditDetail_PresenceRefusalRow(t *testing.T) {
 		{"with subject", row("credential.mint", "ci-deploy", false), "credential.mint  ci-deploy  via=cli  presence was refused"},
 		{"without subject", row("login.bootstrap.mint", "", false), "login.bootstrap.mint  via=cli  presence was refused"},
 		{"truncated subject", row("credential.mint", "ci-deploy", true), "credential.mint  ci-deploy  via=cli  presence was refused  (truncated)"},
+		{"subject with newline and tab", row("credential.mint", "probe\n12:00:00\tok", false), "credential.mint  probe 12:00:00 ok  via=cli  presence was refused"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := auditDetail(tc.ev); got != tc.want {

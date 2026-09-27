@@ -223,7 +223,7 @@ func auditBaseDetail(ev audit.AuditEvent) string {
 func auditPresenceRefusalDetail(ev audit.AuditEvent) string {
 	parts := []string{ev.Method}
 	if ev.Subject != "" {
-		parts = append(parts, ev.Subject)
+		parts = append(parts, collapseWhitespace(ev.Subject))
 	}
 	parts = append(parts, "via="+ev.Via, collapseWhitespace(ev.Error))
 	if ev.IssuanceTruncated {
