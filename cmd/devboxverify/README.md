@@ -242,7 +242,7 @@ effect (the name, id or window is absent or unchanged).
   row for a cancelled prompt, so the detail says the refusal is not audited.
   The enrolment update and revoke negatives name an id that does not exist:
   the gate runs before the lookup, and a "not found" reads FAIL.
-  `gate-eve-passkey-revoke-neg` reads BLOCKED unless relay's eve passkey
+  `gate-eve-passkey-revoke-neg` reads NOTRUN unless relay's eve passkey
   mirror holds a non-pending passkey that is not the last one.
 
 **Owner-gate negatives with no door** (screen): `gate-project-grant-neg`,
