@@ -245,7 +245,8 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 		return EnrolmentCreated{}, err
 	}
 	norm := enrolmentFields{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}
-	grant, err := requireGate(o.Gate, ctx, "enrolment.create", norm.presenceDigest(), enrolmentCreateReason(clientID, f.ProjectIDs))
+	grant, err := requireGate(o.Gate, ctx, "enrolment.create", norm.presenceDigest(), enrolmentCreateReason(clientID, f.ProjectIDs),
+		presenceAttempt{auditor: o.auditor(), via: via, credID: credID, subject: clientID})
 	if err != nil {
 		return EnrolmentCreated{}, err
 	}
@@ -302,7 +303,8 @@ func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, cre
 		return EnrolmentCreated{}, err
 	}
 	norm := enrolmentSignFields{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget, CSRPEM: f.CSRPEM}
-	grant, err := requireGate(o.Gate, ctx, "enrolment.sign", norm.presenceDigest(csr), enrolmentSignReason(clientID, f.ProjectIDs))
+	grant, err := requireGate(o.Gate, ctx, "enrolment.sign", norm.presenceDigest(csr), enrolmentSignReason(clientID, f.ProjectIDs),
+		presenceAttempt{auditor: o.auditor(), via: via, credID: credID, subject: clientID})
 	if err != nil {
 		return EnrolmentCreated{}, err
 	}
@@ -466,7 +468,8 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	}
 	norm := enrolmentSignFields{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget, CSRPEM: string(rec.CSRPEM)}
 	reason := enrolmentApproveReason(rec.RemoteAddr, clientID, f.ProjectIDs)
-	grant, err := requireGate(o.Gate, ctx, "enrolment.sign", norm.presenceDigest(csr), reason)
+	grant, err := requireGate(o.Gate, ctx, "enrolment.sign", norm.presenceDigest(csr), reason,
+		presenceAttempt{auditor: o.auditor(), via: via, credID: credID, subject: clientID})
 	if err != nil {
 		return EnrolmentCreated{}, err
 	}
@@ -666,7 +669,8 @@ func (o *EnrolmentOps) Update(ctx context.Context, req enrolment.UpdateRequest, 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
 		return config.Enrolment{}, config.Enrolment{}, err
 	}
-	grant, err := requireGate(o.Gate, ctx, "enrolment.update", enrolmentUpdateDigest(req), enrolmentUpdateReason(req))
+	grant, err := requireGate(o.Gate, ctx, "enrolment.update", enrolmentUpdateDigest(req), enrolmentUpdateReason(req),
+		presenceAttempt{auditor: o.auditor(), via: via, credID: credID, subject: req.ClientID})
 	if err != nil {
 		return config.Enrolment{}, config.Enrolment{}, err
 	}
@@ -720,7 +724,8 @@ func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string)
 		return config.Enrolment{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "enrolment.revoke",
-		singleStringDigest("enrolment.revoke", "client_id", clientID), fmt.Sprintf("revoke the enrolment %q", clientID))
+		singleStringDigest("enrolment.revoke", "client_id", clientID), fmt.Sprintf("revoke the enrolment %q", clientID),
+		presenceAttempt{auditor: o.auditor(), via: via, credID: credID, subject: clientID})
 	if err != nil {
 		return config.Enrolment{}, err
 	}
@@ -972,7 +977,8 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 	var approved *presence.Digest
 	var presenceID string
 	if snapshot.needGate {
-		grant, err := requireGate(o.Gate, context.WithoutCancel(ctx), "remote.configure", snapshot.digest, remoteGateReason(snapshot))
+		grant, err := requireGate(o.Gate, context.WithoutCancel(ctx), "remote.configure", snapshot.digest, remoteGateReason(snapshot),
+			presenceAttempt{auditor: o.auditor(), via: via, credID: credID, subject: "remote"})
 		if err != nil {
 			return remoteConfigView{}, err
 		}

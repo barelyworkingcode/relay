@@ -207,7 +207,8 @@ func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (conf
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
 		return config.ExternalMcp{}, err
 	}
-	grant, err := requireGate(o.Gate, ctx, "mcp.register", f.presenceDigest(id), mcpRegisterReason(id, f))
+	grant, err := requireGate(o.Gate, ctx, "mcp.register", f.presenceDigest(id), mcpRegisterReason(id, f),
+		presenceAttempt{auditor: o.Issuance, via: via, credID: credID, subject: id})
 	if err != nil {
 		return config.ExternalMcp{}, err
 	}
@@ -350,7 +351,8 @@ func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string)
 	// present upstream, and because it opens a browser on a target the
 	// caller chose (§6.4).
 	grant, err := requireGate(o.Gate, ctx, "mcp.oauth.start",
-		singleStringDigest("mcp.oauth.start", "id", id), fmt.Sprintf("start OAuth for the MCP %q", id))
+		singleStringDigest("mcp.oauth.start", "id", id), fmt.Sprintf("start OAuth for the MCP %q", id),
+		presenceAttempt{auditor: o.Issuance, via: via, credID: credID, subject: id})
 	if err != nil {
 		return nil, err
 	}

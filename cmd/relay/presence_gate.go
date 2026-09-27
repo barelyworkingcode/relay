@@ -52,15 +52,22 @@ var errPresenceGateNotWired = errors.New("presence gate is not wired for this op
 // background detection of a real close, it only removes the artificial
 // timer racing it. ctx still cancels, and gate.Require still returns
 // ctx.Err(), the moment the client actually goes away.
-func requireGate(gate *presence.Gate, ctx context.Context, op string, d presence.Digest, reason string) (presence.Grant, error) {
+//
+// Every error it returns is recorded as a presence refusal through attempt;
+// the recording never changes what is returned.
+func requireGate(gate *presence.Gate, ctx context.Context, op string, d presence.Digest, reason string, attempt presenceAttempt) (presence.Grant, error) {
+	pending := attempt.begin(ctx)
 	if gate == nil {
+		pending.refused(op, errPresenceGateNotWired)
 		return presence.Grant{}, errPresenceGateNotWired
 	}
 	if extend, ok := readDeadlineExtenderFromContext(ctx); ok {
 		extend(presenceWaitReadDeadline)
 		defer extend(frontendRouteReadDeadline)
 	}
-	return gate.Require(ctx, op, d, reason)
+	grant, err := gate.Require(ctx, op, d, reason)
+	pending.refused(op, err)
+	return grant, err
 }
 
 // singleStringDigest builds the digest for a gated operation whose entire

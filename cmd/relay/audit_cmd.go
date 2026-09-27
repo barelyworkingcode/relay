@@ -192,6 +192,12 @@ func auditBaseDetail(ev audit.AuditEvent) string {
 	if ev.Event == audit.AuditEventModelCall || ev.Event == audit.AuditEventModelList {
 		return auditModelDetail(ev)
 	}
+	// A presence refusal is a control_decision with no route; checked before
+	// the route branch so it does not print an empty path, class and
+	// transport.
+	if ev.Event == audit.AuditEventControlDecision && ev.Via != "" {
+		return auditPresenceRefusalDetail(ev)
+	}
 	// A control_decision row (ADR-015) names no MCP or tool, so the
 	// method/path/class/transport it carries instead is the detail — every
 	// other kind of event leaves Method and Path empty.
@@ -212,6 +218,18 @@ func auditBaseDetail(ev audit.AuditEvent) string {
 		return fmt.Sprintf("%d tools visible", ev.ToolCount)
 	}
 	return ""
+}
+
+func auditPresenceRefusalDetail(ev audit.AuditEvent) string {
+	parts := []string{ev.Method}
+	if ev.Subject != "" {
+		parts = append(parts, ev.Subject)
+	}
+	parts = append(parts, "via="+ev.Via, collapseWhitespace(ev.Error))
+	if ev.IssuanceTruncated {
+		parts = append(parts, "(truncated)")
+	}
+	return strings.Join(parts, "  ")
 }
 
 // auditIssuanceDetail renders a credential_issued / credential_revoked row.

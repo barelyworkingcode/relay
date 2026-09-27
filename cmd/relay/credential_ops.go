@@ -83,7 +83,8 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 	}
 	norm := credentialMintRequest{Name: name, Classes: audit.ClassStrings(classes), TTL: req.TTL}
 	grant, err := requireGate(o.Gate, ctx, "credential.mint", norm.presenceDigest(),
-		fmt.Sprintf("mint a control-plane credential named %q with classes %s", name, joinWithAnd(audit.ClassStrings(classes))))
+		fmt.Sprintf("mint a control-plane credential named %q with classes %s", name, joinWithAnd(audit.ClassStrings(classes))),
+		presenceAttempt{auditor: o.Issuance, via: via, credID: credID, subject: name})
 	if err != nil {
 		return config.APICredential{}, "", err
 	}
@@ -128,7 +129,8 @@ func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (con
 		return config.APICredential{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "credential.revoke",
-		singleStringDigest("credential.revoke", "id", id), fmt.Sprintf("revoke the control-plane credential %q", id))
+		singleStringDigest("credential.revoke", "id", id), fmt.Sprintf("revoke the control-plane credential %q", id),
+		presenceAttempt{auditor: o.Issuance, via: via, credID: credID, subject: id})
 	if err != nil {
 		return config.APICredential{}, err
 	}
