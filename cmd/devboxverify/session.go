@@ -119,7 +119,8 @@ func execMarker(tag string) (input string, pattern *regexp.Regexp) {
 }
 
 // Exec runs one shell line and answers its output up to the exit marker,
-// without the terminal's echo of the line or of the marker command.
+// without the echo of the marker command or of the input's first line; later
+// lines of a multi-line input keep their echo in the output.
 func (l *liveSession) Exec(ctx context.Context, line string) (out string, exit int, err error) {
 	if l.exited {
 		return "", 0, errSessionExited

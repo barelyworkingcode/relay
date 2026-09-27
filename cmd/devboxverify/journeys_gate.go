@@ -354,10 +354,13 @@ type renewalRun struct {
 	ID         string
 	TokenOK    bool
 	WriteErr   error
-	Listed     bool
-	ListErr    error
-	Row        *audit.AuditEvent
-	RowErr     error
+	// Revoke and RevokeDialog are set only when WriteErr is.
+	Revoke       cliResult
+	RevokeDialog dialogResult
+	Listed       bool
+	ListErr      error
+	Row          *audit.AuditEvent
+	RowErr       error
 }
 
 // renewalExpect is relay's whole reason for this mint as the dialog shows it
@@ -379,12 +382,22 @@ func runRenewal(ctx context.Context, e env) result {
 	id, token := parseMintOutput(r.CLI.Stdout)
 	r.ID, r.TokenOK = id, isToken(token)
 	if r.CLI.Exit == 0 && r.TokenOK {
-		r.WriteErr = writeSecretFile(e.CredentialFile, token)
-		creds, err := listCredentials(ctx, e)
-		r.Listed, r.ListErr = findCred(creds, id) != nil, err
-		r.Row, r.RowErr = issuanceRow(ctx, e, audit.AuditEventCredentialIssued, "api_credential", id)
+		settleRenewal(ctx, e, &r, token)
 	}
 	return classifyRenewal(r)
+}
+
+// settleRenewal stores a freshly minted P4 token and checks its record. A
+// token that cannot be stored is revoked at once: nothing else holds it, so
+// the credential would stay live and unusable until it expired.
+func settleRenewal(ctx context.Context, e env, r *renewalRun, token string) {
+	if r.WriteErr = writeSecretFile(e.CredentialFile, token); r.WriteErr != nil {
+		r.Revoke, r.RevokeDialog = gatedCLI(ctx, e, fmt.Sprintf("%q", r.ID), "credential", "revoke", "--id", r.ID)
+		return
+	}
+	creds, err := listCredentials(ctx, e)
+	r.Listed, r.ListErr = findCred(creds, r.ID) != nil, err
+	r.Row, r.RowErr = issuanceRow(ctx, e, audit.AuditEventCredentialIssued, "api_credential", r.ID)
 }
 
 // writeSecretFile replaces path atomically with a mode 0600 file.
@@ -433,7 +446,7 @@ func classifyRenewal(r renewalRun) result {
 	case r.ID == "" || !r.TokenOK:
 		return fail("mint printed no id or no 64-hex token")
 	case r.WriteErr != nil:
-		return fail(fmt.Sprintf("minted credential %s, but the P4 file was not rewritten: %s", r.ID, r.WriteErr))
+		return fail(fmt.Sprintf("minted credential %s, but the P4 file was not rewritten: %s; %s", r.ID, r.WriteErr, renewalRevokeOutcome(r)))
 	case r.ListErr != nil:
 		return blocked(id, "credential.list: "+r.ListErr.Error())
 	case !r.Listed:
@@ -443,6 +456,18 @@ func classifyRenewal(r renewalRun) result {
 		return res
 	}
 	return result{id, statePass, "P4 renewed for 168 h and rewritten at mode 0600; issuance recorded with presence"}
+}
+
+func renewalRevokeOutcome(r renewalRun) string {
+	res, refused := positiveRefusal(renewalID, r.Revoke.Stderr, r.RevokeDialog)
+	switch {
+	case refused:
+	case r.Revoke.Exit != 0:
+		res = cliExitFail(renewalID, "credential revoke", r.Revoke)
+	default:
+		return fmt.Sprintf("revoked %s after the prompt was answered", r.ID)
+	}
+	return fmt.Sprintf("revoking %s failed: %s; revoke it by hand", r.ID, res.Detail)
 }
 
 type mcpPosRun struct {

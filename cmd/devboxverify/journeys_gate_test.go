@@ -88,9 +88,40 @@ func TestClassifyRenewal(t *testing.T) {
 		{"no console session", func(r *renewalRun) { r.Dialog, r.CLI = noPrompt, cliResult{Stderr: cliNoConsole, Exit: 1} }, stateBlocked},
 		{"mint failed", func(r *renewalRun) { r.CLI.Exit = 1 }, notPass},
 		{"P4 file not rewritten", func(r *renewalRun) { r.WriteErr = errors.New("read-only") }, notPass},
+		{"P4 file not rewritten, revoked", func(r *renewalRun) {
+			r.WriteErr, r.RevokeDialog, r.Listed, r.Row = errors.New("read-only"), answered, false, nil
+		}, stateFail},
+		{"P4 file not rewritten, revoke failed", func(r *renewalRun) {
+			r.WriteErr, r.Revoke, r.RevokeDialog, r.Listed, r.Row = errors.New("read-only"), cliResult{Stderr: "error: boom", Exit: 1}, answered, false, nil
+		}, stateFail},
+		{"P4 file not rewritten, revoke unanswered", func(r *renewalRun) {
+			r.WriteErr, r.Revoke, r.RevokeDialog, r.Listed, r.Row = errors.New("read-only"), cliResult{Exit: 1}, helperRefused, false, nil
+		}, stateFail},
 		{"not listed", func(r *renewalRun) { r.Listed = false }, notPass},
 		{"issuance row without presence", func(r *renewalRun) { r.Row.PresenceID = "" }, notPass},
-	}, map[string]string{"no console session": "console", "P4 file not rewritten": "c2"})
+	}, map[string]string{"no console session": "console", "P4 file not rewritten": "c2",
+		"P4 file not rewritten, revoked": "revoked c2", "P4 file not rewritten, revoke failed": "by hand",
+		"P4 file not rewritten, revoke unanswered": "by hand"})
+
+	leak := base()
+	leak.WriteErr, leak.Revoke, leak.RevokeDialog = errors.New("read-only"), cliResult{Stderr: "error: " + testToken, Exit: 1}, answered
+	if d := classifyRenewal(leak).Detail; strings.Contains(d, testToken) {
+		t.Errorf("detail %q carries the token", d)
+	}
+}
+
+func TestRenewalRevokesWhatItCouldNotStore(t *testing.T) {
+	e := blockedEnv(t)
+	e.CredentialFile = filepath.Join(t.TempDir(), "missing", "credential")
+	answeringPresence(t, e.ConfigDir)
+	var argv string
+	e.RelayBin, argv = argvLoggingRelay(t, e.ConfigDir)
+	r := renewalRun{Due: true, Found: true, Dialog: answered, ID: "c2", TokenOK: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	settleRenewal(ctx, e, &r, testToken)
+	checkRelayRan(t, argv, "credential revoke --id c2")
+	checkDetail(t, classifyRenewal(r), "revoked")
 }
 
 func TestRenewalDue(t *testing.T) {
@@ -264,9 +295,34 @@ func TestMintJourneyRecordsAnIDItDoesNotPass(t *testing.T) {
 	}
 
 	e = blockedEnv(t)
+	answeringPresence(t, e.ConfigDir)
+	var argv string
+	e.RelayBin, argv = argvLoggingRelay(t, e.ConfigDir)
 	e.Run = &runState{MintedCredID: "c-fail"}
-	if got := runJourney(t, revokePosID, e); strings.Contains(got.Detail, "no credential to revoke") {
-		t.Errorf("revoke with only a minted id = %s %q; want it to try c-fail", got.State, got.Detail)
+	runJourney(t, revokePosID, e)
+	checkRelayRan(t, argv, "credential revoke --id c-fail")
+}
+
+// answeringPresence installs a devboxpresence that reports ready and an
+// answered dialog, so gatedCLI goes on to run relay.
+func answeringPresence(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("DEVBOXPRESENCE_BIN", fakeBin(t, dir, "presence-answers",
+		"echo 'devboxpresence: ready' >&2\nprintf 'DIALOG\\tanswered\\tthe dialog closed\\n'\nexit 0\n"))
+}
+
+// argvLoggingRelay is a relay that appends its arguments to a log and exits 0.
+func argvLoggingRelay(t *testing.T, dir string) (bin, log string) {
+	t.Helper()
+	log = filepath.Join(dir, "relay-argv.log")
+	return fakeBin(t, dir, "relay-logs", "echo \"$*\" >> '"+log+"'\nexit 0\n"), log
+}
+
+func checkRelayRan(t *testing.T, log, want string) {
+	t.Helper()
+	b, _ := os.ReadFile(log)
+	if !slices.Contains(strings.Split(string(b), "\n"), want) {
+		t.Errorf("relay ran %q; want a %q call", string(b), want)
 	}
 }
 
