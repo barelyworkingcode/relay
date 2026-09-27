@@ -10,6 +10,7 @@ bin/
 /relay
 /relaygo
 /macmcp
+/devboxverify
 
 # OS
 .DS_Store
