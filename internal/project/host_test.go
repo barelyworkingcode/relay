@@ -8,7 +8,7 @@ import (
 
 func TestValidateShape_HostProject(t *testing.T) {
 	base := func() config.Project {
-		return config.Project{HostID: "h_1", Path: "/home/admin/src/relayfs"}
+		return config.Project{HostID: "h_1", Path: "/home/acme/src/relayfs"}
 	}
 
 	t.Run("valid host project passes", func(t *testing.T) {
@@ -91,7 +91,7 @@ func TestApplyCreate_HostProject(t *testing.T) {
 
 	created, err := ApplyCreate(&s, CreateFields{
 		Name:   "relayfs",
-		Path:   "/home/admin/src/relayfs",
+		Path:   "/home/acme/src/relayfs",
 		HostID: "h_1",
 	}, McpSurfaces{})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestApplyUpdate_HostProject(t *testing.T) {
 	}
 
 	hostID := "h_1"
-	newPath := "/home/admin/src/relayfs"
+	newPath := "/home/acme/src/relayfs"
 	updated, found, err := ApplyUpdate(&s, created.ID, UpdateFields{HostID: &hostID, Path: &newPath}, func() McpSurfaces { return McpSurfaces{} })
 	if err != nil || !found {
 		t.Fatalf("ApplyUpdate: found=%v err=%v", found, err)
@@ -148,13 +148,13 @@ func TestValidateProjectPath_WindowsDrivePathOnlyForHostProjects(t *testing.T) {
 		hosted  bool
 		wantErr bool
 	}{
-		{"C:/Users/me/source/Acme/", true, false},
+		{"C:/Users/acme/source/Acme/", true, false},
 		{`C:\Users\me\source\Acme`, true, false},
-		{"C:/Users/me", false, true},
+		{"C:/Users/acme", false, true},
 		{"C:/Users/../x", true, true},
 		{`C:\Users\..\x`, true, true},
 		{"C:relative", true, true},
-		{"/Users/me/proj", false, false},
+		{"/Users/acme/proj", false, false},
 	}
 	for _, c := range cases {
 		err := validateProjectPath(c.path, c.hosted)
@@ -173,7 +173,7 @@ func TestApplyCreate_WindowsHostDrivePath(t *testing.T) {
 
 	created, err := ApplyCreate(&s, CreateFields{
 		Name:   "Acme",
-		Path:   "C:/Users/me/source/Acme/",
+		Path:   "C:/Users/acme/source/Acme/",
 		HostID: "h_win",
 	}, McpSurfaces{})
 	if err != nil {
