@@ -860,8 +860,9 @@ type fixturesRun struct {
 	ListErr                              error
 }
 
-// withResolved gives a root in the form relay-sessions records a cwd
-// (symlinks resolved) as well as the form the run was configured with.
+// withResolved gives a root as configured and with symlinks resolved:
+// relay-sessions records the attach cwd as sent, and the journeys send it
+// resolved.
 func withResolved(root string) []string {
 	if r, err := filepath.EvalSymlinks(root); err == nil && r != root {
 		return []string{root, r}

@@ -342,8 +342,7 @@ state folders. Every terminal whose directory is under a `grant-*` state
 folder or the World root is deleted, whatever its state. PASS when none is
 left and no prompt appeared.
 - Lives in: `cmd/relay/mcp_ops.go`, `cmd/relay/service_ops.go`,
-  `cmd/relay/project_ops.go`, the terminal routes in
-  `cmd/relay/session_routes.go`.
+  `cmd/relay/project_ops.go`, `internal/sessions/api/http_terminal.go`.
 - Traps: without the run credential the projects and terminals stay, the
   rest is still removed, and the journey reads BLOCKED. A terminal left
   behind makes eve's next page load open on it instead of Home.
