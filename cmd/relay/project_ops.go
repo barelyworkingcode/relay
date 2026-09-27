@@ -227,7 +227,8 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 		return config.Project{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "project.grant", projectCreateDigest(f),
-		fmt.Sprintf("create the project %q and grant it its initial scope", f.Name))
+		fmt.Sprintf("create the project %q and grant it its initial scope", f.Name),
+		presenceAttempt{auditor: o.Issuance, via: via, credID: credID, subject: strings.TrimSpace(f.Name)})
 	if err != nil {
 		return config.Project{}, err
 	}
@@ -294,7 +295,8 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 			return config.Project{}, false, err
 		}
 		grant, err := requireGate(o.Gate, ctx, "project.grant", projectUpdateDigest(id, f),
-			projectGrantUpdateReason(id, widened))
+			projectGrantUpdateReason(id, widened),
+			presenceAttempt{auditor: o.Issuance, via: via, credID: credID, subject: id})
 		if err != nil {
 			return config.Project{}, false, err
 		}
@@ -487,7 +489,8 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (s
 		return "", false, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "project.rotate_token",
-		singleStringDigest("project.rotate_token", "project_id", id), fmt.Sprintf("rotate the token for the project %q", id))
+		singleStringDigest("project.rotate_token", "project_id", id), fmt.Sprintf("rotate the token for the project %q", id),
+		presenceAttempt{auditor: o.Issuance, via: via, credID: credID, subject: id})
 	if err != nil {
 		return "", false, err
 	}

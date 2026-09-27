@@ -89,3 +89,44 @@ func (r *AuditRecorder) RecordDecision(d control.ControlDecision) {
 		Actor:           actor,
 	})
 }
+
+// PresenceRefusal is one gated op whose presence prompt did not end in a
+// grant. There is deliberately no field for the digest, the prompt's reason
+// text or a presence id: this type is the whole input to the row, so none of
+// them can reach the log without being added here first.
+type PresenceRefusal struct {
+	Op, Subject, Via string
+	Actor            AuditActor
+	Start            time.Time
+	Dur              time.Duration
+	Reason           string
+}
+
+// Via set and Path empty is what tells a presence refusal apart from a route
+// decision; readers of the log select on exactly that.
+func PresenceRefusalEvent(p PresenceRefusal) AuditEvent {
+	subject, cut := CapControlString(p.Subject, auditMaxIssuanceFieldBytes)
+	return AuditEvent{
+		ID:                NewAuditID(),
+		TS:                p.Start.UTC(),
+		DurMs:             p.Dur.Milliseconds(),
+		Event:             AuditEventControlDecision,
+		Actor:             p.Actor,
+		Outcome:           AuditOutcomeDenied,
+		Error:             p.Reason,
+		Method:            p.Op,
+		Subject:           subject,
+		Via:               p.Via,
+		IssuanceTruncated: cut,
+	}
+}
+
+// RecordPresenceRefusal goes through the fail-open queue, never
+// RecordDurable: the act is already refused, so a lost row has nothing left
+// to fail closed on.
+func (r *AuditRecorder) RecordPresenceRefusal(p PresenceRefusal) {
+	if !r.Enabled() {
+		return
+	}
+	r.Record(PresenceRefusalEvent(p))
+}

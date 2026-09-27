@@ -66,10 +66,11 @@ func sealedResetReason(s *config.Settings) string {
 // destructive sequence then runs as ONE queued step, so no queued write can
 // interleave with the deletes or seal under the old key mid-reset. queue is nil
 // only where no queue exists (tests): the sequence then runs inline.
-func resetSealedStore(ctx context.Context, dir string, store *config.FileSettingsStore, keyring sealed.Keyring, gate *presence.Gate, queue *config.CommandQueue) error {
+func resetSealedStore(ctx context.Context, dir string, store *config.FileSettingsStore, keyring sealed.Keyring, gate *presence.Gate, queue *config.CommandQueue, auditor IssuanceAuditor) error {
 	s := config.FreshSettings(store)
 	digest := sealedResetDigest(s.SealedKeyID, keyring)
-	if _, err := requireGate(gate, ctx, "sealed.reset", digest, sealedResetReason(s)); err != nil {
+	if _, err := requireGate(gate, ctx, "sealed.reset", digest, sealedResetReason(s),
+		presenceAttempt{auditor: auditor, via: auditViaTray}); err != nil {
 		return err
 	}
 	step := func() error { return commitSealedReset(dir, store, keyring, digest) }

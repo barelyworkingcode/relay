@@ -244,7 +244,8 @@ func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (config.EveP
 	}
 	grant, err := requireGate(o.Gate, ctx, "eve.passkey.revoke",
 		singleStringDigest("eve.passkey.revoke", "id", id),
-		fmt.Sprintf("revoke the Eve passkey %s", abbreviatePasskeyID(id)))
+		fmt.Sprintf("revoke the Eve passkey %s", abbreviatePasskeyID(id)),
+		presenceAttempt{auditor: o.auditor(), via: via, subject: id})
 	if err != nil {
 		return config.EvePasskeyRevocation{}, err
 	}

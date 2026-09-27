@@ -521,14 +521,14 @@ func (o *ServiceOps) Register(ctx context.Context, f serviceFields, via, credID 
 		if err := o.preflightUpdate(id, f); err != nil {
 			return config.ServiceConfig{}, err
 		}
-		if approval, err = o.approveUpdate(ctx, id, f, *snapshot); err != nil {
+		if approval, err = o.approveUpdate(ctx, id, f, *snapshot, via, credID); err != nil {
 			return config.ServiceConfig{}, err
 		}
 	} else {
 		if err := o.preflightCreate(id, f); err != nil {
 			return config.ServiceConfig{}, err
 		}
-		if approval, err = o.approveCreate(ctx, id, f); err != nil {
+		if approval, err = o.approveCreate(ctx, id, f, via, credID); err != nil {
 			return config.ServiceConfig{}, err
 		}
 	}
@@ -554,7 +554,7 @@ func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID st
 	if err := o.preflightCreate(id, f); err != nil {
 		return config.ServiceConfig{}, err
 	}
-	approval, err := o.approveCreate(ctx, id, f)
+	approval, err := o.approveCreate(ctx, id, f, via, credID)
 	if err != nil {
 		return config.ServiceConfig{}, err
 	}
@@ -598,9 +598,10 @@ func (o *ServiceOps) preflightUpdate(id string, f serviceFields) error {
 	return requireIssuanceAuditor(o.Issuance)
 }
 
-func (o *ServiceOps) approveCreate(ctx context.Context, id string, f serviceFields) (serviceApproval, error) {
+func (o *ServiceOps) approveCreate(ctx context.Context, id string, f serviceFields, via, credID string) (serviceApproval, error) {
 	grant, err := requireGate(o.Gate, ctx, "service.register", f.presenceDigest(id),
-		fmt.Sprintf("register the service %q (%s) that runs %s", f.DisplayName, id, f.Command))
+		fmt.Sprintf("register the service %q (%s) that runs %s", f.DisplayName, id, f.Command),
+		presenceAttempt{auditor: o.Issuance, via: via, credID: credID, subject: id})
 	if err != nil {
 		return serviceApproval{}, err
 	}
@@ -610,12 +611,13 @@ func (o *ServiceOps) approveCreate(ctx context.Context, id string, f serviceFiel
 // approveUpdate prompts only when the update changes something serviceUpdateNeedsGate
 // names, judged against snapshot. snapshot is the zero record when the id is
 // unknown, which over-prompts and then loses to errServiceNotFound in the commit.
-func (o *ServiceOps) approveUpdate(ctx context.Context, id string, f serviceFields, snapshot config.ServiceConfig) (serviceApproval, error) {
+func (o *ServiceOps) approveUpdate(ctx context.Context, id string, f serviceFields, snapshot config.ServiceConfig, via, credID string) (serviceApproval, error) {
 	if !serviceUpdateNeedsGate(snapshot, f) {
 		return serviceApproval{}, nil
 	}
 	grant, err := requireGate(o.Gate, ctx, "service.register", f.presenceDigest(id),
-		fmt.Sprintf("update the service %q to run %s", id, f.Command))
+		fmt.Sprintf("update the service %q to run %s", id, f.Command),
+		presenceAttempt{auditor: o.Issuance, via: via, credID: credID, subject: id})
 	if err != nil {
 		return serviceApproval{}, err
 	}
@@ -678,7 +680,7 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 	if e, _ := config.FindServiceByID(config.FreshSettings(o.Store), id); e != nil {
 		snapshot = *e
 	}
-	approval, err := o.approveUpdate(ctx, id, f, snapshot)
+	approval, err := o.approveUpdate(ctx, id, f, snapshot, via, credID)
 	if err != nil {
 		return config.ServiceConfig{}, err
 	}
