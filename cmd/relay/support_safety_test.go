@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -15,14 +17,18 @@ import (
 // suiteHome is the isolated HOME TestMain sets before m.Run; "" until then.
 var suiteHome string
 
-// TestMain enforces the headline rule from ADR-001: no test may mutate the
-// real user config directory (~/Library/Application Support/relay/).
+const sandboxFixHint = "fix: ensure every test calls mkSandboxRelayHome(t) before touching settings/pidfiles/logs/sockets"
+
+// maxTripwireEntries caps how many leaked entries a violation names.
+const maxTripwireEntries = 20
+
+// TestMain enforces the headline rule from ADR-001: no test may read or
+// mutate the real user config directory (~/Library/Application Support/relay/).
 //
-// This catches three classes of bug at the suite level:
-//   - A new test forgot to call mkSandboxRelayHome(t).
-//   - A helper bypassed bridge.ConfigDir() and called os.UserConfigDir directly.
-//   - SetConfigDirForTest("") was called too early (clearing the override
-//     mid-test) so a later write landed in the real dir.
+// The suite runs under an isolated HOME, so a test that skips
+// mkSandboxRelayHome(t) resolves the config dir to a tripwire under that HOME.
+// The tripwire must not exist after the run. The real config dir is also
+// compared before and after, unless a relay answered on its socket at start.
 func TestMain(m *testing.M) {
 	// This is deliberate: tests swap HOME, and Go derives these caches from
 	// HOME, so an unpinned child `go build` would start from an empty module
@@ -32,12 +38,9 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	// Capture the REAL ConfigDir (override is empty at this point) so the
-	// snapshot is meaningful even if a stray Set call below leaks.
 	bridge.SetConfigDirForTest("")
-	realDir := bridge.ConfigDir()
-
-	before, beforeOK := snapshotDir(realDir)
+	realDir := bridge.DefaultConfigDir()
+	real := watchRealDir(realDir)
 
 	// This is deliberate: /tmp, not $TMPDIR, so a test that binds relay.sock
 	// under the isolated HOME stays inside the 104-byte socket path limit.
@@ -58,30 +61,146 @@ func TestMain(m *testing.M) {
 	}
 	suiteHome = root
 	tripwire := bridge.DefaultConfigDir()
-	_ = tripwire
+
+	if v := isolationViolations(root, tripwire, bridge.ConfigDir()); len(v) > 0 {
+		fmt.Fprintf(os.Stderr, "isolated suite HOME is not in effect before the run:\n")
+		for _, msg := range v {
+			fmt.Fprintf(os.Stderr, "  %s\n", msg)
+		}
+		_ = os.RemoveAll(root)
+		os.Exit(1)
+	}
 
 	code := m.Run()
+
+	bridge.SetConfigDirForTest("")
+	v := isolationViolations(root, tripwire, bridge.ConfigDir())
+	realViolations := real.violations()
+	v = append(v, realViolations...)
+
+	if real.liveOwner {
+		fmt.Fprintf(os.Stderr, "sandbox guard: a relay answered on %s at start; real config dir not compared this run (isolated-HOME tripwire still checked)\n", filepath.Join(realDir, "relay.sock"))
+	}
 
 	if err := os.RemoveAll(root); err != nil {
 		fmt.Fprintf(os.Stderr, "remove isolated suite HOME %s: %v\n", root, err)
 		code = 1
 	}
 
-	// Reset any override the suite may have left behind before re-reading.
-	bridge.SetConfigDirForTest("")
-	after, afterOK := snapshotDir(realDir)
-
-	if beforeOK != afterOK {
-		fmt.Fprintf(os.Stderr, "\n\nSANDBOX VIOLATION: real ConfigDir existence changed during test run\n  path: %s\n  before: existed=%v  after: existed=%v\n  %s\n  fix: ensure every test calls mkSandboxRelayHome(t) before touching settings/pidfiles/logs/sockets\n\n", realDir, beforeOK, afterOK, runningRelayNote(realDir))
-		os.Exit(1)
-	}
-	if beforeOK && !before.equal(after) {
-		diff := before.diff(after)
-		fmt.Fprintf(os.Stderr, "\n\nSANDBOX VIOLATION: real ConfigDir was modified during test run\n  path: %s\n  before: %s\n  after:  %s\n%s  %s\n  fix: ensure every test calls mkSandboxRelayHome(t) before touching settings/pidfiles/logs/sockets\n\n", realDir, before, after, diff, runningRelayNote(realDir))
+	if len(v) > 0 {
+		var b strings.Builder
+		b.WriteString("\n\nSANDBOX VIOLATION\n")
+		for _, msg := range v {
+			for _, line := range strings.Split(strings.TrimRight(msg, "\n"), "\n") {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+		if len(realViolations) > 0 {
+			b.WriteString("  " + runningRelayNote(realDir) + "\n")
+		}
+		b.WriteString("  " + sandboxFixHint + "\n\n")
+		fmt.Fprint(os.Stderr, b.String())
 		os.Exit(1)
 	}
 
 	os.Exit(code)
+}
+
+// isolationViolations reports how the isolated HOME failed to contain the
+// suite: the tripwire outside root, the resolved config dir moved off the
+// tripwire, or anything created at the tripwire. Entries elsewhere under root
+// (Go telemetry from child `go` commands, for one) are not violations.
+func isolationViolations(root, tripwire, resolved string) []string {
+	var v []string
+	// This is subtle: plain string prefixes, never EvalSymlinks. /tmp is a
+	// symlink on macOS and DefaultConfigDir returns $HOME literally, so root,
+	// tripwire and resolved are only comparable in their unresolved form.
+	if !strings.HasPrefix(tripwire, root+string(filepath.Separator)) {
+		v = append(v, fmt.Sprintf("tripwire %s is not under the isolated suite HOME %s", tripwire, root))
+	}
+	if resolved != tripwire {
+		v = append(v, fmt.Sprintf("config dir resolves to %s, not the tripwire %s: a test left HOME, XDG_CONFIG_HOME or the config dir override changed", resolved, tripwire))
+	}
+	if _, err := os.Lstat(tripwire); err == nil {
+		v = append(v, tripwireLeakMessage(tripwire))
+	}
+	return v
+}
+
+func tripwireLeakMessage(tripwire string) string {
+	var entries []string
+	_ = filepath.WalkDir(tripwire, func(path string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // deliberate: skip the unreadable entry, keep walking
+		}
+		if path == tripwire {
+			return nil
+		}
+		rel, relErr := filepath.Rel(tripwire, path)
+		if relErr != nil {
+			rel = path
+		}
+		entries = append(entries, rel)
+		return nil
+	})
+	sort.Strings(entries)
+	var b strings.Builder
+	fmt.Fprintf(&b, "tripwire %s exists: a test wrote the default config dir without mkSandboxRelayHome", tripwire)
+	for i, e := range entries {
+		if i == maxTripwireEntries {
+			fmt.Fprintf(&b, "\n  ... and %d more", len(entries)-maxTripwireEntries)
+			break
+		}
+		fmt.Fprintf(&b, "\n  - %s", e)
+	}
+	return b.String()
+}
+
+// liveRelayAnswers reports whether configDir/relay.sock accepts a connection
+// within 200ms.
+func liveRelayAnswers(configDir string) bool {
+	conn, err := net.DialTimeout("unix", filepath.Join(configDir, "relay.sock"), 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+type realDirWatch struct {
+	dir       string
+	liveOwner bool
+	before    dirSnapshot
+	beforeOK  bool
+}
+
+// watchRealDir decides once, before the run, whether a live relay owns dir.
+//
+// This is deliberate: liveness is never re-checked after the run, so a test
+// that binds the real socket cannot switch off the comparison for its own leak.
+func watchRealDir(dir string) realDirWatch {
+	w := realDirWatch{dir: dir, liveOwner: liveRelayAnswers(dir)}
+	if !w.liveOwner {
+		w.before, w.beforeOK = snapshotDir(dir)
+	}
+	return w
+}
+
+// violations compares dir against the snapshot taken at watch time. It
+// returns nil when a live relay owned dir at watch time: that relay rewrites
+// settings.json on its own schedule, so a comparison would say nothing.
+func (w realDirWatch) violations() []string {
+	if w.liveOwner {
+		return nil
+	}
+	after, afterOK := snapshotDir(w.dir)
+	if w.beforeOK != afterOK {
+		return []string{fmt.Sprintf("real ConfigDir existence changed during test run\n  path: %s\n  before: existed=%v  after: existed=%v", w.dir, w.beforeOK, afterOK)}
+	}
+	if w.beforeOK && !w.before.equal(after) {
+		return []string{fmt.Sprintf("real ConfigDir was modified during test run\n  path: %s\n  before: %s\n  after:  %s\n%s", w.dir, w.before, after, strings.TrimRight(w.before.diff(after), "\n"))}
+	}
+	return nil
 }
 
 type dirSnapshot struct {
@@ -197,11 +316,9 @@ func shouldIgnoreForSafetySnapshot(root, path string) bool {
 // running, or any other reason) still leaves the generic line in place.
 func runningRelayNote(configDir string) string {
 	generic := "possible cause: a running relay writes to this directory on its own schedule (e.g. settings.json), unrelated to the code under test — stop relay and rerun"
-	conn, err := net.DialTimeout("unix", filepath.Join(configDir, "relay.sock"), 200*time.Millisecond)
-	if err != nil {
+	if !liveRelayAnswers(configDir) {
 		return generic
 	}
-	conn.Close()
 	return "likely cause: a relay instance is running right now (its bridge socket answered) and writes to this directory on its own schedule — stop it and rerun"
 }
 

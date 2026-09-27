@@ -5,28 +5,48 @@
 `mkSandboxRelayHome(t)` (in `support_test.go`), which redirects
 `bridge.ConfigDir()` to a per-test temp dir under `/tmp` (via `mkShortTempDir`,
 which sidesteps the 104-char Unix-socket path limit) populated from
-`test/fixtures/relay-home/`. The `support_safety_test.go` guard fails the suite
-if anything in the real ConfigDir changes during a run. The suite expects
-relay stopped: a running instance legitimately rewrites `settings.json` there
-on its own schedule and will trip this guard for a reason that has nothing to
-do with the code under test.
+`test/fixtures/relay-home/`.
+
+The `support_safety_test.go` guard enforces it, and the suite runs with relay
+running or stopped. `TestMain` points `HOME` and `XDG_CONFIG_HOME` at a fresh
+root under `/tmp` (`/tmp/relay-suite-home-*`) before any test runs, so nothing
+in the process reaches the real config dir through `HOME`. A test that forgets
+`mkSandboxRelayHome` resolves the config dir to
+`<root>/Library/Application Support/relay`, the tripwire. The suite fails if
+the tripwire exists after the run (no ignore list: `logs/`, `run/` and sockets
+count too), or if the config dir no longer resolves to it (a test left `HOME`,
+`XDG_CONFIG_HOME` or the override changed). The isolated root is a tripwire,
+not a place tests may use.
+
+The guard also compares the real config dir before and after the run, which
+catches a route that ignores `HOME`. That comparison is skipped when a relay
+answers on the real `relay.sock` at the start of the run: the live app
+rewrites `settings.json` on its own schedule. The guard then prints one
+`sandbox guard: ... real config dir not compared this run` line. CI never has
+a relay running, so CI always runs the comparison.
+
+Prove the guard still bites with the leak probe, which writes the tripwire's
+`settings.json` and must turn the package red with `SANDBOX VIOLATION`:
+
+```bash
+go test -count=1 -tags leakprobe -run '^TestLeakProbe_' ./cmd/relay/
+```
 
 ## Config dir isolation
 
 Every package, not just `cmd/relay`, keeps its tests off the real config dir.
-Outside `cmd/relay`, a package does it once in `TestMain`: point `HOME` (and
-`XDG_CONFIG_HOME`) at a temp dir with `os.Setenv`, as
-`internal/service/main_test.go` does. A package can also call
-`bridge.SetConfigDirForTest` instead, as `internal/sshhost` does. `cmd/relay`
-isolates per test with `mkSandboxRelayHome` and relies on its end-of-run
-guard. The path getters (`bridge.ConfigDir`, `SocketPath`, `ModelSocketPath`)
-only compute paths. The code that binds or writes creates the directory.
+A package does it once in `TestMain`: point `HOME` (and `XDG_CONFIG_HOME`) at
+a temp dir with `os.Setenv`, as `internal/service/main_test.go` does. A
+package can also call `bridge.SetConfigDirForTest` instead, as
+`internal/sshhost` does. `cmd/relay` isolates `HOME` in its `TestMain` and
+still sandboxes each test with `mkSandboxRelayHome`. The path getters
+(`bridge.ConfigDir`, `SocketPath`, `ModelSocketPath`) only compute paths. The code that binds or writes creates the directory.
 
 `internal/bridge/home_isolation_gate_test.go` enforces this. It finds every
 package with tests whose source mentions `bridge.ConfigDir(`,
 `bridge.SocketPath(`, `bridge.ModelSocketPath(` or `os.UserConfigDir(`, and
-requires a `TestMain` that calls `os.Setenv("HOME"`. The exemptions
-(`cmd/relay`, `internal/sshhost`) are a named list, each with its reason. The
+requires a `TestMain` that calls `os.Setenv("HOME"`. The exemption list
+(`internal/sshhost`) names each package with its reason. The
 gate also fails if it matches no packages, so a broken scan can't pass. Its
 blind spot: it reads source text, so it can't see a package that reaches these
 helpers only through another package. Such a package still needs its own
