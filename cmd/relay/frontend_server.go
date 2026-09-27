@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
@@ -624,9 +627,11 @@ type readDeadlineExtenderKey struct{}
 
 // readDeadlineExtender re-arms the read deadline on the connection a
 // request arrived on. d == 0 clears it outright (no artificial bound); d >
-// 0 sets it to time.Now().Add(d). It exists so a presence-gated handler can
-// suspend frontendRouteReadDeadline for the human-timescale wait a prompt
-// takes, then restore it once that wait is over — see requireGate.
+// 0 sets it to time.Now().Add(d), but only while the request body is still
+// being received — once it is done, d > 0 clears too. It exists so a
+// presence-gated handler can suspend frontendRouteReadDeadline for the
+// human-timescale wait a prompt takes, then restore it once that wait is
+// over — see requireGate.
 type readDeadlineExtender func(d time.Duration)
 
 func withReadDeadlineExtender(ctx context.Context, extend readDeadlineExtender) context.Context {
@@ -648,11 +653,20 @@ func readDeadlineExtenderFromContext(ctx context.Context) (readDeadlineExtender,
 // same connection, for requireGate to reach for later. Every caller must
 // serve the returned request, not the one it was given — the extender is
 // only reachable through the context on the new value.
+//
+// The deadline bounds receipt of the body only, never the handler's run
+// time. This is deliberate: net/http keeps a background read on the
+// connection once the body is done (or from the start, with no body), and
+// a deadline firing under that read cancels the connection's context,
+// failing every later request on the same keep-alive connection. So a
+// request with no body gets no deadline, and a body's deadline is cleared
+// the first time a read returns io.EOF or the body is closed.
 func setFrontendRouteReadDeadline(w http.ResponseWriter, r *http.Request) *http.Request {
 	rc := http.NewResponseController(w)
+	var bodyDone atomic.Bool
 	extend := func(d time.Duration) {
 		var deadline time.Time
-		if d > 0 {
+		if d > 0 && !bodyDone.Load() {
 			deadline = time.Now().Add(d)
 		}
 		// Best-effort: a client that already dropped the connection makes
@@ -662,10 +676,46 @@ func setFrontendRouteReadDeadline(w http.ResponseWriter, r *http.Request) *http.
 		// own write fail where it fails.
 		_ = rc.SetReadDeadline(deadline)
 	}
-	if err := rc.SetReadDeadline(time.Now().Add(frontendRouteReadDeadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		slog.Warn("frontend: could not set read deadline", "error", err, "path", r.URL.Path)
+	if hasNoBody(r) {
+		bodyDone.Store(true)
+	} else {
+		if err := rc.SetReadDeadline(time.Now().Add(frontendRouteReadDeadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			slog.Warn("frontend: could not set read deadline", "error", err, "path", r.URL.Path)
+		}
+		r.Body = &deadlineClearingBody{ReadCloser: r.Body, done: func() {
+			if !bodyDone.Swap(true) {
+				extend(0)
+			}
+		}}
 	}
 	return r.WithContext(withReadDeadlineExtender(r.Context(), extend))
+}
+
+func hasNoBody(r *http.Request) bool {
+	if r.Body == nil || r.Body == http.NoBody {
+		return true
+	}
+	return r.ContentLength == 0 && !slices.Contains(r.TransferEncoding, "chunked")
+}
+
+// deadlineClearingBody calls done the first time a read returns io.EOF or
+// the body is closed.
+type deadlineClearingBody struct {
+	io.ReadCloser
+	done func()
+}
+
+func (b *deadlineClearingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if errors.Is(err, io.EOF) {
+		b.done()
+	}
+	return n, err
+}
+
+func (b *deadlineClearingBody) Close() error {
+	b.done()
+	return b.ReadCloser.Close()
 }
 
 // withRelayRouteReadDeadline sets frontendRouteReadDeadline before serving
