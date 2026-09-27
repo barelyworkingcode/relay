@@ -12,16 +12,19 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
 type state string
@@ -39,14 +42,60 @@ type result struct {
 	Detail string
 }
 
+type phase string
+
+const (
+	phaseAPI    phase = "api"
+	phaseScreen phase = "screen"
+)
+
+type journey struct {
+	ID      string
+	Areas   []string
+	Phase   phase
+	Timeout time.Duration
+	Run     func(ctx context.Context, e env) result
+}
+
 type env struct {
 	RelayBin, ConfigDir, FrontendSocket, WorldRoot, CredentialFile, Nonce string
 	RelayPID                                                              int
+	BinDir                                                                string
+	Run                                                                   *runState
 }
 
-type journey struct {
-	ID  string
-	Run func(ctx context.Context, e env) result
+// runState carries what one journey sets up for later ones in the same run.
+// An empty field means the journey that sets it did not PASS; a reader goes
+// BLOCKED naming that journey. RunToken is never printed or written to disk.
+type runState struct {
+	RunCredID, RunToken                                string
+	ProbeMCP                                           string
+	GrantProjectID, GrantProjectName, GrantProjectPath string
+	CrashService                                       string
+}
+
+var journeys = slices.Concat(apiJourneys, gateSetupJourneys, screenJourneys, gateTeardownJourneys)
+
+// selectJourneys keeps table order; an empty phase selects every journey.
+func selectJourneys(all []journey, p phase) []journey {
+	if p == "" {
+		return all
+	}
+	var out []journey
+	for _, j := range all {
+		if j.Phase == p {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+func parsePhase(s string) (phase, error) {
+	switch p := phase(s); p {
+	case phaseAPI, phaseScreen:
+		return p, nil
+	}
+	return "", fmt.Errorf("--phase must be %s or %s", phaseAPI, phaseScreen)
 }
 
 func main() { os.Exit(run()) }
@@ -100,16 +149,13 @@ func run() int {
 	checkout := fs.String("checkout", "", "relay checkout the running app must be built from (default: this checkout)")
 	world := fs.String("world", "", "devboxWorld checkout (default: devboxWorld beside this checkout)")
 	pr := fs.Int("post", 0, "PR number to post the status and evidence comment to")
-	err := fs.Parse(os.Args[1:])
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "post" && *pr < 1 {
-			err = errors.New("--post needs a PR number")
-		}
-	})
-	if err != nil || fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--world DIR] [--post PR]")
+	phaseFlag := fs.String("phase", "", "run only the api or the screen journeys (default: both, api first)")
+	p, err := parseFlags(fs, os.Args[1:], pr, phaseFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--world DIR] [--post PR | --phase api|screen]")
 		return 2
 	}
+	screen := p == "" || p == phaseScreen
 	toolRoot, err := gitOut(".", "rev-parse", "--show-toplevel")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "run devboxverify from inside a relay checkout")
@@ -127,7 +173,15 @@ func run() int {
 		ConfigDir:      bridge.ConfigDir(),
 		WorldRoot:      envOr("DEVBOXWORLD_ROOT", filepath.Join(home, "World")),
 		CredentialFile: envOr("RELAY_VERIFY_CREDENTIAL_FILE", filepath.Join(home, ".config", "relay-verify", "credential")),
+		BinDir:         filepath.Dir(presenceBinPath()),
+		Run:            &runState{},
 	}
+	var releaseLock func()
+	defer func() {
+		if releaseLock != nil {
+			releaseLock()
+		}
+	}()
 
 	var head string
 	var worldPass, worldFail int
@@ -162,6 +216,20 @@ func run() int {
 			e.FrontendSocket, e.RelayPID, err = findApp(e.ConfigDir, e.RelayBin)
 			return fmt.Sprintf("pid %d", e.RelayPID), err
 		}},
+		{"helpers", func() (string, error) { return buildHelpers(toolRoot, e.BinDir, screen) }},
+		{"lock", func() (string, error) {
+			releaseLock, err = takeBrowserLock(context.Background(), scrub(strings.Join(append([]string{"devboxverify"}, os.Args[1:]...), " "), home))
+			return "holding " + scrub(browserLockPath(), home), err
+		}},
+		{"console", func() (string, error) { return consoleCheck(e) }},
+		{"password", func() (string, error) { return presenceCheck(e, "check", "--password") }},
+		{"sweep", func() (string, error) {
+			d := sweepDialogs(context.Background(), e)
+			if d.Code != 0 {
+				return "", fmt.Errorf("devboxpresence cancel --any exit %d: %s", d.Code, d.Detail)
+			}
+			return d.Detail, nil
+		}},
 		{"pr", func() (string, error) {
 			ph, err := prHead(context.Background(), *pr)
 			if err != nil {
@@ -190,8 +258,9 @@ func run() int {
 			return "green", nil
 		}},
 	}
+	screenOnly := map[string]bool{"lock": true, "console": true, "password": true, "sweep": true}
 	for _, c := range checks {
-		if c.name == "pr" && *pr == 0 {
+		if c.name == "pr" && *pr == 0 || screenOnly[c.name] && !screen {
 			continue
 		}
 		detail, err := c.run()
@@ -212,11 +281,14 @@ func run() int {
 	_, _ = rand.Read(nonce)
 	e.Nonce = hex.EncodeToString(nonce)
 	var results []result
-	for _, j := range journeys {
+	for _, j := range selectJourneys(journeys, p) {
 		fmt.Fprintln(os.Stderr, "running", j.ID)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), j.Timeout)
 		r := j.Run(ctx, e)
 		cancel()
+		if j.Phase == phaseScreen {
+			r = afterSweep(r, sweepDialogs(context.Background(), e))
+		}
 		results = append(results, r)
 		emit("JOURNEY", r.ID, string(r.State), r.Detail)
 	}
@@ -234,6 +306,111 @@ func run() int {
 		emit("POSTED", statusState(results), url)
 	}
 	return code
+}
+
+// parseFlags refuses --post with --phase: a PR's evidence covers every
+// journey, so a one-phase run cannot stand for it.
+func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string) (phase, error) {
+	if err := fs.Parse(args); err != nil {
+		return "", err
+	}
+	if fs.NArg() > 0 {
+		return "", errors.New("unexpected arguments")
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	switch {
+	case set["post"] && *pr < 1:
+		return "", errors.New("--post needs a PR number")
+	case set["post"] && set["phase"]:
+		return "", errors.New("--post runs every phase; drop --phase")
+	case !set["phase"]:
+		return "", nil
+	}
+	return parsePhase(*phaseFlag)
+}
+
+// afterSweep applies the loop rule: a screen journey must not leave a
+// presence prompt open, so one swept after it turns a PASS into a FAIL.
+func afterSweep(r result, d dialogResult) result {
+	switch {
+	case d.Code == 0 && d.Outcome == "none":
+		return r
+	case d.Outcome == "swept" && r.State == statePass:
+		return result{r.ID, stateFail, "left a presence prompt open; " + d.Detail}
+	case d.Outcome == "swept":
+		r.Detail += "; swept a presence prompt left open: " + d.Detail
+	default:
+		r.Detail += fmt.Sprintf("; sweep exit %d: %s", d.Code, d.Detail)
+	}
+	return r
+}
+
+func presenceBinPath() string {
+	return envOr("DEVBOXPRESENCE_BIN", filepath.Join(home, ".local", "share", "devboxverify", "bin", "devboxpresence"))
+}
+
+// buildHelpers builds from the tool's own checkout: the helpers are harness
+// code, not part of the app under test.
+func buildHelpers(toolRoot, binDir string, screen bool) (string, error) {
+	if _, err := exec.LookPath("go"); err != nil {
+		return "", errors.New("go not on PATH")
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return "", fmt.Errorf("cannot create the helper dir: %w", err)
+	}
+	targets := map[string]string{"./cmd/devboxpresence": presenceBinPath()}
+	if screen {
+		targets["./cmd/testmcp"] = filepath.Join(binDir, "testmcp")
+		targets["./cmd/testservice"] = filepath.Join(binDir, "testservice")
+	}
+	names := slices.Sorted(maps.Keys(targets))
+	for _, pkg := range names {
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+		cmd := exec.CommandContext(ctx, "go", "build", "-o", targets[pkg], pkg)
+		cmd.Dir, cmd.Stdout, cmd.Stderr = toolRoot, os.Stderr, os.Stderr
+		err := cmd.Run()
+		cancel()
+		if err != nil {
+			return "", fmt.Errorf("go build %s failed", pkg)
+		}
+	}
+	return "built " + strings.Join(names, ", "), nil
+}
+
+// consoleCheck asks the kernel, through a socketpair whose peer is this
+// process, whether our audit session has graphic access; relay asks the same
+// of a caller before it will prompt. devboxpresence check cannot tell an SSH
+// shell from the console, so it only adds the screen-side checks.
+func consoleCheck(e env) (string, error) {
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		return "", fmt.Errorf("socketpair: %w", err)
+	}
+	graphic, err := presence.PeerGraphicAccess(fds[0])
+	_ = unix.Close(fds[0])
+	_ = unix.Close(fds[1])
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("cannot read this session's graphic access: %w", err)
+	case !graphic:
+		return "", errors.New("no graphic access: run from the console session, not SSH")
+	}
+	return presenceCheck(e, "check")
+}
+
+func presenceCheck(e env, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var out strings.Builder
+	cmd := exec.CommandContext(ctx, presenceBin(e), args...)
+	cmd.Stdout, cmd.Stderr = &out, os.Stderr
+	err := cmd.Run()
+	d := parseDialogLine(out.String(), exitCode(cmd, err))
+	if d.Code != 0 {
+		return "", fmt.Errorf("devboxpresence %s exit %d: %s", strings.Join(args, " "), d.Code, d.Detail)
+	}
+	return d.Detail, nil
 }
 
 func buildMatches(settings []debug.BuildSetting, head string) error {

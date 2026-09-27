@@ -65,7 +65,11 @@ func configureCredential(id string) (token string, res result, ok bool) {
 // TimedOut rather than failed: the server never times out a presence prompt,
 // so a held request is the only sign of one.
 func frontendDo(ctx context.Context, e env, token, method, path string, body []byte) frontendResponse {
-	ctx, cancel := context.WithTimeout(ctx, frontendRequestTimeout)
+	return frontendDoTimeout(ctx, e, token, method, path, body, frontendRequestTimeout)
+}
+
+func frontendDoTimeout(ctx context.Context, e env, token, method, path string, body []byte, timeout time.Duration) frontendResponse {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var rd io.Reader
 	if body != nil {
