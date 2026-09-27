@@ -358,11 +358,12 @@ project and host are deleted after.
 `devboxverify-crash-*` service is unregistered (both ungated) and every
 `Verify Grant *` and `Unreachable Host *` project deleted, from this run or a
 crashed one, with their state folders. Then every host named `blackhole-*`
-with target `192.0.2.1` is deleted. Every terminal whose directory is under a `grant-*` state
-folder or the World root is deleted, whatever its state. PASS when none is
-left and no prompt appeared.
+with target `192.0.2.1` is deleted. Every terminal whose directory is under a
+`grant-*` state folder or the World root is deleted, whatever its state. PASS
+when none is left and no prompt appeared.
 - Lives in: `cmd/relay/mcp_ops.go`, `cmd/relay/service_ops.go`,
-  `cmd/relay/project_ops.go`, `internal/sessions/api/http_terminal.go`.
+  `cmd/relay/project_ops.go`, `cmd/relay/host_routes.go`,
+  `internal/sessions/api/http_terminal.go`.
 - Traps: without the run credential the projects, hosts and terminals stay,
   the rest is still removed, and the journey reads BLOCKED. A terminal left
   behind makes eve's next page load open on it instead of Home.

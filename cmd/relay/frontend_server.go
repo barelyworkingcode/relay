@@ -587,7 +587,7 @@ func frontendCredentialAuth(store config.SettingsStore, launches *service.Launch
 // doc comment explains why): both need mux.Handler(r)'s matched pattern
 // before ServeHTTP runs, and the TCP mux never registers the "/" catch-all
 // (ClassProxy is socket-only), so every match here is one of relay's own
-// routes and gets the deadline unconditionally.
+// routes and goes through setFrontendRouteReadDeadline.
 //
 // This is subtle: the handler mux.Handler returns is discarded rather than
 // served. Only ServeMux.ServeHTTP stores the wildcard values a handler reads
@@ -698,8 +698,8 @@ func hasNoBody(r *http.Request) bool {
 	return r.ContentLength == 0 && !slices.Contains(r.TransferEncoding, "chunked")
 }
 
-// deadlineClearingBody calls done the first time a read returns io.EOF or
-// the body is closed.
+// deadlineClearingBody calls done on every read that returns io.EOF and on
+// every Close. done must tolerate repeat calls.
 type deadlineClearingBody struct {
 	io.ReadCloser
 	done func()
@@ -718,13 +718,14 @@ func (b *deadlineClearingBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
-// withRelayRouteReadDeadline sets frontendRouteReadDeadline before serving
-// any request that resolves to one of relay's own registered patterns on
-// mux, and leaves the "/" catch-all (the proxied dispatcher, including WS
-// upgrades) untouched — that mount is registered by registerFrontendRoutes
-// on the socket mux only (control.ClassProxy is socket-only), so this is the
-// socket door's counterpart to warnOnUnmatchedTCPRoute's deadline duty on
-// the TCP door.
+// withRelayRouteReadDeadline passes any request that resolves to one of
+// relay's own registered patterns on mux through
+// setFrontendRouteReadDeadline, which bounds receipt of its body (a request
+// with no body gets no deadline), and leaves the "/" catch-all (the proxied
+// dispatcher, including WS upgrades) untouched — that mount is registered by
+// registerFrontendRoutes on the socket mux only (control.ClassProxy is
+// socket-only), so this is the socket door's counterpart to
+// warnOnUnmatchedTCPRoute's deadline duty on the TCP door.
 //
 // mux.Handler(r) only looks up the match; it neither invokes nor consumes
 // the request, so calling it ahead of ServeHTTP is safe — the same

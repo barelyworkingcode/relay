@@ -45,20 +45,23 @@ func TestClassifySlowRouteKeepalive(t *testing.T) {
 
 func TestClassifySlowRouteKeepaliveAppendsTeardown(t *testing.T) {
 	const teardown = "; teardown: DELETE project status 500; teardown: DELETE host status 500"
-	cases := map[string]func(*slowRouteRun){
-		"pass":    func(*slowRouteRun) {},
-		"fail":    func(r *slowRouteRun) { r.After.Status = http.StatusBadGateway },
-		"blocked": func(r *slowRouteRun) { r.ProjectErr = "POST /api/projects status 500" },
+	cases := []struct {
+		name string
+		mut  func(*slowRouteRun)
+		want state
+	}{
+		{"pass", func(*slowRouteRun) {}, statePass},
+		{"fail", func(r *slowRouteRun) { r.After.Status = http.StatusBadGateway }, stateFail},
+		{"blocked", func(r *slowRouteRun) { r.ProjectErr = "POST /api/projects status 500" }, stateBlocked},
 	}
-	for name, mut := range cases {
-		t.Run(name, func(t *testing.T) {
-			clean := slowRoutePass()
-			mut(&clean)
-			dirty := clean
-			dirty.Teardown = teardown
-			want, got := classifySlowRouteKeepalive(clean), classifySlowRouteKeepalive(dirty)
-			if got.State != want.State {
-				t.Errorf("teardown changed the state: %s, want %s", got.State, want.State)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := slowRoutePass()
+			tc.mut(&run)
+			run.Teardown = teardown
+			got := classifySlowRouteKeepalive(run)
+			if got.State != tc.want {
+				t.Errorf("state %s with a teardown note, want %s", got.State, tc.want)
 			}
 			if !strings.HasSuffix(got.Detail, teardown) {
 				t.Errorf("detail %q does not end with the teardown %q", got.Detail, teardown)

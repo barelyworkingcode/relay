@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
 // A relay route whose handler outlives frontendRouteReadDeadline must not
@@ -26,17 +28,27 @@ func TestRelayRouteReadDeadline_SlowHandlerDoesNotPoisonConnection(t *testing.T)
 		body   string
 	}{
 		{name: "no-body GET", method: http.MethodGet},
-		{name: "PUT with JSON body", method: http.MethodPut, body: `{"name":"acme"}`},
+		{name: "PUT with JSON body through the presence gate", method: http.MethodPut, body: `{"name":"acme"}`},
+	}
+	gate, err := presence.NewGate(approvingPresenceProvider{})
+	if err != nil {
+		t.Fatalf("presence.NewGate: %v", err)
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mux := http.NewServeMux()
 			mux.HandleFunc("/api/slow", func(w http.ResponseWriter, r *http.Request) {
-				got, err := io.ReadAll(r.Body)
-				if err != nil || string(got) != tc.body {
-					http.Error(w, "body read: "+string(got), http.StatusBadRequest)
-					return
+				if tc.body != "" {
+					got, err := io.ReadAll(r.Body)
+					if err != nil || string(got) != tc.body {
+						http.Error(w, "body read: "+string(got), http.StatusBadRequest)
+						return
+					}
+					if _, err := requireGate(gate, r.Context(), "credential.mint", presence.Digest{}, "test", presenceAttempt{}); err != nil {
+						http.Error(w, "presence gate: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
 				}
 				time.Sleep(handlerRun)
 				w.WriteHeader(http.StatusOK)
@@ -106,6 +118,10 @@ func TestRelayRouteReadDeadline_SlowHandlerDoesNotPoisonConnection(t *testing.T)
 		})
 	}
 }
+
+type approvingPresenceProvider struct{}
+
+func (approvingPresenceProvider) Evaluate(context.Context, string) error { return nil }
 
 func doAndDrain(t *testing.T, client *http.Client, req *http.Request) (int, string) {
 	t.Helper()
