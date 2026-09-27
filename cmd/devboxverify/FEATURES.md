@@ -249,7 +249,7 @@ here.
 | `login.bootstrap.mint` | a code that registers a browser passkey | gate-login-bootstrap-mint-pos: NOTRUN, the code is redeemed only by the browser ceremony | gate-login-bootstrap-mint-neg |
 | `login.passkey.revoke` | revoking a relay passkey | gate-login-passkey-revoke-pos: NOTRUN, there is no disposable relay passkey | gate-login-passkey-revoke-neg |
 | `eve.enrolment.open` | eve's five-minute passkey enrolment window | gate-eve-enrolment-open-pos (closes the window after) | gate-eve-enrolment-open-neg |
-| `eve.passkey.revoke` | revoking an eve passkey | gate-eve-passkey-revoke-pos: NOTRUN, relay keeps one eve passkey mirror that each eve's report replaces, so no verify passkey can be revoked through it | gate-eve-passkey-revoke-neg: BLOCKED while the mirror holds no revocable passkey, since relay refuses an unknown or last id before the gate |
+| `eve.passkey.revoke` | revoking an eve passkey | gate-eve-passkey-revoke-pos: NOTRUN, relay keeps one eve passkey mirror that each eve's report replaces, so no verify passkey can be revoked through it | gate-eve-passkey-revoke-neg: NOTRUN while the mirror holds no revocable passkey, since relay refuses an unknown or last id before the gate |
 | `sealed.reset` | the sealed store | gate-sealed-reset-pos: NOTRUN, break-glass destroys the store | gate-sealed-reset-neg (no door from a session) |
 
 ## Areas
