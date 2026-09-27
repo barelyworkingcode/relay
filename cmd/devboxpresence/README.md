@@ -15,6 +15,7 @@ devboxpresence cancel --expect TEXT [--timeout 20s]
 devboxpresence cancel --any            # sweep every open LocalAuthentication dialog
 devboxpresence check [--password]
 devboxpresence measure --relay PATH [--count 10] [--timeout 60s]
+devboxpresence version                 # DIALOG\tready\tsource=<rev>
 ```
 
 Stdout is exactly one line on every path, usage errors included:
@@ -36,6 +37,41 @@ triggering; a dialog that lands before the snapshot is refused as already open.
 | 3 | refused to act; typed and pressed nothing. The detail names the reason |
 | 4 | the password file is unusable |
 | 5 | acted, but the dialog was still open 5 s later |
+
+## Responsibility, signing and the grant
+
+Under a launchd job, macOS judges Accessibility trust by the job's responsible
+process, which is the job's leader (eve's nightly is led by `node`), not by
+this binary. So at startup the helper re-spawns itself with the same argv and
+environment through `posix_spawn` with
+`responsibility_spawnattrs_setdisclaim` set. The child is its own responsible
+process and is judged by its own grant. The parent forwards SIGTERM and SIGINT
+to the child, shares its stdin, stdout and stderr, and exits with its code
+(128 + the signal if it was killed). The child carries
+`DEVBOXPRESENCE_DISCLAIMED=1` so it does not re-spawn again; setting it by hand
+only skips the disclaim. If the re-spawn fails, the helper prints a `refused`
+line and exits 3.
+
+Disclaiming means an ad-hoc build has no grant of its own: run from an SSH
+shell, whose trust comes from sshd's side, `check` reports `ax_trusted=no`.
+The helper that runs unattended is the installed one, signed with a Developer
+ID identity, so its grant survives rebuilds. devboxWorld's `bootstrap.sh`
+builds it, signs it, installs it at
+`~/.local/share/devboxverify/bin/devboxpresence` and grants it Accessibility
+once. Relay only owns the source.
+
+`version` reports the relay source the binary was built from. The convention
+is the last commit that touched this directory, so unrelated relay commits do
+not make an installed helper stale:
+
+```bash
+rev=$(git -C <relay checkout> log -1 --format=%H -- cmd/devboxpresence)
+go build -ldflags "-X main.sourceRev=$rev" -o <out> ./cmd/devboxpresence
+```
+
+A build without the flag reports `source=unknown`. devboxverify's `helpers`
+preflight compares this rev with its own checkout's, checks the Developer ID
+signature, and refuses to run a missing, stale or unsigned helper.
 
 ## What it checks before acting
 
@@ -127,11 +163,11 @@ cat "$R/dev.devbox.presence-measure.err"   # per-iteration D and the AX text
 Reading the results:
 
 - `check` prints `DIALOG ready console=yes … ax_trusted=yes post_events=yes`
-  when the helper can act under launchd. Under launchd, TCC attributes the
-  request to the helper binary itself, not to Terminal or sshd, and an
-  ad-hoc-signed Go binary's identity changes on every rebuild. So
-  `ax_trusted=no` here means a one-time grant will not survive the next
-  build. Escalate it; don't grant by hand.
+  when the helper can act under launchd. Because the helper disclaims
+  responsibility, TCC judges the helper binary itself, and an ad-hoc-signed
+  Go binary's identity changes on every rebuild. Point `oneshot` at the
+  installed, Developer ID signed helper rather than `$R/devboxpresence` to
+  measure trust; `ax_trusted=no` for it means the bootstrap grant is missing.
 - `measure` ends with
   `DIALOG ready answer n=10 mean=…s max=…s; cancel n=10 mean=…s max=…s; ax_text=readable`.
   `ax_text=unknown` together with exit 3 "unreadable" means AX cannot read

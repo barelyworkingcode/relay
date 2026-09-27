@@ -64,7 +64,13 @@ type result struct {
 	Text            string // the acted-on dialog's text; measure reports it
 }
 
+// sourceRev is set at build time with -ldflags "-X main.sourceRev=<rev>".
+var sourceRev string
+
 func main() {
+	if code, ok := runDisclaimed(); ok {
+		os.Exit(code)
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -85,13 +91,18 @@ func refused(format string, a ...any) result {
 
 func dispatch(args []string, stderr io.Writer) result {
 	if len(args) == 0 {
-		return usage("devboxpresence answer|cancel|check|measure [flags]")
+		return usage("devboxpresence answer|cancel|check|measure|version [flags]")
 	}
 	fs := flag.NewFlagSet("devboxpresence "+args[0], flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	expect := fs.String("expect", "", "text the dialog must contain")
 	timeout := fs.Duration("timeout", 20*time.Second, "how long to wait for the dialog")
 	switch args[0] {
+	case "version":
+		if len(args) > 1 {
+			return usage("version")
+		}
+		return version()
 	case modeAnswer:
 		if err := fs.Parse(args[1:]); err != nil || fs.NArg() > 0 || *expect == "" || *timeout <= 0 {
 			return usage("answer --expect TEXT [--timeout 20s]")
@@ -209,6 +220,14 @@ func (s sessionState) String() string {
 	}
 	return fmt.Sprintf("console=%s screen_locked=%s ax_trusted=%s post_events=%s window_list=%s",
 		yn(s.OnConsole), yn(s.Locked), yn(s.AXTrusted), yn(s.PostEvents), yn(s.WindowList))
+}
+
+func version() result {
+	rev := sourceRev
+	if rev == "" {
+		rev = "unknown"
+	}
+	return result{Code: exitDone, Outcome: "ready", Detail: "source=" + rev}
 }
 
 func check(withPasswordFile bool) result {

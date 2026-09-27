@@ -216,7 +216,7 @@ func run() int {
 			e.FrontendSocket, e.RelayPID, err = findApp(e.ConfigDir, e.RelayBin)
 			return fmt.Sprintf("pid %d", e.RelayPID), err
 		}},
-		{"helpers", func() (string, error) { return buildHelpers(toolRoot, e.BinDir, screen) }},
+		{"helpers", func() (string, error) { return prepareHelpers(e, toolRoot, screen) }},
 		{"lock", func() (string, error) {
 			releaseLock, err = takeBrowserLock(context.Background(), scrub(strings.Join(append([]string{"devboxverify"}, os.Args[1:]...), " "), home))
 			return "holding " + scrub(browserLockPath(), home), err
@@ -350,19 +350,66 @@ func presenceBinPath() string {
 	return envOr("DEVBOXPRESENCE_BIN", filepath.Join(home, ".local", "share", "devboxverify", "bin", "devboxpresence"))
 }
 
-// buildHelpers builds from the tool's own checkout: the helpers are harness
+// developerIDRequirement accepts any Developer ID Application identity, so
+// no team id is pinned here.
+const developerIDRequirement = "=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+
+// prepareHelpers verifies the installed presence helper and builds the test
+// binaries. The presence helper is never built here: its Accessibility grant
+// belongs to the signed binary devboxWorld's bootstrap installs.
+func prepareHelpers(e env, toolRoot string, screen bool) (string, error) {
+	if err := verifyPresenceHelper(e, toolRoot, screen); err != nil {
+		return "", err
+	}
+	detail := "devboxpresence installed, signed and current"
+	if !screen {
+		return detail, nil
+	}
+	built, err := buildTestBinaries(toolRoot, e.BinDir)
+	if err != nil {
+		return "", err
+	}
+	return detail + "; built " + built, nil
+}
+
+func verifyPresenceHelper(e env, toolRoot string, screen bool) error {
+	stale := errors.New("presence helper missing or stale; run devboxWorld bootstrap.sh")
+	bin := presenceBin(e)
+	if fi, err := os.Stat(bin); err != nil || !fi.Mode().IsRegular() {
+		return stale
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if exec.CommandContext(ctx, "codesign", "--verify", "--strict", "-R", developerIDRequirement, bin).Run() != nil {
+		return errors.New("presence helper not Developer ID signed; run bootstrap.sh")
+	}
+	want, err := gitOut(toolRoot, "log", "-1", "--format=%H", "--", "cmd/devboxpresence")
+	if err != nil || want == "" {
+		return errors.New("cannot read the presence helper's source rev from this checkout")
+	}
+	if got, err := presenceCheck(e, "version"); err != nil || got != "source="+want {
+		return stale
+	}
+	if screen {
+		if _, err := presenceCheck(e, "check"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// buildTestBinaries builds from the tool's own checkout: they are harness
 // code, not part of the app under test.
-func buildHelpers(toolRoot, binDir string, screen bool) (string, error) {
+func buildTestBinaries(toolRoot, binDir string) (string, error) {
 	if _, err := exec.LookPath("go"); err != nil {
 		return "", errors.New("go not on PATH")
 	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return "", fmt.Errorf("cannot create the helper dir: %w", err)
 	}
-	targets := map[string]string{"./cmd/devboxpresence": presenceBinPath()}
-	if screen {
-		targets["./cmd/testmcp"] = filepath.Join(binDir, "testmcp")
-		targets["./cmd/testservice"] = filepath.Join(binDir, "testservice")
+	targets := map[string]string{
+		"./cmd/testmcp":     filepath.Join(binDir, "testmcp"),
+		"./cmd/testservice": filepath.Join(binDir, "testservice"),
 	}
 	names := slices.Sorted(maps.Keys(targets))
 	for _, pkg := range names {
@@ -375,7 +422,7 @@ func buildHelpers(toolRoot, binDir string, screen bool) (string, error) {
 			return "", fmt.Errorf("go build %s failed", pkg)
 		}
 	}
-	return "built " + strings.Join(names, ", "), nil
+	return strings.Join(names, ", "), nil
 }
 
 // consoleCheck asks the kernel, through a socketpair whose peer is this
@@ -403,7 +450,7 @@ func presenceCheck(e env, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var out strings.Builder
-	cmd := exec.CommandContext(ctx, presenceBin(e), args...)
+	cmd := presenceCommand(ctx, e, args...)
 	cmd.Stdout, cmd.Stderr = &out, os.Stderr
 	err := cmd.Run()
 	d := parseDialogLine(out.String(), exitCode(cmd, err))

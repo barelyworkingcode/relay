@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
@@ -38,9 +39,19 @@ const (
 	presenceReady    = "devboxpresence: ready"
 )
 
-// presenceBin is the binary the helpers preflight built.
+// presenceBin is the installed binary the helpers preflight verified.
 func presenceBin(e env) string {
 	return envOr("DEVBOXPRESENCE_BIN", filepath.Join(e.BinDir, "devboxpresence"))
+}
+
+// presenceCommand runs the helper under ctx. Deliberate: cancellation sends
+// SIGTERM, not the default SIGKILL, because the helper runs its work in a
+// disclaimed child that only a forwarded signal reaches.
+func presenceCommand(ctx context.Context, e env, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, presenceBin(e), args...)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
+	return cmd
 }
 
 func exitCode(cmd *exec.Cmd, err error) int {
@@ -74,9 +85,8 @@ func parseDialogLine(stdout string, code int) dialogResult {
 // the helper stopped.
 func startDialog(ctx context.Context, e env, mode dialogMode, expect string, timeout time.Duration) (wait func() dialogResult, err error) {
 	var stdout strings.Builder
-	cmd := exec.CommandContext(ctx, presenceBin(e), string(mode), "--expect", expect, "--timeout", timeout.String())
+	cmd := presenceCommand(ctx, e, string(mode), "--expect", expect, "--timeout", timeout.String())
 	cmd.Stdout = &stdout
-	cmd.WaitDelay = 2 * time.Second
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, fmt.Errorf("devboxpresence: %w", err)
@@ -123,7 +133,7 @@ func sweepDialogs(ctx context.Context, e env) dialogResult {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var out strings.Builder
-	cmd := exec.CommandContext(ctx, presenceBin(e), "cancel", "--any")
+	cmd := presenceCommand(ctx, e, "cancel", "--any")
 	cmd.Stdout, cmd.Stderr = &out, os.Stderr
 	err := cmd.Run()
 	return parseDialogLine(out.String(), exitCode(cmd, err))
