@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,72 +30,53 @@ func TestResolveMcpToken_ReadsProjectTokenNotLegacyAlias(t *testing.T) {
 	}
 }
 
-func TestResolveToolArgs_InlineArgs(t *testing.T) {
-	got, err := resolveToolArgs("", `{"a":1}`, nil)
-	if err != nil {
-		t.Fatalf("resolveToolArgs: %v", err)
-	}
-	if string(got) != `{"a":1}` {
-		t.Errorf("got %q, want {\"a\":1}", got)
-	}
-}
-
-func TestResolveToolArgs_FromFile(t *testing.T) {
-	// The load-bearing case: a prompt with quotes/apostrophes/parens that would
-	// be mangled by shell quoting if passed inline.
-	body := `{"prompt":"Van Gogh's \"Starry Night\" (1889)"}`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "args.json")
-	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+func TestResolveToolArgs(t *testing.T) {
+	// The file row is the load-bearing case: a prompt with quotes, apostrophes
+	// and parens that shell quoting would mangle if passed inline.
+	fileBody := `{"prompt":"Van Gogh's \"Starry Night\" (1889)"}`
+	argsPath := filepath.Join(t.TempDir(), "args.json")
+	if err := os.WriteFile(argsPath, []byte(fileBody), 0600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveToolArgs(path, "", nil)
-	if err != nil {
-		t.Fatalf("resolveToolArgs: %v", err)
-	}
-	if string(got) != body {
-		t.Errorf("got %q, want %q", got, body)
-	}
-}
+	stdinBody := `{"prompt":"line one\nline two"}`
 
-func TestResolveToolArgs_FromStdin(t *testing.T) {
-	body := `{"prompt":"line one\nline two"}`
-	got, err := resolveToolArgs("-", "", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("resolveToolArgs: %v", err)
+	tests := []struct {
+		name     string
+		argsFile string
+		toolArgs string
+		stdin    io.Reader
+		want     string // compared only when wantErr is empty; "" means nil
+		wantErr  string
+	}{
+		{name: "inline", toolArgs: `{"a":1}`, want: `{"a":1}`},
+		{name: "file", argsFile: argsPath, want: fileBody},
+		{name: "stdin", argsFile: "-", stdin: strings.NewReader(stdinBody), want: stdinBody},
+		{name: "both", argsFile: "some-file", toolArgs: `{"a":1}`, wantErr: "not both"},
+		{name: "invalid JSON", toolArgs: `{not json`, wantErr: "invalid args JSON"},
+		{name: "blank", toolArgs: "   "},
+		{name: "missing file", argsFile: filepath.Join(t.TempDir(), "nope.json"), wantErr: "args-file"},
 	}
-	if string(got) != body {
-		t.Errorf("got %q, want %q", got, body)
-	}
-}
-
-func TestResolveToolArgs_BothSourcesRejected(t *testing.T) {
-	_, err := resolveToolArgs("some-file", `{"a":1}`, nil)
-	if err == nil || !strings.Contains(err.Error(), "not both") {
-		t.Fatalf("want conflicting-flags error, got %v", err)
-	}
-}
-
-func TestResolveToolArgs_InvalidJSONRejected(t *testing.T) {
-	_, err := resolveToolArgs("", `{not json`, nil)
-	if err == nil || !strings.Contains(err.Error(), "invalid args JSON") {
-		t.Fatalf("want invalid-JSON error, got %v", err)
-	}
-}
-
-func TestResolveToolArgs_EmptyIsNil(t *testing.T) {
-	got, err := resolveToolArgs("", "   ", nil)
-	if err != nil {
-		t.Fatalf("resolveToolArgs: %v", err)
-	}
-	if got != nil {
-		t.Errorf("empty args should yield nil, got %q", got)
-	}
-}
-
-func TestResolveToolArgs_MissingFileIsError(t *testing.T) {
-	_, err := resolveToolArgs(filepath.Join(t.TempDir(), "nope.json"), "", nil)
-	if err == nil || !strings.Contains(err.Error(), "args-file") {
-		t.Fatalf("want unreadable-file error, got %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveToolArgs(tc.argsFile, tc.toolArgs, tc.stdin)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("want an error mentioning %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveToolArgs: %v", err)
+			}
+			if tc.want == "" {
+				if got != nil {
+					t.Errorf("want nil args, got %q", got)
+				}
+				return
+			}
+			if string(got) != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

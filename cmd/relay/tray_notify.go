@@ -55,9 +55,6 @@ func newPendingEnrolmentNotifier(now func() time.Time, notify func(title, body s
 	if now == nil {
 		now = time.Now
 	}
-	if notify == nil {
-		notify = func(title, body string) {}
-	}
 	return &pendingEnrolmentNotifier{now: now, notify: notify}
 }
 

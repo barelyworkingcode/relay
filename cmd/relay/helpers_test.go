@@ -30,46 +30,32 @@ func TestSlugify(t *testing.T) {
 	}
 }
 
-func TestValidateMcpURL_ValidHTTP(t *testing.T) {
-	if err := validateMcpURL("http://example.com/mcp"); err != nil {
-		t.Errorf("expected no error for valid http URL, got: %v", err)
+func TestValidateMcpURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr string // empty: valid; "*": any error
+	}{
+		{name: "http", url: "http://example.com/mcp"},
+		{name: "https", url: "https://example.com/mcp"},
+		{name: "ftp", url: "ftp://example.com/file", wantErr: "unsupported URL scheme"},
+		{name: "no host", url: "http:///path", wantErr: "missing a host"},
+		{name: "empty", url: "", wantErr: "*"},
+		{name: "malformed", url: "://bad", wantErr: "*"},
 	}
-}
-
-func TestValidateMcpURL_ValidHTTPS(t *testing.T) {
-	if err := validateMcpURL("https://example.com/mcp"); err != nil {
-		t.Errorf("expected no error for valid https URL, got: %v", err)
-	}
-}
-
-func TestValidateMcpURL_FTPSchemeRejected(t *testing.T) {
-	err := validateMcpURL("ftp://example.com/file")
-	if err == nil {
-		t.Fatal("expected error for ftp scheme, got nil")
-	}
-	if want := "unsupported URL scheme"; !strings.Contains(err.Error(), want) {
-		t.Errorf("error %q should mention %q", err.Error(), want)
-	}
-}
-
-func TestValidateMcpURL_MissingHostRejected(t *testing.T) {
-	err := validateMcpURL("http:///path")
-	if err == nil {
-		t.Fatal("expected error for missing host, got nil")
-	}
-	if want := "missing a host"; !strings.Contains(err.Error(), want) {
-		t.Errorf("error %q should mention %q", err.Error(), want)
-	}
-}
-
-func TestValidateMcpURL_EmptyString(t *testing.T) {
-	if err := validateMcpURL(""); err == nil {
-		t.Fatal("expected error for empty string, got nil")
-	}
-}
-
-func TestValidateMcpURL_MalformedURL(t *testing.T) {
-	if err := validateMcpURL("://bad"); err == nil {
-		t.Fatal("expected error for malformed URL, got nil")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateMcpURL(tc.url)
+			switch {
+			case tc.wantErr == "":
+				if err != nil {
+					t.Errorf("validateMcpURL(%q) = %v, want nil", tc.url, err)
+				}
+			case err == nil:
+				t.Fatalf("validateMcpURL(%q) = nil, want an error", tc.url)
+			case tc.wantErr != "*" && !strings.Contains(err.Error(), tc.wantErr):
+				t.Errorf("validateMcpURL(%q) error %q should mention %q", tc.url, err.Error(), tc.wantErr)
+			}
+		})
 	}
 }

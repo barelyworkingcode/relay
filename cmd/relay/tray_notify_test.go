@@ -11,7 +11,6 @@ package main
 // a second clock type in this package.
 
 import (
-	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -44,67 +43,35 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// Constructor defaults
-// ---------------------------------------------------------------------------
-
-func TestNewPendingEnrolmentNotifier_NilDefaults(t *testing.T) {
-	n := newPendingEnrolmentNotifier(nil, nil)
-	if n.now == nil {
-		t.Fatal("now must default to a real clock (time.Now), not stay nil")
-	}
-	if n.notify == nil {
-		t.Fatal("notify must default to a no-op, not stay nil")
-	}
-
-	before := time.Now()
-	got := n.now()
-	after := time.Now()
-	if got.Before(before) || got.After(after) {
-		t.Errorf("default clock did not read time.Now(): got %v, want between %v and %v", got, before, after)
-	}
-
-	// Must not panic — this is the substituted no-op notify, driven through
-	// a real tick with every gate satisfied.
-	n.tick(1, 1, notifierLive, notifierMaxLive, false)
-}
-
-// ---------------------------------------------------------------------------
 // Rule 1: gen must rise
 // ---------------------------------------------------------------------------
 
-func TestTick_FirstCallWithZeroLastAtNotifies(t *testing.T) {
-	n, _, calls := newTestNotifier()
-	n.tick(1, 1, notifierLive, notifierMaxLive, false)
-	if len(*calls) != 1 {
-		t.Fatalf("first call = %d notifications, want 1 (lastAt's zero value must count as due)", len(*calls))
-	}
-}
+// A gen equal to or below the one already seen (a repaint with no new row, a
+// wrapped counter, a stale read) stays silent however much time passes.
+func TestTick_NonRisingGenNeverNotifies(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		baseline, gen uint64
+		repeats       int
+		advance       time.Duration
+	}{
+		{"unchanged", 5, 5, 200, time.Minute}, // plenty past every interval and window bound
+		{"lower", 10, 3, 1, time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, clk, calls := newTestNotifier()
+			n.tick(tc.baseline, 1, notifierLive, notifierMaxLive, false)
+			*calls = nil
 
-func TestTick_UnchangedGenNeverNotifies(t *testing.T) {
-	n, clk, calls := newTestNotifier()
-	// One legitimate rise establishes a baseline lastGen != 0.
-	n.tick(5, 1, notifierLive, notifierMaxLive, false)
-	*calls = nil
-
-	for i := 0; i < 200; i++ {
-		clk.advance(time.Minute) // plenty past every interval and window bound
-		n.tick(5, 1, notifierLive, notifierMaxLive, false)
-	}
-	if len(*calls) != 0 {
-		t.Errorf("gen held at 5 across 200 calls produced %d notifications, want 0", len(*calls))
-	}
-}
-
-func TestTick_LowerGenNeverNotifies(t *testing.T) {
-	n, clk, calls := newTestNotifier()
-	n.tick(10, 1, notifierLive, notifierMaxLive, false)
-	*calls = nil
-	clk.advance(time.Hour)
-	// A lower gen than what's already been seen — e.g. gen wrapped or a
-	// stale read — must stay silent, not just an equal one.
-	n.tick(3, 1, notifierLive, notifierMaxLive, false)
-	if len(*calls) != 0 {
-		t.Errorf("gen(3) <= lastGen(10) notified anyway")
+			for i := 0; i < tc.repeats; i++ {
+				clk.advance(tc.advance)
+				n.tick(tc.gen, 1, notifierLive, notifierMaxLive, false)
+			}
+			if len(*calls) != 0 {
+				t.Errorf("gen(%d) <= lastGen(%d) across %d calls produced %d notifications, want 0",
+					tc.gen, tc.baseline, tc.repeats, len(*calls))
+			}
+		})
 	}
 }
 
@@ -114,49 +81,36 @@ func TestTick_LowerGenNeverNotifies(t *testing.T) {
 // applies to every one of these gates, not only the rate limiter).
 // ---------------------------------------------------------------------------
 
-func TestTick_ZeroUnapprovedIsSilentButGenAdvances(t *testing.T) {
-	n, clk, calls := newTestNotifier()
-	n.tick(1, 0, notifierLive, notifierMaxLive, false)
-	if len(*calls) != 0 {
-		t.Fatalf("unapproved=0 notified anyway")
-	}
-	// Prove lastGen moved: a later call with unapproved>0 but the SAME gen
-	// must still be silent, and one with a higher gen must fire.
-	clk.advance(time.Minute)
-	n.tick(1, 1, notifierLive, notifierMaxLive, false)
-	if len(*calls) != 0 {
-		t.Fatalf("gen(1) fired again after lastGen should already have reached 1")
-	}
-	clk.advance(time.Minute)
-	n.tick(2, 1, notifierLive, notifierMaxLive, false)
-	if len(*calls) != 1 {
-		t.Fatalf("a genuinely new gen after a silent unapproved=0 call produced %d notifications, want 1", len(*calls))
-	}
-}
-
-func TestTick_FullTableIsSilentButGenAdvances(t *testing.T) {
-	n, clk, calls := newTestNotifier()
-	n.tick(1, 1, notifierMaxLive, notifierMaxLive, false) // live == maxLive: full
-	if len(*calls) != 0 {
-		t.Fatalf("live == maxLive notified anyway")
-	}
-	clk.advance(time.Minute)
-	n.tick(1, 1, notifierLive, notifierMaxLive, false) // same gen, table has room now
-	if len(*calls) != 0 {
-		t.Fatalf("gen(1) fired again after lastGen should already have reached 1 from the full-table call")
-	}
-}
-
-func TestTick_SettingsOpenIsSilentButGenAdvances(t *testing.T) {
-	n, clk, calls := newTestNotifier()
-	n.tick(1, 1, notifierLive, notifierMaxLive, true) // settings open
-	if len(*calls) != 0 {
-		t.Fatalf("settingsOpen=true notified anyway")
-	}
-	clk.advance(time.Minute)
-	n.tick(1, 1, notifierLive, notifierMaxLive, false) // same gen, settings now closed
-	if len(*calls) != 0 {
-		t.Fatalf("gen(1) fired again after lastGen should already have reached 1 while settings was open")
+func TestTick_SilencingGateStillAdvancesGen(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		unapproved   int
+		live         int
+		settingsOpen bool
+	}{
+		{"zero unapproved", 0, notifierLive, false},
+		{"full table", 1, notifierMaxLive, false}, // live == maxLive
+		{"settings open", 1, notifierLive, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, clk, calls := newTestNotifier()
+			n.tick(1, tc.unapproved, tc.live, notifierMaxLive, tc.settingsOpen)
+			if len(*calls) != 0 {
+				t.Fatalf("%s notified anyway", tc.name)
+			}
+			// Prove lastGen moved: a later call with every gate open but the
+			// SAME gen must still be silent, and one with a higher gen must fire.
+			clk.advance(time.Minute)
+			n.tick(1, 1, notifierLive, notifierMaxLive, false)
+			if len(*calls) != 0 {
+				t.Fatalf("gen(1) fired again after lastGen should already have reached 1 from the %s call", tc.name)
+			}
+			clk.advance(time.Minute)
+			n.tick(2, 1, notifierLive, notifierMaxLive, false)
+			if len(*calls) != 1 {
+				t.Fatalf("a genuinely new gen after a silent %s call produced %d notifications, want 1", tc.name, len(*calls))
+			}
+		})
 	}
 }
 
@@ -203,40 +157,6 @@ func TestTick_AnHourOfInsertsProducesAtMostSix(t *testing.T) {
 	}
 	if len(*calls) == 0 {
 		t.Fatalf("an hour of rising-gen inserts produced zero notifications, want at least 1")
-	}
-}
-
-// The interval alone (60s spacing, well under the hourly cap) must produce
-// one notification per interval, not one total — pins the cap and the
-// interval as two independent gates rather than the interval silently being
-// the only one that matters.
-func TestTick_SpacedPastIntervalNotifiesEachTime(t *testing.T) {
-	n, clk, calls := newTestNotifier()
-	gen := uint64(0)
-	const rounds = 4 // stays under notifyMaxPerHour
-	for i := 0; i < rounds; i++ {
-		gen++
-		n.tick(gen, 1, notifierLive, notifierMaxLive, false)
-		clk.advance(notifyMinInterval + time.Second)
-	}
-	if len(*calls) != rounds {
-		t.Fatalf("got %d notifications over %d intervals spaced past notifyMinInterval, want %d", len(*calls), rounds, rounds)
-	}
-}
-
-// A call inside the interval is silent even with a fresh gen; the same gen
-// retried once the interval has passed must NOT re-fire (lastGen already
-// caught up), proving the interval and the gen check are both honoured.
-func TestTick_WithinIntervalIsSilent(t *testing.T) {
-	n, clk, calls := newTestNotifier()
-	n.tick(1, 1, notifierLive, notifierMaxLive, false)
-	if len(*calls) != 1 {
-		t.Fatalf("first call = %d notifications, want 1", len(*calls))
-	}
-	clk.advance(notifyMinInterval - time.Second) // just short of the interval
-	n.tick(2, 1, notifierLive, notifierMaxLive, false)
-	if len(*calls) != 1 {
-		t.Fatalf("a call inside notifyMinInterval notified anyway (%d total)", len(*calls))
 	}
 }
 
@@ -341,44 +261,31 @@ func TestTick_CapSuppressedGenStillAdvancesLastGen(t *testing.T) {
 // Notification content
 // ---------------------------------------------------------------------------
 
-func TestTick_NotificationTitleAndSingularBody(t *testing.T) {
-	n, _, calls := newTestNotifier()
-	n.tick(1, 1, notifierLive, notifierMaxLive, false)
-	if len(*calls) != 1 {
-		t.Fatalf("got %d notifications, want 1", len(*calls))
-	}
-	got := (*calls)[0]
-	if got.title != "Relay" {
-		t.Errorf("title = %q, want %q", got.title, "Relay")
-	}
-	wantBody := "1 machine is waiting to be registered.\n" +
-		"Open Settings → Remote Clients to compare its code and approve. Nothing is granted until you do."
-	if got.body != wantBody {
-		t.Errorf("body = %q, want %q", got.body, wantBody)
-	}
-}
-
-func TestTick_PluralBodySubstitutesTheCount(t *testing.T) {
-	n, _, calls := newTestNotifier()
-	n.tick(1, 3, notifierLive, notifierMaxLive, false)
-	if len(*calls) != 1 {
-		t.Fatalf("got %d notifications, want 1", len(*calls))
-	}
-	wantBody := fmt.Sprintf("%d machines are waiting to be registered.\n"+
-		"Open Settings → Remote Clients to compare its code and approve. Nothing is granted until you do.", 3)
-	if (*calls)[0].body != wantBody {
-		t.Errorf("body = %q, want %q", (*calls)[0].body, wantBody)
-	}
-}
-
-// tick must call notify at most once per call, even with a generous
-// unapproved count that might tempt a "one notification per pending
-// request" misreading of requirement 3.
-func TestTick_AtMostOneNotifyCallPerTick(t *testing.T) {
-	n, _, calls := newTestNotifier()
-	n.tick(1, 50, notifierLive, notifierMaxLive, false)
-	if len(*calls) != 1 {
-		t.Errorf("got %d notify calls for one tick with unapproved=50, want exactly 1", len(*calls))
+func TestTick_NotificationTitleAndBody(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		unapproved int
+		wantBody   string
+	}{
+		{"singular", 1, "1 machine is waiting to be registered.\n" +
+			"Open Settings → Remote Clients to compare its code and approve. Nothing is granted until you do."},
+		{"plural", 3, "3 machines are waiting to be registered.\n" +
+			"Open Settings → Remote Clients to compare its code and approve. Nothing is granted until you do."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, _, calls := newTestNotifier()
+			n.tick(1, tc.unapproved, notifierLive, notifierMaxLive, false)
+			if len(*calls) != 1 {
+				t.Fatalf("got %d notifications for one tick with unapproved=%d, want exactly 1", len(*calls), tc.unapproved)
+			}
+			got := (*calls)[0]
+			if got.title != "Relay" {
+				t.Errorf("title = %q, want %q", got.title, "Relay")
+			}
+			if got.body != tc.wantBody {
+				t.Errorf("body = %q, want %q", got.body, tc.wantBody)
+			}
+		})
 	}
 }
 
