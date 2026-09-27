@@ -27,6 +27,28 @@ func noteFor(t *testing.T, schema, value string) string {
 	}, "fs_read")
 }
 
+// Deliberate: a count is not a measure of confinement — "1 value" is true of
+// /Users/acme/project and equally true of "/".
+func TestScopeNote_AFilesystemRootIsNotConfinedToOneValue(t *testing.T) {
+	root := noteFor(t, fsmcpCountSchema, `["/"]`)
+	folder := noteFor(t, fsmcpCountSchema, `["/Users/acme/project"]`)
+
+	if root == folder {
+		t.Fatalf("a grant of \"/\" and a grant of one folder render identically: %q", root)
+	}
+	if strings.Contains(root, "confined to 1 value") {
+		t.Errorf("a grant of the whole filesystem is described as a confinement: %q", root)
+	}
+	if !strings.Contains(root, "unrestricted") {
+		t.Errorf("the note does not say the grant is unrestricted: %q", root)
+	}
+	// Deliberate: the bounded grant's client-facing note is unchanged — fixing
+	// the operator-side problem must not weaken client disclosure.
+	if folder != `Scope: Directories this client may read, search and modify within — confined to 1 value.` {
+		t.Errorf("the bounded grant's note changed: %q", folder)
+	}
+}
+
 // Deliberate: a client learns it's at a filesystem root the moment it lists
 // one, so withholding that fact buys nothing.
 func TestScopeNote_AnUnrestrictedValueOutranksEveryDiscloseSetting(t *testing.T) {
