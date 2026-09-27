@@ -45,12 +45,15 @@ type sandboxHost struct {
 
 	conns    chan *websocket.Conn
 	rejectWS atomic.Bool
+
+	beforeLaunch atomic.Pointer[func()]
+	terminated   chan struct{}
 }
 
 func newSandboxHost(t *testing.T) *sandboxHost {
 	t.Helper()
 	t.Setenv("SHELL", "")
-	h := &sandboxHost{t: t, f: newSessionRoutesFixture(t), conns: make(chan *websocket.Conn, 8)}
+	h := &sandboxHost{t: t, f: newSessionRoutesFixture(t), conns: make(chan *websocket.Conn, 8), terminated: make(chan struct{}, 8)}
 	upgrader := websocket.Upgrader{}
 	var fs *FakeService
 	launch := fakeLaunchHandler(&fs, func(id string) string {
@@ -62,9 +65,16 @@ func newSandboxHost(t *testing.T) *sandboxHost {
 		Handler: func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/launch":
+				if gate := h.beforeLaunch.Load(); gate != nil {
+					(*gate)()
+				}
 				launch(w, r)
 			case "/terminate":
 				w.WriteHeader(http.StatusNoContent)
+				select {
+				case h.terminated <- struct{}{}:
+				default:
+				}
 			case "/ws":
 				if h.rejectWS.Load() {
 					http.Error(w, "no", http.StatusServiceUnavailable)
@@ -1336,5 +1346,63 @@ func TestSandboxAttach_OverTheBridgeSocketClientDisconnectEndsTheSession(t *test
 	}
 	if terms := h.terminations(); len(terms) != 1 || terms[0].SessionID != hs.id {
 		t.Fatalf("terminations = %+v, want exactly one for %s", terms, hs.id)
+	}
+}
+
+func TestSandboxAttach_OverTheBridgeSocketClientLeavingMidLaunchTerminatesTheLaunchedSession(t *testing.T) {
+	h := newSandboxHost(t)
+	p := h.project("p-main", "Main", t.TempDir(), nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var enterOnce sync.Once
+	gate := func() {
+		enterOnce.Do(func() { close(entered) })
+		<-release
+	}
+	h.beforeLaunch.Store(&gate)
+	sock := sbxStartBridge(t, h, false)
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sbxBridgeRequest(t, conn, sbxReq("shell", realDir(t, p.Path)))
+	select {
+	case <-entered:
+	case <-time.After(sbxWait):
+		close(release)
+		t.Fatal("the launch never reached the host")
+	}
+	_ = conn.Close()
+	// Whether relay reaches the join depends on when it notices the client
+	// left, so the hub answers a join if one comes and never requires it.
+	hubDone := make(chan struct{})
+	defer close(hubDone)
+	go func() {
+		select {
+		case c := <-h.conns:
+			defer c.Close()
+			var join map[string]any
+			if c.ReadJSON(&join) == nil {
+				_ = c.WriteJSON(map[string]any{"type": "terminal_joined", "terminalId": join["terminalId"], "state": "running", "cols": 100, "rows": 30, "scrollback": ""})
+			}
+			<-hubDone
+		case <-hubDone:
+		}
+	}()
+	// Deliberate: the fake completes the launch after the client left, as
+	// relay-sessions does, since it does not watch the request context.
+	close(release)
+
+	select {
+	case <-h.terminated:
+	case <-time.After(sbxWait):
+		t.Fatal("relay never terminated a session launched for a client that left mid-launch")
+	}
+	launched := h.launches()
+	if len(launched) != 1 {
+		t.Fatalf("%d launch request(s), want 1", len(launched))
+	}
+	if terms := h.terminations(); len(terms) != 1 || terms[0].SessionID != launched[0].SessionID {
+		t.Fatalf("terminations = %+v, want exactly one for %s", terms, launched[0].SessionID)
 	}
 }
