@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Pre-commit hook: the checks that cost seconds.
 #
-# Install once per clone:
-#   git config core.hooksPath .githooks
+# Run by the machine's global hooks dispatcher. Don't set core.hooksPath in
+# the repo: a local value overrides the global hooks and skips the push guard.
 #
 # Skip on emergency:
 #   git commit --no-verify

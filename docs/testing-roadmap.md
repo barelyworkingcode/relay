@@ -51,10 +51,16 @@ socket name (`relay.sock`) and you blow past 104 with
 `os.MkdirTemp("/tmp", "...")`. See `support_test.go:mkShortTempDir`.
 
 ### Sandbox guard false positives from a live tray app
-If the user's actual relay tray is running while tests execute, it
-modifies its log files mid-run and the naive snapshot guard flags it as
-contamination. Fix: ignore `logs/`, `run/`, and `*.sock` in the snapshot.
-See `support_safety_test.go:shouldIgnoreForSafetySnapshot`.
+A running relay rewrites `settings.json` in the real config dir on its own
+schedule, so a before/after comparison of that dir cannot tell the live app
+from a leaking test. The guard therefore leans on an isolated `HOME`: every
+test's default config dir resolves to a tripwire under a `/tmp` root, and the
+tripwire must not exist after the run, whether relay is up or down. The real
+dir comparison runs only when no relay answered on the real `relay.sock` at
+the start of the run, and liveness is decided once, before any test, so a
+test binding that socket cannot switch the comparison off. That comparison
+ignores `logs/`, `run/` and `*.sock`; the tripwire ignores nothing. See
+`support_safety_test.go` (`isolationViolations`, `watchRealDir`).
 
 ### The router and the registry must share one launch table
 The registry begins launches in `service.Launches` and the router binds and

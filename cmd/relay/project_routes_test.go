@@ -577,6 +577,17 @@ func TestProjectRoutes_RotateToken_NewTokenInvalidatesOld(t *testing.T) {
 	if _, err := store.Get().AuthenticateProject(newToken); err != nil {
 		t.Fatalf("new token does not authenticate: %v", err)
 	}
+	stored, _ := config.FindProjectByID(store.Get(), created.ID)
+	if stored == nil {
+		t.Fatalf("project %s missing after rotation", created.ID)
+	}
+	storedPlain, ok := stored.Token.Reveal()
+	if !ok {
+		t.Fatal("stored token has no plaintext to reveal")
+	}
+	if storedPlain != newToken {
+		t.Errorf("stored plaintext = %q; want the returned token %q", storedPlain, newToken)
+	}
 }
 
 func TestProjectRoutes_RegenSkill_OK(t *testing.T) {

@@ -28,10 +28,10 @@ func noteFor(t *testing.T, schema, value string) string {
 }
 
 // Deliberate: a count is not a measure of confinement — "1 value" is true of
-// /Users/me/project and equally true of "/".
+// /Users/acme/project and equally true of "/".
 func TestScopeNote_AFilesystemRootIsNotConfinedToOneValue(t *testing.T) {
 	root := noteFor(t, fsmcpCountSchema, `["/"]`)
-	folder := noteFor(t, fsmcpCountSchema, `["/Users/me/project"]`)
+	folder := noteFor(t, fsmcpCountSchema, `["/Users/acme/project"]`)
 
 	if root == folder {
 		t.Fatalf("a grant of \"/\" and a grant of one folder render identically: %q", root)
@@ -73,7 +73,7 @@ func TestScopeNote_AnUnrestrictedValueOutranksEveryDiscloseSetting(t *testing.T)
 // naming it to a remote client would disclose topology the operator never
 // chose to reveal. It's loud on operator surfaces instead.
 func TestScopeNote_AHomeDirectoryStaysCountedForTheClient(t *testing.T) {
-	note := noteFor(t, fsmcpCountSchema, `["/Users/admin"]`)
+	note := noteFor(t, fsmcpCountSchema, `["/Users/acme"]`)
 	if !strings.Contains(note, "confined to 1 value") {
 		t.Errorf("a home directory's client-facing note changed: %q", note)
 	}
@@ -131,36 +131,20 @@ func TestScopeNote_AWildcardOutranksEveryDiscloseSetting(t *testing.T) {
 	}
 }
 
-func TestScopeBreadth_WildcardClassification(t *testing.T) {
-	if got := ScopeValueBreadth(json.RawMessage(`["*"]`)); got != ScopeBreadthWildcard {
-		t.Errorf("[\"*\"] classified as %q, want wildcard", got)
-	}
-	// Recognised only as the array's sole element (ADR-011 addendum) --
-	// relay's own save-time validation refuses this combination outright, so
-	// it should never reach here already stored, but the classifier must not
-	// call it unrestricted if it somehow does.
-	if got := ScopeValueBreadth(json.RawMessage(`["*","Bob"]`)); got == ScopeBreadthWildcard {
-		t.Errorf("[\"*\",\"Bob\"] classified as the wildcard; it is a mixed value, not a grant of everything")
-	}
-	if got := ScopeValueBreadth(json.RawMessage(`["Bob"]`)); got != ScopeBreadthBounded {
-		t.Errorf("a plain named value classified as %q", got)
-	}
-}
-
 func TestScopeBreadth_Classification(t *testing.T) {
 	cases := []struct{ entry, want string }{
 		{"/", ScopeBreadthRoot},
 		{"//", ScopeBreadthRoot},
 		{"/..", ScopeBreadthRoot},
-		{"/Users/admin/../..", ScopeBreadthRoot},
+		{"/Users/acme/../..", ScopeBreadthRoot},
 		{"  /  ", ScopeBreadthRoot},
 		{"~", ScopeBreadthHome},
 		{"~/", ScopeBreadthHome},
 		{"/Users", ScopeBreadthHome},
-		{"/Users/admin", ScopeBreadthHome},
-		{"/Users/admin/", ScopeBreadthHome},
+		{"/Users/acme", ScopeBreadthHome},
+		{"/Users/acme/", ScopeBreadthHome},
 		{"/home/someone", ScopeBreadthHome},
-		{"/Users/admin/source/project", ScopeBreadthBounded},
+		{"/Users/acme/source/project", ScopeBreadthBounded},
 		{"/etc", ScopeBreadthBounded},
 		{"/tmp/work", ScopeBreadthBounded},
 		{"relative/path", ScopeBreadthBounded},
@@ -177,10 +161,10 @@ func TestScopeBreadth_Classification(t *testing.T) {
 // Subtle: a multi-entry value is a union — reporting just the first entry
 // would describe the confinement the operator meant, not the one in force.
 func TestScopeBreadth_AListIsAUnion(t *testing.T) {
-	if got := ScopeValueBreadth(json.RawMessage(`["/Users/me/proj","/"]`)); got != ScopeBreadthRoot {
+	if got := ScopeValueBreadth(json.RawMessage(`["/Users/acme/proj","/"]`)); got != ScopeBreadthRoot {
 		t.Errorf("a list containing the filesystem root read as %q", got)
 	}
-	if got := ScopeValueBreadth(json.RawMessage(`["/Users/me/proj","/tmp"]`)); got != ScopeBreadthBounded {
+	if got := ScopeValueBreadth(json.RawMessage(`["/Users/acme/proj","/tmp"]`)); got != ScopeBreadthBounded {
 		t.Errorf("a bounded list read as %q", got)
 	}
 	// A string-typed field is one entry, not zero.

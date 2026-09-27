@@ -56,13 +56,13 @@ service id.
 ./build.sh --release    # sign + notarize + /tmp/Relay.dmg (implies --test)
 
 go test ./internal/project/...        # while working: the package you touched
-go test ./...                         # hermetic suite; relay must be STOPPED
+go test ./...                         # hermetic suite; relay may be running
 go test -race ./...                   # CI runs this on every PR; locally on demand
 go test -tags=live ./...              # spawns ../relayLLM and headless Chrome
 golangci-lint run ./...               # a ratchet, not a gate: add no new findings
 ```
 
-What gates what (`git config core.hooksPath .githooks`, once per clone):
+What gates what (`.githooks/`, run by the machine's global hooks dispatcher; never set a repo-local `core.hooksPath`, which skips the push guard):
 
 | Stage | Runs |
 |---|---|

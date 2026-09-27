@@ -83,6 +83,9 @@ func TestUpdateMenuWithSettings_DrivesTheNotifierFromTheSamePendingRead(t *testi
 	if n := len(rp.notifications()); n != 0 {
 		t.Fatalf("an empty table produced %d notifications", n)
 	}
+	if strings.Contains(rp.lastMenu(), "Pending enrolment requests") {
+		t.Fatalf("menu shows a pending line with nothing pending: %s", rp.lastMenu())
+	}
 
 	l1, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "", "", "10.0.0.5:1")
 	assertNoErr(t, err, "Lodge 1")
@@ -116,6 +119,9 @@ func TestUpdateMenuWithSettings_DrivesTheNotifierFromTheSamePendingRead(t *testi
 	app.rebuildMenu()
 	if n := len(rp.notifications()); n != 1 {
 		t.Fatalf("a lodge while Settings was open produced %d notifications, want 1", n)
+	}
+	if !strings.Contains(rp.lastMenu(), "Pending enrolment requests: 2") {
+		t.Fatalf("menu does not show 2 pending requests: %s", rp.lastMenu())
 	}
 	app.settingsOpen.Store(false)
 

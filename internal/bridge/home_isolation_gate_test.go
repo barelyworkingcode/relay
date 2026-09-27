@@ -27,7 +27,6 @@ const homeIsolationCall = `os.Setenv("HOME"`
 // homeIsolationExempt lists package dirs (relative to the module root) that
 // resolve config paths in tests but isolate them some other way.
 var homeIsolationExempt = map[string]string{
-	"cmd/relay": "isolates per test with mkSandboxRelayHome and runs its own end-of-run guard on the real ConfigDir",
 	"internal/sshhost": "its TestMain points bridge.SetConfigDirForTest at a temp dir, and the package reaches the " +
 		"config dir only through bridge.ConfigDir, which honours that override",
 }
