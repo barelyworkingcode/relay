@@ -73,15 +73,10 @@ func TestTemplateRoutes_GetByID(t *testing.T) {
 	if got.ID != "claude-code" || got.Command != "claude" {
 		t.Fatalf("unexpected template: %+v", got)
 	}
-}
 
-func TestTemplateRoutes_GetByIDNotFound(t *testing.T) {
-	srv, _ := newTemplateRoutesServer(t)
-	defer srv.Close()
-
-	resp, _ := doJSON(t, "GET", srv.URL+"/api/terminal/templates/does-not-exist", nil)
+	resp, _ = doJSON(t, "GET", srv.URL+"/api/terminal/templates/does-not-exist", nil)
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", resp.StatusCode)
+		t.Fatalf("unknown id: status = %d, want 404", resp.StatusCode)
 	}
 }
 
