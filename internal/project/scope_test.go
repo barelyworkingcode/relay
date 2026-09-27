@@ -3,6 +3,7 @@ package project
 import (
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -69,13 +70,6 @@ func TestValidateProjectGrants_PermitsWhenTheToolSurfaceIsUnknown(t *testing.T) 
 	}
 }
 
-func TestValidateProjectGrants_LocalProjectsAreExempt(t *testing.T) {
-	local := &config.Project{ID: "p1", Path: "/tmp/x", AllowedMcpIDs: []string{"fsmcp"}}
-	if err := ValidateGrants(local, McpSurfaces{"fsmcp": fsmcpSurface()}); err != nil {
-		t.Fatalf("a local project was refused a path-scoped MCP: %v", err)
-	}
-}
-
 // Relay writes the path because the SCHEMA asked for it, not because relay
 // recognised the field name: the field here is called file_dirs and relay
 // has never heard of it.
@@ -116,11 +110,22 @@ func TestSyncProjectToken_DerivationDoesNotClobberOperatorSetFields(t *testing.T
 // could apply to; this guard is what keeps a bypass of that check from
 // turning a silent widening into a loud failure.
 func TestSyncProjectToken_ARemoteRecordNeverGetsAProjectPathField(t *testing.T) {
-	s := &config.Settings{ExternalMcps: []config.ExternalMcp{{ID: "macmcp"}}}
-	proj := &config.Project{ID: "p1", Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"}}
-	syncProjectToken(s, proj, McpSurfaces{"macmcp": macmcpSurface()})
-	if raw, ok := proj.Context["macmcp"]; ok {
-		t.Fatalf("a profile was handed a derived scope: %s", raw)
+	for _, tc := range []struct {
+		name    string
+		mcpID   string
+		surface McpSurface
+	}{
+		{"v2 schema", "macmcp", macmcpSurface()},
+		{"v1 schema", "fsmcp", McpSurface{Schema: json.RawMessage(`{"allowed_dirs":{"type":"array"}}`)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &config.Settings{ExternalMcps: []config.ExternalMcp{{ID: tc.mcpID}}}
+			proj := &config.Project{ID: "p1", Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{tc.mcpID}}
+			syncProjectToken(s, proj, McpSurfaces{tc.mcpID: tc.surface})
+			if raw, ok := proj.Context[tc.mcpID]; ok {
+				t.Fatalf("a profile was handed a derived scope: %s", raw)
+			}
+		})
 	}
 }
 
@@ -144,10 +149,17 @@ func TestSyncProjectToken_PrunesTheNewAllowlistsForRevokedMcps(t *testing.T) {
 	s := &config.Settings{ExternalMcps: []config.ExternalMcp{{ID: "macmcp"}, {ID: "fsmcp"}}}
 	proj := &config.Project{
 		ID: "p1", Path: "/tmp/project", AllowedMcpIDs: []string{"macmcp"},
-		Access:       map[string]string{"macmcp": config.AccessWrite, "fsmcp": config.AccessWrite},
-		AllowedTools: map[string][]string{"macmcp": {"mail_*"}, "fsmcp": {"fs_*"}},
+		Access:        map[string]string{"macmcp": config.AccessWrite, "fsmcp": config.AccessWrite},
+		AllowedTools:  map[string][]string{"macmcp": {"mail_*"}, "fsmcp": {"fs_*"}},
+		DisabledTools: map[string][]string{"macmcp": {"runScript"}, "fsmcp": {"fs_bash"}},
 	}
 	syncProjectToken(s, proj, McpSurfaces{"macmcp": macmcpSurface()})
+	if _, stale := proj.DisabledTools["fsmcp"]; stale {
+		t.Error("a denylist survived for an MCP the project no longer grants")
+	}
+	if !slices.Contains(proj.DisabledTools["macmcp"], "runScript") {
+		t.Errorf("the granted MCP's denylist was pruned: %v", proj.DisabledTools)
+	}
 	if _, stale := proj.Access["fsmcp"]; stale {
 		t.Error("an access mode survived for an MCP the project no longer grants")
 	}

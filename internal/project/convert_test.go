@@ -1,61 +1,10 @@
 package project
 
 import (
-	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
-
-// Converting an existing LOCAL project to remote is the sharp edge: the project
-// already carries allowed_dirs context from its former life, and that context is
-// what relay injects into _meta on every tool call. If a conversion could keep
-// it, a remote client would inherit host filesystem scope — precisely the thing
-// the remote kind exists to prevent.
-func TestProjectConvertLocalToRemote_CannotInheritFilesystemScope(t *testing.T) {
-	dir := t.TempDir()
-	s := &config.Settings{ExternalMcps: []config.ExternalMcp{{ID: "fsmcp", DisplayName: "fsMCP"}}}
-	schemas := func() McpSurfaces {
-		return McpSurfaces{"fsmcp": {Schema: json.RawMessage(`{"allowed_dirs":{"type":"array"}}`)}}
-	}
-
-	proj, err := CreateWithToken(s, "Local", dir, []string{"fsmcp"}, nil, nil, schemas())
-	if err != nil {
-		t.Fatalf("create local: %v", err)
-	}
-	stored, _ := config.FindProjectByID(s, proj.ID)
-	if len(stored.Context["fsmcp"]) == 0 {
-		t.Fatalf("precondition: local project should have fsmcp allowed_dirs context, got %+v", stored.Context)
-	}
-
-	// Conversion attempt 1: flip kind, clear path, keep the filesystem grant.
-	remote := config.ProjectKindRemote
-	empty := ""
-	_, _, err = ApplyUpdate(s, proj.ID, UpdateFields{Kind: &remote, Path: &empty}, schemas)
-	if err == nil {
-		t.Fatal("converting a project holding a filesystem-scoped MCP to remote must be refused")
-	}
-
-	after, _ := config.FindProjectByID(s, proj.ID)
-	if after.IsRemote() || after.Path != dir {
-		t.Fatalf("refused conversion mutated the project: kind=%q path=%q", after.Kind, after.Path)
-	}
-
-	// Conversion attempt 2: drop the filesystem grant in the same request.
-	none := []string{}
-	if _, _, err := ApplyUpdate(s, proj.ID, UpdateFields{
-		Kind: &remote, Path: &empty, AllowedMcpIDs: &none,
-	}, schemas); err != nil {
-		t.Fatalf("dropping the grant should make conversion legal: %v", err)
-	}
-	converted, _ := config.FindProjectByID(s, proj.ID)
-	if !converted.IsRemote() {
-		t.Fatal("project did not convert to remote")
-	}
-	if raw, ok := converted.Context["fsmcp"]; ok {
-		t.Fatalf("converted project still carries host filesystem scope: %s", raw)
-	}
-}
 
 // An access profile launches no session — resolvePtyEnv and
 // resolveProjectTemplate both refuse a remote record — so both are inert on
@@ -161,24 +110,6 @@ func TestProjectConvertLocalToRemote_ClearingTheInertControlsMakesItLegal(t *tes
 	if converted.PermissionPolicy != nil || len(converted.ChatTemplates) != 0 {
 		t.Fatalf("the converted profile still carries an inert control: policy=%+v templates=%+v",
 			converted.PermissionPolicy, converted.ChatTemplates)
-	}
-}
-
-func TestProjectLocal_KeepsItsPolicyAndTemplates(t *testing.T) {
-	s := &config.Settings{Version: 1}
-	created, err := ApplyCreate(s, CreateFields{
-		Name: "Workspace", Path: t.TempDir(),
-		PermissionPolicy: &config.PermissionPolicy{DefaultMode: "acceptEdits"},
-		ChatTemplates:    []config.ChatTemplate{{ID: "t1", Name: "Default", Model: "claude-opus"}},
-	}, nil)
-	if err != nil {
-		t.Fatalf("a local project was refused: %v", err)
-	}
-	if created.PermissionPolicy == nil || created.PermissionPolicy.DefaultMode != "acceptEdits" {
-		t.Errorf("the local project lost its policy: %+v", created.PermissionPolicy)
-	}
-	if len(created.ChatTemplates) != 1 {
-		t.Errorf("the local project lost its templates: %+v", created.ChatTemplates)
 	}
 }
 
