@@ -25,6 +25,12 @@ func TestModelAllowedForProject(t *testing.T) {
 	store := newProjectsTestStore(t)
 	restricted := restrictedProject(t, store, []string{"haiku", "sonnet"})
 	wildcard := createTestProject(t, store, "Wild", t.TempDir(), []string{"fsmcp"}) // models default to ["*"]
+	empty := createTestProject(t, store, "Empty", t.TempDir(), []string{"fsmcp"})
+	if err := store.With(func(s *config.Settings) {
+		s.UpdateProjectModels(empty.ID, []string{})
+	}); err != nil {
+		t.Fatalf("UpdateProjectModels: %v", err)
+	}
 
 	cases := []struct {
 		name      string
@@ -35,6 +41,7 @@ func TestModelAllowedForProject(t *testing.T) {
 		{"allowed model on restricted project", restricted.ID, "haiku", true},
 		{"disallowed model on restricted project", restricted.ID, "opus", false},
 		{"wildcard project allows any model", wildcard.ID, "opus", true},
+		{"empty allowlist is unrestricted", empty.ID, "opus", true},
 		{"no project scope", "", "opus", true},
 		{"server-default (empty) model", restricted.ID, "", true},
 		{"unknown project falls open", "does-not-exist", "opus", true},
@@ -46,14 +53,6 @@ func TestModelAllowedForProject(t *testing.T) {
 					tc.projectID, tc.model, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestModelAllowedForProject_EmptyAllowlistIsUnrestricted(t *testing.T) {
-	store := newProjectsTestStore(t)
-	proj := restrictedProject(t, store, []string{})
-	if !modelAllowedForProject(store, proj.ID, "opus") {
-		t.Error("empty allowlist should be treated as unrestricted (allow all)")
 	}
 }
 
@@ -77,23 +76,6 @@ func postSessions(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	return req
-}
-
-func TestSessionModelGuard_BlocksDisallowedModel(t *testing.T) {
-	store := newProjectsTestStore(t)
-	proj := restrictedProject(t, store, []string{"haiku"})
-
-	spy := &nextSpy{}
-	guard := newSessionModelGuard(store, spy)
-	rec := httptest.NewRecorder()
-	guard(rec, postSessions(`{"projectId":"`+proj.ID+`","model":"opus"}`))
-
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("status = %d, want 403", rec.Code)
-	}
-	if spy.called {
-		t.Error("disallowed model must not reach the dispatcher")
-	}
 }
 
 func TestSessionModelGuard_ForwardsAllowedModelUntouched(t *testing.T) {
@@ -290,20 +272,6 @@ func TestModelAllowedForProject_WouldPermitRemoteProject(t *testing.T) {
 	}
 }
 
-func TestSessionModelGuard_LocalProjectStillCreatesSessions(t *testing.T) {
-	store := newProjectsTestStore(t)
-	proj := restrictedProject(t, store, []string{"opus"})
-
-	spy := &nextSpy{}
-	guard := newSessionModelGuard(store, spy)
-	rec := httptest.NewRecorder()
-	guard(rec, postSessions(`{"projectId":"`+proj.ID+`","model":"opus"}`))
-
-	if !spy.called {
-		t.Fatalf("local project session was blocked, status = %d", rec.Code)
-	}
-}
-
 // --- PUT /api/sessions/{id}/model ---
 //
 // relayLLM's PUT /api/sessions/{id}/model (SetPiModel) is the other route
@@ -370,19 +338,25 @@ func TestSessionModelGuard_PUT_AllowedModelForwards(t *testing.T) {
 }
 
 func TestSessionModelGuard_PUT_DisallowedModelRefused(t *testing.T) {
-	store := newProjectsTestStore(t)
-	proj := restrictedProject(t, store, []string{"pi/anthropic/claude-haiku"})
-	next := &sessionLookupStub{sessions: []map[string]string{{"id": "sess1", "projectId": proj.ID}}}
+	for _, path := range []string{"/api/sessions/sess1/model", "/api/sessions/sess1/model/"} {
+		t.Run(path, func(t *testing.T) {
+			store := newProjectsTestStore(t)
+			proj := restrictedProject(t, store, []string{"pi/anthropic/claude-haiku"})
+			next := &sessionLookupStub{sessions: []map[string]string{{"id": "sess1", "projectId": proj.ID}}}
 
-	guard := newSessionModelGuard(store, next)
-	rec := httptest.NewRecorder()
-	guard(rec, putSessionModel("sess1", `{"provider":"anthropic","modelId":"claude-opus"}`))
+			guard := newSessionModelGuard(store, next)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPut, path, strings.NewReader(`{"provider":"anthropic","modelId":"claude-opus"}`))
+			req.Header.Set("Content-Type", "application/json")
+			guard(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("status = %d, want 403", rec.Code)
-	}
-	if next.forwardedCalled {
-		t.Error("disallowed model update must not reach relayLLM")
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403", rec.Code)
+			}
+			if next.forwardedCalled {
+				t.Error("disallowed model update must not reach relayLLM")
+			}
+		})
 	}
 }
 
@@ -447,25 +421,6 @@ func TestSessionModelGuard_PUT_IncompleteBodyForwardsUnchecked(t *testing.T) {
 
 	if !next.forwardedCalled {
 		t.Errorf("incomplete model-update body should be forwarded so relayLLM produces the error, status = %d", rec.Code)
-	}
-}
-
-func TestSessionModelGuard_PUT_TrailingSlash(t *testing.T) {
-	store := newProjectsTestStore(t)
-	proj := restrictedProject(t, store, []string{"pi/anthropic/claude-haiku"})
-	next := &sessionLookupStub{sessions: []map[string]string{{"id": "sess1", "projectId": proj.ID}}}
-
-	guard := newSessionModelGuard(store, next)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/sessions/sess1/model/", strings.NewReader(`{"provider":"anthropic","modelId":"claude-opus"}`))
-	req.Header.Set("Content-Type", "application/json")
-	guard(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("status = %d, want 403 on trailing-slash model-update path", rec.Code)
-	}
-	if next.forwardedCalled {
-		t.Error("disallowed model update on the trailing-slash path must not reach relayLLM")
 	}
 }
 

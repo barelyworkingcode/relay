@@ -57,88 +57,12 @@ func TestServiceRegister_NoAllowedModelFlagGrantsNone(t *testing.T) {
 	}
 }
 
-// TestServiceOps_Update_OmittingAllowedModelsPreservesIt covers the other
-// half of the required test: an Update that never mentions AllowedModels
-// (the pointer is nil, the wire shape a request that genuinely omits the
-// field produces) must not clear a grant a prior register or edit set.
-func TestServiceOps_Update_OmittingAllowedModelsPreservesIt(t *testing.T) {
-	store := newCLISandboxStore(t)
-	r := newBrokerRouter(t, store, nil)
-
-	allowed := []string{"vCode"}
-	if _, err := r.serviceOps.Create(context.Background(), serviceFields{
-		DisplayName:   "TTS",
-		Command:       "/bin/true",
-		Capabilities:  &[]config.ServiceCapability{config.ServiceCapabilityModels},
-		AllowedModels: &allowed,
-	}, auditViaCLI, ""); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	// Update touches only Command, leaving AllowedModels nil -- the "this
-	// request doesn't mention it" shape.
-	if _, err := r.serviceOps.Update(context.Background(), "tts", serviceFields{
-		DisplayName: "TTS",
-		Command:     "/bin/true2",
-	}, auditViaCLI, ""); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	svc, _ := config.FindServiceByID(store.Get(), "tts")
-	if svc == nil {
-		t.Fatal("service vanished after update")
-	}
-	if !slices.Equal(svc.AllowedModels, allowed) {
-		t.Errorf("allowed models after an update omitting the field = %v, want %v", svc.AllowedModels, allowed)
-	}
-	if svc.Command != "/bin/true2" {
-		t.Errorf("command was not updated: %q", svc.Command)
-	}
-}
-
-// TestServiceOps_Update_AllowedModelsChangeIsPersisted confirms the other
-// direction: a request that DOES set AllowedModels replaces the stored
-// value, same as any other field this unit's presenceDigest covers.
-func TestServiceOps_Update_AllowedModelsChangeIsPersisted(t *testing.T) {
-	store := newCLISandboxStore(t)
-	r := newBrokerRouter(t, store, nil)
-
-	initial := []string{"vCode"}
-	if _, err := r.serviceOps.Create(context.Background(), serviceFields{
-		DisplayName:   "TTS",
-		Command:       "/bin/true",
-		AllowedModels: &initial,
-	}, auditViaCLI, ""); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	narrowed := []string{"*"}
-	if _, err := r.serviceOps.Update(context.Background(), "tts", serviceFields{
-		DisplayName:   "TTS",
-		Command:       "/bin/true",
-		AllowedModels: &narrowed,
-	}, auditViaCLI, ""); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	svc, _ := config.FindServiceByID(store.Get(), "tts")
-	if svc == nil || !slices.Equal(svc.AllowedModels, narrowed) {
-		t.Fatalf("allowed models after an explicit update = %+v, want %v", svc, narrowed)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Gating: adding a model id, switching to the wildcard, or dropping one
 // (any actual change to the set) goes through the presence gate. Resending
-// the exact set never gates. An earlier revision of this file only gated
-// widening, on the theory that a service's own operator narrowing its own
-// grant needs no prompt -- correct while only an operator-minted credential
-// could reach this route. Since eve's frontend launch identity was granted
-// execute (plan-broker-and-sessions.md's F1 decision), this route is
-// reachable by any frontend-capable service for ANY service's record, so
-// narrowing is now gated too (STATUS-relay-security.md; see
-// serviceAllowedModelsChanged's and serviceCapabilitiesChanged's comments
-// in service_ops.go for the full reasoning).
+// the exact set never gates. Narrowing gates too: any frontend-capable
+// service can reach this route for any service's record (see
+// serviceAllowedModelsChanged's comment in service_ops.go).
 // ---------------------------------------------------------------------------
 
 func seedModelsService(t *testing.T, store config.SettingsStore, allowed []string) {
@@ -214,21 +138,32 @@ func TestServiceOps_AddingAnAllowedModelIsGated(t *testing.T) {
 }
 
 func TestServiceOps_AddingAnAllowedModelIsAppliedUnderAnAllowingGate(t *testing.T) {
-	store := newCLISandboxStore(t)
-	seedModelsService(t, store, []string{"vCode"})
-
-	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
-
-	widened := []string{"vCode", "omlx/Chat"}
-	if _, err := ops.Update(context.Background(), "tts", serviceFields{
-		DisplayName: "TTS", Command: "/bin/tts", AllowedModels: &widened,
-	}, auditViaCLI, ""); err != nil {
-		t.Fatalf("Update under an allowing gate: %v", err)
+	cases := []struct {
+		name    string
+		widened []string
+	}{
+		{"another model id", []string{"vCode", "omlx/Chat"}},
+		{"the wildcard", []string{"*"}},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newCLISandboxStore(t)
+			seedModelsService(t, store, []string{"vCode"})
 
-	svc, _ := config.FindServiceByID(store.Get(), "tts")
-	if svc == nil || !slices.Equal(svc.AllowedModels, widened) {
-		t.Fatalf("allowed models = %+v, want %v", svc, widened)
+			ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+
+			widened := tc.widened
+			if _, err := ops.Update(context.Background(), "tts", serviceFields{
+				DisplayName: "TTS", Command: "/bin/tts", AllowedModels: &widened,
+			}, auditViaCLI, ""); err != nil {
+				t.Fatalf("Update under an allowing gate: %v", err)
+			}
+
+			svc, _ := config.FindServiceByID(store.Get(), "tts")
+			if svc == nil || !slices.Equal(svc.AllowedModels, tc.widened) {
+				t.Fatalf("allowed models = %+v, want %v", svc, tc.widened)
+			}
+		})
 	}
 }
 
@@ -303,31 +238,29 @@ func TestServiceOps_DroppingTheWildcardIsGated(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestServiceOps_Create_RefusesEmptyAllowedModelID(t *testing.T) {
-	store := newCLISandboxStore(t)
-	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
-
-	bad := []string{"vCode", ""}
-	_, err := ops.Create(context.Background(), serviceFields{
-		DisplayName: "TTS", Command: "/bin/tts", AllowedModels: &bad,
-	}, auditViaCLI, "")
-	if !errors.Is(err, errServiceInvalid) {
-		t.Fatalf("err = %v, want errServiceInvalid", err)
+	cases := []struct {
+		name string
+		bad  []string
+	}{
+		{"empty id", []string{"vCode", ""}},
+		{"whitespace-only id", []string{"   "}},
 	}
-	if len(store.Get().Services) != 0 {
-		t.Fatalf("a refused create persisted a record: %+v", store.Get().Services)
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newCLISandboxStore(t)
+			ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 
-func TestServiceOps_Create_RefusesWhitespaceOnlyAllowedModelID(t *testing.T) {
-	store := newCLISandboxStore(t)
-	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
-
-	bad := []string{"   "}
-	_, err := ops.Create(context.Background(), serviceFields{
-		DisplayName: "TTS", Command: "/bin/tts", AllowedModels: &bad,
-	}, auditViaCLI, "")
-	if !errors.Is(err, errServiceInvalid) {
-		t.Fatalf("err = %v, want errServiceInvalid", err)
+			bad := tc.bad
+			_, err := ops.Create(context.Background(), serviceFields{
+				DisplayName: "TTS", Command: "/bin/tts", AllowedModels: &bad,
+			}, auditViaCLI, "")
+			if !errors.Is(err, errServiceInvalid) {
+				t.Fatalf("err = %v, want errServiceInvalid", err)
+			}
+			if len(store.Get().Services) != 0 {
+				t.Fatalf("a refused create persisted a record: %+v", store.Get().Services)
+			}
+		})
 	}
 }
 

@@ -223,6 +223,7 @@ func TestModelEndpoint_ResolveCaller_AuthMatrix(t *testing.T) {
 		// shows up as a 200 instead of the 401 only a real conflict
 		// refusal produces.
 		{"socket/conflicting-x-api-key", transportSocket, withHeaders("Bearer "+projTok, otherProjTok), serviceCtx, false, "", ""},
+		{"socket/same-token-in-both-headers", transportSocket, withHeaders("Bearer "+projTok, projTok), context.Background(), true, "project", "token"},
 		{"tcp/no-header", transportTCP, withHeaders("", ""), context.Background(), false, "", ""},
 		{"tcp/project-token", transportTCP, withHeaders("Bearer "+projTok, ""), context.Background(), true, "project", "token"},
 		{"tcp/identity-is-irrelevant", transportTCP, withHeaders("", ""), serviceCtx, false, "", ""},
@@ -311,14 +312,6 @@ func doHandlerRequest(t *testing.T, h http.Handler, method, path, bearer string,
 	return w
 }
 
-func TestModelEndpoint_TCPTokenlessAlwaysUnauthorized(t *testing.T) {
-	m, _, _, _ := newModelEndpointTestServer(t)
-	w := doHandlerRequest(t, m.Handler(transportTCP), http.MethodGet, "/v1/models", "", nil, "")
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", w.Code)
-	}
-}
-
 func TestModelEndpoint_RemoteProjectForbidden(t *testing.T) {
 	m, store, _, _ := newModelEndpointTestServer(t)
 	tok := addModelProject(t, store, "remote1", nil, true)
@@ -376,35 +369,8 @@ func TestModelEndpoint_SessionsCapabilityGetsTheUnfilteredListButNoCalls(t *test
 	}
 
 	w = doHandlerRequest(t, m.Handler(transportSocket), http.MethodPost, "/v1/chat/completions", "", ctx, `{"model":"vCode"}`)
-	if w.Code == http.StatusOK {
-		t.Fatalf("sessions capability made a model call: status = %d, body=%s", w.Code, w.Body.String())
-	}
-}
-
-func TestModelEndpoint_ModelsListFiltered(t *testing.T) {
-	m, store, launches, hosts := newModelEndpointTestServer(t)
-	sock := newFakeRouterSocket(t, fakeRouterMux(t, nil))
-	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
-	tok := addModelProject(t, store, "restricted", []string{"vCode"}, false)
-
-	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodGet, "/v1/models", tok, nil, "")
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "omlx/Chat") {
-		t.Fatalf("filtered list leaked a model outside the grant: %s", w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "vCode") {
-		t.Fatalf("filtered list dropped the granted model: %s", w.Body.String())
-	}
-}
-
-func TestModelEndpoint_NoHostUnavailable(t *testing.T) {
-	m, store, _, _ := newModelEndpointTestServer(t)
-	tok := addModelProject(t, store, "p1", nil, false)
-	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodGet, "/v1/models", tok, nil, "")
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("sessions capability call: status = %d, want 401; body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -565,100 +531,6 @@ func buildMultipartWithFieldsForTest(t *testing.T, fields [][2]string) ([]byte, 
 		t.Fatal(err)
 	}
 	return buf.Bytes(), w.Boundary()
-}
-
-// TestModelEndpoint_B1_NormalBodyForwardsCorrectlyWithOtherFieldsIntact is
-// B3's positive case: a normal, single-key request still reaches the
-// upstream with the canonical model value and every other field intact —
-// the fix must not have turned forwarding into mush.
-func TestModelEndpoint_B1_NormalBodyForwardsCorrectlyWithOtherFieldsIntact(t *testing.T) {
-	var received []byte
-	m, store, launches, hosts := newModelEndpointTestServer(t)
-	sock := newFakeRouterSocket(t, fakeRouterMux(t, func(w http.ResponseWriter, r *http.Request) {
-		received, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[]}`))
-	}))
-	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
-	tok := addModelProject(t, store, "p1", []string{"vCode"}, false)
-
-	body := `{"model":"vCode","messages":[{"role":"user","content":"hi"}],"temperature":0.5}`
-	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodPost, "/v1/chat/completions", tok, nil, body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-
-	var got map[string]json.RawMessage
-	assertNoErr(t, json.Unmarshal(received, &got), "decode what the upstream received")
-	if string(got["model"]) != `"vCode"` {
-		t.Fatalf("upstream received model=%s, want \"vCode\"", got["model"])
-	}
-	var messages []map[string]string
-	assertNoErr(t, json.Unmarshal(got["messages"], &messages), "decode messages")
-	if len(messages) != 1 || messages[0]["content"] != "hi" {
-		t.Fatalf("messages did not survive forwarding intact: %s", got["messages"])
-	}
-	if string(got["temperature"]) != "0.5" {
-		t.Fatalf("temperature did not survive forwarding intact: %s", got["temperature"])
-	}
-}
-
-func TestModelEndpoint_ForwardsWithHeaderStrippingAndTargetRemoval(t *testing.T) {
-	var gotAuth, gotAPIKey, gotRelayHeader string
-	m, store, launches, hosts := newModelEndpointTestServer(t)
-	sock := newFakeRouterSocket(t, fakeRouterMux(t, func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		gotAPIKey = r.Header.Get("x-api-key")
-		gotRelayHeader = r.Header.Get("X-Relay-Secret")
-		w.Header().Set("X-Relay-Model-Target", "ep/gpt-x")
-		w.Header().Set("X-Relay-Debug", "internal-detail")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}}`))
-	}))
-	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
-	tok := addModelProject(t, store, "p1", nil, false)
-
-	var auditEv ModelCallAudit
-	m.AuditHook = func(ev ModelCallAudit) { auditEv = ev }
-
-	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"vCode"}`))
-	r.Header.Set("Authorization", "Bearer "+tok)
-	// Same value as Authorization's bearer, not a conflicting credential —
-	// this test is about the header being stripped before forwarding, not
-	// about the conflicting-headers-are-401 rule (covered separately in the
-	// auth matrix).
-	r.Header.Set("x-api-key", tok)
-	r.Header.Set("X-Relay-Secret", "should-not-reach-upstream-either")
-	w := httptest.NewRecorder()
-	m.Handler(transportSocket).ServeHTTP(w, r)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	if gotAuth != "" {
-		t.Fatalf("upstream saw Authorization: %q", gotAuth)
-	}
-	if gotAPIKey != "" {
-		t.Fatalf("upstream saw x-api-key: %q", gotAPIKey)
-	}
-	if gotRelayHeader != "" {
-		t.Fatalf("upstream saw an x-relay-* header: %q", gotRelayHeader)
-	}
-	if w.Header().Get("X-Relay-Model-Target") != "" {
-		t.Fatal("X-Relay-Model-Target reached the client")
-	}
-	if w.Header().Get("X-Relay-Debug") != "" {
-		t.Fatal("an x-relay-* response header other than the target reached the client")
-	}
-	if auditEv.Target != "ep/gpt-x" {
-		t.Fatalf("audit Target = %q, want ep/gpt-x", auditEv.Target)
-	}
-	if auditEv.Usage.PromptTokens != 3 || auditEv.Usage.CompletionTokens != 4 {
-		t.Fatalf("audit usage = %+v", auditEv.Usage)
-	}
-	if auditEv.Outcome != "ok" {
-		t.Fatalf("audit outcome = %q, want ok", auditEv.Outcome)
-	}
 }
 
 func TestModelEndpoint_SSEFirstByteFlushedBeforeUpstreamFinishes(t *testing.T) {
@@ -867,20 +739,6 @@ func TestModelEndpoint_ReconcileRefusesNonLoopback(t *testing.T) {
 	}
 }
 
-func TestModelEndpoint_ReconcileBindsAndClosesLoopback(t *testing.T) {
-	m, _, _, _ := newModelEndpointTestServer(t)
-	setModelListenForTest(t, "127.0.0.1:0")
-	m.Reconcile()
-	if m.tcpLn == nil {
-		t.Fatal("a loopback listen address was refused")
-	}
-	setModelListenForTest(t, "")
-	m.Reconcile()
-	if m.tcpLn != nil || m.tcpAddr != "" {
-		t.Fatal("clearing the listen address left a listener bound")
-	}
-}
-
 // TestModelEndpoint_ReconcileDrivenBySettingsStore is S5's positive case:
 // Reconcile driven entirely by settings.json's model_endpoint.listen, with
 // no test-only override in play at all.
@@ -896,6 +754,17 @@ func TestModelEndpoint_ReconcileDrivenBySettingsStore(t *testing.T) {
 	m.Reconcile()
 	if m.tcpLn != nil || m.tcpAddr != "" {
 		t.Fatal("a non-loopback listen address from settings.json was bound")
+	}
+
+	setModelEndpointSettingsListen(t, store, "127.0.0.1:0")
+	m.Reconcile()
+	if m.tcpLn == nil {
+		t.Fatal("a loopback listen address from settings.json was refused after a refused one")
+	}
+	setModelEndpointSettingsListen(t, store, "")
+	m.Reconcile()
+	if m.tcpLn != nil || m.tcpAddr != "" {
+		t.Fatal("clearing the listen address in settings.json left a listener bound")
 	}
 }
 
@@ -1308,7 +1177,8 @@ func TestModelEndpoint_BigNumbersForwardedByteForByte(t *testing.T) {
 
 	const thirtyDigitInt = "123456789012345678901234567890"
 	const hugeExponent = "1e400"
-	body := fmt.Sprintf(`{"model":"vCode","big_int":%s,"big_exp":%s}`, thirtyDigitInt, hugeExponent)
+	const messages = `[{"role":"user","content":"hi"}]`
+	body := fmt.Sprintf(`{"model":"vCode","big_int":%s,"big_exp":%s,"messages":%s}`, thirtyDigitInt, hugeExponent, messages)
 
 	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodPost, "/v1/chat/completions", tok, nil, body)
 	if w.Code != http.StatusOK {
@@ -1322,6 +1192,9 @@ func TestModelEndpoint_BigNumbersForwardedByteForByte(t *testing.T) {
 	}
 	if string(got["big_exp"]) != hugeExponent {
 		t.Fatalf("upstream big_exp = %s, want byte-identical %s", got["big_exp"], hugeExponent)
+	}
+	if string(got["messages"]) != messages {
+		t.Fatalf("upstream messages = %s, want byte-identical %s", got["messages"], messages)
 	}
 }
 

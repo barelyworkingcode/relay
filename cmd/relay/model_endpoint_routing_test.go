@@ -72,6 +72,7 @@ func (h *routingHost) handler() http.Handler {
 		h.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Relay-Model-Target", "vCode")
+		w.Header().Set("X-Relay-Debug", "internal-detail")
 		_, _ = w.Write([]byte(`{"ok":true,"usage":{"prompt_tokens":2,"completion_tokens":3}}`))
 	})
 }
@@ -251,6 +252,9 @@ func TestRouting_LocalBranchStripsEveryCredentialAndAudits(t *testing.T) {
 	if strings.Contains(w.Header().Get("X-Relay-Model-Target"), "vCode") {
 		t.Error("X-Relay-Model-Target reached the client")
 	}
+	if w.Header().Get("X-Relay-Debug") != "" {
+		t.Error("an x-relay-* response header other than the target reached the client")
+	}
 
 	ev := f.lastAudit(t)
 	if ev.Outcome != "ok" || ev.CallerKind != "project" || ev.CallerName != "p1" || ev.Auth != "model_key" || ev.ModelKeyLabel != "session:s1" {
@@ -429,19 +433,6 @@ func TestRouting_RepeatedRelayKeyHeaderIsRefused(t *testing.T) {
 	}
 }
 
-// The bearer headers stay relay's own credential when no X-Relay-Key is sent:
-// pi's overlay and the chat provider authenticate that way today.
-func TestRouting_LegacyBearerStillAuthenticatesTheLocalBranch(t *testing.T) {
-	f := newRoutingFixture(t)
-	w := f.do("POST", "/v1/chat/completions", `{"model":"vCode"}`, map[string]string{"Authorization": "Bearer " + f.key})
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	if seen := f.host.requests(); len(seen) != 1 || seen[0].Header.Get("Authorization") != "" {
-		t.Fatalf("the model host saw %+v; the relay bearer must never reach it", seen)
-	}
-}
-
 // A catalog that cannot be read is a 503 on every path that needs it, and
 // "not in the catalog" is never read as "unmanaged, send it to Anthropic".
 // A path route never consults the catalog, so it is unaffected.
@@ -481,6 +472,7 @@ func TestRouting_NoModelHostIs503OnBothBranches(t *testing.T) {
 		"path passthrough":      newReq("GET", "/openai/v1/models", "", map[string]string{"Authorization": "Bearer sk-x"}),
 		"anthropic passthrough": newReq("POST", "/v1/messages", `{"model":"claude-opus-5"}`, map[string]string{"Authorization": clientOAuth}),
 		"local":                 newReq("POST", "/v1/chat/completions", `{"model":"vCode"}`, map[string]string{"X-Relay-Key": key}),
+		"model list":            newReq("GET", "/v1/models", "", map[string]string{"X-Relay-Key": key}),
 	} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)

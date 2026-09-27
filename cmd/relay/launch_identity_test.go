@@ -314,8 +314,12 @@ func TestBridge_ABridgeServiceIdentityAuthenticatesLaterTokenlessConnections(t *
 	if resp, line := b.send(t, reqs[bridge.ReqRegisterManifest]); resp.Type != bridge.RespOK {
 		t.Fatalf("RegisterManifest by identity on a new connection: %s", line)
 	}
-	if b.enhanced.Get("llm-like") == nil {
+	rec := b.enhanced.Get("llm-like")
+	if rec == nil {
 		t.Fatal("the manifest never reached the registry")
+	}
+	if rec.InternalSocket != "/tmp/launch-identity-test-internal.sock" {
+		t.Fatalf("registered internal socket = %q, want the one the manifest declared", rec.InternalSocket)
 	}
 
 	withToken := reqs[bridge.ReqRegisterManifest]

@@ -408,15 +408,6 @@ func (f *FakeService) LastRequest() *fakeServiceRequest {
 	return f.requests[len(f.requests)-1]
 }
 
-func (f *FakeService) Register(client *bridge.Client) error {
-	return client.RegisterManifest(bridge.RegisterManifestRequest{
-		ServiceID:      f.serviceID,
-		Manifest:       f.manifest,
-		InternalSocket: f.socket,
-		InternalToken:  f.token,
-	})
-}
-
 // Drift-mitigation: relayLLM has its own test that asserts its actual
 // generated manifest equals this file.
 func NewFakeRelayLLMService(t *testing.T) *FakeService {
