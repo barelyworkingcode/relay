@@ -410,6 +410,35 @@ blocked waiting for — a deadlock, not a slow prompt. Every gated call
 therefore runs its `Evaluate` off the main thread, in a tracked goroutine that
 blocks on a channel until the callback fires or the context is cancelled.
 
+## A prompt is bound to its requester
+
+An answer only counts while the process that asked is still there. On the
+Unix bridge, `FrameConn.Serve` watches the connection while a handler runs,
+peeking without consuming, so the takeover seam still has one reader; a peer
+that closes its end cancels that request's context. The darwin provider
+answers the cancellation by invalidating the evaluation's `LAContext`, which
+dismisses the dialog. An owner can still answer in the moment before the
+dismissal lands, so `Gate.Request` checks the context again after a
+successful evaluation and refuses, storing no nonce. A pipelined frame ends
+the watch for the request in flight, because its bytes hide any later EOF
+from a peek. The remote listener's `tls.Conn` exposes no socket to peek, so
+the watch does not apply there.
+
+## Every refusal is recorded
+
+Whatever `Gate.Require` returns short of a grant — the owner cancels, the
+caller leaves mid-prompt, the caller's session cannot show a dialog at all —
+is written to the audit log as a `control_decision` row, `outcome: "denied"`.
+The actor named on that row is resolved on entry to the gate, before the
+prompt is ever shown, so a caller that disconnects mid-prompt is still named
+correctly rather than falling back to the operator actor. Recording is
+fail-open, the same policy as every other `control_decision` row: the act is
+already refused, so there is nothing left to protect by
+refusing it a second time over a broken audit sink, and the refusal a caller
+sees is identical whether or not the row was written. Row shape, the actor
+rules, and the full list of refusal causes are in
+[`docs/audit-log.md`](audit-log.md#presence-refusals).
+
 ## The hermetic seam, and why it cannot exist in a shipped build
 
 The test suite must never raise a real password prompt — a developer running

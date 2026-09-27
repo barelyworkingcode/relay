@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/project"
@@ -101,13 +102,13 @@ func writeAuditTable(w io.Writer, matched []audit.AuditEvent, authority bool) {
 		ev := matched[i]
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			ev.TS.Local().Format("15:04:05"),
-			ev.Outcome,
-			dash(ev.Actor.ProjectName),
-			dash(ev.McpID),
-			dash(ev.Tool),
+			terminalSafe(ev.Outcome),
+			terminalSafe(dash(ev.Actor.ProjectName)),
+			terminalSafe(dash(ev.McpID)),
+			terminalSafe(dash(ev.Tool)),
 			ev.DurMs,
-			dash(auditCallerLabel(ev.Actor)),
-			auditDetail(ev),
+			terminalSafe(dash(auditCallerLabel(ev.Actor))),
+			terminalSafe(auditDetail(ev)),
 		)
 		if !authority {
 			continue
@@ -116,9 +117,31 @@ func writeAuditTable(w io.Writer, matched []audit.AuditEvent, authority bool) {
 			// Seven leading (empty) cells so this line stays inside the same
 			// tabwriter block as the row above it, landing under DETAIL
 			// instead of resetting column widths for every row that follows.
-			fmt.Fprintf(w, "\t\t\t\t\t\t\tauthority: %s\n", line)
+			fmt.Fprintf(w, "\t\t\t\t\t\t\tauthority: %s\n", terminalSafe(line))
 		}
 	}
+}
+
+// Escaping is per cell, after any whitespace folding, so a raw tab or newline
+// in a caller-supplied string cannot forge a column or a row. The stored
+// record keeps the original bytes; only the table view is escaped.
+func terminalSafe(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			fmt.Fprintf(&b, "\\x%02x", s[i])
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, "\\x%02x", r)
+		case r >= 0x80 && r <= 0x9f:
+			fmt.Fprintf(&b, "\\u%04x", r)
+		default:
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
 }
 
 // The parent is listed first because it's the agent that asked; the process
@@ -192,6 +215,12 @@ func auditBaseDetail(ev audit.AuditEvent) string {
 	if ev.Event == audit.AuditEventModelCall || ev.Event == audit.AuditEventModelList {
 		return auditModelDetail(ev)
 	}
+	// A presence refusal is a control_decision with no route; checked before
+	// the route branch so it does not print an empty path, class and
+	// transport.
+	if ev.Event == audit.AuditEventControlDecision && ev.Via != "" {
+		return auditPresenceRefusalDetail(ev)
+	}
 	// A control_decision row (ADR-015) names no MCP or tool, so the
 	// method/path/class/transport it carries instead is the detail — every
 	// other kind of event leaves Method and Path empty.
@@ -212,6 +241,18 @@ func auditBaseDetail(ev audit.AuditEvent) string {
 		return fmt.Sprintf("%d tools visible", ev.ToolCount)
 	}
 	return ""
+}
+
+func auditPresenceRefusalDetail(ev audit.AuditEvent) string {
+	parts := []string{ev.Method}
+	if ev.Subject != "" {
+		parts = append(parts, collapseWhitespace(ev.Subject))
+	}
+	parts = append(parts, "via="+ev.Via, collapseWhitespace(ev.Error))
+	if ev.IssuanceTruncated {
+		parts = append(parts, "(truncated)")
+	}
+	return strings.Join(parts, "  ")
 }
 
 // auditIssuanceDetail renders a credential_issued / credential_revoked row.

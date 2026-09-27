@@ -133,7 +133,8 @@ func (o *EveEnrolmentOps) Open(ctx context.Context, via string) (eveEnrolmentSta
 	// constant here would silently drop out of that guard's coverage.
 	grant, err := requireGate(o.Gate, ctx, "eve.enrolment.open",
 		presence.NewDigestBuilder("eve.enrolment.open").Build(),
-		"open a five-minute window for one new browser to register an Eve passkey")
+		"open a five-minute window for one new browser to register an Eve passkey",
+		presenceAttempt{auditor: o.auditor(), via: via})
 	if err != nil {
 		return eveEnrolmentStatusView{}, err
 	}

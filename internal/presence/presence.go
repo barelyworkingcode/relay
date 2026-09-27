@@ -172,6 +172,13 @@ func (g *Gate) Request(ctx context.Context, op string, d Digest, reason string) 
 	if err := g.provider.Evaluate(ctx, reason); err != nil {
 		return Grant{}, err
 	}
+	// This is subtle: the owner can answer the prompt in the window after
+	// the requester has gone, and a provider may report that approval
+	// rather than the cancellation. An approval for a caller that is no
+	// longer there grants nothing.
+	if err := ctx.Err(); err != nil {
+		return Grant{}, err
+	}
 	id, err := newNonceID()
 	if err != nil {
 		return Grant{}, fmt.Errorf("presence: minting grant id: %w", err)

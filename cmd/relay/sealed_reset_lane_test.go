@@ -68,7 +68,7 @@ func TestResetSealedStore_PromptDoesNotHoldTheLane(t *testing.T) {
 		}
 	}))
 	resetDone := make(chan error, 1)
-	go func() { resetDone <- resetSealedStore(context.Background(), dir, store, keyring, gate, queue) }()
+	go func() { resetDone <- resetSealedStore(context.Background(), dir, store, keyring, gate, queue, nil) }()
 	<-entered
 
 	other := &TemplateOps{Store: store, Queue: queue}
@@ -96,7 +96,7 @@ func TestResetSealedStore_QueuedWriteNeverInterleavesWithTheStep(t *testing.T) {
 	gate := srGate(t, presencetest.Allow())
 
 	resetDone := make(chan error, 1)
-	go func() { resetDone <- resetSealedStore(context.Background(), dir, store, keyring, gate, queue) }()
+	go func() { resetDone <- resetSealedStore(context.Background(), dir, store, keyring, gate, queue, nil) }()
 	<-inStep // settings.json and the CA are already deleted; the key still is not
 
 	other := &TemplateOps{Store: store, Queue: queue}
@@ -134,7 +134,7 @@ func TestResetSealedStore_KeysChangedDuringApprovalCommitsNothing(t *testing.T) 
 		return nil
 	}))
 
-	err := resetSealedStore(context.Background(), dir, store, keyring, gate, queue)
+	err := resetSealedStore(context.Background(), dir, store, keyring, gate, queue, nil)
 	if !errors.Is(err, errSealedKeysChangedDuringApproval) {
 		t.Fatalf("err = %v, want errSealedKeysChangedDuringApproval", err)
 	}
@@ -154,7 +154,7 @@ func TestResetSealedStore_KeysChangedDuringApprovalCommitsNothing(t *testing.T) 
 func TestResetSealedStore_UnchangedKeysResetsThroughTheQueue(t *testing.T) {
 	dir, store, keyring := srSetup(t, "aaaaaaaaaaaaaaaa")
 	queue := srQueue(t)
-	assertNoErr(t, resetSealedStore(context.Background(), dir, store, keyring, srGate(t, presencetest.Allow()), queue), "resetSealedStore")
+	assertNoErr(t, resetSealedStore(context.Background(), dir, store, keyring, srGate(t, presencetest.Allow()), queue, nil), "resetSealedStore")
 	if got := store.Get(); len(got.Projects) != 0 || got.SealedKeyID == "" || got.SealedKeyID == "aaaaaaaaaaaaaaaa" {
 		t.Fatalf("store after reset: projects=%d key id=%q", len(got.Projects), got.SealedKeyID)
 	}

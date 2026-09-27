@@ -9,7 +9,7 @@ package main
 // authentication dialog can show. A human reading carefully is not a
 // control; this is the control.
 //
-// The design: read every requireGate(gate, ctx, op, digest, reason) call
+// The design: read every requireGate(gate, ctx, op, digest, reason, attempt) call
 // site in package main via go/ast, resolve `reason` back to the literal
 // fmt.Sprintf format string(s) that can produce it -- following a named
 // "...Reason" helper and, one level deep, a helper it itself calls (the
@@ -303,8 +303,8 @@ func docReasonExtractSites(t *testing.T, files map[string]*ast.File, fset *token
 				if !ok || id.Name != "requireGate" {
 					return true
 				}
-				if len(call.Args) != 5 {
-					t.Fatalf("doc_reason_strings_test.go: requireGate call at %s has %d args, want 5 -- its signature changed; update this guard", fset.Position(call.Pos()), len(call.Args))
+				if len(call.Args) != 6 {
+					t.Fatalf("doc_reason_strings_test.go: requireGate call at %s has %d args, want 6 -- its signature changed; update this guard", fset.Position(call.Pos()), len(call.Args))
 				}
 				pos := fset.Position(call.Pos()).String()
 				op, ok := docReasonConstString(call.Args[2])

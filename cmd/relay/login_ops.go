@@ -267,7 +267,8 @@ func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (loginCodeView
 		return loginCodeView{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "login.bootstrap.mint",
-		presence.NewDigestBuilder("login.bootstrap.mint").Build(), "mint a login bootstrap code")
+		presence.NewDigestBuilder("login.bootstrap.mint").Build(), "mint a login bootstrap code",
+		presenceAttempt{auditor: o.auditor(), via: via})
 	if err != nil {
 		return loginCodeView{}, err
 	}
@@ -359,7 +360,8 @@ func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (config.Passkey
 		return config.Passkey{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "login.passkey.revoke",
-		singleStringDigest("login.passkey.revoke", "id", id), fmt.Sprintf("revoke the passkey %q", id))
+		singleStringDigest("login.passkey.revoke", "id", id), fmt.Sprintf("revoke the passkey %q", id),
+		presenceAttempt{auditor: o.auditor(), via: auditViaIPC, subject: id})
 	if err != nil {
 		return config.Passkey{}, err
 	}

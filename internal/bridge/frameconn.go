@@ -101,16 +101,23 @@ func (c *FrameConn) WriteFrame(resp BridgeResponse) error {
 	return werr
 }
 
+// Serve cancels only a request's ctx when its peer leaves (see peerWatch),
+// never the connection ctx it was given.
 func (c *FrameConn) Serve(ctx context.Context, handle func(ctx context.Context, line string) BridgeResponse) {
 	for c.scanner.Scan() {
 		c.touch()
 		line := c.scanner.Text()
-		reqCtx := WithProgress(ctx, func(u ProgressUpdate) {
+		reqCtx, cancelReq := context.WithCancel(ctx)
+		reqCtx = WithProgress(reqCtx, func(u ProgressUpdate) {
 			_ = c.WriteFrame(BridgeResponse{Type: RespProgress, Progress: &u})
 		})
 		slot := &takeoverSlot{}
 		reqCtx = context.WithValue(reqCtx, takeoverCtxKey{}, slot)
-		err := c.WriteFrame(handle(reqCtx, line))
+		watch := c.startPeerWatch(cancelReq)
+		resp := handle(reqCtx, line)
+		watch.stop()
+		cancelReq()
+		err := c.WriteFrame(resp)
 		if run := slot.fn; run != nil {
 			if err != nil {
 				// The handler already committed to a stream. Closing makes
