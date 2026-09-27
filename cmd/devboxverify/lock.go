@@ -49,7 +49,19 @@ type lockHolder struct {
 	Since   string `json:"since"`
 }
 
+// lockClock is the retry loop's time source, injected so a test can step it.
+type lockClock struct {
+	now   func() time.Time
+	after func(time.Duration) <-chan time.Time
+}
+
+var realLockClock = lockClock{now: time.Now, after: time.After}
+
 func takeBrowserLock(ctx context.Context, command string) (release func(), err error) {
+	return takeBrowserLockWith(ctx, command, realLockClock)
+}
+
+func takeBrowserLockWith(ctx context.Context, command string, clock lockClock) (release func(), err error) {
 	path := browserLockPath()
 	timeout, err := browserLockTimeout()
 	if err != nil {
@@ -64,7 +76,7 @@ func takeBrowserLock(ctx context.Context, command string) (release func(), err e
 	if err != nil {
 		return nil, fmt.Errorf("cannot take %s: %w", path, err)
 	}
-	deadline := time.Now().Add(timeout)
+	deadline := clock.now().Add(timeout)
 	for {
 		err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
@@ -74,7 +86,7 @@ func takeBrowserLock(ctx context.Context, command string) (release func(), err e
 			_ = f.Close()
 			return nil, fmt.Errorf("cannot take %s: %w", path, err)
 		}
-		if time.Now().After(deadline) {
+		if clock.now().After(deadline) {
 			_ = f.Close()
 			return nil, fmt.Errorf("gave up after %s; %s is held by %s", timeout, path, describeHolder(path))
 		}
@@ -82,10 +94,10 @@ func takeBrowserLock(ctx context.Context, command string) (release func(), err e
 		case <-ctx.Done():
 			_ = f.Close()
 			return nil, ctx.Err()
-		case <-time.After(browserLockRetry):
+		case <-clock.after(browserLockRetry):
 		}
 	}
-	rec, _ := json.Marshal(lockHolder{PID: os.Getpid(), Command: command, Since: time.Now().UTC().Format(time.RFC3339)})
+	rec, _ := json.Marshal(lockHolder{PID: os.Getpid(), Command: command, Since: clock.now().UTC().Format(time.RFC3339)})
 	err = f.Truncate(0)
 	if err == nil {
 		_, err = f.Write(append(rec, '\n'))

@@ -90,7 +90,7 @@ func TestClassifyRenewal(t *testing.T) {
 		{"P4 file not rewritten", func(r *renewalRun) { r.WriteErr = errors.New("read-only") }, notPass},
 		{"not listed", func(r *renewalRun) { r.Listed = false }, notPass},
 		{"issuance row without presence", func(r *renewalRun) { r.Row.PresenceID = "" }, notPass},
-	}, consoleDetail)
+	}, map[string]string{"no console session": "console", "P4 file not rewritten": "c2"})
 }
 
 func TestRenewalDue(t *testing.T) {
@@ -156,16 +156,16 @@ func TestClassifyMcpAndServicePos(t *testing.T) {
 
 func TestClassifyGrantPos(t *testing.T) {
 	base := func() grantPosRun {
-		return grantPosRun{Resp: gateResponse{Status: http.StatusCreated}, Dialog: answered, CreatedID: "g1", Grant: &grantRecord{ID: "g1"}, Row: presenceRow()}
+		return grantPosRun{Resp: frontendResponse{Status: http.StatusCreated}, Dialog: answered, CreatedID: "g1", Grant: &grantRecord{ID: "g1"}, Row: presenceRow()}
 	}
-	noSession := gateResponse{Status: http.StatusForbidden, Error: presence.ErrNoSession.Error()}
+	noSession := frontendResponse{Status: http.StatusForbidden, Error: presence.ErrNoSession.Error()}
 	checkMuts(t, base, classifyGrantPos, []mutCase[grantPosRun]{
 		{"created, granted, audited", func(*grantPosRun) {}, statePass},
 		{"helper did not answer", func(r *grantPosRun) {
-			r.Dialog, r.Resp = helperRefused, gateResponse{Status: http.StatusForbidden, Error: "presence was refused"}
+			r.Dialog, r.Resp = helperRefused, frontendResponse{Status: http.StatusForbidden, Error: "presence was refused"}
 		}, stateBlocked},
 		{"no console session", func(r *grantPosRun) { r.Dialog, r.Resp = noPrompt, noSession }, stateBlocked},
-		{"create refused", func(r *grantPosRun) { r.Resp = gateResponse{Status: http.StatusBadRequest, Error: "bad path"} }, notPass},
+		{"create refused", func(r *grantPosRun) { r.Resp = frontendResponse{Status: http.StatusBadRequest, Error: "bad path"} }, notPass},
 		{"no project id", func(r *grantPosRun) { r.CreatedID = "" }, notPass},
 		{"not in relay grant", func(r *grantPosRun) { r.Grant = nil }, notPass},
 		{"not audited", func(r *grantPosRun) { r.Row = nil }, notPass},
@@ -176,13 +176,15 @@ func TestClassifyGrantPos(t *testing.T) {
 func TestClassifyRotatePos(t *testing.T) {
 	const name = "Verify Grant 0a1b2c3d"
 	base := func() rotatePosRun {
-		return rotatePosRun{Resp: gateResponse{Status: http.StatusOK}, Dialog: answered, TokenOK: true, Described: name, Row: presenceRow()}
+		return rotatePosRun{Resp: frontendResponse{Status: http.StatusOK}, Dialog: answered, TokenOK: true, Described: name, Row: presenceRow()}
 	}
 	checkMuts(t, base, func(r rotatePosRun) result { return classifyRotatePos(r, name) }, []mutCase[rotatePosRun]{
 		{"rotated, token names the project, audited", func(*rotatePosRun) {}, statePass},
-		{"helper did not answer", func(r *rotatePosRun) { r.Dialog, r.Resp = helperRefused, gateResponse{Status: http.StatusForbidden} }, stateBlocked},
+		{"helper did not answer", func(r *rotatePosRun) {
+			r.Dialog, r.Resp = helperRefused, frontendResponse{Status: http.StatusForbidden}
+		}, stateBlocked},
 		{"no console session", func(r *rotatePosRun) {
-			r.Dialog, r.Resp = noPrompt, gateResponse{Status: http.StatusForbidden, Error: presence.ErrNoSession.Error()}
+			r.Dialog, r.Resp = noPrompt, frontendResponse{Status: http.StatusForbidden, Error: presence.ErrNoSession.Error()}
 		}, stateBlocked},
 		{"rotate failed", func(r *rotatePosRun) { r.Resp.Status = http.StatusInternalServerError }, notPass},
 		{"no token", func(r *rotatePosRun) { r.TokenOK = false }, notPass},
@@ -225,7 +227,47 @@ func TestClassifyRevokePos(t *testing.T) {
 		{"not audited", func(r *revokePosRun) { r.Row = nil }, notPass},
 		{"row without presence", func(r *revokePosRun) { r.Row.PresenceID = "" }, notPass},
 		{"token still works", func(r *revokePosRun) { r.TokenStatus = http.StatusOK }, notPass},
+		{"failed mint's credential revoked", func(r *revokePosRun) { r.NoToken, r.TokenStatus = true, 0 }, statePass},
+		{"failed mint's credential still listed", func(r *revokePosRun) { r.NoToken, r.TokenStatus, r.Listed = true, 0, true }, notPass},
 	}, consoleDetail)
+}
+
+func TestFailedMintLeavesItsCredentialToRevoke(t *testing.T) {
+	st := &runState{}
+	recordMint(st, "c-minted")
+	if got, ok := revokeTarget(st); !ok || got != "c-minted" {
+		t.Errorf("after a failed mint, revoke targets %q (%v), want c-minted", got, ok)
+	}
+	failed := mintRun{CLI: cliResult{Stdout: "id: c-minted\n"}, Dialog: answered, ID: "c-minted", TokenOK: true, ListErr: errors.New("bridge down")}
+	checkDetail(t, classifyMintPos(failed), "c-minted")
+
+	st.RunCredID = "c-run"
+	if got, _ := revokeTarget(st); got != "c-run" {
+		t.Errorf("revoke targets %q, want the run credential c-run", got)
+	}
+	if got, ok := revokeTarget(&runState{}); ok {
+		t.Errorf("nothing minted, yet revoke targets %q", got)
+	}
+}
+
+func TestMintJourneyRecordsAnIDItDoesNotPass(t *testing.T) {
+	e := blockedEnv(t)
+	t.Setenv("DEVBOXPRESENCE_BIN", fakeBin(t, e.ConfigDir, "presence-refuses",
+		"echo 'devboxpresence: ready' >&2\nprintf 'DIALOG\\trefused\\tnot trusted\\n'\nexit 3\n"))
+	e.RelayBin = fakeBin(t, e.ConfigDir, "relay-mints", "echo 'id: c-fail'\nexit 0\n")
+	e.Run = &runState{}
+	if got := runJourney(t, mintPosID, e); got.State == statePass {
+		t.Fatalf("mint passed with a refusing helper: %q", got.Detail)
+	}
+	if e.Run.MintedCredID != "c-fail" || e.Run.RunCredID != "" || e.Run.RunToken != "" {
+		t.Errorf("run state after a failed mint = %+v; want only MintedCredID c-fail", *e.Run)
+	}
+
+	e = blockedEnv(t)
+	e.Run = &runState{MintedCredID: "c-fail"}
+	if got := runJourney(t, revokePosID, e); strings.Contains(got.Detail, "no credential to revoke") {
+		t.Errorf("revoke with only a minted id = %s %q; want it to try c-fail", got.State, got.Detail)
+	}
 }
 
 func TestClassifyFixturesRemoved(t *testing.T) {

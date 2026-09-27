@@ -90,16 +90,30 @@ func TestBrowserLockWaitsForTheHolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unlocked := make(chan struct{})
-	go func() {
-		defer close(unlocked)
-		time.Sleep(300 * time.Millisecond)
-		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
-	}()
-	release, err := takeBrowserLock(context.Background(), "devboxverify")
-	<-unlocked
-	if err != nil {
-		t.Fatalf("did not take the lock once the holder unlocked: %v", err)
+	retries := make(chan chan time.Time)
+	now := time.Now()
+	clock := lockClock{now: func() time.Time { return now }, after: func(time.Duration) <-chan time.Time {
+		ch := make(chan time.Time, 1)
+		retries <- ch
+		return ch
+	}}
+	type taken struct {
+		release func()
+		err     error
 	}
-	release()
+	done := make(chan taken, 1)
+	go func() {
+		release, err := takeBrowserLockWith(context.Background(), "devboxverify", clock)
+		done <- taken{release, err}
+	}()
+	retry := <-retries
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	retry <- now
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("did not take the lock once the holder unlocked: %v", got.err)
+	}
+	got.release()
 }

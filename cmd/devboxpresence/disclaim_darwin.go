@@ -36,8 +36,6 @@ import (
 	"unsafe"
 )
 
-const disclaimedEnv = "DEVBOXPRESENCE_DISCLAIMED"
-
 // runDisclaimed re-runs this binary as a child that is its own responsible
 // process and relays its exit. Accessibility trust follows the responsible
 // process, which under a launchd job is the job's leader, not this binary.
@@ -52,7 +50,7 @@ func runDisclaimed() (code int, ok bool) {
 	}
 	argv := cStrings(os.Args)
 	defer freeCStrings(argv)
-	envp := cStrings(append(os.Environ(), disclaimedEnv+"=1"))
+	envp := cStrings(disclaimedEnviron(os.Environ()))
 	defer freeCStrings(envp)
 	cPath := C.CString(exe)
 	defer C.free(unsafe.Pointer(cPath))

@@ -29,6 +29,7 @@ const (
 	liveEditTimeout = 10 * time.Second
 	messageTimeout  = 60 * time.Second
 	disabledRefusal = "is disabled for this token"
+	narrowRefusal   = "no tool named '" + probeTool + "' is available to this grant"
 )
 
 var screenJourneys = []journey{
@@ -122,13 +123,13 @@ func modelCallRows(ctx context.Context, e env, since time.Time, project string) 
 }
 
 type chatRun struct {
-	Models           gateResponse
+	Models           frontendResponse
 	Want, Model      string
-	Create           gateResponse
+	Create           frontendResponse
 	SessionID        string
-	Message          gateResponse
+	Message          frontendResponse
 	Reply            string
-	Delete, List     gateResponse
+	Delete, List     frontendResponse
 	LaunchRow        *audit.AuditEvent
 	ModelRows        []audit.AuditEvent
 	RowsErr          error
@@ -149,7 +150,7 @@ func runChat(ctx context.Context, e env, id string) (chatRun, result, bool) {
 	}
 	start := time.Now().Add(-time.Second)
 	r := chatRun{Want: verifyModel()}
-	r.Models = gateHTTP(ctx, e, run, http.MethodGet, "/api/models", nil, frontendRequestTimeout)
+	r.Models = frontendDo(ctx, e, run, http.MethodGet, "/api/models", nil)
 	if r.Models.Status == http.StatusOK {
 		r.Model = pickModel(r.Models.Body, r.Want)
 	}
@@ -157,7 +158,7 @@ func runChat(ctx context.Context, e env, id string) (chatRun, result, bool) {
 		return r, result{}, true
 	}
 	body := jsonBody(map[string]string{"projectId": acmeID, "name": "verify-" + e.Nonce + "-chat", "model": r.Model})
-	r.Create = gateHTTP(ctx, e, launch, http.MethodPost, "/api/sessions", body, 30*time.Second)
+	r.Create = frontendDoTimeout(ctx, e, launch, http.MethodPost, "/api/sessions", body, 30*time.Second)
 	var created struct {
 		SessionID string `json:"sessionId"`
 	}
@@ -165,7 +166,7 @@ func runChat(ctx context.Context, e env, id string) (chatRun, result, bool) {
 	if r.SessionID = created.SessionID; r.Create.Status != http.StatusCreated || r.SessionID == "" {
 		return r, result{}, true
 	}
-	r.Message = gateHTTP(ctx, e, run, http.MethodPost, "/api/sessions/"+r.SessionID+"/message",
+	r.Message = frontendDoTimeout(ctx, e, run, http.MethodPost, "/api/sessions/"+r.SessionID+"/message",
 		jsonBody(map[string]string{"text": "Reply with the single word: ready"}), messageTimeout)
 	var reply struct {
 		Text string `json:"text"`
@@ -173,8 +174,8 @@ func runChat(ctx context.Context, e env, id string) (chatRun, result, bool) {
 	_ = json.Unmarshal(r.Message.Body, &reply)
 	r.Reply = reply.Text
 	cleanup := context.WithoutCancel(ctx)
-	r.Delete = gateHTTP(cleanup, e, run, http.MethodDelete, "/api/sessions/"+r.SessionID, nil, frontendRequestTimeout)
-	r.List = gateHTTP(cleanup, e, run, http.MethodGet, "/api/sessions", nil, frontendRequestTimeout)
+	r.Delete = frontendDo(cleanup, e, run, http.MethodDelete, "/api/sessions/"+r.SessionID, nil)
+	r.List = frontendDo(cleanup, e, run, http.MethodGet, "/api/sessions", nil)
 	r.StillListedAfter = slices.Contains(listedIDs(r.List.Body, "sessions"), r.SessionID)
 	r.LaunchRow = auditRow(ctx, e, r.SessionID)
 	// Relay records a model call after it returns, off the caller's path.
@@ -279,7 +280,7 @@ func classifyModelCompletion(r chatRun) result {
 	return result{modelID, statePass, r.Model + " listed; one turn answered through the model endpoint; model_call recorded ok; session stopped"}
 }
 
-func launchRefusal(id, path string, r gateResponse) result {
+func launchRefusal(id, path string, r frontendResponse) result {
 	switch r.Status {
 	case 0:
 		return blocked(id, "frontend socket unreachable")
@@ -294,10 +295,10 @@ func launchRefusal(id, path string, r gateResponse) result {
 }
 
 type terminalRun struct {
-	Create                    gateResponse
+	Create                    frontendResponse
 	TermID                    string
-	ListBefore, Log           gateResponse
-	Delete, ListAfter         gateResponse
+	ListBefore, Log           frontendResponse
+	Delete, ListAfter         frontendResponse
 	ListedBefore, ListedAfter bool
 	Row                       *audit.AuditEvent
 }
@@ -313,7 +314,7 @@ func runTerminalLifecycle(ctx context.Context, e env) result {
 	}
 	var r terminalRun
 	body := jsonBody(map[string]any{"templateId": "world-probe", "projectId": acmeID, "name": "verify-" + e.Nonce + "-term", "cols": 120, "rows": 40})
-	r.Create = gateHTTP(ctx, e, launch, http.MethodPost, "/api/terminals", body, 30*time.Second)
+	r.Create = frontendDoTimeout(ctx, e, launch, http.MethodPost, "/api/terminals", body, 30*time.Second)
 	var created struct {
 		TerminalID string `json:"terminalId"`
 	}
@@ -321,18 +322,18 @@ func runTerminalLifecycle(ctx context.Context, e env) result {
 	if r.TermID = created.TerminalID; r.Create.Status != http.StatusCreated || r.TermID == "" {
 		return classifyTerminalLifecycle(r)
 	}
-	r.ListBefore = gateHTTP(ctx, e, run, http.MethodGet, "/api/terminals", nil, frontendRequestTimeout)
+	r.ListBefore = frontendDo(ctx, e, run, http.MethodGet, "/api/terminals", nil)
 	r.ListedBefore = slices.Contains(listedIDs(r.ListBefore.Body, "terminals"), r.TermID)
 	for deadline := time.Now().Add(5 * time.Second); ; {
-		r.Log = gateHTTP(ctx, e, run, http.MethodGet, "/api/terminals/"+r.TermID+"/log", nil, frontendRequestTimeout)
+		r.Log = frontendDo(ctx, e, run, http.MethodGet, "/api/terminals/"+r.TermID+"/log", nil)
 		if r.Log.Status == http.StatusOK && len(r.Log.Body) > 0 || time.Now().After(deadline) || ctx.Err() != nil {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	cleanup := context.WithoutCancel(ctx)
-	r.Delete = gateHTTP(cleanup, e, run, http.MethodDelete, "/api/terminals/"+r.TermID, nil, frontendRequestTimeout)
-	r.ListAfter = gateHTTP(cleanup, e, run, http.MethodGet, "/api/terminals", nil, frontendRequestTimeout)
+	r.Delete = frontendDo(cleanup, e, run, http.MethodDelete, "/api/terminals/"+r.TermID, nil)
+	r.ListAfter = frontendDo(cleanup, e, run, http.MethodGet, "/api/terminals", nil)
 	r.ListedAfter = slices.Contains(listedIDs(r.ListAfter.Body, "terminals"), r.TermID)
 	r.Row = auditRow(ctx, e, r.TermID)
 	return classifyTerminalLifecycle(r)
@@ -398,8 +399,8 @@ func openGrantSession(ctx context.Context, e env, id string) (*liveSession, stri
 	return s, token, result{}, true
 }
 
-func putProject(ctx context.Context, e env, token, projectID string, body any) gateResponse {
-	return gateHTTP(ctx, e, token, http.MethodPut, "/api/projects/"+projectID, jsonBody(body), liveEditTimeout)
+func putProject(ctx context.Context, e env, token, projectID string, body any) frontendResponse {
+	return frontendDoTimeout(ctx, e, token, http.MethodPut, "/api/projects/"+projectID, jsonBody(body), liveEditTimeout)
 }
 
 // probeBaseline judges the view before the change: without the tool
@@ -421,7 +422,7 @@ func probeBaseline(id string, before probeView, others ...execOut) (result, bool
 
 // callRefusal judges an ungated call's answer. One held past its bound is
 // waiting on a presence prompt it should never have raised.
-func callRefusal(id, what string, r gateResponse) (result, bool) {
+func callRefusal(id, what string, r frontendResponse) (result, bool) {
 	switch {
 	case r.TimedOut:
 		return result{id, stateFail, what + " held past 10 s; a presence prompt?"}, true
@@ -437,7 +438,7 @@ func callRefusal(id, what string, r gateResponse) (result, bool) {
 
 type disabledRun struct {
 	Before, After    probeView
-	Disable, Restore gateResponse
+	Disable, Restore frontendResponse
 	Restored         execOut
 }
 
@@ -490,7 +491,7 @@ func classifyDisabledTool(r disabledRun) result {
 
 type narrowRun struct {
 	Before, After probeView
-	Narrow        gateResponse
+	Narrow        frontendResponse
 }
 
 func runGrantNarrowing(ctx context.Context, e env) result {
@@ -525,6 +526,8 @@ func classifyGrantNarrowing(r narrowRun) result {
 		return fail(fmt.Sprintf("%d tools still listed after narrowing to no MCPs", len(tools)))
 	case r.After.Call.Exit == 0:
 		return fail(probeTool + " answered after its MCP was removed from the grant")
+	case !strings.Contains(r.After.Call.Out, narrowRefusal):
+		return fail("refused, but not as outside the grant: " + lastLine(r.After.Call.Out))
 	}
 	return result{id, statePass, "narrowed without a prompt; the live session lists no tools and " + probeTool + " is refused: " + lastLine(r.After.Call.Out)}
 }
@@ -564,7 +567,7 @@ func serviceView(ctx context.Context, e env, svcID string) svcView {
 	// The bracket keeps pgrep's pattern from matching a shell that quotes it.
 	out, err := exec.CommandContext(ctx, "pgrep", "-f", "[c]rash-"+strings.TrimPrefix(svcID, crashPrefix)+`\.env`).Output()
 	var exit *exec.ExitError
-	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) {
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
 		v.Err = errors.New("pgrep failed")
 	}
 	for _, f := range strings.Fields(string(out)) {
@@ -594,8 +597,8 @@ func pollService(ctx context.Context, e env, svcID string, within time.Duration,
 func isUp(v svcView) bool   { return v.State == "running" && len(v.PIDs) > 0 }
 func isDown(v svcView) bool { return v.State == "-" && len(v.PIDs) == 0 }
 
-func serviceAction(ctx context.Context, e env, token, svcID, action string) gateResponse {
-	return gateHTTP(ctx, e, token, http.MethodPost, "/api/services/"+svcID+"/"+action, nil, frontendRequestTimeout)
+func serviceAction(ctx context.Context, e env, token, svcID, action string) frontendResponse {
+	return frontendDo(ctx, e, token, http.MethodPost, "/api/services/"+svcID+"/"+action, nil)
 }
 
 func serviceFixture(e env, id string) (token, svcID string, res result, ok bool) {
@@ -609,7 +612,7 @@ func serviceFixture(e env, id string) (token, svcID string, res result, ok bool)
 }
 
 type startStopRun struct {
-	Start, Stop gateResponse
+	Start, Stop frontendResponse
 	Started     svcView
 	Up          bool
 	Stopped     svcView
@@ -657,7 +660,7 @@ func classifyServiceStartStop(r startStopRun) result {
 }
 
 type crashRun struct {
-	Start, Stop gateResponse
+	Start, Stop frontendResponse
 	Up          svcView
 	UpOK        bool
 	Killed      int

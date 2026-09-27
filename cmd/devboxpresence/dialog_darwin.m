@@ -293,7 +293,29 @@ static void post_text(const uint16_t *pw, int n) {
 	}
 }
 
-int dbp_answer(int32_t pid, uint32_t window, const uint16_t *pw, int n, char *detail, int detail_len) {
+// still_the_one re-checks, just before any keystroke, what the helper decided
+// on earlier: the agent shows exactly this one window, and its text still
+// carries expect. Deliberate: the dialog could have been swapped for another
+// request's while the helper brought it forward.
+static int still_the_one(int32_t pid, uint32_t window, AXUIElementRef win, const char *expect, char *detail, int detail_len) {
+	dbp_window wins[2];
+	int n = dbp_list_windows(wins, 2);
+	if (n != 1 || wins[0].window != window || wins[0].pid != pid) {
+		snprintf(detail, detail_len, "just before typing, %d LocalAuthentication windows were open, not only this one", n);
+		return 0;
+	}
+	NSString *want = expect != NULL ? [NSString stringWithUTF8String:expect] : nil;
+	NSMutableString *text = [NSMutableString string];
+	int budget = 400;
+	ax_collect_text(win, text, 0, &budget);
+	if (want == nil || want.length == 0 || [text rangeOfString:want].location == NSNotFound) {
+		snprintf(detail, detail_len, "just before typing, the dialog's text no longer contained --expect");
+		return 0;
+	}
+	return 1;
+}
+
+int dbp_answer(int32_t pid, uint32_t window, const char *expect, const uint16_t *pw, int n, char *detail, int detail_len) {
 	@autoreleasepool {
 		AXUIElementRef app = ax_app(pid);
 		AXUIElementRef win = ax_window_for(app, window);
@@ -313,7 +335,7 @@ int dbp_answer(int32_t pid, uint32_t window, const uint16_t *pw, int n, char *de
 				snprintf(detail, detail_len, "the dialog's agent did not become the focused application");
 			} else if (!field_has_focus(app, field)) {
 				snprintf(detail, detail_len, "the password field did not take focus");
-			} else {
+			} else if (still_the_one(pid, window, win, expect, detail, detail_len)) {
 				post_text(pw, n);
 				usleep(50000);
 				post_keyboard(kKeyReturn, NULL, 0);

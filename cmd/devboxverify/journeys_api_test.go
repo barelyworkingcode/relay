@@ -82,3 +82,23 @@ func TestClassifyToolCallAudited(t *testing.T) {
 		})
 	}
 }
+
+func TestExecOutputDropsEchoes(t *testing.T) {
+	const line, tag = "'/opt/relay' mcp call --tool testmcp_ping --args '{}'", "0a1b2c3d4e5f"
+	markerEcho := `printf '%s%s:%d\n' 'DBVM' '` + tag + `' "$?"`
+	cases := []struct{ name, transcript, want string }{
+		{"line-editing shell", "$ " + line + "\r\noutput one\r\nlast output\r\n$ " + markerEcho + "\r\n", "output one\r\nlast output\r\n"},
+		{"cooked echo", line + "\r\n" + markerEcho + "\r\noutput one\r\nlast output\r\n", "output one\r\nlast output\r\n"},
+		{"wrapped echo", "$ '/opt/relay' mcp call --tool test \rmcp_ping --args '{}'\r\nlast output\r\n$ " + markerEcho + "\r\n", "last output\r\n"},
+		{"no echo", "first output\r\nlast output\r\n", "first output\r\nlast output\r\n"},
+	}
+	for _, c := range cases {
+		got := execOutput(c.transcript, line, tag)
+		if got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+		if lastLine(got) != "last output" {
+			t.Errorf("%s: lastLine %q, want the last output line", c.name, lastLine(got))
+		}
+	}
+}

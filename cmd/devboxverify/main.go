@@ -67,8 +67,11 @@ type env struct {
 // runState carries what one journey sets up for later ones in the same run.
 // An empty field means the journey that sets it did not PASS; a reader goes
 // BLOCKED naming that journey. RunToken is never printed or written to disk.
+// MintedCredID is the exception: it is set as soon as a mint prints an id,
+// PASS or not, so the credential can still be revoked at teardown.
 type runState struct {
 	RunCredID, RunToken                                string
+	MintedCredID                                       string
 	ProbeMCP                                           string
 	GrantProjectID, GrantProjectName, GrantProjectPath string
 	CrashService                                       string

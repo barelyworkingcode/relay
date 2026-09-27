@@ -159,8 +159,8 @@ func notStarted(wait func() dialogResult, err error) dialogResult {
 // prompt. A helper that did not act leaves the command waiting on a prompt,
 // so the command then gets 5 s before it is killed; the per-journey sweep
 // closes the prompt.
-func gatedCLI(ctx context.Context, e env, mode dialogMode, expect string, args ...string) (cliResult, dialogResult) {
-	wait, err := startDialog(ctx, e, mode, expect, dialogTimeout)
+func gatedCLI(ctx context.Context, e env, expect string, args ...string) (cliResult, dialogResult) {
+	wait, err := startDialog(ctx, e, dialogAnswer, expect, dialogTimeout)
 	if err != nil {
 		return cliResult{Exit: -1}, notStarted(wait, err)
 	}
@@ -193,8 +193,8 @@ func gatedCLI(ctx context.Context, e env, mode dialogMode, expect string, args .
 
 // gatedFrontend is frontendDo with devboxpresence watching for the prompt and
 // a bound long enough for a dialog to be answered.
-func gatedFrontend(ctx context.Context, e env, token, method, path string, body []byte, mode dialogMode, expect string) (frontendResponse, dialogResult) {
-	wait, err := startDialog(ctx, e, mode, expect, dialogTimeout)
+func gatedFrontend(ctx context.Context, e env, token, method, path string, body []byte, expect string) (frontendResponse, dialogResult) {
+	wait, err := startDialog(ctx, e, dialogAnswer, expect, dialogTimeout)
 	if err != nil {
 		return frontendResponse{}, notStarted(wait, err)
 	}

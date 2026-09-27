@@ -83,8 +83,12 @@ needs it after a failed mint reads BLOCKED "no run credential".
 
 `cmd/devboxpresence` answers or cancels relay's LocalAuthentication prompt the
 way a person would, through Accessibility and key events, and only a prompt
-that appeared after its own trigger and whose text carries the run nonce.
-Relay has no API, flag or environment variable that skips the gate. Its CLI,
+that appeared after its own trigger and whose text carries that request's
+subject: the run nonce, or the id it acts on. Two prompts carry no nonce.
+`execute-credential-renewal` mints the fixed name `devbox-verify`, so it
+expects relay's whole reason for that mint, closing period included.
+`gate-eve-enrolment-open-pos` expects relay's fixed reason, which names no
+subject. Relay has no API, flag or environment variable that skips the gate. Its CLI,
 exit codes and safety checks are in [its README](../devboxpresence/README.md).
 
 The helper that runs is the installed one, never a fresh build: macOS ties
@@ -200,7 +204,8 @@ mcp `macmcp` and outcome `ok` or `denied`.
 `gate-project-grant-pos`, `gate-service-register-pos`,
 `gate-project-rotate-token-pos`, `gate-eve-enrolment-open-pos`,
 `gate-credential-revoke-pos`. The harness triggers the op as the owner, the
-helper answers the prompt whose text carries the nonce, and the journey
+helper answers the prompt whose text carries the request's subject (the
+nonce, except for the renewal and the eve enrolment above), and the journey
 checks the effect and a new issuance or `config_change` row carrying
 `presence_id`. The mint, MCP, project and service positives set up the run
 credential, the probe MCP (testmcp), the Verify Grant project and the crash
@@ -410,11 +415,11 @@ None of this drifts `verify.sh`.
    console session), run
    `go run ./cmd/devboxverify --checkout <PR worktree> --post <N>`. To run
    journeys the PR adds, run it from the PR worktree instead; `--checkout`
-   may name any worktree. `--post` runs both phases. From SSH, the
-   one-shot LaunchAgent recipe in the
-   [presence helper's README](../devboxpresence/README.md) is the way to try
-   a run in the console session; whether such a run gets graphic access is
-   not yet measured.
+   may name any worktree. `--post` runs both phases. From SSH, run it
+   through the one-shot LaunchAgent recipe in the
+   [presence helper's README](../devboxpresence/README.md). Measured: a full
+   run that way completes both phases in about 25 s, with relay raising its
+   prompts and the installed helper trusted for Accessibility.
 3. Preflight refuses unless the app was built from the PR head with a clean
    tree, is the one running, and started after it was installed; then
    `bootstrap.sh --check` must pass and `verify.sh` must be green. Only then

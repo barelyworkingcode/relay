@@ -142,7 +142,7 @@ var dialogNegSpecs = []negSpec{
 			if err != nil || !slices.Contains(ids, st.Subject) {
 				return "", err
 			}
-			_, uerr := relayCmd(ctx, e, "mcp", "unregister", "--id", st.Subject)
+			uerr := relayCmd(ctx, e, "mcp", "unregister", "--id", st.Subject)
 			return "the MCP was registered after Cancel" + undoNote(uerr), nil
 		},
 	},
@@ -156,7 +156,7 @@ var dialogNegSpecs = []negSpec{
 			if err != nil || !slices.Contains(ids, st.Subject) {
 				return "", err
 			}
-			_, uerr := relayCmd(ctx, e, "service", "unregister", "--id", st.Subject)
+			uerr := relayCmd(ctx, e, "service", "unregister", "--id", st.Subject)
 			return "the service was registered after Cancel" + undoNote(uerr), nil
 		},
 	},

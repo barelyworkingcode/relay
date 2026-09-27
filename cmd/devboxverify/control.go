@@ -20,6 +20,7 @@ const frontendRequestTimeout = 10 * time.Second
 
 type frontendResponse struct {
 	Status   int
+	Body     []byte
 	Error    string
 	TimedOut bool
 }
@@ -76,7 +77,7 @@ func frontendDoTimeout(ctx context.Context, e env, token, method, path string, b
 		return frontendResponse{TimedOut: errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout()}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 	var b struct {
 		Error string `json:"error"`
 	}
@@ -84,7 +85,7 @@ func frontendDoTimeout(ctx context.Context, e env, token, method, path string, b
 	if json.Unmarshal(raw, &b) == nil {
 		msg = b.Error
 	}
-	return frontendResponse{Status: resp.StatusCode, Error: msg}
+	return frontendResponse{Status: resp.StatusCode, Body: raw, Error: msg}
 }
 
 func frontendRefusal(id, act string, r frontendResponse) (res result, refused bool) {

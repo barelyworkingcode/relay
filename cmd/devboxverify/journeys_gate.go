@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -105,12 +103,12 @@ func cliExitFail(id, what string, c cliResult) result {
 }
 
 // relayCmd runs an ungated relay command.
-func relayCmd(ctx context.Context, e env, args ...string) (string, error) {
+func relayCmd(ctx context.Context, e env, args ...string) error {
 	out, err := exec.CommandContext(ctx, e.RelayBin, args...).CombinedOutput()
 	if err != nil {
-		return string(out), fmt.Errorf("relay %s: %s", strings.Join(args[:min(2, len(args))], " "), lastLine(string(out)))
+		return fmt.Errorf("relay %s: %s", strings.Join(args[:min(2, len(args))], " "), lastLine(string(out)))
 	}
-	return string(out), nil
+	return nil
 }
 
 // issuanceRows answers the newest issuance rows of one event whose text
@@ -237,70 +235,6 @@ func sameSet(a, b []string) bool {
 	return len(a) == len(b) && !slices.ContainsFunc(a, func(s string) bool { return !slices.Contains(b, s) })
 }
 
-// gateResponse is a frontend answer with its body, which frontendDo drops.
-type gateResponse struct {
-	Status   int
-	Body     []byte
-	Error    string
-	TimedOut bool
-}
-
-func gateHTTP(ctx context.Context, e env, token, method, path string, body []byte, timeout time.Duration) gateResponse {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	var rd io.Reader
-	if body != nil {
-		rd = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, "http://relay"+path, rd)
-	if err != nil {
-		return gateResponse{}
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", e.FrontendSocket)
-	}}}
-	resp, err := client.Do(req)
-	if err != nil {
-		var ne net.Error
-		return gateResponse{TimedOut: errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout()}
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
-	var b struct {
-		Error string `json:"error"`
-	}
-	_ = json.Unmarshal(raw, &b)
-	return gateResponse{Status: resp.StatusCode, Body: raw, Error: b.Error}
-}
-
-// gatedHTTP is gateHTTP with devboxpresence answering the prompt, shaped
-// like gatedFrontend.
-func gatedHTTP(ctx context.Context, e env, token, method, path string, body []byte, expect string) (gateResponse, dialogResult) {
-	wait, err := startDialog(ctx, e, dialogAnswer, expect, dialogTimeout)
-	if err != nil {
-		return gateResponse{}, notStarted(wait, err)
-	}
-	reqCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	done := make(chan gateResponse, 1)
-	go func() { done <- gateHTTP(reqCtx, e, token, method, path, body, gatedHTTPTimeout) }()
-	d := wait()
-	if d.Code == 0 {
-		return <-done, d
-	}
-	select {
-	case r := <-done:
-		return r, d
-	case <-time.After(5 * time.Second):
-		cancel()
-		return <-done, d
-	}
-}
-
 func tokenStatus(ctx context.Context, e env, token string) int {
 	return frontendDo(ctx, e, token, http.MethodGet, "/api/services", nil).Status
 }
@@ -327,8 +261,9 @@ func runMintPos(ctx context.Context, e env) result {
 		args = append(args, "--class", c)
 	}
 	args = append(args, "--ttl", "1h")
-	cli, d := gatedCLI(ctx, e, dialogAnswer, fmt.Sprintf("named %q", name), args...)
+	cli, d := gatedCLI(ctx, e, fmt.Sprintf("named %q", name), args...)
 	id, token := parseMintOutput(cli.Stdout)
+	recordMint(e.Run, id)
 	r := mintRun{CLI: cli, Dialog: d, ID: id, TokenOK: isToken(token), Now: time.Now()}
 	if cli.Exit == 0 && r.TokenOK {
 		creds, err := listCredentials(ctx, e)
@@ -343,7 +278,23 @@ func runMintPos(ctx context.Context, e env) result {
 	return res
 }
 
+// recordMint keeps a printed credential id before anything else is judged,
+// so a mint that fails a later check still leaves an id to revoke.
+func recordMint(st *runState, credID string) {
+	if st != nil && credID != "" {
+		st.MintedCredID = credID
+	}
+}
+
 func classifyMintPos(r mintRun) result {
+	res := judgeMintPos(r)
+	if res.State != statePass && r.ID != "" {
+		res.Detail += fmt.Sprintf("; credential %s was minted and stays live until %s revokes it", r.ID, revokePosID)
+	}
+	return res
+}
+
+func judgeMintPos(r mintRun) result {
 	const id = mintPosID
 	fail := func(d string) result { return result{id, stateFail, d} }
 	if res, refused := positiveRefusal(id, r.CLI.Stderr, r.Dialog); refused {
@@ -409,6 +360,11 @@ type renewalRun struct {
 	RowErr     error
 }
 
+// renewalExpect is relay's whole reason for this mint as the dialog shows it
+// ("<app> is trying to <reason>."). Deliberate: the closing period is what
+// keeps a request for more classes, "execute and proxy.", from matching.
+var renewalExpect = fmt.Sprintf("mint a control-plane credential named %q with classes execute.", p4Name)
+
 func runRenewal(ctx context.Context, e env) result {
 	creds, err := listCredentials(ctx, e)
 	r := renewalRun{PreErr: err}
@@ -418,7 +374,7 @@ func runRenewal(ctx context.Context, e env) result {
 	if err != nil || !r.Due {
 		return classifyRenewal(r)
 	}
-	r.CLI, r.Dialog = gatedCLI(ctx, e, dialogAnswer, fmt.Sprintf("named %q with classes execute", p4Name),
+	r.CLI, r.Dialog = gatedCLI(ctx, e, renewalExpect,
 		"credential", "mint", "--name", p4Name, "--class", "execute", "--ttl", "168h")
 	id, token := parseMintOutput(r.CLI.Stdout)
 	r.ID, r.TokenOK = id, isToken(token)
@@ -477,7 +433,7 @@ func classifyRenewal(r renewalRun) result {
 	case r.ID == "" || !r.TokenOK:
 		return fail("mint printed no id or no 64-hex token")
 	case r.WriteErr != nil:
-		return fail("minted, but the P4 file was not rewritten: " + r.WriteErr.Error())
+		return fail(fmt.Sprintf("minted credential %s, but the P4 file was not rewritten: %s", r.ID, r.WriteErr))
 	case r.ListErr != nil:
 		return blocked(id, "credential.list: "+r.ListErr.Error())
 	case !r.Listed:
@@ -506,7 +462,7 @@ func runMcpPos(ctx context.Context, e env) result {
 	}
 	mcpID := probePrefix + e.Nonce
 	var r mcpPosRun
-	r.CLI, r.Dialog = gatedCLI(ctx, e, dialogAnswer, "("+mcpID+")",
+	r.CLI, r.Dialog = gatedCLI(ctx, e, "("+mcpID+")",
 		"mcp", "register", "--id", mcpID, "--name", "devboxverify probe "+e.Nonce, "--command", filepath.Join(e.BinDir, "testmcp"))
 	if r.CLI.Exit == 0 {
 		ids, err := listMcpIDs(ctx, e)
@@ -523,7 +479,7 @@ func runMcpPos(ctx context.Context, e env) result {
 
 func pollProbeTool(ctx context.Context, e env, token, mcpID string) bool {
 	for deadline := time.Now().Add(10 * time.Second); ; {
-		r := gateHTTP(ctx, e, token, http.MethodGet, "/api/mcps/"+mcpID+"/tools", nil, frontendRequestTimeout)
+		r := frontendDo(ctx, e, token, http.MethodGet, "/api/mcps/"+mcpID+"/tools", nil)
 		var tools []gateMcp
 		if r.Status == http.StatusOK && json.Unmarshal(r.Body, &tools) == nil &&
 			slices.ContainsFunc(tools, func(t gateMcp) bool { return t.Name == probeTool }) {
@@ -559,7 +515,7 @@ func classifyMcpPos(r mcpPosRun) result {
 
 type grantPosRun struct {
 	MkdirErr  error
-	Resp      gateResponse
+	Resp      frontendResponse
 	Dialog    dialogResult
 	CreatedID string
 	Grant     *grantRecord
@@ -589,7 +545,7 @@ func runGrantPos(ctx context.Context, e env) result {
 			"access":            map[string]string{e.Run.ProbeMCP: "write"},
 			"allowed_templates": []string{"world-probe"},
 		})
-		r.Resp, r.Dialog = gatedHTTP(ctx, e, token, http.MethodPost, "/api/projects", body, fmt.Sprintf("%q", name))
+		r.Resp, r.Dialog = gatedFrontend(ctx, e, token, http.MethodPost, "/api/projects", body, fmt.Sprintf("%q", name))
 	}
 	if r.Resp.Status == http.StatusCreated {
 		var v struct {
@@ -655,7 +611,7 @@ func runServicePos(ctx context.Context, e env) result {
 	}
 	dump := filepath.Join(gateStateDir(), "crash-"+e.Nonce+".env")
 	var r servicePosRun
-	r.CLI, r.Dialog = gatedCLI(ctx, e, dialogAnswer, "("+svcID+")",
+	r.CLI, r.Dialog = gatedCLI(ctx, e, "("+svcID+")",
 		"service", "register", "--id", svcID, "--name", "devboxverify crash "+e.Nonce,
 		"--command", filepath.Join(e.BinDir, "testservice"), "--args=--dump-env", "--args="+dump)
 	if r.CLI.Exit == 0 {
@@ -690,7 +646,7 @@ func classifyServicePos(r servicePosRun) result {
 }
 
 type rotatePosRun struct {
-	Resp      gateResponse
+	Resp      frontendResponse
 	Dialog    dialogResult
 	TokenOK   bool
 	Described string
@@ -709,7 +665,7 @@ func runRotatePos(ctx context.Context, e env) result {
 		return blocked(rotatePosID, "no grant project: "+grantPosID+" did not pass")
 	}
 	var r rotatePosRun
-	r.Resp, r.Dialog = gatedHTTP(ctx, e, token, http.MethodPost, "/api/projects/"+pid+"/rotate_token", nil, fmt.Sprintf("%q", pid))
+	r.Resp, r.Dialog = gatedFrontend(ctx, e, token, http.MethodPost, "/api/projects/"+pid+"/rotate_token", nil, fmt.Sprintf("%q", pid))
 	if r.Resp.Status == http.StatusOK {
 		var v struct {
 			Token string `json:"token"`
@@ -771,7 +727,7 @@ func classifyRotatePos(r rotatePosRun, wantName string) result {
 }
 
 func eveWindowOpen(ctx context.Context, e env, token string) (bool, error) {
-	r := gateHTTP(ctx, e, token, http.MethodGet, "/api/eve/passkey-enrolment", nil, frontendRequestTimeout)
+	r := frontendDo(ctx, e, token, http.MethodGet, "/api/eve/passkey-enrolment", nil)
 	if r.Status != http.StatusOK {
 		return false, fmt.Errorf("GET /api/eve/passkey-enrolment status %d", r.Status)
 	}
@@ -786,7 +742,7 @@ func eveWindowOpen(ctx context.Context, e env, token string) (bool, error) {
 
 func consumeEveWindow(ctx context.Context, e env, token string) int {
 	body, _ := json.Marshal(map[string]string{"ip": "127.0.0.1", "label": "devboxverify " + e.Nonce})
-	return gateHTTP(ctx, e, token, http.MethodPost, "/api/eve/passkey-enrolment/consume", body, frontendRequestTimeout).Status
+	return frontendDo(ctx, e, token, http.MethodPost, "/api/eve/passkey-enrolment/consume", body).Status
 }
 
 type eveOpenRun struct {
@@ -821,7 +777,7 @@ func runEveOpenPos(ctx context.Context, e env) result {
 	if b := newestIssuance(rows, "eve_enrolment", ""); b != nil {
 		baseline = b.ID
 	}
-	r.CLI, r.Dialog = gatedCLI(ctx, e, dialogAnswer, "open a five-minute window", "eve", "enrol")
+	r.CLI, r.Dialog = gatedCLI(ctx, e, "open a five-minute window", "eve", "enrol")
 	r.OpenAfter, r.AfterErr = eveWindowOpen(ctx, e, token)
 	if r.CLI.Exit == 0 {
 		rows, err := issuanceRows(ctx, e, audit.AuditEventCredentialIssued, "eve_enrolment")
@@ -917,7 +873,7 @@ func runFixturesRemoved(ctx context.Context, e env) result {
 		r.Errs = append(r.Errs, "mcp.list: "+err.Error())
 	}
 	for _, id := range withPrefix(mcps, probePrefix) {
-		if _, err := relayCmd(ctx, e, "mcp", "unregister", "--id", id); err != nil {
+		if err := relayCmd(ctx, e, "mcp", "unregister", "--id", id); err != nil {
 			r.Errs = append(r.Errs, err.Error())
 		}
 	}
@@ -926,7 +882,7 @@ func runFixturesRemoved(ctx context.Context, e env) result {
 		r.Errs = append(r.Errs, "service.list: "+err.Error())
 	}
 	for _, id := range withPrefix(svcs, crashPrefix) {
-		if _, err := relayCmd(ctx, e, "service", "unregister", "--id", id); err != nil {
+		if err := relayCmd(ctx, e, "service", "unregister", "--id", id); err != nil {
 			r.Errs = append(r.Errs, err.Error())
 		}
 	}
@@ -981,25 +937,47 @@ type revokePosRun struct {
 	Row         *audit.AuditEvent
 	RowErr      error
 	TokenStatus int
+	// NoToken: only a failed mint's id is known, so there is no token to
+	// check against 401.
+	NoToken bool
+}
+
+// revokeTarget is the credential teardown revokes: the run credential, or
+// else one a failed mint left live.
+func revokeTarget(st *runState) (credID string, ok bool) {
+	switch {
+	case st == nil:
+		return "", false
+	case st.RunCredID != "":
+		return st.RunCredID, true
+	case st.MintedCredID != "":
+		return st.MintedCredID, true
+	}
+	return "", false
 }
 
 func runRevokePos(ctx context.Context, e env) result {
-	token, res, ok := runCredential(e, revokePosID)
+	credID, ok := revokeTarget(e.Run)
 	if !ok {
-		return res
+		return blocked(revokePosID, "no credential to revoke: "+mintPosID+" printed no id")
 	}
-	credID := e.Run.RunCredID
-	var r revokePosRun
-	r.CLI, r.Dialog = gatedCLI(ctx, e, dialogAnswer, fmt.Sprintf("%q", credID), "credential", "revoke", "--id", credID)
+	token := ""
+	if e.Run.RunCredID == credID {
+		token = e.Run.RunToken
+	}
+	r := revokePosRun{NoToken: token == ""}
+	r.CLI, r.Dialog = gatedCLI(ctx, e, fmt.Sprintf("%q", credID), "credential", "revoke", "--id", credID)
 	if r.CLI.Exit == 0 {
 		creds, err := listCredentials(ctx, e)
 		r.Listed, r.ListErr = findCred(creds, credID) != nil, err
 		r.Row, r.RowErr = issuanceRow(ctx, e, audit.AuditEventCredentialRevoked, "api_credential", credID)
-		r.TokenStatus = tokenStatus(ctx, e, token)
+		if !r.NoToken {
+			r.TokenStatus = tokenStatus(ctx, e, token)
+		}
 	}
-	res = classifyRevokePos(r)
+	res := classifyRevokePos(r)
 	if res.State == statePass {
-		e.Run.RunCredID, e.Run.RunToken = "", ""
+		e.Run.RunCredID, e.Run.RunToken, e.Run.MintedCredID = "", "", ""
 	}
 	return res
 }
@@ -1020,6 +998,9 @@ func classifyRevokePos(r revokePosRun) result {
 	}
 	if res, bad := rowFailure(id, "credential_revoked", r.Row, r.RowErr); bad {
 		return res
+	}
+	if r.NoToken {
+		return result{id, statePass, "revoked the credential a failed mint left live after the prompt was answered; unlisted; revocation recorded with presence; no token to check"}
 	}
 	if r.TokenStatus != http.StatusUnauthorized {
 		return fail(fmt.Sprintf("the revoked token got %d, want 401", r.TokenStatus))

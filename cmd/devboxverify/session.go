@@ -65,7 +65,6 @@ type liveSession struct {
 	s      *stream
 	ID     string
 	exited bool
-	code   int
 }
 
 // openSession answers either a live session or relay's refusal reason.
@@ -89,7 +88,7 @@ func (l *liveSession) send(data string) error {
 }
 
 // next reads one frame; output frames return their bytes, and an exit frame
-// records the session's exit code.
+// marks the session exited.
 func (l *liveSession) next() ([]byte, error) {
 	for {
 		line, err := l.s.r.ReadBytes('\n')
@@ -104,7 +103,7 @@ func (l *liveSession) next() ([]byte, error) {
 		case bridge.StreamOutput:
 			return f.Data, nil
 		case bridge.StreamExit:
-			l.exited, l.code = true, f.Code
+			l.exited = true
 			return nil, errSessionExited
 		}
 	}
@@ -119,8 +118,8 @@ func execMarker(tag string) (input string, pattern *regexp.Regexp) {
 	return "printf '%s%s:%d\\n' 'DBVM' '" + tag + "' \"$?\"\n", regexp.MustCompile(`DBVM` + tag + `:(-?\d+)\r?\n`)
 }
 
-// Exec runs one shell line and answers the transcript up to its exit marker,
-// which includes the terminal's echo of the line itself.
+// Exec runs one shell line and answers its output up to the exit marker,
+// without the terminal's echo of the line or of the marker command.
 func (l *liveSession) Exec(ctx context.Context, line string) (out string, exit int, err error) {
 	if l.exited {
 		return "", 0, errSessionExited
@@ -128,8 +127,10 @@ func (l *liveSession) Exec(ctx context.Context, line string) (out string, exit i
 	defer l.bindDeadline(ctx)()
 	raw := make([]byte, 6)
 	_, _ = rand.Read(raw)
-	marker, pattern := execMarker(hex.EncodeToString(raw))
-	if err := l.send(strings.TrimRight(line, "\n") + "\n" + marker); err != nil {
+	tag := hex.EncodeToString(raw)
+	marker, pattern := execMarker(tag)
+	line = strings.TrimRight(line, "\n")
+	if err := l.send(line + "\n" + marker); err != nil {
 		return "", 0, fmt.Errorf("could not send input: %w", err)
 	}
 	var transcript strings.Builder
@@ -142,13 +143,41 @@ func (l *liveSession) Exec(ctx context.Context, line string) (out string, exit i
 		if m := pattern.FindStringSubmatchIndex(transcript.String()); m != nil {
 			t := transcript.String()
 			code, _ := strconv.Atoi(t[m[2]:m[3]])
-			return t[:m[0]], code, nil
+			return execOutput(t[:m[0]], line, tag), code, nil
 		}
 	}
 }
 
+var terminalNoise = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x20\x7f]`)
+
+// execOutput cuts the echoes out of a transcript that ends before the
+// printed exit marker. A line-editing shell echoes the marker command after
+// the output and a cooked terminal echoes it before, so that echo is removed
+// wherever it sits, found by its tag. The input's echo is cut only when the
+// first line carries it: with echo off, that line is output.
+func execOutput(transcript, line, tag string) string {
+	t := transcript
+	if i := strings.Index(t, tag); i >= 0 {
+		start := strings.LastIndex(t[:i], "\n") + 1
+		end := len(t)
+		if j := strings.Index(t[i:], "\n"); j >= 0 {
+			end = i + j + 1
+		}
+		t = t[:start] + t[end:]
+	}
+	if nl := strings.Index(t, "\n"); nl >= 0 {
+		// Subtle: a wrapped echo carries the shell's own padding, carriage
+		// returns and escapes, so the match ignores all of them.
+		first, want := terminalNoise.ReplaceAllString(t[:nl], ""), terminalNoise.ReplaceAllString(line, "")
+		if want != "" && strings.Contains(first, want) {
+			t = t[nl+1:]
+		}
+	}
+	return t
+}
+
 // Close asks the shell to exit and waits up to 5 s for its exit frame.
-func (l *liveSession) Close(ctx context.Context) (exited bool, code int) {
+func (l *liveSession) Close(ctx context.Context) {
 	defer func() { _ = l.s.Close() }()
 	if !l.exited {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -162,5 +191,4 @@ func (l *liveSession) Close(ctx context.Context) (exited bool, code int) {
 			}
 		}
 	}
-	return l.exited, l.code
 }

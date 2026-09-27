@@ -64,6 +64,21 @@ type result struct {
 	Text            string // the acted-on dialog's text; measure reports it
 }
 
+const disclaimedEnv = "DEVBOXPRESENCE_DISCLAIMED"
+
+// disclaimedEnviron is environ for the disclaimed child. Deliberate: every
+// inherited entry is dropped first, because the child reads the first one and
+// a stray value other than "1" would make it re-spawn itself forever.
+func disclaimedEnviron(environ []string) []string {
+	out := make([]string, 0, len(environ)+1)
+	for _, kv := range environ {
+		if !strings.HasPrefix(kv, disclaimedEnv+"=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, disclaimedEnv+"=1")
+}
+
 // sourceRev is set at build time with -ldflags "-X main.sourceRev=<rev>".
 var sourceRev string
 
@@ -342,7 +357,7 @@ func runDialog(ctx context.Context, mode, expect string, timeout time.Duration, 
 			return sweep(now)
 		}
 		d := freshDialog(atStart, now)
-		return actOn(act, d, pw, detail)
+		return actOn(act, d, expect, pw, detail)
 	}
 }
 
@@ -364,7 +379,7 @@ func containsWindow(ds []laDialog, window uint32) bool {
 	return false
 }
 
-func actOn(act action, d laDialog, pw []uint16, note string) result {
+func actOn(act action, d laDialog, expect string, pw []uint16, note string) result {
 	outcome := "cancelled"
 	var ok bool
 	var detail string
@@ -375,7 +390,7 @@ func actOn(act action, d laDialog, pw []uint16, note string) result {
 		if reason := probeSession().refusal(); reason != "" {
 			return refused("%s", reason)
 		}
-		ok, detail = answerDialog(d, pw)
+		ok, detail = answerDialog(d, expect, pw)
 	} else {
 		ok, detail = cancelDialog(d)
 	}
@@ -467,11 +482,11 @@ func readPasswordFile(path string) ([]byte, error) {
 	if err != nil {
 		var pe *os.PathError
 		if errors.As(err, &pe) {
-			return nil, fmt.Errorf("cannot open it: %v", pe.Err)
+			return nil, fmt.Errorf("cannot open it: %w", pe.Err)
 		}
 		return nil, errors.New("cannot open it")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
 		return nil, errors.New("cannot stat it")

@@ -134,3 +134,15 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		}
 	}
 }
+
+func TestDisclaimedEnvironReplacesEveryInheritedEntry(t *testing.T) {
+	in := []string{"HOME=/h", disclaimedEnv + "=0", "PATH=/bin", disclaimedEnv + "=", disclaimedEnv + "=1"}
+	got := disclaimedEnviron(in)
+	want := []string{"HOME=/h", "PATH=/bin", disclaimedEnv + "=1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("disclaimedEnviron = %q, want %q", got, want)
+	}
+	if !slices.Equal(disclaimedEnviron(nil), []string{disclaimedEnv + "=1"}) {
+		t.Errorf("an empty environment gets no marker")
+	}
+}

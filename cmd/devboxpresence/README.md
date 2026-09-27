@@ -86,10 +86,17 @@ signature, and refuses to run a missing, stale or unsigned helper.
   start snapshot is still open, or if more than one new one appears. Only
   `cancel --any` touches dialogs that were already open.
 - **Text.** The window's text is read through AX, skipping the password field,
-  and re-read until two reads agree. It must contain `--expect`, which carries
-  the run nonce, so the helper never approves someone else's request.
-  Unreadable text refuses `answer`; `cancel --expect` still cancels, since
-  cancelling approves nothing.
+  and re-read until two reads agree. It must contain `--expect`, which names
+  the request (the run nonce, or the id acted on), so the helper never
+  approves someone else's request. Two callers carry no nonce: the P4
+  renewal expects relay's whole reason for that mint, closing period
+  included, and the eve enrolment expects relay's fixed reason. Unreadable
+  text refuses `answer`; `cancel --expect` still cancels, since cancelling
+  approves nothing.
+- **Just before typing.** `answer` counts the agent's windows again and
+  re-reads the dialog's text after focusing the password field. Anything but
+  exactly this one window, still containing `--expect`, exits 3 with nothing
+  typed.
 - **Focus.** `answer` types only after the agent is the focused application
   and its secure field holds focus.
 
@@ -173,6 +180,6 @@ Reading the results:
   `ax_text=unknown` together with exit 3 "unreadable" means AX cannot read
   coreautha's text. Escalate it.
 - (4) A full `devboxverify` run as a one-shot LaunchAgent uses the same
-  recipe once `--phase screen` exists: build `./cmd/devboxverify` into `$R`
-  and pass its absolute path and flags to `oneshot`. launchd's `PATH` has no
-  `go`, so build first rather than using `go run`.
+  recipe: build `./cmd/devboxverify` into `$R` and pass its absolute path and
+  flags, `--phase screen` among them if wanted, to `oneshot`. launchd's
+  `PATH` has no `go`, so build first rather than using `go run`.

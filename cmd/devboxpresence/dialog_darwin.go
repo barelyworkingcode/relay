@@ -5,6 +5,7 @@ package main
 /*
 #cgo CFLAGS: -x objective-c
 #cgo LDFLAGS: -framework ApplicationServices -framework Foundation -framework IOKit -framework Security
+#include <stdlib.h>
 #include "dialog_darwin.h"
 */
 import "C"
@@ -71,13 +72,19 @@ func probeSession() sessionState {
 	}
 }
 
-// answerDialog reports false only when it typed nothing.
-func answerDialog(d laDialog, pw []uint16) (bool, string) {
+// answerDialog reports false only when it typed nothing. Just before typing
+// it re-checks that d is the only agent window and still shows expect.
+func answerDialog(d laDialog, expect string, pw []uint16) (bool, string) {
 	if len(pw) == 0 {
 		return false, "empty password"
 	}
+	if expect == "" {
+		return false, "no --expect to re-check before typing"
+	}
+	cExpect := C.CString(expect)
+	defer C.free(unsafe.Pointer(cExpect))
 	var detail [detailBufLen]C.char
-	ok := C.dbp_answer(C.int32_t(d.PID), C.uint32_t(d.Window),
+	ok := C.dbp_answer(C.int32_t(d.PID), C.uint32_t(d.Window), cExpect,
 		(*C.uint16_t)(unsafe.Pointer(&pw[0])), C.int(len(pw)), &detail[0], detailBufLen) != 0
 	return ok, C.GoString(&detail[0])
 }
