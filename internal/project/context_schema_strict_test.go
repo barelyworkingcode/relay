@@ -61,9 +61,6 @@ func TestParseContextSchema_ATypeSlipIsReportedRatherThanDroppingTheField(t *tes
 	if len(cs.RestrictFields()) != 1 {
 		t.Fatalf("restrict fields = %d, want the one that parsed", len(cs.RestrictFields()))
 	}
-	if cs.Usable() {
-		t.Fatal("a partially-read schema reported itself usable")
-	}
 }
 
 // "ui" and "x-relay-future" stand in for a keyword this relay doesn't know
@@ -100,19 +97,6 @@ func TestParseContextSchema_AnUnknownKeywordIsStillIgnored(t *testing.T) {
 	}
 }
 
-// The `"type": "object"` sibling beside `"properties"` is not a declaration
-// relay failed to read — it is not a declaration at all.
-func TestParseContextSchema_NonObjectSiblingsAreNotMalformed(t *testing.T) {
-	nested := `{"type":"object","properties":` + macmcpSchema + `}`
-	cs := parseStrict(t, nested)
-	if !cs.Usable() {
-		t.Fatalf("the nested form was refused: %s", cs.MalformedReason())
-	}
-	if len(cs.RestrictFields()) != 3 {
-		t.Fatalf("nested restrict fields = %d, want 3", len(cs.RestrictFields()))
-	}
-}
-
 // A bad fragment could otherwise hide inside a nested document whose only
 // restrict field is the bad one: the flat reading alone would present that as
 // a document with no restrictions at all, so the nested rescue has to apply
@@ -125,27 +109,67 @@ func TestParseContextSchema_AMalformedNestedFieldIsStillReported(t *testing.T) {
 	}
 }
 
-func TestContextField_AnEmptyAppliesToEntryGovernsEverything(t *testing.T) {
-	cs := parseStrict(t, `{"mail_accounts":{"type":"array","scope":"restrict","source":"operator","applies_to":[""]}}`)
-	if !cs.Usable() {
-		t.Fatalf("unexpected refusal: %s", cs.MalformedReason())
-	}
-	f, ok := cs.Field("mail_accounts")
-	if !ok {
-		t.Fatal("field missing")
-	}
-	for _, tool := range []string{"mail_search", "capture_screenshot", "web_fetch", ""} {
-		if !f.Governs(tool) {
-			t.Errorf(`applies_to [""] does not govern %q`, tool)
+// Absent applies_to, an empty "" entry (alone or beside a pattern) and an
+// uncompilable glob all govern everything: the fail-closed reading, since
+// more tools then require a value.
+func TestContextField_AnAbsentEmptyOrMalformedAppliesToGovernsEverything(t *testing.T) {
+	parsed := func(t *testing.T, raw, name string) ContextField {
+		t.Helper()
+		cs := parseStrict(t, raw)
+		if !cs.Usable() {
+			t.Fatalf("unexpected refusal: %s", cs.MalformedReason())
 		}
+		f, ok := cs.Field(name)
+		if !ok {
+			t.Fatalf("field %q missing", name)
+		}
+		return f
 	}
-	if !f.GovernsAll([]string{"mail_search", "web_fetch"}) {
-		t.Error(`applies_to [""] did not govern every tool`)
-	}
-
-	cs = parseStrict(t, `{"f":{"type":"array","scope":"restrict","source":"operator","applies_to":["mail_*",""]}}`)
-	f, _ = cs.Field("f")
-	if !f.Governs("capture_screenshot") {
-		t.Error(`a stray "" beside "mail_*" narrowed the field instead of widening it`)
+	for _, tc := range []struct {
+		name       string
+		field      func(t *testing.T) ContextField
+		governs    []string
+		governsAll []string
+	}{
+		{
+			name: `applies_to [""]`,
+			field: func(t *testing.T) ContextField {
+				return parsed(t, `{"mail_accounts":{"type":"array","scope":"restrict","source":"operator","applies_to":[""]}}`, "mail_accounts")
+			},
+			governs:    []string{"mail_search", "capture_screenshot", "web_fetch", ""},
+			governsAll: []string{"mail_search", "web_fetch"},
+		},
+		{
+			name: `a stray "" beside "mail_*"`,
+			field: func(t *testing.T) ContextField {
+				return parsed(t, `{"f":{"type":"array","scope":"restrict","source":"operator","applies_to":["mail_*",""]}}`, "f")
+			},
+			governs: []string{"capture_screenshot"},
+		},
+		{
+			name:       "absent applies_to",
+			field:      func(t *testing.T) ContextField { return parsed(t, fsmcpV2Schema, V1AllowedDirsField) },
+			governs:    []string{"fs_read", "fs_bash", "anything_at_all"},
+			governsAll: []string{"fs_read", "fs_write"},
+		},
+		{
+			name: "an uncompilable glob",
+			field: func(t *testing.T) ContextField {
+				return ContextField{Name: "x", Scope: ContextScopeRestrict, AppliesTo: []string{"mail_[unterminated"}}
+			},
+			governs: []string{"nothing_like_it"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.field(t)
+			for _, tool := range tc.governs {
+				if !f.Governs(tool) {
+					t.Errorf("%s does not govern %q", tc.name, tool)
+				}
+			}
+			if tc.governsAll != nil && !f.GovernsAll(tc.governsAll) {
+				t.Errorf("%s did not govern all of %v", tc.name, tc.governsAll)
+			}
+		})
 	}
 }

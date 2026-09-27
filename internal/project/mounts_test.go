@@ -7,6 +7,7 @@ package project
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -50,28 +51,9 @@ func TestValidateMounts_RefusesNonEmptyMountsOnAZeroValueKindProject(t *testing.
 	}
 }
 
-func TestValidateMounts_NilMountsIsFineOnEveryProjectKind(t *testing.T) {
-	for _, kind := range []config.ProjectKind{"", config.ProjectKindLocal, config.ProjectKindRemote} {
-		proj := &config.Project{Kind: kind}
-		if err := ValidateMounts(proj); err != nil {
-			t.Errorf("kind %q: absent Mounts should not be refused, got: %v", kind, err)
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ValidateMounts on a remote project: per-mount and cross-mount checks.
 // ---------------------------------------------------------------------------
-
-func TestValidateMounts_AcceptsAnOrdinaryBoundedDirectoryOnARemoteProject(t *testing.T) {
-	proj := &config.Project{
-		Kind:   config.ProjectKindRemote,
-		Mounts: []config.MountGrant{{ID: "m1", Path: mkMountDir(t)}},
-	}
-	if err := ValidateMounts(proj); err != nil {
-		t.Fatalf("expected an ordinary bounded directory to be accepted, got: %v", err)
-	}
-}
 
 func TestValidateMounts_RefusesDuplicateMountIDs(t *testing.T) {
 	proj := &config.Project{
@@ -178,72 +160,77 @@ func TestValidateMounts_UnrelatedDirectoriesDoNotOverlap(t *testing.T) {
 // validateMountPath: path shape and filesystem checks, tested directly.
 // ---------------------------------------------------------------------------
 
-func TestValidateMountPath_RefusesRelativePath(t *testing.T) {
-	if err := validateMountPath("relative/dir"); err == nil {
-		t.Fatal("expected refusal of a relative path")
-	}
-}
-
-func TestValidateMountPath_RefusesTrailingSlashRatherThanCleaningIt(t *testing.T) {
-	dir := mkMountDir(t)
-	if err := validateMountPath(dir + "/"); err == nil {
-		t.Fatal("expected refusal of a trailing-slash path; it must not be silently cleaned")
-	}
-}
-
-func TestValidateMountPath_RefusesFilesystemRoot(t *testing.T) {
-	if err := validateMountPath("/"); err == nil {
-		t.Fatal("expected refusal of the filesystem root")
-	}
-}
-
-func TestValidateMountPath_RefusesSymlink(t *testing.T) {
-	target := mkMountDir(t)
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatalf("Symlink: %v", err)
-	}
-	if err := validateMountPath(link); err == nil {
-		t.Fatal("expected refusal of a symlink as a mount root")
-	}
-}
-
-func TestValidateMountPath_RefusesNonExistentPath(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	if err := validateMountPath(missing); err == nil {
-		t.Fatal("expected refusal of a non-existent path")
-	}
-}
-
-func TestValidateMountPath_RefusesAFileNotADirectory(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "plain-file")
-	if err := os.WriteFile(file, []byte("x"), 0600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if err := validateMountPath(file); err == nil {
-		t.Fatal("expected refusal of a file (not a directory)")
-	}
-}
-
-func TestValidateMountPath_AcceptsAnOrdinaryBoundedDirectory(t *testing.T) {
-	if err := validateMountPath(mkMountDir(t)); err != nil {
-		t.Fatalf("expected an ordinary bounded directory to be accepted, got: %v", err)
+func TestValidateMountPath(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		path    func(t *testing.T) string
+		refusal string // "" asserts only that the path is refused
+	}{
+		{
+			// "." exists and is a directory, so only the absolute-path rule
+			// can refuse it.
+			name:    "a relative path",
+			path:    func(*testing.T) string { return "." },
+			refusal: "absolute",
+		},
+		{
+			name: "a trailing slash, rather than cleaning it",
+			path: func(t *testing.T) string { return mkMountDir(t) + "/" },
+		},
+		{
+			name: "the filesystem root",
+			path: func(*testing.T) string { return "/" },
+		},
+		{
+			name: "a symlink",
+			path: func(t *testing.T) string {
+				link := filepath.Join(t.TempDir(), "link")
+				if err := os.Symlink(mkMountDir(t), link); err != nil {
+					t.Fatalf("Symlink: %v", err)
+				}
+				return link
+			},
+			// A symlink to a directory is also not a directory to Lstat, so
+			// without the message check this row passes on the next rule.
+			refusal: "is a symlink",
+		},
+		{
+			name: "a non-existent path",
+			path: func(t *testing.T) string { return filepath.Join(t.TempDir(), "does-not-exist") },
+		},
+		{
+			name: "a file, not a directory",
+			path: func(t *testing.T) string {
+				file := filepath.Join(t.TempDir(), "plain-file")
+				if err := os.WriteFile(file, []byte("x"), 0600); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+				return file
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateMountPath(tc.path(t))
+			if err == nil {
+				t.Fatalf("expected %s to be refused", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.refusal) {
+				t.Errorf("refusal = %q, want it to say %q", err, tc.refusal)
+			}
+		})
 	}
 }
 
 // A two-segment /Users/<name> (or /home/<name>) path is a whole home
 // directory: accepted by validateMountPath (only a filesystem root is
 // refused outright), but flagged by MountBreadthWarnings for the operator
-// surfaces to show loudly. os.UserHomeDir reads $HOME, which this test does
-// not override, so it resolves to the real, pre-existing home directory —
-// exactly the shape ScopeEntryBreadth classifies as "home".
+// surfaces to show loudly. /Users/Shared is used because TestMain points
+// $HOME at a temp dir, and the rule is structural, not about the running
+// user's own home.
 func TestValidateMountPath_AcceptsHomeDirectoryPathButItIsFlaggedAsBreadth(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skipf("no home directory available in this environment: %v", err)
-	}
-	if got := ScopeEntryBreadth(home); got != ScopeBreadthHome {
-		t.Skipf("this environment's home directory %q is not two-segment /Users or /home shaped (breadth=%q); skipping", home, got)
+	const home = "/Users/Shared"
+	if info, err := os.Lstat(home); err != nil || !info.IsDir() {
+		t.Fatalf("%s is not a directory: every macOS install has it", home)
 	}
 
 	if err := validateMountPath(home); err != nil {

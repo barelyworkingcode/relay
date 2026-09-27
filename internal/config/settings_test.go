@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -224,4 +225,38 @@ func TestEdgeCases(t *testing.T) {
 			t.Fatalf("settings file should be named settings.json, got %q", filepath.Base(path))
 		}
 	})
+}
+
+func TestUpdateProjectDisabledTools(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		allowed  []string
+		mcpID    string
+		disabled []string
+		want     []string // nil: no entry for mcpID
+	}{
+		{name: "an empty slice deletes the key", allowed: []string{"fsmcp"}, mcpID: "fsmcp", disabled: nil, want: nil},
+		// A stale list would be inherited silently by a later grant.
+		{name: "an MCP the project does not grant is refused", allowed: []string{"fsmcp"}, mcpID: "macmcp", disabled: []string{"shouldNotPersist"}, want: nil},
+		{name: "duplicates and empty names are dropped", allowed: []string{"fsmcp"}, mcpID: "fsmcp", disabled: []string{"a", "a", "", "b"}, want: []string{"a", "b"}},
+		{name: "a wildcard project accepts any MCP", allowed: []string{"*"}, mcpID: "macmcp", disabled: []string{"runScript"}, want: []string{"runScript"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Settings{Projects: []Project{{
+				ID: "p1", AllowedMcpIDs: tc.allowed,
+				DisabledTools: map[string][]string{"fsmcp": {"fs_bash"}},
+			}}}
+			s.UpdateProjectDisabledTools("p1", tc.mcpID, tc.disabled)
+			got, present := s.Projects[0].DisabledTools[tc.mcpID]
+			if tc.want == nil {
+				if present {
+					t.Fatalf("disabled_tools[%s] = %v, want no entry", tc.mcpID, got)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("disabled_tools[%s] = %v, want %v", tc.mcpID, got, tc.want)
+			}
+		})
+	}
 }

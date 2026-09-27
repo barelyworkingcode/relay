@@ -58,6 +58,9 @@ func TestApplyProjectCreate_RemoteRejectsPathScopedGrant(t *testing.T) {
 	if !strings.Contains(err.Error(), "fsmcp") {
 		t.Errorf("expected error to name the offending MCP (fsmcp), got: %v", err)
 	}
+	if len(s.Projects) != 0 {
+		t.Fatalf("rejected create must not persist a project; got %d", len(s.Projects))
+	}
 }
 
 func TestApplyProjectCreate_RemoteZeroMcpsSucceeds(t *testing.T) {

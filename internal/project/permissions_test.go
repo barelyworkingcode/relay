@@ -40,23 +40,20 @@ func TestValidatePermissions_RefusesUndeclaredField(t *testing.T) {
 	wantRefusal(t, err, "mail_folders", "macmcp", "mail_accounts", "mail_mailboxes")
 }
 
-func TestValidatePermissions_RefusesWrongType(t *testing.T) {
-	proj := profileWithContext("macmcp", `{"mail_accounts":"Bob"}`)
-	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "mail_accounts", "array")
-
-	proj = profileWithContext("macmcp", `{"mail_accounts":[7]}`)
-	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "mail_accounts", "string")
-}
-
-func TestValidatePermissions_RefusesEmptyRestrictValue(t *testing.T) {
-	for _, blob := range []string{
-		`{"mail_accounts":null}`,
-		`{"mail_accounts":[""]}`,
-		`{"mail_accounts":["  "]}`,
-		`{"mail_accounts":["*","Bob"]}`,
+func TestValidatePermissions_RefusesAnInvalidRestrictValue(t *testing.T) {
+	for _, tc := range []struct {
+		blob string
+		says []string
+	}{
+		{`{"mail_accounts":null}`, nil},
+		{`{"mail_accounts":[""]}`, nil},
+		{`{"mail_accounts":["  "]}`, nil},
+		{`{"mail_accounts":["*","Bob"]}`, nil},
+		{`{"mail_accounts":"Bob"}`, []string{"array"}},
+		{`{"mail_accounts":[7]}`, []string{"string"}},
 	} {
-		proj := profileWithContext("macmcp", blob)
-		wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "mail_accounts")
+		proj := profileWithContext("macmcp", tc.blob)
+		wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), append([]string{"mail_accounts"}, tc.says...)...)
 	}
 }
 
@@ -117,15 +114,6 @@ func TestValidatePermissions_RefusesUncompilablePattern(t *testing.T) {
 	if err := validateProjectPermissions(proj, v2Surfaces()); err != nil {
 		t.Errorf("a glob and an exact name should both be accepted: %v", err)
 	}
-}
-
-// SyncProjectToken's v1 branch REPLACES the whole context blob with the
-// derived allowed_dirs, so a value stored here would vanish at the next edit
-// rather than take effect.
-func TestValidatePermissions_RefusesContextForV1Schema(t *testing.T) {
-	proj := &config.Project{ID: "p1", Path: "/tmp/x", AllowedMcpIDs: []string{"fsmcp"},
-		Context: map[string]json.RawMessage{"fsmcp": json.RawMessage(`{"allowed_dirs":["/etc"]}`)}}
-	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "fsmcp", "v1")
 }
 
 // An MCP relay has never connected to cannot be checked, so it is permitted

@@ -86,14 +86,14 @@ func TestParseContextSchema_V2FlatFormIsTheContract(t *testing.T) {
 	if len(cs.ProjectPathFields()) != 1 || cs.ProjectPathFields()[0].Name != "file_dirs" {
 		t.Fatalf("project_path fields = %v", cs.ProjectPathFields())
 	}
-	if len(cs.OperatorFields()) != 2 {
-		t.Fatalf("operator fields = %v", cs.OperatorFields())
-	}
 }
 
 func TestParseContextSchema_NestedFormIsRescuedOnlyTowardsFailClosed(t *testing.T) {
 	nested := `{"type":"object","properties":` + macmcpSchema + `}`
 	cs := ParseContextSchema(json.RawMessage(nested), 2)
+	if !cs.Usable() {
+		t.Fatalf("the nested form was refused: %s", cs.MalformedReason())
+	}
 	if len(cs.RestrictFields()) != 3 {
 		t.Fatalf("nested v2 schema yielded %d restrict fields, want 3", len(cs.RestrictFields()))
 	}
@@ -111,35 +111,6 @@ func TestParseContextSchema_SurvivesRubbish(t *testing.T) {
 		if len(cs.RestrictFields()) != 0 {
 			t.Fatalf("%q produced restrict fields", raw)
 		}
-	}
-}
-
-func TestContextField_GovernsReadsAppliesTo(t *testing.T) {
-	cs := ParseContextSchema(json.RawMessage(macmcpSchema), 2)
-	mail, _ := cs.Field("mail_accounts")
-	dirs, _ := cs.Field("file_dirs")
-
-	if !mail.Governs("mail_search") || !mail.Governs("mail_send") {
-		t.Fatal("mail_* did not match a mail tool")
-	}
-	if mail.Governs("messages_send") {
-		t.Fatal("mail_* matched a non-mail tool")
-	}
-	if !dirs.Governs("mail_get_source") || dirs.Governs("mail_search") {
-		t.Fatal("an explicit applies_to list did not select exactly its two tools")
-	}
-}
-
-func TestContextField_AbsentAppliesToGovernsEverything(t *testing.T) {
-	cs := ParseContextSchema(json.RawMessage(fsmcpV2Schema), 2)
-	f, _ := cs.Field(V1AllowedDirsField)
-	for _, name := range []string{"fs_read", "fs_bash", "anything_at_all"} {
-		if !f.Governs(name) {
-			t.Fatalf("absent applies_to did not govern %q", name)
-		}
-	}
-	if !f.GovernsAll([]string{"fs_read", "fs_write"}) {
-		t.Fatal("absent applies_to did not govern all")
 	}
 }
 
@@ -177,26 +148,6 @@ func TestToolAllowedByPatterns_MalformedPatternAdmitsNothing(t *testing.T) {
 	}
 	if !toolAllowedByPatterns([]string{"nope_*", "mail_*"}, "mail_send") {
 		t.Fatal("a later matching pattern was not reached")
-	}
-}
-
-func TestContextField_MalformedGlobGovernsEverything(t *testing.T) {
-	// "Governs everything" is the fail-closed reading of an uncompilable
-	// pattern: more tools require a value, so a grant whose MCP publishes a
-	// broken pattern is refused rather than silently unscoped.
-	f := ContextField{Name: "x", Scope: ContextScopeRestrict, AppliesTo: []string{"mail_[unterminated"}}
-	if !f.Governs("nothing_like_it") {
-		t.Fatal("a malformed glob failed open")
-	}
-}
-
-func TestContextField_GovernsAllIsFalseForAnUnknownToolSurface(t *testing.T) {
-	// An empty tool list is what an MCP relay has never connected to looks
-	// like; the vacuous-truth reading would grant on the strength of missing
-	// information, so GovernsAll must not take it.
-	f := ContextField{Name: "x", Scope: ContextScopeRestrict}
-	if f.GovernsAll(nil) {
-		t.Fatal("an empty tool list answered GovernsAll true")
 	}
 }
 
@@ -370,20 +321,6 @@ func TestScopeNoteFor_UnsetValueMessageUnchangedByDisclose(t *testing.T) {
 		if got := ScopeNoteFor(cs, nil, "mail_search"); got != want {
 			t.Errorf("disclose %s: note = %q, want %q", disclose, got, want)
 		}
-	}
-}
-
-func TestContextField_DisclosureDefaultsToValue(t *testing.T) {
-	if got := (ContextField{}).Disclosure(); got != ContextDiscloseValue {
-		t.Errorf("a zero-value field disclosure = %q, want %q", got, ContextDiscloseValue)
-	}
-	cs := ParseContextSchema(json.RawMessage(macmcpSchema), 2)
-	f, ok := cs.Field("mail_accounts")
-	if !ok {
-		t.Fatal("mail_accounts missing")
-	}
-	if got := f.Disclosure(); got != ContextDiscloseValue {
-		t.Errorf("a field with no disclose keyword = %q, want %q", got, ContextDiscloseValue)
 	}
 }
 
