@@ -424,6 +424,21 @@ the watch for the request in flight, because its bytes hide any later EOF
 from a peek. The remote listener's `tls.Conn` exposes no socket to peek, so
 the watch does not apply there.
 
+## Every refusal is recorded
+
+Whatever `Gate.Require` returns short of a grant — the owner cancels, the
+caller leaves mid-prompt, the caller's session cannot show a dialog at all —
+is written to the audit log as a `control_decision` row, `outcome: "denied"`.
+The actor named on that row is resolved on entry to the gate, before the
+prompt is ever shown, so a caller that disconnects mid-prompt is still named
+correctly rather than falling back to "unknown caller." Recording is
+fail-open, the same policy every other tool-call and control-plane record
+gets: the act is already refused, so there is nothing left to protect by
+refusing it a second time over a broken audit sink, and the refusal a caller
+sees is identical whether or not the row was written. Row shape, the actor
+rules, and the full list of refusal causes are in
+[`docs/audit-log.md`](audit-log.md#presence-refusals).
+
 ## The hermetic seam, and why it cannot exist in a shipped build
 
 The test suite must never raise a real password prompt — a developer running

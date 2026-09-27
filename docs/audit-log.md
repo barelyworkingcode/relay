@@ -18,13 +18,15 @@ interesting event:
 | `ok` | The call reached the MCP and returned |
 | `error` | The call failed (transport error, unknown tool, or the MCP errored) |
 | `tool_error` | The call completed and the MCP answered `isError` |
-| `denied` | A resolved credential was refused a tool it may not use |
+| `denied` | A resolved credential was refused a tool it may not use, or a caller was refused at a presence prompt (see [Presence refusals](#presence-refusals)) |
 | `unauthorized` | The credential itself did not resolve |
 | `throttled` | A remote enrolment's rate or volume budget was exceeded |
 | `pending` | An intent record, written before the call ran and awaiting its completion |
 
 Event kinds are `call_tool`, `list_tools`, `list_skills`, `control_decision`
-(see [below](#control-plane-authorization-decisions)), `credential_issued` /
+(see [below](#control-plane-authorization-decisions) — this kind also covers a
+presence prompt refused before the gated act it guards ran, see
+[Presence refusals](#presence-refusals)), `credential_issued` /
 `credential_revoked` (see [below](#issuance-and-revocation)), `model_call` /
 `model_list` (see [below](#the-model-endpoint)), `session_launch` /
 `session_end` / `session_resume` (see [below](#session-host-events);
@@ -300,7 +302,9 @@ What is given up by setting it to false:
 - **Control-plane authorization decisions go unrecorded.** Every
   `control_decision` above — creating a service, issuing an enrolment, a
   credential refused a class it does not hold — leaves no trace, which is the
-  state ADR-015 argues against.
+  state ADR-015 argues against. A presence refusal is one of these rows (see
+  [Presence refusals](#presence-refusals)), so it is lost the same way: the
+  owner still cancels the prompt, but nothing names the attempt.
 - **Issuance and revocation go unrecorded.** Every `credential_issued` and
   `credential_revoked` below is lost too. Minting still works: turning
   auditing off is a deliberate act written into settings.json, and refusing to
@@ -516,6 +520,87 @@ that issue, and neither replaces the other: one says the caller was allowed
 through the door, the other says what came out of it. See
 [Issuance and revocation](#issuance-and-revocation).
 
+### Presence refusals
+
+A presence prompt an owner cancels, or one a caller otherwise never wins, is
+also a `control_decision` row with `outcome: "denied"` — the gated act never
+ran, and that refusal is as much an authorization decision as a credential
+turned away at a route. The row is told apart from a class refusal by `via`,
+which only a presence refusal carries:
+
+```json
+{"id":"7d0c…","ts":"2026-09-27T10:22:31.412Z","dur_ms":4210,"event":"control_decision",
+ "actor":{"kind":"project_session","project_id":"proj_7f2a","auth":"session","pid":41221,"proc":"relay","parent":"claude","session_id":"3af1…"},
+ "outcome":"denied","error":"presence was refused","scope":null,
+ "method":"credential.mint","subject":"ci-deploy","via":"cli"}
+```
+
+| field | value |
+|---|---|
+| `id` | a new id for this row |
+| `ts` | the time the gated call was entered, before the prompt was shown |
+| `dur_ms` | milliseconds from entry to refusal |
+| `event` | `"control_decision"` |
+| `actor` | the caller who asked for the gated act — see actor rules below |
+| `outcome` | `"denied"` |
+| `error` | the refusal reason, verbatim — see error table below |
+| `scope` | always `null` |
+| `method` | the gated operation, e.g. `"credential.mint"`; approving a lodged enrolment request is `"enrolment.sign"`, the same op as creating one |
+| `subject` | the thing the operation names — a credential's name, an enrolment's client id — capped at 256 bytes on a rune boundary; omitted when the operation names nothing |
+| `via` | `"cli"`, `"ipc"`, `"tray"` or `"http"` |
+| `issuance_truncated` | `true` only when `subject` was cut to fit the cap |
+
+**Actor**, resolved before the prompt is ever shown, in this order:
+
+1. A caller on the HTTP door: `{"kind":"control","auth":"token","cred_id":<credential id>}`.
+2. A project-session caller: `{"kind":"project_session","auth":"session","project_id":…,"session_id":…}`, plus `pid`/`proc`/`parent` when the caller's pid resolved. No `project_name` here — the PROJECT column shows `-` on these rows, and `--project` still matches on the id.
+3. A caller with a known pid but no session: `{"kind":"operator","auth":"none"}` plus that pid's `proc`/`parent`.
+4. Otherwise: `{"kind":"operator","auth":"none"}` naming relay's own process.
+
+The actor is attribution only, exactly as elsewhere in this log — never an
+input to whether the act was allowed.
+
+**Error**
+
+| cause | `error` |
+|---|---|
+| The owner cancels the prompt, or any LocalAuthentication failure | `presence was refused` |
+| The caller disconnects while the prompt is up | `context canceled` |
+| The caller's session cannot display a prompt | `no session can display a presence prompt` |
+| Presence checking itself is unavailable | `presence checking is unavailable` |
+| The operation was never wired to a gate | `presence gate is not wired for this operation` |
+| Anything else `Gate.Require` returns | its text, verbatim |
+
+Relay has no prompt timeout of its own: a client-side timeout arrives as
+`context canceled`, a LocalAuthentication one as `presence was refused`.
+
+**Never on this row:** `path`, `class`, `transport`, `presence_id`,
+`credential`, `subject_name`, `grants`, `args`, the prompt's reason text, or
+the digest in any form. Only what the act was, who asked, and how it ended.
+
+A refused HTTP request therefore leaves **two** `control_decision` rows: the
+route's own `ok` (the credential was allowed through the door), then the
+presence refusal's `denied` (the gated act behind that door was refused).
+`--event control_decision --outcome denied` returns both class refusals and
+presence refusals together — the two are told apart by `via`, present only on
+the second kind.
+
+No row is written when auditing is off, or when the gated operation's own
+auditor is unset — the refusal itself is unaffected either way; only the
+record of it is lost.
+
+```
+relay audit --event control_decision --outcome denied            # every control-plane refusal, class and presence alike
+relay audit --event control_decision --outcome denied --grep credential.mint   # one operation's refusals
+```
+
+**DETAIL** for this row is `method`, `subject` (if set), `via=<via>`, `error`,
+and `(truncated)` if `issuance_truncated` was set, joined by two spaces:
+
+```
+credential.mint  ci-deploy  via=cli  presence was refused
+```
+
 ## The model endpoint
 
 `model_call` records one finished call to a model route
@@ -669,7 +754,7 @@ tree — a real, open gap, not an oversight, per
 ```
 relay audit --event session_launch                 # every launch attempt, allowed or refused
 relay audit --event session_end                     # every relay-sessions exit report
-relay audit --kind project_session                  # every tool/model call made from inside a session
+relay audit --kind project_session                  # every tool/model call made from inside a session, and every presence refusal a session caller hit
 ```
 
 ## Issuance and revocation
@@ -907,3 +992,8 @@ each door — the CLI subcommands, `LoginOps`, the IPC handlers, and the routes
 registered through `RouteRegistrar` — calls it with its own `via`. Adding a new
 way to issue a credential means adding a call there; nothing catches one that
 forgets, which is why the list of doors is short and named here.
+
+A presence refusal has exactly one hook, unlike issuance's several doors:
+every gated operation calls `requireGate`, so that is the one place that
+records a refusal. A door cannot bypass it because a door never had a way to
+reach the gate except through the core method that calls `requireGate` first.
