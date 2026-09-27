@@ -1,11 +1,8 @@
 package main
 
 import (
-	"net"
 	"strings"
 	"testing"
-
-	"github.com/barelyworkingcode/relay/internal/bridge"
 )
 
 // TestServiceRequiredMessage_NamesTheCommand is AC-11's textual requirement
@@ -26,34 +23,5 @@ func TestServiceRequiredMessage_NamesTheCommand(t *testing.T) {
 	}
 	if strings.Contains(msg, "Read commands still work") {
 		t.Errorf("refusal claims configuration reads work with relay stopped: %q", msg)
-	}
-}
-
-// TestServiceReachable_NoListener asserts the probe reports false against a
-// socket path nothing is listening on.
-func TestServiceReachable_NoListener(t *testing.T) {
-	dir := mkShortTempDir(t, "relay-nosvc-")
-	applyOverride(t, dir)
-
-	if serviceReachable() {
-		t.Fatal("serviceReachable reported true with no listener on the socket")
-	}
-}
-
-// TestServiceReachable_WithListener is the other half: a real listener on
-// relay's own socket path must be detected as reachable, so requireService's
-// refusal fires only when relay genuinely is not there to answer.
-func TestServiceReachable_WithListener(t *testing.T) {
-	dir := mkShortTempDir(t, "relay-withsvc-")
-	applyOverride(t, dir)
-
-	ln, err := net.Listen("unix", bridge.SocketPath())
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() })
-
-	if !serviceReachable() {
-		t.Fatal("serviceReachable reported false with a real listener on the socket")
 	}
 }

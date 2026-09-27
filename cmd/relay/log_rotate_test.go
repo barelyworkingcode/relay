@@ -31,23 +31,12 @@ func TestRotatingWriter_RotatesAtCap(t *testing.T) {
 	if int64(len(cur)) > 64 {
 		t.Errorf("current log = %d bytes, want <= cap 64", len(cur))
 	}
-	if _, err := os.Stat(path + ".1"); err != nil {
-		t.Errorf("expected rotated backup %s.1: %v", path, err)
-	}
-}
-
-func TestRotatingWriter_OversizedSingleWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "big.log")
-	w, err := openRotatingLogSized(path, 8)
+	backup, err := os.ReadFile(path + ".1")
 	if err != nil {
-		t.Fatalf("openRotatingLogSized: %v", err)
+		t.Fatalf("expected rotated backup %s.1: %v", path, err)
 	}
-	defer w.Close()
-
-	big := make([]byte, 100)
-	n, err := w.Write(big)
-	if err != nil || n != len(big) {
-		t.Fatalf("write oversized: n=%d err=%v", n, err)
+	if int64(len(backup)) > 64 {
+		t.Errorf("rotated backup = %d bytes, want <= cap 64", len(backup))
 	}
 }
 

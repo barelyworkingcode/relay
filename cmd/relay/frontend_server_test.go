@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,12 +16,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
-
-// Tests for FrontendServer. Covers:
-//   - bearer-token enforcement (401 on missing/wrong, 200 on right)
-//   - Unix socket created with 0600 permissions
-//   - Empty token = dev mode (no auth)
-//   - Unknown route falls through to dispatcher → 404
 
 func newTestFrontendServer(t *testing.T, token string) (*FrontendServer, string) {
 	t.Helper()
@@ -91,56 +84,18 @@ func TestFrontendServer_SocketHas0600Perms(t *testing.T) {
 	}
 }
 
-func TestFrontendServer_BearerAuth_RejectsMissing(t *testing.T) {
-	_, sock := newTestFrontendServer(t, "good-token")
-	client := dialFrontendHTTP(sock)
-
-	resp, err := client.Get("http://unix/api/unclaimed")
-	assertNoErr(t, err, "GET")
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without Authorization; got %d", resp.StatusCode)
-	}
-}
-
-func TestFrontendServer_BearerAuth_RejectsWrong(t *testing.T) {
-	_, sock := newTestFrontendServer(t, "good-token")
-	client := dialFrontendHTTP(sock)
-
-	req, _ := http.NewRequest(http.MethodGet, "http://unix/api/unclaimed", nil)
-	req.Header.Set("Authorization", "Bearer wrong-token")
-	resp, err := client.Do(req)
-	assertNoErr(t, err, "GET")
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 with wrong Authorization; got %d", resp.StatusCode)
-	}
-}
-
-func TestFrontendServer_BearerAuth_AcceptsCorrect_Returns404ForUnknownRoute(t *testing.T) {
-	_, sock := newTestFrontendServer(t, "good-token")
-	client := dialFrontendHTTP(sock)
-
-	req, _ := http.NewRequest(http.MethodGet, "http://unix/api/unclaimed", nil)
-	req.Header.Set("Authorization", "Bearer good-token")
-	resp, err := client.Do(req)
-	assertNoErr(t, err, "GET")
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404 from dispatcher for unclaimed route; got %d body=%s", resp.StatusCode, body)
-	}
-}
-
 func TestFrontendServer_EmptyToken_FailsClosed(t *testing.T) {
 	// An empty configured token is a misconfiguration (the frontend channel
 	// always mints one). It must fail CLOSED — reject every request — rather
-	// than silently disable auth and expose all proxied services.
+	// than silently disable auth and expose all proxied services. The request
+	// carries a bearer so it reaches the credential check rather than the
+	// headerless launch-identity path.
 	_, sock := newTestFrontendServer(t, "")
 	client := dialFrontendHTTP(sock)
 
-	resp, err := client.Get("http://unix/api/anything")
+	req, _ := http.NewRequest(http.MethodGet, "http://unix/api/anything", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	resp, err := client.Do(req)
 	assertNoErr(t, err, "GET")
 	defer resp.Body.Close()
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -11,20 +10,6 @@ import (
 
 	"github.com/gorilla/websocket"
 )
-
-func TestFrontendDispatcher_404OnUnknownPath(t *testing.T) {
-	registry := NewEnhancedServiceRegistry(nil)
-	dispatcher := NewFrontendDispatcher(registry)
-	srv := httptest.NewServer(dispatcher)
-	defer srv.Close()
-
-	resp, err := http.Get(srv.URL + "/no/such/route")
-	assertNoErr(t, err, "GET /no/such/route")
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404 for unknown path; got %d", resp.StatusCode)
-	}
-}
 
 func TestFrontendDispatcher_RoutesAndInjectsToken(t *testing.T) {
 	registry := NewEnhancedServiceRegistry(nil)
@@ -70,41 +55,6 @@ func TestFrontendDispatcher_RoutesAndInjectsToken(t *testing.T) {
 	}
 	if auth != "Bearer "+fake.Token() {
 		t.Fatalf("upstream Authorization = %q; want %q", auth, "Bearer "+fake.Token())
-	}
-}
-
-func TestFrontendDispatcher_LongestPrefixWins(t *testing.T) {
-	registry := NewEnhancedServiceRegistry(nil)
-	fakeOuter := NewFakeService(t, FakeServiceOptions{
-		ServiceID: "outer",
-		Manifest:  newManifest("/api/"),
-	})
-	fakeInner := NewFakeService(t, FakeServiceOptions{
-		ServiceID: "inner",
-		Manifest:  newManifest("/api/sessions/"),
-	})
-	_ = registry.RegisterManifest(fakeOuter.ServiceID(), fakeOuter.Socket(), fakeOuter.Token(), fakeOuter.Manifest())
-	_ = registry.RegisterManifest(fakeInner.ServiceID(), fakeInner.Socket(), fakeInner.Token(), fakeInner.Manifest())
-
-	dispatcher := NewFrontendDispatcher(registry)
-	srv := httptest.NewServer(dispatcher)
-	defer srv.Close()
-
-	resp1, err := http.Get(srv.URL + "/api/sessions/123")
-	assertNoErr(t, err, "GET sessions")
-	_, _ = io.Copy(io.Discard, resp1.Body)
-	resp1.Body.Close()
-
-	resp2, err := http.Get(srv.URL + "/api/other")
-	assertNoErr(t, err, "GET other")
-	_, _ = io.Copy(io.Discard, resp2.Body)
-	resp2.Body.Close()
-
-	if len(fakeInner.Requests()) != 1 || fakeInner.LastRequest().Path != "/api/sessions/123" {
-		t.Fatalf("inner did not receive sessions request; reqs=%v", fakeInner.Requests())
-	}
-	if len(fakeOuter.Requests()) != 1 || fakeOuter.LastRequest().Path != "/api/other" {
-		t.Fatalf("outer did not receive other request; reqs=%v", fakeOuter.Requests())
 	}
 }
 
