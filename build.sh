@@ -39,12 +39,9 @@ done
 echo "Bundling settings UI..."
 go run ./web/gen
 
-# Stop any running Relay before testing: the hermetic suite requires it
-# stopped (cmd/relay/support_safety_test.go — a live instance rewrites the
-# real settings.json and trips the sandbox-safety guard), and the build below
-# is about to replace its binary regardless. SIGTERM first, for the normal
-# clean shutdown (app.cleanup() in trayapp.go); SIGKILL only if it hasn't
-# exited within 3s.
+# Stop any running Relay before testing: the build below is about to replace
+# its binary. SIGTERM first, for the normal clean shutdown
+# (app.cleanup() in trayapp.go); SIGKILL only if it hasn't exited within 3s.
 stop_relay() {
     pgrep -x relay >/dev/null 2>&1 || return 0
     pkill -TERM -x relay 2>/dev/null || true
