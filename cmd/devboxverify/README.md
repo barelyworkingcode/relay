@@ -335,16 +335,36 @@ between the two. The service is stopped after.
 - Traps: the first restart waits 1 s by design; a build that gives up at the
   first attempt reads FAIL with STATE `failed (exit …)`.
 
+**slow-route-keepalive** (screen). A relay route that runs past the 10 s
+read deadline must not poison the connection it arrived on. The journey adds
+host `blackhole-<nonce>` (target `192.0.2.1`, which drops packets) and
+project `Unreachable Host <nonce>` on it, then on one keep-alive connection
+sends `GET /api/models`, `GET /api/projects/{id}/persistent-sessions` and
+`GET /api/models` again. PASS when the slow list answers 502 after 10 s on
+the reused connection and the second models call answers 200 on it too. The
+project and host are deleted after.
+- Lives in: `cmd/relay/frontend_server.go` (`setFrontendRouteReadDeadline`),
+  `cmd/relay/persistent_session_routes.go`, `cmd/relay/host_routes.go`.
+- Reached by: `POST /api/hosts` (class `configure`, no prompt, bounded at
+  40 s for the ssh probe), `POST /api/projects` through the helper (the
+  `project.grant` prompt), then the three GETs with the run credential over
+  one client that holds a single connection.
+- Traps: a build without the fix reads FAIL, the second models call a 502
+  `context canceled`. BLOCKED when the slow list answers anything but 502,
+  answers in under 10 s or on a new connection: then nothing was proven.
+  `tmux_path` is set, or the list answers 409 without running ssh.
+
 **verify-fixtures-removed** (screen). Every `devboxverify-probe-*` MCP and
 `devboxverify-crash-*` service is unregistered (both ungated) and every
-`Verify Grant *` project deleted, from this run or a crashed one, with their
-state folders. Every terminal whose directory is under a `grant-*` state
+`Verify Grant *` and `Unreachable Host *` project deleted, from this run or a
+crashed one, with their state folders. Then every host named `blackhole-*`
+with target `192.0.2.1` is deleted. Every terminal whose directory is under a `grant-*` state
 folder or the World root is deleted, whatever its state. PASS when none is
 left and no prompt appeared.
 - Lives in: `cmd/relay/mcp_ops.go`, `cmd/relay/service_ops.go`,
   `cmd/relay/project_ops.go`, `internal/sessions/api/http_terminal.go`.
-- Traps: without the run credential the projects and terminals stay, the
-  rest is still removed, and the journey reads BLOCKED. A terminal left
+- Traps: without the run credential the projects, hosts and terminals stay,
+  the rest is still removed, and the journey reads BLOCKED. A terminal left
   behind makes eve's next page load open on it instead of Home.
 
 ## One-time setup
@@ -447,6 +467,11 @@ None of this drifts `verify.sh`.
 - A screen run that dies mid-way leaves its fixtures; the next run's
   verify-fixtures-removed removes them. A credential it minted expires within
   the hour.
+- A crashed slow-route-keepalive leaves its Unreachable Host project. On a
+  build without the read-deadline fix, eve lists that project's persistent
+  sessions on every page load, and each list poisons eve's connection: every
+  chat, shell and model call answers 502 until verify-fixtures-removed runs
+  or relay restarts.
 - Never touch a Relay dialog during a run. The helper answers or cancels the
   harness's own prompts, and the sweep after each screen journey cancels any
   left open.

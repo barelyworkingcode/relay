@@ -42,6 +42,7 @@ var screenJourneys = []journey{
 	{narrowID, []string{"grants", "projects", "sandbox"}, phaseScreen, 45 * time.Second, runGrantNarrowing},
 	{svcStartID, []string{"services"}, phaseScreen, 30 * time.Second, runServiceStartStop},
 	{svcCrashID, []string{"services"}, phaseScreen, 30 * time.Second, runServiceRestart},
+	{slowRouteID, []string{"credentials", "sessions", "hosts"}, phaseScreen, gateTimeout, runSlowRouteKeepalive},
 }
 
 // screenCreds answers P4 for launches, which are class execute, and the run
