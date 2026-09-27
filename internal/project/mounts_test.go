@@ -24,6 +24,16 @@ func mkMountDir(t *testing.T) string {
 // ValidateMounts: the kind gate.
 // ---------------------------------------------------------------------------
 
+func TestValidateMounts_RefusesNonEmptyMountsOnALocalProject(t *testing.T) {
+	proj := &config.Project{
+		Kind:   config.ProjectKindLocal,
+		Mounts: []config.MountGrant{{ID: "m1", Path: mkMountDir(t)}},
+	}
+	if err := ValidateMounts(proj); err == nil {
+		t.Fatal("expected refusal of non-empty Mounts on a kind:local project")
+	}
+}
+
 // The zero value of Kind reads as local (project.go's own documented rule),
 // so a project built with no Kind set at all must be refused exactly like an
 // explicit kind:local one — an equality check against ProjectKindLocal would
