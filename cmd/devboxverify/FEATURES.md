@@ -36,7 +36,7 @@ Areas: sessions, sandbox, templates, audit.
 | Blank-model launch refused | API | `POST /api/sessions` with no model | HTTP [execute] | — | blank-model-refused |
 | Message and stop a session | API (eve) | eve chat → `POST /api/sessions/{id}/message`, `DELETE /api/sessions/{id}`; `GET /api/sessions` | HTTP [proxy] | — | session-chat-lifecycle |
 | Resume a session | API (eve) | `POST /api/sessions/{id}/resume` | HTTP [execute] | — | none |
-| Terminals and their log | API (eve) | eve terminal → `POST /api/terminals` [execute]; `GET /api/terminals`, `GET /api/terminals/{id}/log`, `DELETE` [proxy] | HTTP | — | terminal-lifecycle |
+| Terminals and their log | API (eve) | eve terminal → `POST /api/terminals` [execute]; `GET /api/terminals`, `GET /api/terminals/{id}/log`, `DELETE` [proxy] | HTTP | — | terminal-lifecycle, verify-fixtures-removed |
 | Persistent sessions | API | `GET`/`DELETE /api/projects/{id}/persistent-sessions` | HTTP | — | none |
 | `relay sandbox <template>` | CLI | from a project folder, `relay sandbox world-probe` | CLI / bridge | — | acme-sandbox-reach |
 | Sandbox containment (own project only) | sandbox | any sandboxed session | bridge | — | acme-sandbox-reach |
@@ -264,7 +264,7 @@ areas:
   sessions:
     code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**]
     tests: [cmd/relay/session_*_test.go, cmd/relay/router_sessions_test.go, cmd/relay/mount_session_test.go, cmd/relaysessions/*_test.go, internal/sessions/**/*_test.go]
-    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion]
+    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, verify-fixtures-removed]
   sandbox:
     code: [cmd/relay/sandbox_*.go, cmd/relay/session_sandbox*.go, internal/bridge/sandbox*.go, internal/sessions/sandbox/**]
     tests: [cmd/relay/sandbox_*_test.go, cmd/relay/session_sandbox*_test.go, internal/sessions/sandbox/**/*_test.go]
@@ -342,7 +342,9 @@ areas:
   session.
 - Fixtures the screen phase creates (the probe MCP, the crash service, the
   Verify Grant project) carry the run nonce and are removed by
-  verify-fixtures-removed, including a crashed run's leftovers.
+  verify-fixtures-removed, including a crashed run's leftovers. So are the
+  terminals any journey opened under a `grant-*` state folder or the World
+  root, stopped or not.
 - `screen` features have no door but the Settings window or tray. They are
   the last candidates for a journey; an API door is preferred when one exists.
 - `permission-mode-restart` and `v1-conversion-refusal` are listed for

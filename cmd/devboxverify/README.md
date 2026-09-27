@@ -338,11 +338,15 @@ between the two. The service is stopped after.
 **verify-fixtures-removed** (screen). Every `devboxverify-probe-*` MCP and
 `devboxverify-crash-*` service is unregistered (both ungated) and every
 `Verify Grant *` project deleted, from this run or a crashed one, with their
-state folders. PASS when none is left and no prompt appeared.
+state folders. Every terminal whose directory is under a `grant-*` state
+folder or the World root is deleted, whatever its state. PASS when none is
+left and no prompt appeared.
 - Lives in: `cmd/relay/mcp_ops.go`, `cmd/relay/service_ops.go`,
-  `cmd/relay/project_ops.go`.
-- Traps: without the run credential the projects stay, the rest is still
-  removed, and the journey reads BLOCKED.
+  `cmd/relay/project_ops.go`, the terminal routes in
+  `cmd/relay/session_routes.go`.
+- Traps: without the run credential the projects and terminals stay, the
+  rest is still removed, and the journey reads BLOCKED. A terminal left
+  behind makes eve's next page load open on it instead of Home.
 
 ## One-time setup
 
