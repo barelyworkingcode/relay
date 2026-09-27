@@ -110,17 +110,24 @@ func (p *LocalAuthProvider) Evaluate(ctx context.Context, reason string) error {
 	token := laRegister(ch)
 
 	cReason := C.CString(reason)
+	started := make(chan struct{})
 	laInFlight.Add(1)
 	go func() {
 		defer laInFlight.Done()
 		defer C.free(unsafe.Pointer(cReason))
 		C.relay_la_evaluate(cReason, C.uintptr_t(token))
+		close(started)
 	}()
 
 	select {
 	case res := <-ch:
 		return classifyLAResult(res)
 	case <-ctx.Done():
+		// This is subtle: the context is registered inside relay_la_evaluate,
+		// so an invalidate issued before it returns finds nothing and the
+		// dialog stays up for a requester that has gone.
+		<-started
+		C.relay_la_invalidate(C.uintptr_t(token))
 		return ctx.Err()
 	}
 }
