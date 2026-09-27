@@ -22,7 +22,7 @@ type staleState struct {
 }
 
 func runStaleDerivedEdit(ctx context.Context, e env) result {
-	token, res, ok := configureCredential(staleID)
+	token, res, ok := runCredential(e, staleID)
 	if !ok {
 		return res
 	}

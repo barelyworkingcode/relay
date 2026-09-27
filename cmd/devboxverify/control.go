@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -44,21 +43,6 @@ func readCredential(path string) (string, error) {
 		return "", errors.New("credential file empty or unreadable")
 	}
 	return token, nil
-}
-
-func configureCredentialFile() string {
-	return envOr("RELAY_VERIFY_CONFIGURE_CREDENTIAL_FILE", filepath.Join(home, ".config", "relay-verify", "configure-credential"))
-}
-
-func configureCredential(id string) (token string, res result, ok bool) {
-	token, err := readCredential(configureCredentialFile())
-	switch {
-	case errors.Is(err, errCredentialMissing):
-		return "", result{id, stateNotRun, "no configure credential; mint one for evidence runs: relay credential mint --name devbox-verify-configure --class configure --ttl 24h (README P7)"}, false
-	case err != nil:
-		return "", blocked(id, err.Error()), false
-	}
-	return token, result{}, true
 }
 
 // frontendDo reports a request that outlived frontendRequestTimeout as
@@ -111,9 +95,9 @@ func frontendRefusal(id, act string, r frontendResponse) (res result, refused bo
 	case r.Status == 0:
 		return blocked(id, "frontend socket unreachable"), true
 	case r.Status == http.StatusUnauthorized:
-		return result{id, stateNotRun, "configure credential refused (401): expired or revoked; delete it or re-mint (P7)"}, true
+		return blocked(id, "run credential refused (401): expired or revoked"), true
 	case r.Status == http.StatusForbidden && r.Error == "Forbidden":
-		return blocked(id, "credential lacks the configure class (403); re-mint per P7"), true
+		return blocked(id, "run credential lacks the configure class (403)"), true
 	case r.Status == http.StatusForbidden:
 		return fail(act + " asked for presence: " + r.Error)
 	case r.Status == http.StatusOK:

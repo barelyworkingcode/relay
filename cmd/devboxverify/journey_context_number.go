@@ -28,7 +28,7 @@ type numbersRun struct {
 
 func runContextNumberResave(ctx context.Context, e env) result {
 	const id = "context-number-resave"
-	token, res, ok := configureCredential(id)
+	token, res, ok := runCredential(e, id)
 	if !ok {
 		return res
 	}
