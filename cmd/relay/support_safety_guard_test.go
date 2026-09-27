@@ -1,9 +1,13 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -200,5 +204,66 @@ func TestLiveRelayAnswers(t *testing.T) {
 	listenRelaySock(t, dir)
 	if !liveRelayAnswers(dir) {
 		t.Fatal("liveRelayAnswers = false with a listener on relay.sock, want true")
+	}
+}
+
+const suiteHomeChildExitEnv = "GO_WANT_SUITE_HOME_CHILD_EXIT"
+
+// TestSuiteHomeChildHelper is not a real test: only a child spawned by
+// TestSuiteHome_ChildAdoptsParentRoot sets its guard. It leaves through
+// os.Exit so TestMain's cleanup never runs, as helpers calling main() do.
+func TestSuiteHomeChildHelper(t *testing.T) {
+	code := os.Getenv(suiteHomeChildExitEnv)
+	if code == "" {
+		return
+	}
+	n, err := strconv.Atoi(code)
+	if err != nil {
+		os.Exit(2)
+	}
+	fmt.Printf("suiteHome=%s\n", suiteHome)
+	os.Exit(n)
+}
+
+func suiteRootNames(t *testing.T) map[string]bool {
+	t.Helper()
+	matches, err := filepath.Glob("/tmp/relay-suite-home-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		names[m] = true
+	}
+	return names
+}
+
+func TestSuiteHome_ChildAdoptsParentRoot(t *testing.T) {
+	for _, code := range []int{0, 1} {
+		t.Run(fmt.Sprintf("exit %d", code), func(t *testing.T) {
+			before := suiteRootNames(t)
+			cmd := exec.Command(os.Args[0], "-test.run=^TestSuiteHomeChildHelper$")
+			cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%d", suiteHomeChildExitEnv, code))
+			out, err := cmd.Output()
+			got := 0
+			var stderr []byte
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				got, stderr = exitErr.ExitCode(), exitErr.Stderr
+			} else if err != nil {
+				t.Fatalf("run child: %v", err)
+			}
+			if got != code {
+				t.Fatalf("child exit = %d, want %d; stdout:\n%s\nstderr:\n%s", got, code, out, stderr)
+			}
+			if want := "suiteHome=" + suiteHome + "\n"; !strings.Contains(string(out), want) {
+				t.Fatalf("child stdout = %q, want it to contain %q", out, want)
+			}
+			for name := range suiteRootNames(t) {
+				if !before[name] {
+					t.Errorf("new suite root %s left behind by the child", name)
+				}
+			}
+		})
 	}
 }
