@@ -335,7 +335,10 @@ func TestClassifyFixturesRemoved(t *testing.T) {
 		{"cannot re-list", func(r *fixturesRun) { r.ListErr = errors.New("bridge unreachable") }, notPass},
 		{"no run credential", func(r *fixturesRun) { r.NoToken = true }, stateBlocked},
 		{"no run credential, projects left", func(r *fixturesRun) { r.NoToken, r.LeftProjects = true, []string{"g1"} }, stateBlocked},
-	}, map[string]string{"no run credential": mintPosID, "no run credential, projects left": mintPosID})
+		{"terminal left", func(r *fixturesRun) { r.LeftTerminals = []string{"t1"} }, stateFail},
+		{"no run credential, terminals left", func(r *fixturesRun) { r.NoToken, r.LeftTerminals = true, []string{"t1"} }, stateBlocked},
+	}, map[string]string{"no run credential": mintPosID, "no run credential, projects left": mintPosID,
+		"terminal left": "terminal(s)", "no run credential, terminals left": mintPosID})
 }
 
 func TestClassifyDialogNeg(t *testing.T) {
