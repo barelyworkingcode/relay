@@ -17,6 +17,9 @@ import (
 // suiteHome is the isolated HOME TestMain sets before m.Run; "" until then.
 var suiteHome string
 
+// suiteHomeEnv carries suiteHome to re-exec'd helper children.
+const suiteHomeEnv = "RELAY_TEST_SUITE_HOME"
+
 const sandboxFixHint = "fix: ensure every test calls mkSandboxRelayHome(t) before touching settings/pidfiles/logs/sockets"
 
 // maxTripwireEntries caps how many leaked entries a violation names.
@@ -42,21 +45,41 @@ func TestMain(m *testing.M) {
 	realDir := bridge.DefaultConfigDir()
 	real := watchRealDir(realDir)
 
-	// This is deliberate: /tmp, not $TMPDIR, so a test that binds relay.sock
-	// under the isolated HOME stays inside the 104-byte socket path limit.
-	root, err := os.MkdirTemp("/tmp", "relay-suite-home-")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "create isolated suite HOME under /tmp: %v\n", err)
-		os.Exit(1)
+	// This is subtle: tests re-exec this binary as a helper child, which runs
+	// TestMain again. The child adopts the parent's root so it shares the
+	// tripwire the parent checks, and leaves removal to the parent, since the
+	// child often exits inside main() before reaching cleanup.
+	root := os.Getenv(suiteHomeEnv)
+	ownsRoot := !isDir(root)
+	if ownsRoot {
+		// This is deliberate: /tmp, not $TMPDIR, so a test that binds relay.sock
+		// under the isolated HOME stays inside the 104-byte socket path limit.
+		var err error
+		root, err = os.MkdirTemp("/tmp", "relay-suite-home-")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "create isolated suite HOME under /tmp: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	removeOwnedRoot := func() error {
+		if !ownsRoot {
+			return nil
+		}
+		return os.RemoveAll(root)
 	}
 	if err := os.Setenv("HOME", root); err != nil {
 		fmt.Fprintf(os.Stderr, "set HOME to isolated suite root %s: %v\n", root, err)
-		_ = os.RemoveAll(root)
+		_ = removeOwnedRoot()
 		os.Exit(1)
 	}
 	if err := os.Setenv("XDG_CONFIG_HOME", filepath.Join(root, ".config")); err != nil {
 		fmt.Fprintf(os.Stderr, "set XDG_CONFIG_HOME under isolated suite root %s: %v\n", root, err)
-		_ = os.RemoveAll(root)
+		_ = removeOwnedRoot()
+		os.Exit(1)
+	}
+	if err := os.Setenv(suiteHomeEnv, root); err != nil {
+		fmt.Fprintf(os.Stderr, "set %s to isolated suite root %s: %v\n", suiteHomeEnv, root, err)
+		_ = removeOwnedRoot()
 		os.Exit(1)
 	}
 	suiteHome = root
@@ -67,7 +90,7 @@ func TestMain(m *testing.M) {
 		for _, msg := range v {
 			fmt.Fprintf(os.Stderr, "  %s\n", msg)
 		}
-		_ = os.RemoveAll(root)
+		_ = removeOwnedRoot()
 		os.Exit(1)
 	}
 
@@ -82,7 +105,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "sandbox guard: a relay answered on %s at start; real config dir not compared this run (isolated-HOME tripwire still checked)\n", filepath.Join(realDir, "relay.sock"))
 	}
 
-	if err := os.RemoveAll(root); err != nil {
+	if err := removeOwnedRoot(); err != nil {
 		fmt.Fprintf(os.Stderr, "remove isolated suite HOME %s: %v\n", root, err)
 		code = 1
 	}
@@ -104,6 +127,11 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+func isDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // isolationViolations reports how the isolated HOME failed to contain the

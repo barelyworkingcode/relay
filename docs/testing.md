@@ -16,7 +16,10 @@ in the process reaches the real config dir through `HOME`. A test that forgets
 the tripwire exists after the run (no ignore list: `logs/`, `run/` and sockets
 count too), or if the config dir no longer resolves to it (a test left `HOME`,
 `XDG_CONFIG_HOME` or the override changed). The isolated root is a tripwire,
-not a place tests may use.
+not a place tests may use. Helper children that re-exec the test binary
+inherit the root through `RELAY_TEST_SUITE_HOME` and reuse it rather than
+making their own, so a child's leak lands on the tripwire the parent checks,
+and only the parent removes the root.
 
 The guard also compares the real config dir before and after the run, which
 catches a route that ignores `HOME`. That comparison is skipped when a relay
