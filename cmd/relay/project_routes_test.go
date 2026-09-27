@@ -394,11 +394,20 @@ func TestProjectRoutes_UpdateUnknown(t *testing.T) {
 	srv, _ := newProjectRoutesServer(t)
 	defer srv.Close()
 
-	resp, _ := doJSON(t, "PUT", srv.URL+"/api/projects/does-not-exist", map[string]interface{}{
-		"name": "Whatever",
-	})
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	cases := []struct {
+		name, method, path string
+		body               interface{}
+	}{
+		{"update", "PUT", "/api/projects/does-not-exist", map[string]interface{}{"name": "Whatever"}},
+		{"rotate_token", "POST", "/api/projects/does-not-exist/rotate_token", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, _ := doJSON(t, tc.method, srv.URL+tc.path, tc.body)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("expected 404, got %d", resp.StatusCode)
+			}
+		})
 	}
 }
 
@@ -581,16 +590,6 @@ func TestProjectRoutes_RotateToken_NewTokenInvalidatesOld(t *testing.T) {
 	}
 }
 
-func TestProjectRoutes_RotateToken_Unknown404(t *testing.T) {
-	srv, _ := newProjectRoutesServerFull(t, nil, nil, nil)
-	defer srv.Close()
-
-	resp, _ := doJSON(t, "POST", srv.URL+"/api/projects/nope/rotate_token", nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
-	}
-}
-
 func TestProjectRoutes_RegenSkill_OK(t *testing.T) {
 	srv, _ := newProjectRoutesServerFull(t, nil, fixedTokenLister{}, nil)
 	defer srv.Close()
@@ -634,29 +633,6 @@ func TestProjectRoutes_RegenSkill_NoListerReturns503(t *testing.T) {
 	resp, _ := doJSON(t, "POST", srv.URL+"/api/projects/"+created.ID+"/regen_skill", nil)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 when no skill lister wired, got %d", resp.StatusCode)
-	}
-}
-
-func TestProjectRoutes_ListMcpTools_ReturnsLiveList(t *testing.T) {
-	provider := mcpToolsProviderFunc(func(id string) []config.ToolInfo {
-		if id == "fsmcp" {
-			return []config.ToolInfo{{Name: "fs_read"}, {Name: "fs_write"}}
-		}
-		return nil
-	})
-	srv, _ := newProjectRoutesServerFull(t, provider, nil, nil)
-	defer srv.Close()
-
-	resp, body := doJSON(t, "GET", srv.URL+"/api/mcps/fsmcp/tools", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d body %s", resp.StatusCode, body)
-	}
-	var infos []config.ToolInfo
-	if err := json.Unmarshal(body, &infos); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(infos) != 2 {
-		t.Errorf("expected 2 tools, got %d", len(infos))
 	}
 }
 
@@ -718,8 +694,12 @@ func TestProjectRoutes_CommitEventFires(t *testing.T) {
 }
 
 func TestProjectRoutes_ListMcpTools_DoesNotLeakCredentials(t *testing.T) {
+	tools := []config.ToolInfo{{Name: "fs_read", Description: "read"}, {Name: "fs_write", Description: "write"}}
 	provider := mcpToolsProviderFunc(func(id string) []config.ToolInfo {
-		return []config.ToolInfo{{Name: "fs_read", Description: "read"}}
+		if id == "fsmcp" {
+			return tools
+		}
+		return nil
 	})
 	srv, _ := newProjectRoutesServerFull(t, provider, nil, nil)
 	defer srv.Close()
@@ -731,6 +711,9 @@ func TestProjectRoutes_ListMcpTools_DoesNotLeakCredentials(t *testing.T) {
 	var generic []map[string]interface{}
 	if err := json.Unmarshal(body, &generic); err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+	if len(generic) != len(tools) {
+		t.Fatalf("expected %d tool entries, got %d: %s", len(tools), len(generic), body)
 	}
 	allowedKeys := map[string]bool{"name": true, "description": true, "category": true}
 	for _, m := range generic {

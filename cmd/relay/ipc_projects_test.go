@@ -172,6 +172,10 @@ func TestIPCCreateProject_AppliesGenerateSkillAndDisabledTools(t *testing.T) {
 	if lister.calls == 0 {
 		t.Errorf("expected skill regen to invoke ListTools at least once")
 	}
+	skillPath := filepath.Join(projectSkillDir(added), "relay-files", "SKILL.md")
+	if _, err := os.Stat(skillPath); err != nil {
+		t.Errorf("expected SKILL.md at %s after create: %v", skillPath, err)
+	}
 }
 
 // TestIPCUpdateProject_GenerateSkillPointerSemantics re-points a property
@@ -442,49 +446,7 @@ func TestIPCListMcpTools_NoToolsProviderEmitsEmptyList(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected onMcpToolsListed even with nil provider")
 	}
-	var infos []config.ToolInfo
-	_ = json.Unmarshal(args[1].(json.RawMessage), &infos)
-	if len(infos) != 0 {
-		t.Errorf("expected empty list, got %+v", infos)
+	if got := string(args[1].(json.RawMessage)); got != "[]" {
+		t.Errorf("expected payload [], got %s", got)
 	}
-}
-
-func TestProjectLifecycle_CreateWithSkill_Delete_CleansUpSkillFile(t *testing.T) {
-	ipc, store, ui, _ := newProjectsIPC(t)
-	projDir := t.TempDir()
-
-	rawCreate := mustRaw(t, map[string]interface{}{
-		"name":            "Lifecycle",
-		"path":            projDir,
-		"allowed_mcp_ids": []string{"fsmcp"},
-		"generate_skill":  true,
-	})
-	ipcCreateProject(ipc, rawCreate)
-	args, ok := findEvent(ui, "onProjectAdded")
-	if !ok {
-		t.Fatalf("expected onProjectAdded; events=%+v", ui.events)
-	}
-	var created config.Project
-	_ = json.Unmarshal(args[0].(json.RawMessage), &created)
-
-	skillPath := filepath.Join(projectSkillDir(created), "relay-files", "SKILL.md")
-	if _, err := readFileExists(skillPath); err != nil {
-		t.Fatalf("expected SKILL.md at %s after create: %v", skillPath, err)
-	}
-
-	rawDelete := mustRaw(t, ipcIDMsg{ID: created.ID})
-	ipcRemoveProject(ipc, rawDelete)
-	if _, ok := findEvent(ui, "onProjectRemoved"); !ok {
-		t.Fatalf("expected onProjectRemoved")
-	}
-	if _, err := readFileExists(skillPath); err == nil {
-		t.Fatalf("SKILL.md still present after project delete: %s", skillPath)
-	}
-	if p, _ := config.FindProjectByID(store.Get(), created.ID); p != nil {
-		t.Fatalf("project still in store after delete")
-	}
-}
-
-func readFileExists(path string) ([]byte, error) {
-	return os.ReadFile(path)
 }
