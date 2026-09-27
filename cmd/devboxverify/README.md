@@ -58,10 +58,9 @@ template name writes a size-capped audit row.
   the tool ran inside a relay session.
 
 **stale-derived-access-edit.** An Access-only edit on a remote record that
-holds a stale derived field (`file_dirs`, which the MCP now derives from the
+holds a stale derived field (`file_dirs`, which relay derives from the
 project path) is accepted. The stale field is dropped; `mail_accounts` stays.
 - Lives in: `internal/project/apply.go` (`ApplyUpdate`),
-  `internal/project/grant_widening.go` (`jsonValueEqual`),
   `cmd/relay/project_ops.go` (`ProjectOps.Update`).
 - Reached by: `PUT /api/projects/{id}` on the frontend socket with the
   configure credential (P7); read back through `relay grant --json`.
@@ -152,7 +151,12 @@ None of this drifts `verify.sh`.
   Save the token alone, mode 0600, in the configure credential file. P4
   stays execute-only: a configure token on disk can rename, narrow or delete
   projects without presence. Without P7 both fix journeys read NOTRUN, which
-  is the nightly state.
+  is the nightly state. An expired or revoked one is refused with 401 and
+  also reads NOTRUN.
+
+  After the evidence run, delete the file
+  (`rm ~/.config/relay-verify/configure-credential`) or revoke the credential
+  with `relay credential revoke --id <id>`.
 
 ## Verifying a PR
 
@@ -185,6 +189,10 @@ None of this drifts `verify.sh`.
 - A build without the context-number fix leaves a Relay password dialog open
   after context-number-resave FAILs on its 10 s bound. Press Cancel. Never
   approve a Relay dialog during a run.
+- A stale-derived-access-edit FAIL "stale file_dirs was kept" can also mean
+  `devboxverify-scope` is registered but not connected, so relay holds no
+  schema for it. Check it in Settings before reading the FAIL as a
+  regression. This can never produce a false PASS.
 - Never edit the fixtures from Settings. Any edit with the MCP connected
   drops Verify Stale's `file_dirs`.
 - When showing red then green, run the red build first. A fixed build spends

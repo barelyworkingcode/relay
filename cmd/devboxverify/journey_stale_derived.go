@@ -22,15 +22,15 @@ type staleState struct {
 }
 
 func runStaleDerivedEdit(ctx context.Context, e env) result {
+	token, res, ok := configureCredential(staleID)
+	if !ok {
+		return res
+	}
 	before, recordID, res, ok := readStaleState(ctx, e)
 	if !ok {
 		return res
 	}
 	if res, ok := staleFixtureReady(before); !ok {
-		return res
-	}
-	token, res, ok := configureCredential(staleID)
-	if !ok {
 		return res
 	}
 	body, _ := json.Marshal(map[string]map[string]string{"access": {staleMcp: "read"}})

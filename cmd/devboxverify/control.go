@@ -107,7 +107,7 @@ func frontendRefusal(id, act string, r frontendResponse) (res result, refused bo
 	case r.Status == 0:
 		return blocked(id, "frontend socket unreachable"), true
 	case r.Status == http.StatusUnauthorized:
-		return blocked(id, "credential refused (401)"), true
+		return result{id, stateNotRun, "configure credential refused (401): expired or revoked; delete it or re-mint (P7)"}, true
 	case r.Status == http.StatusForbidden && r.Error == "Forbidden":
 		return blocked(id, "credential lacks the configure class (403); re-mint per P7"), true
 	case r.Status == http.StatusForbidden:

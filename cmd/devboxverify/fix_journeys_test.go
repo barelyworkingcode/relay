@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +25,7 @@ func TestFrontendRefusal(t *testing.T) {
 	}{
 		{"timeout beats an unreachable socket", frontendResponse{TimedOut: true}, stateFail, true, "press Cancel"},
 		{"socket unreachable", frontendResponse{}, stateBlocked, true, ""},
-		{"credential refused", frontendResponse{Status: 401, Error: "unauthorized"}, stateBlocked, true, ""},
+		{"credential expired or revoked", frontendResponse{Status: 401, Error: "unauthorized"}, stateNotRun, true, "P7"},
 		{"credential lacks configure", frontendResponse{Status: 403, Error: "Forbidden"}, stateBlocked, true, "P7"},
 		{"presence asked", frontendResponse{Status: 403, Error: "presence required"}, stateFail, true, ""},
 		{"accepted", frontendResponse{Status: 200}, "", false, ""},
@@ -87,14 +88,13 @@ func TestClassifyContextNumber(t *testing.T) {
 		{"mcp not granted", func(r *numbersRun) { r.Granted = false }, stateBlocked},
 		{"fixture not restored", func(r *numbersRun) { r.Before = "1" }, stateBlocked},
 		{"save held by presence", func(r *numbersRun) {
-			r.Save, r.Restore, r.Restored = numbersSave{Resp: frontendResponse{TimedOut: true}, Stored: "1.0"}, numbersSave{}, false
+			r.Save, r.Restore = numbersSave{Resp: frontendResponse{TimedOut: true}, Stored: "1.0"}, numbersSave{}
 		}, stateFail},
 		{"credential lacks configure", func(r *numbersRun) {
-			r.Save, r.Restore, r.Restored = numbersSave{Resp: frontendResponse{Status: 403, Error: "Forbidden"}, Stored: "1.0"}, numbersSave{}, false
+			r.Save, r.Restore = numbersSave{Resp: frontendResponse{Status: 403, Error: "Forbidden"}, Stored: "1.0"}, numbersSave{}
 		}, stateBlocked},
 		{"save recorded as widening", func(r *numbersRun) { r.Save.Widening = true }, stateFail},
 		{"save ignored", func(r *numbersRun) { r.Save.Stored = "1.0" }, stateFail},
-		{"restore never ran", func(r *numbersRun) { r.Restore, r.Restored = numbersSave{}, false }, stateFail},
 		{"restore held by presence", func(r *numbersRun) { r.Restore = numbersSave{Resp: frontendResponse{TimedOut: true}, Stored: "1"} }, stateFail},
 		{"restore recorded as widening", func(r *numbersRun) { r.Restore.Widening = true }, stateFail},
 		{"restore not stored", func(r *numbersRun) { r.Restore.Stored = "1" }, stateFail},
@@ -105,7 +105,7 @@ func TestClassifyContextNumber(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			v := numbersRun{Found: true, Granted: true, Before: "1.0", Restored: true,
+			v := numbersRun{Found: true, Granted: true, Before: "1.0",
 				Save:    numbersSave{Resp: frontendResponse{Status: 200}, Stored: "1"},
 				Restore: numbersSave{Resp: frontendResponse{Status: 200}, Stored: "1.0"}}
 			c.mut(&v)
@@ -173,6 +173,24 @@ func TestConfigureCredential(t *testing.T) {
 			}
 			checkState(t, res, c.want)
 			checkDetail(t, res, c.detail)
+		})
+	}
+}
+
+func TestFixJourneysNeedConfigureCredentialFirst(t *testing.T) {
+	dir := t.TempDir()
+	relay := filepath.Join(dir, "relay")
+	script := "#!/bin/sh\ncase \"$1\" in grant) echo '[]' ;; mcp) echo 'ID NAME TRANSPORT ENDPOINT' ;; esac\n"
+	if err := os.WriteFile(relay, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RELAY_VERIFY_CONFIGURE_CREDENTIAL_FILE", filepath.Join(dir, "missing"))
+	e := env{RelayBin: relay, ConfigDir: dir, FrontendSocket: filepath.Join(dir, "frontend.sock"), WorldRoot: dir, CredentialFile: filepath.Join(dir, "credential"), Nonce: "0a1b2c3d"}
+	for name, run := range map[string]func(context.Context, env) result{"stale-derived": runStaleDerivedEdit, "context-number": runContextNumberResave} {
+		t.Run(name, func(t *testing.T) {
+			got := run(context.Background(), e)
+			checkState(t, got, stateNotRun)
+			checkDetail(t, got, "relay credential mint")
 		})
 	}
 }

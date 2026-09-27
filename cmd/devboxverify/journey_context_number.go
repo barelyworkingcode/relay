@@ -24,11 +24,14 @@ type numbersRun struct {
 	Found, Granted bool
 	Before         string
 	Save, Restore  numbersSave
-	Restored       bool
 }
 
 func runContextNumberResave(ctx context.Context, e env) result {
 	const id = "context-number-resave"
+	token, res, ok := configureCredential(id)
+	if !ok {
+		return res
+	}
 	recs, err := grantRecords(ctx, e)
 	if err != nil {
 		return blocked(id, err.Error())
@@ -44,10 +47,6 @@ func runContextNumberResave(ctx context.Context, e env) result {
 	if !r.Found || !r.Granted || r.Before != "1.0" {
 		return classifyContextNumber(r)
 	}
-	token, res, ok := configureCredential(id)
-	if !ok {
-		return res
-	}
 	baseline, err := newestConfigChangeID(ctx, e, g.ID)
 	if err != nil {
 		return blocked(id, err.Error())
@@ -56,7 +55,6 @@ func runContextNumberResave(ctx context.Context, e env) result {
 	r.Save, baseline, readErr = saveNumber(ctx, e, token, g.ID, "1", baseline)
 	if r.Save.Resp.Status == http.StatusOK {
 		var restoreErr error
-		r.Restored = true
 		r.Restore, _, restoreErr = saveNumber(ctx, e, token, g.ID, "1.0", baseline)
 		if readErr == nil {
 			readErr = restoreErr
@@ -68,8 +66,6 @@ func runContextNumberResave(ctx context.Context, e env) result {
 	return classifyContextNumber(r)
 }
 
-// saveNumber answers the save and the newest config_change id after it, which
-// is the baseline for the next save. It reads back only after a 200.
 func saveNumber(ctx context.Context, e env, token, profileID, n, baseline string) (numbersSave, string, error) {
 	// This is deliberate: the bodies are literal text because the fix is about
 	// 1 and 1.0 being the same number, and json.Marshal would print both as 1.
@@ -139,7 +135,7 @@ func classifyContextNumber(r numbersRun) result {
 	switch {
 	case r.Restore.Widening:
 		return fail("restoring n = 1.0 recorded a config_change")
-	case !r.Restored || r.Restore.Stored != "1.0":
+	case r.Restore.Stored != "1.0":
 		return fail(fmt.Sprintf("after restoring n = 1.0 the profile holds %q", r.Restore.Stored))
 	}
 	return result{id, statePass, "saved n = 1 over 1.0 and restored, no prompt and no config_change"}
