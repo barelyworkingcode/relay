@@ -3,6 +3,7 @@ package project
 import (
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -128,5 +129,20 @@ func TestUpdateProjectKind_RefusesRemoteToLocalWhileEnrolled(t *testing.T) {
 	updateProjectKind(s, other.ID, config.ProjectKindLocal)
 	if proj, _ := config.FindProjectByID(s, other.ID); proj.IsRemote() {
 		t.Fatal("an unenrolled remote project must still be convertible")
+	}
+}
+
+func TestUpdateProjectDisabledTools_ReplacesSlice(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp", "macmcp"})
+
+	store.With(func(s *config.Settings) {
+		s.UpdateProjectDisabledTools(proj.ID, "macmcp", []string{"runScript", "openApp"})
+	})
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
+	got := after.DisabledTools["macmcp"]
+	want := []string{"runScript", "openApp"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("disabled tools for macmcp = %v; want %v", got, want)
 	}
 }
