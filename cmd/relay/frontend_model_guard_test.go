@@ -448,3 +448,20 @@ func TestIsSessionModelUpdatePath(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionModelGuard_BlocksDisallowedModel(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := restrictedProject(t, store, []string{"haiku"})
+
+	spy := &nextSpy{}
+	guard := newSessionModelGuard(store, spy)
+	rec := httptest.NewRecorder()
+	guard(rec, postSessions(`{"projectId":"`+proj.ID+`","model":"opus"}`))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rec.Code)
+	}
+	if spy.called {
+		t.Error("disallowed model must not reach the dispatcher")
+	}
+}

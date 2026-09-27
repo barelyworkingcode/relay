@@ -1216,3 +1216,21 @@ func TestModelEndpoint_TrailingValueReturns400NotInternalError(t *testing.T) {
 	var got map[string]any
 	assertNoErr(t, json.Unmarshal(w.Body.Bytes(), &got), "error body must be valid JSON in the endpoint's normal shape")
 }
+
+func TestModelEndpoint_ModelsListFiltered(t *testing.T) {
+	m, store, launches, hosts := newModelEndpointTestServer(t)
+	sock := newFakeRouterSocket(t, fakeRouterMux(t, nil))
+	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
+	tok := addModelProject(t, store, "restricted", []string{"vCode"}, false)
+
+	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodGet, "/v1/models", tok, nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "omlx/Chat") {
+		t.Fatalf("filtered list leaked a model outside the grant: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "vCode") {
+		t.Fatalf("filtered list dropped the granted model: %s", w.Body.String())
+	}
+}

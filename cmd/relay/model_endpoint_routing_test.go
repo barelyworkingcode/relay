@@ -647,3 +647,16 @@ func TestRouting_CatalogCarriesModelMapKeysAndNeverExposesTheirTarget(t *testing
 		t.Fatal("the modelMap key is missing from the caller's list")
 	}
 }
+
+// The bearer headers stay relay's own credential when no X-Relay-Key is sent:
+// pi's overlay and the chat provider authenticate that way today.
+func TestRouting_LegacyBearerStillAuthenticatesTheLocalBranch(t *testing.T) {
+	f := newRoutingFixture(t)
+	w := f.do("POST", "/v1/chat/completions", `{"model":"vCode"}`, map[string]string{"Authorization": "Bearer " + f.key})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if seen := f.host.requests(); len(seen) != 1 || seen[0].Header.Get("Authorization") != "" {
+		t.Fatalf("the model host saw %+v; the relay bearer must never reach it", seen)
+	}
+}
