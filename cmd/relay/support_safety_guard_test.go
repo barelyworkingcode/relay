@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -42,7 +43,7 @@ func TestIsolationViolations(t *testing.T) {
 		name string
 		// setup returns the tripwire and resolved dir; "" keeps the defaults.
 		setup func(t *testing.T, root, tripwire string) (string, string)
-		// want is a path the single message must name; "" means clean.
+		// want names the path the single message must name; nil means clean.
 		want func(root, tripwire, resolved string) string
 	}{
 		{"clean", nil, nil},
@@ -123,7 +124,7 @@ func TestRealDirWatch(t *testing.T) {
 		subdir bool // watch dir/relay, absent at watch time
 		before func(t *testing.T, dir string)
 		after  func(t *testing.T, dir string)
-		// want is a path the violation must name; "" means clean.
+		// want names the path the violation must name; nil means clean.
 		want     func(dir string) string
 		wantLive bool
 	}{
@@ -225,44 +226,37 @@ func TestSuiteHomeChildHelper(t *testing.T) {
 	os.Exit(n)
 }
 
-func suiteRootNames(t *testing.T) map[string]bool {
-	t.Helper()
-	matches, err := filepath.Glob("/tmp/relay-suite-home-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := make(map[string]bool, len(matches))
-	for _, m := range matches {
-		names[m] = true
-	}
-	return names
-}
-
 func TestSuiteHome_ChildAdoptsParentRoot(t *testing.T) {
 	for _, code := range []int{0, 1} {
 		t.Run(fmt.Sprintf("exit %d", code), func(t *testing.T) {
-			before := suiteRootNames(t)
 			cmd := exec.Command(os.Args[0], "-test.run=^TestSuiteHomeChildHelper$")
 			cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%d", suiteHomeChildExitEnv, code))
-			out, err := cmd.Output()
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("start child: %v", err)
+			}
+			childPID := cmd.Process.Pid
+			err := cmd.Wait()
 			got := 0
-			var stderr []byte
 			var exitErr *exec.ExitError
 			if errors.As(err, &exitErr) {
-				got, stderr = exitErr.ExitCode(), exitErr.Stderr
+				got = exitErr.ExitCode()
 			} else if err != nil {
 				t.Fatalf("run child: %v", err)
 			}
 			if got != code {
-				t.Fatalf("child exit = %d, want %d; stdout:\n%s\nstderr:\n%s", got, code, out, stderr)
+				t.Fatalf("child exit = %d, want %d; stdout:\n%s\nstderr:\n%s", got, code, stdout.String(), stderr.String())
 			}
-			if want := "suiteHome=" + suiteHome + "\n"; !strings.Contains(string(out), want) {
-				t.Fatalf("child stdout = %q, want it to contain %q", out, want)
+			if want := "suiteHome=" + suiteHome + "\n"; !strings.Contains(stdout.String(), want) {
+				t.Fatalf("child stdout = %q, want it to contain %q", stdout.String(), want)
 			}
-			for name := range suiteRootNames(t) {
-				if !before[name] {
-					t.Errorf("new suite root %s left behind by the child", name)
-				}
+			left, err := filepath.Glob(fmt.Sprintf("/tmp/relay-suite-home-%d-*", childPID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range left {
+				t.Errorf("suite root %s left behind by the child", name)
 			}
 		})
 	}

@@ -17,12 +17,10 @@ import (
 // suiteHome is the isolated HOME TestMain sets before m.Run; "" until then.
 var suiteHome string
 
-// suiteHomeEnv carries suiteHome to re-exec'd helper children.
 const suiteHomeEnv = "RELAY_TEST_SUITE_HOME"
 
 const sandboxFixHint = "fix: ensure every test calls mkSandboxRelayHome(t) before touching settings/pidfiles/logs/sockets"
 
-// maxTripwireEntries caps how many leaked entries a violation names.
 const maxTripwireEntries = 20
 
 // TestMain enforces the headline rule from ADR-001: no test may read or
@@ -55,7 +53,7 @@ func TestMain(m *testing.M) {
 		// This is deliberate: /tmp, not $TMPDIR, so a test that binds relay.sock
 		// under the isolated HOME stays inside the 104-byte socket path limit.
 		var err error
-		root, err = os.MkdirTemp("/tmp", "relay-suite-home-")
+		root, err = os.MkdirTemp("/tmp", fmt.Sprintf("relay-suite-home-%d-", os.Getpid()))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "create isolated suite HOME under /tmp: %v\n", err)
 			os.Exit(1)
@@ -86,7 +84,7 @@ func TestMain(m *testing.M) {
 	tripwire := bridge.DefaultConfigDir()
 
 	if v := isolationViolations(root, tripwire, bridge.ConfigDir()); len(v) > 0 {
-		fmt.Fprintf(os.Stderr, "isolated suite HOME is not in effect before the run:\n")
+		fmt.Fprintf(os.Stderr, "sandbox guard failed before the run:\n")
 		for _, msg := range v {
 			fmt.Fprintf(os.Stderr, "  %s\n", msg)
 		}
@@ -184,8 +182,6 @@ func tripwireLeakMessage(tripwire string) string {
 	return b.String()
 }
 
-// liveRelayAnswers reports whether configDir/relay.sock accepts a connection
-// within 200ms.
 func liveRelayAnswers(configDir string) bool {
 	conn, err := net.DialTimeout("unix", filepath.Join(configDir, "relay.sock"), 200*time.Millisecond)
 	if err != nil {

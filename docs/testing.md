@@ -43,7 +43,8 @@ a temp dir with `os.Setenv`, as `internal/service/main_test.go` does. A
 package can also call `bridge.SetConfigDirForTest` instead, as
 `internal/sshhost` does. `cmd/relay` isolates `HOME` in its `TestMain` and
 still sandboxes each test with `mkSandboxRelayHome`. The path getters
-(`bridge.ConfigDir`, `SocketPath`, `ModelSocketPath`) only compute paths. The code that binds or writes creates the directory.
+(`bridge.ConfigDir`, `SocketPath`, `ModelSocketPath`) only compute paths. The
+code that binds or writes creates the directory.
 
 `internal/bridge/home_isolation_gate_test.go` enforces this. It finds every
 package with tests whose source mentions `bridge.ConfigDir(`,
