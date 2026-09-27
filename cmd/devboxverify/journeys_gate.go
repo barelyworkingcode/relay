@@ -64,7 +64,7 @@ var gateTeardownJourneys = []journey{
 	{eveRevokePosID, []string{"login", "presence"}, phaseScreen, 5 * time.Second, func(context.Context, env) result {
 		return result{eveRevokePosID, stateNotRun, "relay keeps one global eve passkey mirror, replaced by each eve's report, so no verify passkey can be revoked through relay today"}
 	}},
-	{fixturesID, []string{"mcps", "services", "projects"}, phaseScreen, 60 * time.Second, runFixturesRemoved},
+	{fixturesID, []string{"mcps", "services", "projects", "sessions"}, phaseScreen, 60 * time.Second, runFixturesRemoved},
 	{revokePosID, []string{"credentials", "presence", "audit"}, phaseScreen, gateTimeout, runRevokePos},
 }
 
@@ -856,7 +856,63 @@ type fixturesRun struct {
 	NoToken                              bool
 	Errs                                 []string
 	LeftMcps, LeftServices, LeftProjects []string
+	LeftTerminals                        []string
 	ListErr                              error
+}
+
+// withResolved gives a root as configured and with symlinks resolved:
+// relay-sessions records the attach cwd as sent, and the journeys send it
+// resolved.
+func withResolved(root string) []string {
+	if r, err := filepath.EvalSymlinks(root); err == nil && r != root {
+		return []string{root, r}
+	}
+	return []string{root}
+}
+
+// underVerifyRoot is string matching only: by the re-list the grant-*
+// directories are already gone from disk.
+func underVerifyRoot(dir string, stateDirs, worldRoots []string) bool {
+	for _, root := range worldRoots {
+		if dir == root || strings.HasPrefix(dir, root+"/") {
+			return true
+		}
+	}
+	for _, sd := range stateDirs {
+		rest, ok := strings.CutPrefix(dir, sd+"/")
+		if !ok {
+			continue
+		}
+		first, _, _ := strings.Cut(rest, "/")
+		if m, _ := filepath.Match("grant-*", first); m {
+			return true
+		}
+	}
+	return false
+}
+
+func verifyTerminals(ctx context.Context, e env, token string) ([]string, error) {
+	resp := frontendDo(ctx, e, token, http.MethodGet, "/api/terminals", nil)
+	if resp.Status != http.StatusOK {
+		return nil, fmt.Errorf("GET /api/terminals status %d", resp.Status)
+	}
+	var b struct {
+		Terminals []struct {
+			ID        string `json:"id"`
+			Directory string `json:"directory"`
+		} `json:"terminals"`
+	}
+	if err := json.Unmarshal(resp.Body, &b); err != nil {
+		return nil, fmt.Errorf("GET /api/terminals: %w", err)
+	}
+	stateDirs, worldRoots := withResolved(gateStateDir()), withResolved(e.WorldRoot)
+	var ids []string
+	for _, t := range b.Terminals {
+		if underVerifyRoot(t.Directory, stateDirs, worldRoots) {
+			ids = append(ids, t.ID)
+		}
+	}
+	return ids, nil
 }
 
 func withPrefix(ids []string, prefix string) []string {
@@ -892,6 +948,15 @@ func runFixturesRemoved(ctx context.Context, e env) result {
 				r.Errs = append(r.Errs, fmt.Sprintf("DELETE project status %d", st))
 			}
 		}
+		terms, err := verifyTerminals(ctx, e, token)
+		if err != nil {
+			r.Errs = append(r.Errs, err.Error())
+		}
+		for _, tid := range terms {
+			if st := frontendDo(ctx, e, token, http.MethodDelete, "/api/terminals/"+tid, nil).Status; st != http.StatusNoContent {
+				r.Errs = append(r.Errs, fmt.Sprintf("DELETE terminal status %d", st))
+			}
+		}
 	}
 	mcps, err := listMcpIDs(ctx, e)
 	if err != nil {
@@ -922,7 +987,11 @@ func runFixturesRemoved(ctx context.Context, e env) result {
 	mcps, err1 := listMcpIDs(ctx, e)
 	svcs, err2 := listServiceIDs(ctx, e)
 	rs, err3 := grantRecords(ctx, e)
-	r.ListErr = errors.Join(err1, err2, err3)
+	var err4 error
+	if ok {
+		r.LeftTerminals, err4 = verifyTerminals(ctx, e, token)
+	}
+	r.ListErr = errors.Join(err1, err2, err3, err4)
 	r.LeftMcps, r.LeftServices, r.LeftProjects = withPrefix(mcps, probePrefix), withPrefix(svcs, crashPrefix), verifyProjects(rs)
 	return classifyFixturesRemoved(r)
 }
@@ -939,6 +1008,9 @@ func classifyFixturesRemoved(r fixturesRun) result {
 	if n := len(r.LeftProjects); n > 0 && !r.NoToken {
 		left = append(left, fmt.Sprintf("%d Verify Grant project(s)", n))
 	}
+	if n := len(r.LeftTerminals); n > 0 && !r.NoToken {
+		left = append(left, fmt.Sprintf("%d terminal(s)", n))
+	}
 	errs := ""
 	if len(r.Errs) > 0 {
 		errs = "; " + strings.Join(r.Errs, "; ")
@@ -949,9 +1021,9 @@ func classifyFixturesRemoved(r fixturesRun) result {
 	case len(left) > 0:
 		return result{id, stateFail, "still registered: " + strings.Join(left, ", ") + errs}
 	case r.NoToken:
-		return blocked(id, "no run credential: "+mintPosID+" did not pass; MCPs and services removed, projects not"+errs)
+		return blocked(id, "no run credential: "+mintPosID+" did not pass; MCPs and services removed, projects and terminals not"+errs)
 	}
-	return result{id, statePass, "no verify MCP, service or project left" + errs}
+	return result{id, statePass, "no verify MCP, service, project or terminal left" + errs}
 }
 
 type revokePosRun struct {
