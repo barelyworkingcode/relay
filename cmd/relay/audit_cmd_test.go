@@ -5,7 +5,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
@@ -186,5 +188,54 @@ func TestWriteAuditTable_AuthorityFlagSkipsRecordsWithNoAuthority(t *testing.T) 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	if len(lines) != 2 {
 		t.Errorf("service-identity call grew an authority line it has nothing to fill in: %q", lines)
+	}
+}
+
+func TestAuditTable_StripsTerminalControlFromCallerToolName(t *testing.T) {
+	r, rec := auditedRouter(t, map[string]config.Permission{"fsmcp": config.PermOn}, nil, nil, nil)
+	evil := "x\x1b[2K\x1b[1A\rforged"
+	if _, err := r.CallTool(context.Background(), evil, nil, testToken); err == nil {
+		t.Fatal("expected an error for an unknown tool")
+	}
+	var buf bytes.Buffer
+	writeAuditTable(&buf, readLoggedEvents(t, rec), false)
+	out := buf.String()
+	if strings.ContainsAny(out, "\x1b\r") {
+		t.Errorf("rendered audit table contains raw terminal control bytes:\n%q", out)
+	}
+	if !strings.Contains(out, `x\x1b[2K`) {
+		t.Errorf("rendered audit table dropped the control bytes instead of showing them escaped:\n%q", out)
+	}
+}
+
+func TestAuditTable_EscapesControlInMcpSuppliedError(t *testing.T) {
+	mcpErr := "backend \x1b]0;owned\a failed \u009b2J here"
+	mock := newMockConn("fsmcp", simpleTools("read_file"),
+		func(context.Context, string, interface{}) (json.RawMessage, error) {
+			return nil, errors.New(mcpErr)
+		})
+	r, rec := auditedRouter(t,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
+		map[string]*mockMcpConn{"fsmcp": mock}, nil)
+	if _, err := r.CallTool(context.Background(), "read_file", json.RawMessage(`{}`), testToken); err == nil {
+		t.Fatal("expected the MCP's error to surface")
+	}
+
+	events := readLoggedEvents(t, rec)
+	ev := onlyEvent(t, events)
+	if !strings.Contains(ev.Error, mcpErr) {
+		t.Errorf("stored Error = %q, want the MCP's bytes kept verbatim (%q)", ev.Error, mcpErr)
+	}
+
+	var buf bytes.Buffer
+	writeAuditTable(&buf, events, false)
+	out := buf.String()
+	if strings.ContainsAny(out, "\x1b\a\u009b") {
+		t.Errorf("rendered audit table contains raw terminal control characters:\n%q", out)
+	}
+	for _, want := range []string{`\x1b`, `\x07`, `\u009b`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered audit table lacks visible escape %s:\n%q", want, out)
+		}
 	}
 }

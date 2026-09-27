@@ -972,6 +972,10 @@ relay audit --path                   # print the log path and exit
 `relay audit` reads the file directly rather than going over the bridge, so it
 works when the tray is stopped — which is when you are most likely to want it.
 
+Tool names and error text are caller-controlled, so the table escapes control
+characters in every cell: C0 and DEL as `\xNN`, C1 as `\u00NN`, invalid UTF-8
+bytes as `\xNN`. `--json` and the stored record keep the original bytes.
+
 ## Where it hooks in
 
 One place for tool calls: `appRouter.CallTool` in `router.go`. Every tool
