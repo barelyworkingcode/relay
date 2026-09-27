@@ -196,7 +196,7 @@ var dialogNegSpecs = []negSpec{
 			}
 			target := revocableEvePasskey(keys)
 			if target == "" {
-				return negState{}, blocked(id, "no revocable eve passkey in relay's mirror: relay refuses an unknown or last id before the gate"), false
+				return negState{}, result{id, stateNotRun, "no revocable eve passkey in relay's mirror: relay refuses an unknown or last id before the gate"}, false
 			}
 			return negState{Subject: target}, result{}, true
 		},
