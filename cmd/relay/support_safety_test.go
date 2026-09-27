@@ -12,6 +12,9 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 )
 
+// suiteHome is the isolated HOME TestMain sets before m.Run; "" until then.
+var suiteHome string
+
 // TestMain enforces the headline rule from ADR-001: no test may mutate the
 // real user config directory (~/Library/Application Support/relay/).
 //
@@ -36,7 +39,33 @@ func TestMain(m *testing.M) {
 
 	before, beforeOK := snapshotDir(realDir)
 
+	// This is deliberate: /tmp, not $TMPDIR, so a test that binds relay.sock
+	// under the isolated HOME stays inside the 104-byte socket path limit.
+	root, err := os.MkdirTemp("/tmp", "relay-suite-home-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create isolated suite HOME under /tmp: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("HOME", root); err != nil {
+		fmt.Fprintf(os.Stderr, "set HOME to isolated suite root %s: %v\n", root, err)
+		_ = os.RemoveAll(root)
+		os.Exit(1)
+	}
+	if err := os.Setenv("XDG_CONFIG_HOME", filepath.Join(root, ".config")); err != nil {
+		fmt.Fprintf(os.Stderr, "set XDG_CONFIG_HOME under isolated suite root %s: %v\n", root, err)
+		_ = os.RemoveAll(root)
+		os.Exit(1)
+	}
+	suiteHome = root
+	tripwire := bridge.DefaultConfigDir()
+	_ = tripwire
+
 	code := m.Run()
+
+	if err := os.RemoveAll(root); err != nil {
+		fmt.Fprintf(os.Stderr, "remove isolated suite HOME %s: %v\n", root, err)
+		code = 1
+	}
 
 	// Reset any override the suite may have left behind before re-reading.
 	bridge.SetConfigDirForTest("")
