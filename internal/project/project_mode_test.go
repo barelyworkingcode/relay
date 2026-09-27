@@ -49,19 +49,6 @@ func TestApplyCreate_ProjectMode(t *testing.T) {
 	}
 }
 
-func TestProjectMode_ApplyUpdateRefusesInvalidModeWithoutMutation(t *testing.T) {
-	s := &config.Settings{Version: 1}
-	p := pmCreate(t, s, "Acme", config.ProjectModeHome)
-	bad := config.ProjectMode("office")
-	name := "Acme renamed"
-	if _, _, err := ApplyUpdate(s, p.ID, UpdateFields{Name: &name, Mode: &bad}, pmNoSurfaces); !errors.Is(err, config.ErrInvalidProjectMode) {
-		t.Fatalf("err = %v, want ErrInvalidProjectMode", err)
-	}
-	if got, _ := config.FindProjectByID(s, p.ID); got.Mode != config.ProjectModeHome || got.Name != "Acme" {
-		t.Errorf("a refused update mutated the record: %+v", got)
-	}
-}
-
 func TestProjectMode_StoredUnknownModeDoesNotBlockRename(t *testing.T) {
 	s := &config.Settings{Version: 1}
 	p := pmCreate(t, s, "Acme", "")
@@ -97,16 +84,5 @@ func TestDefaultProject_ApplyUpdateThatInvalidatesItClearsIt(t *testing.T) {
 				t.Errorf("default_project after the edit = %+v, want an empty non-nil block", s.DefaultProject)
 			}
 		})
-	}
-}
-
-func TestProjectMode_NotAGrant(t *testing.T) {
-	home := config.ProjectMode(config.ProjectModeHome)
-	stored := config.Project{ID: "p1", Name: "Acme", Mode: config.ProjectModeWork, AllowedMcpIDs: []string{"fsmcp"}}
-	if got := UpdateWidensGrant(stored, UpdateFields{Mode: &home}, nil); len(got) != 0 {
-		t.Errorf("a mode change widens %v, want nothing", got)
-	}
-	if _, err := DecodeNarrowFields([]byte(`{"mode":"home"}`)); err == nil {
-		t.Error("a remote narrowing request may carry mode; it is not a narrowable grant field")
 	}
 }

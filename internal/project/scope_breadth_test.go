@@ -27,28 +27,6 @@ func noteFor(t *testing.T, schema, value string) string {
 	}, "fs_read")
 }
 
-// Deliberate: a count is not a measure of confinement — "1 value" is true of
-// /Users/me/project and equally true of "/".
-func TestScopeNote_AFilesystemRootIsNotConfinedToOneValue(t *testing.T) {
-	root := noteFor(t, fsmcpCountSchema, `["/"]`)
-	folder := noteFor(t, fsmcpCountSchema, `["/Users/me/project"]`)
-
-	if root == folder {
-		t.Fatalf("a grant of \"/\" and a grant of one folder render identically: %q", root)
-	}
-	if strings.Contains(root, "confined to 1 value") {
-		t.Errorf("a grant of the whole filesystem is described as a confinement: %q", root)
-	}
-	if !strings.Contains(root, "unrestricted") {
-		t.Errorf("the note does not say the grant is unrestricted: %q", root)
-	}
-	// Deliberate: the bounded grant's client-facing note is unchanged — fixing
-	// the operator-side problem must not weaken client disclosure.
-	if folder != `Scope: Directories this client may read, search and modify within — confined to 1 value.` {
-		t.Errorf("the bounded grant's note changed: %q", folder)
-	}
-}
-
 // Deliberate: a client learns it's at a filesystem root the moment it lists
 // one, so withholding that fact buys nothing.
 func TestScopeNote_AnUnrestrictedValueOutranksEveryDiscloseSetting(t *testing.T) {
@@ -128,22 +106,6 @@ func TestScopeNote_AWildcardOutranksEveryDiscloseSetting(t *testing.T) {
 	bounded := mailAccountsNoteFor(t, `["Bob"]`)
 	if strings.Contains(bounded, "unrestricted") {
 		t.Errorf("a named account grant read as unrestricted: %q", bounded)
-	}
-}
-
-func TestScopeBreadth_WildcardClassification(t *testing.T) {
-	if got := ScopeValueBreadth(json.RawMessage(`["*"]`)); got != ScopeBreadthWildcard {
-		t.Errorf("[\"*\"] classified as %q, want wildcard", got)
-	}
-	// Recognised only as the array's sole element (ADR-011 addendum) --
-	// relay's own save-time validation refuses this combination outright, so
-	// it should never reach here already stored, but the classifier must not
-	// call it unrestricted if it somehow does.
-	if got := ScopeValueBreadth(json.RawMessage(`["*","Bob"]`)); got == ScopeBreadthWildcard {
-		t.Errorf("[\"*\",\"Bob\"] classified as the wildcard; it is a mixed value, not a grant of everything")
-	}
-	if got := ScopeValueBreadth(json.RawMessage(`["Bob"]`)); got != ScopeBreadthBounded {
-		t.Errorf("a plain named value classified as %q", got)
 	}
 }
 

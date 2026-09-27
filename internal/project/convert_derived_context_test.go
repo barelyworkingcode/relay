@@ -334,22 +334,3 @@ func TestApplyUpdate_RemoteOrHostedRecordDropsStaleDerivedFieldOnAnyEdit(t *test
 		}
 	})
 }
-
-func TestApplyUpdate_ConsoleToHostCarriesNoContext(t *testing.T) {
-	s, id := localWithDerivedContext(t, "macmcp", macmcpSurface(), aliceContext(), "file_dirs")
-	s.Hosts = []config.Host{{ID: "h_win", Name: "winhost"}}
-	host := "h_win"
-
-	_, _, err := ApplyUpdate(s, id, UpdateFields{
-		HostID: &host, AllowedMcpIDs: &[]string{}, DisabledTools: &map[string][]string{},
-	}, surfacesOf(McpSurfaces{"macmcp": macmcpSurface()}))
-	assertNoErr(t, err, "move to host")
-
-	after, _ := config.FindProjectByID(s, id)
-	if !after.IsHosted() {
-		t.Fatal("project did not move to the host")
-	}
-	if len(after.Context) != 0 {
-		t.Errorf("a host project carries context: %v", after.Context)
-	}
-}

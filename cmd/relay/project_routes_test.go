@@ -568,6 +568,10 @@ func TestProjectRoutes_RotateToken_NewTokenInvalidatesOld(t *testing.T) {
 	if _, err := store.Get().AuthenticateProject(newToken); err != nil {
 		t.Fatalf("new token does not authenticate: %v", err)
 	}
+	stored, _ := config.FindProjectByID(store.Get(), created.ID)
+	if storedPlain, _ := stored.Token.Reveal(); storedPlain != newToken {
+		t.Errorf("stored plaintext = %q; want the returned token %q", storedPlain, newToken)
+	}
 }
 
 func TestProjectRoutes_RotateToken_Unknown404(t *testing.T) {

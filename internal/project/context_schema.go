@@ -513,16 +513,6 @@ func AuditedScopeFields(cs ContextSchema) []ContextField {
 	return derivedScopeFields(cs)
 }
 
-func (cs ContextSchema) OperatorFields() []ContextField {
-	out := make([]ContextField, 0, len(cs.Fields))
-	for _, f := range cs.RestrictFields() {
-		if f.FromOperator() {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
 // ParseContextSchema parses the FLAT form (docs/context-schema.md); the
 // nested JSON-Schema form is tolerated only as a rescue.
 func ParseContextSchema(raw json.RawMessage, version int) ContextSchema {

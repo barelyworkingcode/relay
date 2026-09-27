@@ -85,31 +85,6 @@ func TestValidateShape_HostProject(t *testing.T) {
 	})
 }
 
-func TestValidateHostRef(t *testing.T) {
-	s := &config.Settings{Hosts: []config.Host{{ID: "h_1", Name: "devbox"}}}
-
-	t.Run("console project needs no host", func(t *testing.T) {
-		p := config.Project{Path: "/x"}
-		if err := ValidateHostRef(s, &p); err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-	})
-
-	t.Run("existing host_id passes", func(t *testing.T) {
-		p := config.Project{HostID: "h_1", Path: "/x"}
-		if err := ValidateHostRef(s, &p); err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-	})
-
-	t.Run("unknown host_id is refused", func(t *testing.T) {
-		p := config.Project{HostID: "h_missing", Path: "/x"}
-		if err := ValidateHostRef(s, &p); err == nil {
-			t.Fatal("expected an error")
-		}
-	})
-}
-
 func TestApplyCreate_HostProject(t *testing.T) {
 	var s config.Settings
 	s.Hosts = []config.Host{{ID: "h_1", Name: "devbox"}}

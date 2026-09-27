@@ -64,22 +64,6 @@ func derivedPathMatchMetaChars(t *testing.T) []byte {
 	return metas
 }
 
-// TestPathMatchIsMeta_MatchesTheDocumentedGrammar is a sanity floor on the
-// detector itself: path.Match's doc comment names exactly four
-// metacharacters (*, ?, [, \) and no others among ordinary printable ASCII.
-func TestPathMatchIsMeta_MatchesTheDocumentedGrammar(t *testing.T) {
-	want := map[byte]bool{'*': true, '?': true, '[': true, '\\': true}
-	for c := byte(0x21); c < 0x7f; c++ {
-		if c == '/' || c == 'z' {
-			continue
-		}
-		got := pathMatchIsMeta(c)
-		if got != want[c] {
-			t.Errorf("pathMatchIsMeta(%q) = %v, want %v", string(c), got, want[c])
-		}
-	}
-}
-
 // TestHasGlobMeta_CoversEveryPathMatchMetaCharacter is table-driven over a
 // metacharacter set derived independently of hasGlobMeta's own
 // implementation (see derivedPathMatchMetaChars): a future metacharacter
@@ -87,8 +71,8 @@ func TestPathMatchIsMeta_MatchesTheDocumentedGrammar(t *testing.T) {
 // was meant to catch, instead of being missed the same way '\' itself was.
 func TestHasGlobMeta_CoversEveryPathMatchMetaCharacter(t *testing.T) {
 	metas := derivedPathMatchMetaChars(t)
-	if len(metas) == 0 {
-		t.Fatal("derivedPathMatchMetaChars found none; the detector itself is broken")
+	if string(metas) != `*?[\` {
+		t.Fatalf("derivedPathMatchMetaChars = %q, want the documented grammar %q", metas, `*?[\`)
 	}
 	for _, c := range metas {
 		pattern := "mail_" + string(c) + "x"
@@ -98,15 +82,12 @@ func TestHasGlobMeta_CoversEveryPathMatchMetaCharacter(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestHasGlobMeta_OrdinaryCharactersAreNotFlagged is the negative control:
-// hasGlobMeta must not start refusing plain tool-name characters.
-func TestHasGlobMeta_OrdinaryCharactersAreNotFlagged(t *testing.T) {
 	for _, pattern := range []string{"mail_search", "mail-search", "mail.search", "mail_search_v2", "MAIL_SEARCH"} {
-		if hasGlobMeta(pattern) {
-			t.Errorf("hasGlobMeta(%q) = true, want false: it has no path.Match metacharacter", pattern)
-		}
+		t.Run(pattern, func(t *testing.T) {
+			if hasGlobMeta(pattern) {
+				t.Errorf("hasGlobMeta(%q) = true, want false: it has no path.Match metacharacter", pattern)
+			}
+		})
 	}
 }
 
@@ -115,55 +96,51 @@ func TestHasGlobMeta_OrdinaryCharactersAreNotFlagged(t *testing.T) {
 // NOT in the resulting allowed_mcp_ids must be refused rather than stored
 // (SPEC-step2-cli-admin.md §4.2's last bullet) — an inert control reads on
 // the screen as a boundary and is not one. Each of NarrowsOnly's three
-// "is this MCP in the resulting set" guards has its own test: deleting any
-// one of them must leave only its own test red, not the other two.
+// "is this MCP in the resulting set" guards has its own row: deleting any
+// one of them must leave only its own row red, not the other two.
 // ---------------------------------------------------------------------------
 
-func TestNarrowsOnly_RefusesAllowedToolsKeyOnAnMcpNotInTheResultingSet(t *testing.T) {
-	stored := config.Project{
-		AllowedMcpIDs: []string{"macmcp", "other"},
-		AllowedTools:  map[string][]string{"macmcp": {"mail_search"}, "other": {"other_tool"}},
-	}
+func TestNarrowsOnly_RefusesAKeyOnAnMcpNotInTheResultingSet(t *testing.T) {
 	narrowedIDs := []string{"macmcp"}
-	tools := map[string][]string{"other": {"other_tool"}}
-	err := NarrowsOnly(stored, NarrowFields{AllowedMcpIDs: &narrowedIDs, AllowedTools: &tools})
-	if err == nil {
-		t.Fatal("NarrowsOnly accepted an allowed_tools key for an MCP dropped from allowed_mcp_ids")
-	}
-	if !strings.Contains(err.Error(), "other") {
-		t.Errorf("error = %q, want it to name the offending MCP %q", err, "other")
-	}
-}
-
-func TestNarrowsOnly_RefusesAccessKeyOnAnMcpNotInTheResultingSet(t *testing.T) {
-	stored := config.Project{
-		AllowedMcpIDs: []string{"macmcp", "other"},
-		Access:        map[string]string{"macmcp": config.AccessRead, "other": config.AccessRead},
-	}
-	narrowedIDs := []string{"macmcp"}
-	access := map[string]string{"other": config.AccessRead}
-	err := NarrowsOnly(stored, NarrowFields{AllowedMcpIDs: &narrowedIDs, Access: &access})
-	if err == nil {
-		t.Fatal("NarrowsOnly accepted an access key for an MCP dropped from allowed_mcp_ids")
-	}
-	if !strings.Contains(err.Error(), "other") {
-		t.Errorf("error = %q, want it to name the offending MCP %q", err, "other")
-	}
-}
-
-func TestNarrowsOnly_RefusesAllowExternalKeyOnAnMcpNotInTheResultingSet(t *testing.T) {
-	stored := config.Project{
-		AllowedMcpIDs: []string{"macmcp", "other"},
-		AllowExternal: map[string]bool{"macmcp": false, "other": false},
-	}
-	narrowedIDs := []string{"macmcp"}
-	allowExternal := map[string]bool{"other": false}
-	err := NarrowsOnly(stored, NarrowFields{AllowedMcpIDs: &narrowedIDs, AllowExternal: &allowExternal})
-	if err == nil {
-		t.Fatal("NarrowsOnly accepted an allow_external key for an MCP dropped from allowed_mcp_ids")
-	}
-	if !strings.Contains(err.Error(), "other") {
-		t.Errorf("error = %q, want it to name the offending MCP %q", err, "other")
+	for _, tc := range []struct {
+		name   string
+		stored config.Project
+		fields NarrowFields
+	}{
+		{
+			name: "allowed_tools",
+			stored: config.Project{
+				AllowedMcpIDs: []string{"macmcp", "other"},
+				AllowedTools:  map[string][]string{"macmcp": {"mail_search"}, "other": {"other_tool"}},
+			},
+			fields: NarrowFields{AllowedMcpIDs: &narrowedIDs, AllowedTools: &map[string][]string{"other": {"other_tool"}}},
+		},
+		{
+			name: "access",
+			stored: config.Project{
+				AllowedMcpIDs: []string{"macmcp", "other"},
+				Access:        map[string]string{"macmcp": config.AccessRead, "other": config.AccessRead},
+			},
+			fields: NarrowFields{AllowedMcpIDs: &narrowedIDs, Access: &map[string]string{"other": config.AccessRead}},
+		},
+		{
+			name: "allow_external",
+			stored: config.Project{
+				AllowedMcpIDs: []string{"macmcp", "other"},
+				AllowExternal: map[string]bool{"macmcp": false, "other": false},
+			},
+			fields: NarrowFields{AllowedMcpIDs: &narrowedIDs, AllowExternal: &map[string]bool{"other": false}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := NarrowsOnly(tc.stored, tc.fields)
+			if err == nil {
+				t.Fatalf("NarrowsOnly accepted an %s key for an MCP dropped from allowed_mcp_ids", tc.name)
+			}
+			if !strings.Contains(err.Error(), "other") {
+				t.Errorf("error = %q, want it to name the offending MCP %q", err, "other")
+			}
+		})
 	}
 }
 
@@ -176,57 +153,66 @@ func mountStoredProject(mounts ...config.MountGrant) config.Project {
 	return config.Project{Kind: config.ProjectKindRemote, Mounts: mounts}
 }
 
-func TestNarrowsOnly_MountNarrowingWriteToReadIsAllowed(t *testing.T) {
-	stored := mountStoredProject(config.MountGrant{ID: "mail", Path: "/tmp/mail", Access: config.AccessWrite})
-	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail", Access: config.AccessRead}}
-	if err := NarrowsOnly(stored, NarrowFields{Mounts: &narrowed}); err != nil {
-		t.Fatalf("narrowing write->read must be allowed, got: %v", err)
+// A request's own entries are checked against what is stored; a stored mount
+// the request omits is being dropped, which is narrowing and always allowed.
+func TestNarrowsOnly_Mounts(t *testing.T) {
+	mail := config.MountGrant{ID: "mail", Path: "/tmp/mail"}
+	withAccess := func(m config.MountGrant, access string) config.MountGrant {
+		m.Access = access
+		return m
 	}
-}
-
-func TestNarrowsOnly_MountWideningReadToWriteIsRefused(t *testing.T) {
-	stored := mountStoredProject(config.MountGrant{ID: "mail", Path: "/tmp/mail", Access: config.AccessRead})
-	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail", Access: config.AccessWrite}}
-	if err := NarrowsOnly(stored, NarrowFields{Mounts: &narrowed}); err == nil {
-		t.Fatal("widening a mount from read to write via narrowing must be refused")
-	}
-}
-
-func TestNarrowsOnly_MountRequestNamingAnUnstoredIDIsRefused(t *testing.T) {
-	stored := mountStoredProject(config.MountGrant{ID: "mail", Path: "/tmp/mail"})
-	narrowed := []config.MountGrant{
-		{ID: "mail", Path: "/tmp/mail"},
-		{ID: "calendar", Path: "/tmp/cal"},
-	}
-	err := NarrowsOnly(stored, NarrowFields{Mounts: &narrowed})
-	if err == nil {
-		t.Fatal("narrowing must not be able to add a mount id that is not already stored")
-	}
-	if !strings.Contains(err.Error(), "calendar") {
-		t.Errorf("error = %q, want it to name the offending mount id %q", err, "calendar")
-	}
-}
-
-func TestNarrowsOnly_MountRequestChangingPathIsRefused(t *testing.T) {
-	stored := mountStoredProject(config.MountGrant{ID: "mail", Path: "/tmp/mail"})
-	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail-2"}}
-	if err := NarrowsOnly(stored, NarrowFields{Mounts: &narrowed}); err == nil {
-		t.Fatal("narrowing must not be able to change a listed mount's path")
-	}
-}
-
-// Omitting a currently-stored mount entirely is how a narrow request drops
-// it — that is narrowing, always allowed, and NarrowsOnly must not iterate
-// the stored mounts complaining about ones missing from the request (only
-// the request's own entries are checked against what is stored).
-func TestNarrowsOnly_MountOmittingAStoredMountIsAllowed(t *testing.T) {
-	stored := mountStoredProject(
-		config.MountGrant{ID: "mail", Path: "/tmp/mail"},
-		config.MountGrant{ID: "calendar", Path: "/tmp/cal"},
-	)
-	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail"}}
-	if err := NarrowsOnly(stored, NarrowFields{Mounts: &narrowed}); err != nil {
-		t.Fatalf("dropping a stored mount by omitting it must be allowed, got: %v", err)
+	for _, tc := range []struct {
+		name      string
+		stored    config.Project
+		requested []config.MountGrant
+		refusal   []string // nil: the request must be allowed
+	}{
+		{
+			name:      "write to read is allowed",
+			stored:    mountStoredProject(withAccess(mail, config.AccessWrite)),
+			requested: []config.MountGrant{withAccess(mail, config.AccessRead)},
+		},
+		{
+			name:      "read to write is refused",
+			stored:    mountStoredProject(withAccess(mail, config.AccessRead)),
+			requested: []config.MountGrant{withAccess(mail, config.AccessWrite)},
+			refusal:   []string{"mail"},
+		},
+		{
+			name:      "an unstored id is refused",
+			stored:    mountStoredProject(mail),
+			requested: []config.MountGrant{mail, {ID: "calendar", Path: "/tmp/cal"}},
+			refusal:   []string{"calendar", "cannot add"},
+		},
+		{
+			name:      "changing a path is refused",
+			stored:    mountStoredProject(mail),
+			requested: []config.MountGrant{{ID: "mail", Path: "/tmp/mail-2"}},
+			refusal:   []string{"mail"},
+		},
+		{
+			name:      "omitting a stored mount is allowed",
+			stored:    mountStoredProject(mail, config.MountGrant{ID: "calendar", Path: "/tmp/cal"}),
+			requested: []config.MountGrant{mail},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := NarrowsOnly(tc.stored, NarrowFields{Mounts: &tc.requested})
+			if tc.refusal == nil {
+				if err != nil {
+					t.Fatalf("expected the narrowing to be allowed, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected a refusal, got none")
+			}
+			for _, want := range tc.refusal {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("refusal = %q, want it to contain %q", err, want)
+				}
+			}
+		})
 	}
 }
 
