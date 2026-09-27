@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Pre-push hook: the hermetic suite, once per push rather than once per commit.
 #
-# Install once per clone (same setting enables the pre-commit hook):
-#   git config core.hooksPath .githooks
+# This is deliberate: do not set core.hooksPath to .githooks. A global hooks
+# dispatcher runs this file, and pointing hooksPath here bypasses the
+# dispatcher's own push checks.
 #
 # Skip on emergency:
 #   git push --no-verify
