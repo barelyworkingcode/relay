@@ -128,7 +128,10 @@ func (r *appRouter) SandboxAttach(ctx context.Context, req bridge.SandboxAttachR
 		Cols:       req.Cols,
 		Rows:       req.Rows,
 	}
-	result, _, launchRefusal, err := d.launch(ctx, launchReq)
+	// Deliberate: relay-sessions completes a launch whatever happens to the
+	// request ctx, so abandoning the round trip would orphan the session. The
+	// join below stays on ctx, and its failure ends what was launched.
+	result, _, launchRefusal, err := d.launch(context.WithoutCancel(ctx), launchReq)
 	switch {
 	case launchRefusal != nil:
 		return nil, sandboxLaunchRefusal(settings, proj, req.Template, launchRefusal)

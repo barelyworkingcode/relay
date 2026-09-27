@@ -284,3 +284,40 @@ func TestGate_NonceTableIsBoundedAndEvictsOldest(t *testing.T) {
 		t.Fatalf("the most recently minted grant was evicted: %v", err)
 	}
 }
+
+// cancellingProvider approves, but only after the requester's ctx has ended
+// while the prompt was up.
+type cancellingProvider struct{ cancel context.CancelFunc }
+
+func (c cancellingProvider) Evaluate(context.Context, string) error {
+	c.cancel()
+	return nil
+}
+
+func TestGate_RequestRefusesWhenCallerCtxCancelledDespiteApproval(t *testing.T) {
+	cases := map[string]func(cancel context.CancelFunc) Provider{
+		"cancelled before the prompt": func(cancel context.CancelFunc) Provider {
+			cancel()
+			return &countingProvider{}
+		},
+		"cancelled while the prompt is up": func(cancel context.CancelFunc) Provider {
+			return cancellingProvider{cancel: cancel}
+		},
+	}
+	for name, provider := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			g, _ := newGateForTest(t, provider(cancel))
+			d := NewDigestBuilder("credential.mint").StringField("name", true, "x").Build()
+
+			gr, err := g.Request(ctx, "credential.mint", d, "mint")
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Request with an ended ctx returned %v, want context.Canceled", err)
+			}
+			if gr.Valid() {
+				t.Fatal("Request with an ended ctx returned a valid grant")
+			}
+		})
+	}
+}

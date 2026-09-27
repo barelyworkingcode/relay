@@ -81,3 +81,65 @@ func (r *Recording) Reasons() []string {
 	copy(out, r.reasons)
 	return out
 }
+
+// Blocking models a prompt that stays on screen until someone answers it:
+// Evaluate blocks until Release and returns the released result whatever
+// happened to its ctx meanwhile, so a test can answer a dialog whose
+// requester has already gone.
+type Blocking struct {
+	entered  chan struct{}
+	ctxDone  chan struct{}
+	released chan struct{}
+
+	enterOnce   sync.Once
+	ctxDoneOnce sync.Once
+	releaseOnce sync.Once
+
+	mu     sync.Mutex
+	result error
+}
+
+// NewBlocking returns a Blocking with no Evaluate in flight and no answer.
+func NewBlocking() *Blocking {
+	return &Blocking{
+		entered:  make(chan struct{}),
+		ctxDone:  make(chan struct{}),
+		released: make(chan struct{}),
+	}
+}
+
+func (b *Blocking) Evaluate(ctx context.Context, _ string) error {
+	b.enterOnce.Do(func() { close(b.entered) })
+
+	returned := make(chan struct{})
+	defer close(returned)
+	go func() {
+		select {
+		case <-ctx.Done():
+			b.ctxDoneOnce.Do(func() { close(b.ctxDone) })
+		case <-returned:
+		}
+	}()
+
+	<-b.released
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.result
+}
+
+// Entered is closed when the first Evaluate starts.
+func (b *Blocking) Entered() <-chan struct{} { return b.entered }
+
+// CtxDone is closed when the ctx of an in-flight Evaluate ends.
+func (b *Blocking) CtxDone() <-chan struct{} { return b.ctxDone }
+
+// Release answers the prompt: every blocked and future Evaluate returns
+// result. Only the first call has any effect.
+func (b *Blocking) Release(result error) {
+	b.releaseOnce.Do(func() {
+		b.mu.Lock()
+		b.result = result
+		b.mu.Unlock()
+		close(b.released)
+	})
+}

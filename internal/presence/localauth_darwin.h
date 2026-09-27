@@ -9,4 +9,9 @@
 // relayPresenceLAResult cgo export, keyed by token.
 void relay_la_evaluate(const char *reason, uintptr_t token);
 
+// relay_la_invalidate invalidates the context of the evaluation started with
+// token, if it is still pending: the dialog is dismissed and the reply fails
+// with LAErrorAppCancel. A token whose reply has already arrived is a no-op.
+void relay_la_invalidate(uintptr_t token);
+
 #endif
