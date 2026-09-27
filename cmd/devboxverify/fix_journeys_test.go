@@ -1,9 +1,6 @@
 package main
 
 import (
-	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -25,8 +22,8 @@ func TestFrontendRefusal(t *testing.T) {
 	}{
 		{"timeout beats an unreachable socket", frontendResponse{TimedOut: true}, stateFail, true, "press Cancel"},
 		{"socket unreachable", frontendResponse{}, stateBlocked, true, ""},
-		{"credential expired or revoked", frontendResponse{Status: 401, Error: "unauthorized"}, stateNotRun, true, "P7"},
-		{"credential lacks configure", frontendResponse{Status: 403, Error: "Forbidden"}, stateBlocked, true, "P7"},
+		{"run credential expired or revoked", frontendResponse{Status: 401, Error: "unauthorized"}, stateBlocked, true, ""},
+		{"credential lacks configure", frontendResponse{Status: 403, Error: "Forbidden"}, stateBlocked, true, ""},
 		{"presence asked", frontendResponse{Status: 403, Error: "presence required"}, stateFail, true, ""},
 		{"accepted", frontendResponse{Status: 200}, "", false, ""},
 		{"server error", frontendResponse{Status: 500, Error: "boom"}, stateFail, true, ""},
@@ -42,6 +39,9 @@ func TestFrontendRefusal(t *testing.T) {
 			}
 			checkState(t, res, c.want)
 			checkDetail(t, res, c.detail)
+			if strings.Contains(res.Detail, "P7") {
+				t.Errorf("detail %q points at the removed P7 credential file", res.Detail)
+			}
 		})
 	}
 }
@@ -137,60 +137,23 @@ func TestMcpListed(t *testing.T) {
 	}
 }
 
-func TestConfigureCredential(t *testing.T) {
-	cases := []struct {
-		name, content string
-		mode          os.FileMode
-		want          state // empty: ok
-		detail        string
-	}{
-		{"missing", "", 0, stateNotRun, "relay credential mint"},
-		{"group readable", "tok-p1", 0o644, stateBlocked, ""},
-		{"empty", "", 0o600, stateBlocked, ""},
-		{"good", "tok-p1", 0o600, "", ""},
+func TestRunCredential(t *testing.T) {
+	if _, res, ok := runCredential(env{Run: &runState{}}, "j1"); ok || res.ID != "j1" || res.State != stateBlocked || !strings.Contains(res.Detail, mintPosID) {
+		t.Errorf("no run credential = %+v, ok %v; want BLOCKED j1 naming %s", res, ok, mintPosID)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "configure-credential")
-			if c.mode != 0 {
-				if err := os.WriteFile(path, []byte(c.content), c.mode); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(path, c.mode); err != nil {
-					t.Fatal(err)
-				}
-			}
-			t.Setenv("RELAY_VERIFY_CONFIGURE_CREDENTIAL_FILE", path)
-			token, res, ok := configureCredential("j1")
-			if c.want == "" {
-				if !ok || token != "tok-p1" {
-					t.Fatalf("configureCredential = %q, %+v, %v; want tok-p1, ok", token, res, ok)
-				}
-				return
-			}
-			if ok || res.ID != "j1" {
-				t.Fatalf("configureCredential ok = %v, id = %q; want not ok, id j1", ok, res.ID)
-			}
-			checkState(t, res, c.want)
-			checkDetail(t, res, c.detail)
-		})
+	if token, _, ok := runCredential(env{Run: &runState{RunCredID: "c1", RunToken: "tok-p1"}}, "j1"); !ok || token != "tok-p1" {
+		t.Errorf("run credential = %q, ok %v; want tok-p1", token, ok)
 	}
 }
 
-func TestFixJourneysNeedConfigureCredentialFirst(t *testing.T) {
-	dir := t.TempDir()
-	relay := filepath.Join(dir, "relay")
-	script := "#!/bin/sh\ncase \"$1\" in grant) echo '[]' ;; mcp) echo 'ID NAME TRANSPORT ENDPOINT' ;; esac\n"
-	if err := os.WriteFile(relay, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("RELAY_VERIFY_CONFIGURE_CREDENTIAL_FILE", filepath.Join(dir, "missing"))
-	e := env{RelayBin: relay, ConfigDir: dir, FrontendSocket: filepath.Join(dir, "frontend.sock"), WorldRoot: dir, CredentialFile: filepath.Join(dir, "credential"), Nonce: "0a1b2c3d"}
-	for name, run := range map[string]func(context.Context, env) result{"stale-derived": runStaleDerivedEdit, "context-number": runContextNumberResave} {
-		t.Run(name, func(t *testing.T) {
-			got := run(context.Background(), e)
-			checkState(t, got, stateNotRun)
-			checkDetail(t, got, "relay credential mint")
+func TestFixJourneysNeedRunCredential(t *testing.T) {
+	e := blockedEnv(t)
+	e.Run = &runState{}
+	for _, id := range []string{staleID, "context-number-resave"} {
+		t.Run(id, func(t *testing.T) {
+			got := runJourney(t, id, e)
+			checkState(t, got, stateBlocked)
+			checkDetail(t, got, mintPosID)
 		})
 	}
 }

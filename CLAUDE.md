@@ -143,6 +143,10 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
   version got wrong. Code is present tense; the *why* goes in `docs/`.
 - Public-repo hygiene: no real hostnames, tokens or personal paths in docs,
   fixtures or test data.
+- A PR that changes code under an area's `code` globs in
+  [`cmd/devboxverify/FEATURES.md`](cmd/devboxverify/FEATURES.md) updates that
+  area's rows, or says in the PR why nothing a user reaches moved. The reviewer
+  checks it.
 
 ### This file
 

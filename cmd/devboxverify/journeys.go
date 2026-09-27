@@ -21,18 +21,18 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 )
 
-var journeys = []journey{
-	{"blank-model-refused", runBlankModel},
-	{"permission-mode-restart", func(context.Context, env) result {
+var apiJourneys = []journey{
+	{"blank-model-refused", []string{"sessions", "audit"}, phaseAPI, 30 * time.Second, runBlankModel},
+	{"permission-mode-restart", []string{"sessions", "hosts"}, phaseAPI, 5 * time.Second, func(context.Context, env) result {
 		return result{"permission-mode-restart", stateNotRun, "restart path runs only for SSH-host projects; local sessions answer resume_required"}
 	}},
-	{"oversized-launch-audit-capped", runOversized},
-	{"acme-sandbox-reach", runReach},
-	{"stale-derived-access-edit", runStaleDerivedEdit},
-	{"context-number-resave", runContextNumberResave},
-	{"v1-conversion-refusal", func(context.Context, env) result {
+	{"oversized-launch-audit-capped", []string{"sessions", "sandbox", "audit"}, phaseAPI, 30 * time.Second, runOversized},
+	{"acme-sandbox-reach", []string{"sandbox", "grants", "sessions"}, phaseAPI, 30 * time.Second, runReach},
+	{"v1-conversion-refusal", []string{"projects"}, phaseAPI, 5 * time.Second, func(context.Context, env) result {
 		return result{"v1-conversion-refusal", stateNotRun, "a local-to-remote conversion is a kind change, which the presence gate prompts for before it validates; the refusal is reachable only after a human approves, and no v1 MCP is registered here"}
 	}},
+	{toolsID, []string{"mcps", "grants", "sandbox"}, phaseAPI, 60 * time.Second, runToolsThroughBridge},
+	{auditedID, []string{"audit", "mcps"}, phaseAPI, 60 * time.Second, runToolCallAudited},
 }
 
 const acmeName = "Acme Corp"
@@ -245,48 +245,6 @@ func classifyReach(reason, transcript string, exited bool, exitCode int, row *au
 		return fail("audit row not sandboxed")
 	}
 	return result{id, statePass, "Acme read, Globex denied, sandboxed and audited"}
-}
-
-type stream struct {
-	net.Conn
-	r *bufio.Reader
-	bridge.SandboxAttachResult
-}
-
-// sandboxAttach answers either an open stream or relay's refusal reason, and
-// closes the connection on a refusal. An Error answer with no structured
-// refusal reads as reason "error".
-func sandboxAttach(ctx context.Context, e env, template, cwd string) (*stream, string, error) {
-	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(e.ConfigDir, "relay.sock"))
-	if err != nil {
-		return nil, "", errors.New("bridge socket unreachable")
-	}
-	if dl, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(dl)
-	}
-	s := &stream{Conn: conn, r: bufio.NewReader(conn)}
-	args, _ := json.Marshal(bridge.SandboxAttachRequest{Template: template, Cwd: cwd, Cols: 120, Rows: 40})
-	var ack bridge.BridgeResponse
-	err = json.NewEncoder(conn).Encode(bridge.BridgeRequest{Type: bridge.ReqSandboxAttach, Arguments: args})
-	if err == nil {
-		var line []byte
-		if line, err = s.r.ReadBytes('\n'); err == nil {
-			err = json.Unmarshal(line, &ack)
-		}
-	}
-	if err == nil && ack.Type == bridge.RespAttached {
-		_ = json.Unmarshal(ack.Data, &s.SandboxAttachResult)
-		return s, "", nil
-	}
-	_ = conn.Close()
-	if err != nil {
-		return nil, "", errors.New("no answer to the attach request")
-	}
-	var refusal bridge.SandboxRefusal
-	if json.Unmarshal(ack.Data, &refusal) != nil || refusal.Reason == "" {
-		refusal.Reason = "error"
-	}
-	return nil, refusal.Reason, nil
 }
 
 // auditRow polls because relay records a launch asynchronously. It returns
