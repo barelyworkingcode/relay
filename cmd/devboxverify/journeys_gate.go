@@ -586,7 +586,7 @@ func runGrantPos(ctx context.Context, e env) result {
 		body, _ := json.Marshal(map[string]any{
 			"name": name, "path": path,
 			"allowed_mcp_ids":   []string{e.Run.ProbeMCP},
-			"access":            map[string]string{e.Run.ProbeMCP: "read"},
+			"access":            map[string]string{e.Run.ProbeMCP: "write"},
 			"allowed_templates": []string{"world-probe"},
 		})
 		r.Resp, r.Dialog = gatedHTTP(ctx, e, token, http.MethodPost, "/api/projects", body, fmt.Sprintf("%q", name))
