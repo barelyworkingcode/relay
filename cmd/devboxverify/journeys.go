@@ -28,6 +28,11 @@ var journeys = []journey{
 	}},
 	{"oversized-launch-audit-capped", runOversized},
 	{"acme-sandbox-reach", runReach},
+	{"stale-derived-access-edit", runStaleDerivedEdit},
+	{"context-number-resave", runContextNumberResave},
+	{"v1-conversion-refusal", func(context.Context, env) result {
+		return result{"v1-conversion-refusal", stateNotRun, "a local-to-remote conversion is a kind change, which the presence gate prompts for before it validates; the refusal is reachable only after a human approves, and no v1 MCP is registered here"}
+	}},
 }
 
 const acmeName = "Acme Corp"
