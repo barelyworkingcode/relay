@@ -15,12 +15,17 @@ import (
 // Unix bridge and the raw-TCP enrolment-request listener, whose handler
 // ignores its ctx, so a cancel there changes nothing. A tls.Conn (the remote
 // listener) is not one, so there it is a no-op.
+//
+// Deliberate: a peer that half-closes (stops sending) mid-request is treated
+// as gone; relay's clients do not half-close mid-request.
+//
+// A pipelined frame ends the watch, so a peer that sends a second frame and
+// then leaves is not detected for the request in flight.
 type peerWatch struct {
 	fc   *FrameConn
 	done chan struct{}
 }
 
-// startPeerWatch returns nil when the connection cannot be watched.
 func (c *FrameConn) startPeerWatch(cancel context.CancelFunc) *peerWatch {
 	sc, ok := c.conn.(syscall.Conn)
 	if !ok {

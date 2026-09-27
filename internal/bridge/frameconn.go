@@ -101,9 +101,8 @@ func (c *FrameConn) WriteFrame(resp BridgeResponse) error {
 	return werr
 }
 
-// Serve reads and answers one frame at a time on the calling goroutine. While
-// a handler runs, a peer that closes the connection cancels that request's
-// ctx (see peerWatch); the connection ctx is never cancelled by Serve.
+// Serve cancels only a request's ctx when its peer leaves (see peerWatch),
+// never the connection ctx it was given.
 func (c *FrameConn) Serve(ctx context.Context, handle func(ctx context.Context, line string) BridgeResponse) {
 	for c.scanner.Scan() {
 		c.touch()
