@@ -421,6 +421,28 @@ func TestWorldFlagIsRefused(t *testing.T) {
 	}
 }
 
+func TestRenderCommentRepairedRowFollowsWorldVerify(t *testing.T) {
+	cases := []struct {
+		name     string
+		repaired []repairLine
+		row      string
+	}{
+		{"none", nil, "| Repaired | none |"},
+		{"escaped and joined", []repairLine{
+			{What: "world", Detail: "reset; before: 1/12 failed, first file acme a|b.txt:\n\t missing"},
+			{What: "mail", Detail: "reset ok"},
+		}, `| Repaired | world: reset; before: 1/12 failed, first file acme a\|b.txt: missing; mail: reset ok |`},
+	}
+	for _, c := range cases {
+		ev := evidence{PR: 7, Commit: "c1", ToolCommit: "t1", WorldSummary: "pass=12 fail=0", Repaired: c.repaired}
+		lines := strings.Split(renderComment(ev), "\n")
+		i := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "| World verify |") })
+		if i < 0 || i+1 >= len(lines) || lines[i+1] != c.row {
+			t.Errorf("%s: want %q right after World verify:\n%s", c.name, c.row, strings.Join(lines, "\n"))
+		}
+	}
+}
+
 func TestRenderCommentRunTimeFollowsToolCommit(t *testing.T) {
 	cases := []struct {
 		took time.Duration

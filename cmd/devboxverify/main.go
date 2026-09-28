@@ -224,7 +224,7 @@ func run() int {
 	}()
 
 	var head string
-	var worldPass, worldFail int
+	var repair repairOutcome
 	checks := []preflightCheck{
 		{"session", func() (string, error) {
 			if os.Getenv("RELAY_SESSION_ID") != "" {
@@ -278,21 +278,14 @@ func run() int {
 			return "PR head is HEAD", err
 		}},
 		{"bootstrap", func() (string, error) {
-			if script(worldCheckout, "bootstrap.sh", nil, "--check") != nil {
-				return "", errors.New("BLOCKED environment: bootstrap incomplete; run bootstrap.sh")
-			}
-			return "complete", nil
+			repair = runRepair(worldCheckout)
+			return repair.Bootstrap.result()
 		}},
 		{"world", func() (string, error) {
-			var out strings.Builder
-			runErr := script(worldCheckout, "verify.sh", &out)
-			if worldPass, worldFail, err = parseWorldSummary(out.String()); err != nil {
-				return "", errors.New("BLOCKED environment: verify.sh printed no summary")
+			for _, r := range repair.Repaired {
+				emit("REPAIRED", r.What, r.Detail)
 			}
-			if runErr != nil || worldFail != 0 {
-				return "", errors.New("BLOCKED environment: verify.sh is not green")
-			}
-			return "green", nil
+			return repair.World.result()
 		}},
 	}
 	screenOnly := map[string]bool{"lock": true, "console": true, "password": true, "sweep": true}
@@ -302,7 +295,7 @@ func run() int {
 	if !runPreflight(checks) {
 		return 2
 	}
-	emit("WORLD", fmt.Sprintf("pass=%d", worldPass), fmt.Sprintf("fail=%d", worldFail))
+	emit("WORLD", fmt.Sprintf("pass=%d", repair.Pass), fmt.Sprintf("fail=%d", repair.Fail))
 	if script(worldCheckout, "reset.sh", nil) != nil {
 		emit("RESET", "FAIL")
 		return 2
@@ -336,7 +329,7 @@ func run() int {
 		fmt.Sprintf("blocked=%d", counts[stateBlocked]), fmt.Sprintf("notrun=%d", counts[stateNotRun]))
 
 	if *pr > 0 {
-		ev := evidence{PR: *pr, Commit: head, ToolCommit: toolCommit, WorldSummary: fmt.Sprintf("pass=%d fail=%d", worldPass, worldFail), Home: home, RunTime: runTime, Results: results}
+		ev := evidence{PR: *pr, Commit: head, ToolCommit: toolCommit, WorldSummary: fmt.Sprintf("pass=%d fail=%d", repair.Pass, repair.Fail), Repaired: repair.Repaired, Home: home, RunTime: runTime, Results: results}
 		url, err := post(context.Background(), ev)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "post failed:", scrub(err.Error(), home))
