@@ -578,7 +578,7 @@ function renderOverviewAttention() {
 }
 
 function renderOverviewRecentToolCalls() {
-    const rows = (state.auditEvents || []).slice(0, 6);
+    const rows = (state.auditEvents || []).filter(ev => ev.event === 'call_tool').slice(0, 6);
     let html = '<div class="ov-section"><div class="page-header" style="margin-bottom:8px"><h3 style="margin:0">Recent tool calls</h3>';
     html += '<button type="button" class="btn btn-sm" ' + bind(showPage, 'audit') + '>See all</button></div>';
     if (!rows.length) {

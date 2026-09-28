@@ -157,6 +157,7 @@ Areas: tray, settings-ui.
 |---|---|---|---|---|---|
 | Open Settings | tray | tray > Settings… (⌘,) | screen | — | none |
 | Overview tiles and attention list | Settings > Overview | Overview | screen | — | none |
+| Recent tool calls (call_tool rows only) | Settings > Overview | Overview > Recent tool calls | screen | — | none |
 | Reveal config and logs folders | Settings > Overview | Reveal config / Reveal logs | screen | — | none |
 | Service rows with state | tray | menu bar icon | screen | — | none |
 | Pending enrolment line and notification | tray | tray line or banner → Remote Clients | screen | — | none |
