@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,9 +50,12 @@ const (
 	phaseScreen phase = "screen"
 )
 
+// journey.Needs lists the world fixtures it reads; its env.World admits
+// only those.
 type journey struct {
 	ID      string
 	Areas   []string
+	Needs   []string
 	Phase   phase
 	Timeout time.Duration
 	Run     func(ctx context.Context, e env) result
@@ -61,6 +65,7 @@ type env struct {
 	RelayBin, ConfigDir, FrontendSocket, WorldRoot, CredentialFile, Nonce string
 	RelayPID                                                              int
 	BinDir                                                                string
+	World                                                                 worldView
 	Run                                                                   *runState
 }
 
@@ -102,6 +107,9 @@ func parsePhase(s string) (phase, error) {
 }
 
 func main() { os.Exit(run()) }
+
+// vmCheck is a test seam only; the harness has no flag or env override for it.
+var vmCheck = hostIsVM
 
 var home, _ = os.UserHomeDir()
 
@@ -148,17 +156,48 @@ func script(world, name string, out io.Writer, args ...string) error {
 }
 
 func run() int {
+	start := time.Now()
 	fs := flag.NewFlagSet("devboxverify", flag.ContinueOnError)
 	checkout := fs.String("checkout", "", "relay checkout the running app must be built from (default: this checkout)")
-	world := fs.String("world", "", "devboxWorld checkout (default: devboxWorld beside this checkout)")
 	pr := fs.Int("post", 0, "PR number to post the status and evidence comment to")
 	phaseFlag := fs.String("phase", "", "run only the api or the screen journeys (default: both, api first)")
 	p, err := parseFlags(fs, os.Args[1:], pr, phaseFlag)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--world DIR] [--post PR | --phase api|screen]")
+		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--post PR | --phase api|screen]")
 		return 2
 	}
 	screen := p == "" || p == phaseScreen
+	selected := selectJourneys(journeys, p)
+
+	// Deliberate: machine, pin and fixtures run before anything else, so a
+	// host that is not a bootstrapped VM gets no lock, script or network call.
+	var marker worldMarker
+	var wd world
+	worldChecks := []preflightCheck{
+		{"machine", func() (string, error) {
+			marker, err = readMarker(markerPath(), vmCheck)
+			return fmt.Sprintf("vm; world v%d", marker.WorldVersion), err
+		}},
+		{"pin", func() (string, error) {
+			if marker.WorldVersion != worldVersion {
+				return "", fmt.Errorf("BLOCKED fixture: this machine's world is v%d; relay needs v%d", marker.WorldVersion, worldVersion)
+			}
+			return fmt.Sprintf("v%d", worldVersion), nil
+		}},
+		{"fixtures", func() (string, error) {
+			if wd, err = loadWorld(marker); err != nil {
+				return "", errors.New("BLOCKED fixture: " + err.Error())
+			}
+			if miss := missingFixtures(selected, wd); len(miss) > 0 {
+				return "", errors.New("BLOCKED fixture: " + strings.Join(miss, "; "))
+			}
+			return fixturesSummary(selected), nil
+		}},
+	}
+	if !runPreflight(worldChecks) {
+		return 2
+	}
+
 	toolRoot, err := gitOut(".", "rev-parse", "--show-toplevel")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "run devboxverify from inside a relay checkout")
@@ -168,13 +207,11 @@ func run() int {
 	if *checkout == "" {
 		*checkout = toolRoot
 	}
-	if *world == "" {
-		*world = filepath.Join(toolRoot, "..", "devboxWorld")
-	}
+	worldCheckout := marker.WorldCheckout
 	e := env{
 		RelayBin:       envOr("RELAY_BIN", "/Applications/Relay.app/Contents/MacOS/relay"),
 		ConfigDir:      bridge.ConfigDir(),
-		WorldRoot:      envOr("DEVBOXWORLD_ROOT", filepath.Join(home, "World")),
+		WorldRoot:      marker.WorldRoot,
 		CredentialFile: envOr("RELAY_VERIFY_CREDENTIAL_FILE", filepath.Join(home, ".config", "relay-verify", "credential")),
 		BinDir:         filepath.Dir(presenceBinPath()),
 		Run:            &runState{},
@@ -188,10 +225,7 @@ func run() int {
 
 	var head string
 	var worldPass, worldFail int
-	checks := []struct {
-		name string
-		run  func() (string, error)
-	}{
+	checks := []preflightCheck{
 		{"session", func() (string, error) {
 			if os.Getenv("RELAY_SESSION_ID") != "" {
 				return "", errors.New("run from an operator shell, not a relay session")
@@ -244,37 +278,32 @@ func run() int {
 			return "PR head is HEAD", err
 		}},
 		{"bootstrap", func() (string, error) {
-			if script(*world, "bootstrap.sh", nil, "--check") != nil {
-				return "", errors.New("bootstrap incomplete; run bootstrap.sh")
+			if script(worldCheckout, "bootstrap.sh", nil, "--check") != nil {
+				return "", errors.New("BLOCKED environment: bootstrap incomplete; run bootstrap.sh")
 			}
 			return "complete", nil
 		}},
 		{"world", func() (string, error) {
 			var out strings.Builder
-			runErr := script(*world, "verify.sh", &out)
+			runErr := script(worldCheckout, "verify.sh", &out)
 			if worldPass, worldFail, err = parseWorldSummary(out.String()); err != nil {
-				return "", errors.New("verify.sh printed no summary")
+				return "", errors.New("BLOCKED environment: verify.sh printed no summary")
 			}
 			if runErr != nil || worldFail != 0 {
-				return "", errors.New("verify.sh is not green")
+				return "", errors.New("BLOCKED environment: verify.sh is not green")
 			}
 			return "green", nil
 		}},
 	}
 	screenOnly := map[string]bool{"lock": true, "console": true, "password": true, "sweep": true}
-	for _, c := range checks {
-		if c.name == "pr" && *pr == 0 || screenOnly[c.name] && !screen {
-			continue
-		}
-		detail, err := c.run()
-		if err != nil {
-			emit("PREFLIGHT", c.name, "FAIL", err.Error())
-			return 2
-		}
-		emit("PREFLIGHT", c.name, "OK", detail)
+	checks = slices.DeleteFunc(checks, func(c preflightCheck) bool {
+		return c.name == "pr" && *pr == 0 || screenOnly[c.name] && !screen
+	})
+	if !runPreflight(checks) {
+		return 2
 	}
 	emit("WORLD", fmt.Sprintf("pass=%d", worldPass), fmt.Sprintf("fail=%d", worldFail))
-	if script(*world, "reset.sh", nil) != nil {
+	if script(worldCheckout, "reset.sh", nil) != nil {
 		emit("RESET", "FAIL")
 		return 2
 	}
@@ -284,23 +313,29 @@ func run() int {
 	_, _ = rand.Read(nonce)
 	e.Nonce = hex.EncodeToString(nonce)
 	var results []result
-	for _, j := range selectJourneys(journeys, p) {
+	for _, j := range selected {
 		fmt.Fprintln(os.Stderr, "running", j.ID)
+		began := time.Now()
+		je := e
+		je.World = wd.scoped(j.Needs)
 		ctx, cancel := context.WithTimeout(context.Background(), j.Timeout)
-		r := j.Run(ctx, e)
+		r := j.Run(ctx, je)
 		cancel()
 		if j.Phase == phaseScreen {
 			r = afterSweep(r, sweepDialogs(context.Background(), e))
 		}
 		results = append(results, r)
 		emit("JOURNEY", r.ID, string(r.State), r.Detail)
+		emit("TIMING", "journey", j.ID, strconv.FormatInt(time.Since(began).Milliseconds(), 10))
 	}
 	counts, code := tally(results)
+	runTime := time.Since(start)
+	emit("TIMING", "run", strconv.FormatInt(runTime.Milliseconds(), 10))
 	emit("SUMMARY", fmt.Sprintf("pass=%d", counts[statePass]), fmt.Sprintf("fail=%d", counts[stateFail]),
 		fmt.Sprintf("blocked=%d", counts[stateBlocked]), fmt.Sprintf("notrun=%d", counts[stateNotRun]))
 
 	if *pr > 0 {
-		ev := evidence{PR: *pr, Commit: head, ToolCommit: toolCommit, WorldSummary: fmt.Sprintf("pass=%d fail=%d", worldPass, worldFail), Home: home, Results: results}
+		ev := evidence{PR: *pr, Commit: head, ToolCommit: toolCommit, WorldSummary: fmt.Sprintf("pass=%d fail=%d", worldPass, worldFail), Home: home, RunTime: runTime, Results: results}
 		url, err := post(context.Background(), ev)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "post failed:", scrub(err.Error(), home))
@@ -309,6 +344,40 @@ func run() int {
 		emit("POSTED", statusState(results), url)
 	}
 	return code
+}
+
+type preflightCheck struct {
+	name string
+	run  func() (string, error)
+}
+
+// runPreflight stops at the first FAIL; the caller exits 2.
+func runPreflight(checks []preflightCheck) bool {
+	for _, c := range checks {
+		detail, err := c.run()
+		if err != nil {
+			emit("PREFLIGHT", c.name, "FAIL", err.Error())
+			return false
+		}
+		emit("PREFLIGHT", c.name, "OK", detail)
+	}
+	return true
+}
+
+// fixturesSummary counts the distinct fixtures the selected journeys declare
+// and the journeys that declare any.
+func fixturesSummary(js []journey) string {
+	ids := map[string]bool{}
+	n := 0
+	for _, j := range js {
+		if len(j.Needs) > 0 {
+			n++
+		}
+		for _, id := range j.Needs {
+			ids[id] = true
+		}
+	}
+	return fmt.Sprintf("%d fixtures for %d journeys", len(ids), n)
 }
 
 // parseFlags refuses --post with --phase: a PR's evidence covers every

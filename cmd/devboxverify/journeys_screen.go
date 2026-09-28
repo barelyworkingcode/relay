@@ -35,19 +35,19 @@ const (
 )
 
 var screenJourneys = []journey{
-	{staleID, []string{"projects", "grants"}, phaseScreen, 30 * time.Second, runStaleDerivedEdit},
-	{"context-number-resave", []string{"projects", "grants", "audit"}, phaseScreen, 30 * time.Second, runContextNumberResave},
-	{chatID, []string{"sessions", "audit"}, phaseScreen, 90 * time.Second, runChatLifecycle},
-	{terminalID, []string{"sessions", "templates", "audit"}, phaseScreen, 30 * time.Second, runTerminalLifecycle},
-	{modelID, []string{"models", "sessions", "audit"}, phaseScreen, 90 * time.Second, runModelCompletion},
-	{chatResumeID, []string{"sessions", "audit"}, phaseScreen, 180 * time.Second, runChatResume},
-	{disabledID, []string{"mcps", "grants"}, phaseScreen, 45 * time.Second, runDisabledTool},
-	{narrowID, []string{"grants", "projects", "sandbox"}, phaseScreen, 45 * time.Second, runGrantNarrowing},
-	{svcStartID, []string{"services"}, phaseScreen, 30 * time.Second, runServiceStartStop},
-	{svcCrashID, []string{"services"}, phaseScreen, 30 * time.Second, runServiceRestart},
-	{slowRouteID, []string{"credentials", "sessions", "hosts"}, phaseScreen, gateTimeout, runSlowRouteKeepalive},
+	{staleID, []string{"projects", "grants"}, nil, phaseScreen, 30 * time.Second, runStaleDerivedEdit},
+	{"context-number-resave", []string{"projects", "grants", "audit"}, nil, phaseScreen, 30 * time.Second, runContextNumberResave},
+	{chatID, []string{"sessions", "audit"}, []string{"project:acme"}, phaseScreen, 90 * time.Second, runChatLifecycle},
+	{terminalID, []string{"sessions", "templates", "audit"}, []string{"project:acme"}, phaseScreen, 30 * time.Second, runTerminalLifecycle},
+	{modelID, []string{"models", "sessions", "audit"}, []string{"project:acme"}, phaseScreen, 90 * time.Second, runModelCompletion},
+	{chatResumeID, []string{"sessions", "audit"}, []string{"project:acme"}, phaseScreen, 180 * time.Second, runChatResume},
+	{disabledID, []string{"mcps", "grants"}, nil, phaseScreen, 45 * time.Second, runDisabledTool},
+	{narrowID, []string{"grants", "projects", "sandbox"}, nil, phaseScreen, 45 * time.Second, runGrantNarrowing},
+	{svcStartID, []string{"services"}, nil, phaseScreen, 30 * time.Second, runServiceStartStop},
+	{svcCrashID, []string{"services"}, nil, phaseScreen, 30 * time.Second, runServiceRestart},
+	{slowRouteID, []string{"credentials", "sessions", "hosts"}, nil, phaseScreen, gateTimeout, runSlowRouteKeepalive},
 	// Last: it restarts the session host under every live session.
-	{hostRstID, []string{"services", "sessions"}, phaseScreen, 30 * time.Second, runSessionHostRestart},
+	{hostRstID, []string{"services", "sessions"}, nil, phaseScreen, 30 * time.Second, runSessionHostRestart},
 }
 
 // screenCreds answers P4 for launches, which are class execute, and the run
@@ -131,6 +131,7 @@ func modelCallRows(ctx context.Context, e env, since time.Time, project string) 
 type chatRun struct {
 	Models           frontendResponse
 	Want, Model      string
+	Project          string // the world project's name, for details
 	Create           frontendResponse
 	SessionID        string
 	Message          frontendResponse
@@ -150,12 +151,12 @@ func runChat(ctx context.Context, e env, id string) (chatRun, result, bool) {
 	if !ok {
 		return chatRun{}, res, false
 	}
-	acmeID, err := acmeProjectID(ctx, e)
+	acme, acmeID, err := grantedProject(ctx, e, "acme")
 	if err != nil {
 		return chatRun{}, blocked(id, err.Error()), false
 	}
 	start := time.Now().Add(-time.Second)
-	r := chatRun{Want: verifyModel()}
+	r := chatRun{Want: verifyModel(), Project: acme.Name}
 	r.Models = frontendDo(ctx, e, run, http.MethodGet, "/api/models", nil)
 	if r.Models.Status == http.StatusOK {
 		r.Model = pickModel(r.Models.Body, r.Want)
@@ -223,7 +224,7 @@ func classifyChat(id string, r chatRun) (result, bool) {
 	case r.Model == "":
 		return blocked(id, fmt.Sprintf("model %q not in GET /api/models; set RELAY_VERIFY_MODEL", r.Want)), true
 	case r.Create.Status != http.StatusCreated || r.SessionID == "":
-		return launchRefusal(id, "/api/sessions", r.Create), true
+		return launchRefusal(id, "/api/sessions", r.Project, r.Create), true
 	case hostUnavailable(r.ModelRows):
 		return blocked(id, "the model host answered 503"), true
 	case r.Message.Status == http.StatusUnauthorized:
@@ -262,7 +263,7 @@ func classifyChatLifecycle(r chatRun) result {
 	case r.LaunchRow.Outcome != audit.AuditOutcomeOK:
 		return result{chatID, stateFail, fmt.Sprintf("session_launch outcome %q", r.LaunchRow.Outcome)}
 	}
-	return result{chatID, statePass, "chat launched in " + acmeName + " with " + r.Model + ", answered, deleted and gone from the list; launch audited"}
+	return result{chatID, statePass, "chat launched in " + r.Project + " with " + r.Model + ", answered, deleted and gone from the list; launch audited"}
 }
 
 func runModelCompletion(ctx context.Context, e env) result {
@@ -281,19 +282,19 @@ func classifyModelCompletion(r chatRun) result {
 	case r.RowsErr != nil:
 		return blocked(modelID, r.RowsErr.Error())
 	case okModelRow(r) == nil:
-		return result{modelID, stateFail, fmt.Sprintf("no ok model_call row for %s in %s", r.Model, acmeName)}
+		return result{modelID, stateFail, fmt.Sprintf("no ok model_call row for %s in %s", r.Model, r.Project)}
 	}
 	return result{modelID, statePass, r.Model + " listed; one turn answered through the model endpoint; model_call recorded ok; session stopped"}
 }
 
-func launchRefusal(id, path string, r frontendResponse) result {
+func launchRefusal(id, path, project string, r frontendResponse) result {
 	switch r.Status {
 	case 0:
 		return blocked(id, "frontend socket unreachable")
 	case http.StatusUnauthorized:
 		return blocked(id, "P4 execute credential refused (401)")
 	case http.StatusForbidden:
-		return blocked(id, "launch refused for "+acmeName+": "+r.Error)
+		return blocked(id, "launch refused for "+project+": "+r.Error)
 	case http.StatusCreated:
 		return result{id, stateFail, "201 from POST " + path + " without an id"}
 	}
@@ -301,6 +302,7 @@ func launchRefusal(id, path string, r frontendResponse) result {
 }
 
 type terminalRun struct {
+	Project                   string
 	Create                    frontendResponse
 	TermID                    string
 	ListBefore, Log           frontendResponse
@@ -314,11 +316,11 @@ func runTerminalLifecycle(ctx context.Context, e env) result {
 	if !ok {
 		return res
 	}
-	acmeID, err := acmeProjectID(ctx, e)
+	acme, acmeID, err := grantedProject(ctx, e, "acme")
 	if err != nil {
 		return blocked(terminalID, err.Error())
 	}
-	var r terminalRun
+	r := terminalRun{Project: acme.Name}
 	body := jsonBody(map[string]any{"templateId": "world-probe", "projectId": acmeID, "name": "verify-" + e.Nonce + "-term", "cols": 120, "rows": 40})
 	r.Create = frontendDoTimeout(ctx, e, launch, http.MethodPost, "/api/terminals", body, 30*time.Second)
 	var created struct {
@@ -350,7 +352,7 @@ func classifyTerminalLifecycle(r terminalRun) result {
 	fail := func(d string) result { return result{id, stateFail, d} }
 	switch {
 	case r.Create.Status != http.StatusCreated || r.TermID == "":
-		return launchRefusal(id, "/api/terminals", r.Create)
+		return launchRefusal(id, "/api/terminals", r.Project, r.Create)
 	case r.ListBefore.Status == http.StatusUnauthorized:
 		return blocked(id, "run credential refused (401)")
 	case !r.ListedBefore:
@@ -370,7 +372,7 @@ func classifyTerminalLifecycle(r terminalRun) result {
 	case r.Row.Outcome != audit.AuditOutcomeOK:
 		return fail(fmt.Sprintf("session_launch outcome %q", r.Row.Outcome))
 	}
-	return result{id, statePass, "world-probe terminal launched in " + acmeName + ", listed, logged, deleted and gone; launch audited"}
+	return result{id, statePass, "world-probe terminal launched in " + r.Project + ", listed, logged, deleted and gone; launch audited"}
 }
 
 // probeView is what a Verify Grant session sees of the probe MCP.

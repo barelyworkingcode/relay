@@ -37,12 +37,12 @@ func runChatResume(ctx context.Context, e env) result {
 	if !ok {
 		return res
 	}
-	acmeID, err := acmeProjectID(ctx, e)
+	acme, acmeID, err := grantedProject(ctx, e, "acme")
 	if err != nil {
 		return blocked(chatResumeID, err.Error())
 	}
 	start := time.Now().Add(-time.Second)
-	r := chatResumeRun{chatRun: chatRun{Want: verifyModel()}}
+	r := chatResumeRun{chatRun: chatRun{Want: verifyModel(), Project: acme.Name}}
 	r.Models = frontendDo(ctx, e, run, http.MethodGet, "/api/models", nil)
 	if r.Models.Status == http.StatusOK {
 		r.Model = pickModel(r.Models.Body, r.Want)
@@ -151,7 +151,7 @@ func classifyChatResume(r chatResumeRun) result {
 	case r.Model == "":
 		return blocked(id, fmt.Sprintf("model %q not in GET /api/models; set RELAY_VERIFY_MODEL", r.Want))
 	case r.Create.Status != http.StatusCreated || r.SessionID == "":
-		return launchRefusal(id, "/api/sessions", r.Create)
+		return launchRefusal(id, "/api/sessions", r.Project, r.Create)
 	case hostUnavailable(r.ModelRows):
 		return blocked(id, "the model host answered 503")
 	case r.Message.Status == http.StatusUnauthorized:
@@ -189,5 +189,5 @@ func classifyChatResume(r chatResumeRun) result {
 	case r.StillListedAfter:
 		return fail("session still listed after DELETE")
 	}
-	return result{id, statePass, "chat in " + acmeName + " with " + r.Model + " answered, ended, refused a message while dormant, resumed, answered again; deleted"}
+	return result{id, statePass, "chat in " + r.Project + " with " + r.Model + " answered, ended, refused a message while dormant, resumed, answered again; deleted"}
 }

@@ -61,9 +61,13 @@ func attachRefusal(id, reason string) (result, bool) {
 }
 
 func openAcmeProbe(ctx context.Context, e env, id string) (*liveSession, result, bool) {
-	cwd, err := filepath.EvalSymlinks(filepath.Join(e.WorldRoot, acmeName))
+	acme, err := e.World.project("acme")
 	if err != nil {
-		return nil, blocked(id, "Acme folder missing"), false
+		return nil, blocked(id, err.Error()), false
+	}
+	cwd, err := filepath.EvalSymlinks(acme.Folder)
+	if err != nil {
+		return nil, blocked(id, acme.Name+" folder missing"), false
 	}
 	s, reason, err := openSession(ctx, e, "world-probe", cwd)
 	if err != nil {
@@ -143,12 +147,13 @@ func classifyToolsThroughBridge(r toolsRun) result {
 
 type auditedRun struct {
 	SessionID, AcmeID string
+	AcmeName          string
 	Allowed, Denied   execOut
 	Rows              []audit.AuditEvent // call_tool rows newer than the baseline
 }
 
 func runToolCallAudited(ctx context.Context, e env) result {
-	acmeID, err := acmeProjectID(ctx, e)
+	acme, acmeID, err := grantedProject(ctx, e, "acme")
 	if err != nil {
 		return blocked(auditedID, err.Error())
 	}
@@ -164,7 +169,7 @@ func runToolCallAudited(ctx context.Context, e env) result {
 	if !ok {
 		return res
 	}
-	r := auditedRun{SessionID: s.ID, AcmeID: acmeID}
+	r := auditedRun{SessionID: s.ID, AcmeID: acmeID, AcmeName: acme.Name}
 	r.Allowed = sessionExec(ctx, s, toolCallLine(e.RelayBin, allowedTool))
 	r.Denied = sessionExec(ctx, s, toolCallLine(e.RelayBin, deniedTool))
 	s.Close(context.WithoutCancel(ctx))
@@ -251,7 +256,7 @@ func classifyToolCallAudited(r auditedRun) result {
 		case row.Actor.Kind != audit.AuditActorProjectSession:
 			return fail(fmt.Sprintf("%s row actor %q", want.tool, row.Actor.Kind))
 		case row.Actor.ProjectID != r.AcmeID:
-			return fail(want.tool + " row is not for " + acmeName)
+			return fail(want.tool + " row is not for " + r.AcmeName)
 		case row.McpID != acmeMcp:
 			return fail(fmt.Sprintf("%s row mcp %q, want %s", want.tool, row.McpID, acmeMcp))
 		case row.Outcome != want.outcome:

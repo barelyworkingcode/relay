@@ -152,7 +152,7 @@ func TestClassifyBlankModel(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			v := in{400, body(msg), row("control", acme, "error", msg, chatArgs)}
 			c.mut(&v)
-			checkState(t, classifyBlankModel(v.status, v.body, v.row, name, acme), c.want)
+			checkState(t, classifyBlankModel(v.status, v.body, v.row, name, acme, "Acme"), c.want)
 		})
 	}
 }
@@ -192,7 +192,7 @@ func TestClassifyOversized(t *testing.T) {
 func TestClassifyReach(t *testing.T) {
 	// The PTY echoes every byte typed into the probe shell, so the transcript
 	// always holds the script itself; a marker must appear only as output.
-	script := reachScript("/w")
+	script := reachScript("PROJECT.md", "/w/Other/PROJECT.md")
 	for _, m := range []string{"ACME_OK", "ACME_DENIED", "GLOBEX_OK", "GLOBEX_DENIED"} {
 		if strings.Contains(script, m) {
 			t.Fatalf("reachScript contains the literal marker %s, so its echo alone could pass", m)
@@ -227,7 +227,7 @@ func TestClassifyReach(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			v := in{"", good, true, 0, row("operator", "p1", "ok", "", `{"session_id":"s1","template_id":"world-probe","sandbox":true}`)}
 			c.mut(&v)
-			checkState(t, classifyReach(v.reason, v.transcript, v.exited, v.code, v.row), c.want)
+			checkState(t, classifyReach("Acme", "Other", v.reason, v.transcript, v.exited, v.code, v.row), c.want)
 		})
 	}
 }

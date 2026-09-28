@@ -5,7 +5,7 @@ devboxWorld test world, through relay's own surfaces, and read the outcome
 back, audit log included. No mocks. It runs on the devbox, never in CI.
 
 ```bash
-go run ./cmd/devboxverify [--checkout DIR] [--world DIR] [--post PR | --phase api|screen]
+go run ./cmd/devboxverify [--checkout DIR] [--post PR | --phase api|screen]
 ```
 
 Environment:
@@ -13,7 +13,7 @@ Environment:
 | Variable | Default | Used for |
 |---|---|---|
 | `RELAY_BIN` | `/Applications/Relay.app/Contents/MacOS/relay` | the app under test |
-| `DEVBOXWORLD_ROOT` | `~/World` | the test world's folders |
+| `DEVBOXWORLD_MARKER` | `~/.config/devboxWorld/machine.json` | devboxWorld's machine marker: the only source of the world checkout, the world root and the world version |
 | `RELAY_VERIFY_CREDENTIAL_FILE` | `~/.config/relay-verify/credential` | P4, the `execute` credential |
 | `RELAY_VERIFY_MODEL` | `Chat` | the model the chat journeys pick from `GET /api/models`: equal, or ending in `/Chat` |
 | `DEVBOXPRESENCE_BIN` | `~/.local/share/devboxverify/bin/devboxpresence` | the presence helper; testmcp and testservice are built beside it |
@@ -21,11 +21,37 @@ Environment:
 | `EVE_BROWSER_LOCK` | `~/.cache/eve/browser-tests.lock` | the shared screen lock |
 | `EVE_BROWSER_LOCK_TIMEOUT` | `1800` | seconds to wait for the lock |
 
-Stdout is tab-separated `PREFLIGHT`, `WORLD`, `RESET`, `JOURNEY`, `SUMMARY`
-and `POSTED` lines and nothing else; progress and the world scripts' own
+Stdout is tab-separated `PREFLIGHT`, `WORLD`, `RESET`, `JOURNEY`, `TIMING`,
+`SUMMARY` and `POSTED` lines and nothing else; progress and the world scripts' own
 output go to stderr. Exit 0 when every journey is PASS or NOTRUN, 1 on any
 FAIL or BLOCKED, 2 on a usage, preflight, reset or post failure. A journey
-the phase does not select prints nothing.
+the phase does not select prints nothing. `TIMING\tjourney\t<id>\t<ms>`
+follows each `JOURNEY` line; `TIMING\trun\t<ms>` (from start to the last
+journey) comes before `SUMMARY`, and the evidence comment carries it as a
+Run time row.
+
+A red run names its cause. A preflight FAIL whose detail starts
+`BLOCKED fixture: ` is the test data (the world's version or catalogue); one
+starting `BLOCKED environment: ` is the machine's world state (bootstrap or
+`verify.sh`); `not a test machine: …` means this is not a bootstrapped VM.
+A journey FAIL after a green preflight is the product.
+
+## The world
+
+The world comes only from devboxWorld's machine marker, which bootstrap's
+`machine` step writes on a VM. There is no flag or environment override for
+the world's checkout or root. The marker is refused, with devboxWorld's own
+reasons, unless `kern.hv_vmm_present` is 1, it is a regular file of mode
+0600 or tighter, and it holds `schema` 1, absolute `world_checkout` and
+`world_root`, a positive `world_version` and `written_at`.
+
+`worldVersion` in `world.go` is relay's pin; it must equal the marker's
+`world_version`. The fixtures come from `<world_checkout>/data/world.json`:
+its `projects` and its `fixtures` catalogue (`project:<key>`,
+`file:<key>/<rel>`). Every journey declares the fixtures it reads in
+`Needs`, and at run time sees only those: a lookup of anything else reads
+BLOCKED `undeclared fixture <id>`. Project names and folders are read from
+the catalogue, never written into a journey.
 
 The tool changes settings only on its own fixtures: Verify Stale and Verify
 Numbers (one-time setup below), and the records the screen phase creates
@@ -50,11 +76,16 @@ credential, and renews P4 when it is due.
 The nightly runs relay `--phase api`, then eve's own run, then relay
 `--phase screen`. Eve's `nightly.js` owns that order.
 
-Preflight, in order: `session` (not inside a relay session), `head`, `build`
-(the app was built from HEAD, clean tree), `app` (the one running), `helpers`,
-then for the screen phase `lock`, `console`, `password` and `sweep`, then
-`pr` (with `--post`), `bootstrap` and `world`. Both phases run bootstrap,
-world and reset.
+Preflight, in order: `machine` (the marker, read on a VM: `vm; world v<N>`),
+`pin` (the marker's world version is relay's), `fixtures` (every fixture the
+selected journeys declare is in the catalogue), then `session` (not inside a
+relay session), `head`, `build` (the app was built from HEAD, clean tree),
+`app` (the one running), `helpers`, then for the screen phase `lock`,
+`console`, `password` and `sweep`, then `pr` (with `--post`), `bootstrap` and
+`world`, both run from the marker's `world_checkout`. The first three run
+before any lock, script or network call, so a machine without a valid
+marker gets `PREFLIGHT machine FAIL not a test machine: …` and exit 2 with
+nothing touched. Both phases run bootstrap, world and reset.
 
 - `helpers` checks the installed presence helper is present, Developer ID
   signed and built from this checkout's `cmd/devboxpresence` rev, and for the
@@ -483,7 +514,7 @@ None of this drifts `verify.sh`.
 - `build.sh` signs and relaunches the app. Unlock the signing keychain first,
   or the build fails at `codesign`.
 - A stale or incomplete bootstrap (a helper build out of date, say) fails
-  preflight as `bootstrap incomplete; run bootstrap.sh`. It is checked before
+  preflight as `BLOCKED environment: bootstrap incomplete; run bootstrap.sh`. It is checked before
   `reset.sh` because reset takes the world down before it checks bootstrap,
   and would leave it down.
 - Audit rows are recorded asynchronously and read back for up to 5 s. A
