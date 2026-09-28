@@ -366,19 +366,15 @@ func runPreflight(checks []preflightCheck) bool {
 }
 
 // fixturesSummary counts the distinct fixtures the selected journeys declare
-// and the journeys that declare any.
+// and every selected journey, whether or not it declares any.
 func fixturesSummary(js []journey) string {
 	ids := map[string]bool{}
-	n := 0
 	for _, j := range js {
-		if len(j.Needs) > 0 {
-			n++
-		}
 		for _, id := range j.Needs {
 			ids[id] = true
 		}
 	}
-	return fmt.Sprintf("%d fixtures for %d journeys", len(ids), n)
+	return fmt.Sprintf("%d fixtures for %d journeys", len(ids), len(js))
 }
 
 // parseFlags refuses --post with --phase: a PR's evidence covers every
