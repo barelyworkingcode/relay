@@ -53,7 +53,7 @@ func runBlankModel(ctx context.Context, e env) result {
 	if err != nil || token == "" {
 		return blocked(id, "credential file empty or unreadable")
 	}
-	acme, acmeID, err := grantedProject(ctx, e, "acme")
+	acme, acmeID, err := grantedAcme(ctx, e)
 	if err != nil {
 		return blocked(id, err.Error())
 	}
@@ -345,10 +345,10 @@ func auditLineBytes(ctx context.Context, e env, rowID string) (int, error) {
 	}
 }
 
-// grantedProject resolves a declared world project to the Relay project of
-// the same name, as relay grant lists it.
-func grantedProject(ctx context.Context, e env, key string) (worldProject, string, error) {
-	wp, err := e.World.project(key)
+// grantedAcme resolves the declared acme world project to the Relay project
+// of the same name, as relay grant lists it.
+func grantedAcme(ctx context.Context, e env) (worldProject, string, error) {
+	wp, err := e.World.project("acme")
 	if err != nil {
 		return worldProject{}, "", err
 	}

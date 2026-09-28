@@ -127,7 +127,7 @@ func classifyToolsThroughBridge(r toolsRun) result {
 	case r.List.Exit != 0:
 		return fail(fmt.Sprintf("mcp call --list exit %d", r.List.Exit))
 	case len(tools) == 0:
-		return fail("no tools listed in an Acme session")
+		return fail("no tools listed in the probe session")
 	}
 	for _, t := range tools {
 		if !strings.HasPrefix(t, "mail_") {
@@ -138,7 +138,7 @@ func classifyToolsThroughBridge(r toolsRun) result {
 	case r.Allowed.Exit != 0:
 		return fail(fmt.Sprintf("%s exit %d", allowedTool, r.Allowed.Exit))
 	case r.Denied.Exit == 0:
-		return fail(deniedTool + " answered in an Acme session")
+		return fail(deniedTool + " answered in the probe session")
 	case !strings.Contains(r.Denied.Out, accessDenied):
 		return fail(deniedTool + " failed without an access denial")
 	}
@@ -153,7 +153,7 @@ type auditedRun struct {
 }
 
 func runToolCallAudited(ctx context.Context, e env) result {
-	acme, acmeID, err := grantedProject(ctx, e, "acme")
+	acme, acmeID, err := grantedAcme(ctx, e)
 	if err != nil {
 		return blocked(auditedID, err.Error())
 	}

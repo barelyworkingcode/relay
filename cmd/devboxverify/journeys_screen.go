@@ -151,7 +151,7 @@ func runChat(ctx context.Context, e env, id string) (chatRun, result, bool) {
 	if !ok {
 		return chatRun{}, res, false
 	}
-	acme, acmeID, err := grantedProject(ctx, e, "acme")
+	acme, acmeID, err := grantedAcme(ctx, e)
 	if err != nil {
 		return chatRun{}, blocked(id, err.Error()), false
 	}
@@ -316,7 +316,7 @@ func runTerminalLifecycle(ctx context.Context, e env) result {
 	if !ok {
 		return res
 	}
-	acme, acmeID, err := grantedProject(ctx, e, "acme")
+	acme, acmeID, err := grantedAcme(ctx, e)
 	if err != nil {
 		return blocked(terminalID, err.Error())
 	}

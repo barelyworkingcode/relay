@@ -41,8 +41,8 @@ A journey FAIL after a green preflight is the product.
 The world comes only from devboxWorld's machine marker, which bootstrap's
 `machine` step writes on a VM. There is no flag or environment override for
 the world's checkout or root. The marker is refused, with devboxWorld's own
-reasons, unless `kern.hv_vmm_present` is 1, it is a regular file of mode
-0600 or tighter, and it holds `schema` 1, absolute `world_checkout` and
+reasons, unless `kern.hv_vmm_present` is 1, it is a regular file with no
+group or other permission bits, and it holds `schema` 1, absolute `world_checkout` and
 `world_root`, a positive `world_version` and `written_at`.
 
 `worldVersion` in `world.go` is relay's pin; it must equal the marker's
@@ -74,7 +74,7 @@ credential, and renews P4 when it is due.
   both and refuses `--phase`.
 
 The nightly runs relay `--phase api`, then eve's own run, then relay
-`--phase screen`. Eve's `nightly.js` owns that order.
+`--phase screen`. The nightly runner owns that order.
 
 Preflight, in order: `machine` (the marker, read on a VM: `vm; world v<N>`),
 `pin` (the marker's world version is relay's), `fixtures` (every fixture the

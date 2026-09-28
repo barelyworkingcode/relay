@@ -37,7 +37,7 @@ func runChatResume(ctx context.Context, e env) result {
 	if !ok {
 		return res
 	}
-	acme, acmeID, err := grantedProject(ctx, e, "acme")
+	acme, acmeID, err := grantedAcme(ctx, e)
 	if err != nil {
 		return blocked(chatResumeID, err.Error())
 	}

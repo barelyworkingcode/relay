@@ -292,7 +292,6 @@ func runIsolated(t *testing.T, marker string, isVM bool, args ...string) (code i
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	t.Setenv("DEVBOXWORLD_MARKER", marker)
 	t.Setenv("EVE_BROWSER_LOCK", filepath.Join(dir, "browser.lock"))
-	t.Setenv("DEVBOXWORLD_ROOT", filepath.Join(dir, "ignored-world"))
 	// Deliberate: should the world checks pass, the first existing check
 	// stops the run before it reaches the app.
 	t.Setenv("RELAY_SESSION_ID", "s1")
@@ -302,6 +301,7 @@ func runIsolated(t *testing.T, marker string, isVM bool, args ...string) (code i
 		}
 	}
 	savedVM, savedArgs, savedOut := vmCheck, os.Args, os.Stdout
+	t.Cleanup(func() { vmCheck, os.Args, os.Stdout = savedVM, savedArgs, savedOut })
 	out, err := os.Create(filepath.Join(dir, "stdout"))
 	if err != nil {
 		t.Fatal(err)
