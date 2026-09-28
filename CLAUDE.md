@@ -27,6 +27,14 @@ same change when behaviour moves.
 | Model endpoint, model keys | [`docs/model-endpoint.md`](docs/model-endpoint.md) |
 | Tests | [`docs/testing.md`](docs/testing.md), [`docs/testing-roadmap.md`](docs/testing-roadmap.md) |
 | Devbox verify (layer 2, the running app) | [`cmd/devboxverify/README.md`](cmd/devboxverify/README.md) |
+| Judging a security finding: who relay defends against, and what's out of scope | [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) |
+
+Conventions the global rules name: the **threat model** is
+[`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md), the **feature map** is
+[`cmd/devboxverify/FEATURES.md`](cmd/devboxverify/FEATURES.md), and the
+**verify harness** is `cmd/devboxverify`. Planners and reviewers judge
+security findings against the threat model: a finding names the attacker,
+the asset and the promise broken, or it is out of scope.
 
 ADR-NNN citations in code and docs are labels for reasoning recorded in those
 documents; there is no ADR directory to look in.
