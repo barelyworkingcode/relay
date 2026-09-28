@@ -38,6 +38,7 @@ var screenJourneys = []journey{
 	{chatID, []string{"sessions", "audit"}, phaseScreen, 90 * time.Second, runChatLifecycle},
 	{terminalID, []string{"sessions", "templates", "audit"}, phaseScreen, 30 * time.Second, runTerminalLifecycle},
 	{modelID, []string{"models", "sessions", "audit"}, phaseScreen, 90 * time.Second, runModelCompletion},
+	{chatResumeID, []string{"sessions", "audit"}, phaseScreen, 180 * time.Second, runChatResume},
 	{disabledID, []string{"mcps", "grants"}, phaseScreen, 45 * time.Second, runDisabledTool},
 	{narrowID, []string{"grants", "projects", "sandbox"}, phaseScreen, 45 * time.Second, runGrantNarrowing},
 	{svcStartID, []string{"services"}, phaseScreen, 30 * time.Second, runServiceStartStop},

@@ -247,11 +247,15 @@ func classifyReach(reason, transcript string, exited bool, exitCode int, row *au
 	return result{id, statePass, "Acme read, Globex denied, sandboxed and audited"}
 }
 
-// auditRow polls because relay records a launch asynchronously. It returns
-// the newest session_launch row matching key.
 func auditRow(ctx context.Context, e env, key string) *audit.AuditEvent {
+	return auditEventRow(ctx, e, audit.AuditEventSessionLaunch, key)
+}
+
+// auditEventRow polls because relay records launches and exits
+// asynchronously. It returns the newest row of event matching key.
+func auditEventRow(ctx context.Context, e env, event, key string) *audit.AuditEvent {
 	for deadline := time.Now().Add(5 * time.Second); ; {
-		out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--event", "session_launch", "--grep", key, "--json", "--tail", "1").Output()
+		out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--event", event, "--grep", key, "--json", "--tail", "1").Output()
 		line := bytes.TrimSpace(out)
 		var row audit.AuditEvent
 		if err == nil && len(line) > 0 && json.Unmarshal(line, &row) == nil {

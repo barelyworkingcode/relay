@@ -294,6 +294,18 @@ for Acme records that model with outcome `ok`. The session is deleted after.
 - Traps: rows are matched by time, not a baseline id, because other
   services' model calls can push an id out of the window.
 
+**session-chat-resume** (screen). A chat session in Acme Corp answers, is
+ended without being deleted, answers `resume_required`, resumes with
+`resumed: true`, and answers again. The session is deleted after.
+- Lives in: `cmd/relay/session_routes.go` (`handleResumeSession`),
+  `cmd/relay/router_sessions.go` (`SessionExited` ages the ledger record),
+  `internal/sessions/session` (`Create` with `Resume`).
+- Reached by: the session-chat-lifecycle calls; the WS `end_session` frame on
+  `/ws` with the run credential; `POST /api/sessions/{id}/resume` with P4.
+- Traps: `end_session` has no reply, so the journey waits for the session's
+  `session_end` audit row before it sends. It cannot drive a stale `live`
+  record left by a Relay relaunch: restarting Relay mid-run stops eve-verify.
+
 **disabled-tool-refused** (screen). In a live session in Verify Grant,
 `testmcp_ping` answers; a `PUT /api/projects/{id}` with `disabled_tools`
 naming it returns 200 within 10 s without a prompt; the same session no
