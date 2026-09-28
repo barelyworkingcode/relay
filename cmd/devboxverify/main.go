@@ -315,18 +315,19 @@ func run() int {
 	var results []result
 	for _, j := range selected {
 		fmt.Fprintln(os.Stderr, "running", j.ID)
-		began := time.Now()
 		je := e
 		je.World = wd.scoped(j.Needs)
+		began := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), j.Timeout)
 		r := j.Run(ctx, je)
 		cancel()
 		if j.Phase == phaseScreen {
 			r = afterSweep(r, sweepDialogs(context.Background(), e))
 		}
+		took := time.Since(began)
 		results = append(results, r)
 		emit("JOURNEY", r.ID, string(r.State), r.Detail)
-		emit("TIMING", "journey", j.ID, strconv.FormatInt(time.Since(began).Milliseconds(), 10))
+		emit("TIMING", "journey", j.ID, strconv.FormatInt(took.Milliseconds(), 10))
 	}
 	counts, code := tally(results)
 	runTime := time.Since(start)

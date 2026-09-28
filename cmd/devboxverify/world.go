@@ -39,11 +39,16 @@ type worldMarker struct {
 
 type worldProject struct{ Key, Name, Mode, Folder string }
 
+// worldMCP is world.json's relay_mcp: the MCP every world project grants and
+// the tool pattern it grants.
+type worldMCP struct{ ID, Tools string }
+
 type world struct {
 	Version        int
 	Root, Checkout string
 	Projects       map[string]worldProject
 	Fixtures       map[string]bool
+	MCP            worldMCP
 }
 
 // worldView is what one journey may see of the world: only the fixtures it
@@ -174,6 +179,8 @@ func positiveInt(raw json.RawMessage) (int, bool) {
 	return n, true
 }
 
+// loadWorld reports the first failure in devboxWorld's published order; main
+// prefixes it with "BLOCKED fixture: ".
 func loadWorld(m worldMarker) (world, error) {
 	f, err := os.Open(filepath.Join(m.WorldCheckout, "data", "world.json"))
 	if err != nil {
@@ -184,38 +191,66 @@ func loadWorld(m worldMarker) (world, error) {
 	if err != nil {
 		return world{}, errors.New("world data is not readable")
 	}
-	var doc struct {
-		WorldVersion json.RawMessage   `json:"world_version"`
-		Projects     []json.RawMessage `json:"projects"`
-		Fixtures     json.RawMessage   `json:"fixtures"`
-	}
-	if !utf8.Valid(raw) || json.Unmarshal(raw, &doc) != nil {
+	var doc map[string]json.RawMessage
+	if !utf8.Valid(raw) || !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) || json.Unmarshal(raw, &doc) != nil {
 		return world{}, errors.New("world data is not valid JSON")
 	}
-	v, ok := positiveInt(doc.WorldVersion)
+	v, ok := positiveInt(doc["world_version"])
 	if !ok {
-		return world{}, errors.New("world data world_version is not a positive integer")
+		return world{}, errors.New("world_version is not a positive integer")
 	}
-	ids, ok := stringList(doc.Fixtures)
+	ids, ok := stringList(doc["fixtures"])
 	if !ok {
-		return world{}, errors.New("world data fixtures is not a list of strings")
+		return world{}, errors.New("fixtures is not a list of strings")
+	}
+	var projects []json.RawMessage
+	if !bytes.HasPrefix(bytes.TrimSpace(doc["projects"]), []byte("[")) || json.Unmarshal(doc["projects"], &projects) != nil {
+		return world{}, errors.New("projects is not a list")
 	}
 	w := world{Version: v, Root: m.WorldRoot, Checkout: m.WorldCheckout, Projects: map[string]worldProject{}, Fixtures: map[string]bool{}}
-	for i, pr := range doc.Projects {
+	for i, pr := range projects {
 		p, ok := parseProject(pr)
 		if _, dup := w.Projects[p.Key]; !ok || dup {
-			return world{}, fmt.Errorf("world data project %d is malformed", i)
+			return world{}, fmt.Errorf("project %d is malformed", i)
 		}
 		p.Folder = filepath.Join(m.WorldRoot, p.Name)
 		w.Projects[p.Key] = p
 	}
+	if w.MCP, ok = parseMCP(doc["relay_mcp"]); !ok {
+		return world{}, errors.New("relay_mcp is malformed")
+	}
 	for _, id := range ids {
 		if !w.resolves(id) {
-			return world{}, fmt.Errorf("world data fixture %s does not resolve", id)
+			return world{}, fmt.Errorf("fixture %s does not resolve", id)
 		}
 		w.Fixtures[id] = true
 	}
 	return w, nil
+}
+
+// nonEmptyStrings reads each named field of a JSON object into its
+// destination; any field absent, not a string or empty refuses the object.
+func nonEmptyStrings(raw json.RawMessage, fields map[string]*string) bool {
+	var obj map[string]json.RawMessage
+	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) || json.Unmarshal(raw, &obj) != nil {
+		return false
+	}
+	for name, dst := range fields {
+		s, ok := jsonString(obj[name])
+		if !ok || s == "" {
+			return false
+		}
+		*dst = s
+	}
+	return true
+}
+
+func parseMCP(raw json.RawMessage) (worldMCP, bool) {
+	var m worldMCP
+	if !nonEmptyStrings(raw, map[string]*string{"id": &m.ID, "tools": &m.Tools}) {
+		return worldMCP{}, false
+	}
+	return m, true
 }
 
 func stringList(raw json.RawMessage) ([]string, bool) {
@@ -235,20 +270,9 @@ func stringList(raw json.RawMessage) ([]string, bool) {
 }
 
 func parseProject(raw json.RawMessage) (worldProject, bool) {
-	var fields map[string]json.RawMessage
-	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) || json.Unmarshal(raw, &fields) != nil {
-		return worldProject{}, false
-	}
 	var p worldProject
-	for _, f := range []struct {
-		name string
-		dst  *string
-	}{{"key", &p.Key}, {"name", &p.Name}, {"mode", &p.Mode}} {
-		s, ok := jsonString(fields[f.name])
-		if !ok || s == "" {
-			return worldProject{}, false
-		}
-		*f.dst = s
+	if !nonEmptyStrings(raw, map[string]*string{"key": &p.Key, "name": &p.Name, "mode": &p.Mode}) {
+		return worldProject{}, false
 	}
 	// The name becomes a folder under the world root, so it must stay one.
 	if strings.ContainsRune(p.Name, '/') || p.Name == "." || p.Name == ".." {
@@ -260,9 +284,6 @@ func parseProject(raw json.RawMessage) (worldProject, bool) {
 // resolves checks an id's shape against the projects; the file content is
 // devboxWorld's own validate-data concern.
 func (w world) resolves(id string) bool {
-	if strings.Contains(id, "..") {
-		return false
-	}
 	if key, ok := strings.CutPrefix(id, "project:"); ok {
 		_, known := w.Projects[key]
 		return known
@@ -273,7 +294,7 @@ func (w world) resolves(id string) bool {
 	}
 	key, rel, ok := strings.Cut(rest, "/")
 	_, known := w.Projects[key]
-	return ok && known && rel != "" && !strings.HasPrefix(rel, "/")
+	return ok && known && rel != "" && !strings.HasPrefix(rel, "/") && !strings.Contains(rel, "..")
 }
 
 func (w world) scoped(needs []string) worldView {
@@ -293,6 +314,10 @@ func (v worldView) admit(id string) error {
 	}
 	return nil
 }
+
+// relayMCP is a published constant, not a catalogue id, so it needs no
+// declaration.
+func (v worldView) relayMCP() worldMCP { return v.w.MCP }
 
 func (v worldView) project(key string) (worldProject, error) {
 	id := "project:" + key

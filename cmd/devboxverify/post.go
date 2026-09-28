@@ -58,7 +58,7 @@ func renderComment(ev evidence) string {
 	fmt.Fprintf(&b, "| Relay commit | `%s` |\n", ev.Commit)
 	fmt.Fprintf(&b, "| World verify | %s |\n", ev.WorldSummary)
 	fmt.Fprintf(&b, "| Tool commit | `%s` |\n", ev.ToolCommit)
-	fmt.Fprintf(&b, "| Run time | %d s |\n\n", int64(ev.RunTime.Round(time.Second)/time.Second))
+	fmt.Fprintf(&b, "| Run time | %d s |\n\n", (ev.RunTime.Milliseconds()+500)/1000)
 	fmt.Fprintf(&b, "| Journey | Result | Detail |\n|---|---|---|\n")
 	for _, r := range ev.Results {
 		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", r.ID, r.State, strings.ReplaceAll(r.Detail, "|", `\|`))
