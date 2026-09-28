@@ -228,8 +228,8 @@ missing reads BLOCKED naming the journey that sets it.
 `gate-enrolment-revoke-pos`, `gate-login-bootstrap-mint-pos`,
 `gate-login-passkey-revoke-pos`, `gate-mcp-oauth-start-pos`,
 `gate-remote-configure-pos`, `gate-sealed-reset-pos` and
-`gate-eve-passkey-revoke-pos` always read NOTRUN; the detail and FEATURES.md
-say why for each.
+`gate-eve-passkey-revoke-pos` always read NOTRUN; the detail and the feature
+map ([`docs/FEATURES.md`](../../docs/FEATURES.md)) say why for each.
 
 **Owner-gate negatives with a prompt** (screen): `gate-<op>-neg` for
 `credential.mint`, `credential.revoke`, `mcp.register`, `service.register`,

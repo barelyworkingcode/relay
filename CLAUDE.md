@@ -31,10 +31,10 @@ same change when behaviour moves.
 
 Conventions the global rules name: the **threat model** is
 [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md), the **feature map** is
-[`cmd/devboxverify/FEATURES.md`](cmd/devboxverify/FEATURES.md), and the
-**verify harness** is `cmd/devboxverify`. Planners and reviewers judge
-security findings against the threat model: a finding names the attacker,
-the asset and the promise broken, or it is out of scope.
+[`docs/FEATURES.md`](docs/FEATURES.md) (a PR that adds or changes a feature
+updates it), and the **verify harness** is `cmd/devboxverify`. Planners and
+reviewers judge security findings against the threat model: a finding names
+the attacker, the asset and the promise broken, or it is out of scope.
 
 ADR-NNN citations in code and docs are labels for reasoning recorded in those
 documents; there is no ADR directory to look in.
@@ -152,9 +152,8 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
 - Public-repo hygiene: no real hostnames, tokens or personal paths in docs,
   fixtures or test data.
 - A PR that changes code under an area's `code` globs in
-  [`cmd/devboxverify/FEATURES.md`](cmd/devboxverify/FEATURES.md) updates that
-  area's rows, or says in the PR why nothing a user reaches moved. The reviewer
-  checks it.
+  [`docs/FEATURES.md`](docs/FEATURES.md) updates that area's rows, or says in
+  the PR why nothing a user reaches moved. The reviewer checks it.
 
 ### This file
 
