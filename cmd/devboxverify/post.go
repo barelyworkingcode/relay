@@ -14,6 +14,7 @@ import (
 type evidence struct {
 	PR                                     int
 	Commit, ToolCommit, WorldSummary, Home string
+	RunTime                                time.Duration
 	Results                                []result
 }
 
@@ -56,7 +57,8 @@ func renderComment(ev evidence) string {
 	fmt.Fprintf(&b, "| | |\n|---|---|\n")
 	fmt.Fprintf(&b, "| Relay commit | `%s` |\n", ev.Commit)
 	fmt.Fprintf(&b, "| World verify | %s |\n", ev.WorldSummary)
-	fmt.Fprintf(&b, "| Tool commit | `%s` |\n\n", ev.ToolCommit)
+	fmt.Fprintf(&b, "| Tool commit | `%s` |\n", ev.ToolCommit)
+	fmt.Fprintf(&b, "| Run time | %d s |\n\n", (ev.RunTime.Milliseconds()+500)/1000)
 	fmt.Fprintf(&b, "| Journey | Result | Detail |\n|---|---|---|\n")
 	for _, r := range ev.Results {
 		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", r.ID, r.State, strings.ReplaceAll(r.Detail, "|", `\|`))

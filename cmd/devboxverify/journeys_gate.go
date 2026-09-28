@@ -45,27 +45,27 @@ var runCredClasses = []string{"read", "configure", "grant", "proxy"}
 
 var gateSetupJourneys = slices.Concat(
 	[]journey{
-		{mintPosID, []string{"credentials", "presence", "audit"}, phaseScreen, gateTimeout, runMintPos},
-		{renewalID, []string{"credentials", "presence"}, phaseScreen, gateTimeout, runRenewal},
+		{mintPosID, []string{"credentials", "presence", "audit"}, nil, phaseScreen, gateTimeout, runMintPos},
+		{renewalID, []string{"credentials", "presence"}, nil, phaseScreen, gateTimeout, runRenewal},
 	},
 	dialogNegJourneys(),
 	noDoorJourneys(),
 	notRunPosJourneys(),
 	[]journey{
-		{mcpPosID, []string{"mcps", "presence", "audit"}, phaseScreen, gateTimeout, runMcpPos},
-		{grantPosID, []string{"projects", "grants", "presence", "audit"}, phaseScreen, gateTimeout, runGrantPos},
-		{servicePosID, []string{"services", "presence", "audit"}, phaseScreen, gateTimeout, runServicePos},
+		{mcpPosID, []string{"mcps", "presence", "audit"}, nil, phaseScreen, gateTimeout, runMcpPos},
+		{grantPosID, []string{"projects", "grants", "presence", "audit"}, nil, phaseScreen, gateTimeout, runGrantPos},
+		{servicePosID, []string{"services", "presence", "audit"}, nil, phaseScreen, gateTimeout, runServicePos},
 	},
 )
 
 var gateTeardownJourneys = []journey{
-	{rotatePosID, []string{"projects", "presence", "audit"}, phaseScreen, gateTimeout, runRotatePos},
-	{eveOpenPosID, []string{"login", "presence", "audit"}, phaseScreen, gateTimeout, runEveOpenPos},
-	{eveRevokePosID, []string{"login", "presence"}, phaseScreen, 5 * time.Second, func(context.Context, env) result {
+	{rotatePosID, []string{"projects", "presence", "audit"}, nil, phaseScreen, gateTimeout, runRotatePos},
+	{eveOpenPosID, []string{"login", "presence", "audit"}, nil, phaseScreen, gateTimeout, runEveOpenPos},
+	{eveRevokePosID, []string{"login", "presence"}, nil, phaseScreen, 5 * time.Second, func(context.Context, env) result {
 		return result{eveRevokePosID, stateNotRun, "relay keeps one global eve passkey mirror, replaced by each eve's report, so no verify passkey can be revoked through relay today"}
 	}},
-	{fixturesID, []string{"mcps", "services", "projects", "sessions", "hosts"}, phaseScreen, 60 * time.Second, runFixturesRemoved},
-	{revokePosID, []string{"credentials", "presence", "audit"}, phaseScreen, gateTimeout, runRevokePos},
+	{fixturesID, []string{"mcps", "services", "projects", "sessions", "hosts"}, nil, phaseScreen, 60 * time.Second, runFixturesRemoved},
+	{revokePosID, []string{"credentials", "presence", "audit"}, nil, phaseScreen, gateTimeout, runRevokePos},
 }
 
 func gateStateDir() string { return filepath.Join(home, ".local", "state", "devboxverify") }

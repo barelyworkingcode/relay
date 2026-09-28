@@ -18,7 +18,6 @@ import (
 const (
 	toolsID      = "acme-tools-through-bridge"
 	auditedID    = "tool-call-audited"
-	acmeMcp      = "macmcp"
 	allowedTool  = "mail_list_accounts"
 	deniedTool   = "contacts_list"
 	accessDenied = "access denied"
@@ -61,9 +60,13 @@ func attachRefusal(id, reason string) (result, bool) {
 }
 
 func openAcmeProbe(ctx context.Context, e env, id string) (*liveSession, result, bool) {
-	cwd, err := filepath.EvalSymlinks(filepath.Join(e.WorldRoot, acmeName))
+	acme, err := e.World.project("acme")
 	if err != nil {
-		return nil, blocked(id, "Acme folder missing"), false
+		return nil, blocked(id, err.Error()), false
+	}
+	cwd, err := filepath.EvalSymlinks(acme.Folder)
+	if err != nil {
+		return nil, blocked(id, acme.Name+" folder missing"), false
 	}
 	s, reason, err := openSession(ctx, e, "world-probe", cwd)
 	if err != nil {
@@ -76,6 +79,7 @@ func openAcmeProbe(ctx context.Context, e env, id string) (*liveSession, result,
 }
 
 type toolsRun struct {
+	MCP                   worldMCP
 	List, Allowed, Denied execOut
 }
 
@@ -85,7 +89,7 @@ func runToolsThroughBridge(ctx context.Context, e env) result {
 		return res
 	}
 	defer s.Close(context.WithoutCancel(ctx))
-	var r toolsRun
+	r := toolsRun{MCP: e.World.relayMCP()}
 	r.List = sessionExec(ctx, s, shellQuote(e.RelayBin)+" mcp call --list")
 	r.Allowed = sessionExec(ctx, s, toolCallLine(e.RelayBin, allowedTool))
 	r.Denied = sessionExec(ctx, s, toolCallLine(e.RelayBin, deniedTool))
@@ -118,37 +122,40 @@ func classifyToolsThroughBridge(r toolsRun) result {
 			return blocked(toolsID, "session: "+x.Err)
 		}
 	}
+	prefix := strings.TrimSuffix(r.MCP.Tools, "*")
 	tools := parseToolList(r.List.Out)
 	switch {
 	case r.List.Exit != 0:
 		return fail(fmt.Sprintf("mcp call --list exit %d", r.List.Exit))
 	case len(tools) == 0:
-		return fail("no tools listed in an Acme session")
+		return fail("no tools listed in the probe session")
 	}
 	for _, t := range tools {
-		if !strings.HasPrefix(t, "mail_") {
-			return fail("tool " + t + " listed outside mail_*")
+		if !strings.HasPrefix(t, prefix) {
+			return fail("tool " + t + " listed outside " + r.MCP.Tools)
 		}
 	}
 	switch {
 	case r.Allowed.Exit != 0:
 		return fail(fmt.Sprintf("%s exit %d", allowedTool, r.Allowed.Exit))
 	case r.Denied.Exit == 0:
-		return fail(deniedTool + " answered in an Acme session")
+		return fail(deniedTool + " answered in the probe session")
 	case !strings.Contains(r.Denied.Out, accessDenied):
 		return fail(deniedTool + " failed without an access denial")
 	}
-	return result{toolsID, statePass, fmt.Sprintf("%d mail tools listed; %s answered; %s denied", len(tools), allowedTool, deniedTool)}
+	return result{toolsID, statePass, fmt.Sprintf("%d tools listed under %s; %s answered; %s denied", len(tools), r.MCP.Tools, allowedTool, deniedTool)}
 }
 
 type auditedRun struct {
 	SessionID, AcmeID string
+	AcmeName          string
+	MCP               worldMCP
 	Allowed, Denied   execOut
 	Rows              []audit.AuditEvent // call_tool rows newer than the baseline
 }
 
 func runToolCallAudited(ctx context.Context, e env) result {
-	acmeID, err := acmeProjectID(ctx, e)
+	acme, acmeID, err := grantedAcme(ctx, e)
 	if err != nil {
 		return blocked(auditedID, err.Error())
 	}
@@ -164,7 +171,7 @@ func runToolCallAudited(ctx context.Context, e env) result {
 	if !ok {
 		return res
 	}
-	r := auditedRun{SessionID: s.ID, AcmeID: acmeID}
+	r := auditedRun{SessionID: s.ID, AcmeID: acmeID, AcmeName: acme.Name, MCP: e.World.relayMCP()}
 	r.Allowed = sessionExec(ctx, s, toolCallLine(e.RelayBin, allowedTool))
 	r.Denied = sessionExec(ctx, s, toolCallLine(e.RelayBin, deniedTool))
 	s.Close(context.WithoutCancel(ctx))
@@ -251,9 +258,9 @@ func classifyToolCallAudited(r auditedRun) result {
 		case row.Actor.Kind != audit.AuditActorProjectSession:
 			return fail(fmt.Sprintf("%s row actor %q", want.tool, row.Actor.Kind))
 		case row.Actor.ProjectID != r.AcmeID:
-			return fail(want.tool + " row is not for " + acmeName)
-		case row.McpID != acmeMcp:
-			return fail(fmt.Sprintf("%s row mcp %q, want %s", want.tool, row.McpID, acmeMcp))
+			return fail(want.tool + " row is not for " + r.AcmeName)
+		case row.McpID != r.MCP.ID:
+			return fail(fmt.Sprintf("%s row mcp %q, want %s", want.tool, row.McpID, r.MCP.ID))
 		case row.Outcome != want.outcome:
 			return fail(fmt.Sprintf("%s row outcome %q, want %s", want.tool, row.Outcome, want.outcome))
 		}

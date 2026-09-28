@@ -22,20 +22,20 @@ import (
 )
 
 var apiJourneys = []journey{
-	{"blank-model-refused", []string{"sessions", "audit"}, phaseAPI, 30 * time.Second, runBlankModel},
-	{"permission-mode-restart", []string{"sessions", "hosts"}, phaseAPI, 5 * time.Second, func(context.Context, env) result {
+	{"blank-model-refused", []string{"sessions", "audit"}, []string{"project:acme"}, phaseAPI, 30 * time.Second, runBlankModel},
+	{"permission-mode-restart", []string{"sessions", "hosts"}, nil, phaseAPI, 5 * time.Second, func(context.Context, env) result {
 		return result{"permission-mode-restart", stateNotRun, "restart path runs only for SSH-host projects; local sessions answer resume_required"}
 	}},
-	{"oversized-launch-audit-capped", []string{"sessions", "sandbox", "audit"}, phaseAPI, 30 * time.Second, runOversized},
-	{"acme-sandbox-reach", []string{"sandbox", "grants", "sessions"}, phaseAPI, 30 * time.Second, runReach},
-	{"v1-conversion-refusal", []string{"projects"}, phaseAPI, 5 * time.Second, func(context.Context, env) result {
+	{"oversized-launch-audit-capped", []string{"sessions", "sandbox", "audit"}, []string{"project:acme"}, phaseAPI, 30 * time.Second, runOversized},
+	{"acme-sandbox-reach", []string{"sandbox", "grants", "sessions"}, reachNeeds, phaseAPI, 30 * time.Second, runReach},
+	{"v1-conversion-refusal", []string{"projects"}, nil, phaseAPI, 5 * time.Second, func(context.Context, env) result {
 		return result{"v1-conversion-refusal", stateNotRun, "a local-to-remote conversion is a kind change, which the presence gate prompts for before it validates; the refusal is reachable only after a human approves, and no v1 MCP is registered here"}
 	}},
-	{toolsID, []string{"mcps", "grants", "sandbox"}, phaseAPI, 60 * time.Second, runToolsThroughBridge},
-	{auditedID, []string{"audit", "mcps"}, phaseAPI, 60 * time.Second, runToolCallAudited},
+	{toolsID, []string{"mcps", "grants", "sandbox"}, []string{"project:acme"}, phaseAPI, 60 * time.Second, runToolsThroughBridge},
+	{auditedID, []string{"audit", "mcps"}, []string{"project:acme"}, phaseAPI, 60 * time.Second, runToolCallAudited},
 }
 
-const acmeName = "Acme Corp"
+var reachNeeds = []string{"project:acme", "project:globex", "file:acme/PROJECT.md", "file:globex/PROJECT.md"}
 
 func blocked(id, detail string) result { return result{id, stateBlocked, detail} }
 
@@ -53,7 +53,7 @@ func runBlankModel(ctx context.Context, e env) result {
 	if err != nil || token == "" {
 		return blocked(id, "credential file empty or unreadable")
 	}
-	acmeID, err := acmeProjectID(ctx, e)
+	acme, acmeID, err := grantedAcme(ctx, e)
 	if err != nil {
 		return blocked(id, err.Error())
 	}
@@ -75,10 +75,10 @@ func runBlankModel(ctx context.Context, e env) result {
 	if resp.StatusCode == http.StatusBadRequest {
 		row = auditRow(ctx, e, name)
 	}
-	return classifyBlankModel(resp.StatusCode, respBody, row, name, acmeID)
+	return classifyBlankModel(resp.StatusCode, respBody, row, name, acmeID, acme.Name)
 }
 
-func classifyBlankModel(status int, body []byte, row *audit.AuditEvent, name, acmeID string) result {
+func classifyBlankModel(status int, body []byte, row *audit.AuditEvent, name, acmeID, project string) result {
 	const id = "blank-model-refused"
 	fail := func(d string) result { return result{id, stateFail, d} }
 	var b struct {
@@ -90,9 +90,9 @@ func classifyBlankModel(status int, body []byte, row *audit.AuditEvent, name, ac
 	case status == http.StatusUnauthorized:
 		return blocked(id, "credential refused (401)")
 	case status == http.StatusForbidden && strings.Contains(b.Error, `template "chat" is not available`):
-		return blocked(id, "template chat not allowed for "+acmeName)
+		return blocked(id, "template chat not allowed for "+project)
 	case status/100 == 2:
-		return fail(fmt.Sprintf("launch accepted; chat session %s left running in %s", name, acmeName))
+		return fail(fmt.Sprintf("launch accepted; chat session %s left running in %s", name, project))
 	case status != http.StatusBadRequest:
 		return fail(fmt.Sprintf("status %d, want 400", status))
 	case b.Error != want:
@@ -102,7 +102,7 @@ func classifyBlankModel(status int, body []byte, row *audit.AuditEvent, name, ac
 	case row.Outcome != "error" || row.Error != want:
 		return fail(fmt.Sprintf("audit row outcome %q or error mismatch", row.Outcome))
 	case row.Actor.Kind != "control" || row.Actor.ProjectID != acmeID:
-		return fail(fmt.Sprintf("audit actor kind %q, or project not %s", row.Actor.Kind, acmeName))
+		return fail(fmt.Sprintf("audit actor kind %q, or project not %s", row.Actor.Kind, project))
 	}
 	var args struct {
 		SessionID   string `json:"session_id"`
@@ -116,9 +116,13 @@ func classifyBlankModel(status int, body []byte, row *audit.AuditEvent, name, ac
 
 func runOversized(ctx context.Context, e env) result {
 	const id = "oversized-launch-audit-capped"
-	cwd, err := filepath.EvalSymlinks(filepath.Join(e.WorldRoot, acmeName))
+	acme, err := e.World.project("acme")
 	if err != nil {
-		return blocked(id, "Acme folder missing")
+		return blocked(id, err.Error())
+	}
+	cwd, err := filepath.EvalSymlinks(acme.Folder)
+	if err != nil {
+		return blocked(id, acme.Name+" folder missing")
 	}
 	prefix := "verify-" + e.Nonce + "-"
 	s, reason, err := sandboxAttach(ctx, e, prefix+strings.Repeat("A", 300000), cwd)
@@ -162,23 +166,22 @@ func classifyOversized(reason string, row *audit.AuditEvent, rowBytes int) resul
 
 func runReach(ctx context.Context, e env) result {
 	const id = "acme-sandbox-reach"
-	root, err := filepath.EvalSymlinks(e.WorldRoot)
-	cwd, cwdErr := filepath.EvalSymlinks(filepath.Join(e.WorldRoot, acmeName))
-	if err != nil || cwdErr != nil {
-		return blocked(id, "Acme folder missing")
+	w, err := reachWorld(e)
+	if err != nil {
+		return blocked(id, err.Error())
 	}
-	s, reason, err := sandboxAttach(ctx, e, "world-probe", cwd)
+	s, reason, err := sandboxAttach(ctx, e, "world-probe", w.cwd)
 	if err != nil {
 		return blocked(id, err.Error())
 	}
 	if s == nil {
-		return classifyReach(reason, "", false, 0, nil)
+		return classifyReach(w.own, w.other, reason, "", false, 0, nil)
 	}
 	defer func() { _ = s.Close() }()
 	if s.SessionID == "" {
 		return result{id, stateFail, "attach answer named no session"}
 	}
-	if err := json.NewEncoder(s).Encode(bridge.StreamFrame{Type: bridge.StreamInput, Data: []byte(reachScript(root))}); err != nil {
+	if err := json.NewEncoder(s).Encode(bridge.StreamFrame{Type: bridge.StreamInput, Data: []byte(reachScript(w.ownFile, w.otherFile))}); err != nil {
 		return blocked(id, "could not send input")
 	}
 	var transcript strings.Builder
@@ -200,18 +203,64 @@ func runReach(ctx context.Context, e env) result {
 		}
 	}
 	row := auditRow(ctx, e, s.SessionID)
-	return classifyReach("", transcript.String(), exited, code, row)
+	return classifyReach(w.own, w.other, "", transcript.String(), exited, code, row)
+}
+
+// reachFixtures is the reach probe's view of the world: the session's own
+// project and the one it must not read. Paths are resolved because the
+// sandbox profile names resolved paths.
+type reachFixtures struct {
+	own, other         string // project names
+	cwd                string
+	ownFile, otherFile string
+}
+
+func reachWorld(e env) (reachFixtures, error) {
+	own, err := e.World.project("acme")
+	if err != nil {
+		return reachFixtures{}, err
+	}
+	other, err := e.World.project("globex")
+	if err != nil {
+		return reachFixtures{}, err
+	}
+	ownFile, err := e.World.file("acme", "PROJECT.md")
+	if err != nil {
+		return reachFixtures{}, err
+	}
+	otherFile, err := e.World.file("globex", "PROJECT.md")
+	if err != nil {
+		return reachFixtures{}, err
+	}
+	cwd, err := filepath.EvalSymlinks(own.Folder)
+	if err != nil {
+		return reachFixtures{}, errors.New(own.Name + " folder missing")
+	}
+	root, err := filepath.EvalSymlinks(e.WorldRoot)
+	if err != nil {
+		return reachFixtures{}, errors.New("world root missing")
+	}
+	ownRel, err := filepath.Rel(own.Folder, ownFile)
+	if err != nil {
+		return reachFixtures{}, errors.New(own.Name + " folder missing")
+	}
+	otherRel, err := filepath.Rel(e.WorldRoot, otherFile)
+	if err != nil {
+		return reachFixtures{}, errors.New(other.Name + " folder missing")
+	}
+	return reachFixtures{own: own.Name, other: other.Name, cwd: cwd, ownFile: ownRel, otherFile: filepath.Join(root, otherRel)}, nil
 }
 
 // reachScript builds its markers with printf at run time so the terminal's
-// echo of this input can never contain them.
-func reachScript(root string) string {
-	return "(: < PROJECT.md) && printf '%s_%s\\n' ACME OK || printf '%s_%s\\n' ACME DENIED\n" +
-		"(: < \"" + filepath.Join(root, "Globex", "PROJECT.md") + "\") && printf '%s_%s\\n' GLOBEX OK || printf '%s_%s\\n' GLOBEX DENIED\n" +
+// echo of this input can never contain them. ownFile is relative to the
+// session's folder; otherFile is absolute.
+func reachScript(ownFile, otherFile string) string {
+	return "(: < " + shellQuote(ownFile) + ") && printf '%s_%s\\n' ACME OK || printf '%s_%s\\n' ACME DENIED\n" +
+		"(: < " + shellQuote(otherFile) + ") && printf '%s_%s\\n' GLOBEX OK || printf '%s_%s\\n' GLOBEX DENIED\n" +
 		"exit\n"
 }
 
-func classifyReach(reason, transcript string, exited bool, exitCode int, row *audit.AuditEvent) result {
+func classifyReach(own, other, reason, transcript string, exited bool, exitCode int, row *audit.AuditEvent) result {
 	const id = "acme-sandbox-reach"
 	fail := func(d string) result { return result{id, stateFail, d} }
 	switch reason {
@@ -224,11 +273,11 @@ func classifyReach(reason, transcript string, exited bool, exitCode int, row *au
 	}
 	switch {
 	case strings.Contains(transcript, "GLOBEX_OK"):
-		return fail("Globex readable from an Acme session")
+		return fail(other + " readable from the " + own + " session")
 	case !strings.Contains(transcript, "ACME_OK"):
-		return fail("Acme not readable from its own session")
+		return fail(own + " not readable from its own session")
 	case !strings.Contains(transcript, "GLOBEX_DENIED") || !strings.Contains(transcript, "Operation not permitted"):
-		return fail("Globex read not denied by the sandbox")
+		return fail(other + " read not denied by the sandbox")
 	case !exited:
 		return fail("no exit frame")
 	case exitCode != 0:
@@ -244,7 +293,7 @@ func classifyReach(reason, transcript string, exited bool, exitCode int, row *au
 	if json.Unmarshal(row.Args, &args) != nil || !args.Sandbox {
 		return fail("audit row not sandboxed")
 	}
-	return result{id, statePass, "Acme read, Globex denied, sandboxed and audited"}
+	return result{id, statePass, own + " read, " + other + " denied, sandboxed and audited"}
 }
 
 func auditRow(ctx context.Context, e env, key string) *audit.AuditEvent {
@@ -296,19 +345,25 @@ func auditLineBytes(ctx context.Context, e env, rowID string) (int, error) {
 	}
 }
 
-func acmeProjectID(ctx context.Context, e env) (string, error) {
+// grantedAcme resolves the declared acme world project to the Relay project
+// of the same name, as relay grant lists it.
+func grantedAcme(ctx context.Context, e env) (worldProject, string, error) {
+	wp, err := e.World.project("acme")
+	if err != nil {
+		return worldProject{}, "", err
+	}
 	out, err := exec.CommandContext(ctx, e.RelayBin, "grant", "--json").Output()
 	if err != nil {
-		return "", errors.New("relay grant failed")
+		return wp, "", errors.New("relay grant failed")
 	}
 	var projects []struct{ ID, Name string }
 	if err := json.Unmarshal(out, &projects); err != nil {
-		return "", errors.New("relay grant printed unreadable JSON")
+		return wp, "", errors.New("relay grant printed unreadable JSON")
 	}
 	for _, p := range projects {
-		if p.Name == acmeName {
-			return p.ID, nil
+		if p.Name == wp.Name {
+			return wp, p.ID, nil
 		}
 	}
-	return "", errors.New("no " + acmeName + " in relay grant")
+	return wp, "", errors.New("no " + wp.Name + " in relay grant")
 }

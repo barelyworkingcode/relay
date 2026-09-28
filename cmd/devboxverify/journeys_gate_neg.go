@@ -378,7 +378,7 @@ func dialogNegJourneys() []journey {
 	out := make([]journey, 0, len(dialogNegSpecs))
 	for _, s := range dialogNegSpecs {
 		id := gateJourneyID(s.op, "neg")
-		out = append(out, journey{id, append(opAreas(s.op), "presence", "sandbox"), phaseScreen, negTimeout,
+		out = append(out, journey{id, append(opAreas(s.op), "presence", "sandbox"), []string{"project:acme"}, phaseScreen, negTimeout,
 			func(ctx context.Context, e env) result { return runDialogNeg(ctx, e, id, s) }})
 	}
 	return out
@@ -476,7 +476,7 @@ func noDoorJourneys() []journey {
 	out := make([]journey, 0, len(noDoorSpecs))
 	for _, s := range noDoorSpecs {
 		id := gateJourneyID(s.op, "neg")
-		out = append(out, journey{id, append(opAreas(s.op), "presence", "sandbox"), phaseScreen, noDoorTimeout,
+		out = append(out, journey{id, append(opAreas(s.op), "presence", "sandbox"), []string{"project:acme"}, phaseScreen, noDoorTimeout,
 			func(ctx context.Context, e env) result { return runNoDoor(ctx, e, id, s) }})
 	}
 	return out
@@ -544,7 +544,7 @@ func notRunPosJourneys() []journey {
 	out := make([]journey, 0, len(notRunPositives))
 	for _, p := range notRunPositives {
 		id := gateJourneyID(p.op, "pos")
-		out = append(out, journey{id, append(opAreas(p.op), "presence"), phaseScreen, 5 * time.Second,
+		out = append(out, journey{id, append(opAreas(p.op), "presence"), nil, phaseScreen, 5 * time.Second,
 			func(context.Context, env) result { return result{id, stateNotRun, p.reason} }})
 	}
 	return out

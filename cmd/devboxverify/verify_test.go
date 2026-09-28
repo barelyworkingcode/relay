@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 )
@@ -152,7 +155,7 @@ func TestClassifyBlankModel(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			v := in{400, body(msg), row("control", acme, "error", msg, chatArgs)}
 			c.mut(&v)
-			checkState(t, classifyBlankModel(v.status, v.body, v.row, name, acme), c.want)
+			checkState(t, classifyBlankModel(v.status, v.body, v.row, name, acme, "Acme"), c.want)
 		})
 	}
 }
@@ -192,7 +195,7 @@ func TestClassifyOversized(t *testing.T) {
 func TestClassifyReach(t *testing.T) {
 	// The PTY echoes every byte typed into the probe shell, so the transcript
 	// always holds the script itself; a marker must appear only as output.
-	script := reachScript("/w")
+	script := reachScript("PROJECT.md", "/w/Other/PROJECT.md")
 	for _, m := range []string{"ACME_OK", "ACME_DENIED", "GLOBEX_OK", "GLOBEX_DENIED"} {
 		if strings.Contains(script, m) {
 			t.Fatalf("reachScript contains the literal marker %s, so its echo alone could pass", m)
@@ -227,7 +230,7 @@ func TestClassifyReach(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			v := in{"", good, true, 0, row("operator", "p1", "ok", "", `{"session_id":"s1","template_id":"world-probe","sandbox":true}`)}
 			c.mut(&v)
-			checkState(t, classifyReach(v.reason, v.transcript, v.exited, v.code, v.row), c.want)
+			checkState(t, classifyReach("Acme", "Other", v.reason, v.transcript, v.exited, v.code, v.row), c.want)
 		})
 	}
 }
@@ -265,5 +268,174 @@ func TestFormatLineIsOneTabSeparatedLineWithoutHome(t *testing.T) {
 	got := formatLine("/Users/someone", "JOURNEY", "acme-sandbox-reach", "FAIL", "read /Users/someone/a \n then\t\t/Users/someone/b")
 	if want := "JOURNEY\tacme-sandbox-reach\tFAIL\tread ~/a then ~/b"; got != want {
 		t.Fatalf("formatLine = %q, want %q", got, want)
+	}
+}
+
+// runIsolated runs the harness in-process against the marker at marker.
+// Every door a run could open before its journeys leaves a trace: gh and git
+// on PATH and the world checkout's scripts log to calls, and the browser
+// lock is a scratch path.
+func runIsolated(t *testing.T, marker string, isVM bool, args ...string) (code int, stdout []string, calls string, lockTaken bool) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls")
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fakeBin(t, bin, "gh", "echo gh >> '"+log+"'\nexit 1\n")
+	fakeBin(t, bin, "git", "echo git >> '"+log+"'\nexec '"+realGit+"' \"$@\"\n")
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	t.Setenv("DEVBOXWORLD_MARKER", marker)
+	t.Setenv("EVE_BROWSER_LOCK", filepath.Join(dir, "browser.lock"))
+	// Deliberate: should the world checks pass, the first existing check
+	// stops the run before it reaches the app.
+	t.Setenv("RELAY_SESSION_ID", "s1")
+	if m, err := readMarker(marker, vmIs(true, nil)); err == nil {
+		for _, s := range []string{"bootstrap.sh", "verify.sh", "reset.sh"} {
+			fakeBin(t, m.WorldCheckout, s, "echo "+s+" >> '"+log+"'\n")
+		}
+	}
+	savedVM, savedArgs, savedOut := vmCheck, os.Args, os.Stdout
+	t.Cleanup(func() { vmCheck, os.Args, os.Stdout = savedVM, savedArgs, savedOut })
+	out, err := os.Create(filepath.Join(dir, "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vmCheck = func() (bool, error) { return isVM, nil }
+	os.Args, os.Stdout = append([]string{"devboxverify"}, args...), out
+	code = run()
+	vmCheck, os.Args, os.Stdout = savedVM, savedArgs, savedOut
+	_ = out.Close()
+	raw, _ := os.ReadFile(out.Name())
+	if s := strings.TrimSuffix(string(raw), "\n"); s != "" {
+		stdout = strings.Split(s, "\n")
+	}
+	c, _ := os.ReadFile(log)
+	_, statErr := os.Stat(filepath.Join(dir, "browser.lock"))
+	return code, stdout, string(c), statErr == nil
+}
+
+func scratchMarker(t *testing.T, checkout string, version int) string {
+	t.Helper()
+	return writeMode(t, filepath.Join(t.TempDir(), "machine.json"),
+		markerDoc(checkout, func(m map[string]any) { m["world_version"] = version }), 0o600)
+}
+
+func TestPreflightRefusesBeforeAnyLockScriptOrNetwork(t *testing.T) {
+	const machineOK = "PREFLIGHT\tmachine\tOK\tvm; world v1"
+	cases := []struct {
+		name   string
+		marker func(t *testing.T) string
+		isVM   bool
+		want   []string
+	}{
+		{"absent marker", func(t *testing.T) string { return filepath.Join(t.TempDir(), "machine.json") }, true,
+			[]string{"PREFLIGHT\tmachine\tFAIL\tnot a test machine: run devboxWorld bootstrap on a VM"}},
+		{"not a VM", func(t *testing.T) string { return scratchMarker(t, writeWorld(t, nil), 1) }, false,
+			[]string{"PREFLIGHT\tmachine\tFAIL\tnot a test machine: not a VM: kern.hv_vmm_present is not 1; run devboxWorld bootstrap on a VM"}},
+		{"pin mismatch", func(t *testing.T) string { return scratchMarker(t, writeWorld(t, nil), 2) }, true,
+			[]string{"PREFLIGHT\tmachine\tOK\tvm; world v2", "PREFLIGHT\tpin\tFAIL\tBLOCKED fixture: this machine's world is v2; relay needs v1"}},
+		{"missing fixture", func(t *testing.T) string { return scratchMarker(t, writeWorld(t, dropFixtures("project:globex")), 1) }, true,
+			[]string{machineOK, "PREFLIGHT\tpin\tOK\tv1", "PREFLIGHT\tfixtures\tFAIL\tBLOCKED fixture: acme-sandbox-reach needs project:globex"}},
+		{"unreadable world data", func(t *testing.T) string { return scratchMarker(t, t.TempDir(), 1) }, true,
+			[]string{machineOK, "PREFLIGHT\tpin\tOK\tv1", "PREFLIGHT\tfixtures\tFAIL\tBLOCKED fixture: world data is not readable"}},
+		{"fixture missing for many journeys", func(t *testing.T) string { return scratchMarker(t, writeWorld(t, dropFixtures("project:acme")), 1) }, true,
+			[]string{machineOK, "PREFLIGHT\tpin\tOK\tv1", "PREFLIGHT\tfixtures\tFAIL\tBLOCKED fixture: " + strings.Join(needing("project:acme"), "; ")}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, stdout, calls, locked := runIsolated(t, c.marker(t), c.isVM)
+			if code != 2 || !slices.Equal(stdout, c.want) {
+				t.Errorf("exit %d, stdout:\n%s\nwant exit 2, stdout:\n%s", code, strings.Join(stdout, "\n"), strings.Join(c.want, "\n"))
+			}
+			if calls != "" || locked {
+				t.Errorf("preflight refusal still called %q, lock taken %v", calls, locked)
+			}
+		})
+	}
+}
+
+// needing lists, in run order, "<journey> needs <id>" for every journey the
+// contract says declares id.
+func needing(id string) []string {
+	var out []string
+	for _, j := range journeys {
+		if slices.Contains(contractNeeds()[j.ID], id) {
+			out = append(out, j.ID+" needs "+id)
+		}
+	}
+	return out
+}
+
+// screenSummary is the fixtures OK detail for --phase screen: the distinct
+// ids the contract gives the screen journeys, and every screen journey.
+func screenSummary() string {
+	ids, m := map[string]bool{}, 0
+	for _, j := range journeys {
+		if j.Phase == phaseScreen {
+			m++
+			for _, id := range contractNeeds()[j.ID] {
+				ids[id] = true
+			}
+		}
+	}
+	return fmt.Sprintf("%d fixtures for %d journeys", len(ids), m)
+}
+
+func TestWorldChecksPassThenTheExistingChecksRun(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		fixtures string
+	}{
+		{"every journey", nil, fmt.Sprintf("4 fixtures for %d journeys", len(journeys))},
+		{"screen phase", []string{"--phase", "screen"}, screenSummary()},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, stdout, calls, locked := runIsolated(t, scratchMarker(t, writeWorld(t, nil), 1), true, c.args...)
+			want := []string{"PREFLIGHT\tmachine\tOK\tvm; world v1", "PREFLIGHT\tpin\tOK\tv1", "PREFLIGHT\tfixtures\tOK\t" + c.fixtures}
+			if code != 2 || len(stdout) != 4 || !slices.Equal(stdout[:3], want) || !strings.HasPrefix(stdout[3], "PREFLIGHT\tsession\tFAIL\t") {
+				t.Errorf("exit %d, stdout:\n%s\nwant:\n%s\nthen session FAIL", code, strings.Join(stdout, "\n"), strings.Join(want, "\n"))
+			}
+			if !strings.Contains(calls, "git") {
+				t.Errorf("calls = %q; the sentinel saw no git call, so it cannot prove the refusals ran none", calls)
+			}
+			if strings.Contains(calls, "gh") || strings.Contains(calls, ".sh") || locked {
+				t.Errorf("stopped at session, yet called %q, lock taken %v", calls, locked)
+			}
+		})
+	}
+}
+
+func TestWorldFlagIsRefused(t *testing.T) {
+	w := writeWorld(t, nil)
+	code, stdout, calls, locked := runIsolated(t, scratchMarker(t, w, 1), true, "--world", w)
+	if code != 2 || len(stdout) != 0 || calls != "" || locked {
+		t.Errorf("--world: exit %d, stdout %q, calls %q, lock %v; want a usage refusal, exit 2, nothing run", code, stdout, calls, locked)
+	}
+}
+
+func TestRenderCommentRunTimeFollowsToolCommit(t *testing.T) {
+	cases := []struct {
+		took time.Duration
+		row  string
+	}{
+		{125 * time.Second, "| Run time | 125 s |"},
+		{1499 * time.Millisecond, "| Run time | 1 s |"},
+		{1500 * time.Millisecond, "| Run time | 2 s |"},
+	}
+	for _, c := range cases {
+		ev := evidence{PR: 7, Commit: "c1", ToolCommit: "t1", WorldSummary: "pass=1 fail=0", RunTime: c.took}
+		lines := strings.Split(renderComment(ev), "\n")
+		i := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "| Tool commit |") })
+		if i < 0 || i+2 >= len(lines) || lines[i+1] != c.row || lines[i+2] != "" {
+			t.Errorf("%v: want %q right after Tool commit, then a blank line:\n%s", c.took, c.row, strings.Join(lines, "\n"))
+		}
 	}
 }

@@ -41,10 +41,13 @@ func TestClassifyToolsThroughBridge(t *testing.T) {
 		{"allowed call failed", func(r *toolsRun) { r.Allowed.Exit = 1 }, stateFail},
 		{"denied call answered", func(r *toolsRun) { r.Denied = execOut{Out: "{}", Exit: 0} }, stateFail},
 		{"denied call failed without a denial", func(r *toolsRun) { r.Denied.Out = "error: bridge closed" }, notPass},
+		{"prefix from the world's tools", func(r *toolsRun) { r.MCP.Tools, r.List.Out = "contacts_*", toolTable("contacts_list") }, statePass},
+		{"only one trailing star trimmed", func(r *toolsRun) { r.MCP.Tools = "mail_**" }, stateFail},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := toolsRun{
+				MCP:     worldMCP{ID: "macmcp", Tools: "mail_*"},
 				List:    execOut{Out: toolTable("mail_list_accounts", "mail_send")},
 				Allowed: execOut{Out: `{"accounts":["Alice"]}`},
 				Denied:  execOut{Out: "error: access denied: MCP 'macmcp' tool 'contacts_list' is not allowed", Exit: 1},
@@ -72,10 +75,11 @@ func TestClassifyToolCallAudited(t *testing.T) {
 		{"rows for another mcp", func(r *auditedRun) { r.Rows[1].McpID = "fsmcp" }, stateFail},
 		{"allowed call recorded as denied", func(r *auditedRun) { r.Rows[0].Outcome = audit.AuditOutcomeDenied }, stateFail},
 		{"denied call recorded as ok", func(r *auditedRun) { r.Rows[1].Outcome = audit.AuditOutcomeOK }, stateFail},
+		{"rows for the world's mcp", func(r *auditedRun) { r.MCP.ID, r.Rows[0].McpID, r.Rows[1].McpID = "fsmcp", "fsmcp", "fsmcp" }, statePass},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := auditedRun{SessionID: "s1", AcmeID: "p1", Rows: []audit.AuditEvent{
+			r := auditedRun{SessionID: "s1", AcmeID: "p1", MCP: worldMCP{ID: "macmcp", Tools: "mail_*"}, Rows: []audit.AuditEvent{
 				callRow("mail_list_accounts", audit.AuditOutcomeOK), callRow("contacts_list", audit.AuditOutcomeDenied)}}
 			c.mut(&r)
 			checkState(t, classifyToolCallAudited(r), c.want)
