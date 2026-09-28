@@ -11,7 +11,7 @@ import (
 // fenced Areas block.
 func featureAreas(t *testing.T) map[string][]string {
 	t.Helper()
-	raw, err := os.ReadFile("FEATURES.md")
+	raw, err := os.ReadFile("../../docs/FEATURES.md")
 	if err != nil {
 		t.Fatal(err)
 	}
