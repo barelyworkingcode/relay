@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 const (
@@ -25,6 +26,7 @@ const (
 	narrowID   = "grant-narrowing-live"
 	svcStartID = "service-start-stop"
 	svcCrashID = "service-restart-on-crash"
+	hostRstID  = "session-host-restart"
 
 	liveEditTimeout = 10 * time.Second
 	messageTimeout  = 60 * time.Second
@@ -44,6 +46,8 @@ var screenJourneys = []journey{
 	{svcStartID, []string{"services"}, phaseScreen, 30 * time.Second, runServiceStartStop},
 	{svcCrashID, []string{"services"}, phaseScreen, 30 * time.Second, runServiceRestart},
 	{slowRouteID, []string{"credentials", "sessions", "hosts"}, phaseScreen, gateTimeout, runSlowRouteKeepalive},
+	// Last: it restarts the session host under every live session.
+	{hostRstID, []string{"services", "sessions"}, phaseScreen, 30 * time.Second, runSessionHostRestart},
 }
 
 // screenCreds answers P4 for launches, which are class execute, and the run
@@ -535,8 +539,8 @@ func classifyGrantNarrowing(r narrowRun) result {
 }
 
 // svcView is one poll of a service: the STATE relay service list renders
-// from the same statuses, and the processes carrying the crash service's
-// unique argv.
+// from the same statuses, and the processes whose argv matches the service's
+// pgrep pattern.
 type svcView struct {
 	State   string
 	Attempt int
@@ -544,7 +548,7 @@ type svcView struct {
 	Err     error
 }
 
-func serviceView(ctx context.Context, e env, svcID string) svcView {
+func serviceView(ctx context.Context, e env, svcID, pidPattern string) svcView {
 	type status struct {
 		Phase        string `json:"phase"`
 		Attempt      int    `json:"attempt"`
@@ -566,8 +570,7 @@ func serviceView(ctx context.Context, e env, svcID string) svcView {
 	case st.Phase == "failed":
 		v.State = fmt.Sprintf("failed (exit %d)", st.LastExitCode)
 	}
-	// The bracket keeps pgrep's pattern from matching a shell that quotes it.
-	out, err := exec.CommandContext(ctx, "pgrep", "-f", "[c]rash-"+strings.TrimPrefix(svcID, crashPrefix)+`\.env`).Output()
+	out, err := exec.CommandContext(ctx, "pgrep", "-f", pidPattern).Output()
 	var exit *exec.ExitError
 	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
 		v.Err = errors.New("pgrep failed")
@@ -580,9 +583,17 @@ func serviceView(ctx context.Context, e env, svcID string) svcView {
 	return v
 }
 
-func pollService(ctx context.Context, e env, svcID string, within time.Duration, done func(svcView) bool, seen func(svcView)) (svcView, bool) {
+// Each pgrep pattern opens with a bracket so it cannot match a shell that
+// quotes it.
+func crashPIDPattern(svcID string) string {
+	return "[c]rash-" + strings.TrimPrefix(svcID, crashPrefix) + `\.env`
+}
+
+const sessionHostPIDPattern = "[r]elay-sessions service"
+
+func pollService(ctx context.Context, e env, svcID, pidPattern string, within time.Duration, done func(svcView) bool, seen func(svcView)) (svcView, bool) {
 	for deadline := time.Now().Add(within); ; {
-		v := serviceView(ctx, e, svcID)
+		v := serviceView(ctx, e, svcID, pidPattern)
 		if seen != nil {
 			seen(v)
 		}
@@ -628,10 +639,10 @@ func runServiceStartStop(ctx context.Context, e env) result {
 	}
 	var r startStopRun
 	if r.Start = serviceAction(ctx, e, token, svcID, "start"); r.Start.Status == http.StatusOK {
-		r.Started, r.Up = pollService(ctx, e, svcID, 5*time.Second, isUp, nil)
+		r.Started, r.Up = pollService(ctx, e, svcID, crashPIDPattern(svcID), 5*time.Second, isUp, nil)
 		r.Stop = serviceAction(context.WithoutCancel(ctx), e, token, svcID, "stop")
 		if r.Stop.Status == http.StatusOK {
-			r.Stopped, r.Down = pollService(ctx, e, svcID, 5*time.Second, isDown, nil)
+			r.Stopped, r.Down = pollService(ctx, e, svcID, crashPIDPattern(svcID), 5*time.Second, isDown, nil)
 		}
 	}
 	return classifyServiceStartStop(r)
@@ -686,14 +697,14 @@ func runServiceRestart(ctx context.Context, e env) result {
 }
 
 func crashOnce(ctx context.Context, e env, svcID string, r *crashRun) {
-	if r.Up, r.UpOK = pollService(ctx, e, svcID, 5*time.Second, isUp, nil); !r.UpOK {
+	if r.Up, r.UpOK = pollService(ctx, e, svcID, crashPIDPattern(svcID), 5*time.Second, isUp, nil); !r.UpOK {
 		return
 	}
 	r.Killed = r.Up.PIDs[0]
 	if r.KillErr = syscall.Kill(r.Killed, syscall.SIGKILL); r.KillErr != nil {
 		return
 	}
-	r.After, r.Restarted = pollService(ctx, e, svcID, 15*time.Second,
+	r.After, r.Restarted = pollService(ctx, e, svcID, crashPIDPattern(svcID), 15*time.Second,
 		func(v svcView) bool { return isUp(v) && !slices.Contains(v.PIDs, r.Killed) },
 		func(v svcView) { r.SawAttempt1 = r.SawAttempt1 || v.Attempt == 1 })
 }
@@ -725,4 +736,44 @@ func classifyServiceRestart(r crashRun) result {
 		detail += fmt.Sprintf("; stop afterwards answered %d", r.Stop.Status)
 	}
 	return result{id, statePass, detail}
+}
+
+type hostRestartRun struct {
+	Before     svcView
+	RestartErr error
+	After      svcView
+	Back       bool
+}
+
+func runSessionHostRestart(ctx context.Context, e env) result {
+	const svcID = config.RelaySessionsServiceID
+	r := hostRestartRun{Before: serviceView(ctx, e, svcID, sessionHostPIDPattern)}
+	if r.Before.Err == nil && isUp(r.Before) {
+		_, r.RestartErr = adminOp[json.RawMessage](ctx, e, "service.restart", jsonBody(map[string]string{"id": svcID}))
+		if r.RestartErr == nil {
+			r.After, r.Back = pollService(ctx, e, svcID, sessionHostPIDPattern, 15*time.Second,
+				func(v svcView) bool {
+					return isUp(v) && !slices.ContainsFunc(v.PIDs, func(p int) bool { return slices.Contains(r.Before.PIDs, p) })
+				}, nil)
+		}
+	}
+	return classifySessionHostRestart(r)
+}
+
+func classifySessionHostRestart(r hostRestartRun) result {
+	const id = hostRstID
+	fail := func(d string) result { return result{id, stateFail, d} }
+	switch {
+	case r.Before.Err != nil:
+		return blocked(id, r.Before.Err.Error())
+	case !isUp(r.Before):
+		return blocked(id, fmt.Sprintf("session host not running before the restart: STATE %s, %d processes", r.Before.State, len(r.Before.PIDs)))
+	case r.RestartErr != nil:
+		return fail("service.restart failed: " + r.RestartErr.Error())
+	case r.After.Err != nil:
+		return blocked(id, r.After.Err.Error())
+	case !r.Back:
+		return fail(fmt.Sprintf("not running with a new pid 15 s after service.restart: STATE %s, %d processes", r.After.State, len(r.After.PIDs)))
+	}
+	return result{id, statePass, fmt.Sprintf("service.restart answered; running with pid %v, was %v", r.After.PIDs, r.Before.PIDs)}
 }

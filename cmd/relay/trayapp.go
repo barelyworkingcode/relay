@@ -441,6 +441,9 @@ func runTrayApp() {
 		Enhanced: enhancedRegistry,
 		Queue:    serviceQueue,
 		Gate:     presenceGate,
+		SessionHost: func(autostart bool) config.ServiceConfig {
+			return service.BuiltinRelaySessionsService(resolveRelayBin(), configDir, autostart)
+		},
 		OnChange: func() {
 			app.platform.DispatchToMain(func() {
 				app.updateMenu()

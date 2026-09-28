@@ -32,7 +32,8 @@ config dir — `Command`, `Args`, `DisplayName` and `Capabilities` are never
 read from `settings.json`, even if a stored record exists (`sanitizeIfBuiltin`
 strips a stored `Command`/`Args` on load as defense in depth). `Autostart` is
 the one field a stored record contributes, and a fresh install defaults it to
-`true`.
+`true`. A restart (`service.restart`, the tray, the Settings UI) resynthesizes
+the record the same way startup does, through `ServiceOps.SessionHost`.
 
 `Args` carries `-relay-mcp-command <relayBin>` alongside the socket flags,
 the relay binary path relay derives `Command` from: relay-sessions
