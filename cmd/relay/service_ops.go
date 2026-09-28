@@ -459,7 +459,11 @@ type ServiceOps struct {
 	// Issuance records the config_change every register/unregister leaves
 	// (§7.5) and is the hard dependency §7.4 checks before Gate.
 	Issuance IssuanceAuditor
-	OnChange func()
+	// SessionHost synthesizes the built-in session host's record, the same
+	// one startup launches. Restart needs it because the stored record is
+	// bare; nil refuses a restart of relaysessions.
+	SessionHost func(autostart bool) config.ServiceConfig
+	OnChange    func()
 }
 
 func (o *ServiceOps) runQueued(ctx context.Context, fn func() error) error {
@@ -879,9 +883,9 @@ func (o *ServiceOps) start(id string) error {
 		// see EnsureBuiltinRelaySessionsRecord), so a bare pass-through to
 		// Registry.Start would reach cfg.Validate() and fail with "service
 		// command is required," a correct but opaque answer for a caller who
-		// has no way to know this record is special. StartAllAutostart is
-		// the only path that starts it, using its own fully-populated
-		// synthesis (EnsureBuiltinRelaySessionsService), never this one.
+		// has no way to know this record is special. StartAllAutostart and
+		// Restart start it, each from a fully-populated synthesis
+		// (EnsureBuiltinRelaySessionsService, SessionHost), never this one.
 		return invalidService(fmt.Sprintf("%q is relay's built-in session host and cannot be started manually", id))
 	}
 	svc, _ := config.FindServiceByID(config.FreshSettings(o.Store), id)
@@ -924,6 +928,13 @@ func (o *ServiceOps) Restart(id string) error {
 		svc, _ := config.FindServiceByID(config.FreshSettings(o.Store), id)
 		if svc == nil {
 			return fmt.Errorf("%w: %s", errServiceNotFound, id)
+		}
+		if id == config.RelaySessionsServiceID {
+			if o.SessionHost == nil {
+				return invalidService(fmt.Sprintf("%q cannot be restarted: no session host synthesis is wired", id))
+			}
+			rec := o.SessionHost(svc.Autostart)
+			svc = &rec
 		}
 		if err := o.Registry.Reload(id, svc); err != nil {
 			return fmt.Errorf("restart service: %w", err)

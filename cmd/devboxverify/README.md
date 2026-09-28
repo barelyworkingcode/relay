@@ -366,6 +366,20 @@ project and host are deleted after.
   answers in under 10 s or on a new connection: then nothing was proven.
   `tmux_path` is set, or the list answers 409 without running ssh.
 
+**session-host-restart** (screen). The admin op `service.restart
+{"id":"relaysessions"}` answers without error, and within 15 s
+`relaysessions` is STATE `running` with a `relay-sessions` pid it did not
+have before. Runs last among the feature journeys: it restarts the session
+host under every live session.
+- Lives in: `cmd/relay/service_ops.go` (`Restart` resynthesizes the built-in
+  record), `internal/service` (the registry).
+- Reached by: the bridge admin op, ungated, as `relay service restart --id
+  relaysessions` sends it; STATE from `service.list`, the process from
+  `pgrep -f` on `relay-sessions service`, polled every 200 ms.
+- Traps: BLOCKED when the host is not running with a process beforehand. A
+  build that stops the host and then fails validation reads FAIL with the
+  op's error; the host stays down until Relay.app is relaunched.
+
 **verify-fixtures-removed** (screen). Every `devboxverify-probe-*` MCP and
 `devboxverify-crash-*` service is unregistered (both ungated) and every
 `Verify Grant *` and `Unreachable Host *` project deleted, from this run or a

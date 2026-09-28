@@ -235,6 +235,12 @@ func dialogRefusal(id string, d dialogResult, mode dialogMode) (result, bool) {
 
 // adminRead is an ungated admin_op read over the bridge, such as eve.list.
 func adminRead[T any](ctx context.Context, e env, op string) (T, error) {
+	return adminOp[T](ctx, e, op, nil)
+}
+
+// adminOp is an ungated admin_op over the bridge that carries args, such as
+// service.restart.
+func adminOp[T any](ctx context.Context, e env, op string, args json.RawMessage) (T, error) {
 	var out T
 	type answer struct {
 		raw json.RawMessage
@@ -242,7 +248,7 @@ func adminRead[T any](ctx context.Context, e env, op string) (T, error) {
 	}
 	ch := make(chan answer, 1)
 	go func() {
-		raw, err := bridge.NewClientAt(filepath.Join(e.ConfigDir, "relay.sock"), "").AdminOp(op, nil)
+		raw, err := bridge.NewClientAt(filepath.Join(e.ConfigDir, "relay.sock"), "").AdminOp(op, args)
 		ch <- answer{raw, err}
 	}()
 	select {

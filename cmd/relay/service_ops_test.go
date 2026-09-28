@@ -14,6 +14,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 func TestServiceOps_Create_RefusesRelayPrefixedEnvBeforePersisting(t *testing.T) {
@@ -391,5 +392,91 @@ func TestServiceOps_RenamingAServiceIsGated(t *testing.T) {
 	svc, _ := config.FindServiceByID(store.Get(), "relaytts")
 	if svc == nil || svc.DisplayName != "relayTTS" {
 		t.Fatalf("a refused rename must not persist: display_name = %+v", svc)
+	}
+}
+
+// validatingReloadRecorder behaves like service.Registry.Reload: it stops the
+// process first and only then validates the record it is asked to start.
+type validatingReloadRecorder struct {
+	noopServiceManager
+	stopped  []string
+	reloaded []config.ServiceConfig
+}
+
+func (r *validatingReloadRecorder) Stop(id string) { r.stopped = append(r.stopped, id) }
+
+func (r *validatingReloadRecorder) Reload(id string, cfg *config.ServiceConfig) error {
+	r.stopped = append(r.stopped, id)
+	r.reloaded = append(r.reloaded, *cfg)
+	return cfg.Validate()
+}
+
+func seedBareSessionHostRecord(t *testing.T, store config.SettingsStore, autostart bool) {
+	t.Helper()
+	if err := store.With(func(s *config.Settings) {
+		service.EnsureBuiltinRelaySessionsRecord(s)
+		s.SetServiceAutostart(config.RelaySessionsServiceID, autostart)
+	}); err != nil {
+		t.Fatalf("seed session host record: %v", err)
+	}
+}
+
+func TestServiceOps_Restart_SessionHostReloadsTheSynthesizedRecord(t *testing.T) {
+	store := newCLISandboxStore(t)
+	seedBareSessionHostRecord(t, store, false)
+	reg := &validatingReloadRecorder{}
+	var gotAutostart []bool
+	want := service.BuiltinRelaySessionsService("/opt/testbox/Relay.app/Contents/MacOS/relay", "/opt/testbox/config", false)
+	ops := &ServiceOps{Store: store, Registry: reg, SessionHost: func(autostart bool) config.ServiceConfig {
+		gotAutostart = append(gotAutostart, autostart)
+		return service.BuiltinRelaySessionsService("/opt/testbox/Relay.app/Contents/MacOS/relay", "/opt/testbox/config", autostart)
+	}}
+
+	if err := ops.Restart(config.RelaySessionsServiceID); err != nil {
+		t.Fatalf("Restart(%q) = %v, want nil", config.RelaySessionsServiceID, err)
+	}
+	if !slices.Equal(gotAutostart, []bool{false}) {
+		t.Fatalf("SessionHost called with %v, want [false] (the stored record's autostart)", gotAutostart)
+	}
+	if len(reg.reloaded) != 1 {
+		t.Fatalf("Reload called %d times, want 1", len(reg.reloaded))
+	}
+	got := reg.reloaded[0]
+	if got.ID != want.ID || got.Command != want.Command || !slices.Equal(got.Args, want.Args) || got.Autostart != want.Autostart {
+		t.Fatalf("Reload got %+v, want the synthesized record %+v", got, want)
+	}
+}
+
+func TestServiceOps_Restart_SessionHostRefusesBeforeStopping(t *testing.T) {
+	cases := []struct {
+		name        string
+		seed        bool
+		sessionHost func(bool) config.ServiceConfig
+		wantErr     error
+	}{
+		{name: "no synthesizer", seed: true, sessionHost: nil, wantErr: errServiceInvalid},
+		{name: "no stored record", seed: false, sessionHost: func(a bool) config.ServiceConfig {
+			return service.BuiltinRelaySessionsService("/opt/testbox/relay", "/opt/testbox/config", a)
+		}, wantErr: errServiceNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newCLISandboxStore(t)
+			if tc.seed {
+				seedBareSessionHostRecord(t, store, true)
+			} else if svc, _ := config.FindServiceByID(store.Get(), config.RelaySessionsServiceID); svc != nil {
+				t.Fatal("setup: fresh store already holds a session host record")
+			}
+			reg := &validatingReloadRecorder{}
+			ops := &ServiceOps{Store: store, Registry: reg, SessionHost: tc.sessionHost}
+
+			err := ops.Restart(config.RelaySessionsServiceID)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Restart error = %v, want %v", err, tc.wantErr)
+			}
+			if len(reg.stopped) != 0 || len(reg.reloaded) != 0 {
+				t.Fatalf("registry saw stopped=%v reloaded=%d, want nothing stopped or reloaded", reg.stopped, len(reg.reloaded))
+			}
+		})
 	}
 }

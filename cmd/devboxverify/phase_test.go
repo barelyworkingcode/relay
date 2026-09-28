@@ -72,7 +72,7 @@ var screenStage = map[string]int{
 
 	"session-chat-lifecycle": 50, "terminal-lifecycle": 50, "model-list-and-completion": 50, "disabled-tool-refused": 50,
 	"grant-narrowing-live": 50, "service-start-stop": 50, "service-restart-on-crash": 50, "stale-derived-access-edit": 50,
-	"context-number-resave": 50, "slow-route-keepalive": 50, "session-chat-resume": 50,
+	"context-number-resave": 50, "slow-route-keepalive": 50, "session-chat-resume": 50, "session-host-restart": 50,
 
 	"gate-project-rotate-token-pos": 60, "gate-eve-enrolment-open-pos": 61, "gate-eve-passkey-revoke-pos": 61,
 	"verify-fixtures-removed": 62, "gate-credential-revoke-pos": 70,
