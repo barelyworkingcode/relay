@@ -814,7 +814,8 @@ tab's headline state, a "Needs attention" list aggregated client-side from
 state every other tab already has (scope gaps, MCP health, unreachable hosts,
 autostart-but-not-running services, audit disabled/dropped, sealed-store
 degradation, pending enrolment requests, a Home or Work default project that
-is unset, deleted or no longer eligible), the last 6 audit rows, and a footer
+is unset, deleted or no longer eligible), the last 6 tool calls (`call_tool`
+rows; other audit kinds are on the Tool Calls tab only), and a footer
 with the version and two "Reveal" actions (`reveal_config_dir`,
 `reveal_logs_dir`, both in `ipc_overview.go`). MCP health (`onMcpHealth`,
 whole-map push) and service runtime (folded into the existing
