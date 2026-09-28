@@ -60,6 +60,9 @@ func (f *fakeTerminals) handler() http.Handler {
 		f.terms = slices.DeleteFunc(f.terms, func(x fakeTerminal) bool { return x.ID == id })
 		w.WriteHeader(http.StatusNoContent)
 	}))
+	mux.HandleFunc("GET /api/hosts", authed(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("[]"))
+	}))
 	return mux
 }
 

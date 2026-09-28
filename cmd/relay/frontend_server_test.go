@@ -293,16 +293,23 @@ func TestListenLoopback_AbsentAddrBindsNothing(t *testing.T) {
 type deadlineRecorder struct {
 	*httptest.ResponseRecorder
 	deadlineSet bool
+	last        time.Time
 }
 
-func (d *deadlineRecorder) SetReadDeadline(time.Time) error {
+func (d *deadlineRecorder) SetReadDeadline(t time.Time) error {
 	d.deadlineSet = true
+	d.last = t
 	return nil
 }
 
+// armed reports the deadline state left on the connection, not whether the
+// method was called: clearing with the zero time leaves no deadline.
+func (d *deadlineRecorder) armed() bool { return !d.last.IsZero() }
+
 // The catch-all proxies to relayLLM's sessions/terminals/WS, which must
-// never carry this deadline; a route relay registers for itself must always
-// get one. withRelayRouteReadDeadline is what the socket mux is wrapped in
+// never carry this deadline. A route relay registers for itself gets one
+// while a request body is being received, and none when there is no body.
+// withRelayRouteReadDeadline is what the socket mux is wrapped in
 // (NewFrontendServer) to draw exactly that line.
 func TestWithRelayRouteReadDeadline_SkipsCatchAllSetsForOwnRoutes(t *testing.T) {
 	mux := http.NewServeMux()
@@ -316,9 +323,15 @@ func TestWithRelayRouteReadDeadline_SkipsCatchAllSetsForOwnRoutes(t *testing.T) 
 		t.Error(`the "/" catch-all must not get a read deadline`)
 	}
 
-	owned := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
-	handler.ServeHTTP(owned, httptest.NewRequest(http.MethodGet, "/api/testroute", nil))
-	if !owned.deadlineSet {
-		t.Error("a relay-owned route must get a read deadline")
+	ownedBody := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(ownedBody, httptest.NewRequest(http.MethodPut, "/api/testroute", strings.NewReader(`{"name":"acme"}`)))
+	if !ownedBody.armed() {
+		t.Error("a relay-owned route receiving a body must get a read deadline")
+	}
+
+	ownedNoBody := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(ownedNoBody, httptest.NewRequest(http.MethodGet, "/api/testroute", nil))
+	if ownedNoBody.armed() {
+		t.Error("a relay-owned route with no body must not be left with a read deadline")
 	}
 }

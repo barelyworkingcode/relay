@@ -337,8 +337,30 @@ func TestClassifyFixturesRemoved(t *testing.T) {
 		{"no run credential, projects left", func(r *fixturesRun) { r.NoToken, r.LeftProjects = true, []string{"g1"} }, stateBlocked},
 		{"terminal left", func(r *fixturesRun) { r.LeftTerminals = []string{"t1"} }, stateFail},
 		{"no run credential, terminals left", func(r *fixturesRun) { r.NoToken, r.LeftTerminals = true, []string{"t1"} }, stateBlocked},
+		{"host left", func(r *fixturesRun) { r.LeftHosts = []string{"h1"} }, stateFail},
+		{"no run credential, hosts left", func(r *fixturesRun) { r.NoToken, r.LeftHosts = true, []string{"h1"} }, stateBlocked},
 	}, map[string]string{"no run credential": mintPosID, "no run credential, projects left": mintPosID,
-		"terminal left": "terminal(s)", "no run credential, terminals left": mintPosID})
+		"terminal left": "terminal(s)", "no run credential, terminals left": mintPosID,
+		"host left": "host", "no run credential, hosts left": mintPosID})
+}
+
+func TestBlackholeHosts(t *testing.T) {
+	cases := []struct {
+		name string
+		hs   []hostEntry
+		want []string
+	}{
+		{"blackhole name and target", []hostEntry{{ID: "h1", Name: "blackhole-0a1b", Target: "192.0.2.1"}}, []string{"h1"}},
+		{"other name", []hostEntry{{ID: "h2", Name: "devbox", Target: "192.0.2.1"}}, nil},
+		{"prefix without the dash", []hostEntry{{ID: "h3", Name: "blackhole0a1b", Target: "192.0.2.1"}}, nil},
+		{"other target", []hostEntry{{ID: "h4", Name: "blackhole-0a1b", Target: "192.0.2.2"}}, nil},
+		{"no hosts", nil, nil},
+	}
+	for _, c := range cases {
+		if got := blackholeHosts(c.hs); !slices.Equal(got, c.want) {
+			t.Errorf("%s: blackholeHosts = %v, want %v", c.name, got, c.want)
+		}
+	}
 }
 
 func TestClassifyDialogNeg(t *testing.T) {

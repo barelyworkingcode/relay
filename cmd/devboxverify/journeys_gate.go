@@ -64,7 +64,7 @@ var gateTeardownJourneys = []journey{
 	{eveRevokePosID, []string{"login", "presence"}, phaseScreen, 5 * time.Second, func(context.Context, env) result {
 		return result{eveRevokePosID, stateNotRun, "relay keeps one global eve passkey mirror, replaced by each eve's report, so no verify passkey can be revoked through relay today"}
 	}},
-	{fixturesID, []string{"mcps", "services", "projects", "sessions"}, phaseScreen, 60 * time.Second, runFixturesRemoved},
+	{fixturesID, []string{"mcps", "services", "projects", "sessions", "hosts"}, phaseScreen, 60 * time.Second, runFixturesRemoved},
 	{revokePosID, []string{"credentials", "presence", "audit"}, phaseScreen, gateTimeout, runRevokePos},
 }
 
@@ -856,7 +856,7 @@ type fixturesRun struct {
 	NoToken                              bool
 	Errs                                 []string
 	LeftMcps, LeftServices, LeftProjects []string
-	LeftTerminals                        []string
+	LeftTerminals, LeftHosts             []string
 	ListErr                              error
 }
 
@@ -927,8 +927,32 @@ func withPrefix(ids []string, prefix string) []string {
 
 func verifyProjects(rs []grantRecord) (ids []string) {
 	for _, g := range rs {
-		if strings.HasPrefix(g.Name, grantNamePrefix) {
+		if strings.HasPrefix(g.Name, grantNamePrefix) || strings.HasPrefix(g.Name, unreachableHostPrefix) {
 			ids = append(ids, g.ID)
+		}
+	}
+	return ids
+}
+
+func listHosts(ctx context.Context, e env, token string) ([]hostEntry, error) {
+	resp := frontendDo(ctx, e, token, http.MethodGet, "/api/hosts", nil)
+	if resp.Status != http.StatusOK {
+		return nil, fmt.Errorf("GET /api/hosts status %d", resp.Status)
+	}
+	var hs []hostEntry
+	if err := json.Unmarshal(resp.Body, &hs); err != nil {
+		return nil, fmt.Errorf("GET /api/hosts: %w", err)
+	}
+	return hs, nil
+}
+
+// blackholeHosts needs both the name prefix and the documentation-range
+// target, so an operator's own host that happens to share the name survives.
+func blackholeHosts(hs []hostEntry) []string {
+	var ids []string
+	for _, h := range hs {
+		if strings.HasPrefix(h.Name, blackholePrefix) && h.Target == blackholeTarget {
+			ids = append(ids, h.ID)
 		}
 	}
 	return ids
@@ -946,6 +970,15 @@ func runFixturesRemoved(ctx context.Context, e env) result {
 		for _, pid := range verifyProjects(rs) {
 			if st := frontendDo(ctx, e, token, http.MethodDelete, "/api/projects/"+pid, nil).Status; st != http.StatusNoContent {
 				r.Errs = append(r.Errs, fmt.Sprintf("DELETE project status %d", st))
+			}
+		}
+		hosts, err := listHosts(ctx, e, token)
+		if err != nil {
+			r.Errs = append(r.Errs, err.Error())
+		}
+		for _, hid := range blackholeHosts(hosts) {
+			if st := frontendDo(ctx, e, token, http.MethodDelete, "/api/hosts/"+hid, nil).Status; st != http.StatusNoContent {
+				r.Errs = append(r.Errs, fmt.Sprintf("DELETE host status %d", st))
 			}
 		}
 		terms, err := verifyTerminals(ctx, e, token)
@@ -987,11 +1020,14 @@ func runFixturesRemoved(ctx context.Context, e env) result {
 	mcps, err1 := listMcpIDs(ctx, e)
 	svcs, err2 := listServiceIDs(ctx, e)
 	rs, err3 := grantRecords(ctx, e)
-	var err4 error
+	var err4, err5 error
 	if ok {
 		r.LeftTerminals, err4 = verifyTerminals(ctx, e, token)
+		var hosts []hostEntry
+		hosts, err5 = listHosts(ctx, e, token)
+		r.LeftHosts = blackholeHosts(hosts)
 	}
-	r.ListErr = errors.Join(err1, err2, err3, err4)
+	r.ListErr = errors.Join(err1, err2, err3, err4, err5)
 	r.LeftMcps, r.LeftServices, r.LeftProjects = withPrefix(mcps, probePrefix), withPrefix(svcs, crashPrefix), verifyProjects(rs)
 	return classifyFixturesRemoved(r)
 }
@@ -1006,7 +1042,10 @@ func classifyFixturesRemoved(r fixturesRun) result {
 		left = append(left, fmt.Sprintf("%d crash service(s)", n))
 	}
 	if n := len(r.LeftProjects); n > 0 && !r.NoToken {
-		left = append(left, fmt.Sprintf("%d Verify Grant project(s)", n))
+		left = append(left, fmt.Sprintf("%d Verify Grant or Unreachable Host project(s)", n))
+	}
+	if n := len(r.LeftHosts); n > 0 && !r.NoToken {
+		left = append(left, fmt.Sprintf("%d blackhole host(s)", n))
 	}
 	if n := len(r.LeftTerminals); n > 0 && !r.NoToken {
 		left = append(left, fmt.Sprintf("%d terminal(s)", n))
@@ -1021,9 +1060,9 @@ func classifyFixturesRemoved(r fixturesRun) result {
 	case len(left) > 0:
 		return result{id, stateFail, "still registered: " + strings.Join(left, ", ") + errs}
 	case r.NoToken:
-		return blocked(id, "no run credential: "+mintPosID+" did not pass; MCPs and services removed, projects and terminals not"+errs)
+		return blocked(id, "no run credential: "+mintPosID+" did not pass; MCPs and services removed, projects, hosts and terminals not"+errs)
 	}
-	return result{id, statePass, "no verify MCP, service, project or terminal left" + errs}
+	return result{id, statePass, "no verify MCP, service, project, host or terminal left" + errs}
 }
 
 type revokePosRun struct {

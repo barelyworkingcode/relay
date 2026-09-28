@@ -37,7 +37,8 @@ Areas: sessions, sandbox, templates, audit.
 | Message and stop a session | API (eve) | eve chat → `POST /api/sessions/{id}/message`, `DELETE /api/sessions/{id}`; `GET /api/sessions` | HTTP [proxy] | — | session-chat-lifecycle |
 | Resume a session | API (eve) | `POST /api/sessions/{id}/resume` | HTTP [execute] | — | none |
 | Terminals and their log | API (eve) | eve terminal → `POST /api/terminals` [execute]; `GET /api/terminals`, `GET /api/terminals/{id}/log`, `DELETE` [proxy] | HTTP | — | terminal-lifecycle, verify-fixtures-removed |
-| Persistent sessions | API | `GET`/`DELETE /api/projects/{id}/persistent-sessions` | HTTP | — | none |
+| Persistent sessions | API | `GET`/`DELETE /api/projects/{id}/persistent-sessions` | HTTP | — | slow-route-keepalive (`GET`, unreachable host) |
+| Proxied calls after a slow relay route | API (eve) | eve's keep-alive socket: a relay route slower than 10 s, then `GET /api/models` | HTTP [read, proxy] | — | slow-route-keepalive |
 | `relay sandbox <template>` | CLI | from a project folder, `relay sandbox world-probe` | CLI / bridge | — | acme-sandbox-reach |
 | Sandbox containment (own project only) | sandbox | any sandboxed session | bridge | — | acme-sandbox-reach |
 | Launch audit row, size-capped | audit | any refused launch | bridge | — | oversized-launch-audit-capped |
@@ -192,12 +193,13 @@ Areas: remote.
 ### G11 · Work on a remote directory over SSH — later
 Intent: treat a folder on another machine as a project.
 It worked: sessions and tools run on the host through one SSH connection.
-Why later: the devbox world has no hosts, so no journey can run.
+Why later: the devbox world has no hosts; only slow-route-keepalive adds one,
+an unreachable host it removes again.
 Areas: hosts.
 
 | Feature | Surface | Reach | Door | Gate | Journey |
 |---|---|---|---|---|---|
-| Add, edit, remove a host | Settings > Hosts | Add host | HTTP `/api/hosts` | — | none |
+| Add, edit, remove a host | Settings > Hosts | Add host | HTTP `/api/hosts` [configure] | — | slow-route-keepalive (add, remove), verify-fixtures-removed (remove) |
 | Probe, disconnect | Settings > Hosts | row > Probe / Disconnect | HTTP `/api/hosts/{id}/probe`, `/disconnect` | — | none |
 | Host templates | Settings > Hosts | row > Templates | HTTP `/api/hosts/{id}/templates` | — | none |
 
@@ -264,7 +266,7 @@ areas:
   sessions:
     code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**]
     tests: [cmd/relay/session_*_test.go, cmd/relay/router_sessions_test.go, cmd/relay/mount_session_test.go, cmd/relaysessions/*_test.go, internal/sessions/**/*_test.go]
-    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, verify-fixtures-removed]
+    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, slow-route-keepalive, verify-fixtures-removed]
   sandbox:
     code: [cmd/relay/sandbox_*.go, cmd/relay/session_sandbox*.go, internal/bridge/sandbox*.go, internal/sessions/sandbox/**]
     tests: [cmd/relay/sandbox_*_test.go, cmd/relay/session_sandbox*_test.go, internal/sessions/sandbox/**/*_test.go]
@@ -304,7 +306,7 @@ areas:
   credentials:
     code: [cmd/relay/credential_*.go, cmd/relay/api_credential.go, cmd/relay/frontend_*.go, internal/control/**, internal/peertoken/**]
     tests: [cmd/relay/credential_*_test.go, cmd/relay/api_credential*_test.go, cmd/relay/frontend_*_test.go, cmd/relay/transport_enforcement_test.go]
-    journeys: [gate-credential-mint-pos, execute-credential-renewal, gate-credential-mint-neg, gate-credential-revoke-neg, gate-credential-revoke-pos]
+    journeys: [gate-credential-mint-pos, execute-credential-renewal, gate-credential-mint-neg, gate-credential-revoke-neg, slow-route-keepalive, gate-credential-revoke-pos]
   remote:
     code: [cmd/relay/enrol*.go, cmd/relay/ipc_enrolments.go, cmd/relay/remote_*.go, internal/enrolment/**]
     tests: [cmd/relay/enrol*_test.go, cmd/relay/ipc_enrolment*_test.go, cmd/relay/remote_*_test.go, cmd/relay/audit_remote_test.go, cmd/relay/settings_enrolments*_test.go, internal/enrolment/*_test.go]
@@ -312,7 +314,7 @@ areas:
   hosts:
     code: [cmd/relay/host_*.go, cmd/relay/ipc_host*.go, internal/sshhost/**]
     tests: [cmd/relay/host_*_test.go, cmd/relay/settings_hosts_ui_test.go, internal/sshhost/*_test.go]
-    journeys: [permission-mode-restart]
+    journeys: [permission-mode-restart, slow-route-keepalive, verify-fixtures-removed]
   presence:
     code: [cmd/relay/presence_gate.go, cmd/relay/admin_ops.go, cmd/relay/admin_read_ops.go, internal/presence/**]
     tests: [cmd/relay/presence_*_test.go, cmd/relay/gate_*_test.go, cmd/relay/config_queue_*_test.go, internal/presence/*_test.go]
@@ -341,8 +343,9 @@ areas:
 - Screen journeys take the shared browser-test lock and need the console
   session.
 - Fixtures the screen phase creates (the probe MCP, the crash service, the
-  Verify Grant project) carry the run nonce and are removed by
-  verify-fixtures-removed, including a crashed run's leftovers. So are the
+  Verify Grant project, the Unreachable Host project and its `blackhole-`
+  host) carry the run nonce and are removed by verify-fixtures-removed,
+  including a crashed run's leftovers. So are the
   terminals any journey opened under a `grant-*` state folder or the World
   root, stopped or not.
 - `screen` features have no door but the Settings window or tray. They are

@@ -18,9 +18,11 @@ import (
 // long relay waits to receive a request BODY, and by the time a gated core
 // reaches requireGate the body is already decoded — the wait left is a
 // LocalAuthentication prompt, which is a human-timescale wait that deadline
-// was never meant to bound. Restoring frontendRouteReadDeadline immediately
-// after (success, refusal, or real cancellation) means a genuinely dead
-// connection is still bounded for whatever the handler does next.
+// was never meant to bound. The restore of frontendRouteReadDeadline
+// afterwards (success, refusal, or real cancellation) only re-arms it while
+// the body is still being received; once the body is done it clears
+// instead, since a deadline under net/http's background read would cancel
+// the connection's context.
 //
 // A var, not a const, for the same reason frontendRouteReadDeadline is one:
 // a test needs to shorten frontendRouteReadDeadline and still prove this
@@ -43,7 +45,8 @@ var errPresenceGateNotWired = errors.New("presence gate is not wired for this op
 // when ctx carries a readDeadlineExtender — only true for a request that
 // arrived through withRelayRouteReadDeadline / warnOnUnmatchedTCPRoute —
 // this widens the connection's read deadline before the blocking wait and
-// puts it back immediately after, on every exit path. An IPC or CLI caller's
+// restores it after, on every exit path (see presenceWaitReadDeadline for
+// what the restore does once the body is done). An IPC or CLI caller's
 // ctx carries no such value, so gate.Require runs exactly as before for
 // them.
 //
