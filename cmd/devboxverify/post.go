@@ -16,6 +16,7 @@ type evidence struct {
 	Commit, ToolCommit, WorldSummary, Home string
 	RunTime                                time.Duration
 	Results                                []result
+	Repaired                               []repairLine
 }
 
 func gh(ctx context.Context, stdin string, args ...string) (string, error) {
@@ -57,6 +58,7 @@ func renderComment(ev evidence) string {
 	fmt.Fprintf(&b, "| | |\n|---|---|\n")
 	fmt.Fprintf(&b, "| Relay commit | `%s` |\n", ev.Commit)
 	fmt.Fprintf(&b, "| World verify | %s |\n", ev.WorldSummary)
+	fmt.Fprintf(&b, "| Repaired | %s |\n", repairedCell(ev.Repaired))
 	fmt.Fprintf(&b, "| Tool commit | `%s` |\n", ev.ToolCommit)
 	fmt.Fprintf(&b, "| Run time | %d s |\n\n", (ev.RunTime.Milliseconds()+500)/1000)
 	fmt.Fprintf(&b, "| Journey | Result | Detail |\n|---|---|---|\n")
@@ -64,6 +66,19 @@ func renderComment(ev evidence) string {
 		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", r.ID, r.State, strings.ReplaceAll(r.Detail, "|", `\|`))
 	}
 	return scrub(b.String(), ev.Home)
+}
+
+// repairedCell states "none" rather than leaving the row out, so the absence
+// of a repair is stated, not implied.
+func repairedCell(rs []repairLine) string {
+	if len(rs) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(rs))
+	for i, r := range rs {
+		parts[i] = strings.Join(strings.Fields(r.What+": "+r.Detail), " ")
+	}
+	return strings.ReplaceAll(strings.Join(parts, "; "), "|", `\|`)
 }
 
 // post comments first so the commit status can link to the comment.

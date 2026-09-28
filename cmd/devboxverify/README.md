@@ -21,7 +21,7 @@ Environment:
 | `EVE_BROWSER_LOCK` | `~/.cache/eve/browser-tests.lock` | the shared screen lock |
 | `EVE_BROWSER_LOCK_TIMEOUT` | `1800` | seconds to wait for the lock |
 
-Stdout is tab-separated `PREFLIGHT`, `WORLD`, `RESET`, `JOURNEY`, `TIMING`,
+Stdout is tab-separated `PREFLIGHT`, `REPAIRED`, `WORLD`, `RESET`, `JOURNEY`, `TIMING`,
 `SUMMARY` and `POSTED` lines and nothing else; progress and the world scripts' own
 output go to stderr. Exit 0 when every journey is PASS or NOTRUN, 1 on any
 FAIL or BLOCKED, 2 on a usage, preflight, reset or post failure. A journey
@@ -31,12 +31,14 @@ the journey starts until its result. `TIMING\trun\t<ms>` comes immediately
 before `SUMMARY`, and only when `SUMMARY` prints; it is measured from entry
 to `run()`. The evidence comment carries the same measurement as a
 `| Run time | <s> s |` row right after `Tool commit`, with
-`<s> = (ms+500)/1000`.
+`<s> = (ms+500)/1000`. The comment's `| Repaired |` row sits right after
+`World verify`: `none`, or `<what>: <detail>` per repair joined `; `, with
+pipes escaped.
 
 A red run names its cause. A preflight FAIL whose detail starts
 `BLOCKED fixture: ` is the test data (the world's version or catalogue); one
 starting `BLOCKED environment: ` is the machine's world state (bootstrap or
-`verify.sh`); `not a test machine: …` means this is not a bootstrapped VM.
+`repair.sh`); `not a test machine: …` means this is not a bootstrapped VM.
 A journey FAIL after a green preflight is the product.
 
 ## The world
@@ -54,9 +56,34 @@ read error after a good `lstat`.
 
 The harness never reads, sets or clears `DEVBOXWORLD_ROOT`; the world
 scripts inherit its environment unchanged, `DEVBOXWORLD_MARKER` included. A
-stray `DEVBOXWORLD_ROOT` makes `bootstrap.sh --check` fail, which reads
-`PREFLIGHT bootstrap FAIL BLOCKED environment: bootstrap incomplete; run
-bootstrap.sh`.
+stray `DEVBOXWORLD_ROOT` makes `repair.sh` refuse, which reads
+`PREFLIGHT bootstrap FAIL BLOCKED environment: bootstrap incomplete; repair.sh
+exited 2 without a result; run bootstrap.sh`, with the reason on stderr.
+
+### The repair call
+
+`bootstrap` and `world` share one call to devboxWorld's `repair.sh`, run
+once from `world_checkout` in `bootstrap`'s place and killed at 900 s. Its
+stdout is parsed and copied to stderr. `repair.sh` checks bootstrap, then
+verifies the world; when `verify.sh` is red it resets once and verifies
+again. It writes every detail; the harness only adds the
+`BLOCKED environment: ` prefix to a FAIL. devboxWorld's `docs/WORLD.md`
+holds the wire shape.
+
+- `CHECK bootstrap OK|FAIL <d>` becomes `PREFLIGHT bootstrap OK <d>` or
+  `FAIL BLOCKED environment: <d>`. With no bootstrap line it reads
+  `bootstrap incomplete; repair.sh <how> without a result; run bootstrap.sh`.
+- Each `REPAIRED\t<what>\t<d>` prints unchanged before the world line.
+- `world` is OK, with `<d>` `green` or `green after repair`, only when
+  `repair.sh` printed `CHECK world OK <d>`, exited 0 in time and printed a
+  `SUMMARY` with `fail=0`. A `CHECK world FAIL <d>` line reads
+  `BLOCKED environment: <d>` whatever the exit code; anything else reads
+  `repair.sh <how> without a result`.
+- `<how>` is `exited <n>` or `timed out after 900s`.
+- `WORLD` and the `World verify` row take their counts from the last `SUMMARY`.
+
+A repaired run resets twice: once inside `repair.sh` and once after
+preflight.
 
 `worldVersion` in `world.go` is relay's pin; it must equal the marker's
 `world_version`. The fixtures come from `<world_checkout>/data/world.json`:
@@ -534,8 +561,8 @@ None of this drifts `verify.sh`.
    prompts and the installed helper trusted for Accessibility.
 3. Preflight refuses unless the app was built from the PR head with a clean
    tree, is the one running, and started after it was installed; then
-   `bootstrap.sh --check` must pass and `verify.sh` must be green. Only then
-   does `reset.sh` run.
+   `repair.sh` must report bootstrap complete and the world green, repaired
+   at most once. Only then does `reset.sh` run.
 4. Rebuild from `main` when done, so the app is left on `main`.
 
 ## Traps
@@ -545,9 +572,9 @@ None of this drifts `verify.sh`.
 - `build.sh` signs and relaunches the app. Unlock the signing keychain first,
   or the build fails at `codesign`.
 - A stale or incomplete bootstrap (a helper build out of date, say) fails
-  preflight as `BLOCKED environment: bootstrap incomplete; run bootstrap.sh`. It is checked before
-  `reset.sh` because reset takes the world down before it checks bootstrap,
-  and would leave it down.
+  preflight as `BLOCKED environment: bootstrap incomplete; needs a person: …;
+  run bootstrap.sh`. `repair.sh` checks it before any reset because reset
+  takes the world down before it checks bootstrap, and would leave it down.
 - Audit rows are recorded asynchronously and read back for up to 5 s. A
   dropped row reads as FAIL, not as a pass.
 - A regression that accepts the blank-model launch, or one whose `DELETE`
