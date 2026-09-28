@@ -167,9 +167,6 @@ func TestReadMarker(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if c.name == "unreadable" && os.Geteuid() == 0 {
-				t.Skip("root reads a mode-0000 file")
-			}
 			_, err := readMarker(c.path(t, t.TempDir()), c.vm)
 			if err == nil || err.Error() != c.want {
 				t.Fatalf("readMarker error = %v\nwant %s", err, c.want)
