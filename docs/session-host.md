@@ -1054,6 +1054,16 @@ is `StateDormant`, and names the same project the resume request names — a
 caller cannot squat a live session id or resume one project's session under
 another project's name this way.
 
+At startup relay ages every `live` ledger record to `dormant`
+(`ledger.MarkLiveDormant`, called from `openSessionLedger` in
+`cmd/relay/trayapp.go`). relay-sessions and every provider it hosts are
+children of this relay process, so no record from an earlier run can still be
+live; a provider that was live when relay quit never sent the `SessionExited`
+that would have aged it. Left `live`, that record makes relay's
+`POST /api/sessions/{id}/resume` answer "already live" (`resumed: false`)
+without launching anything, and the client's next message gets
+`resume_required` again.
+
 There is no project-less launch: `AuthorizeLaunch` refuses one for every kind
 (`project_required`), so every session relay launches carries a project's
 authority and none auto-respawns.

@@ -35,7 +35,7 @@ Areas: sessions, sandbox, templates, audit.
 | Launch a session | API (eve) | eve starts a session → `POST /api/sessions` | HTTP [execute] | — | session-chat-lifecycle, model-list-and-completion |
 | Blank-model launch refused | API | `POST /api/sessions` with no model | HTTP [execute] | — | blank-model-refused |
 | Message and stop a session | API (eve) | eve chat → `POST /api/sessions/{id}/message`, `DELETE /api/sessions/{id}`; `GET /api/sessions` | HTTP [proxy] | — | session-chat-lifecycle |
-| Resume a session | API (eve) | `POST /api/sessions/{id}/resume` | HTTP [execute] | — | none |
+| Resume a session | API (eve) | `POST /api/sessions/{id}/resume` | HTTP [execute] | — | session-chat-resume |
 | Terminals and their log | API (eve) | eve terminal → `POST /api/terminals` [execute]; `GET /api/terminals`, `GET /api/terminals/{id}/log`, `DELETE` [proxy] | HTTP | — | terminal-lifecycle, verify-fixtures-removed |
 | Persistent sessions | API | `GET`/`DELETE /api/projects/{id}/persistent-sessions` | HTTP | — | slow-route-keepalive (`GET`, unreachable host) |
 | Proxied calls after a slow relay route | API (eve) | eve's keep-alive socket: a relay route slower than 10 s, then `GET /api/models` | HTTP [read, proxy] | — | slow-route-keepalive |
@@ -267,7 +267,7 @@ areas:
   sessions:
     code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**]
     tests: [cmd/relay/session_*_test.go, cmd/relay/router_sessions_test.go, cmd/relay/mount_session_test.go, cmd/relaysessions/*_test.go, internal/sessions/**/*_test.go]
-    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, slow-route-keepalive, verify-fixtures-removed]
+    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, session-chat-resume, slow-route-keepalive, verify-fixtures-removed]
   sandbox:
     code: [cmd/relay/sandbox_*.go, cmd/relay/session_sandbox*.go, internal/bridge/sandbox*.go, internal/sessions/sandbox/**]
     tests: [cmd/relay/sandbox_*_test.go, cmd/relay/session_sandbox*_test.go, internal/sessions/sandbox/**/*_test.go]
@@ -291,7 +291,7 @@ areas:
   audit:
     code: [cmd/relay/audit_*.go, cmd/relay/ipc_audit.go, internal/audit/**]
     tests: [cmd/relay/audit_*_test.go, cmd/relay/settings_audit_ui_test.go, internal/audit/*_test.go]
-    journeys: [blank-model-refused, oversized-launch-audit-capped, tool-call-audited, gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, context-number-resave, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos]
+    journeys: [blank-model-refused, oversized-launch-audit-capped, tool-call-audited, gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, context-number-resave, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, session-chat-resume, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos]
   services:
     code: [cmd/relay/service_*.go, cmd/relay/cli_service.go, cmd/relay/enhanced_services.go, cmd/relay/ipc_service*.go, internal/service/**]
     tests: [cmd/relay/service_*_test.go, cmd/relay/cli_service*_test.go, cmd/relay/enhanced_services*_test.go, cmd/relay/ipc_service*_test.go, cmd/relay/settings_service*_test.go, cmd/relay/launch_*_test.go, internal/service/*_test.go]

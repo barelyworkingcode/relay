@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"testing"
@@ -217,4 +218,72 @@ func TestLedger_ExistsAfterFirstSave(t *testing.T) {
 	if !Exists(dir) {
 		t.Fatal("Exists() false after a save")
 	}
+}
+
+func TestLedger_MarkLiveDormant_AgesEveryLiveRecordOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	l := mustOpen(t, dir)
+	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	seeds := []Record{
+		{SessionID: "s1", Kind: "chat", ProjectID: "p1", Directory: "/tmp/p1", Created: created, State: StateLive,
+			SessionRequest: json.RawMessage(`{"projectId":"p1","model":"m1"}`)},
+		{SessionID: "s2", Kind: "claude", ProjectID: "p1", Directory: "/tmp/p1", TemplateID: "claude-code", Created: created, State: StateDormant},
+		{SessionID: "s3", Kind: "pi", ProjectID: "p2", Directory: "/tmp/p2", TemplateID: "pi", Created: created.Add(time.Hour), State: StateLive},
+	}
+	for _, r := range seeds {
+		if err := l.Put(r); err != nil {
+			t.Fatalf("Put(%s): %v", r.SessionID, err)
+		}
+	}
+
+	n, err := l.MarkLiveDormant()
+	if err != nil || n != 2 {
+		t.Fatalf("MarkLiveDormant() = %d, %v, want 2, nil", n, err)
+	}
+
+	reopened := mustOpen(t, dir)
+	for _, seed := range seeds {
+		got, ok := reopened.Get(seed.SessionID)
+		if !ok {
+			t.Fatalf("reopened ledger lost %s", seed.SessionID)
+		}
+		want := seed
+		want.State = StateDormant
+		// MarshalIndent re-indents an embedded RawMessage, so compare its
+		// JSON value rather than its bytes.
+		if !jsonEqual(t, got.SessionRequest, want.SessionRequest) {
+			t.Fatalf("%s session_request = %s, want %s", seed.SessionID, got.SessionRequest, want.SessionRequest)
+		}
+		got.SessionRequest, want.SessionRequest = nil, nil
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("reopened %s = %+v, want %+v", seed.SessionID, got, want)
+		}
+	}
+}
+
+func TestLedger_MarkLiveDormant_NothingLiveDoesNotSave(t *testing.T) {
+	dir := t.TempDir()
+	l := mustOpen(t, dir)
+	n, err := l.MarkLiveDormant()
+	if err != nil || n != 0 {
+		t.Fatalf("MarkLiveDormant() on an empty ledger = %d, %v, want 0, nil", n, err)
+	}
+	if Exists(dir) {
+		t.Fatal("MarkLiveDormant with nothing to change wrote a ledger file")
+	}
+}
+
+func jsonEqual(t *testing.T, a, b json.RawMessage) bool {
+	t.Helper()
+	if len(a) == 0 || len(b) == 0 {
+		return len(a) == len(b)
+	}
+	var va, vb any
+	if err := json.Unmarshal(a, &va); err != nil {
+		t.Fatalf("unmarshal %s: %v", a, err)
+	}
+	if err := json.Unmarshal(b, &vb); err != nil {
+		t.Fatalf("unmarshal %s: %v", b, err)
+	}
+	return reflect.DeepEqual(va, vb)
 }

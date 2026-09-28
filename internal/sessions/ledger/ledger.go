@@ -124,6 +124,26 @@ func (l *Ledger) SetState(id string, state State) (bool, error) {
 	return true, l.saveLocked()
 }
 
+// MarkLiveDormant sets every StateLive record to StateDormant with a single
+// save and reports how many changed. It does not save when none did.
+func (l *Ledger) MarkLiveDormant() (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	changed := 0
+	for id, r := range l.records {
+		if r.State != StateLive {
+			continue
+		}
+		r.State = StateDormant
+		l.records[id] = r
+		changed++
+	}
+	if changed == 0 {
+		return 0, nil
+	}
+	return changed, l.saveLocked()
+}
+
 // Remove deletes the record named id and saves. A no-op for an id the
 // ledger does not hold.
 func (l *Ledger) Remove(id string) error {

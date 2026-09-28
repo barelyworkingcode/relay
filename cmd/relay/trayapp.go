@@ -186,6 +186,35 @@ func (a *App) goFunc(fn func()) {
 // not resumed.
 const cleanupWaitGroupTimeout = 5 * time.Second
 
+// openSessionLedger opens the session ledger (plan-broker-and-sessions.md §2
+// C5): relay's only on-disk record of a claude/pi/chat session, never a
+// terminal (never persisted) and never a secret or key. A first start with no
+// ledger file yet imports relayLLM's own dormant sessions once, so an upgrade
+// does not silently drop every resumable session a user already had. It
+// returns nil when the ledger cannot be read; resume is then unavailable this
+// run.
+func openSessionLedger(configDir string) *ledger.Ledger {
+	isFirstRun := !ledger.Exists(configDir)
+	l, err := ledger.Open(configDir)
+	if err != nil {
+		slog.Error("failed to open session ledger; session resume will be unavailable this run", "error", err)
+		return nil
+	}
+	if isFirstRun {
+		importSessionLedgerFromRelayLLM(l)
+	}
+	// Deliberate: relay-sessions and every provider it hosts are children of
+	// this relay process, so no record from an earlier run can still be live.
+	// A live record left over would make resume skip the launch.
+	n, err := l.MarkLiveDormant()
+	if err != nil {
+		slog.Warn("session ledger: could not age stale live sessions to dormant", "count", n, "error", err)
+	} else if n > 0 {
+		slog.Info("session ledger: aged stale live sessions to dormant", "count", n)
+	}
+	return l
+}
+
 // importSessionLedgerFromRelayLLM runs once, on a feature build's first
 // start with no ledger file yet (plan-broker-and-sessions.md §2 C5): every
 // dormant session ImportFromRelayLLM finds in relayLLM's own on-disk
@@ -622,19 +651,7 @@ func runTrayApp() {
 		BrokerRows: app.modelEndpoint.catalog.Snapshot,
 	}
 
-	// The session ledger (plan-broker-and-sessions.md §2 C5): relay's only
-	// on-disk record of a claude/pi/chat session, never a terminal (never
-	// persisted) and never a secret or key. A first start with no ledger
-	// file yet imports relayLLM's own dormant sessions once, so an upgrade
-	// does not silently drop every resumable session a user already had.
-	sessLedgerIsFirstRun := !ledger.Exists(configDir)
-	sessLedger, err := ledger.Open(configDir)
-	if err != nil {
-		slog.Error("failed to open session ledger; session resume will be unavailable this run", "error", err)
-		sessLedger = nil
-	} else if sessLedgerIsFirstRun {
-		importSessionLedgerFromRelayLLM(sessLedger)
-	}
+	sessLedger := openSessionLedger(configDir)
 
 	// sessionAccounts is the launch-identity/model-key bookkeeping SessionExited
 	// (router_sessions.go) and project-delete cleanup (project_ops.go) both
