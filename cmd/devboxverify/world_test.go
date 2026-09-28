@@ -20,13 +20,15 @@ const worldV1 = `{
   "schema": 1,
   "world_version": 1,
   "mail_domain": "relaytest.local",
+  "relay_mcp": {"id": "macmcp", "tools": "mail_*"},
   "projects": [
     {"key": "acme",   "name": "Acme Corp", "mode": "work", "color": "#1F6FD1", "relay_mailboxes": ["INBOX", "Archive", "Clients"]},
     {"key": "globex", "name": "Globex",    "mode": "work", "color": "#2E9E5B", "relay_mailboxes": ["INBOX", "Archive"]},
     {"key": "home",   "name": "Home",      "mode": "home", "color": "#D9822B", "relay_mailboxes": ["INBOX", "Archive"]}
   ],
   "fixtures": ["project:acme", "project:globex", "project:home",
-               "file:acme/PROJECT.md", "file:globex/PROJECT.md", "file:home/PROJECT.md"]
+               "file:acme/PROJECT.md", "file:globex/PROJECT.md", "file:home/PROJECT.md",
+               "file:acme/todo.txt", "file:acme/budget/q4-budget-draft.csv"]
 }
 `
 
@@ -111,6 +113,10 @@ func TestReadMarker(t *testing.T) {
 		}
 	}
 	raw := func(s string) json.RawMessage { return json.RawMessage(s) }
+	// A path under a regular file: lstat fails with ENOTDIR, not ENOENT.
+	underFile := func(t *testing.T, d string) string {
+		return filepath.Join(writeMode(t, filepath.Join(d, "f"), "", 0o600), "machine.json")
+	}
 	cases := []struct {
 		name string
 		path func(*testing.T, string) string
@@ -122,9 +128,8 @@ func TestReadMarker(t *testing.T) {
 		{"not a VM", valid(nil), no, refusal("not a VM: kern.hv_vmm_present is not 1")},
 		{"sysctl fails", valid(nil), fails, refusal("not a VM: kern.hv_vmm_present is not 1")},
 		{"not a VM before a bad marker", file("x", 0o644), no, refusal("not a VM: kern.hv_vmm_present is not 1")},
-		{"lstat fails", func(t *testing.T, d string) string {
-			return filepath.Join(writeMode(t, filepath.Join(d, "f"), "", 0o600), "machine.json")
-		}, yes, refusal("marker is not readable")},
+		{"lstat fails", underFile, yes, refusal("marker is not readable")},
+		{"lstat fails on a host", underFile, no, refusal("not a VM: kern.hv_vmm_present is not 1")},
 		{"symlink", func(t *testing.T, d string) string {
 			p := filepath.Join(d, "link")
 			if err := os.Symlink(valid(nil)(t, d), p); err != nil {
@@ -197,33 +202,81 @@ func TestMarkerPath(t *testing.T) {
 
 func TestLoadWorld(t *testing.T) {
 	set := func(k string, v any) func(map[string]any) { return func(m map[string]any) { m[k] = v } }
-	addFixture := func(id string) func(map[string]any) {
-		return func(m map[string]any) { m["fixtures"] = append(m["fixtures"].([]any), id) }
+	del := func(k string) func(map[string]any) { return func(m map[string]any) { delete(m, k) } }
+	addFixture := func(ids ...string) func(map[string]any) {
+		return func(m map[string]any) {
+			for _, id := range ids {
+				m["fixtures"] = append(m["fixtures"].([]any), id)
+			}
+		}
 	}
+	projectsMut := func(mut func(p []any)) func(map[string]any) {
+		return func(m map[string]any) { mut(m["projects"].([]any)) }
+	}
+	mcp := func(v any) func(map[string]any) { return set("relay_mcp", v) }
+	data := func(muts ...func(map[string]any)) func(*testing.T) string {
+		return func(t *testing.T) string {
+			return writeWorld(t, func(m map[string]any) {
+				for _, mut := range muts {
+					mut(m)
+				}
+			})
+		}
+	}
+	body := func(s string) func(*testing.T) string {
+		return func(t *testing.T) string {
+			d := writeWorld(t, nil)
+			writeMode(t, filepath.Join(d, "data", "world.json"), s, 0o600)
+			return d
+		}
+	}
+	const (
+		unreadable = "world data is not readable"
+		notJSON    = "world data is not valid JSON"
+		version    = "world_version is not a positive integer"
+		fixtures   = "fixtures is not a list of strings"
+		projects   = "projects is not a list"
+		badMCP     = "relay_mcp is malformed"
+	)
 	cases := []struct {
 		name string
 		dir  func(*testing.T) string
 		want string
 	}{
-		{"no world.json", func(t *testing.T) string { return t.TempDir() }, "world data is not readable"},
-		{"not JSON", func(t *testing.T) string {
-			d := writeWorld(t, nil)
-			writeMode(t, filepath.Join(d, "data", "world.json"), "{", 0o600)
-			return d
-		}, "world data is not valid JSON"},
-		{"version absent", func(t *testing.T) string { return writeWorld(t, func(m map[string]any) { delete(m, "world_version") }) }, "world data world_version is not a positive integer"},
-		{"version 0", func(t *testing.T) string { return writeWorld(t, set("world_version", 0)) }, "world data world_version is not a positive integer"},
-		{"version string", func(t *testing.T) string { return writeWorld(t, set("world_version", "1")) }, "world data world_version is not a positive integer"},
-		{"fixtures absent", func(t *testing.T) string { return writeWorld(t, func(m map[string]any) { delete(m, "fixtures") }) }, "world data fixtures is not a list of strings"},
-		{"fixtures a string", func(t *testing.T) string { return writeWorld(t, set("fixtures", "project:acme")) }, "world data fixtures is not a list of strings"},
-		{"fixtures not strings", func(t *testing.T) string { return writeWorld(t, set("fixtures", []any{1})) }, "world data fixtures is not a list of strings"},
-		{"project without a name", func(t *testing.T) string {
-			return writeWorld(t, func(m map[string]any) { delete(m["projects"].([]any)[1].(map[string]any), "name") })
-		}, "world data project 1 is malformed"},
-		{"unknown project", func(t *testing.T) string { return writeWorld(t, addFixture("project:initech")) }, "world data fixture project:initech does not resolve"},
-		{"file of an unknown project", func(t *testing.T) string { return writeWorld(t, addFixture("file:initech/PROJECT.md")) }, "world data fixture file:initech/PROJECT.md does not resolve"},
-		{"unknown kind", func(t *testing.T) string { return writeWorld(t, addFixture("folder:acme")) }, "world data fixture folder:acme does not resolve"},
-		{"dot-dot", func(t *testing.T) string { return writeWorld(t, addFixture("file:acme/../globex/PROJECT.md")) }, "world data fixture file:acme/../globex/PROJECT.md does not resolve"},
+		{"no world.json", func(t *testing.T) string { return t.TempDir() }, unreadable},
+		{"not JSON", body("{"), notJSON},
+		{"top level not an object", body("[]"), notJSON},
+		{"version absent", data(del("world_version")), version},
+		{"version 0", data(set("world_version", 0)), version},
+		{"version string", data(set("world_version", "1")), version},
+		{"version 1.0", data(set("world_version", json.RawMessage("1.0"))), version},
+		{"version before fixtures", data(set("world_version", 0), del("fixtures")), version},
+		{"fixtures absent", data(del("fixtures")), fixtures},
+		{"fixtures a string", data(set("fixtures", "project:acme")), fixtures},
+		{"fixtures not strings", data(set("fixtures", []any{1})), fixtures},
+		{"fixtures before projects", data(set("fixtures", "project:acme"), del("projects")), fixtures},
+		{"projects absent", data(del("projects")), projects},
+		{"projects an object", data(set("projects", map[string]any{"key": "acme"})), projects},
+		{"projects before relay_mcp", data(del("projects"), del("relay_mcp")), projects},
+		{"project not an object", data(projectsMut(func(p []any) { p[0] = "acme" })), "project 0 is malformed"},
+		{"project without a name", data(projectsMut(func(p []any) { delete(p[1].(map[string]any), "name") })), "project 1 is malformed"},
+		{"project with an empty mode", data(projectsMut(func(p []any) { p[2].(map[string]any)["mode"] = "" })), "project 2 is malformed"},
+		{"project key not a string", data(projectsMut(func(p []any) { p[0].(map[string]any)["key"] = 7 })), "project 0 is malformed"},
+		{"project before relay_mcp", data(projectsMut(func(p []any) { delete(p[1].(map[string]any), "name") }), del("relay_mcp")), "project 1 is malformed"},
+		{"relay_mcp absent", data(del("relay_mcp")), badMCP},
+		{"relay_mcp not an object", data(mcp("macmcp")), badMCP},
+		{"relay_mcp id empty", data(mcp(map[string]any{"id": "", "tools": "mail_*"})), badMCP},
+		{"relay_mcp tools absent", data(mcp(map[string]any{"id": "macmcp"})), badMCP},
+		{"relay_mcp tools not a string", data(mcp(map[string]any{"id": "macmcp", "tools": 1})), badMCP},
+		{"relay_mcp before fixture ids", data(del("relay_mcp"), addFixture("project:initech")), badMCP},
+		{"unknown project", data(addFixture("project:initech")), "fixture project:initech does not resolve"},
+		{"file of an unknown project", data(addFixture("file:initech/PROJECT.md")), "fixture file:initech/PROJECT.md does not resolve"},
+		{"unknown kind", data(addFixture("folder:acme")), "fixture folder:acme does not resolve"},
+		{"dot-dot", data(addFixture("file:acme/../globex/PROJECT.md")), "fixture file:acme/../globex/PROJECT.md does not resolve"},
+		{"empty rel", data(addFixture("file:acme/")), "fixture file:acme/ does not resolve"},
+		{"no rel", data(addFixture("file:acme")), "fixture file:acme does not resolve"},
+		{"rel starts with a slash", data(addFixture("file:acme//etc/hosts")), "fixture file:acme//etc/hosts does not resolve"},
+		{"first unresolved id in catalogue order", data(addFixture("project:zeta", "folder:acme")), "fixture project:zeta does not resolve"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -242,7 +295,9 @@ func TestLoadWorld(t *testing.T) {
 			"home":   {"home", "Home", "home", "/w/root/Home"},
 		},
 		Fixtures: map[string]bool{"project:acme": true, "project:globex": true, "project:home": true,
-			"file:acme/PROJECT.md": true, "file:globex/PROJECT.md": true, "file:home/PROJECT.md": true},
+			"file:acme/PROJECT.md": true, "file:globex/PROJECT.md": true, "file:home/PROJECT.md": true,
+			"file:acme/todo.txt": true, "file:acme/budget/q4-budget-draft.csv": true},
+		MCP: worldMCP{ID: "macmcp", Tools: "mail_*"},
 	}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("loadWorld(v1) = %+v, %v\nwant %+v", got, err, want)
@@ -262,7 +317,9 @@ func TestWorldViewAdmitsOnlyDeclaredFixtures(t *testing.T) {
 		{"declared project", w.scoped([]string{"project:acme"}), projectFolder("acme"), "/w/root/Acme Corp", ""},
 		{"other project", w.scoped([]string{"project:acme"}), projectFolder("home"), "", "undeclared fixture project:home"},
 		{"project does not admit its file", w.scoped([]string{"project:acme"}), fileOf("acme", "PROJECT.md"), "", "undeclared fixture file:acme/PROJECT.md"},
+		// /w/root does not exist: file answers the path without touching it.
 		{"declared file", w.scoped([]string{"file:acme/PROJECT.md"}), fileOf("acme", "PROJECT.md"), "/w/root/Acme Corp/PROJECT.md", ""},
+		{"declared nested file", w.scoped([]string{"file:acme/budget/q4-budget-draft.csv"}), fileOf("acme", "budget/q4-budget-draft.csv"), "/w/root/Acme Corp/budget/q4-budget-draft.csv", ""},
 		{"other file", w.scoped([]string{"file:acme/PROJECT.md"}), fileOf("acme", "notes.md"), "", "undeclared fixture file:acme/notes.md"},
 		{"declared project not in world", w.scoped([]string{"project:globex"}), projectFolder("globex"), "", "fixture project:globex is not in world v1"},
 		{"declared file not in world", w.scoped([]string{"file:globex/PROJECT.md"}), fileOf("globex", "PROJECT.md"), "", "fixture file:globex/PROJECT.md is not in world v1"},
@@ -274,6 +331,13 @@ func TestWorldViewAdmitsOnlyDeclaredFixtures(t *testing.T) {
 				t.Fatalf("lookup = %q, %q; want %q, %q", got, gotErr, c.want, c.wantErr)
 			}
 		})
+	}
+}
+
+func TestRelayMCPNeedsNoDeclaration(t *testing.T) {
+	want := worldMCP{ID: "macmcp", Tools: "mail_*"}
+	if got := loadTestWorld(t, nil).scoped(nil).relayMCP(); got != want {
+		t.Errorf("relayMCP() with no needs = %+v, want %+v", got, want)
 	}
 }
 
@@ -363,7 +427,7 @@ func TestNoFixtureNameLiteralInHarnessCode(t *testing.T) {
 				return true
 			}
 			s, _ := strconv.Unquote(lit.Value)
-			for _, bad := range []string{"Acme Corp", "Globex", "DEVBOXWORLD_ROOT"} {
+			for _, bad := range []string{"Acme Corp", "Globex", "DEVBOXWORLD_ROOT", "macmcp", "mail_*"} {
 				if strings.Contains(s, bad) {
 					t.Errorf("%s: string literal %s names %q", f, lit.Value, bad)
 				}

@@ -344,6 +344,8 @@ func TestPreflightRefusesBeforeAnyLockScriptOrNetwork(t *testing.T) {
 			[]string{machineOK, "PREFLIGHT\tpin\tOK\tv1", "PREFLIGHT\tfixtures\tFAIL\tBLOCKED fixture: acme-sandbox-reach needs project:globex"}},
 		{"unreadable world data", func(t *testing.T) string { return scratchMarker(t, t.TempDir(), 1) }, true,
 			[]string{machineOK, "PREFLIGHT\tpin\tOK\tv1", "PREFLIGHT\tfixtures\tFAIL\tBLOCKED fixture: world data is not readable"}},
+		{"fixture missing for many journeys", func(t *testing.T) string { return scratchMarker(t, writeWorld(t, dropFixtures("project:acme")), 1) }, true,
+			[]string{machineOK, "PREFLIGHT\tpin\tOK\tv1", "PREFLIGHT\tfixtures\tFAIL\tBLOCKED fixture: " + strings.Join(needing("project:acme"), "; ")}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -358,18 +360,56 @@ func TestPreflightRefusesBeforeAnyLockScriptOrNetwork(t *testing.T) {
 	}
 }
 
+// needing lists, in run order, "<journey> needs <id>" for every journey the
+// contract says declares id.
+func needing(id string) []string {
+	var out []string
+	for _, j := range journeys {
+		if slices.Contains(contractNeeds()[j.ID], id) {
+			out = append(out, j.ID+" needs "+id)
+		}
+	}
+	return out
+}
+
+// screenSummary is the fixtures OK detail for --phase screen: the distinct
+// ids the contract gives the screen journeys, and every screen journey.
+func screenSummary() string {
+	ids, m := map[string]bool{}, 0
+	for _, j := range journeys {
+		if j.Phase == phaseScreen {
+			m++
+			for _, id := range contractNeeds()[j.ID] {
+				ids[id] = true
+			}
+		}
+	}
+	return fmt.Sprintf("%d fixtures for %d journeys", len(ids), m)
+}
+
 func TestWorldChecksPassThenTheExistingChecksRun(t *testing.T) {
-	code, stdout, calls, locked := runIsolated(t, scratchMarker(t, writeWorld(t, nil), 1), true)
-	want := []string{"PREFLIGHT\tmachine\tOK\tvm; world v1", "PREFLIGHT\tpin\tOK\tv1",
-		fmt.Sprintf("PREFLIGHT\tfixtures\tOK\t4 fixtures for %d journeys", len(contractNeeds()))}
-	if code != 2 || len(stdout) != 4 || !slices.Equal(stdout[:3], want) || !strings.HasPrefix(stdout[3], "PREFLIGHT\tsession\tFAIL\t") {
-		t.Errorf("exit %d, stdout:\n%s\nwant the world checks OK, then session FAIL", code, strings.Join(stdout, "\n"))
+	cases := []struct {
+		name     string
+		args     []string
+		fixtures string
+	}{
+		{"every journey", nil, fmt.Sprintf("4 fixtures for %d journeys", len(journeys))},
+		{"screen phase", []string{"--phase", "screen"}, screenSummary()},
 	}
-	if !strings.Contains(calls, "git") {
-		t.Errorf("calls = %q; the sentinel saw no git call, so it cannot prove the refusals ran none", calls)
-	}
-	if strings.Contains(calls, "gh") || strings.Contains(calls, ".sh") || locked {
-		t.Errorf("stopped at session, yet called %q, lock taken %v", calls, locked)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, stdout, calls, locked := runIsolated(t, scratchMarker(t, writeWorld(t, nil), 1), true, c.args...)
+			want := []string{"PREFLIGHT\tmachine\tOK\tvm; world v1", "PREFLIGHT\tpin\tOK\tv1", "PREFLIGHT\tfixtures\tOK\t" + c.fixtures}
+			if code != 2 || len(stdout) != 4 || !slices.Equal(stdout[:3], want) || !strings.HasPrefix(stdout[3], "PREFLIGHT\tsession\tFAIL\t") {
+				t.Errorf("exit %d, stdout:\n%s\nwant:\n%s\nthen session FAIL", code, strings.Join(stdout, "\n"), strings.Join(want, "\n"))
+			}
+			if !strings.Contains(calls, "git") {
+				t.Errorf("calls = %q; the sentinel saw no git call, so it cannot prove the refusals ran none", calls)
+			}
+			if strings.Contains(calls, "gh") || strings.Contains(calls, ".sh") || locked {
+				t.Errorf("stopped at session, yet called %q, lock taken %v", calls, locked)
+			}
+		})
 	}
 }
 
@@ -382,10 +422,20 @@ func TestWorldFlagIsRefused(t *testing.T) {
 }
 
 func TestRenderCommentRunTimeFollowsToolCommit(t *testing.T) {
-	ev := evidence{PR: 7, Commit: "c1", ToolCommit: "t1", WorldSummary: "pass=1 fail=0", RunTime: 125 * time.Second}
-	lines := strings.Split(renderComment(ev), "\n")
-	i := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "| Tool commit |") })
-	if i < 0 || i+1 >= len(lines) || lines[i+1] != "| Run time | 125 s |" {
-		t.Errorf("no `| Run time | 125 s |` row after Tool commit:\n%s", strings.Join(lines, "\n"))
+	cases := []struct {
+		took time.Duration
+		row  string
+	}{
+		{125 * time.Second, "| Run time | 125 s |"},
+		{1499 * time.Millisecond, "| Run time | 1 s |"},
+		{1500 * time.Millisecond, "| Run time | 2 s |"},
+	}
+	for _, c := range cases {
+		ev := evidence{PR: 7, Commit: "c1", ToolCommit: "t1", WorldSummary: "pass=1 fail=0", RunTime: c.took}
+		lines := strings.Split(renderComment(ev), "\n")
+		i := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "| Tool commit |") })
+		if i < 0 || i+2 >= len(lines) || lines[i+1] != c.row || lines[i+2] != "" {
+			t.Errorf("%v: want %q right after Tool commit, then a blank line:\n%s", c.took, c.row, strings.Join(lines, "\n"))
+		}
 	}
 }
