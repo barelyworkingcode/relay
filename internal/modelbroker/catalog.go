@@ -21,7 +21,8 @@ type Row struct {
 	// the router id the key rewrites to before dispatch.
 	Target string
 	// System is relayLLM's "system": true row flag: the model is reserved
-	// for relay's own use. It rides along on every row Filter returns.
+	// for system use and hidden from chat pickers. It rides along on every
+	// row Filter returns.
 	System bool
 }
 
