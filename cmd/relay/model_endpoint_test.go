@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1232,5 +1233,104 @@ func TestModelEndpoint_ModelsListFiltered(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "vCode") {
 		t.Fatalf("filtered list dropped the granted model: %s", w.Body.String())
+	}
+}
+
+// ---- system-only rows ----
+
+const systemCatalogJSON = `{"object":"list","data":[` +
+	`{"id":"acme-sys","owned_by":"llama.cpp","system":true},` +
+	`{"id":"acme-chat","owned_by":"llama.cpp"}]}`
+
+// newSystemCatalogServer registers a fake upstream whose catalog marks
+// acme-sys system-only, and returns a pointer to its chat-completion count.
+func newSystemCatalogServer(t *testing.T) (*ModelEndpointServer, config.SettingsStore, *atomic.Int32) {
+	t.Helper()
+	m, store, launches, hosts := newModelEndpointTestServer(t)
+	var chatCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(systemCatalogJSON))
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		chatCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}`))
+	})
+	registerFakeHost(t, hosts, launches, "relayllm", newFakeRouterSocket(t, mux), selfPeerToken(t).Process())
+	return m, store, &chatCalls
+}
+
+func TestModelEndpoint_ModelsListCarriesSystemFlag(t *testing.T) {
+	m, store, _ := newSystemCatalogServer(t)
+	tok := addModelProject(t, store, "p1", nil, false)
+
+	for _, transport := range []string{transportSocket, transportTCP} {
+		t.Run(transport, func(t *testing.T) {
+			w := doHandlerRequest(t, m.Handler(transport), http.MethodGet, "/v1/models", tok, nil, "")
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+			}
+			var body struct {
+				Data []map[string]json.RawMessage `json:"data"`
+			}
+			assertNoErr(t, json.Unmarshal(w.Body.Bytes(), &body), "decode /v1/models")
+			seen := map[string]bool{}
+			for _, row := range body.Data {
+				var id string
+				assertNoErr(t, json.Unmarshal(row["id"], &id), "decode row id")
+				seen[id] = true
+				system, has := row["system"]
+				switch id {
+				case "acme-sys":
+					if string(system) != "true" {
+						t.Fatalf("acme-sys row system = %q (present=%v), want true", system, has)
+					}
+				default:
+					if has {
+						t.Fatalf("row %q carries a system key %s, want none", id, system)
+					}
+				}
+			}
+			if !seen["acme-sys"] || !seen["acme-chat"] {
+				t.Fatalf("list lacks a catalog row: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestModelEndpoint_SystemModelCallReachesUpstreamForGrantedCaller(t *testing.T) {
+	m, store, chatCalls := newSystemCatalogServer(t)
+	tok := addModelProject(t, store, "p1", []string{"acme-sys"}, false)
+
+	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodPost, "/v1/chat/completions", tok, nil, `{"model":"acme-sys"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if n := chatCalls.Load(); n != 1 {
+		t.Fatalf("upstream chat calls = %d, want 1", n)
+	}
+}
+
+func TestModelEndpoint_IsSystemModel(t *testing.T) {
+	m, _, _ := newSystemCatalogServer(t)
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{
+		{"acme-sys", true},
+		{"acme-chat", false},
+		{"acme-absent", false},
+	} {
+		got, err := m.IsSystemModel(context.Background(), tc.id)
+		if err != nil || got != tc.want {
+			t.Fatalf("IsSystemModel(%q) = (%v, %v), want (%v, nil)", tc.id, got, err, tc.want)
+		}
+	}
+
+	noHost, _, _, _ := newModelEndpointTestServer(t)
+	if got, err := noHost.IsSystemModel(context.Background(), "acme-sys"); err == nil {
+		t.Fatalf("IsSystemModel with no readable catalog = (%v, nil), want an error", got)
 	}
 }

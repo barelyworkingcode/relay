@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -656,5 +658,152 @@ func TestSessionRoutes_GetTerminals_NoHostRegistered503s(t *testing.T) {
 	f.mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, body = %s, want 503", rec.Code, rec.Body.String())
+	}
+}
+
+// --- system-only models -------------------------------------------------
+
+// fakeSystemModel is a sessionRouteDeps.systemModel stand-in that answers
+// with a fixed verdict and records every id it was asked about.
+type fakeSystemModel struct {
+	system bool
+	err    error
+	asked  []string
+}
+
+func (s *fakeSystemModel) lookup(_ context.Context, id string) (bool, error) {
+	s.asked = append(s.asked, id)
+	return s.system, s.err
+}
+
+// muxWithSystemModel registers a copy of f.deps carrying lookup onto a fresh
+// mux; the copy shares f.deps' store, ledger, launches and auditor.
+func (f *sessionRoutesFixture) muxWithSystemModel(lookup func(context.Context, string) (bool, error)) *http.ServeMux {
+	deps := f.deps
+	deps.systemModel = lookup
+	mux := http.NewServeMux()
+	RegisterSessionRoutes(&control.RouteRegistrar{Mux: mux, Transport: control.TransportSocket}, deps)
+	return mux
+}
+
+func (f *sessionRoutesFixture) registerChatHost(t *testing.T) *FakeService {
+	t.Helper()
+	var fs *FakeService
+	fs = NewFakeService(t, FakeServiceOptions{
+		ServiceID: config.RelaySessionsServiceID, Manifest: fakeSessionsManifest(),
+		Handler: fakeLaunchHandler(&fs, func(id string) string { return `{"sessionId":"` + id + `"}` }),
+	})
+	f.registerFakeSessionsHost(t, fs, selfPeerToken(t).Process())
+	return fs
+}
+
+func (f *sessionRoutesFixture) postSession(t *testing.T, mux *http.ServeMux, path, model string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := `{"projectId":"` + f.proj.ID + `","directory":"","name":"","model":"` + model + `"}`
+	req := f.withExecuteCredential(t, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestSessionRoutes_CreateChat_SystemModelRefused(t *testing.T) {
+	for _, path := range []string{"/api/sessions", "/api/sessions/"} {
+		t.Run(path, func(t *testing.T) {
+			f := newSessionRoutesFixture(t, newTestAudit(t, nil))
+			fs := f.registerChatHost(t)
+			sys := &fakeSystemModel{system: true}
+
+			rec := f.postSession(t, f.muxWithSystemModel(sys.lookup), path, "acme-sys")
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, body = %s, want 403", rec.Code, rec.Body.String())
+			}
+			var body map[string]string
+			assertNoErr(t, json.Unmarshal(rec.Body.Bytes(), &body), "decode refusal body")
+			want := map[string]string{"error": `model "acme-sys" is reserved for system use and cannot host a chat session`}
+			if len(body) != len(want) || body["error"] != want["error"] {
+				t.Fatalf("body = %v, want %v", body, want)
+			}
+			if len(sys.asked) != 1 || sys.asked[0] != "acme-sys" {
+				t.Fatalf("systemModel asked about %v, want [acme-sys]", sys.asked)
+			}
+			if got := fs.Requests(); len(got) != 0 {
+				t.Fatalf("a refused create reached the host: %d requests", len(got))
+			}
+			events := readLoggedEvents(t, f.deps.auditor)
+			if len(events) != 1 || events[0].Event != "session_launch" || events[0].Outcome != "denied" {
+				t.Fatalf("audit events = %+v, want exactly one denied session_launch", events)
+			}
+		})
+	}
+}
+
+func TestSessionRoutes_CreateSession_SystemModelCheckScope(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		sys       fakeSystemModel
+		wantAsked int
+		wantCode  int // 0: any status except the system-only refusal
+	}{
+		{"non-system chat model", "acme-chat", fakeSystemModel{system: false}, 1, http.StatusCreated},
+		{"lookup error lets the create proceed", "acme-chat", fakeSystemModel{err: errors.New("broker unreachable")}, 1, http.StatusCreated},
+		{"claude model is never checked", "sonnet", fakeSystemModel{system: true}, 0, 0},
+		{"pi model is never checked", "pi/acme-model", fakeSystemModel{system: true}, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSessionRoutesFixture(t)
+			f.registerChatHost(t)
+			sys := tc.sys
+
+			rec := f.postSession(t, f.muxWithSystemModel(sys.lookup), "/api/sessions", tc.model)
+
+			if len(sys.asked) != tc.wantAsked {
+				t.Fatalf("systemModel called %d times (%v), want %d", len(sys.asked), sys.asked, tc.wantAsked)
+			}
+			if strings.Contains(rec.Body.String(), "reserved for system use") {
+				t.Fatalf("create refused as system-only: %s", rec.Body.String())
+			}
+			if tc.wantCode != 0 && rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, body = %s, want %d", rec.Code, rec.Body.String(), tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestSessionRoutes_Resume_NeverChecksSystemModel(t *testing.T) {
+	f := newSessionRoutesFixture(t)
+	assertNoErr(t, f.deps.sessions.Put(ledger.Record{
+		SessionID: "s1", Kind: KindChat, ProjectID: f.proj.ID, Directory: f.proj.Path, State: ledger.StateDormant,
+		SessionRequest: json.RawMessage(`{"projectId":"` + f.proj.ID + `","directory":"` + f.proj.Path + `","model":"acme-sys"}`),
+	}), "seed dormant record")
+	f.registerChatHost(t)
+	sys := &fakeSystemModel{system: true}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/s1/resume", nil)
+	req.SetPathValue("id", "s1")
+	req = f.withExecuteCredential(t, req)
+	rec := httptest.NewRecorder()
+	f.muxWithSystemModel(sys.lookup).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	if len(sys.asked) != 0 {
+		t.Fatalf("resume asked systemModel about %v, want no lookup", sys.asked)
+	}
+}
+
+func TestSessionRoutes_Launch_SystemModelRefusalCode(t *testing.T) {
+	f := newSessionRoutesFixture(t)
+	deps := f.deps
+	deps.systemModel = (&fakeSystemModel{system: true}).lookup
+
+	_, _, refusal, err := deps.launch(context.Background(), LaunchRequest{
+		Caller: bearerCaller(control.ClassExecute), ProjectID: f.proj.ID, Kind: KindChat, Model: "acme-sys",
+	})
+	if err != nil || refusal == nil || refusal.Code != "model_system_only" || refusal.Status != http.StatusForbidden {
+		t.Fatalf("launch = (refusal %+v, err %v), want a 403 model_system_only refusal", refusal, err)
 	}
 }

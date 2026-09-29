@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -94,5 +95,44 @@ func TestHandleModels_MergeGolden(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("response does not match %s\n--- got ---\n%s\n--- want ---\n%s", goldenPath, got, want)
+	}
+}
+
+func TestHandleModels_OmitsSystemBrokerRows(t *testing.T) {
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[` +
+			`{"id":"acme-sys","object":"model","owned_by":"llama.cpp","system":true},` +
+			`{"id":"acme-chat","object":"model","owned_by":"llama.cpp"}` +
+			`]}`))
+	}))
+	t.Cleanup(broker.Close)
+
+	cfg := ModelsConfig{
+		PiBinary: filepath.Join(t.TempDir(), "no-such-pi-binary"),
+		dial: func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", broker.Listener.Addr().String())
+		},
+	}
+	rec := httptest.NewRecorder()
+	HandleModels(cfg, rec, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Models []struct {
+			Value string `json:"value"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	values := map[string]bool{}
+	for _, m := range body.Models {
+		values[m.Value] = true
+	}
+	if values["acme-sys"] || !values["acme-chat"] {
+		t.Fatalf("models = %s, want acme-chat listed and acme-sys omitted", rec.Body.String())
 	}
 }
