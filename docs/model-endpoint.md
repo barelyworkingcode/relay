@@ -152,6 +152,12 @@ host does not return. The two reads agree because both go through the same
 host first matters only when the cache is cold: the host's request fills it,
 and relay's own read then finds it filled.
 
+- A catalog row carries `"system": true` when relayLLM reserves the model for
+  system use; the key is omitted on every other row. `modelbroker.Filter`
+  keeps it (it still strips `target`) and `/v1/models` on the endpoint passes
+  it through. Dispatch of a system model is unchanged: the flag informs
+  relay's session list and chat-launch check, not the broker's grant test.
+  `ModelEndpointServer.IsSystemModel` reads it from the cache.
 - Only `chat`-provider rows are matched to cache rows, by exact id. A modelMap
   key (`owned_by: anthropic-map`) is grouped under `Model broker · aliases`
   and labelled `key → target`. A virtual model goes under

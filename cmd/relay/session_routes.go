@@ -181,6 +181,10 @@ type sessionRouteDeps struct {
 	auditor     *audit.AuditRecorder
 	accounting  *sessionAccounting
 	resumeGuard *resumeGuard
+
+	// systemModel reports whether a model id is reserved for system use; nil
+	// means no check.
+	systemModel func(ctx context.Context, id string) (bool, error)
 }
 
 // ready reports whether every field a route handler needs, other than the
@@ -400,6 +404,18 @@ func (d sessionRouteDeps) launchAndRespond(ctx context.Context, w http.ResponseW
 // one of refusal and err is set on failure; both are already audited, and a
 // door only decides how to phrase them.
 func (d sessionRouteDeps) launch(ctx context.Context, req LaunchRequest) (*LaunchResult, *hostapi.LaunchResponse, *LaunchRefusal, error) {
+	if d.systemModel != nil && req.Kind == KindChat && !req.Resume && req.Model != "" {
+		// Deliberate: a lookup error falls through to the create. This check
+		// is about intent, not access control, so an unreachable broker must
+		// not block a chat create.
+		if system, err := d.systemModel(ctx, req.Model); err == nil && system {
+			refusal := forbidden("model_system_only",
+				fmt.Sprintf("model %q is reserved for system use and cannot host a chat session", req.Model),
+				sessionLaunchAuditFields{Actor: callerAuditActor(req.Caller), ProjectID: req.ProjectID, Kind: req.Kind})
+			d.auditor.Record(refusal.Audit)
+			return nil, nil, refusal, nil
+		}
+	}
 	result, refusal := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, req)
 	if refusal != nil {
 		d.auditor.Record(refusal.Audit)

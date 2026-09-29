@@ -291,6 +291,7 @@ func (m *ModelEndpointServer) fetchCatalog(ctx context.Context) ([]modelbroker.R
 			ID      string `json:"id"`
 			OwnedBy string `json:"owned_by"`
 			Target  string `json:"target,omitempty"`
+			System  bool   `json:"system,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, modelbroker.JSONBodyCap)).Decode(&body); err != nil {
@@ -298,7 +299,7 @@ func (m *ModelEndpointServer) fetchCatalog(ctx context.Context) ([]modelbroker.R
 	}
 	rows := make([]modelbroker.Row, 0, len(body.Data))
 	for _, d := range body.Data {
-		rows = append(rows, modelbroker.Row{ID: d.ID, OwnedBy: d.OwnedBy, Target: d.Target})
+		rows = append(rows, modelbroker.Row{ID: d.ID, OwnedBy: d.OwnedBy, Target: d.Target, System: d.System})
 	}
 	return rows, nil
 }
@@ -821,15 +822,32 @@ func (m *ModelEndpointServer) serveNoModelRoute(w http.ResponseWriter, r *http.R
 	m.proxy(w, r, caller, transport, route, "", "", start, "")
 }
 
+// IsSystemModel reports whether id is a system-only row in the catalog. An id
+// the catalog does not list is (false, nil); an unreadable catalog is an
+// error, never a guess.
+func (m *ModelEndpointServer) IsSystemModel(ctx context.Context, id string) (bool, error) {
+	rows, err := m.catalog.Resolve(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if row.ID == id {
+			return row.System, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *ModelEndpointServer) writeModelList(w http.ResponseWriter, rows []modelbroker.Row) {
 	type modelObj struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
 		OwnedBy string `json:"owned_by"`
+		System  bool   `json:"system,omitempty"`
 	}
 	data := make([]modelObj, 0, len(rows))
 	for _, row := range rows {
-		data = append(data, modelObj{ID: row.ID, Object: "model", OwnedBy: row.OwnedBy})
+		data = append(data, modelObj{ID: row.ID, Object: "model", OwnedBy: row.OwnedBy, System: row.System})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})

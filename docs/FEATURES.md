@@ -126,7 +126,7 @@ Areas: models, sessions, audit.
 
 | Feature | Surface | Reach | Door | Gate | Journey |
 |---|---|---|---|---|---|
-| Model list | Settings > Projects, API | model picker; `GET /api/models` | HTTP [proxy] | — | model-list-and-completion |
+| Model list | Settings > Projects, API | model picker; `GET /api/models` (system-only models omitted) | HTTP [proxy] | — | model-list-and-completion |
 | Pick a model per project or service | Settings | project form > Model; service > allowed models | HTTP `PUT /api/projects/{id}` | — | none |
 | Model endpoint (`/v1/chat/completions`, `/v1/models`, passthrough) | socket, optional TCP | a session or relayLLM calls `model.sock` | HTTP (model socket) | — | model-list-and-completion (one chat turn and its `model_call` row) |
 | Model keys (`rmk_`) for sessions | background | minted at session launch | HTTP (model socket) | — | none |

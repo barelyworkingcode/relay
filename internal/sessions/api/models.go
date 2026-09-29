@@ -82,6 +82,7 @@ func fetchBrokerModels(ctx context.Context, cfg ModelsConfig, taken map[string]b
 		Data []struct {
 			ID      string `json:"id"`
 			OwnedBy string `json:"owned_by"`
+			System  bool   `json:"system"`
 		} `json:"data"`
 	}
 	if json.NewDecoder(resp.Body).Decode(&parsed) != nil {
@@ -90,7 +91,7 @@ func fetchBrokerModels(ctx context.Context, cfg ModelsConfig, taken map[string]b
 
 	models := make([]sessionstypes.ModelInfo, 0, len(parsed.Data))
 	for _, row := range parsed.Data {
-		if taken[row.ID] {
+		if row.System || taken[row.ID] {
 			continue
 		}
 		models = append(models, sessionstypes.ModelInfo{
