@@ -197,6 +197,20 @@ Resume is exempt on both sides. It sends the session's stored model back
 through the same path, and a stored model may be blank. `pty` launches carry
 no model and are unaffected.
 
+### A system model cannot host a chat
+
+relayLLM marks a model reserved for system use with `"system": true` on its
+`/v1/models` row. A new `chat` launch naming one is refused before
+`AuthorizeLaunch` runs: `sessionRouteDeps.launch` asks `systemModel`
+(`ModelEndpointServer.IsSystemModel`) and answers `403`
+`model_system_only` with `{"error": "<message>"}`. One `session_launch`
+audit record with outcome `denied` is written; nothing is minted.
+
+The check is about intent, not access control, so it is deliberately
+best-effort: when the catalog cannot be read the create proceeds. Resume
+does not go through `launch` and is unchecked, as are `claude` and `pi`
+launches. The model list (`GET /api/models`) omits system rows.
+
 ### `POST /terminate`
 
 Body is `{session_id, reason}`. Resolves the id against `terminal.Manager`

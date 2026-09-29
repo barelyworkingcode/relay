@@ -34,6 +34,7 @@ Areas: sessions, sandbox, templates, audit.
 |---|---|---|---|---|---|
 | Launch a session | API (eve) | eve starts a session → `POST /api/sessions` | HTTP [execute] | — | session-chat-lifecycle, model-list-and-completion |
 | Blank-model launch refused | API | `POST /api/sessions` with no model | HTTP [execute] | — | blank-model-refused |
+| System-model chat launch refused | API (eve) | `POST /api/sessions` for a chat session on a model relayLLM marks `system` → 403 | HTTP [execute] | — | none |
 | Message and stop a session | API (eve) | eve chat → `POST /api/sessions/{id}/message`, `DELETE /api/sessions/{id}`; `GET /api/sessions` | HTTP [proxy] | — | session-chat-lifecycle |
 | Resume a session | API (eve) | `POST /api/sessions/{id}/resume` | HTTP [execute] | — | session-chat-resume |
 | Terminals and their log | API (eve) | eve terminal → `POST /api/terminals` [execute]; `GET /api/terminals`, `GET /api/terminals/{id}/log`, `DELETE` [proxy] | HTTP | — | terminal-lifecycle, verify-fixtures-removed |
@@ -126,7 +127,7 @@ Areas: models, sessions, audit.
 
 | Feature | Surface | Reach | Door | Gate | Journey |
 |---|---|---|---|---|---|
-| Model list | Settings > Projects, API | model picker; `GET /api/models` | HTTP [proxy] | — | model-list-and-completion |
+| Model list | Settings > Projects, API | model picker; `GET /api/models` (system-only models omitted) | HTTP [proxy] | — | model-list-and-completion |
 | Pick a model per project or service | Settings | project form > Model; service > allowed models | HTTP `PUT /api/projects/{id}` | — | none |
 | Model endpoint (`/v1/chat/completions`, `/v1/models`, passthrough) | socket, optional TCP | a session or relayLLM calls `model.sock` | HTTP (model socket) | — | model-list-and-completion (one chat turn and its `model_call` row) |
 | Model keys (`rmk_`) for sessions | background | minted at session launch | HTTP (model socket) | — | none |

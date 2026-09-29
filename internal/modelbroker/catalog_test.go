@@ -3,6 +3,7 @@ package modelbroker
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -211,5 +212,21 @@ func TestCache_FetchErrorPropagates(t *testing.T) {
 	}, 0)
 	if _, err := c.Snapshot(context.Background()); !errors.Is(err, wantErr) {
 		t.Fatalf("Snapshot error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestFilter_KeepsSystemFlagAndStripsTarget(t *testing.T) {
+	rows := []Row{
+		{ID: "acme-sys", OwnedBy: "llama.cpp", System: true},
+		{ID: "acme-alias", OwnedBy: "anthropic-map", Target: "acme-sys", System: true},
+		{ID: "acme-chat", OwnedBy: "llama.cpp"},
+	}
+	want := []Row{
+		{ID: "acme-sys", OwnedBy: "llama.cpp", System: true},
+		{ID: "acme-alias", OwnedBy: "anthropic-map", System: true},
+		{ID: "acme-chat", OwnedBy: "llama.cpp"},
+	}
+	if got := Filter(rows, []string{"*"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Filter = %+v, want %+v", got, want)
 	}
 }

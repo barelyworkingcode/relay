@@ -678,6 +678,7 @@ func runTrayApp() {
 		auditor:     rec,
 		accounting:  sessionAccounts,
 		resumeGuard: newResumeGuard(),
+		systemModel: app.modelEndpoint.IsSystemModel,
 	}
 
 	router.sessionDeps = sessionDeps

@@ -20,6 +20,10 @@ type Row struct {
 	// Target is set only for a modelMap row (OwnedBy == "anthropic-map"):
 	// the router id the key rewrites to before dispatch.
 	Target string
+	// System is relayLLM's "system": true row flag: the model is reserved
+	// for system use and hidden from chat pickers. It rides along on every
+	// row Filter returns.
+	System bool
 }
 
 // FetchFunc retrieves a fresh catalog snapshot, e.g. by calling relayLLM's
@@ -133,7 +137,7 @@ func Filter(rows []Row, grant []string) []Row {
 	out := make([]Row, 0, len(rows))
 	for _, row := range rows {
 		if _, ok, _ := Allowed(row.ID, grant, rows); ok {
-			out = append(out, Row{ID: row.ID, OwnedBy: row.OwnedBy})
+			out = append(out, Row{ID: row.ID, OwnedBy: row.OwnedBy, System: row.System})
 		}
 	}
 	return out
