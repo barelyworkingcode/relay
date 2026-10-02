@@ -377,6 +377,11 @@ type ChatTemplate struct {
 	SystemPrompt   string `json:"system_prompt,omitempty"`
 	AppendClaudeMd bool   `json:"append_claude_md,omitempty"`
 	UseRelayTools  bool   `json:"use_relay_tools,omitempty"`
+	// PresetFor names the modes (home, work) this template is the preset
+	// for: the Ask preset when Mode is not "voice", the voice preset when it
+	// is. A label eve reads to pick a starting template, never a grant:
+	// nothing that decides access, launch or routing reads it.
+	PresetFor []ProjectMode `json:"preset_for,omitempty"`
 }
 
 // PermissionPolicy is forwarded to relayLLM for both Claude CLI flags and to

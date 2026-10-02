@@ -169,10 +169,20 @@ func cloneTerminalTemplates(s []TerminalTemplate) []TerminalTemplate {
 	return out
 }
 
+// cloneChatTemplates copies each template's PresetFor, which a plain slice
+// copy would leave shared between snapshots.
+func cloneChatTemplates(ts []ChatTemplate) []ChatTemplate {
+	out := cloneSlice(ts)
+	for i := range out {
+		out[i].PresetFor = cloneSlice(out[i].PresetFor)
+	}
+	return out
+}
+
 func cloneProject(p Project) Project {
 	p.AllowedMcpIDs = cloneSlice(p.AllowedMcpIDs)
 	p.AllowedModels = cloneSlice(p.AllowedModels)
-	p.ChatTemplates = cloneSlice(p.ChatTemplates)
+	p.ChatTemplates = cloneChatTemplates(p.ChatTemplates)
 	p.AllowedTemplates = cloneSlice(p.AllowedTemplates)
 	p.DisabledTools = cloneStringSliceMap(p.DisabledTools)
 	p.Context = cloneContextMap(p.Context)

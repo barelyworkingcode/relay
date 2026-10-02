@@ -383,6 +383,17 @@ tool grants stay per project. Mode and defaults get no presence gate, no
 digests, `UpdateWidensGrant`, `NarrowsOnly` and `StoredToken`. Both fields are
 plain operator-visible values, so nothing about them is sealed.
 
+**Presets.** A chat template may name the modes it is the preset for:
+`preset_for`, a list of `home` and/or `work` stored inside the project's
+`chat_templates` (so deleting a template deletes its preset). It is the Ask
+preset when the template's `mode` is not `voice`, the voice preset when it is.
+`ValidateShape` enforces two rules on create and update: each entry is exactly
+`home` or `work` and appears once per template, and per mode a project has at
+most one Ask preset and one voice preset; a violation is a 400 that leaves the
+store untouched. Relay checks shape only, not that the project's mode includes
+the preset's mode. Like mode and defaults it is a label, not a grant: nothing
+that decides access, launch or routing reads it.
+
 ### Remote client enrolment
 
 An **enrolment** (`internal/enrolment`, `settings.json` → `enrolments`) binds one

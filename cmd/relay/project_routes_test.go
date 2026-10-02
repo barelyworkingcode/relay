@@ -779,3 +779,69 @@ func TestProjectRoutes_FullLifecycle(t *testing.T) {
 		t.Fatalf("SKILL.md still present at %s after delete", skillFile)
 	}
 }
+
+func presetTemplates(mode2 string) []map[string]interface{} {
+	return []map[string]interface{}{
+		{"id": "q", "name": "Quick", "model": "claude-sonnet", "preset_for": []string{"home"}},
+		{"id": "p", "name": "Plain", "model": "claude-haiku", "mode": mode2, "preset_for": []string{"home", "work"}},
+	}
+}
+
+func TestProjectRoutes_PresetFor(t *testing.T) {
+	srv, _ := newProjectRoutesServer(t)
+	defer srv.Close()
+
+	// voice + Ask in the same mode is allowed; stored and returned.
+	resp, body := doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
+		"name": "Presets", "path": t.TempDir(), "chat_templates": presetTemplates("voice"),
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status %d body %s", resp.StatusCode, body)
+	}
+	var created config.Project
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	want := []config.ProjectMode{config.ProjectModeHome, config.ProjectModeWork}
+	if got := created.ChatTemplates[1].PresetFor; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("preset_for not returned on create: %+v", created.ChatTemplates)
+	}
+
+	// GET returns it.
+	resp, body = doJSON(t, "GET", srv.URL+"/api/projects/"+created.ID, nil)
+	var got config.Project
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &got) != nil || len(got.ChatTemplates[0].PresetFor) != 1 {
+		t.Fatalf("GET lost preset_for: %d %s", resp.StatusCode, body)
+	}
+
+	// A PUT without chat_templates keeps it.
+	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{"name": "Renamed"})
+	var renamed config.Project
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &renamed) != nil || len(renamed.ChatTemplates[1].PresetFor) != 2 {
+		t.Fatalf("PUT without chat_templates dropped preset_for: %d %s", resp.StatusCode, body)
+	}
+
+	// Two home Ask presets: 400 on PUT, stored project untouched.
+	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
+		"chat_templates": presetTemplates(""),
+	})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "both the home Ask preset") {
+		t.Fatalf("PUT two Ask presets: status %d body %s", resp.StatusCode, body)
+	}
+	resp, body = doJSON(t, "GET", srv.URL+"/api/projects/"+created.ID, nil)
+	var after config.Project
+	if err := json.Unmarshal(body, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Name != "Renamed" || after.ChatTemplates[1].Mode != "voice" || len(after.ChatTemplates[1].PresetFor) != 2 {
+		t.Fatalf("refused PUT changed the stored project: %s", body)
+	}
+
+	// Same refusal on create.
+	resp, body = doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
+		"name": "Bad", "path": t.TempDir(), "chat_templates": presetTemplates(""),
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST two Ask presets: status %d body %s", resp.StatusCode, body)
+	}
+}
