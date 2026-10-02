@@ -413,14 +413,17 @@ func (p *ChatProvider) runToolLoop(ctx context.Context, cancel context.CancelFun
 				return
 			}
 
-			toolResult, toolErr := p.mcpManager.CallTool(ctx, tc.Name, tc.Arguments, func(msg string) {
+			callRes, toolErr := p.mcpManager.CallTool(ctx, tc.Name, tc.Arguments, func(msg string) {
 				guardedEmitter.ToolProgress(tc.ID, tc.Name, msg)
 			})
-			isError := toolErr != nil
+			toolResult := callRes.Text
+			isError := toolErr != nil || callRes.IsError
+			scopeViolation := callRes.ScopeViolation
 			if toolErr != nil {
 				if ctx.Err() != nil {
 					return
 				}
+				scopeViolation = false
 				toolResult = fmt.Sprintf("Error: %s", toolErr.Error())
 				slog.Warn("chat: tool call failed", "tool", tc.Name, "error", toolErr)
 			}
@@ -428,7 +431,7 @@ func (p *ChatProvider) runToolLoop(ctx context.Context, cancel context.CancelFun
 				toolResult = toolResult[:maxToolResultLen] + "\n...(truncated)"
 			}
 
-			guardedEmitter.ToolResult(tc.ID, tc.Name, toolResult, isError)
+			guardedEmitter.ToolResult(tc.ID, tc.Name, toolResult, isError, scopeViolation)
 
 			resultContent, _ := json.Marshal(toolResult)
 			toolMessages = append(toolMessages, sessionstypes.Message{

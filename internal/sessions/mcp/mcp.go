@@ -111,6 +111,16 @@ type MCPTool struct {
 	Tool       *mcp.Tool
 }
 
+// ToolCallResult is what a tool call returned. IsError repeats the MCP result's
+// isError. ScopeViolation is set only when IsError is also true and the result's
+// _meta holds scope_violation or relay/scope_violation as boolean true; it is
+// informational and gates nothing.
+type ToolCallResult struct {
+	Text           string
+	IsError        bool
+	ScopeViolation bool
+}
+
 // MCPClient is the surface that BaseChatProvider needs from MCP. Decoupling
 // chat_base from the concrete MCPManager lets tests substitute a fake without
 // spawning real subprocesses.
@@ -119,7 +129,7 @@ type MCPClient interface {
 	HasTools() bool
 	ToolCount() int
 	ChatToolDefs() []map[string]interface{}
-	CallTool(ctx context.Context, name string, arguments json.RawMessage, onProgress func(message string)) (string, error)
+	CallTool(ctx context.Context, name string, arguments json.RawMessage, onProgress func(message string)) (ToolCallResult, error)
 	ToolNames() []string
 	ServerNames() []string
 	Close()
@@ -394,17 +404,17 @@ func (m *MCPManager) ChatToolDefs() []map[string]interface{} {
 // CallTool executes a tool by name via the appropriate MCP server. If
 // onProgress is non-nil, a progressToken is attached so the server streams
 // notifications/progress back, each delivered to onProgress as it arrives.
-func (m *MCPManager) CallTool(ctx context.Context, name string, arguments json.RawMessage, onProgress func(message string)) (string, error) {
+func (m *MCPManager) CallTool(ctx context.Context, name string, arguments json.RawMessage, onProgress func(message string)) (ToolCallResult, error) {
 	m.mu.Lock()
 	serverName, ok := m.toolMap[name]
 	if !ok {
 		m.mu.Unlock()
-		return "", fmt.Errorf("mcp: unknown tool %q", name)
+		return ToolCallResult{}, fmt.Errorf("mcp: unknown tool %q", name)
 	}
 	conn, ok := m.servers[serverName]
 	if !ok {
 		m.mu.Unlock()
-		return "", fmt.Errorf("mcp: server %q not connected", serverName)
+		return ToolCallResult{}, fmt.Errorf("mcp: server %q not connected", serverName)
 	}
 	m.mu.Unlock()
 
@@ -412,7 +422,7 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, arguments json.R
 	var args map[string]any
 	if len(arguments) > 0 {
 		if err := json.Unmarshal(arguments, &args); err != nil {
-			return "", fmt.Errorf("mcp: unmarshal arguments: %w", err)
+			return ToolCallResult{}, fmt.Errorf("mcp: unmarshal arguments: %w", err)
 		}
 	}
 
@@ -432,10 +442,15 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, arguments json.R
 
 	result, err := conn.session.CallTool(ctx, params)
 	if err != nil {
-		return "", fmt.Errorf("mcp: call %q: %w", name, err)
+		return ToolCallResult{}, fmt.Errorf("mcp: call %q: %w", name, err)
 	}
 
-	return extractToolResultText(result), nil
+	res := ToolCallResult{Text: extractToolResultText(result)}
+	if result != nil && result.IsError {
+		res.IsError = true
+		res.ScopeViolation = metaTrue(result.Meta, "scope_violation") || metaTrue(result.Meta, "relay/scope_violation")
+	}
+	return res, nil
 }
 
 // progressTokenString normalizes a JSON progressToken (string or number) to
@@ -519,4 +534,11 @@ func extractToolResultText(result *mcp.CallToolResult) string {
 		}
 	}
 	return sb.String()
+}
+
+// metaTrue reports whether meta[key] is the boolean true. Strings and numbers
+// do not count: the marker is trusted, never the message text.
+func metaTrue(meta mcp.Meta, key string) bool {
+	v, ok := meta[key].(bool)
+	return ok && v
 }

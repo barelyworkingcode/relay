@@ -1012,7 +1012,7 @@ func (p *ClaudeProvider) translateUser(raw json.RawMessage) {
 		if block.Type != "tool_result" {
 			continue
 		}
-		p.emitter.ToolResult(block.ToolUseID, block.ToolName, sessionstypes.FlattenTextBlocks(block.Content), block.IsError)
+		p.emitter.ToolResult(block.ToolUseID, block.ToolName, sessionstypes.FlattenTextBlocks(block.Content), block.IsError, false)
 	}
 }
 
