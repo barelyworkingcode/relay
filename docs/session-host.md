@@ -211,6 +211,16 @@ best-effort: when the catalog cannot be read the create proceeds. Resume
 does not go through `launch` and is unchecked, as are `claude` and `pi`
 launches. The model list (`GET /api/models`) omits system rows.
 
+### A stalled chat stream ends the turn
+
+`chatHTTPTransport.StreamChunks` wraps the response body in an idle
+timeout (`chatStreamIdleTimeout`, 120 s, a package var and not a setting).
+The timer starts when the stream is entered, after headers, and resets on
+every read that returns bytes. On expiry the body is closed, which aborts
+the upstream request, and the read fails with `model stream stalled: no data
+for 120s`. The turn ends through the normal `error` event; a Stop still
+wins and ends silently. A server that never sends headers is not bounded.
+
 ### `POST /terminate`
 
 Body is `{session_id, reason}`. Resolves the id against `terminal.Manager`

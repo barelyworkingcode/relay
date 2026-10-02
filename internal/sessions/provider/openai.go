@@ -342,9 +342,10 @@ type openAIUsage struct {
 // StreamChunks reads the SSE-formatted response body, emits text/thinking/
 // tool deltas through emit, and returns the accumulated result.
 func (t *chatHTTPTransport) StreamChunks(resp *http.Response, startTime time.Time, emit func(ChatDelta)) NormalizedStreamResult {
-	defer resp.Body.Close()
+	body := newIdleTimeoutBody(resp.Body, chatStreamIdleTimeout)
+	defer body.Close()
 
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
 	var fullText strings.Builder
