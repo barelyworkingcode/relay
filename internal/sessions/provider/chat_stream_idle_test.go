@@ -3,9 +3,11 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,7 +37,7 @@ type stallRecorder struct {
 func startStallChat(t *testing.T, stream http.HandlerFunc, withEchoTool bool) (*ChatProvider, *sessionstypes.Session, *stallRecorder) {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "model.sock")
-	fakeBroker(t, sock, func(w http.ResponseWriter, r *http.Request) {
+	closingBroker(t, sock, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -65,6 +67,59 @@ func startStallChat(t *testing.T, stream http.HandlerFunc, withEchoTool bool) (*
 		t.Fatalf("SendMessage: %v", err)
 	}
 	return p, sess, rec
+}
+
+// closingBroker serves handler on sock like fakeBroker, but its cleanup
+// returns only once every connection is closed on both ends and every
+// handler has returned. Server.Close alone closes the server end, and the
+// client transport closes its pooled end later on its own goroutine; that
+// late close lands inside whichever test runs next (the fd-leak tests count
+// open fds). Deliberate order: stop accepting, half-close each connection so
+// the client sees EOF and closes its end, wait for the server to see that
+// close, then close the server.
+func closingBroker(t *testing.T, sock string, handler http.HandlerFunc) {
+	t.Helper()
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen unix %s: %v", sock, err)
+	}
+	var (
+		mu    sync.Mutex
+		conns []net.Conn
+		open  sync.WaitGroup
+	)
+	srv := &http.Server{Handler: handler, ConnState: func(c net.Conn, st http.ConnState) {
+		switch st {
+		case http.StateNew:
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+			open.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			open.Done()
+		}
+	}}
+	served := make(chan struct{})
+	go func() { _ = srv.Serve(ln); close(served) }()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-served // no StateNew after this, so open's count is final
+		mu.Lock()
+		for _, c := range conns {
+			if hc, ok := c.(interface{ CloseWrite() error }); ok {
+				_ = hc.CloseWrite()
+			}
+		}
+		mu.Unlock()
+		closed := make(chan struct{})
+		go func() { open.Wait(); close(closed) }()
+		select {
+		case <-closed:
+		case <-time.After(5 * time.Second):
+			t.Errorf("fake broker: connections still open 5s after the provider was killed")
+		}
+		_ = srv.Close()
+	})
 }
 
 func sseHeaders(w http.ResponseWriter) {
@@ -179,11 +234,18 @@ func TestChatStreamIdle_SlowSteadyStreamCompletesIntact(t *testing.T) {
 
 func TestChatStreamIdle_StopDuringStallEmitsNoError(t *testing.T) {
 	shortenStreamIdle(t)
+	stalled := make(chan struct{}, 1)
 	p, _, rec := startStallChat(t, func(w http.ResponseWriter, r *http.Request) {
 		sseHeaders(w)
+		stalled <- struct{}{}
 		<-r.Context().Done()
 	}, false)
 
+	select {
+	case <-stalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("model request never reached the fake broker")
+	}
 	time.Sleep(300 * time.Millisecond)
 	p.StopGeneration()
 
