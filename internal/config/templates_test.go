@@ -723,3 +723,14 @@ func TestValidateTemplate_PersistOnlyOnAHostTemplate(t *testing.T) {
 		t.Fatalf("ValidateHostTemplate(persist) = %v, want nil", err)
 	}
 }
+
+func TestChatTemplate_CloneDoesNotSharePresetFor(t *testing.T) {
+	s := &Settings{Projects: []Project{{ID: "p", ChatTemplates: []ChatTemplate{
+		{ID: "t", Name: "T", PresetFor: []ProjectMode{ProjectModeHome}},
+	}}}}
+	cp := s.Clone()
+	cp.Projects[0].ChatTemplates[0].PresetFor[0] = ProjectModeWork
+	if got := s.Projects[0].ChatTemplates[0].PresetFor[0]; got != ProjectModeHome {
+		t.Fatalf("mutating the clone reached the original: preset_for = %q", got)
+	}
+}

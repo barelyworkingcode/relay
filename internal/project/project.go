@@ -139,6 +139,40 @@ func validateAllowedTemplates(ids []string) error {
 	return nil
 }
 
+// validateChatTemplatePresets checks the shape of preset_for: each entry is
+// exactly home or work, none repeats within a template, and per mode at most
+// one voice template and one non-voice (Ask) template claim it. Shape only:
+// it does not look at the project's own mode (a label, never a grant).
+func validateChatTemplatePresets(templates []config.ChatTemplate) error {
+	type slot struct {
+		mode  config.ProjectMode
+		voice bool
+	}
+	claimed := map[slot]string{}
+	for _, t := range templates {
+		seen := map[config.ProjectMode]bool{}
+		for _, m := range t.PresetFor {
+			if m != config.ProjectModeHome && m != config.ProjectModeWork {
+				return fmt.Errorf("chat template %q: preset_for entry %q must be home or work", t.Name, string(m))
+			}
+			if seen[m] {
+				return fmt.Errorf("chat template %q lists the %s mode twice in preset_for", t.Name, m)
+			}
+			seen[m] = true
+			sl := slot{m, t.Mode == "voice"}
+			if other, ok := claimed[sl]; ok {
+				kind := "Ask"
+				if sl.voice {
+					kind = "voice"
+				}
+				return fmt.Errorf("chat templates %q and %q are both the %s %s preset; a project has at most one Ask preset and one voice preset per mode", other, t.Name, m, kind)
+			}
+			claimed[sl] = t.Name
+		}
+	}
+	return nil
+}
+
 // ValidateShape is the single point that decides whether a given
 // combination of Kind, Path, GenerateSkill, AllowedTemplates,
 // AllowedMcpIDs and AllowedModels is coherent — called from both the create
@@ -174,6 +208,11 @@ func ValidateShape(proj *config.Project) error {
 		return fmt.Errorf(`project cannot set both host_id and kind: "remote": a host project is kind: local with its directory on another machine; a remote project is a capability grant with no directory`)
 	}
 	if !proj.IsRemote() {
+		// Remote projects refuse any template below, so presets are only
+		// reachable here.
+		if err := validateChatTemplatePresets(proj.ChatTemplates); err != nil {
+			return err
+		}
 		if err := validateProjectPath(proj.Path, proj.IsHosted()); err != nil {
 			return err
 		}

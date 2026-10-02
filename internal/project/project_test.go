@@ -214,3 +214,48 @@ func TestProjectPersistence(t *testing.T) {
 		t.Errorf("expected 0 projects after delete, got %d", len(reloaded2.Projects))
 	}
 }
+
+func TestValidateChatTemplatePresets(t *testing.T) {
+	home := []config.ProjectMode{config.ProjectModeHome}
+	work := []config.ProjectMode{config.ProjectModeWork}
+	tmpl := func(name, mode string, p ...config.ProjectMode) config.ChatTemplate {
+		return config.ChatTemplate{ID: name, Name: name, Model: "m", Mode: mode, PresetFor: p}
+	}
+	cases := []struct {
+		name string
+		ts   []config.ChatTemplate
+		want string // empty = accepted
+	}{
+		{"none", []config.ChatTemplate{tmpl("A", "")}, ""},
+		{"ask and voice same mode", []config.ChatTemplate{tmpl("A", "", home...), tmpl("V", "voice", home...)}, ""},
+		{"both modes one template", []config.ChatTemplate{tmpl("A", "", config.ProjectModeHome, config.ProjectModeWork)}, ""},
+		{"different modes", []config.ChatTemplate{tmpl("A", "", home...), tmpl("B", "", work...)}, ""},
+		{"both refused", []config.ChatTemplate{tmpl("A", "", config.ProjectModeBoth)}, "must be home or work"},
+		{"empty refused", []config.ChatTemplate{tmpl("A", "", "")}, "must be home or work"},
+		{"unknown refused", []config.ChatTemplate{tmpl("A", "", "Home")}, "must be home or work"},
+		{"duplicate in one", []config.ChatTemplate{tmpl("A", "", config.ProjectModeHome, config.ProjectModeHome)}, "twice"},
+		{"two home Ask", []config.ChatTemplate{tmpl("Quick", "", home...), tmpl("Plain", "chat", home...)},
+			`chat templates "Quick" and "Plain" are both the home Ask preset; a project has at most one Ask preset and one voice preset per mode`},
+		{"two work voice", []config.ChatTemplate{tmpl("V1", "voice", work...), tmpl("V2", "voice", work...)}, `"V1" and "V2" are both the work voice preset`},
+	}
+	for _, c := range cases {
+		proj := &config.Project{Path: t.TempDir(), ChatTemplates: c.ts}
+		err := ValidateShape(proj)
+		if c.want == "" && err != nil {
+			t.Errorf("%s: unexpected refusal: %v", c.name, err)
+		}
+		if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%s: err = %v, want containing %q", c.name, err, c.want)
+		}
+	}
+}
+
+func TestValidateShape_RemoteRefusesTemplatesBeforePresets(t *testing.T) {
+	proj := &config.Project{Kind: config.ProjectKindRemote, ChatTemplates: []config.ChatTemplate{
+		{ID: "a", Name: "A", PresetFor: []config.ProjectMode{config.ProjectModeBoth}},
+	}}
+	err := ValidateShape(proj)
+	if err == nil || !strings.Contains(err.Error(), "must not have chat templates") {
+		t.Fatalf("err = %v, want the remote chat-templates refusal", err)
+	}
+}
