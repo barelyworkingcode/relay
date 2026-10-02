@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+
+	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 )
 
 // FakeMCPClient is an MCPClient driven by scripted responses. Tests register
@@ -24,6 +26,8 @@ type FakeTool struct {
 	Description string
 	Schema      map[string]interface{} // JSON schema; nil if no params
 	Handler     func(args json.RawMessage) (string, error)
+	// IsError and ScopeViolation script the MCP result flags on a handler success.
+	IsError, ScopeViolation bool
 }
 
 // FakeMCPCall records one CallTool invocation for assertions.
@@ -78,21 +82,24 @@ func (f *FakeMCPClient) ChatToolDefs() []map[string]interface{} {
 	return defs
 }
 
-func (f *FakeMCPClient) CallTool(ctx context.Context, name string, args json.RawMessage, onProgress func(message string)) (string, error) {
+func (f *FakeMCPClient) CallTool(ctx context.Context, name string, args json.RawMessage, onProgress func(message string)) (sessionsmcp.ToolCallResult, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, FakeMCPCall{Name: name, Args: append(json.RawMessage(nil), args...)})
 	var handler func(json.RawMessage) (string, error)
+	var isErr, scope bool
 	for _, t := range f.tools {
 		if t.Name == name {
 			handler = t.Handler
+			isErr, scope = t.IsError, t.ScopeViolation
 			break
 		}
 	}
 	f.mu.Unlock()
 	if handler == nil {
-		return "", fmt.Errorf("fake mcp: no handler for tool %q", name)
+		return sessionsmcp.ToolCallResult{}, fmt.Errorf("fake mcp: no handler for tool %q", name)
 	}
-	return handler(args)
+	text, err := handler(args)
+	return sessionsmcp.ToolCallResult{Text: text, IsError: isErr, ScopeViolation: scope}, err
 }
 
 func (f *FakeMCPClient) ToolNames() []string {

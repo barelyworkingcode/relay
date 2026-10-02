@@ -971,7 +971,7 @@ func (p *PiProvider) translateToolResult(raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &ev); err != nil {
 		return
 	}
-	p.emitter.ToolResult(ev.ToolCallID, ev.ToolName, sessionstypes.FlattenTextBlocks(ev.Result.Content), ev.IsError)
+	p.emitter.ToolResult(ev.ToolCallID, ev.ToolName, sessionstypes.FlattenTextBlocks(ev.Result.Content), ev.IsError, false)
 }
 
 func (p *PiProvider) translateAgentEnd(raw json.RawMessage) {

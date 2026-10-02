@@ -193,6 +193,9 @@ type ResultToolResultEvent struct {
 	ToolName  string `json:"tool_name,omitempty"`
 	Content   string `json:"content"`
 	IsError   bool   `json:"is_error"`
+	// ScopeViolation is set only by chat sessions, when the MCP result refused
+	// with _meta scope_violation. Informational; nothing gates on it.
+	ScopeViolation bool `json:"scope_violation,omitempty"`
 }
 
 type ResultToolProgressEvent struct {
@@ -382,13 +385,14 @@ func (e *EventEmitter) ToolUseBlockStop(index int, id, name string, input json.R
 	})
 }
 
-func (e *EventEmitter) ToolResult(toolUseID, toolName, content string, isError bool) {
+func (e *EventEmitter) ToolResult(toolUseID, toolName, content string, isError, scopeViolation bool) {
 	e.emit(ResultToolResultEvent{
 		subtypedEnvelope: newResultEnv(ResultToolResultSubtype),
 		ToolUseID:        toolUseID,
 		ToolName:         toolName,
 		Content:          content,
 		IsError:          isError,
+		ScopeViolation:   scopeViolation,
 	})
 }
 

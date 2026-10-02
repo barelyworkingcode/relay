@@ -1008,6 +1008,20 @@ directory) is a one-time, best-effort migration *source*: `runService` calls
 session data into the layout above without ever deleting the source. A
 migration failure is logged and does not stop the host from starting.
 
+## The `tool_result` event
+
+Every provider emits `tool_result` (`result` envelope, subtype `tool_result`) when a tool call finishes. Clients pair it to the call by `tool_use_id`.
+
+| Field | Meaning |
+|---|---|
+| `tool_use_id` | The call this answers. |
+| `tool_name` | Label only; omitted when unknown. |
+| `content` | The tool's text. Chat sessions truncate it at 8192 bytes. |
+| `is_error` | The tool failed or refused. For a chat session it is true when `CallTool` errored or the MCP result carried `isError: true`; the model sees the same `content` either way. |
+| `scope_violation` | Chat sessions only. `true` when `is_error` came from the MCP result and its `_meta` holds `scope_violation` or `relay/scope_violation` as the boolean `true` (the marker `relay audit` also trusts). Absent otherwise (`omitempty`), always for Claude and pi sessions. Informational: nothing in relay gates on it. |
+
+The marker is trusted, never the message text, and a successful call cannot claim to have refused.
+
 ## The `SessionExited` bridge notification
 
 When `hostapi.Server` learns a session it dispatched to has exited — from

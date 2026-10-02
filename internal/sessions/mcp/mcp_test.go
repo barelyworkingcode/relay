@@ -74,8 +74,8 @@ func TestMCPManager_CallTool_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
-	if out != "pong" {
-		t.Errorf("CallTool result = %q; want pong", out)
+	if out.Text != "pong" || out.IsError || out.ScopeViolation {
+		t.Errorf("CallTool result = %+v; want pong with no flags", out)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestMCPManager_CallTool_StreamsProgress(t *testing.T) {
 	resCh := make(chan result, 1)
 	go func() {
 		out, err := m.CallTool(t.Context(), "work", nil, func(msg string) { received <- msg })
-		resCh <- result{out, err}
+		resCh <- result{out.Text, err}
 	}()
 
 	// Observe both progress messages (order on a single connection is stable).
@@ -297,5 +297,53 @@ func TestNewMCPManager_InitializesMaps(t *testing.T) {
 	if m.servers == nil || m.toolMap == nil || m.progress == nil {
 		t.Errorf("NewMCPManager left a nil map: servers=%v toolMap=%v progress=%v",
 			m.servers == nil, m.toolMap == nil, m.progress == nil)
+	}
+}
+
+// A tool that answers with isError and a chosen _meta, as macMCP does on a
+// scope refusal.
+func registerRefusing(name string, isError bool, meta mcp.Meta) func(*mcp.Server) {
+	return func(s *mcp.Server) {
+		mcp.AddTool(s, &mcp.Tool{Name: name, Description: "refuses"},
+			func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: "refused"}},
+					IsError: isError,
+					Meta:    meta,
+				}, nil, nil
+			})
+	}
+}
+
+func TestMCPManager_CallTool_ErrorAndScopeFlags(t *testing.T) {
+	cases := []struct {
+		name      string
+		isError   bool
+		meta      mcp.Meta
+		wantError bool
+		wantScope bool
+	}{
+		{"success", false, nil, false, false},
+		{"plain isError", true, nil, true, false},
+		{"scope_violation", true, mcp.Meta{"scope_violation": true}, true, true},
+		{"relay/scope_violation", true, mcp.Meta{"relay/scope_violation": true}, true, true},
+		{"string true is not true", true, mcp.Meta{"scope_violation": "true"}, true, false},
+		{"false marker", true, mcp.Meta{"scope_violation": false}, true, false},
+		{"marker without isError", false, mcp.Meta{"scope_violation": true}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := startInMemoryMCP(t, "srv", registerRefusing("tool", tc.isError, tc.meta))
+			out, err := m.CallTool(t.Context(), "tool", nil, nil)
+			if err != nil {
+				t.Fatalf("CallTool: %v", err)
+			}
+			if out.Text != "refused" {
+				t.Errorf("Text = %q; want refused (content unchanged)", out.Text)
+			}
+			if out.IsError != tc.wantError || out.ScopeViolation != tc.wantScope {
+				t.Errorf("IsError=%v ScopeViolation=%v; want %v %v", out.IsError, out.ScopeViolation, tc.wantError, tc.wantScope)
+			}
+		})
 	}
 }
