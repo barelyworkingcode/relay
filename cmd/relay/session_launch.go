@@ -189,6 +189,30 @@ func forbidden(code, message string, fields sessionLaunchAuditFields) *LaunchRef
 		Audit: newSessionLaunchAuditEvent(fields, audit.AuditOutcomeDenied, message)}
 }
 
+const (
+	maxTerminalExtraArgs      = 64
+	maxTerminalExtraArgsBytes = 64 * 1024
+)
+
+// checkTerminalExtraArgs refuses extraArgs on a hosted project and any list
+// over the entry or total-size cap.
+func checkTerminalExtraArgs(args []string, hosted bool, fields sessionLaunchAuditFields) *LaunchRefusal {
+	if len(args) == 0 {
+		return nil
+	}
+	if hosted {
+		return invalidRequest("invalid_request", "extraArgs are not supported for host terminals", fields)
+	}
+	total := 0
+	for _, a := range args {
+		total += len(a)
+	}
+	if len(args) > maxTerminalExtraArgs || total > maxTerminalExtraArgsBytes {
+		return invalidRequest("invalid_request", fmt.Sprintf("extraArgs exceed the cap of %d entries and %d bytes", maxTerminalExtraArgs, maxTerminalExtraArgsBytes), fields)
+	}
+	return nil
+}
+
 func invalidRequest(code, message string, fields sessionLaunchAuditFields) *LaunchRefusal {
 	return &LaunchRefusal{Status: 400, Code: code, Message: message,
 		Audit: newSessionLaunchAuditEvent(fields, audit.AuditOutcomeError, message)}
@@ -451,6 +475,12 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	// Spec.Identity itself.
 
 	if req.Kind == KindPTY {
+		if refusal := checkTerminalExtraArgs(req.ExtraArgs, proj != nil && proj.IsHosted(), baseFields); refusal != nil {
+			return nil, refusal
+		}
+		// For a pty the extra args belong to the argv, not the host spec's
+		// ExtraArgs (which the agent kinds use).
+		spec.ExtraArgs = nil
 		if proj != nil && proj.IsHosted() && tmpl.Persist {
 			argv, name, refusal := resolvePersistArgv(settings, proj, *tmpl, req.PersistSession, baseFields)
 			if refusal != nil {
@@ -461,7 +491,10 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		} else if proj != nil && proj.IsHosted() {
 			spec.Argv = resolveHostArgv(*tmpl, proj.Path, req.ProjectID)
 		} else {
-			spec.Argv = resolveArgv(*tmpl, projectPathOrEmpty(proj), req.ProjectID)
+			// Appended verbatim, never through ExpandTemplateVars: a ${...}
+			// in a caller-supplied arg must not resolve credential
+			// placeholders (same rule as internal/sessions/provider/pi.go).
+			spec.Argv = append(resolveArgv(*tmpl, projectPathOrEmpty(proj), req.ProjectID), req.ExtraArgs...)
 		}
 		env, err := resolveTemplateEnv(*tmpl, settings)
 		if err != nil {
