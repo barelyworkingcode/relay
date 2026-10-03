@@ -280,6 +280,8 @@ type createTerminalWireBody struct {
 	// PersistSession is snake_case, unlike its neighbours: it is relay's own
 	// field, not one of the terminal_create keys eve has always sent.
 	PersistSession string `json:"persist_session,omitempty"`
+	// ExtraArgs is appended verbatim to a local terminal's argv.
+	ExtraArgs []string `json:"extraArgs,omitempty"`
 }
 
 func (d sessionRouteDeps) handleCreateTerminal(w http.ResponseWriter, r *http.Request) {
@@ -301,6 +303,7 @@ func (d sessionRouteDeps) handleCreateTerminal(w http.ResponseWriter, r *http.Re
 		Rows:       body.Rows,
 
 		PersistSession: body.PersistSession,
+		ExtraArgs:      body.ExtraArgs,
 	}
 	d.launchAndRespond(r.Context(), w, req)
 }
