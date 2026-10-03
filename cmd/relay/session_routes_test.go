@@ -807,3 +807,117 @@ func TestSessionRoutes_Launch_SystemModelRefusalCode(t *testing.T) {
 		t.Fatalf("launch = (refusal %+v, err %v), want a 403 model_system_only refusal", refusal, err)
 	}
 }
+
+// --- extraArgs on POST /api/terminals ----------------------------------------
+
+// extraArgsFixture is a session-routes fixture with a fake relaysessions host
+// that answers /launch 201, and a local "script" template with its own args.
+func extraArgsFixture(t *testing.T) (*sessionRoutesFixture, *FakeService) {
+	t.Helper()
+	f := newSessionRoutesFixture(t)
+	assertNoErr(t, f.store.With(func(s *config.Settings) {
+		s.TerminalTemplates = append(s.TerminalTemplates, config.TerminalTemplate{
+			ID: "script", Name: "Script", Command: "/bin/sh", Args: []string{"-e", "${PROJECT_ID}"}, Sandbox: ptr(false),
+		})
+	}), "seed script template")
+	var fs *FakeService
+	fs = NewFakeService(t, FakeServiceOptions{
+		ServiceID: config.RelaySessionsServiceID,
+		Manifest:  fakeSessionsManifest(),
+		Handler: fakeLaunchHandler(&fs, func(id string) string {
+			return `{"terminalId":"` + id + `","templateId":"script","name":"t","host":null}`
+		}),
+	})
+	f.registerFakeSessionsHost(t, fs, selfPeerToken(t).Process())
+	return f, fs
+}
+
+func (f *sessionRoutesFixture) postTerminal(t *testing.T, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	data, err := json.Marshal(body)
+	assertNoErr(t, err, "marshal terminal body")
+	req := f.withExecuteCredential(t, httptest.NewRequest(http.MethodPost, "/api/terminals", strings.NewReader(string(data))))
+	rec := httptest.NewRecorder()
+	f.mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestSessionRoutes_CreateTerminal_ExtraArgsAppendVerbatimToLocalArgv(t *testing.T) {
+	for name, c := range map[string]struct {
+		extraArgs []string
+		wantArgv  []string
+	}{
+		"absent": {nil, []string{"/bin/sh", "-e", "p1"}},
+		"appended verbatim, placeholders literal": {
+			[]string{"-c", "echo ${PROJECT_ID} $HOME"},
+			[]string{"/bin/sh", "-e", "p1", "-c", "echo ${PROJECT_ID} $HOME"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, fs := extraArgsFixture(t)
+			body := map[string]any{"templateId": "script", "name": "t", "projectId": f.proj.ID, "cols": 80, "rows": 24}
+			if c.extraArgs != nil {
+				body["extraArgs"] = c.extraArgs
+			}
+			rec := f.postTerminal(t, body)
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, body = %s, want 201", rec.Code, rec.Body.String())
+			}
+			var spec hostapi.LaunchRequest
+			assertNoErr(t, json.Unmarshal(fs.LastRequest().Body, &spec), "unmarshal launch spec")
+			got, _ := json.Marshal(spec.Argv)
+			want, _ := json.Marshal(c.wantArgv)
+			if string(got) != string(want) {
+				t.Fatalf("launch spec argv = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestSessionRoutes_CreateTerminal_ExtraArgsCaps(t *testing.T) {
+	many := func(n, size int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = strings.Repeat("a", size)
+		}
+		return out
+	}
+	for name, c := range map[string]struct {
+		extraArgs  []string
+		wantStatus int
+	}{
+		"64 entries under 64 KB": {many(64, 999), http.StatusCreated},
+		"65 entries":             {many(65, 1), http.StatusBadRequest},
+		"over 64 KB in total":    {many(2, 32769), http.StatusBadRequest},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, fs := extraArgsFixture(t)
+			rec := f.postTerminal(t, map[string]any{"templateId": "script", "name": "t", "projectId": f.proj.ID,
+				"cols": 80, "rows": 24, "extraArgs": c.extraArgs})
+			if rec.Code != c.wantStatus {
+				t.Fatalf("status = %d, body = %.200s, want %d", rec.Code, rec.Body.String(), c.wantStatus)
+			}
+			if c.wantStatus != http.StatusCreated && len(fs.Requests()) != 0 {
+				t.Fatalf("fake host received %d request(s) for a refused launch", len(fs.Requests()))
+			}
+		})
+	}
+}
+
+func TestSessionRoutes_CreateTerminal_HostedProjectRefusesExtraArgs(t *testing.T) {
+	for name, templateID := range map[string]string{"command template": "tool", "persist template": "shell"} {
+		t.Run(name, func(t *testing.T) {
+			f, fs := extraArgsFixture(t)
+			proj := addPersistLaunchTestProject(t, f.store, "", "/usr/bin/tmux")
+			stubPersistSessionNames(t, nil, nil)
+			rec := f.postTerminal(t, map[string]any{"templateId": templateID, "name": "t", "projectId": proj.ID,
+				"cols": 80, "rows": 24, "extraArgs": []string{"-c", "echo hi"}})
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "extraArgs") {
+				t.Fatalf("status = %d, body = %s, want 400 naming extraArgs", rec.Code, rec.Body.String())
+			}
+			if got := fs.Requests(); len(got) != 0 {
+				t.Fatalf("fake host received %d request(s) for a refused launch", len(got))
+			}
+		})
+	}
+}
