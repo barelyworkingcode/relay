@@ -509,7 +509,8 @@ relay-sessions logs through `internal/logging`: JSON lines on stderr, service
 id `relaysessions`, schema and levels in
 [`logging-standard.md`](logging-standard.md). relay's `sessionHostClient`
 forwards the request's trace ID in `X-Trace-Id` on each call, so a frontend
-request, its `/launch` and the WebSocket it opens share one ID.
+request and its `/launch` share one ID. A chat turn takes its ID from the
+`trace_id` of its `send_message`.
 
 The `send_message` WebSocket message takes an optional `trace_id`. A valid one
 is kept, otherwise one is minted. The session records the turn when the message

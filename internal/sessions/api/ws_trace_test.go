@@ -75,7 +75,8 @@ func captureLogs(t *testing.T) *lockedBuf {
 }
 
 // traceProvider reports its own exit from Kill through the manager's event
-// handler, as the production claude and pi providers do.
+// handler, as ChatProvider does. The claude and pi providers report from their
+// wait-for-exit goroutine instead.
 type traceProvider struct {
 	wsFakeProvider
 	handler sessionstypes.EventHandler
@@ -247,6 +248,9 @@ func TestTrace_RefusedSend_LogsOneWarn(t *testing.T) {
 				t.Fatalf("chat.turn lines = %d, want 1: %s", len(lines), e.buf.String())
 			}
 			l := lines[0]
+			if sid, has := l["session_id"]; has && (tc.sessionID(e) == "" || sid == "") {
+				t.Fatalf("session_id = %q present for an empty sessionId: %v", sid, l)
+			}
 			if l["level"] != "warn" || l["status"] != "error" || l["error"] != tc.code || l["trace_id"] != "refused-trace-01" {
 				t.Fatalf("refusal line = %v", l)
 			}
