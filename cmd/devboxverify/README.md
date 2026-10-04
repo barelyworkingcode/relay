@@ -455,6 +455,26 @@ between the two. The service is stopped after.
 - Traps: the first restart waits 1 s by design; a build that gives up at the
   first attempt reads FAIL with STATE `failed (exit …)`.
 
+**settings-window-services** (screen). The harness reads Accessibility
+itself, through cgo, so it needs no other driver. It starts the crash service
+through the API, opens Settings from the tray (the status item with help
+"Relay", then "Settings..."), presses the Services tab and finds the crash
+service's card by its display name. Stop is pressed on that card; the window
+must read `stopped` with a Start button, and `relay service list` must show
+the service stopped within 5 s. Start is pressed; the window must show a new
+pid within 10 s and `service.list` must agree. The crash service is then
+stopped through the API, and the window closed if the journey opened it.
+- Lives in: `cmd/relay/trayapp.go` (the Settings... item),
+  `cmd/relay/ipc_services.go` (`ipcStartService`, `ipcStopService`),
+  `cmd/relay/ipc_handlers.go` (dispatch, `serviceStatusEventPayload`),
+  `web/src/app.js` (`renderServices`, `toggleServiceRunning`,
+  `onServiceStatus`).
+- Reached by: Accessibility from the harness; the API for the fixture's start
+  and restore; `service.list` plus `pgrep` for state.
+- Traps: BLOCKED under the LaunchAgent recipe, where the process leading the
+  job holds no Accessibility grant. A Services Edit form left open hides the
+  cards.
+
 **slow-route-keepalive** (screen). A relay route that runs past the 10 s
 read deadline must not poison the connection it arrived on. The journey adds
 host `blackhole-<nonce>` (target `192.0.2.1`, which drops packets) and
@@ -565,6 +585,9 @@ None of this drifts `verify.sh`.
   If a run leaves `n = 1`, restore it with a `PUT /api/projects/<id>` of
   `{"context":{"devboxverify-numbers":{"n":1.0}}}` (no prompt on a fixed
   build).
+- **P7.** The app that runs devboxverify holds Accessibility: add the desktop
+  Terminal under System Settings > Privacy & Security > Accessibility.
+  Without it settings-window-services reads BLOCKED.
 
 ## Verifying a PR
 
@@ -578,7 +601,10 @@ None of this drifts `verify.sh`.
    through the one-shot LaunchAgent recipe in the
    [presence helper's README](../devboxpresence/README.md). Measured: a full
    run that way completes both phases in about 25 s, with relay raising its
-   prompts and the installed helper trusted for Accessibility.
+   prompts and the installed helper trusted for Accessibility. Under that
+   recipe settings-window-services reads BLOCKED, because the process leading
+   the job holds no Accessibility grant of its own, and the status reads
+   `error`; run from a desktop Terminal to get a verdict.
 3. Preflight refuses unless the app was built from the PR head with a clean
    tree, is the one running, and started after it was installed; then
    `repair.sh` must report bootstrap complete and the world green, repaired
@@ -608,6 +634,8 @@ None of this drifts `verify.sh`.
   sessions on every page load, and each list poisons eve's connection: every
   chat, shell and model call answers 502 until verify-fixtures-removed runs
   or relay restarts.
+- Never touch the Settings window or the tray menu during a run. The
+  journey drives them, and a click lands on whatever is in front.
 - Never touch a Relay dialog during a run. The helper answers or cancels the
   harness's own prompts, and the sweep after each screen journey cancels any
   left open.

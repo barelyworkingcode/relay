@@ -120,7 +120,7 @@ Areas: services, tray.
 |---|---|---|---|---|---|---|---|
 | Register a service (command, capabilities) | Settings > Services, CLI | `relay service register`, or Add Service | CLI, HTTP `POST /api/services` | owner gate | gate-service-register-pos, gate-service-register-neg | Settings > Services > + New Service > Add Service | `relay service register` |
 | Edit a service | Settings > Services | row > Edit | HTTP `PUT /api/services/{id}` | owner gate if fields change | none | Settings > Services > card > Edit > Save | `relay service register --name <existing>` |
-| Start, stop, restart | Settings, tray, CLI | tray service row; `relay service restart` | CLI, HTTP `POST /api/services/{id}/start`, `/stop` [configure] | — | service-start-stop, session-host-restart | tray > service row; Settings > Services > Start / Stop | `relay service restart` |
+| Start, stop, restart | Settings, tray, CLI | tray service row; `relay service restart` | CLI, HTTP `POST /api/services/{id}/start`, `/stop` [configure] | — | service-start-stop, settings-window-services, session-host-restart | tray > service row; Settings > Services > Start / Stop | `relay service restart` |
 | Autostart at login | Settings > Services | row > autostart | HTTP `PUT /api/services/{id}/autostart` | — | none | Settings > Services > card > Start with Relay | `relay service register --autostart` |
 | Restart on crash, then `failed` after max attempts | background | a service exits unrequested | CLI `relay service list` (STATE) | — | service-restart-on-crash (the restart, not `failed`) | n/a | n/a |
 | Unregister | Settings, CLI | `relay service unregister` | CLI, HTTP `DELETE` | — | verify-fixtures-removed | Settings > Services > Remove | `relay service unregister` |
@@ -165,7 +165,7 @@ Areas: tray, settings-ui.
 
 | Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
 |---|---|---|---|---|---|---|---|
-| Open Settings | tray | tray > Settings… (⌘,) | screen | — | none | tray > Settings... (⌘,) | none |
+| Open Settings | tray | tray > Settings… (⌘,) | screen | — | settings-window-services | tray > Settings... (⌘,) | none |
 | Overview tiles and attention list | Settings > Overview | Overview | screen | — | none | Settings > Overview | none |
 | Recent tool calls (call_tool rows only) | Settings > Overview | Overview > Recent tool calls | screen | — | none | Settings > Overview > Recent tool calls | `relay audit --tail` |
 | Reveal config and logs folders | Settings > Overview | Reveal config / Reveal logs | screen | — | none | Settings > Overview > Reveal / Reveal logs | none |
@@ -305,7 +305,7 @@ areas:
   services:
     code: [cmd/relay/service_*.go, cmd/relay/cli_service.go, cmd/relay/enhanced_services.go, cmd/relay/ipc_service*.go, internal/service/**]
     tests: [cmd/relay/service_*_test.go, cmd/relay/cli_service*_test.go, cmd/relay/enhanced_services*_test.go, cmd/relay/ipc_service*_test.go, cmd/relay/settings_service*_test.go, cmd/relay/launch_*_test.go, internal/service/*_test.go]
-    journeys: [gate-service-register-neg, gate-service-register-pos, service-start-stop, service-restart-on-crash, session-host-restart, verify-fixtures-removed]
+    journeys: [gate-service-register-neg, gate-service-register-pos, service-start-stop, service-restart-on-crash, settings-window-services, session-host-restart, verify-fixtures-removed]
   models:
     code: [cmd/relay/model_*.go, cmd/relay/router_model_host.go, cmd/relay/frontend_model_guard.go, cmd/relay/relay_llm_channel.go, cmd/relay/ipc_models.go, internal/modelbroker/**]
     tests: [cmd/relay/model_*_test.go, cmd/relay/router_model_host_test.go, cmd/relay/frontend_model_guard_test.go, cmd/relay/relay_llm_channel_test.go, cmd/relay/ipc_models_test.go, cmd/relay/settings_model_picker*_test.go, cmd/relay/integration_*relayllm_test.go, internal/modelbroker/*_test.go]
@@ -337,11 +337,11 @@ areas:
   tray:
     code: [cmd/relay/trayapp.go, cmd/relay/tray_notify.go, cmd/relay/cocoa_darwin.go, cmd/relay/native_view.go, cmd/relay/icon.go, cmd/relay/platform.go]
     tests: [cmd/relay/trayapp_test.go, cmd/relay/tray_*_test.go, cmd/relay/service_menu_order_test.go]
-    journeys: []
+    journeys: [settings-window-services]
   settings-ui:
     code: [web/**, cmd/relay/settings_html.go, cmd/relay/ipc_handlers.go, cmd/relay/ipc_overview.go, cmd/relay/overview_seed.go, internal/webassets/**]
     tests: [cmd/relay/settings_*_test.go, cmd/relay/ipc_handlers_test.go, cmd/relay/ipc_contract_test.go]
-    journeys: []
+    journeys: [settings-window-services]
 ```
 
 ## Notes
