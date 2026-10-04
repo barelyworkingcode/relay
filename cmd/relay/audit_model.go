@@ -72,6 +72,7 @@ func modelAuditEvent(event string, ev ModelCallAudit) audit.AuditEvent {
 		CompletionTokens: ev.Usage.CompletionTokens,
 		Status:           ev.Status,
 		Outcome:          ev.Outcome,
+		TraceID:          ev.traceID,
 	}
 }
 

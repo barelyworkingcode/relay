@@ -117,7 +117,10 @@ logging/                 The one slog setup every relay process installs (Instal
                          and writes one frontend.request line per request; successful GET/HEAD polls
                          are excluded. The bridge accepts a trace_id on each request and writes
                          one bridge.request line; the model endpoint accepts or mints the ID,
-                         forwards X-Trace-Id and writes one model.request line.
+                         forwards X-Trace-Id and writes one model.request line. The remote
+                         listener mints a trace ID per request and writes one remote.request line.
+                         `Repeat` limits a failure that repeats to one line per interval with a
+                         `repeats` count; each site owns its own.
 peertoken/               Reads a Unix-socket peer's kernel audit token (LOCAL_PEERTOKEN). A leaf
                          package, so presence/ (audit session) and bridge/ (launch identity) share
                          one reader.
@@ -490,6 +493,13 @@ dispatch, so a grant that went stale by any route relay did not anticipate
 fails closed).
 
 ### The remote listener
+
+Each request gets a new trace ID (the strict decoder still rejects a
+client-sent `trace_id`) and one `remote.request` line that never carries
+arguments, `args_sha256`, a token or the response message. Refusals before
+admission (handshake failure, unenrolled certificate, auditing off, too many
+connections) are rate-limited per server, because anyone who can reach the port
+causes them.
 
 `RemoteServer` (`remote_server.go`) is a **second listener beside**
 `BridgeServer` — never a mode of it. Its dispatch table (`remoteHandlers`) has

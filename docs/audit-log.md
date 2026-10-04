@@ -928,6 +928,24 @@ overshoot is a few hundred bytes per invocation.
 `relay audit` reads the file directly, so a record written by one CLI process
 is readable by the next with no tray involved at all.
 
+## Trace ID
+
+An audit record may carry `trace_id`, the ID the log lines of the same action
+carry (docs/logging-standard.md), so a developer can go from a log line to the
+record or back. Tool calls and model calls set it; a remote call's intent and
+completion records share one value. Records outside any action (`mcp_down`,
+`mcp_up`, CLI issuance and revocation) leave it out.
+
+On the bridge path the caller may supply the ID, and relay keeps it only when
+it is valid. On the remote path the listener mints a new ID per request, and a
+client cannot send one. The field joins records to a trace and proves nothing
+about who acted: the actor is still the peer or the certificate, and no
+decision reads it. The durability rules do not change.
+
+A failure that repeats (a full queue, a failed write or sync) logs its first
+occurrence, then at most one line a minute carrying `repeats`. The drop counter
+and every returned error and refusal are unchanged.
+
 ## Fail-open, visibly
 
 Events are handed to a single writer goroutine over a bounded channel. If that

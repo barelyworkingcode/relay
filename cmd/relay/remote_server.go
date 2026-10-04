@@ -17,6 +17,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
@@ -272,6 +273,13 @@ type RemoteServer struct {
 	// there too — this table exists only so revalidateMounts can find live
 	// sessions to freshness-check, a different question from revocation.
 	mountConns map[*mountConn]struct{}
+
+	// Pre-admission refusals are caused by whoever can reach the port, so each
+	// is limited on its own.
+	handshakeFailLog *logging.Repeat
+	notEnrolledLog   *logging.Repeat
+	noAuditLog       *logging.Repeat
+	tooManyConnsLog  *logging.Repeat
 }
 
 func (s *RemoteServer) currentSettings() *config.Settings {
@@ -345,6 +353,11 @@ func NewRemoteServer(ctx context.Context, store config.SettingsStore, router Rem
 		conns:        map[string]map[*remoteConn]struct{}{},
 		mountBudgets: &enrolment.Budgets{},
 		mountConns:   map[*mountConn]struct{}{},
+
+		handshakeFailLog: logging.NewRepeat(0, nil),
+		notEnrolledLog:   logging.NewRepeat(0, nil),
+		noAuditLog:       logging.NewRepeat(0, nil),
+		tooManyConnsLog:  logging.NewRepeat(0, nil),
 	}
 
 	// Installed with an owner because a rebind (RemoteSupervisor) binds the
@@ -439,7 +452,8 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 
 	_ = conn.SetDeadline(time.Now().Add(remoteHandshakeTimeout))
 	if err := tlsConn.HandshakeContext(connCtx); err != nil {
-		slog.Warn("remote: TLS handshake failed", "remote_addr", conn.RemoteAddr().String(), "error", err)
+		s.handshakeFailLog.Log(connCtx, slog.LevelWarn, "remote: TLS handshake failed",
+			slog.String("remote_addr", conn.RemoteAddr().String()), slog.Any("error", err))
 		return
 	}
 
@@ -456,16 +470,16 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 	settings := s.currentSettings()
 	enr := enrolment.FindByFingerprint(settings, fingerprint)
 	if enr == nil {
-		slog.Warn("remote: closing connection, certificate is not enrolled",
-			"fingerprint", fingerprint, "remote_addr", conn.RemoteAddr().String())
+		s.notEnrolledLog.Log(connCtx, slog.LevelWarn, "remote: closing connection, certificate is not enrolled",
+			slog.String("fingerprint", fingerprint), slog.String("remote_addr", conn.RemoteAddr().String()))
 		return
 	}
 
 	// Re-checked here, not just at startup: auditing could have been
 	// turned off since this listener bound.
 	if !remoteAuditingLive(settings, s.audit) {
-		slog.Error("remote: closing connection, auditing is not active",
-			"client_id", enr.ClientID, "remote_addr", conn.RemoteAddr().String())
+		s.noAuditLog.Log(connCtx, slog.LevelError, "remote: closing connection, auditing is not active",
+			slog.String("client_id", enr.ClientID), slog.String("remote_addr", conn.RemoteAddr().String()))
 		return
 	}
 
@@ -481,8 +495,9 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 		// which fingerprint this is, which only the certificate (verified
 		// above) answers. No read, no write beyond the TLS teardown
 		// deferred conn.Close() already does.
-		slog.Warn("remote: closing connection, too many concurrent connections",
-			"client_id", enr.ClientID, "fingerprint", fingerprint, "remote_addr", conn.RemoteAddr().String())
+		s.tooManyConnsLog.Log(connCtx, slog.LevelWarn, "remote: closing connection, too many concurrent connections",
+			slog.String("client_id", enr.ClientID), slog.String("fingerprint", fingerprint),
+			slog.String("remote_addr", conn.RemoteAddr().String()))
 		return
 	}
 	defer s.untrack(rc)
@@ -514,12 +529,31 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 // refused, and a revoked certificate sending one gets "this certificate is
 // no longer enrolled" rather than "not available to remote clients" — both
 // are refusals, and neither leaks anything the other didn't.
-func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line string) bridge.BridgeResponse {
+func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line string) (resp bridge.BridgeResponse) {
+	// A new ID per request, never read from the wire: the strict decoder
+	// rejects trace_id, so a client cannot choose what reaches the logs.
+	ctx = logging.ContextWithTrace(ctx, logging.NewTraceID())
+	start := time.Now()
+	reqType, name := "unknown", ""
+	defer func() {
+		// A nil response to logRemoteRequest means the handler panicked; the
+		// panic continues to the connection's own recover.
+		if p := recover(); p != nil {
+			logRemoteRequest(ctx, reqType, name, nil, time.Since(start))
+			panic(p)
+		}
+		logRemoteRequest(ctx, reqType, name, &resp, time.Since(start))
+	}()
+
 	req, err := bridge.DecodeRemoteRequest([]byte(line))
 	if err != nil {
 		// Strict decoding: a client sending `cwd` or `token` lands here
 		// loudly rather than the field being silently ignored.
 		return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, "remote request: "+err.Error())
+	}
+	reqType, name = remoteRequestTypeForLog(req.Type), ""
+	if req.Type == bridge.ReqCallTool {
+		name = logging.Truncate(req.Name)
 	}
 
 	settings, enr, proj, err := s.resolveCaller(fingerprint, req.ProjectID)
@@ -557,6 +591,57 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 	slog.Warn("remote: request type is not available on the remote listener", "type", req.Type)
 	return bridge.ErrorResponse(jsonrpc.CodeMethodNotFound,
 		"request type is not available to remote clients: "+req.Type)
+}
+
+// remoteRequestTypeForLog keeps the type on the remote.request line to the
+// known set: a caller-chosen string never reaches that line.
+func remoteRequestTypeForLog(t string) string {
+	if _, ok := remoteHandlers[t]; ok {
+		return t
+	}
+	if _, ok := remoteConfigHandlers[t]; ok {
+		return t
+	}
+	return "unknown"
+}
+
+// logRemoteRequest writes the one remote.request line, shaped like the bridge's
+// request line. It never reads resp.Message, the arguments, args_sha256 or the
+// token: only the response code and the request type decide what is written. A
+// nil resp means the handler panicked.
+func logRemoteRequest(ctx context.Context, reqType, name string, resp *bridge.BridgeResponse, took time.Duration) {
+	level, status, errText := slog.LevelInfo, "ok", ""
+	switch {
+	case resp == nil:
+		level, status, errText = slog.LevelError, "error", "panic"
+	case resp.Type == bridge.RespError:
+		switch resp.Code {
+		case jsonrpc.CodeUnauthorized:
+			level, status, errText = slog.LevelWarn, "denied", "unauthorized"
+		case jsonrpc.CodeParseError:
+			level, status, errText = slog.LevelWarn, "error", "parse_error"
+		case jsonrpc.CodeMethodNotFound:
+			level, status, errText = slog.LevelWarn, "error", "method_not_found"
+		case jsonrpc.CodeInvalidParams:
+			level, status, errText = slog.LevelWarn, "error", "invalid_params"
+		default:
+			level, status, errText = slog.LevelError, "error", "internal_error"
+		}
+	}
+	attrs := []slog.Attr{
+		slog.String("op", "remote.request"),
+		slog.String("status", status),
+		slog.Int64("duration_ms", took.Milliseconds()),
+		slog.String("error", errText),
+		slog.String("request_type", reqType),
+	}
+	if name != "" {
+		attrs = append(attrs, slog.String("name", name))
+	}
+	if rc, ok := bridge.RemoteCallerFromContext(ctx); ok && rc.ClientID != "" {
+		attrs = append(attrs, slog.String("client_id", rc.ClientID))
+	}
+	slog.LogAttrs(ctx, level, "remote request", attrs...)
 }
 
 // recordConfigRefusal is the control_decision half of refusing a config

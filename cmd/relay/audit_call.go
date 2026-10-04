@@ -9,6 +9,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
@@ -49,6 +50,7 @@ func (r *appRouter) beginAudit(ctx context.Context, event string) *auditCall {
 			Actor: audit.AuditActor{Kind: audit.AuditActorUnknown, Auth: audit.AuditAuthNone},
 		},
 	}
+	a.ev.TraceID = logging.TraceFromContext(ctx)
 	// A remote caller's identity is attested by its certificate, the network
 	// equivalent of the peer pid and strictly stronger (a pid is reusable and
 	// racy, a fingerprint is neither); this is an either/or rather than two
