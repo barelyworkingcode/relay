@@ -933,8 +933,8 @@ is readable by the next with no tray involved at all.
 An audit record may carry `trace_id`, the ID the log lines of the same action
 carry (docs/logging-standard.md), so a developer can go from a log line to the
 record or back. Tool calls and model calls set it; a remote call's intent and
-completion records share one value. Records outside any action (`mcp_down`,
-`mcp_up`, CLI issuance and revocation) leave it out.
+completion records share one value. Every other record kind (control decisions,
+sessions, mounts, `mcp_down` / `mcp_up`, issuance and revocation) leaves it out.
 
 On the bridge path the caller may supply the ID, and relay keeps it only when
 it is valid. On the remote path the listener mints a new ID per request, and a

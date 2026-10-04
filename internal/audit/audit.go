@@ -448,7 +448,9 @@ type AuditEvent struct {
 	// Outcome instead.
 	Status int `json:"status,omitempty"`
 
-	// TraceID joins this record to log lines of the same action. Caller-supplied on the bridge path (validated), relay-minted on the remote path; it proves nothing about who acted and no decision reads it.
+	// TraceID joins this record to log lines of the same action.
+	// Caller-supplied on the bridge path (validated), relay-minted on the
+	// remote path; it proves nothing about who acted and no decision reads it.
 	TraceID string `json:"trace_id,omitempty"`
 }
 

@@ -594,7 +594,7 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 }
 
 // remoteRequestTypeForLog keeps the type on the remote.request line to the
-// known set: a caller-chosen string never reaches that line.
+// known set: a caller-chosen request type never reaches that line.
 func remoteRequestTypeForLog(t string) string {
 	if _, ok := remoteHandlers[t]; ok {
 		return t

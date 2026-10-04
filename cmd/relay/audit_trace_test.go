@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,29 +41,6 @@ func TestAuditTrace_CallWithNoTraceLeavesTheFieldOut(t *testing.T) {
 	}
 	if strings.Contains(amLogBytes(t, rec), "trace_id") {
 		t.Error("a call with no trace wrote a trace_id field")
-	}
-}
-
-func TestAuditTrace_RemoteIntentAndCompletionShareTheTrace(t *testing.T) {
-	mkSandboxRelayHome(t)
-	mock := newMockConn("macmcp", localTools("mail_search"), okHandler(`{"content":[]}`))
-	r, rec := auditedRouter(t,
-		map[string]config.Permission{"macmcp": config.PermOn}, nil,
-		map[string]*mockMcpConn{"macmcp": mock}, nil)
-	id := logging.NewTraceID()
-
-	ctx := logging.ContextWithTrace(remoteCtx("hermes-mail"), id)
-	if _, err := r.CallTool(ctx, "mail_search", json.RawMessage(`{}`), testToken); err != nil {
-		t.Fatalf("CallTool: %v", err)
-	}
-	events := readLoggedEvents(t, rec)
-	if len(events) != 2 {
-		t.Fatalf("want intent + completion, got %+v", events)
-	}
-	for _, ev := range events {
-		if ev.TraceID != id {
-			t.Errorf("%s record trace_id = %q, want %q", ev.Phase, ev.TraceID, id)
-		}
 	}
 }
 

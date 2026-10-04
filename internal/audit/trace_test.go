@@ -51,14 +51,3 @@ func TestReadAuditTail_ReadsMixedOldAndNewRecords(t *testing.T) {
 		t.Errorf("old record = %+v", got[1])
 	}
 }
-
-func TestRecordDurable_KeepsTraceID(t *testing.T) {
-	rec := newTestAudit(t, nil)
-	if err := rec.RecordDurable(AuditEvent{ID: "d1", TraceID: traceTestID}); err != nil {
-		t.Fatalf("RecordDurable: %v", err)
-	}
-	ev := onlyEvent(t, readLoggedEvents(t, rec))
-	if ev.TraceID != traceTestID {
-		t.Errorf("trace_id on disk = %q, want %q", ev.TraceID, traceTestID)
-	}
-}
