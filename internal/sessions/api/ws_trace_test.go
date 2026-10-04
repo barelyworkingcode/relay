@@ -74,12 +74,27 @@ func captureLogs(t *testing.T) *lockedBuf {
 	return buf
 }
 
+// traceProvider reports its own exit from Kill through the manager's event
+// handler, as the production claude and pi providers do.
+type traceProvider struct {
+	wsFakeProvider
+	handler sessionstypes.EventHandler
+	killed  chan struct{}
+	once    sync.Once
+}
+
+func (p *traceProvider) Kill() {
+	p.wsFakeProvider.Kill()
+	p.handler("process_exited", json.RawMessage(`{"exitCode":0}`))
+	p.once.Do(func() { close(p.killed) })
+}
+
 type traceEnv struct {
 	conn interface {
 		WriteJSON(any) error
 	}
 	sh   *SessionHandlers
-	fp   *wsFakeProvider
+	fp   *traceProvider
 	id   string
 	buf  *lockedBuf
 	read func() map[string]any
@@ -89,8 +104,9 @@ func newTraceEnv(t *testing.T) *traceEnv {
 	t.Helper()
 	buf := captureLogs(t)
 	hub, mgr, sh := newTestSessionSetup(t)
-	fp := &wsFakeProvider{}
-	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+	fp := &traceProvider{killed: make(chan struct{})}
+	mgr.SetProviderFactory(func(_ *sessionstypes.Session, _ session.CreateSpec, h sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+		fp.handler = h
 		return fp, nil
 	})
 	sess, err := mgr.Create(session.CreateSpec{SessionID: wsTestSessionID, ProjectID: "proj-1", Kind: session.KindClaude})
@@ -246,13 +262,19 @@ func TestTrace_TurnDroppedSilently(t *testing.T) {
 		"clear_messages": func(_ *testing.T, e *traceEnv) {
 			e.sh.SendToSession(e.id, map[string]any{"type": "clear_messages", "sessionId": e.id})
 		},
-		"session_ended": func(_ *testing.T, e *traceEnv) {
-			e.sh.SendToSession(e.id, map[string]any{"type": "session_ended", "sessionId": e.id})
-		},
 		"delete_session": func(t *testing.T, e *traceEnv) {
 			e.send(t, map[string]any{"type": "delete_session", "sessionId": e.id})
 			if got := e.read(); got["type"] != "session_ended" {
 				t.Fatalf("reply = %v, want session_ended", got)
+			}
+			<-e.fp.killed
+		},
+		"end_session": func(t *testing.T, e *traceEnv) {
+			e.send(t, map[string]any{"type": "end_session", "sessionId": e.id})
+			select {
+			case <-e.fp.killed:
+			case <-time.After(2 * time.Second):
+				t.Fatal("provider was not killed by end_session")
 			}
 		},
 	}

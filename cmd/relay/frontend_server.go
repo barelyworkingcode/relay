@@ -800,11 +800,15 @@ func logFrontendRequest(r *http.Request, code int, took time.Duration) {
 	if rs := []rune(path); len(rs) > logging.MaxTextChars {
 		path = string(rs[:logging.MaxTextChars])
 	}
+	method := r.Method
+	if rs := []rune(method); len(rs) > logging.MaxTextChars {
+		method = string(rs[:logging.MaxTextChars])
+	}
 	attrs := []any{
 		"op", "frontend.request",
 		"status", status,
 		"duration_ms", took.Milliseconds(),
-		"method", r.Method,
+		"method", method,
 		"path", path,
 		"http_status", code,
 	}

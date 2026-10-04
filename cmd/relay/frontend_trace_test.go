@@ -392,6 +392,24 @@ func TestTrace_StalledBodyOnRelayRouteIsCut(t *testing.T) {
 	waitRequestLine(t, buf, "stalled POST", func(m map[string]any) bool { return m["path"] == "/api/projects" })
 }
 
+func TestTrace_HugeMethodIsBoundedInLog(t *testing.T) {
+	buf, _, _, sock := traceFixture(t, "/api/svc/")
+	conn := dialUnixWithTimeout(t, sock, 2*time.Second)
+	defer conn.Close()
+
+	method := strings.Repeat("A", 100000)
+	fmt.Fprintf(conn, "%s /api/svc/huge HTTP/1.1\r\nHost: unix\r\nAuthorization: Bearer %s\r\n\r\n", method, traceTestToken)
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if resp, err := http.ReadResponse(bufio.NewReader(conn), nil); err == nil {
+		resp.Body.Close()
+	}
+
+	line := waitRequestLine(t, buf, "huge method", func(m map[string]any) bool { return m["path"] == "/api/svc/huge" })
+	if n := utf8.RuneCountInString(fmt.Sprint(line["method"])); n > 500 {
+		t.Fatalf("method logged with %d runes, want at most 500", n)
+	}
+}
+
 func TestTrace_SessionHostClientForwardsContextTraceID(t *testing.T) {
 	cases := []struct {
 		name string

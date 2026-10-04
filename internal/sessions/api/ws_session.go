@@ -131,7 +131,10 @@ func logTurn(level slog.Level, sessionID, trace string, d time.Duration, code st
 	if code != "" {
 		status = "error"
 	}
-	attrs := []any{"op", "chat.turn", "status", status, "duration_ms", d.Milliseconds(), "session_id", sessionID}
+	attrs := []any{"op", "chat.turn", "status", status, "duration_ms", d.Milliseconds()}
+	if sessionID != "" {
+		attrs = append(attrs, "session_id", sessionID)
+	}
 	if code != "" {
 		attrs = append(attrs, "error", code)
 	}
@@ -292,6 +295,11 @@ func (sh *SessionHandlers) handleEndSession(c *Conn, raw []byte) {
 		sendWSError(c, "sessionId required")
 		return
 	}
+	// Drop the pending turn first: the provider's synchronous process_exited
+	// on a user-initiated end must not log a failed chat.turn.
+	sh.mu.Lock()
+	delete(sh.turns, req.SessionID)
+	sh.mu.Unlock()
 	sh.mgr.EndSession(req.SessionID)
 }
 
@@ -334,10 +342,12 @@ func (sh *SessionHandlers) handleDeleteSession(c *Conn, raw []byte) {
 		sendWSError(c, "sessionId required")
 		return
 	}
+	sh.mu.Lock()
+	delete(sh.turns, req.SessionID)
+	sh.mu.Unlock()
 	sh.mgr.DeleteSession(req.SessionID)
 
 	sh.mu.Lock()
-	delete(sh.turns, req.SessionID)
 	delete(sh.viewers, req.SessionID)
 	if sh.bound[c.ID] != nil {
 		delete(sh.bound[c.ID], req.SessionID)

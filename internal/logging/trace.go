@@ -15,11 +15,7 @@ type traceKey struct{}
 // NewTraceID returns 32 lowercase hex characters from crypto/rand.
 func NewTraceID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand failing means the platform is unusable; a log line
-		// must not take the process down over it.
-		return "00000000000000000000000000000000"
-	}
+	_, _ = rand.Read(b[:]) // never returns an error; failure is fatal inside crypto/rand
 	return hex.EncodeToString(b[:])
 }
 
