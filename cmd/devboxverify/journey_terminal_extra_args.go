@@ -72,7 +72,7 @@ func runTerminalExtraArgs(ctx context.Context, e env) result {
 	if r.PreDelete.Status != http.StatusNoContent && r.PreDelete.Status != http.StatusNotFound {
 		return classifyTerminalExtraArgs(r)
 	}
-	// Whatever happens next, the template does not outlive the run.
+	// Deliberate: removed even on early return; a leftover fixed-id template makes the next run's create collide.
 	defer func() {
 		frontendDo(context.WithoutCancel(ctx), e, run, http.MethodDelete, tmplPath, nil)
 	}()
