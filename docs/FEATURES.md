@@ -17,6 +17,15 @@ Columns:
 - **Journey**: an existing `devboxverify` journey, `preflight` (the read-only
   `relay grant --json` check the world runs before any journey), or `none`.
   A journey marked NOTRUN always reads NOTRUN and covers nothing today.
+- **Simple door**: the screen and control an everyday person uses: a Settings
+  pane, the tray menu, relay's login page, or eve's screens. `none` when a
+  person can reach it only from the CLI.
+- **Power door**: the `relay` CLI verb or `settings.json` key a power user
+  reaches it through, or `none`. An owner-gated row names no `settings.json`
+  key.
+- A row is user-visible when a person reaches it through a screen, the tray,
+  the CLI or a UI that calls it. Background and API-only rows read `n/a` in
+  both door columns.
 
 Priority is per goal: **must-have** means used daily and a silent break
 strands the user; **should** means weekly or a break is loud; **later** means
@@ -30,21 +39,21 @@ It worked: the session starts in the project folder, answers, and stops when tol
 Why must-have: eve's everyday path; every chat goes through it.
 Areas: sessions, sandbox, templates, audit.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Launch a session | API (eve) | eve starts a session → `POST /api/sessions` | HTTP [execute] | — | session-chat-lifecycle, model-list-and-completion |
-| Blank-model launch refused | API | `POST /api/sessions` with no model | HTTP [execute] | — | blank-model-refused |
-| System-model chat launch refused | API (eve) | `POST /api/sessions` for a chat session on a model relayLLM marks `system` → 403 | HTTP [execute] | — | none |
-| Message and stop a session | API (eve) | eve chat → `POST /api/sessions/{id}/message`, `DELETE /api/sessions/{id}`; `GET /api/sessions` | HTTP [proxy] | — | session-chat-lifecycle |
-| Resume a session | API (eve) | `POST /api/sessions/{id}/resume` | HTTP [execute] | — | session-chat-resume |
-| Terminals and their log | API (eve) | eve terminal → `POST /api/terminals` [execute]; `GET /api/terminals`, `GET /api/terminals/{id}/log`, `DELETE` [proxy] | HTTP | — | terminal-lifecycle, verify-fixtures-removed |
-| Persistent sessions | API | `GET`/`DELETE /api/projects/{id}/persistent-sessions` | HTTP | — | slow-route-keepalive (`GET`, unreachable host) |
-| Proxied calls after a slow relay route | API (eve) | eve's keep-alive socket: a relay route slower than 10 s, then `GET /api/models` | HTTP [read, proxy] | — | slow-route-keepalive |
-| `relay sandbox <template>` | CLI | from a project folder, `relay sandbox world-probe` | CLI / bridge | — | acme-sandbox-reach |
-| Sandbox containment (own project only) | sandbox | any sandboxed session | bridge | — | acme-sandbox-reach |
-| Launch audit row, size-capped | audit | any refused launch | bridge | — | oversized-launch-audit-capped |
-| Permission-mode restart (SSH hosts) | API | change permission mode on an SSH-host session | HTTP | — | permission-mode-restart (always NOTRUN: world has no hosts) |
-| Terminal templates: list, add, edit, remove | Settings > Templates | Settings > Templates > Add | HTTP `/api/terminal/templates` | — | none |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Launch a session | API (eve) | eve starts a session → `POST /api/sessions` | HTTP [execute] | — | session-chat-lifecycle, model-list-and-completion | eve > New Session > New > chat card > Start Chat | none |
+| Blank-model launch refused | API | `POST /api/sessions` with no model | HTTP [execute] | — | blank-model-refused | n/a | n/a |
+| System-model chat launch refused | API (eve) | `POST /api/sessions` for a chat session on a model relayLLM marks `system` → 403 | HTTP [execute] | — | none | n/a | n/a |
+| Message and stop a session | API (eve) | eve chat → `POST /api/sessions/{id}/message`, `DELETE /api/sessions/{id}`; `GET /api/sessions` | HTTP [proxy] | — | session-chat-lifecycle | eve > session > chat input / Stop | none |
+| Resume a session | API (eve) | `POST /api/sessions/{id}/resume` | HTTP [execute] | — | session-chat-resume | eve > New Session > Resume > session | none |
+| Terminals and their log | API (eve) | eve terminal → `POST /api/terminals` [execute]; `GET /api/terminals`, `GET /api/terminals/{id}/log`, `DELETE` [proxy] | HTTP | — | terminal-lifecycle, verify-fixtures-removed | eve > New Session > New > terminal card; Agents board for the log | none |
+| Persistent sessions | API | `GET`/`DELETE /api/projects/{id}/persistent-sessions` | HTTP | — | slow-route-keepalive (`GET`, unreachable host) | eve > New Session > New > Remote sessions > Reattach / Kill | none |
+| Proxied calls after a slow relay route | API (eve) | eve's keep-alive socket: a relay route slower than 10 s, then `GET /api/models` | HTTP [read, proxy] | — | slow-route-keepalive | n/a | n/a |
+| `relay sandbox <template>` | CLI | from a project folder, `relay sandbox world-probe` | CLI / bridge | — | acme-sandbox-reach | none | `relay sandbox <template>` |
+| Sandbox containment (own project only) | sandbox | any sandboxed session | bridge | — | acme-sandbox-reach | n/a | n/a |
+| Launch audit row, size-capped | audit | any refused launch | bridge | — | oversized-launch-audit-capped | n/a | n/a |
+| Permission-mode restart (SSH hosts) | API | change permission mode on an SSH-host session | HTTP | — | permission-mode-restart (always NOTRUN: world has no hosts) | eve > session > chat input > Toggle plan mode | none |
+| Terminal templates: list, add, edit, remove | Settings > Templates | Settings > Templates > Add | HTTP `/api/terminal/templates` | — | none | Settings > Templates > + Add template; row > Edit / Remove | `settings.json` `terminal_templates` |
 
 ### G2 · Give an agent access to one project and nothing else — must-have
 Intent: grant a project its folder, mail account and chosen tools, and nothing wider.
@@ -54,19 +63,19 @@ Areas: projects, grants, sandbox.
 
 Creating a project and widening a grant are `project.grant`, an owner gate. Journeys cover the gate itself (the harness creates Verify Grant as the owner; a session has no door to it), the effect of an approved grant (preflight, acme-sandbox-reach) and the ungated edits: narrowing that takes effect in a live session, and re-saves that change nothing.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Create a project | Settings > Projects | Settings > Projects > Add project | HTTP `POST /api/projects` [configure] | owner gate | gate-project-grant-pos, gate-project-grant-neg |
-| Widen a grant (MCPs, tools, access, scope) | Settings > Projects | project > Edit > Save | HTTP `PUT /api/projects/{id}` [configure] | owner gate | gate-project-grant-neg |
-| Narrow a grant or ungated edit | Settings > Projects | project > Edit > Save | HTTP `PUT /api/projects/{id}` [configure] | — | grant-narrowing-live, stale-derived-access-edit, context-number-resave |
-| Local-to-remote conversion | Settings > Projects | project > Edit > kind | HTTP `PUT` | owner gate | v1-conversion-refusal (NOTRUN) |
-| Remove a project | Settings > Projects | project > Remove | HTTP `DELETE /api/projects/{id}` | — | verify-fixtures-removed |
-| Show a project's grant | CLI | `relay grant --json` | CLI | — | preflight |
-| Scope values (`contextSchema`) | Settings > Projects | project form > scope field | HTTP `/api/mcps/{id}/scope_fields` | owner gate if widening | context-number-resave (partial) |
-| Default project (home/work) | Settings > Projects | Default project picker | HTTP `PUT /api/default_project/{mode}` | — | none |
-| Rotate a project token | Settings > Projects | project > Rotate token | HTTP `POST /api/projects/{id}/rotate_token` [grant] | owner gate | gate-project-rotate-token-pos, gate-project-rotate-token-neg |
-| Reveal a project token | Settings > Projects | project > eye icon | screen | — | none |
-| Regenerate SKILL.md | Settings > Projects | project > Regen Skill | HTTP `POST /api/projects/{id}/regen_skill` | — | none |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Create a project | Settings > Projects | Settings > Projects > Add project | HTTP `POST /api/projects` [configure] | owner gate | gate-project-grant-pos, gate-project-grant-neg | Settings > Projects > + New > Create | none |
+| Widen a grant (MCPs, tools, access, scope) | Settings > Projects | project > Edit > Save | HTTP `PUT /api/projects/{id}` [configure] | owner gate | gate-project-grant-neg | Settings > Projects > Edit > Save | none |
+| Narrow a grant or ungated edit | Settings > Projects | project > Edit > Save | HTTP `PUT /api/projects/{id}` [configure] | — | grant-narrowing-live, stale-derived-access-edit, context-number-resave | Settings > Projects > Edit > Save | `settings.json` `projects[]` |
+| Local-to-remote conversion | Settings > Projects | project > Edit > kind | HTTP `PUT` | owner gate | v1-conversion-refusal (NOTRUN) | none | none |
+| Remove a project | Settings > Projects | project > Remove | HTTP `DELETE /api/projects/{id}` | — | verify-fixtures-removed | Settings > Projects > Delete | none |
+| Show a project's grant | CLI | `relay grant --json` | CLI | — | preflight | Settings > Projects > Edit | `relay grant --json` |
+| Scope values (`contextSchema`) | Settings > Projects | project form > scope field | HTTP `/api/mcps/{id}/scope_fields` | owner gate if widening | context-number-resave (partial) | Settings > Projects > Edit > scope field | none |
+| Default project (home/work) | Settings > Projects | Default project picker | HTTP `PUT /api/default_project/{mode}` | — | none | Settings > Projects > Default projects > Home / Work | `settings.json` `default_project` |
+| Rotate a project token | Settings > Projects | project > Rotate token | HTTP `POST /api/projects/{id}/rotate_token` [grant] | owner gate | gate-project-rotate-token-pos, gate-project-rotate-token-neg | Settings > Projects > Edit > Bearer Token > Rotate | none |
+| Reveal a project token | Settings > Projects | project > eye icon | screen | — | none | Settings > Projects > Edit > Bearer Token > Show | none |
+| Regenerate SKILL.md | Settings > Projects | project > Regen Skill | HTTP `POST /api/projects/{id}/regen_skill` | — | none | Settings > Projects > Regen Skill | none |
 
 ### G3 · Add a tool and let a project use it — must-have
 Intent: register an MCP server and have a project's agents call its tools.
@@ -74,15 +83,15 @@ It worked: the tools appear in the project's session, a call returns, and a disa
 Why must-have: every mail, calendar and file action an agent takes goes through the bridge.
 Areas: mcps, grants, audit.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Register an MCP (stdio or HTTP) | Settings > MCP Servers, CLI | `relay mcp register`, or Add | CLI, HTTP `POST /api/mcps` | owner gate | gate-mcp-register-pos, gate-mcp-register-neg |
-| Authenticate an HTTP MCP (OAuth) | Settings > MCP Servers | row > Authenticate | screen | owner gate | gate-mcp-oauth-start-pos (NOTRUN), gate-mcp-oauth-start-neg |
-| List MCPs and their tools | Settings, CLI | `relay mcp list`; `GET /api/mcps/{id}/tools` | CLI, HTTP | — | gate-mcp-register-pos |
-| Tool listing and calls through the bridge | bridge | a session's `relay mcp --token`; `relay mcp call --token` | bridge, CLI | — | acme-tools-through-bridge |
-| Disable tools per project | Settings > Projects | project form > tool picker | HTTP `PUT /api/projects/{id}` `disabled_tools` [configure] | — | disabled-tool-refused |
-| Unregister an MCP | Settings, CLI | `relay mcp unregister`, or Remove | CLI, HTTP `DELETE /api/mcps/{id}` | — | verify-fixtures-removed |
-| Reset MCP permissions (macOS TCC) | Settings > MCP Servers | row > Reset permissions | screen | — | none |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Register an MCP (stdio or HTTP) | Settings > MCP Servers, CLI | `relay mcp register`, or Add | CLI, HTTP `POST /api/mcps` | owner gate | gate-mcp-register-pos, gate-mcp-register-neg | Settings > MCP Servers > + New MCP Server | `relay mcp register` |
+| Authenticate an HTTP MCP (OAuth) | Settings > MCP Servers | row > Authenticate | screen | owner gate | gate-mcp-oauth-start-pos (NOTRUN), gate-mcp-oauth-start-neg | Settings > MCP Servers > card > Authenticate | none |
+| List MCPs and their tools | Settings, CLI | `relay mcp list`; `GET /api/mcps/{id}/tools` | CLI, HTTP | — | gate-mcp-register-pos | Settings > MCP Servers > card > tools | `relay mcp list` |
+| Tool listing and calls through the bridge | bridge | a session's `relay mcp --token`; `relay mcp call --token` | bridge, CLI | — | acme-tools-through-bridge | none | `relay mcp --token`, `relay mcp call --token` |
+| Disable tools per project | Settings > Projects | project form > tool picker | HTTP `PUT /api/projects/{id}` `disabled_tools` [configure] | — | disabled-tool-refused | Settings > Projects > Edit > tool picker > untick | `settings.json` `projects[].disabled_tools` |
+| Unregister an MCP | Settings, CLI | `relay mcp unregister`, or Remove | CLI, HTTP `DELETE /api/mcps/{id}` | — | verify-fixtures-removed | Settings > MCP Servers > Remove | `relay mcp unregister` |
+| Reset MCP permissions (macOS TCC) | Settings > MCP Servers | row > Reset permissions | screen | — | none | Settings > MCP Servers > Reset Permissions | none |
 
 ### G4 · See what an agent touched — must-have
 Intent: after a session, look up which tools it called, on what, and what was refused.
@@ -90,16 +99,16 @@ It worked: every call and refusal is in the log with its project, tool and outco
 Why must-have: the only after-the-fact check on an agent; a dropped row is invisible.
 Areas: audit.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Tail and filter the log | CLI | `relay audit --event …` | CLI | — | context-number-resave (reads `config_change`) |
-| Query and filter in Settings | Settings > Tool Calls | filter form | HTTP `GET /api/audit` [read] | — | none |
-| Tool-call rows (one row per local call; intent then completion for a remote one) | background | any bridge call | bridge | — | tool-call-audited |
-| Issuance and config-change rows carrying the presence id | background | any owner gate passed | CLI, HTTP | owner gate | gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos |
-| Session launch rows | background | any launch | HTTP, bridge | — | session-chat-lifecycle, terminal-lifecycle |
-| Refusal rows | background | any refused launch | HTTP, bridge | — | blank-model-refused, oversized-launch-audit-capped |
-| Export the log | Settings > Tool Calls | Export | HTTP `POST /api/audit/export` [configure] | — | none |
-| Reveal the log file | Settings > Tool Calls | Reveal log | screen | — | none |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Tail and filter the log | CLI | `relay audit --event …` | CLI | — | context-number-resave (reads `config_change`) | none | `relay audit` |
+| Query and filter in Settings | Settings > Tool Calls | filter form | HTTP `GET /api/audit` [read] | — | none | Settings > Tool Calls > filters > Refresh | `relay audit --event --project …` |
+| Tool-call rows (one row per local call; intent then completion for a remote one) | background | any bridge call | bridge | — | tool-call-audited | n/a | n/a |
+| Issuance and config-change rows carrying the presence id | background | any owner gate passed | CLI, HTTP | owner gate | gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos | n/a | n/a |
+| Session launch rows | background | any launch | HTTP, bridge | — | session-chat-lifecycle, terminal-lifecycle | n/a | n/a |
+| Refusal rows | background | any refused launch | HTTP, bridge | — | blank-model-refused, oversized-launch-audit-capped | n/a | n/a |
+| Export the log | Settings > Tool Calls | Export | HTTP `POST /api/audit/export` [configure] | — | none | Settings > Tool Calls > Export | `relay audit --json` |
+| Reveal the log file | Settings > Tool Calls | Reveal log | screen | — | none | Settings > Tool Calls > Reveal Log | `relay audit --path` |
 
 ### G5 · Keep background services running, including scheduled work — must-have
 Intent: run relayLLM, eve, the scheduler and other services under relay, started at login and restarted on a crash.
@@ -107,17 +116,17 @@ It worked: the services are up after login, a crashed one comes back, and the tr
 Why must-have: eve, chat and scheduled runs all sit on this; a service that stays down after a crash is noticed late. Scheduling itself lives in relayScheduler; relay's part is keeping it running.
 Areas: services, tray.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Register a service (command, capabilities) | Settings > Services, CLI | `relay service register`, or Add Service | CLI, HTTP `POST /api/services` | owner gate | gate-service-register-pos, gate-service-register-neg |
-| Edit a service | Settings > Services | row > Edit | HTTP `PUT /api/services/{id}` | owner gate if fields change | none |
-| Start, stop, restart | Settings, tray, CLI | tray service row; `relay service restart` | CLI, HTTP `POST /api/services/{id}/start`, `/stop` [configure] | — | service-start-stop, session-host-restart |
-| Autostart at login | Settings > Services | row > autostart | HTTP `PUT /api/services/{id}/autostart` | — | none |
-| Restart on crash, then `failed` after max attempts | background | a service exits unrequested | CLI `relay service list` (STATE) | — | service-restart-on-crash (the restart, not `failed`) |
-| Unregister | Settings, CLI | `relay service unregister` | CLI, HTTP `DELETE` | — | verify-fixtures-removed |
-| Menu visibility and order | Settings > Services | row > menu checkbox; drag | HTTP `PUT /api/services/{id}/menu`, `/position` | — | none |
-| Service actions and config (manifest) | Settings > Service Inspector | service > action or Config | screen | — | none |
-| Reveal a service's log | Settings > Service Inspector | Reveal log | screen | — | none |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Register a service (command, capabilities) | Settings > Services, CLI | `relay service register`, or Add Service | CLI, HTTP `POST /api/services` | owner gate | gate-service-register-pos, gate-service-register-neg | Settings > Services > + New Service > Add Service | `relay service register` |
+| Edit a service | Settings > Services | row > Edit | HTTP `PUT /api/services/{id}` | owner gate if fields change | none | Settings > Services > card > Edit > Save | `relay service register --name <existing>` |
+| Start, stop, restart | Settings, tray, CLI | tray service row; `relay service restart` | CLI, HTTP `POST /api/services/{id}/start`, `/stop` [configure] | — | service-start-stop, session-host-restart | tray > service row; Settings > Services > Start / Stop | `relay service restart` |
+| Autostart at login | Settings > Services | row > autostart | HTTP `PUT /api/services/{id}/autostart` | — | none | Settings > Services > card > Start with Relay | `relay service register --autostart` |
+| Restart on crash, then `failed` after max attempts | background | a service exits unrequested | CLI `relay service list` (STATE) | — | service-restart-on-crash (the restart, not `failed`) | n/a | n/a |
+| Unregister | Settings, CLI | `relay service unregister` | CLI, HTTP `DELETE` | — | verify-fixtures-removed | Settings > Services > Remove | `relay service unregister` |
+| Menu visibility and order | Settings > Services | row > menu checkbox; drag | HTTP `PUT /api/services/{id}/menu`, `/position` | — | none | Settings > Services > card > Show in menu; ↑ / ↓ | `settings.json` `services[].hide_from_menu`, `services[]` order |
+| Service actions and config (manifest) | Settings > Service Inspector | service > action or Config | screen | — | none | Settings > Service Inspector > service > action / Configuration | none |
+| Reveal a service's log | Settings > Service Inspector | Reveal log | screen | — | none | Settings > Services > card > Logs | none |
 
 ### G6 · Let a session use a model — must-have
 Intent: pick a model for a project or service and have its sessions reach it through relay.
@@ -125,12 +134,12 @@ It worked: the model list shows the configured models, and a chat gets an answer
 Why must-have: every chat turn crosses the model endpoint.
 Areas: models, sessions, audit.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Model list | Settings > Projects, API | model picker; `GET /api/models` (system-only models omitted) | HTTP [proxy] | — | model-list-and-completion |
-| Pick a model per project or service | Settings | project form > Model; service > allowed models | HTTP `PUT /api/projects/{id}` | — | none |
-| Model endpoint (`/v1/chat/completions`, `/v1/models`, passthrough) | socket, optional TCP | a session or relayLLM calls `model.sock` | HTTP (model socket) | — | model-list-and-completion (one chat turn and its `model_call` row) |
-| Model keys (`rmk_`) for sessions | background | minted at session launch | HTTP (model socket) | — | none |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Model list | Settings > Projects, API | model picker; `GET /api/models` (system-only models omitted) | HTTP [proxy] | — | model-list-and-completion | Settings > Projects > Edit > Allowed Models; eve > New Session > Web Chat > Model | none |
+| Pick a model per project or service | Settings | project form > Model; service > allowed models | HTTP `PUT /api/projects/{id}` | — | none | Settings > Projects or Services > Edit > Allowed Models | `relay service register --allowed-model`; `settings.json` `projects[].allowed_models` |
+| Model endpoint (`/v1/chat/completions`, `/v1/models`, passthrough) | socket, optional TCP | a session or relayLLM calls `model.sock` | HTTP (model socket) | — | model-list-and-completion (one chat turn and its `model_call` row) | n/a | n/a |
+| Model keys (`rmk_`) for sessions | background | minted at session launch | HTTP (model socket) | — | none | n/a | n/a |
 
 ### G7 · Sign in from a browser — should
 Intent: reach relay's and eve's web pages from a browser with a passkey.
@@ -138,15 +147,15 @@ It worked: a registered passkey signs in; a revoked one no longer does.
 Why should: used when away from the Mac; a break is loud, since the sign-in fails in front of the user.
 Areas: login.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Mint a login code | tray, CLI | tray > Show Login Code…; `relay login enrol` | CLI | owner gate | gate-login-bootstrap-mint-pos (NOTRUN), gate-login-bootstrap-mint-neg |
-| Register a passkey | login page | `/relay/login` > code > Register | browser | owner gate (ceremony) | none |
-| Sign in with a passkey | login page | `/relay/login` > passkey | browser | owner gate (ceremony) | none |
-| List passkeys, sign out a session | Settings > Passkeys, CLI | `relay login list` | CLI, screen | — | none |
-| Revoke a passkey | Settings > Passkeys, CLI | `relay login revoke --id` | CLI | owner gate | gate-login-passkey-revoke-pos (NOTRUN), gate-login-passkey-revoke-neg |
-| Open eve passkey enrolment | tray, CLI | tray > Allow Eve Passkey Enrolment…; `relay eve enrol` | CLI | owner gate | gate-eve-enrolment-open-pos, gate-eve-enrolment-open-neg |
-| List and revoke eve passkeys | Settings > Passkeys, CLI | `relay eve list`, `relay eve revoke` | CLI | revoke is an owner gate | gate-eve-passkey-revoke-pos (NOTRUN), gate-eve-passkey-revoke-neg |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Mint a login code | tray, CLI | tray > Show Login Code…; `relay login enrol` | CLI | owner gate | gate-login-bootstrap-mint-pos (NOTRUN), gate-login-bootstrap-mint-neg | tray > Show Login Code... | `relay login enrol` |
+| Register a passkey | login page | `/relay/login` > code > Register | browser | owner gate (ceremony) | none | /relay/login > code > Register a passkey | none |
+| Sign in with a passkey | login page | `/relay/login` > passkey | browser | owner gate (ceremony) | none | /relay/login > Sign in | none |
+| List passkeys, sign out a session | Settings > Passkeys, CLI | `relay login list` | CLI, screen | — | none | Settings > Passkeys; Signed-in Browsers > Sign out | `relay login list` |
+| Revoke a passkey | Settings > Passkeys, CLI | `relay login revoke --id` | CLI | owner gate | gate-login-passkey-revoke-pos (NOTRUN), gate-login-passkey-revoke-neg | Settings > Passkeys > Revoke | `relay login revoke --id` |
+| Open eve passkey enrolment | tray, CLI | tray > Allow Eve Passkey Enrolment…; `relay eve enrol` | CLI | owner gate | gate-eve-enrolment-open-pos, gate-eve-enrolment-open-neg | tray > Allow Eve Passkey Enrolment… | `relay eve enrol` |
+| List and revoke eve passkeys | Settings > Passkeys, CLI | `relay eve list`, `relay eve revoke` | CLI | revoke is an owner gate | gate-eve-passkey-revoke-pos (NOTRUN), gate-eve-passkey-revoke-neg | Settings > Passkeys > Eve passkeys > Revoke | `relay eve list`, `relay eve revoke` |
 
 ### G8 · Operate relay from the tray and Settings — should
 Intent: see at a glance that relay is healthy and get to what needs attention.
@@ -154,16 +163,16 @@ It worked: Settings opens, Overview's tiles and attention list match reality, an
 Why should: used daily, but a break is visible at once.
 Areas: tray, settings-ui.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Open Settings | tray | tray > Settings… (⌘,) | screen | — | none |
-| Overview tiles and attention list | Settings > Overview | Overview | screen | — | none |
-| Recent tool calls (call_tool rows only) | Settings > Overview | Overview > Recent tool calls | screen | — | none |
-| Reveal config and logs folders | Settings > Overview | Reveal config / Reveal logs | screen | — | none |
-| Service rows with state | tray | menu bar icon | screen | — | none |
-| Pending enrolment line and notification | tray | tray line or banner → Remote Clients | screen | — | none |
-| Sealed-store warning | tray | menu bar icon | screen | — | none |
-| Quit Relay | tray | tray > Quit Relay | screen | — | none |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Open Settings | tray | tray > Settings… (⌘,) | screen | — | none | tray > Settings... (⌘,) | none |
+| Overview tiles and attention list | Settings > Overview | Overview | screen | — | none | Settings > Overview | none |
+| Recent tool calls (call_tool rows only) | Settings > Overview | Overview > Recent tool calls | screen | — | none | Settings > Overview > Recent tool calls | `relay audit --tail` |
+| Reveal config and logs folders | Settings > Overview | Reveal config / Reveal logs | screen | — | none | Settings > Overview > Reveal / Reveal logs | none |
+| Service rows with state | tray | menu bar icon | screen | — | none | tray > service row | `relay service list` |
+| Pending enrolment line and notification | tray | tray line or banner → Remote Clients | screen | — | none | tray > Pending enrolment requests line, or the banner | `relay enrol requests` |
+| Sealed-store warning | tray | menu bar icon | screen | — | none | tray > Sealed store line; Overview > Needs attention | none |
+| Quit Relay | tray | tray > Quit Relay | screen | — | none | tray > Quit Relay | none |
 
 ### G9 · Let a script or another tool drive relay — should
 Intent: give a script a scoped credential for relay's control plane.
@@ -171,12 +180,12 @@ It worked: the credential's class allows what it should and nothing more; a revo
 Why should: every journey and several clients depend on it, but a break is loud.
 Areas: credentials.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Mint a credential | CLI | `relay credential mint --class …` | CLI | owner gate | gate-credential-mint-pos, execute-credential-renewal, gate-credential-mint-neg |
-| List credentials | CLI | `relay credential list` | CLI | — | gate-credential-mint-pos |
-| Revoke a credential | CLI | `relay credential revoke --id` | CLI | owner gate | gate-credential-revoke-pos, gate-credential-revoke-neg |
-| Class enforcement on `/api/*` | API | any route with a bearer | HTTP | — | every journey (implicitly) |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Mint a credential | CLI | `relay credential mint --class …` | CLI | owner gate | gate-credential-mint-pos, execute-credential-renewal, gate-credential-mint-neg | none | `relay credential mint` |
+| List credentials | CLI | `relay credential list` | CLI | — | gate-credential-mint-pos | none | `relay credential list` |
+| Revoke a credential | CLI | `relay credential revoke --id` | CLI | owner gate | gate-credential-revoke-pos, gate-credential-revoke-neg | none | `relay credential revoke` |
+| Class enforcement on `/api/*` | API | any route with a bearer | HTTP | — | every journey (implicitly) | n/a | n/a |
 
 ### G10 · Give a remote machine access — later
 Intent: let another machine reach chosen projects over mTLS.
@@ -184,13 +193,13 @@ It worked: an approved client reaches its projects and only those; a revoked one
 Why later: set up rarely; almost every step is an owner gate.
 Areas: remote.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Configure the remote listener | Settings > Remote Clients | listener form | screen | owner gate | gate-remote-configure-pos (NOTRUN), gate-remote-configure-neg |
-| Lodge, list, refuse an enrolment request | CLI, Settings | `relay enrol requests`, `relay enrol refuse` | CLI, HTTP `/api/enrolments` | — | none |
-| Approve, sign, create, update, revoke | CLI, Settings | `relay enrol approve …` | CLI | owner gate | gate-enrolment-create-pos, gate-enrolment-sign-pos, gate-enrolment-update-pos, gate-enrolment-revoke-pos (all NOTRUN); gate-enrolment-create-neg, gate-enrolment-sign-neg, gate-enrolment-update-neg, gate-enrolment-revoke-neg |
-| CA fingerprint | CLI | `relay enrol ca-fingerprint` | CLI | — | none |
-| Remote calls (fail-closed, audited) | mTLS listener | an enrolled client calls a tool | mTLS | — | none |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Configure the remote listener | Settings > Remote Clients | listener form | screen | owner gate | gate-remote-configure-pos (NOTRUN), gate-remote-configure-neg | Settings > Remote Clients > Remote Listener > Save | none |
+| Lodge, list, refuse an enrolment request | CLI, Settings | `relay enrol requests`, `relay enrol refuse` | CLI, HTTP `/api/enrolments` | — | none | Settings > Remote Clients > Pending requests > Refuse | `relay enrol requests`, `relay enrol refuse` |
+| Approve, sign, create, update, revoke | CLI, Settings | `relay enrol approve …` | CLI | owner gate | gate-enrolment-create-pos, gate-enrolment-sign-pos, gate-enrolment-update-pos, gate-enrolment-revoke-pos (all NOTRUN); gate-enrolment-create-neg, gate-enrolment-sign-neg, gate-enrolment-update-neg, gate-enrolment-revoke-neg | Settings > Remote Clients > Approve… / + New Enrolment / Revoke | `relay enrol approve`, `sign`, `create`, `update`, `revoke` |
+| CA fingerprint | CLI | `relay enrol ca-fingerprint` | CLI | — | none | Settings > Remote Clients > CA fingerprint > Copy | `relay enrol ca-fingerprint` |
+| Remote calls (fail-closed, audited) | mTLS listener | an enrolled client calls a tool | mTLS | — | none | n/a | n/a |
 
 ### G11 · Work on a remote directory over SSH — later
 Intent: treat a folder on another machine as a project.
@@ -199,11 +208,11 @@ Why later: the devbox world has no hosts; only slow-route-keepalive adds one,
 an unreachable host it removes again.
 Areas: hosts.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Add, edit, remove a host | Settings > Hosts | Add host | HTTP `/api/hosts` [configure] | — | slow-route-keepalive (add, remove), verify-fixtures-removed (remove) |
-| Probe, disconnect | Settings > Hosts | row > Probe / Disconnect | HTTP `/api/hosts/{id}/probe`, `/disconnect` | — | none |
-| Host templates | Settings > Hosts | row > Templates | HTTP `/api/hosts/{id}/templates` | — | none |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Add, edit, remove a host | Settings > Hosts | Add host | HTTP `/api/hosts` [configure] | — | slow-route-keepalive (add, remove), verify-fixtures-removed (remove) | Settings > Hosts > + Add host; row > Edit / Remove | `settings.json` `hosts[]` |
+| Probe, disconnect | Settings > Hosts | row > Probe / Disconnect | HTTP `/api/hosts/{id}/probe`, `/disconnect` | — | none | Settings > Hosts > row > Probe / Disconnect | none |
+| Host templates | Settings > Hosts | row > Templates | HTTP `/api/hosts/{id}/templates` | — | none | Settings > Hosts > row > Edit > Terminal templates | `settings.json` `hosts[].terminal_templates` |
 
 ### G12 · Recover from a broken sealed store — later
 Intent: start over when the keychain key is lost.
@@ -211,9 +220,9 @@ It worked: relay names what it destroys, and starts clean.
 Why later: break-glass only; it is an owner gate by design.
 Areas: sealed.
 
-| Feature | Surface | Reach | Door | Gate | Journey |
-|---|---|---|---|---|---|
-| Reset Sealed Store… | tray | tray > Reset Sealed Store… | screen | owner gate | gate-sealed-reset-pos (NOTRUN), gate-sealed-reset-neg |
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Reset Sealed Store… | tray | tray > Reset Sealed Store… | screen | owner gate | gate-sealed-reset-pos (NOTRUN), gate-sealed-reset-neg | tray > Reset Sealed Store... | none |
 
 ## Owner gates
 
