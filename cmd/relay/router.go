@@ -15,6 +15,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
@@ -656,6 +657,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// data unsafe.
 	meta := mergeProjectID(project.FilterKnownContextFields(stored.Context[extID], schema), stored.ProjectID)
 	meta = mergeArgsSHA256(meta, bridge.ArgsSHA256FromContext(ctx))
+	meta = mergeTraceID(meta, traceForMcp(ctx, settings, extID, schema))
 
 	// Audited BEFORE the first thing that can refuse (ADR-011 decision 7),
 	// taken from `meta` -- the bytes that would go on the wire -- rather
@@ -808,6 +810,57 @@ func mergeProjectID(base json.RawMessage, projectID string) json.RawMessage {
 		return base
 	}
 	return out
+}
+
+// mergeTraceID adds the call's trace ID to an existing _meta object. It never
+// creates a _meta: an absent one means nobody mediated the call, and a key the
+// grant or schema already put there is not overwritten.
+func mergeTraceID(base json.RawMessage, traceID string) json.RawMessage {
+	if !logging.ValidTraceID(traceID) {
+		return base
+	}
+	if len(base) == 0 || string(base) == "null" {
+		return base
+	}
+	m := map[string]json.RawMessage{}
+	if err := json.Unmarshal(base, &m); err != nil || len(m) == 0 {
+		return base
+	}
+	if _, present := m["trace_id"]; present {
+		return base
+	}
+	encoded, err := json.Marshal(traceID)
+	if err != nil {
+		return base
+	}
+	m["trace_id"] = encoded
+	out, err := json.Marshal(m)
+	if err != nil {
+		return base
+	}
+	return out
+}
+
+// traceForMcp returns the trace ID to forward to extID, or "" when none may
+// go: no trace in ctx, an unknown MCP, an HTTP MCP off this machine, or an MCP
+// whose schema declares its own trace_id field.
+func traceForMcp(ctx context.Context, settings *config.Settings, extID string, schema project.ContextSchema) string {
+	traceID := logging.TraceFromContext(ctx)
+	if traceID == "" {
+		return ""
+	}
+	if _, declared := schema.Field("trace_id"); declared {
+		return ""
+	}
+	for i := range settings.ExternalMcps {
+		if settings.ExternalMcps[i].ID == extID {
+			if !mcpbroker.CarriesTrace(&settings.ExternalMcps[i]) {
+				return ""
+			}
+			return traceID
+		}
+	}
+	return ""
 }
 
 // checkScopePresence requires a value in the grant's context for every

@@ -181,6 +181,17 @@ func main() {
 			writeResp(req.ID, result)
 		case "tools/list":
 			writeResp(req.ID, json.RawMessage(`{"tools":[{"name":"testmcp_ping","description":"ping","inputSchema":{"type":"object"}}]}`))
+		case "env":
+			// Reports the trace ID relay put in this process's environment.
+			b, _ := json.Marshal(map[string]string{"value": os.Getenv("RELAY_TRACE_ID")})
+			writeResp(req.ID, b)
+		case "stderr":
+			var p struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(req.Params, &p)
+			_, _ = os.Stderr.WriteString(p.Text)
+			writeResp(req.ID, json.RawMessage(`{}`))
 		case "hang":
 			// Never respond — the caller's ctx or request timeout must fire.
 		case "exit":

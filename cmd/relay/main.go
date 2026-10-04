@@ -39,6 +39,10 @@ var (
 const relayServiceID = "relay"
 
 func main() {
+	// Deliberate: an inherited value must not reach a child; only a spawn that
+	// has a request's trace ID sets it.
+	os.Unsetenv(logging.EnvTraceID)
+
 	args := os.Args[1:]
 	args, configDirExplicit := applyConfigDirFlag(args)
 

@@ -33,7 +33,7 @@ project_routes.go        HTTP project routes; shares Settings mutators with ipc_
 project_dto.go           projectView DTO — strips the token from every response except rotate
 host_routes.go           HTTP host routes (docs/ssh-hosts.md) — GET/POST/PUT/DELETE /api/hosts[/{id}], probe, disconnect
 host_ops.go              HostOps: the ungated core host_routes.go and ipc_hosts.go share; runs sshhost.Probe and writes the host.probe audit event
-router.go                Bridge auth (project tokens, launch identity by capability, directory auth), Hello, tool filtering, access mode, scope presence, _meta injection
+router.go                Bridge auth (project tokens, launch identity by capability, directory auth), Hello, tool filtering, access mode, scope presence, _meta injection (project_id, args_sha256, trace_id)
 audit_call.go            Nil-safe per-call event builder used by the router instrumentation; reads AuditRecorder
                          via RedactCallArgs/PreviewResult rather than its unexported config
 audit_cmd.go             `relay audit` CLI
@@ -110,7 +110,8 @@ project/                 The project domain — the unit a grant is scoped to: c
                          handlers and the DTO stay in main.
 logging/                 The one slog setup every relay process installs (Install: JSON lines on
                          stderr or the log file, level from RELAY_LOG_LEVEL), the trace ID helpers
-                         (X-Trace-Id, validated, carried in the context) and the line schema.
+                         (X-Trace-Id, validated, carried in the context), `EnvTraceID` (RELAY_TRACE_ID, which
+                         main unsets at start and only `service.SetTraceEnv` sets on a spawn) and the line schema.
                          Standard: docs/logging-standard.md. The frontend wraps both doors in
                          frontendTrace (frontend_server.go), which mints or accepts the trace ID
                          and writes one frontend.request line per request; successful GET/HEAD polls
@@ -160,6 +161,8 @@ audit/                   The tool-call audit log engine: the event/actor/config 
                          stay in main, since they reach the router or unexported recorder state
                          directly.
 mcpbroker/               The external-MCP client: the stdio and HTTP transports and their JSON-RPC
+                         (a stdio child's stderr goes line by line to logs/mcp/<id>.log through
+                         stderr_log.go; its spawn env carries RELAY_TRACE_ID when the context has one)
                          framing (external_mcp.go, http_mcp.go), the seatbelt launch decision
                          (mcp_sandbox.go), the OAuth 2.1 client relay authenticates to an upstream
                          HTTP MCP with (oauth.go — PKCE, dynamic registration, refresh; nothing to do
