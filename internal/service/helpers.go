@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 // ScrubEnv removes every entry for each of names from cmd's environment.
@@ -47,6 +48,25 @@ func MergeEnv(cmd *exec.Cmd, env map[string]string) {
 		kept = append(kept, kv)
 	}
 	cmd.Env = append(kept, envSlice(env)...)
+}
+
+// SetTraceEnv drops every RELAY_TRACE_ID entry from cmd's environment and sets
+// one when traceID is valid. Call it after the last MergeEnv so nothing
+// re-adds a stale value. The ID is not a credential.
+func SetTraceEnv(cmd *exec.Cmd, traceID string) {
+	base := cmd.Environ()
+	kept := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		key, _, _ := strings.Cut(kv, "=")
+		if key == logging.EnvTraceID {
+			continue
+		}
+		kept = append(kept, kv)
+	}
+	if logging.ValidTraceID(traceID) {
+		kept = append(kept, logging.EnvTraceID+"="+traceID)
+	}
+	cmd.Env = kept
 }
 
 func envSlice(env map[string]string) []string {

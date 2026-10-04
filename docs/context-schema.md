@@ -593,7 +593,8 @@ The reconciliation rule, so every scoping MCP implements it identically:
 
 `_meta` being present at all is a reliable signal that a chokepoint mediated the
 call: relay injects `_meta.project_id` on every mediated call and has since
-ADR-007. An MCP can therefore require its own declared restrict fields whenever
+ADR-007, and `_meta.trace_id` when the call carries a trace ID and the MCP is a
+stdio child or an HTTP MCP on this machine and declares no field of that name. An MCP can therefore require its own declared restrict fields whenever
 `_meta` is present, needing nothing from relay beyond the fact of mediation. An
 absent `_meta` means nobody mediated — an operator running the MCP over stdio by
 hand, which is same-user local access.

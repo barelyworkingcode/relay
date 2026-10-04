@@ -32,6 +32,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -98,6 +99,9 @@ type Manager struct {
 	// startup to turn a child's death, restart, or abandonment into an audit
 	// record. Nil until SetHealthObserver is called.
 	onHealth func(HealthEvent)
+
+	// Opens the per-MCP stderr log. Nil until SetStderrLog is called.
+	openStderr StderrLogOpener
 }
 
 type pendingResponse struct {
@@ -140,6 +144,8 @@ type externalMcpConn struct {
 	baseMcpConn
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
+	// Closed by Close after cmd.Wait, when the child's stderr is captured.
+	stderrLog io.Closer
 
 	mu       sync.Mutex // protects the pending map and progress map
 	pending  map[int64]*pendingResponse
@@ -441,24 +447,41 @@ func (m *Manager) startOne(ctx context.Context, mcpCfg *config.ExternalMcp) erro
 }
 
 // The caller is responsible for calling Close() on error or when done.
-func spawnStdioConn(command string, args []string, env map[string]string, cfg *config.ExternalMcp) (*externalMcpConn, error) {
+//
+// A non-nil stderr is owned by this function: it is closed on every error path
+// and otherwise by the connection's Close.
+func spawnStdioConn(command string, args []string, env map[string]string, cfg *config.ExternalMcp, traceID string, stderr io.WriteCloser) (*externalMcpConn, error) {
+	closeStderr := func() {
+		if stderr != nil {
+			_ = stderr.Close()
+		}
+	}
 	cmd := exec.Command(command, args...)
 	service.SetProcessGroup(cmd)
 	service.MergeEnv(cmd, env)
+	service.SetTraceEnv(cmd, traceID)
+	if stderr != nil {
+		cmd.Stderr = newStderrLineWriter(stderr, maxStderrLineBytes)
+		// A grandchild that inherits the stderr pipe must not hold Wait open.
+		cmd.WaitDelay = mcpStderrWaitDelay
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		closeStderr()
 		return nil, fmt.Errorf("stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
+		closeStderr()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		closeStderr()
 		return nil, fmt.Errorf("spawn failed: %w", err)
 	}
 
@@ -468,6 +491,9 @@ func spawnStdioConn(command string, args []string, env map[string]string, cfg *c
 		pending:     make(map[int64]*pendingResponse),
 		progressSem: make(chan struct{}, maxInflightProgress),
 		readerDone:  make(chan struct{}),
+	}
+	if stderr != nil {
+		conn.stderrLog = cmd.Stderr.(io.Closer)
 	}
 	if cfg != nil {
 		conn.config = *cfg
@@ -515,7 +541,19 @@ func (m *Manager) connectStdio(ctx context.Context, sup *mcpSupervisor) (*extern
 	if err != nil {
 		return nil, fmt.Errorf("env: %w", err)
 	}
-	conn, err := spawnStdioConn(command, args, env, &sup.cfg)
+	var stderr io.WriteCloser
+	m.mu.Lock()
+	open := m.openStderr
+	m.mu.Unlock()
+	if open != nil {
+		w, err := open(sup.id)
+		if err != nil {
+			slog.Warn("MCP stderr log unavailable", "op", "mcp.stderr", "status", "error", "id", sup.id, "error", err)
+		} else {
+			stderr = w
+		}
+	}
+	conn, err := spawnStdioConn(command, args, env, &sup.cfg, logging.TraceFromContext(ctx), stderr)
 	if err != nil {
 		return nil, err
 	}
@@ -1178,7 +1216,7 @@ func discoverMcp(ctx context.Context, conn Connection, base config.ExternalMcp) 
 
 // One-shot spawn, handshake, tool listing, then kill.
 func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, args []string, env map[string]string) (*config.ExternalMcp, error) {
-	conn, err := spawnStdioConn(command, args, env, nil)
+	conn, err := spawnStdioConn(command, args, env, nil, logging.TraceFromContext(ctx), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1558,6 +1596,9 @@ func (c *externalMcpConn) Close() {
 		if c.cmd != nil {
 			service.KillProcessGroup(c.cmd)
 			_ = c.cmd.Wait()
+		}
+		if c.stderrLog != nil {
+			_ = c.stderrLog.Close()
 		}
 		// Wait for readLoop to finish so no goroutine is leaked and all pending
 		// requests are drained before the connection is considered closed.

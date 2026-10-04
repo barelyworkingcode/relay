@@ -21,7 +21,7 @@ import (
 func newTestMcpConn(t *testing.T) *externalMcpConn {
 	t.Helper()
 	bin := buildTestMcpBinary(t)
-	conn, err := spawnStdioConn(bin, nil, nil, nil)
+	conn, err := spawnStdioConn(bin, nil, nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("spawnStdioConn: %v", err)
 	}

@@ -10,6 +10,10 @@ import (
 // deliberately not in the x-relay-* family, which the model path strips.
 const TraceHeader = "X-Trace-Id"
 
+// EnvTraceID names the spawn-environment variable that carries a trace ID to
+// a child process.
+const EnvTraceID = "RELAY_TRACE_ID"
+
 type traceKey struct{}
 
 // NewTraceID returns 32 lowercase hex characters from crypto/rand.

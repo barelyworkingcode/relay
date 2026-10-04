@@ -381,6 +381,8 @@ func runTrayApp() {
 		},
 	)
 
+	extMgr.SetStderrLog(openMcpStderrLog)
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	registry := service.NewRegistry()
