@@ -15,7 +15,6 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/hook"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
 	"github.com/barelyworkingcode/relay/internal/sessions/migrate"
@@ -63,6 +63,7 @@ func usage() {
 // the real terminal.Manager/session.Manager, and serves C5's internal API
 // and C6's hook socket on top of them.
 func runService(args []string) int {
+	logging.Install(os.Stderr, logging.Options{DefaultService: config.RelaySessionsServiceID})
 	cfg, err := parseServiceArgs(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "relay-sessions service: %v\n", err)
@@ -77,27 +78,31 @@ func runService(args []string) int {
 	relayPID := cfg.relayPIDOverride
 	secret, launched, err := bridge.ReadLaunchSecret()
 	if err != nil {
-		log.Fatalf("relay-sessions: launch fd: %v", err)
+		slog.Error("relay-sessions: launch fd", "error", err)
+		return 1
 	}
 	if launched {
 		if bridgeSock == "" {
-			log.Fatal("relay-sessions: launched by relay with no RELAY_BRIDGE_SOCKET")
+			slog.Error("relay-sessions: launched by relay with no RELAY_BRIDGE_SOCKET", "error", "bridge_socket_unset")
+			return 1
 		}
 		hello, err := bridge.SendHello(bridgeSock, cfg.serviceName, secret)
 		if err != nil {
-			log.Fatalf("relay-sessions: hello: %v", err)
+			slog.Error("relay-sessions: hello", "error", err)
+			return 1
 		}
 		relayPID = hello.RelayPID
-		log.Printf("relay-sessions: identity bound (relay pid %d)", relayPID)
+		slog.Info("relay-sessions: identity bound", "relay_pid", relayPID)
 	} else if relayPID == 0 {
-		log.Println("relay-sessions: not launched by relay and no -relay-pid override; the internal API will refuse every caller")
+		slog.Warn("relay-sessions: not launched by relay and no -relay-pid override; the internal API will refuse every caller")
 	}
 
 	shimBinary := cfg.shimBinary
 	if shimBinary == "" {
 		self, err := os.Executable()
 		if err != nil {
-			log.Fatalf("relay-sessions: resolve own executable path: %v", err)
+			slog.Error("relay-sessions: resolve own executable path", "error", err)
+			return 1
 		}
 		shimBinary = self
 	}
@@ -129,7 +134,8 @@ func runService(args []string) int {
 	// never touches a flag, an environment variable, or a log line.
 	internalBearer, err := generateBearer()
 	if err != nil {
-		log.Fatalf("relay-sessions: generate internal bearer: %v", err)
+		slog.Error("relay-sessions: generate internal bearer", "error", err)
+		return 1
 	}
 
 	srv := hostapi.New(hostapi.Config{
@@ -145,19 +151,21 @@ func runService(args []string) int {
 		reportSessionExited(bridgeSock, id, rootPID, exitCode, reason)
 	})
 	if err := srv.ListenInternal(); err != nil {
-		log.Fatalf("relay-sessions: %v", err)
+		slog.Error("relay-sessions: listen internal", "error", err)
+		return 1
 	}
 	if err := srv.ListenHook(); err != nil {
-		log.Fatalf("relay-sessions: %v", err)
+		slog.Error("relay-sessions: listen hook", "error", err)
+		return 1
 	}
 	go func() {
 		if err := srv.ServeInternal(); err != nil {
-			log.Printf("relay-sessions: internal API server: %v", err)
+			slog.Error("relay-sessions: internal API server", "error", err)
 		}
 	}()
 	go func() {
 		if err := srv.ServeHook(); err != nil {
-			log.Printf("relay-sessions: hook server: %v", err)
+			slog.Error("relay-sessions: hook server", "error", err)
 		}
 	}()
 
@@ -185,7 +193,8 @@ func runService(args []string) int {
 			InternalToken:  internalBearer,
 			Manifest:       bridge.Manifest{Routes: config.RelaySessionsManifestRoutes},
 		}); err != nil {
-			log.Fatalf("relay-sessions: register manifest: %v", err)
+			slog.Error("relay-sessions: register manifest", "error", err)
+			return 1
 		}
 	}
 

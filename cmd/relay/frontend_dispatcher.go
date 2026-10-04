@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/gorilla/websocket"
 )
 
@@ -26,7 +27,7 @@ func NewFrontendDispatcher(registry *EnhancedServiceRegistry) *FrontendDispatche
 func (d *FrontendDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	svc := d.registry.LookupByPath(r.URL.Path)
 	if svc == nil {
-		slog.Debug("frontend dispatch: no service for path", "path", r.URL.Path)
+		slog.DebugContext(r.Context(), "frontend dispatch: no service for path", "path", r.URL.Path)
 		http.Error(w, "no service registered for this path", http.StatusNotFound)
 		return
 	}
@@ -73,8 +74,8 @@ func (d *FrontendDispatcher) proxyWS(svc *EnhancedService, w http.ResponseWriter
 
 	clientConn, err := dispatcherWSUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		slog.Warn("frontend dispatch: WS upgrade failed",
-			"service", svc.ServiceID, "error", err)
+		slog.WarnContext(r.Context(), "frontend dispatch: WS upgrade failed",
+			"service_id", svc.ServiceID, "error", err)
 		return
 	}
 	defer func() { _ = clientConn.Close() }()
@@ -83,6 +84,9 @@ func (d *FrontendDispatcher) proxyWS(svc *EnhancedService, w http.ResponseWriter
 	if svc.InternalToken != "" {
 		upstreamHeader.Set("Authorization", "Bearer "+svc.InternalToken)
 	}
+	if id := logging.TraceFromContext(r.Context()); id != "" {
+		upstreamHeader.Set(logging.TraceHeader, id)
+	}
 	upstreamConn, resp, err := dialer.Dial("ws://internal.relay.localsocket"+r.URL.RequestURI(), upstreamHeader)
 	if err != nil {
 		// On handshake failure gorilla may still return a non-nil response
@@ -90,8 +94,8 @@ func (d *FrontendDispatcher) proxyWS(svc *EnhancedService, w http.ResponseWriter
 		if resp != nil {
 			_ = resp.Body.Close()
 		}
-		slog.Warn("frontend dispatch: WS upstream dial failed",
-			"service", svc.ServiceID, "error", err)
+		slog.WarnContext(r.Context(), "frontend dispatch: WS upstream dial failed",
+			"service_id", svc.ServiceID, "error", err)
 		_ = clientConn.WriteControl(
 			websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "upstream unreachable"),

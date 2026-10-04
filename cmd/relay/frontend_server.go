@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/login"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/project"
@@ -118,7 +120,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 
 	s.tcpLn = ln
 	s.tcpServer = &http.Server{
-		Handler:           frontendPublicDoor(publicMux, frontendCredentialAuth(s.routeDeps.store, nil, frontendRecover(warnOnUnmatchedTCPRoute(tcpMux)))),
+		Handler:           frontendTrace(frontendPublicDoor(publicMux, frontendCredentialAuth(s.routeDeps.store, nil, frontendRecover(warnOnUnmatchedTCPRoute(tcpMux))))),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       5 * time.Minute,
 	}
@@ -423,7 +425,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 	// a socket has no origin, so there is no ceremony to serve here and the
 	// public mux is nil rather than populated. Composing it anyway is what
 	// keeps the two doors' shape identical.
-	handler := frontendPublicDoor(nil, frontendCredentialAuth(store, launches, frontendRecover(withRelayRouteReadDeadline(socketMux))))
+	handler := frontendTrace(frontendPublicDoor(nil, frontendCredentialAuth(store, launches, frontendRecover(withRelayRouteReadDeadline(socketMux)))))
 
 	srv := &http.Server{
 		Handler:     handler,
@@ -552,7 +554,7 @@ func frontendCredentialAuth(store config.SettingsStore, launches *service.Launch
 			s = config.FreshSettings(store)
 		}
 		if s == nil || len(s.APICredentials) == 0 {
-			slog.Error("frontend: no API credentials configured — rejecting all requests (fail closed)")
+			slog.ErrorContext(r.Context(), "frontend: no API credentials configured — rejecting all requests (fail closed)")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -562,7 +564,7 @@ func frontendCredentialAuth(store config.SettingsStore, launches *service.Launch
 			return
 		}
 		if authenticateAPICredential(s, token) == nil {
-			slog.Warn("frontend: bad bearer token",
+			slog.WarnContext(r.Context(), "frontend: bad bearer token",
 				"method", r.Method, "path", r.URL.Path)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -596,7 +598,7 @@ func frontendCredentialAuth(store config.SettingsStore, launches *service.Launch
 func warnOnUnmatchedTCPRoute(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, pattern := mux.Handler(r); pattern == "" {
-			slog.Warn(unmatchedRouteWarning,
+			slog.WarnContext(r.Context(), unmatchedRouteWarning,
 				"method", r.Method, "path", r.URL.Path, "transport", string(control.TransportTCP))
 		} else {
 			r = setFrontendRouteReadDeadline(w, r)
@@ -680,7 +682,7 @@ func setFrontendRouteReadDeadline(w http.ResponseWriter, r *http.Request) *http.
 		bodyDone.Store(true)
 	} else {
 		if err := rc.SetReadDeadline(time.Now().Add(frontendRouteReadDeadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-			slog.Warn("frontend: could not set read deadline", "error", err, "path", r.URL.Path)
+			slog.WarnContext(r.Context(), "frontend: could not set read deadline", "error", err, "path", r.URL.Path)
 		}
 		r.Body = &deadlineClearingBody{ReadCloser: r.Body, done: func() {
 			if !bodyDone.Swap(true) {
@@ -744,11 +746,123 @@ func frontendRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				slog.Error("frontend: panic in handler",
+				slog.ErrorContext(r.Context(), "frontend: panic in handler",
 					"error", err, "method", r.Method, "path", r.URL.Path)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// frontendPollPaths are periodic client polls. The logging standard forbids a
+// line per poll, so a successful GET or HEAD on one writes nothing; a failing
+// poll still logs.
+var frontendPollPaths = map[string]struct{}{
+	"/api/eve/passkeys/revocations": {},
+	"/api/eve/passkey-enrolment":    {},
+	"/api/auth/status":              {},
+}
+
+// frontendTrace is outermost on both doors so every line written below it,
+// and every upstream hop, carries one trace ID. It logs only the method, the
+// path without its query, and the outcome: never headers or bodies.
+func frontendTrace(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := logging.TraceIDOrNew(r.Header.Get(logging.TraceHeader))
+		r.Header.Set(logging.TraceHeader, id)
+		r = r.WithContext(logging.ContextWithTrace(r.Context(), id))
+		sw := &frontendStatusWriter{ResponseWriter: w}
+		start := time.Now()
+		defer func() {
+			logFrontendRequest(r, sw.statusCode(), time.Since(start))
+		}()
+		next.ServeHTTP(sw, r)
+	})
+}
+
+func logFrontendRequest(r *http.Request, code int, took time.Duration) {
+	if code < http.StatusBadRequest && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		if _, poll := frontendPollPaths[r.URL.Path]; poll {
+			return
+		}
+	}
+	level, status, errCode := slog.LevelInfo, "ok", ""
+	switch {
+	case code == http.StatusUnauthorized || code == http.StatusForbidden:
+		level, status, errCode = slog.LevelWarn, "denied", fmt.Sprintf("http_%d", code)
+	case code >= 500:
+		level, status, errCode = slog.LevelError, "error", fmt.Sprintf("http_%d", code)
+	case code >= 400:
+		level, status, errCode = slog.LevelWarn, "error", fmt.Sprintf("http_%d", code)
+	}
+	path := r.URL.Path
+	if rs := []rune(path); len(rs) > logging.MaxTextChars {
+		path = string(rs[:logging.MaxTextChars])
+	}
+	attrs := []any{
+		"op", "frontend.request",
+		"status", status,
+		"duration_ms", took.Milliseconds(),
+		"method", r.Method,
+		"path", path,
+		"http_status", code,
+	}
+	if errCode != "" {
+		attrs = append(attrs, "error", errCode)
+	}
+	slog.Log(r.Context(), level, "frontend request", attrs...)
+}
+
+// frontendStatusWriter records the status for the request line. Unwrap is
+// load-bearing: http.ResponseController (the route read deadline) reaches the
+// connection through it. Hijack records 101 because a hijacked connection
+// never calls WriteHeader.
+type frontendStatusWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (w *frontendStatusWriter) WriteHeader(code int) {
+	if w.code == 0 && code >= 200 {
+		w.code = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *frontendStatusWriter) Write(p []byte) (int, error) {
+	if w.code == 0 {
+		w.code = http.StatusOK
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *frontendStatusWriter) Flush() {
+	if w.code == 0 {
+		w.code = http.StatusOK
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *frontendStatusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	conn, rw, err := h.Hijack()
+	if err == nil {
+		w.code = http.StatusSwitchingProtocols
+	}
+	return conn, rw, err
+}
+
+func (w *frontendStatusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *frontendStatusWriter) statusCode() int {
+	if w.code == 0 {
+		return http.StatusOK
+	}
+	return w.code
 }

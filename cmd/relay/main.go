@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -35,14 +35,10 @@ var (
 	HelperTeam   = ""
 )
 
-func main() {
-	logLevel := slog.LevelInfo
-	if env := os.Getenv("RELAY_LOG_LEVEL"); env != "" {
-		if err := logLevel.UnmarshalText([]byte(env)); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: invalid RELAY_LOG_LEVEL %q, using info\n", env)
-		}
-	}
+// relayServiceID is the service id on every line the tray app and CLI write.
+const relayServiceID = "relay"
 
+func main() {
 	args := os.Args[1:]
 	args, configDirExplicit := applyConfigDirFlag(args)
 
@@ -54,7 +50,7 @@ func main() {
 			logOut = io.MultiWriter(os.Stderr, rw)
 		}
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: logLevel})))
+	logging.Install(logOut, logging.Options{DefaultService: relayServiceID})
 
 	if len(args) == 0 {
 		runTrayApp()
