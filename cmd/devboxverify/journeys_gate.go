@@ -35,6 +35,7 @@ const (
 	p4Name          = "devbox-verify"
 	probePrefix     = "devboxverify-probe-"
 	crashPrefix     = "devboxverify-crash-"
+	crashNamePrefix = "devboxverify crash "
 	grantNamePrefix = "Verify Grant "
 	probeTool       = "testmcp_ping"
 	renewWithin     = 48 * time.Hour
@@ -637,7 +638,7 @@ func runServicePos(ctx context.Context, e env) result {
 	dump := filepath.Join(gateStateDir(), "crash-"+e.Nonce+".env")
 	var r servicePosRun
 	r.CLI, r.Dialog = gatedCLI(ctx, e, "("+svcID+")",
-		"service", "register", "--id", svcID, "--name", "devboxverify crash "+e.Nonce,
+		"service", "register", "--id", svcID, "--name", crashNamePrefix+e.Nonce,
 		"--command", filepath.Join(e.BinDir, "testservice"), "--args=--dump-env", "--args="+dump)
 	if r.CLI.Exit == 0 {
 		ids, err := listServiceIDs(ctx, e)
