@@ -214,6 +214,7 @@ type BridgeRequest struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Token     string          `json:"token,omitempty"`
 	ProjectID string          `json:"project_id,omitempty"`
+	TraceID   string          `json:"trace_id,omitempty"`
 
 	// Kind is Hello-only and optional: the IdentityKind the caller expects to
 	// bind (plan-broker-and-sessions.md §2 C2). Absent means "don't care" —

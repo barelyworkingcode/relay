@@ -22,6 +22,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/modelbroker"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -114,6 +115,9 @@ type ModelCallAudit struct {
 	// (docs/model-endpoint.md's Limits and Audit sections).
 	Outcome    string
 	DurationMS int64
+
+	// traceID is set only by auditFor, from the request context.
+	traceID string
 }
 
 // modelCaller is what the auth resolver hands the rest of the handler: the
@@ -622,7 +626,70 @@ func (m *ModelEndpointServer) writeError(w http.ResponseWriter, e modelbroker.Er
 	_, _ = w.Write(e.Body)
 }
 
+// modelPollPaths are the routes clients hit on a timer; a successful one
+// writes no log line.
+var modelPollPaths = map[string]struct{}{"/health": {}, "/models": {}, "/v1/models": {}}
+
+// modelLogStatus maps a finished call to its log level, status and error text.
+func modelLogStatus(ev ModelCallAudit) (slog.Level, string, string) {
+	switch ev.Outcome {
+	case "ok":
+		switch {
+		case ev.Status < 400:
+			return slog.LevelInfo, "ok", ""
+		case ev.Status == http.StatusUnauthorized || ev.Status == http.StatusForbidden:
+			return slog.LevelWarn, "denied", fmt.Sprintf("http_%d", ev.Status)
+		case ev.Status < 500:
+			return slog.LevelWarn, "error", fmt.Sprintf("http_%d", ev.Status)
+		default:
+			return slog.LevelError, "error", fmt.Sprintf("http_%d", ev.Status)
+		}
+	case "denied", "not_found", "unauthorized", "remote_project":
+		return slog.LevelWarn, "denied", ev.Outcome
+	case "route_not_found", "bad_request", "body_too_large", "trailing_data", "rate_limited", "client_abort":
+		return slog.LevelWarn, "error", ev.Outcome
+	default:
+		return slog.LevelError, "error", ev.Outcome
+	}
+}
+
+// logModelRequest writes the one model.request line for a finished call. It
+// names the route and caller, never the query, headers, body or credentials.
+func logModelRequest(ev ModelCallAudit) {
+	if ev.Outcome == "ok" && ev.Status < 400 && (ev.Method == http.MethodGet || ev.Method == http.MethodHead) {
+		if _, poll := modelPollPaths[ev.Path]; poll {
+			return
+		}
+	}
+	level, status, errText := modelLogStatus(ev)
+	attrs := []slog.Attr{
+		slog.String("op", "model.request"),
+		slog.String("status", status),
+		slog.Int64("duration_ms", ev.DurationMS),
+		slog.String("error", errText),
+		slog.String("method", logging.Truncate(ev.Method)),
+		slog.String("path", logging.Truncate(ev.Path)),
+		slog.Int("http_status", ev.Status),
+		slog.String("transport", ev.Transport),
+	}
+	if ev.CallerKind != "" {
+		attrs = append(attrs, slog.String("caller_kind", ev.CallerKind))
+	}
+	if ev.CallerName != "" {
+		attrs = append(attrs, slog.String("caller", logging.Truncate(ev.CallerName)))
+	}
+	if ev.SessionID != "" {
+		attrs = append(attrs, slog.String("session_id", ev.SessionID))
+	}
+	if ev.CanonicalModel != "" {
+		attrs = append(attrs, slog.String("model", logging.Truncate(ev.CanonicalModel)))
+	}
+	ctx := logging.ContextWithTrace(context.Background(), ev.traceID)
+	slog.LogAttrs(ctx, level, "model request", attrs...)
+}
+
 func (m *ModelEndpointServer) audit(ev ModelCallAudit) {
+	logModelRequest(ev)
 	if m.AuditHook != nil {
 		m.AuditHook(ev)
 	}
@@ -644,6 +711,7 @@ func (m *ModelEndpointServer) auditFor(caller modelCaller, transport string, r *
 		Status:            status,
 		Outcome:           outcome,
 		DurationMS:        time.Since(start).Milliseconds(),
+		traceID:           logging.TraceFromContext(r.Context()),
 	}
 }
 
@@ -664,6 +732,7 @@ func (m *ModelEndpointServer) auditFor(caller modelCaller, transport string, r *
 // every other route's branch follows from its path.
 func (m *ModelEndpointServer) Handler(transport string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(logging.ContextWithTrace(r.Context(), logging.TraceIDOrNew(r.Header.Get(logging.TraceHeader))))
 		start := time.Now()
 
 		if name, ok := modelbroker.MatchPassthrough(r.URL.Path); ok {
@@ -1190,6 +1259,12 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 			if strings.HasPrefix(strings.ToLower(k), "x-relay-") {
 				req.Header.Del(k)
 			}
+		}
+		// upstreamTransport only dials the registered unix socket, so this hop
+		// is always on-box and the ID may travel with the request.
+		req.Header.Del(logging.TraceHeader)
+		if id := logging.TraceFromContext(req.Context()); id != "" {
+			req.Header.Set(logging.TraceHeader, id)
 		}
 	}
 	rp.ModifyResponse = func(resp *http.Response) error {

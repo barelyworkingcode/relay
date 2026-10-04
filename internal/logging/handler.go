@@ -305,6 +305,9 @@ func valueString(v slog.Value) string {
 	return v.String()
 }
 
+// Truncate cuts s to MaxTextChars runes.
+func Truncate(s string) string { return truncate(s) }
+
 func truncate(s string) string {
 	if len(s) <= MaxTextChars || utf8.RuneCountInString(s) <= MaxTextChars {
 		return s

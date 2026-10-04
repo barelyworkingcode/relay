@@ -309,6 +309,14 @@ disconnects mid-stream cancels the outbound request to the upstream via the
 shared request context, the same propagation `net/http` gives any reverse
 proxy.
 
+On both branches relay sets `X-Trace-Id` on the forwarded request from the
+validated trace ID (the caller's, if it sent a valid one, else a new one);
+see `logging-standard.md`. Every call writes one `model.request` log line
+except a successful poll (`GET`/`HEAD` of `/health`, `/models` or
+`/v1/models`). The line carries the method, path, status, transport, caller and
+canonical model name. It never carries the query string, headers, body,
+requested model, key label or any credential.
+
 ## Catalog cache
 
 `modelbroker.Cache` (`internal/modelbroker/catalog.go`) sits in front of
