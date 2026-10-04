@@ -216,7 +216,7 @@ func TestStderrLineWriterNeverReturnsAnError(t *testing.T) {
 // kills the MCP's process group; Stop must still return promptly.
 func TestStdioMcpCloseIsBoundedWhenAGrandchildHoldsStderr(t *testing.T) {
 	if _, err := exec.LookPath("perl"); err != nil {
-		t.Skip("perl not available")
+		t.Fatalf("perl is required: %v", err)
 	}
 	bin := buildTestMcpBinary(t)
 	m := NewManager(nil)
