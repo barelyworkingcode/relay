@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
@@ -285,15 +286,29 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqAdminOp: {handle: handleAdminOp},
 }
 
-func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeResponse {
+func (s *BridgeServer) handleRequest(ctx context.Context, line string) (resp BridgeResponse) {
+	start := time.Now()
 	var req BridgeRequest
-	if err := json.Unmarshal([]byte(line), &req); err != nil {
-		return bridgeError(jsonrpc.CodeParseError, "parse error: "+err.Error())
+	parseErr := json.Unmarshal([]byte(line), &req)
+	ctx = logging.ContextWithTrace(ctx, logging.TraceIDOrNew(req.TraceID))
+
+	// This is deliberate: the panic is re-raised after the line is written so
+	// handleConn's recover still runs and closes the connection as before.
+	defer func() {
+		if r := recover(); r != nil {
+			logBridgeRequest(ctx, requestTypeForLog(&req), req.Name, nil, time.Since(start))
+			panic(r)
+		}
+		logBridgeRequest(ctx, requestTypeForLog(&req), req.Name, &resp, time.Since(start))
+	}()
+
+	if parseErr != nil {
+		return bridgeError(jsonrpc.CodeParseError, "parse error: "+parseErr.Error())
 	}
 
 	h, ok := bridgeHandlers[req.Type]
 	if !ok {
-		slog.Warn("bridge: unknown request type", "type", req.Type)
+		slog.WarnContext(ctx, "bridge: unknown request type", "type", req.Type)
 		return bridgeError(jsonrpc.CodeMethodNotFound, "unknown request type: "+req.Type)
 	}
 
@@ -361,7 +376,7 @@ func handleReloadService(_ context.Context, req *BridgeRequest, router ToolRoute
 func handleHello(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
 	result, err := router.Hello(ctx, req.Name, req.Token, req.Kind)
 	if err != nil {
-		slog.Warn("bridge: hello refused", "name", req.Name, "peer_pid", CallerPIDFromContext(ctx), "reason", err)
+		slog.WarnContext(ctx, "bridge: hello refused", "name", req.Name, "peer_pid", CallerPIDFromContext(ctx), "reason", err)
 		return bridgeError(jsonrpc.CodeUnauthorized, "hello refused")
 	}
 	data, err := json.Marshal(result)
@@ -440,4 +455,52 @@ func handleRegisterManifest(ctx context.Context, req *BridgeRequest, router Tool
 		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespOK}
+}
+
+// requestTypeForLog keeps the logged type to the known set: a caller-chosen
+// string never reaches a log line.
+func requestTypeForLog(req *BridgeRequest) string {
+	if _, ok := bridgeHandlers[req.Type]; ok {
+		return req.Type
+	}
+	return "unknown"
+}
+
+// logBridgeRequest writes the one bridge.request line. It never reads
+// resp.Message, the token, the arguments or the data: only the response code
+// and the request type decide what is written. A nil resp means the handler
+// panicked.
+func logBridgeRequest(ctx context.Context, reqType, name string, resp *BridgeResponse, took time.Duration) {
+	level, status, errText := slog.LevelInfo, "ok", ""
+	switch {
+	case resp == nil:
+		level, status, errText = slog.LevelError, "error", "panic"
+	case resp.Type == RespError:
+		switch resp.Code {
+		case jsonrpc.CodeUnauthorized:
+			level, status, errText = slog.LevelWarn, "denied", "unauthorized"
+		case jsonrpc.CodeParseError:
+			level, status, errText = slog.LevelWarn, "error", "parse_error"
+		case jsonrpc.CodeMethodNotFound:
+			level, status, errText = slog.LevelWarn, "error", "method_not_found"
+		case jsonrpc.CodeInvalidParams:
+			level, status, errText = slog.LevelWarn, "error", "invalid_params"
+		default:
+			level, status, errText = slog.LevelError, "error", "internal_error"
+		}
+	}
+	attrs := []slog.Attr{
+		slog.String("op", "bridge.request"),
+		slog.String("status", status),
+		slog.Int64("duration_ms", took.Milliseconds()),
+		slog.String("error", errText),
+		slog.String("request_type", reqType),
+	}
+	if (reqType == ReqCallTool || reqType == ReqAdminOp) && name != "" {
+		attrs = append(attrs, slog.String("name", logging.Truncate(name)))
+	}
+	if pid := CallerPIDFromContext(ctx); pid > 0 {
+		attrs = append(attrs, slog.Int("peer_pid", int(pid)))
+	}
+	slog.LogAttrs(ctx, level, "bridge request", attrs...)
 }

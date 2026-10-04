@@ -114,7 +114,9 @@ logging/                 The one slog setup every relay process installs (Instal
                          Standard: docs/logging-standard.md. The frontend wraps both doors in
                          frontendTrace (frontend_server.go), which mints or accepts the trace ID
                          and writes one frontend.request line per request; successful GET/HEAD polls
-                         are excluded.
+                         are excluded. The bridge accepts a trace_id on each request and writes
+                         one bridge.request line; the model endpoint accepts or mints the ID,
+                         forwards X-Trace-Id and writes one model.request line.
 peertoken/               Reads a Unix-socket peer's kernel audit token (LOCAL_PEERTOKEN). A leaf
                          package, so presence/ (audit session) and bridge/ (launch identity) share
                          one reader.
