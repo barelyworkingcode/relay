@@ -107,7 +107,7 @@ func (sh *SessionHandlers) observeTurn(sessionID string, msg map[string]any) {
 		level, code = slog.LevelError, "provider_error"
 	case events.WSMsgProcessExited:
 		level, code = slog.LevelError, "process_exited"
-	case events.WSMsgClearMessages, events.WSMsgSessionEnded:
+	case events.WSMsgClearMessages:
 		sh.mu.Lock()
 		delete(sh.turns, sessionID)
 		sh.mu.Unlock()
