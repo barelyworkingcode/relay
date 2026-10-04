@@ -457,8 +457,8 @@ func handleRegisterManifest(ctx context.Context, req *BridgeRequest, router Tool
 	return BridgeResponse{Type: RespOK}
 }
 
-// requestTypeForLog keeps the logged type to the known set: a caller-chosen
-// string never reaches a log line.
+// requestTypeForLog keeps the type on the bridge.request line to the known
+// set: a caller-chosen string never reaches that line.
 func requestTypeForLog(req *BridgeRequest) string {
 	if _, ok := bridgeHandlers[req.Type]; ok {
 		return req.Type

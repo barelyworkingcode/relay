@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -44,6 +45,7 @@ func captureLogs(t *testing.T) *lockedBuf {
 	return buf
 }
 
+// nineKeys mirrors the required keys in docs/logging-schema.json.
 var nineKeys = []string{"ts", "level", "msg", "service", "op", "status", "duration_ms", "error", "trace_id"}
 
 // bridgeLines returns the parsed bridge.request lines and fails if any has
@@ -278,5 +280,46 @@ func TestBridgeTrace_NeverLogsSecretsOrContent(t *testing.T) {
 	}
 	if n := len(bridgeLines(t, buf)); n != 2 {
 		t.Fatalf("want 2 bridge.request lines, got %d", n)
+	}
+}
+
+type panicRouter struct{ *stubRouter }
+
+func (panicRouter) CallTool(context.Context, string, json.RawMessage, string) (json.RawMessage, error) {
+	panic("router exploded")
+}
+
+func TestBridgeTrace_PanicLogsLineThenClosesConnection(t *testing.T) {
+	buf := captureLogs(t)
+	sock := startTestBridge(t, panicRouter{&stubRouter{}})
+
+	const id = "panic-trace-0001"
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	line, _ := json.Marshal(map[string]string{"type": ReqCallTool, "name": "tool_a", "trace_id": id})
+	if _, err := conn.Write(append(line, '\n')); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if NewScanner(conn).Scan() {
+		t.Fatal("got a reply; want the connection closed after the panic")
+	}
+	// A deadline error would mean the server never closed the connection.
+	if _, err := conn.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("connection not closed by server: %v", err)
+	}
+
+	got := oneBridgeLine(t, buf)
+	if got["level"] != "error" || got["status"] != "error" || got["error"] != "panic" || got["trace_id"] != id {
+		t.Fatalf("level/status/error/trace_id = %v/%v/%v/%v, want error/error/panic/%s",
+			got["level"], got["status"], got["error"], got["trace_id"], id)
+	}
+
+	resp := sendReq(t, sock, BridgeRequest{Type: ReqListTools})
+	if resp.Code != 0 || resp.Type == "" {
+		t.Fatalf("second connection not served normally: %+v", resp)
 	}
 }
