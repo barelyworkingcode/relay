@@ -20,6 +20,7 @@ same change when behaviour moves.
 | Remote projects, enrolment | [`docs/access-profiles.md`](docs/access-profiles.md), [`docs/install-remote-machine.md`](docs/install-remote-machine.md) |
 | MCP scoping (`contextSchema`, `_meta`) | [`docs/context-schema.md`](docs/context-schema.md) |
 | Audit log | [`docs/audit-log.md`](docs/audit-log.md) |
+| Service logs: levels, line keys, trace ID | [`docs/logging-standard.md`](docs/logging-standard.md), [`docs/logging-schema.json`](docs/logging-schema.json) |
 | Enhanced services, manifests, restart supervision | [`docs/service-manifest.md`](docs/service-manifest.md) |
 | Sessions (terminal, claude, pi, chat) | [`docs/session-host.md`](docs/session-host.md) |
 | `relay sandbox`, the bridge takeover seam | [`docs/sandbox-command.md`](docs/sandbox-command.md) |
