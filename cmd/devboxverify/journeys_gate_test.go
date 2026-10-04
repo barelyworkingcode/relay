@@ -339,9 +339,12 @@ func TestClassifyFixturesRemoved(t *testing.T) {
 		{"no run credential, terminals left", func(r *fixturesRun) { r.NoToken, r.LeftTerminals = true, []string{"t1"} }, stateBlocked},
 		{"host left", func(r *fixturesRun) { r.LeftHosts = []string{"h1"} }, stateFail},
 		{"no run credential, hosts left", func(r *fixturesRun) { r.NoToken, r.LeftHosts = true, []string{"h1"} }, stateBlocked},
+		{"template left", func(r *fixturesRun) { r.LeftTemplate = true }, stateFail},
+		{"no run credential, template left", func(r *fixturesRun) { r.NoToken, r.LeftTemplate = true, true }, stateBlocked},
 	}, map[string]string{"no run credential": mintPosID, "no run credential, projects left": mintPosID,
 		"terminal left": "terminal(s)", "no run credential, terminals left": mintPosID,
-		"host left": "host", "no run credential, hosts left": mintPosID})
+		"host left": "host", "no run credential, hosts left": mintPosID,
+		"template left": "template", "no run credential, template left": mintPosID})
 }
 
 func TestBlackholeHosts(t *testing.T) {
