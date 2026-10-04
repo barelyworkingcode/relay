@@ -64,7 +64,7 @@ var gateTeardownJourneys = []journey{
 	{eveRevokePosID, []string{"login", "presence"}, nil, phaseScreen, 5 * time.Second, func(context.Context, env) result {
 		return result{eveRevokePosID, stateNotRun, "relay keeps one global eve passkey mirror, replaced by each eve's report, so no verify passkey can be revoked through relay today"}
 	}},
-	{fixturesID, []string{"mcps", "services", "projects", "sessions", "hosts"}, nil, phaseScreen, 60 * time.Second, runFixturesRemoved},
+	{fixturesID, []string{"mcps", "services", "projects", "sessions", "hosts", "templates"}, nil, phaseScreen, 60 * time.Second, runFixturesRemoved},
 	{revokePosID, []string{"credentials", "presence", "audit"}, nil, phaseScreen, gateTimeout, runRevokePos},
 }
 
@@ -568,7 +568,7 @@ func runGrantPos(ctx context.Context, e env) result {
 			"name": name, "path": path,
 			"allowed_mcp_ids":   []string{e.Run.ProbeMCP},
 			"access":            map[string]string{e.Run.ProbeMCP: "write"},
-			"allowed_templates": []string{"world-probe"},
+			"allowed_templates": []string{"world-probe", extraArgsTemplateID},
 		})
 		r.Resp, r.Dialog = gatedFrontend(ctx, e, token, http.MethodPost, "/api/projects", body, fmt.Sprintf("%q", name))
 	}
@@ -857,6 +857,7 @@ type fixturesRun struct {
 	Errs                                 []string
 	LeftMcps, LeftServices, LeftProjects []string
 	LeftTerminals, LeftHosts             []string
+	LeftTemplate                         bool
 	ListErr                              error
 }
 
@@ -990,6 +991,9 @@ func runFixturesRemoved(ctx context.Context, e env) result {
 				r.Errs = append(r.Errs, fmt.Sprintf("DELETE terminal status %d", st))
 			}
 		}
+		if st := frontendDo(ctx, e, token, http.MethodDelete, "/api/terminal/templates/"+extraArgsTemplateID, nil).Status; st != http.StatusNoContent && st != http.StatusNotFound {
+			r.Errs = append(r.Errs, fmt.Sprintf("DELETE template status %d", st))
+		}
 	}
 	mcps, err := listMcpIDs(ctx, e)
 	if err != nil {
@@ -1026,6 +1030,13 @@ func runFixturesRemoved(ctx context.Context, e env) result {
 		var hosts []hostEntry
 		hosts, err5 = listHosts(ctx, e, token)
 		r.LeftHosts = blackholeHosts(hosts)
+		switch st := frontendDo(ctx, e, token, http.MethodGet, "/api/terminal/templates/"+extraArgsTemplateID, nil).Status; st {
+		case http.StatusOK:
+			r.LeftTemplate = true
+		case http.StatusNotFound:
+		default:
+			err5 = errors.Join(err5, fmt.Errorf("GET template status %d", st))
+		}
 	}
 	r.ListErr = errors.Join(err1, err2, err3, err4, err5)
 	r.LeftMcps, r.LeftServices, r.LeftProjects = withPrefix(mcps, probePrefix), withPrefix(svcs, crashPrefix), verifyProjects(rs)
@@ -1050,6 +1061,9 @@ func classifyFixturesRemoved(r fixturesRun) result {
 	if n := len(r.LeftTerminals); n > 0 && !r.NoToken {
 		left = append(left, fmt.Sprintf("%d terminal(s)", n))
 	}
+	if r.LeftTemplate && !r.NoToken {
+		left = append(left, "the extra-args template")
+	}
 	errs := ""
 	if len(r.Errs) > 0 {
 		errs = "; " + strings.Join(r.Errs, "; ")
@@ -1060,9 +1074,9 @@ func classifyFixturesRemoved(r fixturesRun) result {
 	case len(left) > 0:
 		return result{id, stateFail, "still registered: " + strings.Join(left, ", ") + errs}
 	case r.NoToken:
-		return blocked(id, "no run credential: "+mintPosID+" did not pass; MCPs and services removed, projects, hosts and terminals not"+errs)
+		return blocked(id, "no run credential: "+mintPosID+" did not pass; MCPs and services removed, projects, hosts, terminals and the template not"+errs)
 	}
-	return result{id, statePass, "no verify MCP, service, project, host or terminal left" + errs}
+	return result{id, statePass, "no verify MCP, service, project, host, terminal or template left" + errs}
 }
 
 type revokePosRun struct {
