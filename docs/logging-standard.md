@@ -54,8 +54,15 @@ One JSON object per line. No pretty-printing, no multi-line values.
 | `error` | string | Names the failure. Empty when `status` is `ok`. |
 | `trace_id` | string | The trace ID, or an empty string outside any user action. |
 
-Every line carries all nine keys. A line with nothing to say for a key uses the
-empty string or `0`; it does not omit the key.
+Every line carries all nine keys; none is omitted. Only three may be empty or
+zero: `error` is the empty string when `status` is `ok`, `trace_id` is the empty
+string outside any user action, and `duration_ms` is `0` on a line that marks a
+point in time. `ts`, `level`, `service`, `op` and `status` always hold a real value.
+
+`service` is the service id Relay uses for the log file name, `logs/<service-id>.log`.
+
+`status` and `level` agree. `ok` logs at `info` or `debug`. `denied` logs at
+`warn`. `error` logs at `error`, or at `warn` when the service recovered.
 
 Optional entity keys name what the operation touched. They are ids, never
 content:
@@ -161,10 +168,10 @@ are not touched.
 
 | Repo | Today | Must change |
 |---|---|---|
-| relay | `slog` text handler to stderr, level from `RELAY_LOG_LEVEL` (default info). Teed to `logs/relay.log` by the rotating writer. Local-time RFC 3339. About 360 calls. No trace ID. A separate audit log with its own schema, UTC `ts` and uuid `id`. | Switch to the JSON handler with the nine keys. Create a trace ID at the frontend server, bridge, model endpoint and remote listener, and carry it in context. Pass it through the bridge request, MCP `_meta`, the frontend reverse proxy, WebSocket header, session host, model broker and spawn env. Stop the model endpoint stripping `X-Trace-Id`. Capture a stdio MCP's stderr, which is discarded today. Add `trace_id` to audit records. Drop or aggregate repeating lines. |
-| relay-sessions | Mix of stdlib `log` and `slog`. No level, local time. | Use the same handler as relay. Replace the stdlib `log` calls. |
+| relay | `slog` text handler to stderr, level from `RELAY_LOG_LEVEL` (default info). Teed to `logs/relay.log` by the rotating writer. Local-time RFC 3339. About 360 calls. No trace ID. A separate audit log with its own schema, UTC `ts` and uuid `id`. | Switch to the JSON handler with the nine keys. Create a trace ID at the frontend server, bridge, model endpoint and remote listener, and carry it in context. Pass it through the bridge request, MCP `_meta`, the frontend reverse proxy, WebSocket header, session host, model broker and spawn env. Forward `X-Trace-Id` on the model path; the `x-relay-*` strip does not touch it. Capture a stdio MCP's stderr, which is discarded today. Add `trace_id` to audit records. Drop or aggregate repeating lines. |
+| relay-sessions (in the relay repo) | Mix of stdlib `log` and `slog`. No level, local time. | Use the same handler as relay. Replace the stdlib `log` calls. |
 | relayLLM | `slog` default handler: local-time text, no level control, so `debug` lines never appear. Re-emits managed child process output verbatim. No ID. Strips inbound `x-relay-*` headers. | JSON handler, `RELAY_LOG_LEVEL`, UTC `ts`. Middleware that creates and validates the trace ID, and passes it on the bridge request, proxy headers and child env. Bound and redact the child-output passthrough. One `info` line per request. |
-| relayScheduler | `slog` default handler: local-time text, no level control. Run history is JSON files and is not a log. A job ID exists (`Task.ID`); there is no run ID. Execution records use UTC. | JSON handler, `RELAY_LOG_LEVEL`, UTC `ts`. Create a trace ID when a job fires and in the create and run-now handlers. Add the header to every outbound call and WebSocket dial. Add `job_id` and a new `run_id` to each line. |
+| relayScheduler | `slog` default handler: local-time text, no level control. Run history is JSON files and is not a log. A job ID exists (`Task.ID`). The wire field `runId` holds a session or terminal id, so it is not a per-fire log key. Execution records use UTC. | JSON handler, `RELAY_LOG_LEVEL`, UTC `ts`. Create a trace ID when a job fires and in the create and run-now handlers. Add the header to every outbound call and WebSocket dial. Add `job_id` and a new `run_id` for each fire to each line; do not reuse the wire `runId`. |
 | eve | Hand-written logger: text `[Prefix] message`, no timestamp, no level printed. Level from `LOG_LEVEL`. Debug and info to stdout, warn and error to stderr. No ID. | Write JSON lines to stderr only. Read `RELAY_LOG_LEVEL`. Add middleware that creates and validates the trace ID for HTTP and WebSocket. Pass it through the relay transport and the speech frames. Remove per-chunk and per-reconnect lines, or keep them at `debug`. |
 | relayRemote | `slog` text handler to stderr, level fixed at info, key `time`. One debug line, unreachable. Some CLI text uses `fmt` directly. | JSON handler, `ts` key, `RELAY_LOG_LEVEL`. Create a trace ID per tool call. Add `trace_id` to the request frame. Remove the frame excerpt from the debug line. |
 | relayHarness | `fmt` messages to stderr. Own audit file of one JSON record per tool call, and an unrotated `fsmcp.log` of child stderr. UTC RFC 3339 `ts` in the audit record. A random session ID. No trace ID. | Log in the standard format to stderr. Map audit keys to `status`, `duration_ms` and `session_id`, and add `service`, `op`, `error` and `trace_id`. Create a trace ID per turn. Pass it on the bridge request, the model request header and MCP `_meta`. Fold `fsmcp.log` into the standard or drop it. |
