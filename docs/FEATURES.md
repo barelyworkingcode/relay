@@ -46,7 +46,7 @@ Areas: sessions, sandbox, templates, audit.
 | System-model chat launch refused | API (eve) | `POST /api/sessions` for a chat session on a model relayLLM marks `system` → 403 | HTTP [execute] | — | none | n/a | n/a |
 | Message and stop a session | API (eve) | eve chat → `POST /api/sessions/{id}/message`, `DELETE /api/sessions/{id}`; `GET /api/sessions` | HTTP [proxy] | — | session-chat-lifecycle | eve > session > chat input / Stop | none |
 | Resume a session | API (eve) | `POST /api/sessions/{id}/resume` | HTTP [execute] | — | session-chat-resume | eve > New Session > Resume > session | none |
-| Terminals and their log | API (eve) | eve terminal → `POST /api/terminals` [execute]; `GET /api/terminals`, `GET /api/terminals/{id}/log`, `DELETE` [proxy] | HTTP | — | terminal-lifecycle, verify-fixtures-removed | eve > New Session > New > terminal card; Agents board for the log | none |
+| Terminals and their log | API (eve) | eve terminal → `POST /api/terminals` [execute]; `GET /api/terminals`, `GET /api/terminals/{id}/log`, `DELETE` [proxy] | HTTP | — | terminal-lifecycle, terminal-extra-args, verify-fixtures-removed | eve > New Session > New > terminal card; Agents board for the log | none |
 | Persistent sessions | API | `GET`/`DELETE /api/projects/{id}/persistent-sessions` | HTTP | — | slow-route-keepalive (`GET`, unreachable host) | eve > New Session > New > Remote sessions > Reattach / Kill | none |
 | Proxied calls after a slow relay route | API (eve) | eve's keep-alive socket: a relay route slower than 10 s, then `GET /api/models` | HTTP [read, proxy] | — | slow-route-keepalive | n/a | n/a |
 | `relay sandbox <template>` | CLI | from a project folder, `relay sandbox world-probe` | CLI / bridge | — | acme-sandbox-reach | none | `relay sandbox <template>` |
@@ -277,7 +277,7 @@ areas:
   sessions:
     code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**]
     tests: [cmd/relay/session_*_test.go, cmd/relay/router_sessions_test.go, cmd/relay/mount_session_test.go, cmd/relaysessions/*_test.go, internal/sessions/**/*_test.go]
-    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, session-chat-resume, slow-route-keepalive, session-host-restart, verify-fixtures-removed]
+    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, slow-route-keepalive, session-host-restart, verify-fixtures-removed]
   sandbox:
     code: [cmd/relay/sandbox_*.go, cmd/relay/session_sandbox*.go, internal/bridge/sandbox*.go, internal/sessions/sandbox/**]
     tests: [cmd/relay/sandbox_*_test.go, cmd/relay/session_sandbox*_test.go, internal/sessions/sandbox/**/*_test.go]
@@ -285,7 +285,7 @@ areas:
   templates:
     code: [cmd/relay/template_*.go, cmd/relay/ipc_templates.go]
     tests: [cmd/relay/template_*_test.go, cmd/relay/ipc_templates_test.go, cmd/relay/settings_templates_ui_test.go]
-    journeys: [terminal-lifecycle]
+    journeys: [terminal-lifecycle, terminal-extra-args, verify-fixtures-removed]
   projects:
     code: [cmd/relay/project_*.go, cmd/relay/ipc_projects.go, cmd/relay/skills.go, internal/project/**]
     tests: [cmd/relay/project_*_test.go, cmd/relay/ipc_project*_test.go, cmd/relay/settings_project*_test.go, cmd/relay/skills_test.go, internal/project/*_test.go]
@@ -355,7 +355,8 @@ areas:
   session.
 - Fixtures the screen phase creates (the probe MCP, the crash service, the
   Verify Grant project, the Unreachable Host project and its `blackhole-`
-  host) carry the run nonce and are removed by verify-fixtures-removed,
+  host, and the extra-args terminal template, whose fixed id is
+  `devboxverify-extra-args` and whose name carries the nonce) carry the run nonce and are removed by verify-fixtures-removed,
   including a crashed run's leftovers. So are the
   terminals any journey opened under a `grant-*` state folder or the World
   root, stopped or not.

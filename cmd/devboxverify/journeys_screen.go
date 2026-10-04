@@ -39,6 +39,7 @@ var screenJourneys = []journey{
 	{"context-number-resave", []string{"projects", "grants", "audit"}, nil, phaseScreen, 30 * time.Second, runContextNumberResave},
 	{chatID, []string{"sessions", "audit"}, []string{"project:acme"}, phaseScreen, 90 * time.Second, runChatLifecycle},
 	{terminalID, []string{"sessions", "templates", "audit"}, []string{"project:acme"}, phaseScreen, 30 * time.Second, runTerminalLifecycle},
+	{extraArgsID, []string{"sessions", "templates"}, nil, phaseScreen, 60 * time.Second, runTerminalExtraArgs},
 	{modelID, []string{"models", "sessions", "audit"}, []string{"project:acme"}, phaseScreen, 90 * time.Second, runModelCompletion},
 	{chatResumeID, []string{"sessions", "audit"}, []string{"project:acme"}, phaseScreen, 180 * time.Second, runChatResume},
 	{disabledID, []string{"mcps", "grants"}, nil, phaseScreen, 45 * time.Second, runDisabledTool},

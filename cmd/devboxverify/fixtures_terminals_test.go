@@ -28,6 +28,10 @@ type fakeTerminals struct {
 	refuse     map[string]bool
 	listStatus int
 	deleted    []string
+	// templates holds template ids; a refused delete leaves one in place.
+	templates       map[string]bool
+	refuseTemplates bool
+	deletedTmpls    []string
 }
 
 func (f *fakeTerminals) handler() http.Handler {
@@ -59,6 +63,24 @@ func (f *fakeTerminals) handler() http.Handler {
 		f.deleted = append(f.deleted, id)
 		f.terms = slices.DeleteFunc(f.terms, func(x fakeTerminal) bool { return x.ID == id })
 		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.HandleFunc("GET /api/terminal/templates/{id}", authed(func(w http.ResponseWriter, r *http.Request) {
+		if !f.templates[r.PathValue("id")] {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	mux.HandleFunc("DELETE /api/terminal/templates/{id}", authed(func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		switch {
+		case f.refuseTemplates:
+			w.WriteHeader(http.StatusInternalServerError)
+		case !f.templates[id]:
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			delete(f.templates, id)
+			f.deletedTmpls = append(f.deletedTmpls, id)
+			w.WriteHeader(http.StatusNoContent)
+		}
 	}))
 	mux.HandleFunc("GET /api/hosts", authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("[]"))
@@ -171,6 +193,53 @@ func TestFixturesRemovedSweepsTerminals(t *testing.T) {
 			defer f.mu.Unlock()
 			if !slices.Equal(f.deleted, c.deleted) {
 				t.Errorf("DELETEd terminals %v, want %v", f.deleted, c.deleted)
+			}
+		})
+	}
+}
+
+func TestFixturesRemovedSweepsTemplate(t *testing.T) {
+	cases := []struct {
+		name    string
+		present bool
+		refused bool
+		want    state
+		deleted []string
+	}{
+		{"leftover template is deleted", true, false, statePass, []string{extraArgsTemplateID}},
+		{"no template present", false, false, statePass, nil},
+		{"refused delete leaves the template", true, true, stateFail, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			old := home
+			home = resolvedTempDir(t)
+			t.Cleanup(func() { home = old })
+			e := blockedEnv(t)
+			e.ConfigDir = resolvedTempDir(t)
+			e.FrontendSocket = filepath.Join(e.ConfigDir, "frontend.sock")
+			e.RelayBin = fakeBin(t, e.ConfigDir, "relay", "[ \"$1\" = grant ] && echo '[]'\nexit 0\n")
+			e.Run = &runState{RunCredID: "c1", RunToken: "tok-p1"}
+			serveEmptyBridge(t, filepath.Join(e.ConfigDir, "relay.sock"))
+
+			f := &fakeTerminals{templates: map[string]bool{extraArgsTemplateID: c.present}, refuseTemplates: c.refused}
+			ln, err := net.Listen("unix", e.FrontendSocket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := &http.Server{Handler: f.handler()}
+			go func() { _ = srv.Serve(ln) }()
+			t.Cleanup(func() { _ = srv.Close() })
+
+			got := runJourney(t, fixturesID, e)
+			checkState(t, got, c.want)
+			if c.want == stateFail {
+				checkDetail(t, got, "template")
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if !slices.Equal(f.deletedTmpls, c.deleted) {
+				t.Errorf("DELETEd templates %v, want %v", f.deletedTmpls, c.deleted)
 			}
 		})
 	}

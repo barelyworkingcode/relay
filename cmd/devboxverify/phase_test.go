@@ -70,7 +70,7 @@ var screenStage = map[string]int{
 
 	"gate-mcp-register-pos": 40, "gate-project-grant-pos": 41, "gate-service-register-pos": 42,
 
-	"session-chat-lifecycle": 50, "terminal-lifecycle": 50, "model-list-and-completion": 50, "disabled-tool-refused": 50,
+	"session-chat-lifecycle": 50, "terminal-lifecycle": 50, "terminal-extra-args": 50, "model-list-and-completion": 50, "disabled-tool-refused": 50,
 	"grant-narrowing-live": 50, "service-start-stop": 50, "service-restart-on-crash": 50, "stale-derived-access-edit": 50,
 	"context-number-resave": 50, "slow-route-keepalive": 50, "session-chat-resume": 50, "session-host-restart": 50,
 

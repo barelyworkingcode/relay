@@ -109,7 +109,9 @@ the catalogue, never written into a journey.
 
 The tool changes settings only on its own fixtures: Verify Stale and Verify
 Numbers (one-time setup below), and the records the screen phase creates
-with the run nonce in their names. It mints and revokes its own run
+with the run nonce in their names, plus one terminal template with the fixed
+id `devboxverify-extra-args` (nonce in its name only). Verify Grant allows
+that template. It mints and revokes its own run
 credential, and renews P4 when it is due.
 
 ## Phases
@@ -373,6 +375,23 @@ the list, and its launch is audited.
   run credential.
 - Traps: the log route answers 404 until the log exists, so it is polled.
 
+**terminal-extra-args** (screen). A terminal launched from a fixture template
+in the Verify Grant project, with `extraArgs` of one marker, prints the marker
+and exits 0. The template (fixed id `devboxverify-extra-args`) prints its
+first argument; the marker is only in the launch body. The journey waits up
+to 10 s for the row to read `stopped`, then up to 5 s for the log to hold
+`extra-arg:devboxverify-extra-arg-marker`, and deletes terminal and template.
+- Lives in: `cmd/relay/session_launch.go` (`AuthorizeLaunch`),
+  `cmd/relay/session_routes.go` (`createTerminalWireBody`).
+- Reached by: `DELETE` and `POST /api/terminal/templates` with the run
+  credential; `POST /api/terminals` with P4; `GET /api/terminals` and
+  `GET /api/terminals/{id}/log` with the run credential.
+- Traps: the launch answers 201 even when `extraArgs` is dropped, so the
+  marker check comes before the exit code. A run on main with exit 0 and no
+  marker goes through the Proof rules; it may be lost pty output. Do not add
+  a `sleep` to the script. The template is allowed in Verify Grant only, so
+  the journey needs gate-project-grant-pos to have passed.
+
 **model-list-and-completion** (screen). `GET /api/models` lists the chosen
 model, one chat turn in Acme Corp gets an answer, and a new `model_call` row
 for Acme records that model with outcome `ok`. The session is deleted after.
@@ -469,7 +488,8 @@ host under every live session.
   build that stops the host and then fails validation reads FAIL with the
   op's error; the host stays down until Relay.app is relaunched.
 
-**verify-fixtures-removed** (screen). Every `devboxverify-probe-*` MCP and
+**verify-fixtures-removed** (screen). The `devboxverify-extra-args` terminal
+template is deleted if present and checked gone. Every `devboxverify-probe-*` MCP and
 `devboxverify-crash-*` service is unregistered (both ungated) and every
 `Verify Grant *` and `Unreachable Host *` project deleted, from this run or a
 crashed one, with their state folders. Then every host named `blackhole-*`
