@@ -1,17 +1,27 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
+
+// pendingTurn is the in-flight send_message turn of one session: the trace
+// the caller supplied (or the one minted for it) and when it started.
+type pendingTurn struct {
+	trace string
+	start time.Time
+}
 
 // SessionHandlers registers the session-related WS message types onto a
 // Hub, and implements sessionstypes.EventSink so session.Manager can be
@@ -26,6 +36,7 @@ type SessionHandlers struct {
 	mu      sync.Mutex
 	viewers map[string]map[uint64]*Conn // sessionID -> connID -> Conn
 	bound   map[uint64]map[string]bool  // connID -> set of sessionIDs it joined
+	turns   map[string]pendingTurn      // sessionID -> turn awaiting its end event
 }
 
 // NewSessionHandlers registers every session-related handler on hub and
@@ -39,6 +50,7 @@ func NewSessionHandlers(hub *Hub, mgr *session.Manager, perms *permission.Permis
 		perms:   perms,
 		viewers: make(map[string]map[uint64]*Conn),
 		bound:   make(map[uint64]map[string]bool),
+		turns:   make(map[string]pendingTurn),
 	}
 
 	hub.RegisterHandler(events.WSMsgJoinSession, sh.handleJoinSession)
@@ -66,6 +78,7 @@ func (sh *SessionHandlers) HasViewers(sessionID string) bool {
 // SendToSession implements sessionstypes.EventSink: broadcast msg to every
 // connection currently joined to sessionID.
 func (sh *SessionHandlers) SendToSession(sessionID string, msg map[string]any) {
+	sh.observeTurn(sessionID, msg)
 	sh.mu.Lock()
 	viewers := make([]*Conn, 0, len(sh.viewers[sessionID]))
 	for _, c := range sh.viewers[sessionID] {
@@ -79,6 +92,53 @@ func (sh *SessionHandlers) SendToSession(sessionID string, msg map[string]any) {
 	for _, c := range viewers {
 		c.Write(data)
 	}
+}
+
+// observeTurn closes the pending turn a terminal event ends and logs it. It
+// runs before the no-viewer early return in SendToSession: a turn finishes
+// whether or not anyone is watching. Only the event type is read; text and
+// provider messages never reach a log line.
+func (sh *SessionHandlers) observeTurn(sessionID string, msg map[string]any) {
+	typ, _ := msg["type"].(string)
+	level, code := slog.LevelInfo, ""
+	switch typ {
+	case events.HandlerMessageComplete:
+	case events.WSMsgError:
+		level, code = slog.LevelError, "provider_error"
+	case events.WSMsgProcessExited:
+		level, code = slog.LevelError, "process_exited"
+	case events.WSMsgClearMessages:
+		sh.mu.Lock()
+		delete(sh.turns, sessionID)
+		sh.mu.Unlock()
+		return
+	default:
+		return
+	}
+	sh.mu.Lock()
+	turn, ok := sh.turns[sessionID]
+	delete(sh.turns, sessionID)
+	sh.mu.Unlock()
+	if !ok {
+		return
+	}
+	logTurn(level, sessionID, turn.trace, time.Since(turn.start), code)
+}
+
+// logTurn writes the one chat.turn line for a turn; code is empty on success.
+func logTurn(level slog.Level, sessionID, trace string, d time.Duration, code string) {
+	status := "ok"
+	if code != "" {
+		status = "error"
+	}
+	attrs := []any{"op", "chat.turn", "status", status, "duration_ms", d.Milliseconds()}
+	if sessionID != "" {
+		attrs = append(attrs, "session_id", sessionID)
+	}
+	if code != "" {
+		attrs = append(attrs, "error", code)
+	}
+	slog.Log(logging.ContextWithTrace(context.Background(), trace), level, "chat turn", attrs...)
 }
 
 func (sh *SessionHandlers) handleJoinSession(c *Conn, raw []byte) {
@@ -175,22 +235,55 @@ func (sh *SessionHandlers) handleSendMessage(c *Conn, raw []byte) {
 		SessionID string                         `json:"sessionId"`
 		Text      string                         `json:"text"`
 		Files     []sessionstypes.FileAttachment `json:"files"`
+		TraceID   string                         `json:"trace_id"`
 	}
 	_ = json.Unmarshal(raw, &req)
+	trace := logging.TraceIDOrNew(req.TraceID)
 	if req.SessionID == "" {
+		logTurn(slog.LevelWarn, "", trace, 0, "session_id_required")
 		sendWSError(c, "sessionId required")
 		return
 	}
+
+	// The turn is recorded before SendMessage: a fast provider can emit
+	// message_complete before SendMessage returns.
+	mine := pendingTurn{trace: trace, start: time.Now()}
+	sh.mu.Lock()
+	prev, hadPrev := sh.turns[req.SessionID]
+	sh.turns[req.SessionID] = mine
+	sh.mu.Unlock()
 
 	err := sh.mgr.SendMessage(req.SessionID, req.Text, req.Files)
 	if err == nil {
 		return
 	}
+	sh.mu.Lock()
+	if sh.turns[req.SessionID] == mine {
+		if hadPrev {
+			sh.turns[req.SessionID] = prev
+		} else {
+			delete(sh.turns, req.SessionID)
+		}
+	}
+	sh.mu.Unlock()
+	logTurn(slog.LevelWarn, req.SessionID, trace, 0, sendFailureCode(err))
 	if errors.Is(err, session.ErrResumeRequired) {
 		sendResumeRequired(c, req.SessionID, err)
 		return
 	}
 	sendWSError(c, err.Error())
+}
+
+func sendFailureCode(err error) string {
+	switch {
+	case errors.Is(err, session.ErrSessionNotFound):
+		return "session_not_found"
+	case errors.Is(err, session.ErrAlreadyProcessing):
+		return "already_processing"
+	case errors.Is(err, session.ErrResumeRequired):
+		return "resume_required"
+	}
+	return "send_failed"
 }
 
 func (sh *SessionHandlers) handleEndSession(c *Conn, raw []byte) {
@@ -202,6 +295,11 @@ func (sh *SessionHandlers) handleEndSession(c *Conn, raw []byte) {
 		sendWSError(c, "sessionId required")
 		return
 	}
+	// Drop the pending turn first: the provider's synchronous process_exited
+	// on a user-initiated end must not log a failed chat.turn.
+	sh.mu.Lock()
+	delete(sh.turns, req.SessionID)
+	sh.mu.Unlock()
 	sh.mgr.EndSession(req.SessionID)
 }
 
@@ -244,6 +342,9 @@ func (sh *SessionHandlers) handleDeleteSession(c *Conn, raw []byte) {
 		sendWSError(c, "sessionId required")
 		return
 	}
+	sh.mu.Lock()
+	delete(sh.turns, req.SessionID)
+	sh.mu.Unlock()
 	sh.mgr.DeleteSession(req.SessionID)
 
 	sh.mu.Lock()

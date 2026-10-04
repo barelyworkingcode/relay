@@ -158,6 +158,13 @@ launch and `0` for a provider-hosted (claude/pi/chat) launch. `ClaudeProvider`
 reports a process root, but only to `/permission`'s ancestry walk; `/launch`
 does not report it (see [Known gaps](#what-is-not-built-yet)).
 
+`handleLaunch` reads `X-Trace-Id`; a valid ID (`[A-Za-z0-9_-]{8,64}`) is kept
+and anything else is replaced by a fresh one, never logged. Every exit writes
+exactly one `session.launch` line with the trace ID, `duration_ms`, `status`
+(`ok`, `error` or `denied`), and `session_id` and `kind` once the body parsed.
+A refusal carries the error code (not its message) in `error`. The
+`LaunchRequest`, its identity secret and its model key never reach a line.
+
 Error codes C5 names explicitly, each mapped from a manager error:
 
 | HTTP | code | meaning |
@@ -495,6 +502,25 @@ Identity fd 3 and status fd 4 are never in `ExtraFiles` for the target: fd 3
 is fully closed by the time the target spawns (step 1), and fd 4 is
 `CLOSE_ON_EXEC` (set at open), so `exec(2)` closes it in the child
 automatically.
+
+## Logging and trace IDs
+
+relay-sessions logs through `internal/logging`: JSON lines on stderr, service
+id `relaysessions`, schema and levels in
+[`logging-standard.md`](logging-standard.md). relay's `sessionHostClient`
+forwards the request's trace ID in `X-Trace-Id` on each call, so a frontend
+request and its `/launch` share one ID. A chat turn takes its ID from the
+`trace_id` of its `send_message`.
+
+The `send_message` WebSocket message takes an optional `trace_id`. A valid one
+is kept, otherwise one is minted. The session records the turn when the message
+is accepted and writes one `chat.turn` line when the turn ends: `message_complete`
+is `ok`; a provider error or process exit is `error` (`provider_error`,
+`process_exited`). A message refused up front writes the line at once with
+`session_id_required`, `session_not_found`, `already_processing`,
+`resume_required` or `send_failed`. A cleared or ended session drops its pending
+turn without a line. The line carries the session id and duration, never message
+text.
 
 ## Provider stderr
 

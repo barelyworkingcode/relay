@@ -1,6 +1,7 @@
 package hostapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/sessions/api"
@@ -484,7 +486,17 @@ func (s *Server) reserveLaunch(kind, id string) (release func(), ok bool) {
 // each owns its own shim-spawn (or direct-spawn) and Hello-wait mechanics
 // end to end (types.go's package doc), so this handler's only remaining job
 // once the spec is built is to call Create and map the result.
-func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLaunch(rw http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	ctx := logging.ContextWithTrace(r.Context(), logging.TraceIDOrNew(r.Header.Get(logging.TraceHeader)))
+	w := &launchRecorder{ResponseWriter: rw}
+	var sessionID, kind string
+	// Logs only the outcome and identifiers: the LaunchRequest, its identity
+	// secret and model key never reach a log line.
+	defer func() {
+		logLaunch(ctx, w, sessionID, kind, time.Since(start))
+	}()
+
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -501,6 +513,7 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, err.Error())
 		return
 	}
+	sessionID, kind = req.SessionID, req.Kind
 	if req.V != 1 || req.SessionID == "" || req.Kind == "" {
 		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "v, session_id and kind are required")
 		return
@@ -526,6 +539,75 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, fmt.Sprintf("kind %q is not one of pty, claude, pi, chat", req.Kind))
 	}
+}
+
+// launchRecorder captures what handleLaunch answered so the single
+// session.launch line covers every exit. It keeps the body only for error
+// statuses, where it is a small ErrorResponse whose code (never its message)
+// is logged.
+type launchRecorder struct {
+	http.ResponseWriter
+	status int
+	body   bytes.Buffer
+}
+
+func (l *launchRecorder) WriteHeader(code int) {
+	if l.status == 0 {
+		l.status = code
+	}
+	l.ResponseWriter.WriteHeader(code)
+}
+
+func (l *launchRecorder) Write(b []byte) (int, error) {
+	if l.status == 0 {
+		l.status = http.StatusOK
+	}
+	if l.status >= 400 && l.body.Len() < 4096 {
+		l.body.Write(b)
+	}
+	return l.ResponseWriter.Write(b)
+}
+
+func logLaunch(ctx context.Context, w *launchRecorder, sessionID, kind string, d time.Duration) {
+	status := w.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	attrs := []any{"op", "session.launch", "duration_ms", d.Milliseconds()}
+	if sessionID != "" {
+		attrs = append(attrs, "session_id", sessionID)
+	}
+	if kind != "" {
+		attrs = append(attrs, "kind", kind)
+	}
+	if status < 400 {
+		slog.InfoContext(ctx, "session launched", append(attrs, "status", "ok")...)
+		return
+	}
+	var code string
+	switch status {
+	case http.StatusForbidden:
+		code = "forbidden"
+	case http.StatusMethodNotAllowed:
+		code = "method_not_allowed"
+	default:
+		var er ErrorResponse
+		if json.Unmarshal(w.body.Bytes(), &er) == nil {
+			code = er.Error
+		}
+		if code == "" {
+			code = fmt.Sprintf("http_%d", status)
+		}
+	}
+	level := slog.LevelWarn
+	state := "error"
+	if status >= 500 {
+		level = slog.LevelError
+	}
+	if status == http.StatusForbidden {
+		state = "denied"
+	}
+	slog.Log(ctx, level, "session launch refused", append(attrs, "status", state, "error", code)...)
 }
 
 func (s *Server) launchTerminal(w http.ResponseWriter, req LaunchRequest) {

@@ -108,6 +108,13 @@ project/                 The project domain — the unit a grant is scoped to: c
                          parameter, so it never reaches the MCP manager. Depends on
                          config/enrolment; the presence gate, the router, the routes, the IPC
                          handlers and the DTO stay in main.
+logging/                 The one slog setup every relay process installs (Install: JSON lines on
+                         stderr or the log file, level from RELAY_LOG_LEVEL), the trace ID helpers
+                         (X-Trace-Id, validated, carried in the context) and the line schema.
+                         Standard: docs/logging-standard.md. The frontend wraps both doors in
+                         frontendTrace (frontend_server.go), which mints or accepts the trace ID
+                         and writes one frontend.request line per request; successful GET/HEAD polls
+                         are excluded.
 peertoken/               Reads a Unix-socket peer's kernel audit token (LOCAL_PEERTOKEN). A leaf
                          package, so presence/ (audit session) and bridge/ (launch identity) share
                          one reader.

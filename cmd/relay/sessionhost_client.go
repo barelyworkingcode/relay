@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
@@ -88,6 +89,9 @@ func (c *sessionHostClient) do(ctx context.Context, method, path string, body an
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+es.InternalToken)
+	if id := logging.TraceFromContext(ctx); id != "" {
+		req.Header.Set(logging.TraceHeader, id)
+	}
 
 	client := &http.Client{
 		Timeout: sessionHostRequestTimeout,
