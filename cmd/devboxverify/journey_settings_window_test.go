@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -232,6 +233,7 @@ type fakeSteps struct {
 
 	startFixture, restore int
 	restoreCtxErr         error
+	restoreErr            error
 	pressed               []string
 }
 
@@ -269,7 +271,7 @@ func (f *fakeSteps) Service(context.Context, time.Duration, func(svcView) bool) 
 func (f *fakeSteps) Restore(ctx context.Context) error {
 	f.restore++
 	f.restoreCtxErr = ctx.Err()
-	return nil
+	return f.restoreErr
 }
 
 func happySteps() *fakeSteps {
@@ -322,6 +324,20 @@ func TestRunSettingsWindowRestoresOnce(t *testing.T) {
 				t.Errorf("Restore ran on a cancelled context: %v", f.restoreCtxErr)
 			}
 		})
+	}
+}
+
+func TestRunSettingsWindowReportsRestoreError(t *testing.T) {
+	f := happySteps()
+	f.restoreErr = errors.New("stop fixture: refused")
+	r := runSettingsWindowWith(context.Background(), f)
+	if r.RestoreErr == nil {
+		t.Fatal("RestoreErr not set on the run")
+	}
+	got := classifySettingsWindow(r)
+	checkState(t, got, statePass)
+	if !strings.Contains(got.Detail, "restore: stop fixture: refused") {
+		t.Errorf("detail %q does not carry the restore error", got.Detail)
 	}
 }
 

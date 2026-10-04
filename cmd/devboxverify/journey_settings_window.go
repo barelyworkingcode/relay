@@ -147,8 +147,7 @@ const (
 	settingsStartWait = 10 * time.Second
 )
 
-func runSettingsWindowWith(ctx context.Context, s settingsSteps) settingsRun {
-	var r settingsRun
+func runSettingsWindowWith(ctx context.Context, s settingsSteps) (r settingsRun) {
 	if !s.Trusted() {
 		r.Untrusted = true
 		return r
@@ -434,6 +433,7 @@ func pollNode(ctx context.Context, within time.Duration, find func() (*axNode, f
 		if n != nil {
 			return n, release, nil
 		}
+		release()
 		if err != nil {
 			lastErr = err
 		}
