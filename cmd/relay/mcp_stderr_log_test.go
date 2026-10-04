@@ -45,7 +45,7 @@ func TestOpenMcpStderrLogRefusesIdsThatAreNotSafeFileNames(t *testing.T) {
 			t.Errorf("id %q was accepted", id)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(home, "escape.log")); err == nil {
+	if _, err := os.Stat(filepath.Join(home, "logs", "escape.log")); err == nil {
 		t.Error("a traversal id created a file outside the mcp log dir")
 	}
 	w, err := openMcpStderrLog("a" + strings.Repeat("b", 127))

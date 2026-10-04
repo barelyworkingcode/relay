@@ -127,8 +127,8 @@ func TestStdioMcpStderrOverLongLineIsCutAtTheCap(t *testing.T) {
 	if len(lines) != 2 || lines[1] != "after" {
 		t.Fatalf("want the cut line then an intact next line, got %d lines", len(lines))
 	}
-	if n := len(lines[0]); n == 0 || n > 16<<10 {
-		t.Errorf("over-long line kept %d bytes, want 1..16384", n)
+	if n := len(lines[0]); n != 16<<10 {
+		t.Errorf("over-long line kept %d bytes, want 16384", n)
 	}
 	if !strings.HasSuffix(sink.String(), "\n") {
 		t.Error("cut line was not terminated with a newline")
