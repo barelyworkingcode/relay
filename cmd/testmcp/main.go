@@ -2,7 +2,8 @@
 // spawns to exercise relay's real external-MCP stdio transport
 // (externalMcpConn.SendRequest / readLoop) without mocking the connection.
 // Behavior is selected by the request method and by RELAY_TESTMCP_CONTEXT;
-// see contextMode below for the context/enumerate modes.
+// see contextMode below for the context/enumerate modes. RELAY_TESTMCP_CATALOG=wide
+// swaps the one-tool catalogue for a 48-tool one (wide.go).
 //
 // Built on demand by buildTestMcpBinary in external_mcp_stdio_test.go.
 package main
@@ -94,6 +95,13 @@ func enumerate(params json.RawMessage) (json.RawMessage, *jsonrpc.Error) {
 }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--write-skills" {
+		if err := writeWideSkills(os.Args[2]); err != nil {
+			os.Stderr.WriteString("testmcp: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1<<20)
 
@@ -159,6 +167,18 @@ func main() {
 		}
 		if req.ID == nil {
 			continue // notification (e.g. notifications/initialized) — no response
+		}
+
+		if wideMode() {
+			switch req.Method {
+			case "tools/list":
+				b, _ := json.Marshal(map[string]any{"tools": wideToolList()})
+				writeResp(req.ID, b)
+				continue
+			case "tools/call":
+				writeResp(req.ID, wideCall(req.Params))
+				continue
+			}
 		}
 
 		switch req.Method {

@@ -228,6 +228,64 @@ the upstream request, and the read fails with `model stream stalled: no data
 for 120s`. The turn ends through the normal `error` event; a Stop still
 wins and ends silently. A server that never sends headers is not bounded.
 
+### Chat tool search
+
+A web chat sends every relay MCP tool's full schema on every request. With
+many tools that is most of the prompt. Tool search hides the tools a project
+skill covers and gives the model two fixed tools instead: `tool_search` and
+`call_tool`. The code is `internal/sessions/provider/chat_toolsearch.go`; the
+pure parts (config, skill reader, ranking) are `internal/sessions/toolsearch`.
+
+**Why the tool list never changes.** A model's prompt cache keys on the
+request prefix, and the tool list sits near its front. Adding a tool to the
+list when a search loads it would invalidate the cache every time. So the
+list is decided once, at provider Start, as `[tool_search, call_tool]`, then
+every tool that stays visible, in MCP order. A search loads a tool by
+returning its full definition in a tool message; the model then runs it
+through `call_tool {"name", "arguments"}`. `arguments` goes to the MCP
+manager byte for byte. A hidden tool that was not loaded is refused with no
+MCP call (`chat.call_tool`, `denied`, `not_loaded`). Calling a loaded tool
+by its real name works too.
+
+**What is hidden.** A tool is hidden when a project skill lists it, it is
+not in `pinned`, and it is in the live MCP catalogue. Skills are read at
+every Start from `<project dir>/.claude/skills/*/SKILL.md`: the frontmatter
+gives the index line and ranking text, and the first `## Tools` section lists
+the tools. A tool no skill lists is never hidden. The index (one line per
+skill) is appended to the system message for each request; it is not written
+into the stored `SystemPrompt`. Loaded names are saved with the turn that
+loaded them in the session's provider state
+(`{"toolSearch":{"loaded":[...]}}`) and restored on resume; a stopped or
+failed turn saves none.
+
+**Symlinks.** The reader `lstat`s `.claude`, `skills`, each skill
+directory and `SKILL.md` and skips any symlink, then opens with
+`O_NOFOLLOW`. A project can therefore not point the index at files outside
+itself. Files over 64 KiB and more than 256 skills are skipped.
+
+**When it is on.** `chat.json` in the relay-sessions data directory
+(`<config dir>/sessions/chat.json`), read at each Start:
+
+```json
+{"toolSearch": {"mode": "auto", "threshold": 0.1, "maxLoaded": 20, "pinned": ["some_tool"]}}
+```
+
+`mode` is `auto` (default), `on` or `off`. In `auto` tool search turns on
+when the tool definitions are more than `threshold` of the model's context
+window, taken from the model catalogue row's `context_length` (32768 when the
+broker does not report one). `maxLoaded` caps tools loaded per chat;
+`pinned` tools stay visible. A missing file means the defaults. An invalid
+file (bad JSON, an unknown key inside `toolSearch`, a bad value, over 64 KiB)
+turns tool search **off** and logs one warning naming the file and field; it
+never guesses. Tool search is also inactive with no relay tools, for a host
+session, when a tool is itself named `tool_search` or `call_tool`, and when no
+tool would be hidden. With it off or inactive the request bytes are the same
+as without the feature. Claude and pi sessions never read `chat.json`.
+
+Logs: `chat.tool_search` once per Start (mode, active, reason, counts and
+token estimates), `chat.tool_search.query` per search (counts and names, no
+query text).
+
 ### `POST /terminate`
 
 Body is `{session_id, reason}`. Resolves the id against `terminal.Manager`

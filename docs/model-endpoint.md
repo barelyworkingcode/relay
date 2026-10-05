@@ -524,6 +524,9 @@ every request; it cannot also carry a relay key there.
   does not autoload models.
 - `GET /models` adds `status.value` of `"loaded"` to each entry (the llama.cpp
   router dialect). `GET /v1/models` keeps the plain OpenAI shape.
+- Both listings carry a top-level `context_length` on a row when relayLLM
+  reports one for it (a positive integer, the context window a client should
+  assume). The key is omitted, never `0`, when the size is unknown.
 
 **Rules that keep it safe.**
 

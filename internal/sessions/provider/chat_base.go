@@ -57,6 +57,12 @@ type ChatConfig struct {
 	// own nullability rule.
 	Identity *sessionsmcp.IdentitySpec
 
+	// ToolSearchConfigPath is the chat.json read at each Start to decide
+	// whether the session hides its relay tools behind tool_search. "" turns
+	// tool search off: requests are then byte-identical to a build without
+	// it. Static across sessions, like ModelSocket.
+	ToolSearchConfigPath string
+
 	// dial overrides how the transport reaches ModelSocket. Test-only seam;
 	// nil dials ModelSocket over a real Unix socket (see openai.go).
 	dial dialFunc
@@ -204,6 +210,15 @@ type ChatProvider struct {
 	cancelFn   context.CancelFunc
 	activeBody io.Closer // resp.Body of the in-flight stream; closed on stop
 	generation atomic.Uint64
+
+	// toolSearchConfigPath is ChatConfig.ToolSearchConfigPath.
+	toolSearchConfigPath string
+
+	// tsMu guards ts and tsLoaded: GetState runs on the persist goroutine,
+	// RestoreState before Start, commits on the tool-loop goroutine.
+	tsMu     sync.Mutex
+	ts       *toolSearchState // nil = tool search off or inactive
+	tsLoaded []string         // loaded hidden tools, committed turns only
 }
 
 // NewChatProvider constructs a provider for session, talking to relay's
@@ -214,6 +229,8 @@ func NewChatProvider(session *sessionstypes.Session, handler sessionstypes.Event
 		handler:    handler,
 		transport:  newChatHTTPTransport(cfg, session.Model, session.Settings),
 		mcpManager: buildChatMCPManager(cfg, session),
+
+		toolSearchConfigPath: cfg.ToolSearchConfigPath,
 	}
 }
 
@@ -241,6 +258,8 @@ func (p *ChatProvider) Start() error {
 		}
 	}
 
+	p.adoptToolSearch(p.setupToolSearch(p.toolSearchConfigPath))
+
 	slog.Info("chat provider started", "session", p.session.ID, "model", p.session.Model)
 	return nil
 }
@@ -251,7 +270,7 @@ func (p *ChatProvider) SendMessage(_ string, _ []sessionstypes.FileAttachment) e
 	}
 
 	p.mu.Lock()
-	messages := p.transport.BuildMessages(p.session.SystemPrompt, p.copyHistory())
+	messages := p.transport.BuildMessages(p.systemPrompt(), p.copyHistory())
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancelFn = cancel
 	gen := p.generation.Add(1)
@@ -287,6 +306,9 @@ func (p *ChatProvider) copyHistory() []sessionstypes.Message {
 }
 
 func (p *ChatProvider) toolDefs() []map[string]any {
+	if ts := p.toolSearch(); ts != nil {
+		return ts.defs
+	}
 	if p.mcpManager != nil && p.mcpManager.HasTools() {
 		return p.mcpManager.ChatToolDefs()
 	}
@@ -321,6 +343,12 @@ func (p *ChatProvider) runToolLoop(ctx context.Context, cancel context.CancelFun
 	const maxToolResultLen = 8192
 
 	var toolMessages []sessionstypes.Message
+
+	ts := p.toolSearch()
+	var tsTurn *toolSearchTurn
+	if ts != nil {
+		tsTurn = ts.newTurn(p.committedLoads())
+	}
 
 	// All tool-loop iterations are one assistant turn from the client's POV.
 	if !stale() {
@@ -396,6 +424,9 @@ func (p *ChatProvider) runToolLoop(ctx context.Context, cancel context.CancelFun
 				p.session.Messages = append(p.session.Messages, toolMessages...)
 				p.session.Unlock()
 			}
+			if tsTurn != nil {
+				p.commitLoads(tsTurn.pending)
+			}
 
 			guardedHandler(events.HandlerMessageComplete, nil)
 			return
@@ -413,21 +444,39 @@ func (p *ChatProvider) runToolLoop(ctx context.Context, cancel context.CancelFun
 				return
 			}
 
-			callRes, toolErr := p.mcpManager.CallTool(ctx, tc.Name, tc.Arguments, func(msg string) {
-				guardedEmitter.ToolProgress(tc.ID, tc.Name, msg)
-			})
-			toolResult := callRes.Text
-			isError := toolErr != nil || callRes.IsError
-			scopeViolation := callRes.ScopeViolation
-			if toolErr != nil {
-				if ctx.Err() != nil {
-					return
+			var (
+				toolResult     string
+				isError        bool
+				scopeViolation bool
+				cutExempt      bool
+			)
+			callName, callArgs := tc.Name, tc.Arguments
+			routed := false
+			if ts != nil {
+				out := ts.route(tc, tsTurn)
+				if out.Final {
+					toolResult, isError, cutExempt, routed = out.Result, out.IsError, out.CutExempt, true
+				} else {
+					callName, callArgs = out.Name, out.Args
 				}
-				scopeViolation = false
-				toolResult = fmt.Sprintf("Error: %s", toolErr.Error())
-				slog.Warn("chat: tool call failed", "tool", tc.Name, "error", toolErr)
 			}
-			if len(toolResult) > maxToolResultLen {
+			if !routed {
+				callRes, toolErr := p.mcpManager.CallTool(ctx, callName, callArgs, func(msg string) {
+					guardedEmitter.ToolProgress(tc.ID, tc.Name, msg)
+				})
+				toolResult = callRes.Text
+				isError = toolErr != nil || callRes.IsError
+				scopeViolation = callRes.ScopeViolation
+				if toolErr != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					scopeViolation = false
+					toolResult = fmt.Sprintf("Error: %s", toolErr.Error())
+					slog.Warn("chat: tool call failed", "tool", callName, "error", toolErr)
+				}
+			}
+			if !cutExempt && len(toolResult) > maxToolResultLen {
 				toolResult = toolResult[:maxToolResultLen] + "\n...(truncated)"
 			}
 
@@ -500,10 +549,8 @@ func (p *ChatProvider) Kill() {
 	}
 }
 
-func (p *ChatProvider) DeleteSession() error           { return nil }
-func (p *ChatProvider) Alive() bool                    { return p.started.Load() }
-func (p *ChatProvider) GetState() json.RawMessage      { return json.RawMessage(`{}`) }
-func (p *ChatProvider) RestoreState(_ json.RawMessage) {}
+func (p *ChatProvider) DeleteSession() error { return nil }
+func (p *ChatProvider) Alive() bool          { return p.started.Load() }
 
 func timeNow() string {
 	return time.Now().UTC().Format(time.RFC3339)

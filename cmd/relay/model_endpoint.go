@@ -292,10 +292,11 @@ func (m *ModelEndpointServer) fetchCatalog(ctx context.Context) ([]modelbroker.R
 	}
 	var body struct {
 		Data []struct {
-			ID      string `json:"id"`
-			OwnedBy string `json:"owned_by"`
-			Target  string `json:"target,omitempty"`
-			System  bool   `json:"system,omitempty"`
+			ID            string `json:"id"`
+			OwnedBy       string `json:"owned_by"`
+			Target        string `json:"target,omitempty"`
+			System        bool   `json:"system,omitempty"`
+			ContextLength int64  `json:"context_length,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, modelbroker.JSONBodyCap)).Decode(&body); err != nil {
@@ -303,7 +304,7 @@ func (m *ModelEndpointServer) fetchCatalog(ctx context.Context) ([]modelbroker.R
 	}
 	rows := make([]modelbroker.Row, 0, len(body.Data))
 	for _, d := range body.Data {
-		rows = append(rows, modelbroker.Row{ID: d.ID, OwnedBy: d.OwnedBy, Target: d.Target, System: d.System})
+		rows = append(rows, modelbroker.Row{ID: d.ID, OwnedBy: d.OwnedBy, Target: d.Target, System: d.System, ContextLength: d.ContextLength})
 	}
 	return rows, nil
 }
@@ -926,15 +927,19 @@ func (m *ModelEndpointServer) writeModelList(w http.ResponseWriter, rows []model
 		Value string `json:"value"`
 	}
 	type modelObj struct {
-		ID      string       `json:"id"`
-		Object  string       `json:"object"`
-		OwnedBy string       `json:"owned_by"`
-		System  bool         `json:"system,omitempty"`
-		Status  *modelStatus `json:"status,omitempty"`
+		ID            string       `json:"id"`
+		Object        string       `json:"object"`
+		OwnedBy       string       `json:"owned_by"`
+		System        bool         `json:"system,omitempty"`
+		ContextLength int64        `json:"context_length,omitempty"`
+		Status        *modelStatus `json:"status,omitempty"`
 	}
 	data := make([]modelObj, 0, len(rows))
 	for _, row := range rows {
 		obj := modelObj{ID: row.ID, Object: "model", OwnedBy: row.OwnedBy, System: row.System}
+		if row.ContextLength > 0 {
+			obj.ContextLength = row.ContextLength
+		}
 		if routerStatus {
 			obj.Status = &modelStatus{Value: "loaded"}
 		}
