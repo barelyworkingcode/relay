@@ -883,7 +883,7 @@ func (m *ModelEndpointServer) serveNoModelRoute(w http.ResponseWriter, r *http.R
 			return
 		}
 		filtered := modelbroker.Filter(rows, caller.grant)
-		m.writeModelList(w, filtered)
+		m.writeModelList(w, filtered, r.URL.Path == "/models")
 		m.audit(m.auditFor(caller, transport, r, http.StatusOK, "ok", start, "", ""))
 		return
 	}
@@ -907,16 +907,29 @@ func (m *ModelEndpointServer) IsSystemModel(ctx context.Context, id string) (boo
 	return false, nil
 }
 
-func (m *ModelEndpointServer) writeModelList(w http.ResponseWriter, rows []modelbroker.Row) {
+// routerStatus adds status.value to each entry, for GET /models only: that
+// path is the llama.cpp router dialect, and a client such as pi's llama.cpp
+// provider rejects the whole catalog when one entry lacks it. Every row is
+// "loaded" because relay routes to it on demand. /v1/models stays plain
+// OpenAI shape.
+func (m *ModelEndpointServer) writeModelList(w http.ResponseWriter, rows []modelbroker.Row, routerStatus bool) {
+	type modelStatus struct {
+		Value string `json:"value"`
+	}
 	type modelObj struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		OwnedBy string `json:"owned_by"`
-		System  bool   `json:"system,omitempty"`
+		ID      string       `json:"id"`
+		Object  string       `json:"object"`
+		OwnedBy string       `json:"owned_by"`
+		System  bool         `json:"system,omitempty"`
+		Status  *modelStatus `json:"status,omitempty"`
 	}
 	data := make([]modelObj, 0, len(rows))
 	for _, row := range rows {
-		data = append(data, modelObj{ID: row.ID, Object: "model", OwnedBy: row.OwnedBy, System: row.System})
+		obj := modelObj{ID: row.ID, Object: "model", OwnedBy: row.OwnedBy, System: row.System}
+		if routerStatus {
+			obj.Status = &modelStatus{Value: "loaded"}
+		}
+		data = append(data, obj)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
