@@ -3,6 +3,7 @@ package audit
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/google/uuid"
 )
 
@@ -445,6 +447,11 @@ type AuditEvent struct {
 	// model_call / model_list; every other event kind's status is implied by
 	// Outcome instead.
 	Status int `json:"status,omitempty"`
+
+	// TraceID joins this record to log lines of the same action.
+	// Caller-supplied on the bridge path (validated), relay-minted on the
+	// remote path; it proves nothing about who acted and no decision reads it.
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -801,6 +808,12 @@ type AuditRecorder struct {
 	dropped atomic.Uint64
 	wrote   atomic.Uint64
 
+	// One limiter per failure site; the durable write and sync failures share
+	// one because they are the same fault seen at two steps.
+	queueFullLog   *logging.Repeat
+	writeFailedLog *logging.Repeat
+	durableFailLog *logging.Repeat
+
 	// Guarded by sinkMu because the settings window can attach and detach at
 	// any time.
 	sinkMu sync.RWMutex
@@ -854,6 +867,10 @@ func NewAuditRecorderWith(resolved resolvedAuditConfig, path string, w io.WriteC
 		ring:    newAuditRing(resolved.RingSize),
 		w:       w,
 		done:    make(chan struct{}),
+
+		queueFullLog:   logging.NewRepeat(0, nil),
+		writeFailedLog: logging.NewRepeat(0, nil),
+		durableFailLog: logging.NewRepeat(0, nil),
 	}
 	go r.run()
 	return r
@@ -978,10 +995,9 @@ func (r *AuditRecorder) Record(ev AuditEvent) {
 	select {
 	case r.ch <- ev:
 	default:
-		if n := r.dropped.Add(1); n == 1 {
-			// Warn once; the counter carries the rest.
-			slog.Warn("audit log queue full, dropping events", "path", r.path)
-		}
+		r.dropped.Add(1)
+		r.queueFullLog.Log(context.Background(), slog.LevelWarn, "audit log queue full, dropping events",
+			slog.String("path", r.path))
 	}
 }
 
@@ -1021,7 +1037,8 @@ func (r *AuditRecorder) run() {
 func (r *AuditRecorder) write(enc *json.Encoder, ev AuditEvent) {
 	r.ring.add(ev)
 	if err := enc.Encode(ev); err != nil {
-		slog.Warn("audit log write failed", "error", err)
+		r.writeFailedLog.Log(context.Background(), slog.LevelWarn, "audit log write failed",
+			slog.Any("error", err))
 	}
 	r.wrote.Add(1)
 
@@ -1038,11 +1055,13 @@ func (r *AuditRecorder) write(enc *json.Encoder, ev AuditEvent) {
 // the Tool Calls tab as though it had been logged.
 func (r *AuditRecorder) writeDurable(enc *json.Encoder, ev AuditEvent) error {
 	if err := enc.Encode(ev); err != nil {
-		slog.Warn("audit durable write failed", "path", r.path, "error", err)
+		r.durableFailLog.Log(context.Background(), slog.LevelWarn, "audit durable write failed",
+			slog.String("path", r.path), slog.Any("error", err))
 		return fmt.Errorf("audit write: %w", err)
 	}
 	if err := syncAuditWriter(r.w); err != nil {
-		slog.Warn("audit durable sync failed", "path", r.path, "error", err)
+		r.durableFailLog.Log(context.Background(), slog.LevelWarn, "audit durable sync failed",
+			slog.String("path", r.path), slog.Any("error", err))
 		return fmt.Errorf("audit sync: %w", err)
 	}
 	r.ring.add(ev)
