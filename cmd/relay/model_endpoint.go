@@ -628,7 +628,7 @@ func (m *ModelEndpointServer) writeError(w http.ResponseWriter, e modelbroker.Er
 
 // modelPollPaths are the routes clients hit on a timer; a successful one
 // writes no log line.
-var modelPollPaths = map[string]struct{}{"/health": {}, "/models": {}, "/v1/models": {}}
+var modelPollPaths = map[string]struct{}{"/health": {}, "/props": {}, "/models": {}, "/v1/models": {}}
 
 // modelLogStatus maps a finished call to its log level, status and error text.
 func modelLogStatus(ev ModelCallAudit) (slog.Level, string, string) {

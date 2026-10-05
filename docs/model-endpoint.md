@@ -312,7 +312,7 @@ proxy.
 On both branches relay sets `X-Trace-Id` on the forwarded request from the
 validated trace ID (the caller's, if it sent a valid one, else a new one);
 see `logging-standard.md`. Every call writes one `model.request` log line
-except a successful poll (`GET`/`HEAD` of `/health`, `/models` or
+except a successful poll (`GET`/`HEAD` of `/health`, `/props`, `/models` or
 `/v1/models`). The line carries the method, path, status, transport, caller and
 canonical model name. It never carries the query string, headers, body,
 requested model, key label or any credential.
@@ -518,6 +518,12 @@ every request; it cannot also carry a relay key there.
   leave the machine. A mistyped local name (not Claude-shaped) is the same 404.
   Cost: a Claude model is never in the catalog, so every such request pays one
   extra `GET /v1/models` on router.sock.
+- `GET /props` is answered by relay itself with `200 {"models_autoload":false}`
+  and never forwarded to the model host. It is authenticated and audited like
+  `/health`. It exists so llama.cpp router-dialect clients see a router that
+  does not autoload models.
+- `GET /models` adds `status.value` of `"loaded"` to each entry (the llama.cpp
+  router dialect). `GET /v1/models` keeps the plain OpenAI shape.
 
 **Rules that keep it safe.**
 
