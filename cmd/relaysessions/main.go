@@ -227,6 +227,8 @@ func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
 			ShimBinary:      shimBinary,
 			BridgeSocket:    cfg.bridgeSocket,
 			RelayMCPCommand: cfg.relayMCPCommand,
+
+			ToolSearchConfigPath: filepath.Join(cfg.dataDir, "chat.json"),
 		},
 	}
 }

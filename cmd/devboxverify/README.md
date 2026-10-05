@@ -414,6 +414,30 @@ ended without being deleted, answers `resume_required`, resumes with
   `session_end` audit row before it sends. It cannot drive a stale `live`
   record left by a Relay relaunch: restarting Relay mid-run stops eve-verify.
 
+**chat-tool-search-tokens** (screen). A chat in Verify Skills sends "Reply with
+the single word: ready" twice, each in a fresh session: once with
+`sessions/chat.json` set to `{"toolSearch":{"mode":"off"}}`, once with
+`{"toolSearch":{"mode":"on","pinned":["tides_lookup"]}}`. The first
+`model_call` row of each gives `prompt_tokens` and `request_bytes`. PASS when
+all four are above 0, both are lower with tool search on, and the
+relay-sessions log has a `chat.tool_search` line for each session: `active=false
+reason=off` for the first, `active=true reason=on skills>=40 pinned=1` for the
+second. BLOCKED when Verify Skills or the model is missing. The journey backs
+up `chat.json` first and puts it back (or removes it, if there was none)
+whatever the outcome; a restore that fails is a FAIL.
+- Lives in: `internal/sessions/toolsearch/`,
+  `internal/sessions/provider/chat_toolsearch.go`, `cmd/relaysessions/main.go`
+  (the `chat.json` path), `cmd/testmcp/wide.go`.
+- Reached by: `POST /api/sessions` with P4, the message route with the run
+  credential, `relay audit --event model_call --json`, and
+  `<configdir>/logs/relaysessions.log`. It writes
+  `<configdir>/sessions/chat.json` directly: that file is the power door.
+- Traps: relay-sessions reads `chat.json` when a chat provider starts, so the
+  file is written before each session, not during one. The skills are read
+  from Verify Skills' folder at the same moment. If the model never answers
+  with prompt tokens, the row shows 0 and the journey FAILs: the model host
+  must report usage (setup P8 step 4).
+
 **disabled-tool-refused** (screen). In a live session in Verify Grant,
 `testmcp_ping` answers; a `PUT /api/projects/{id}` with `disabled_tools`
 naming it returns 200 within 10 s without a prompt; the same session no
@@ -588,6 +612,39 @@ None of this drifts `verify.sh`.
 - **P7.** The app that runs devboxverify holds Accessibility: add the desktop
   Terminal under System Settings > Privacy & Security > Accessibility.
   Without it settings-window-services reads BLOCKED.
+- **P8. Verify Skills.** A project whose chat sees 48 relay tools and 48
+  skills that cover them. Needs the `configure` credential of P5 for the setup
+  alone.
+  1. Build the test MCP as in P5 step 1. It serves the 48-tool catalogue when
+     `RELAY_TESTMCP_CATALOG=wide`.
+  2. Make the project folder and write its skills (one per domain, each
+     listing its one tool):
+
+     ```bash
+     mkdir -p ~/verify-skills
+     ~/.local/bin/devboxverify-testmcp --write-skills ~/verify-skills
+     ```
+
+  3. Create the project with the P5 curl, body below, then set its folder to
+     `~/verify-skills` in Settings. It prompts once. Add `chat` to its allowed
+     templates and, if the model list is restricted, the `RELAY_VERIFY_MODEL`
+     model.
+
+     ```json
+     {"name":"Verify Skills","kind":"local","allowed_mcp_ids":["devboxverify-wide"]}
+     ```
+
+  4. From a desktop Terminal (it prompts), register the MCP under its own id:
+
+     ```bash
+     relay mcp register --id devboxverify-wide --name "devboxverify wide catalogue" --command ~/.local/bin/devboxverify-testmcp --env RELAY_TESTMCP_CATALOG=wide
+     ```
+
+  The model host must return token usage for chat completions, or the journey
+  reads `prompt_tokens` 0 and FAILs. The Child B eve journey uses the same
+  project: it asks for the tide code of a port and `tides_lookup` answers
+  `TIDE-` plus the first 8 hex digits of the SHA-256 of the lower-cased,
+  trimmed port name.
 
 ## Verifying a PR
 

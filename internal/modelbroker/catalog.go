@@ -24,6 +24,10 @@ type Row struct {
 	// for system use and hidden from chat pickers. It rides along on every
 	// row Filter returns.
 	System bool
+	// ContextLength is relayLLM's top-level context_length: the single
+	// context-window size a client should assume. Zero means unknown, and
+	// is never emitted as 0 on a listing.
+	ContextLength int64
 }
 
 // FetchFunc retrieves a fresh catalog snapshot, e.g. by calling relayLLM's
@@ -137,7 +141,7 @@ func Filter(rows []Row, grant []string) []Row {
 	out := make([]Row, 0, len(rows))
 	for _, row := range rows {
 		if _, ok, _ := Allowed(row.ID, grant, rows); ok {
-			out = append(out, Row{ID: row.ID, OwnedBy: row.OwnedBy, System: row.System})
+			out = append(out, Row{ID: row.ID, OwnedBy: row.OwnedBy, System: row.System, ContextLength: row.ContextLength})
 		}
 	}
 	return out

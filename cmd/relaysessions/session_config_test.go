@@ -156,3 +156,14 @@ func TestSessionConfig_ClaudeWithoutUseRelayToolsGetsNoMCPConfig(t *testing.T) {
 		t.Fatalf("claude argv carries --mcp-config for an opted-out session:\n%s", argv)
 	}
 }
+
+func TestSessionConfig_ChatToolSearchConfigPathIsChatJSONInDataDir(t *testing.T) {
+	cfg, err := parseServiceArgs(serviceArgs("-data-dir", "/opt/acme/sessions-data"))
+	if err != nil {
+		t.Fatalf("parseServiceArgs: %v", err)
+	}
+	sc := sessionConfig(cfg, "/opt/acme/relay-sessions")
+	if want := "/opt/acme/sessions-data/chat.json"; sc.Chat.ToolSearchConfigPath != want {
+		t.Fatalf("Chat.ToolSearchConfigPath = %q, want %q", sc.Chat.ToolSearchConfigPath, want)
+	}
+}

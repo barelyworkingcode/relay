@@ -64,6 +64,10 @@ type chatHTTPTransport struct {
 	// of AppendAssistantWithToolCalls so two successive tool-using turns
 	// within one conversation don't reuse the same ID.
 	iterCounter atomic.Uint64
+
+	// ctxTokens is the model's context window from the broker's catalog row,
+	// read by Ping; 0 when unknown.
+	ctxTokens atomic.Int64
 }
 
 // newChatHTTPTransport constructs a transport for cfg. dial defaults to
@@ -129,7 +133,33 @@ func (t *chatHTTPTransport) Ping(ctx context.Context) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("model broker /v1/models returned %d", resp.StatusCode)
 	}
+	t.ctxTokens.Store(readContextLength(resp.Body, t.model))
 	return nil
+}
+
+// ContextTokens returns the context window Ping read for this transport's
+// model, or 0 when the broker did not report one. It satisfies
+// contextTokensReporter.
+func (t *chatHTTPTransport) ContextTokens() int { return int(t.ctxTokens.Load()) }
+
+// readContextLength finds model's row in a /v1/models body. Best effort: a
+// garbled body, a missing row or a non-positive value gives 0.
+func readContextLength(body io.Reader, model string) int64 {
+	var list struct {
+		Data []struct {
+			ID            string `json:"id"`
+			ContextLength int64  `json:"context_length"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(io.LimitReader(body, 8<<20)).Decode(&list) != nil {
+		return 0
+	}
+	for _, row := range list.Data {
+		if row.ID == model && row.ContextLength > 0 {
+			return row.ContextLength
+		}
+	}
+	return 0
 }
 
 // BuildMessages converts session history into OpenAI chat format. Images
