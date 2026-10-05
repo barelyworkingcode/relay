@@ -60,9 +60,9 @@ The state and the excerpt leave relay-sessions. The excerpt is agent output. It 
 
 ## Docs
 
-- [session-host.md](../../session-host.md): "Session state", the frame, the list field.
-- [FEATURES.md](../../FEATURES.md): a G1 row for session state, with journey AA-J03.
-- [logging-standard.md](../../logging-standard.md): no change. The ops use the standard keys.
+- [session-host.md](../../../session-host.md): "Session state", the frame, the list field.
+- [FEATURES.md](../../../FEATURES.md): a G1 row for session state, with journey AA-J03.
+- [logging-standard.md](../../../logging-standard.md): no change. The ops use the standard keys.
 
 ## Rollback
 

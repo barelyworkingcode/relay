@@ -61,8 +61,8 @@ The environment carries no relay credential. Secrets travel on fd 3, as for othe
 
 ## Docs
 
-- [session-host.md](../../session-host.md): the Codex kind, the template, the folders it needs.
-- [FEATURES.md](../../FEATURES.md): the G1 rows.
+- [session-host.md](../../../session-host.md): the Codex kind, the template, the folders it needs.
+- [FEATURES.md](../../../FEATURES.md): the G1 rows.
 - The `codex` template: a seeded entry in `terminal_templates`.
 
 ## Rollback

@@ -47,7 +47,7 @@ The decoder reads untrusted agent output. It never executes it. It never logs it
 
 ## Docs
 
-- [session-host.md](../../session-host.md): the Codex kind.
+- [session-host.md](../../../session-host.md): the Codex kind.
 - `docs/epics/agent-attention/codex-findings.md`: link from here.
 
 ## Rollback

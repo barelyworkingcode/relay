@@ -13,7 +13,7 @@ As a person who works on a remote machine, I want to run Codex there, so that th
 - Host sessions use the same decoder.
 - A host template for Codex.
 
-The design follows [ssh-hosts.md](../../ssh-hosts.md).
+The design follows [ssh-hosts.md](../../../ssh-hosts.md).
 
 ## Out of scope
 
@@ -52,8 +52,8 @@ A host template never sandboxes. Yolo mode on a host means an unconfined agent o
 
 ## Docs
 
-- [ssh-hosts.md](../../ssh-hosts.md): the Codex section.
-- [session-host.md](../../session-host.md): the host template lines.
+- [ssh-hosts.md](../../../ssh-hosts.md): the Codex section.
+- [session-host.md](../../../session-host.md): the host template lines.
 
 ## Rollback
 

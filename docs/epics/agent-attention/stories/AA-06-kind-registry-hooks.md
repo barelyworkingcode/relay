@@ -61,13 +61,13 @@ No new line. Existing `session.launch` lines keep their codes. A test pins each 
 
 ## Security impact
 
-This story touches the sandbox, the model key and the host rule. Each is a security invariant in [CLAUDE.md](../../../CLAUDE.md). The review needs a security reader. A mistake can widen a grant. Golden profile tests guard against that.
+This story touches the sandbox, the model key and the host rule. Each is a security invariant in [CLAUDE.md](../../../../CLAUDE.md). The review needs a security reader. A mistake can widen a grant. Golden profile tests guard against that.
 
 ## Docs
 
-- [session-host.md](../../session-host.md): the lines on the kinds, the model key and the sandbox.
-- [architecture.md](../../architecture.md): the model-key lines.
-- [package-layout.md](../../package-layout.md): the registry package.
+- [session-host.md](../../../session-host.md): the lines on the kinds, the model key and the sandbox.
+- [architecture.md](../../../architecture.md): the model-key lines.
+- [package-layout.md](../../../package-layout.md): the registry package.
 
 ## Rollback
 

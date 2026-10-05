@@ -62,7 +62,7 @@ The board shows agent output excerpts. They stay in the page. The page already s
 ## Docs
 
 - Eve [FEATURES.md](https://github.com/barelyworkingcode/eve/blob/main/docs/FEATURES.md): the board row.
-- [FEATURES.md](../../FEATURES.md) in relay: G1 row.
+- [FEATURES.md](../../../FEATURES.md) in relay: G1 row.
 
 ## Rollback
 

@@ -88,8 +88,8 @@ The terminal must carry the same limits as the headless session. A weaker profil
 
 ## Docs
 
-- [session-host.md](../../session-host.md): "Drop-in".
-- [FEATURES.md](../../FEATURES.md): a G1 row.
+- [session-host.md](../../../session-host.md): "Drop-in".
+- [FEATURES.md](../../../FEATURES.md): a G1 row.
 
 ## Rollback
 

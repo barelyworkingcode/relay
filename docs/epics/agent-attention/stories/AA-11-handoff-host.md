@@ -8,7 +8,7 @@ As a person who runs agents on a remote machine, I want to take over one session
 
 ## Background
 
-A host session already streams over `ssh -T`. A host terminal can persist through tmux. See [ssh-hosts.md](../../ssh-hosts.md).
+A host session already streams over `ssh -T`. A host terminal can persist through tmux. See [ssh-hosts.md](../../../ssh-hosts.md).
 
 ## Scope
 
@@ -53,8 +53,8 @@ A host has no relay sandbox. The terminal carries the same limits as the headles
 
 ## Docs
 
-- [ssh-hosts.md](../../ssh-hosts.md): "Drop-in".
-- [FEATURES.md](../../FEATURES.md): the G11 row.
+- [ssh-hosts.md](../../../ssh-hosts.md): "Drop-in".
+- [FEATURES.md](../../../FEATURES.md): the G11 row.
 
 ## Rollback
 

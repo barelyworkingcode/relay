@@ -60,8 +60,8 @@ The id is not a secret. A random UUID does not leak anything. The id appears in 
 
 ## Docs
 
-- [session-host.md](../../session-host.md): the launch section.
-- [FEATURES.md](../../FEATURES.md): the G1 session rows, if they name resume.
+- [session-host.md](../../../session-host.md): the launch section.
+- [FEATURES.md](../../../FEATURES.md): the G1 session rows, if they name resume.
 
 ## Rollback
 

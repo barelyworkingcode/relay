@@ -76,8 +76,8 @@ None. The package reads canonical events and returns a word. It never reads mess
 
 ## Docs
 
-- A new section in [session-host.md](../../session-host.md): "Session state".
-- [package-layout.md](../../package-layout.md): the new package row.
+- A new section in [session-host.md](../../../session-host.md): "Session state".
+- [package-layout.md](../../../package-layout.md): the new package row.
 
 ## Rollback
 

@@ -54,8 +54,8 @@ The gate tests match source text. Run them before and after. Confirm that each g
 
 ## Docs
 
-- [session-host.md](../../session-host.md): the line that names the three kinds.
-- [CLAUDE.md](../../../CLAUDE.md): line 25 names the kinds. The reviewer decides if it changes.
+- [session-host.md](../../../session-host.md): the line that names the three kinds.
+- [CLAUDE.md](../../../../CLAUDE.md): line 25 names the kinds. The reviewer decides if it changes.
 
 ## Rollback
 
