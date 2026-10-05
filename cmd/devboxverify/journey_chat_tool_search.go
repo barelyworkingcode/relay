@@ -124,8 +124,13 @@ func driveToolSearchTurn(ctx context.Context, e env, launch, run string, r chatT
 		var rows []audit.AuditEvent
 		rows, t.RowsErr = modelCallRows(ctx, e, start, r.ProjectID)
 		t.Row = nil
-		if len(rows) > 0 {
-			t.Row = &rows[0]
+		// Pick this turn's row by its session: the off turn's row is still
+		// inside the on turn's time window.
+		for i := range rows {
+			if rows[i].ModelKeyLabel == "session:"+t.SessionID {
+				t.Row = &rows[i]
+				break
+			}
 		}
 		if t.RowsErr != nil || t.Row != nil || t.Message.Status != http.StatusOK || time.Now().After(deadline) || ctx.Err() != nil {
 			break
