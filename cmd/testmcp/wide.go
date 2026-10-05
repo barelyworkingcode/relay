@@ -80,14 +80,20 @@ var wideDomains = []wideDomain{
 func (d wideDomain) tool() string { return d.domain + "_" + d.verb }
 
 func (d wideDomain) description() string {
-	return fmt.Sprintf("%s. Use when the user asks for %s. Answers with a short plain-text result for one request; it does not change any account, booking or setting.",
-		d.summary, d.asks)
+	return fmt.Sprintf("%s. Use when the user asks for %s.\n\n"+
+		"When to use: pick this tool for one concrete request about %s, such as a single lookup, a short comparison or a quick check. Name the subject in the query exactly as the user phrased it. If the request mixes several topics, call the matching tool for each topic separately rather than packing them into one query.\n\n"+
+		"When not to use: do not use it to change an account, make a booking, send a message or pay for anything. It only reads and reports. Do not use it for general knowledge questions that need no live data, and do not call it again with the same arguments within one turn; reuse the earlier answer.\n\n"+
+		"Output: a short plain-text answer for one request, with the figures or names the user asked about first and any caveat after them. When the %s service has no answer, the text says what is missing and which argument to change. It never returns markup, links that need a login, or personal data about other people.\n\n"+
+		"Limits: at most 20 calls a minute per session. Answers are cached for five minutes. Times use the region's local clock unless the answer states a zone. Related terms the service understands: %s.",
+		d.summary, d.asks, d.asks, d.domain, d.keywords)
 }
 
-// wideProps gives the tool its schema. tides_lookup is pinned by the
+// schema gives the tool its input schema. tides_lookup is pinned by the
 // journey's contract: a required port and an optional date, nothing else.
-// Every other tool gets 3-5 described properties, sized so the whole
-// catalogue's definitions are well over 60 KB as JSON.
+// Every other tool gets 6-8 described properties, sized so the whole
+// catalogue's definitions are well over 130 KB as JSON: the chat-tool-search
+// journey needs auto mode to fire on a 262144-token window (10% = 26214
+// tokens, about 105 KB at 4 bytes a token).
 func (d wideDomain) schema(i int) map[string]any {
 	if d.tool() == "tides_lookup" {
 		return map[string]any{
@@ -101,15 +107,21 @@ func (d wideDomain) schema(i int) map[string]any {
 	}
 	about := d.asks
 	props := map[string]any{
-		"query":  map[string]any{"type": "string", "description": "What to look for in this domain, in a few words. Name the place, person, item or topic the request is about, as the user phrased it, so the answer can be matched to " + about + "."},
-		"region": map[string]any{"type": "string", "description": "Where the request applies: a town, a country or a region code. Leave it out to use the account's home region, which is right for most requests about " + d.domain + ". A region the service does not cover is answered with the nearest covered one, and the answer says so."},
-		"date":   map[string]any{"type": "string", "description": "The day the request is about, as YYYY-MM-DD. Leave it out for today. A date in the past returns the recorded " + d.domain + " answer for that day."},
-	}
-	{
-		props["limit"] = map[string]any{"type": "integer", "description": "The most results to return, from 1 to 50. The default is 10. Use a small number when the user wants one answer about " + d.domain + " rather than a list."}
+		"query":    map[string]any{"type": "string", "description": "What to look for in this domain, in a few words. Name the place, person, item or topic the request is about, as the user phrased it, so the answer can be matched to " + about + ". Do not add instructions or politeness; keep it to the subject. Example subjects for " + d.domain + " are: " + d.keywords + "."},
+		"region":   map[string]any{"type": "string", "description": "Where the request applies: a town, a country or a region code. Leave it out to use the account's home region, which is right for most requests about " + d.domain + ". A region the service does not cover is answered with the nearest covered one, and the answer says so."},
+		"date":     map[string]any{"type": "string", "description": "The day the request is about, as YYYY-MM-DD. Leave it out for today. A date in the past returns the recorded " + d.domain + " answer for that day; a date more than a year ahead is refused with a message that names the latest accepted day."},
+		"limit":    map[string]any{"type": "integer", "description": "The most results to return, from 1 to 50. The default is 10. Use a small number when the user wants one answer about " + d.domain + " rather than a list, and a larger one only when the user asks to see every option."},
+		"language": map[string]any{"type": "string", "description": "The language of the answer as an IETF tag such as en or de. The default is the language of the user's request. Names of places and people stay in their local spelling whatever this is set to, so a " + d.domain + " answer never renames the subject."},
+		"units":    map[string]any{"type": "string", "enum": []string{"metric", "imperial"}, "description": "The unit system for any distance, weight, volume or temperature in the answer. The default follows the region. Set it only when the user states a preference, because a wrong guess makes the " + d.domain + " figures hard to compare with what the user already knows."},
 	}
 	if i%2 == 0 {
-		props["detail"] = map[string]any{"type": "string", "description": "How much to say: brief or full. The default is brief. Choose full only when the user asks for every detail about " + d.domain + " in the answer."}
+		props["detail"] = map[string]any{"type": "string", "enum": []string{"brief", "full"}, "description": "How much to say: brief or full. The default is brief. Choose full only when the user asks for every detail about " + d.domain + " in the answer, because the full text is several times longer and costs the user reading time."}
+	}
+	if i%3 == 0 {
+		props["sort"] = map[string]any{"type": "string", "enum": []string{"relevance", "newest", "nearest"}, "description": "The order of the results: relevance, newest or nearest. The default is relevance. Use nearest only when the region argument names a place, and newest only when the user cares about recent " + d.domain + " information over the best match."}
+	}
+	if i%4 == 0 {
+		props["include_sources"] = map[string]any{"type": "boolean", "description": "Whether to name where each " + d.domain + " figure came from. The default is false. Set it to true when the user asks how sure the answer is or where the information was taken from."}
 	}
 	return map[string]any{"type": "object", "properties": props, "required": []string{"query"}}
 }
