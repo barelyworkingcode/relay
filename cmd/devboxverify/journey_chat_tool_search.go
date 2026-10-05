@@ -104,7 +104,9 @@ func driveToolSearchTurn(ctx context.Context, e env, launch, run string, r chatT
 		return t
 	}
 	start := time.Now().Add(-time.Second)
-	body := jsonBody(map[string]string{"projectId": r.ProjectID, "name": "verify-" + e.Nonce + "-tools-" + label, "model": r.Model})
+	// useRelayTools is what eve's web chat sets on every non-Claude chat; without it
+	// the chat has no MCP tools and tool search reads no_tools.
+	body := jsonBody(map[string]any{"projectId": r.ProjectID, "name": "verify-" + e.Nonce + "-tools-" + label, "model": r.Model, "settings": map[string]bool{"useRelayTools": true}})
 	t.Create = frontendDoTimeout(ctx, e, launch, http.MethodPost, "/api/sessions", body, 30*time.Second)
 	var created struct {
 		SessionID string `json:"sessionId"`
