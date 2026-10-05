@@ -887,6 +887,15 @@ func (m *ModelEndpointServer) serveNoModelRoute(w http.ResponseWriter, r *http.R
 		m.audit(m.auditFor(caller, transport, r, http.StatusOK, "ok", start, "", ""))
 		return
 	}
+	if r.URL.Path == "/props" {
+		// llama.cpp router dialect: pi's llama.cpp provider reads /props for
+		// each model it lists, and one non-200 fails the whole catalog refresh.
+		// Relay has no router autoload and no per-model chat template to give.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models_autoload":false}`))
+		m.audit(m.auditFor(caller, transport, r, http.StatusOK, "ok", start, "", ""))
+		return
+	}
 	// /health: proxied upstream, no model to check.
 	m.proxy(w, r, caller, transport, route, "", "", start, "")
 }

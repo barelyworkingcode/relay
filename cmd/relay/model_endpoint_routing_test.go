@@ -698,3 +698,22 @@ func TestRouting_ModelsPathListsEntriesWithRouterStatus(t *testing.T) {
 		}
 	}
 }
+
+// pi's llama.cpp provider calls GET /props (optionally ?model=) for every
+// model it lists; any non-200 fails the whole catalog refresh.
+func TestRouting_PropsAnswersForTheRouterDialect(t *testing.T) {
+	f := newRoutingFixture(t)
+	addModelProject(t, f.store, "limited", []string{"vCode"}, false)
+	key, err := f.m.modelKeys.Mint("limited", "session:props")
+	assertNoErr(t, err, "Mint")
+	hdr := map[string]string{"X-Relay-Key": key}
+	for _, path := range []string{"/props", "/props?model=vCode&autoload=false"} {
+		w := f.do("GET", path, "", hdr)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"models_autoload":false`) {
+			t.Errorf("GET %s: status = %d body=%s, want 200 with models_autoload false", path, w.Code, w.Body.String())
+		}
+	}
+	if w := f.do("GET", "/props", "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("GET /props without a key: status = %d, want 401", w.Code)
+	}
+}

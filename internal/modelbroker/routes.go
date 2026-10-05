@@ -59,6 +59,8 @@ var allowedRoutes = []Route{
 	{"POST", "/v1/messages/count_tokens", ShapeAnthropic, ModelSourceJSONBody},
 
 	{"GET", "/health", ShapeOpenAI, ModelSourceNone},
+	// /props is answered by relay itself (serveNoModelRoute), never proxied.
+	{"GET", "/props", ShapeOpenAI, ModelSourceNone},
 }
 
 // MatchRoute reports whether method+path is on the broker's allowlist, and
