@@ -494,6 +494,7 @@ func (ts *toolSearchState) search(raw json.RawMessage, turn *toolSearchTurn) too
 			Name: m.Tool.Name, Skill: m.Skill, Description: m.Tool.Description, Parameters: params,
 		})
 	}
+	sort.Strings(already)
 	res := toolSearchResult{Loaded: entries, AlreadyLoaded: already, HowToCall: toolSearchHowToCall}
 	out := marshalNoEscape(res)
 	for len(out) > toolSearchResultMaxBytes && len(res.Loaded) > 1 {

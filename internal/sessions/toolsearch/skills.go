@@ -207,6 +207,13 @@ func unquote(v string) string {
 	return v
 }
 
+// isToolsHeading accepts "## Tools" and the generator's "## Tools (N)".
+func isToolsHeading(line string) bool {
+	return toolsHeadingRE.MatchString(strings.TrimSpace(line))
+}
+
+var toolsHeadingRE = regexp.MustCompile(`^## Tools(?: \(\d+\))?$`)
+
 // parseTools reads the first "## Tools" section only: relay's generated
 // skill files list callable tools there, and later sections are prose.
 func parseTools(body []string) []string {
@@ -215,7 +222,7 @@ func parseTools(body []string) []string {
 	in := false
 	for _, line := range body {
 		if !in {
-			in = strings.TrimSpace(line) == "## Tools"
+			in = isToolsHeading(line)
 			continue
 		}
 		if strings.HasPrefix(line, "## ") {

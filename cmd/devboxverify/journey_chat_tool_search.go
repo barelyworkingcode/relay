@@ -60,7 +60,7 @@ type chatToolSearchRun struct {
 // runChatToolSearch measures what a chat turn costs in the project Verify
 // Skills with tool search off, then on. It backs up the operator's chat.json,
 // writes its own, and puts the original back whatever happens.
-func runChatToolSearch(ctx context.Context, e env) result {
+func runChatToolSearch(ctx context.Context, e env) (out result) {
 	launch, run, res, ok := screenCreds(e, chatToolSearchID)
 	if !ok {
 		return res
@@ -83,14 +83,20 @@ func runChatToolSearch(ctx context.Context, e env) result {
 		r.ConfigErr = err.Error()
 		return classifyChatToolSearch(r)
 	}
+	// Deferred so a panic in a turn still puts the file back; the restore
+	// ignores ctx, so cancellation cannot skip it. The result is classified
+	// in the same defer, after the restore has been recorded.
+	defer func() {
+		r.RestoreErr = restoreOptionalFile(path, prev, existed)
+		out = classifyChatToolSearch(r)
+	}()
 	logPath := filepath.Join(e.ConfigDir, "logs", "relaysessions.log")
 	r.Off = driveToolSearchTurn(ctx, e, launch, run, r, path, logPath, `{"toolSearch":{"mode":"off"}}`, "off")
 	if r.Off.ConfigErr == "" && r.Off.Message.Status == http.StatusOK {
 		r.On = driveToolSearchTurn(ctx, e, launch, run, r, path, logPath,
 			`{"toolSearch":{"mode":"on","pinned":["`+toolSearchPinned+`"]}}`, "on")
 	}
-	r.RestoreErr = restoreOptionalFile(path, prev, existed)
-	return classifyChatToolSearch(r)
+	return result{}
 }
 
 // driveToolSearchTurn writes cfg, then runs one chat. relay-sessions reads

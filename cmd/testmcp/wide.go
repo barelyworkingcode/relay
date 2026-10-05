@@ -169,14 +169,15 @@ func wideCall(params json.RawMessage) json.RawMessage {
 }
 
 // writeWideSkills writes one skill per domain under dir/.claude/skills, in
-// the shape relay's renderBucketSkillMd produces.
+// the shape relay's renderBucketSkillMd produces, heading count included
+// ("## Tools (N)").
 func writeWideSkills(dir string) error {
 	for _, d := range wideDomains {
 		skillDir := filepath.Join(dir, ".claude", "skills", "relay-"+d.domain)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
 			return err
 		}
-		doc := fmt.Sprintf("---\nname: relay-%s\ndescription: %s\nkeywords: [%s]\n---\n\n# %s\n\n## Tools\n\n- **%s** — %s\n",
+		doc := fmt.Sprintf("---\nname: relay-%s\ndescription: %s\nkeywords: [%s]\n---\n\n# %s\n\n## Tools (1)\n\n- **%s** — %s\n",
 			d.domain, d.summary, d.keywords, d.domain, d.tool(), d.summary)
 		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(doc), 0o644); err != nil {
 			return err
