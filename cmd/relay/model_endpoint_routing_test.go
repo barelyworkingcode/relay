@@ -660,3 +660,60 @@ func TestRouting_LegacyBearerStillAuthenticatesTheLocalBranch(t *testing.T) {
 		t.Fatalf("the model host saw %+v; the relay bearer must never reach it", seen)
 	}
 }
+
+// GET /models speaks the llama.cpp router dialect, so a client such as pi's
+// built-in llama.cpp provider accepts the catalog: every entry carries
+// status.value. GET /v1/models stays plain OpenAI shape.
+func TestRouting_ModelsPathListsEntriesWithRouterStatus(t *testing.T) {
+	f := newRoutingFixture(t)
+	addModelProject(t, f.store, "limited", []string{"vCode"}, false)
+	key, err := f.m.modelKeys.Mint("limited", "session:router-status")
+	assertNoErr(t, err, "Mint")
+	hdr := map[string]string{"X-Relay-Key": key}
+
+	decode := func(path string) []map[string]any {
+		w := f.do("GET", path, "", hdr)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200; body=%s", path, w.Code, w.Body.String())
+		}
+		var body struct {
+			Data []map[string]any `json:"data"`
+		}
+		assertNoErr(t, json.Unmarshal(w.Body.Bytes(), &body), "decode "+path)
+		if len(body.Data) == 0 {
+			t.Fatalf("GET %s: no entries", path)
+		}
+		return body.Data
+	}
+
+	for _, e := range decode("/models") {
+		status, _ := e["status"].(map[string]any)
+		if status["value"] != "loaded" {
+			t.Errorf("GET /models entry %v: status = %v, want {value: loaded}", e["id"], e["status"])
+		}
+	}
+	for _, e := range decode("/v1/models") {
+		if _, has := e["status"]; has {
+			t.Errorf("GET /v1/models entry %v: has status, want plain OpenAI shape", e["id"])
+		}
+	}
+}
+
+// pi's llama.cpp provider calls GET /props (optionally ?model=) for every
+// model it lists; any non-200 fails the whole catalog refresh.
+func TestRouting_PropsAnswersForTheRouterDialect(t *testing.T) {
+	f := newRoutingFixture(t)
+	addModelProject(t, f.store, "limited", []string{"vCode"}, false)
+	key, err := f.m.modelKeys.Mint("limited", "session:props")
+	assertNoErr(t, err, "Mint")
+	hdr := map[string]string{"X-Relay-Key": key}
+	for _, path := range []string{"/props", "/props?model=vCode&autoload=false"} {
+		w := f.do("GET", path, "", hdr)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"models_autoload":false`) {
+			t.Errorf("GET %s: status = %d body=%s, want 200 with models_autoload false", path, w.Code, w.Body.String())
+		}
+	}
+	if w := f.do("GET", "/props", "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("GET /props without a key: status = %d, want 401", w.Code)
+	}
+}

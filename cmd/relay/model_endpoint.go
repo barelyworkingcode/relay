@@ -628,7 +628,7 @@ func (m *ModelEndpointServer) writeError(w http.ResponseWriter, e modelbroker.Er
 
 // modelPollPaths are the routes clients hit on a timer; a successful one
 // writes no log line.
-var modelPollPaths = map[string]struct{}{"/health": {}, "/models": {}, "/v1/models": {}}
+var modelPollPaths = map[string]struct{}{"/health": {}, "/props": {}, "/models": {}, "/v1/models": {}}
 
 // modelLogStatus maps a finished call to its log level, status and error text.
 func modelLogStatus(ev ModelCallAudit) (slog.Level, string, string) {
@@ -883,7 +883,16 @@ func (m *ModelEndpointServer) serveNoModelRoute(w http.ResponseWriter, r *http.R
 			return
 		}
 		filtered := modelbroker.Filter(rows, caller.grant)
-		m.writeModelList(w, filtered)
+		m.writeModelList(w, filtered, r.URL.Path == "/models")
+		m.audit(m.auditFor(caller, transport, r, http.StatusOK, "ok", start, "", ""))
+		return
+	}
+	if r.URL.Path == "/props" {
+		// llama.cpp router dialect: pi's llama.cpp provider reads /props for
+		// each model it lists, and one non-200 fails the whole catalog refresh.
+		// Relay has no router autoload and no per-model chat template to give.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models_autoload":false}`))
 		m.audit(m.auditFor(caller, transport, r, http.StatusOK, "ok", start, "", ""))
 		return
 	}
@@ -907,16 +916,29 @@ func (m *ModelEndpointServer) IsSystemModel(ctx context.Context, id string) (boo
 	return false, nil
 }
 
-func (m *ModelEndpointServer) writeModelList(w http.ResponseWriter, rows []modelbroker.Row) {
+// routerStatus adds status.value to each entry, for GET /models only: that
+// path is the llama.cpp router dialect, and a client such as pi's llama.cpp
+// provider rejects the whole catalog when one entry lacks it. Every row is
+// "loaded" because relay routes to it on demand. /v1/models stays plain
+// OpenAI shape.
+func (m *ModelEndpointServer) writeModelList(w http.ResponseWriter, rows []modelbroker.Row, routerStatus bool) {
+	type modelStatus struct {
+		Value string `json:"value"`
+	}
 	type modelObj struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		OwnedBy string `json:"owned_by"`
-		System  bool   `json:"system,omitempty"`
+		ID      string       `json:"id"`
+		Object  string       `json:"object"`
+		OwnedBy string       `json:"owned_by"`
+		System  bool         `json:"system,omitempty"`
+		Status  *modelStatus `json:"status,omitempty"`
 	}
 	data := make([]modelObj, 0, len(rows))
 	for _, row := range rows {
-		data = append(data, modelObj{ID: row.ID, Object: "model", OwnedBy: row.OwnedBy, System: row.System})
+		obj := modelObj{ID: row.ID, Object: "model", OwnedBy: row.OwnedBy, System: row.System}
+		if routerStatus {
+			obj.Status = &modelStatus{Value: "loaded"}
+		}
+		data = append(data, obj)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})

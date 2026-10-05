@@ -138,7 +138,7 @@ Areas: models, sessions, audit.
 |---|---|---|---|---|---|---|---|
 | Model list | Settings > Projects, API | model picker; `GET /api/models` (system-only models omitted) | HTTP [proxy] | — | model-list-and-completion | Settings > Projects > Edit > Allowed Models; eve > New Session > Web Chat > Model | none |
 | Pick a model per project or service | Settings | project form > Model; service > allowed models | HTTP `PUT /api/projects/{id}` | — | none | Settings > Projects or Services > Edit > Allowed Models | `relay service register --allowed-model`; `settings.json` `projects[].allowed_models` |
-| Model endpoint (`/v1/chat/completions`, `/v1/models`, passthrough) | socket, optional TCP | a session or relayLLM calls `model.sock` | HTTP (model socket) | — | model-list-and-completion (one chat turn and its `model_call` row) | n/a | n/a |
+| Model endpoint (`/v1/chat/completions`, `/v1/models`, router-dialect `/models` with `status.value` and `/props`, passthrough) | socket, optional TCP | a session or relayLLM calls `model.sock` | HTTP (model socket) | — | model-list-and-completion (one chat turn and its `model_call` row) | n/a | n/a |
 | Model keys (`rmk_`) for sessions | background | minted at session launch | HTTP (model socket) | — | none | n/a | n/a |
 
 ### G7 · Sign in from a browser — should
