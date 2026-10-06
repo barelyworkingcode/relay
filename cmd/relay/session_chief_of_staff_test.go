@@ -172,6 +172,7 @@ func TestChiefOfStaffSend_HostRefusalsMapToCodesAndCompletionOutcomes(t *testing
 		{"unknown or unlisted session", hostAnswers(404, hostapi.ErrSessionNotFound), false, 404, "session_not_found", audit.AuditOutcomeNotFound, ""},
 		{"already processing", hostAnswers(409, hostapi.ErrAlreadyProcessing), false, 409, "already_processing", audit.AuditOutcomeError, "already_processing"},
 		{"resume required", hostAnswers(409, hostapi.ErrResumeRequired), false, 409, "resume_required", audit.AuditOutcomeError, "resume_required"},
+		{"dropped in", hostAnswers(409, "dropped_in"), false, 409, "dropped_in", audit.AuditOutcomeError, "dropped_in"},
 		{"host failed to send", hostAnswers(500, hostapi.ErrSendFailed), false, 502, "session_host_unavailable", audit.AuditOutcomeError, "send_failed"},
 		{"host not reachable", nil, true, 502, "session_host_unavailable", audit.AuditOutcomeError, "session_host_unavailable"},
 	} {

@@ -102,6 +102,9 @@ func (d sessionRouteDeps) handleChiefOfStaffMessage(w http.ResponseWriter, r *ht
 		case hostapi.ErrResumeRequired:
 			outcome, errCode = audit.AuditOutcomeError, hostapi.ErrResumeRequired
 			status, wireCode, message = http.StatusConflict, hostapi.ErrResumeRequired, "the session is not running; resume it first"
+		case hostapi.ErrDroppedIn:
+			outcome, errCode = audit.AuditOutcomeError, hostapi.ErrDroppedIn
+			status, wireCode, message = http.StatusConflict, hostapi.ErrDroppedIn, "a terminal holds this session; close it first"
 		case hostapi.ErrSendFailed:
 			outcome, errCode = audit.AuditOutcomeError, hostapi.ErrSendFailed
 			status, wireCode, message = http.StatusBadGateway, "session_host_unavailable", "the session host could not deliver the message"

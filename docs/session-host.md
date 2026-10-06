@@ -156,7 +156,9 @@ writes the intent audit row, then calls `sessionHostClient.Send`, which posts
 `/launch`, and `/send` is in `sessionHostReservedRoutes`, so no manifest can
 declare it. Only listed sessions can receive: an unlisted session answers
 `not_found`. A turn already running answers `already_processing`, and a session
-that is not live answers `resume_required`. The answer is `{session_id,
+that is not live answers `resume_required`. A session a drop-in terminal holds
+answers `dropped_in` (409); relay's route passes it through as 409
+`dropped_in`. The answer is `{session_id,
 origin, at}`.
 
 `origin` is set only on this route. No inbound decoder on the public surface

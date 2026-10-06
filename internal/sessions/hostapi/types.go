@@ -128,6 +128,7 @@ const (
 	ErrSessionNotFound   = "session_not_found"  // 404
 	ErrAlreadyProcessing = "already_processing" // 409
 	ErrResumeRequired    = "resume_required"    // 409
+	ErrDroppedIn         = "dropped_in"         // 409
 	ErrSendFailed        = "send_failed"        // 500
 )
 

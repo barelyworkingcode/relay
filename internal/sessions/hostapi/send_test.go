@@ -222,4 +222,18 @@ func TestSend_Conflicts(t *testing.T) {
 			t.Fatalf("error = %q, want %q", e.Error, hostapi.ErrResumeRequired)
 		}
 	})
+	t.Run("dropped in", func(t *testing.T) {
+		f := newDropInFixture(t, map[string]any{"headless": true, "agent": true})
+		if code, out := f.post(t, "/handoff", map[string]any{"session_id": agentID}); code != http.StatusOK {
+			t.Fatalf("handoff = %d %v, want 200", code, out)
+		}
+
+		code, out := f.post(t, "/send", sendBody(agentID, "hello", sessionstypes.OriginChiefOfStaff))
+		if code != http.StatusConflict || out["error"] != hostapi.ErrDroppedIn || out["message"] == "" {
+			t.Fatalf("send while held = %d %v, want 409 %s with a message", code, out, hostapi.ErrDroppedIn)
+		}
+		if got := f.provider.Sent(); len(got) != 0 {
+			t.Fatalf("provider received %d messages while a terminal holds the session, want 0", len(got))
+		}
+	})
 }

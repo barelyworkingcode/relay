@@ -779,8 +779,8 @@ answers.
   it is cut to `audit.max_arg_bytes` on a rune boundary, with
   `text_truncated` set when it was.
 - **Completion outcome.** `ok`, `not_found` or `error`. An `error` row names
-  the cause in `error`: `already_processing`, `resume_required`, `send_failed`
-  or `session_host_unavailable`.
+  the cause in `error`: `already_processing`, `resume_required`, `dropped_in`,
+  `send_failed` or `session_host_unavailable`.
 - A message the person types is not a `session_message` row.
 
 ```

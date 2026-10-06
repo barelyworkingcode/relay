@@ -83,6 +83,9 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, session.ErrResumeRequired):
 		logSend("error", err)
 		writeErr(w, http.StatusConflict, ErrResumeRequired, "session is not running; resume it first")
+	case errors.Is(err, session.ErrDroppedIn):
+		logSend("error", err)
+		writeErr(w, http.StatusConflict, ErrDroppedIn, "a terminal holds this session; close it first")
 	default:
 		logSend("error", err)
 		writeErr(w, http.StatusInternalServerError, ErrSendFailed, "send failed")
