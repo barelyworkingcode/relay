@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/sessions/attention"
 	"github.com/barelyworkingcode/relay/internal/sessions/clock"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
@@ -109,6 +110,9 @@ type Manager struct {
 
 	sink sessionstypes.EventSink
 
+	attn     *attention.Board
+	attnSink *sinkAdapter
+
 	// onExit mirrors internal/sessions/terminal.Manager's own field of the
 	// same name and purpose: a later unit's SessionExited bridge hook, fired
 	// from handleProviderEvent's "process_exited" case, usually on the
@@ -144,13 +148,20 @@ func (m *Manager) getProviderFactory() func(*sessionstypes.Session, CreateSpec, 
 // spawns a claude session with host-control_request permissions (tests, a
 // pi-only deployment).
 func NewManager(cfg Config, store *Store, perms *permission.PermissionManager) *Manager {
-	return &Manager{
+	adapter := &sinkAdapter{}
+	m := &Manager{
 		slots:      make(map[string]*sessionSlot),
 		store:      store,
 		perms:      perms,
 		cfg:        cfg,
 		collectors: make(map[string]*ResponseCollector),
+		attn:       attention.NewBoard(cfg.clockOrDefault(), adapter),
+		attnSink:   adapter,
 	}
+	if perms != nil {
+		perms.SetPendingObserver(m.onPermissionPending)
+	}
+	return m
 }
 
 // SetEventSink installs the sink every provider event and lifecycle
@@ -305,6 +316,7 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 
 	sess, err := m.resolveSessionForCreate(spec, reused)
 	if err == nil {
+		m.signal(sess, attention.Launching)
 		_, err = m.startProvider(sess, spec)
 	}
 
@@ -320,10 +332,14 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 	m.mu.Unlock()
 
 	if err != nil {
+		if sess != nil {
+			m.signal(sess, attention.LaunchFailed)
+		}
 		close(slot.done)
 		return nil, err
 	}
 	if stopping {
+		m.signal(sess, attention.SessionEnded)
 		// A Close (EndSession/DeleteSession) for this id arrived while the
 		// spawn was still in flight: it found only the reservation, not a
 		// provider to kill, so this goroutine — the one that actually
@@ -336,6 +352,7 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 		close(slot.done)
 		return nil, fmt.Errorf("session: %s: closed while starting", spec.SessionID)
 	}
+	m.signal(sess, attention.Launched)
 	close(slot.done)
 	return sess, nil
 }
@@ -376,6 +393,7 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 
 	var parsed struct {
 		Headless         bool                            `json:"headless"`
+		Agent            bool                            `json:"agent"`
 		PermissionMode   string                          `json:"permissionMode"`
 		PermissionPolicy *sessionstypes.PermissionPolicy `json:"permissionPolicy"`
 		ThinkingLevel    string                          `json:"thinkingLevel"`
@@ -405,6 +423,7 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 		Messages:       []sessionstypes.Message{},
 		Stats:          sessionstypes.SessionStats{},
 		Headless:       parsed.Headless,
+		Agent:          parsed.Agent,
 		PermissionMode: mode,
 		Policy:         parsed.PermissionPolicy,
 		Host:           spec.Host,
@@ -544,7 +563,9 @@ func (m *Manager) restartProvider(sess *sessionstypes.Session, slot *sessionSlot
 		old.Kill()
 	}
 
+	m.signal(sess, attention.Launching)
 	if err := p.Start(); err != nil {
+		m.signal(sess, attention.LaunchFailed)
 		return fmt.Errorf("session: restart provider: %w", err)
 	}
 	m.mu.Lock()
@@ -552,7 +573,11 @@ func (m *Manager) restartProvider(sess *sessionstypes.Session, slot *sessionSlot
 	launched := cur != nil && (cur.launching || cur.spec.SessionID != "")
 	m.mu.Unlock()
 	if cur == slot {
+		m.signal(sess, attention.Launched)
 		return nil
+	}
+	if cur == nil {
+		m.signal(sess, attention.SessionEnded)
 	}
 	// Deliberate: kill p itself, never sess.Provider(), and take p out of
 	// sess first only when another launch owns the id. Then p's exit event
@@ -764,6 +789,7 @@ func (m *Manager) EndSession(id string) {
 	if sess == nil {
 		return
 	}
+	m.signal(sess, attention.SessionEnded)
 	if p := sess.Provider(); p != nil {
 		p.Kill()
 	}
@@ -776,6 +802,7 @@ func (m *Manager) DeleteSession(id string) {
 	sess := m.stopSlot(id)
 	if sess != nil {
 		sess.MarkDeleted()
+		m.signal(sess, attention.SessionEnded)
 		if p := sess.Provider(); p != nil {
 			if err := p.DeleteSession(); err != nil {
 				slog.Warn("session: delete provider data failed", "id", id, "error", err)
@@ -815,6 +842,7 @@ func (m *Manager) StopAll() {
 	m.mu.Unlock()
 
 	for _, sess := range live {
+		m.signal(sess, attention.SessionEnded)
 		if p := sess.Provider(); p != nil {
 			p.Kill()
 		}
@@ -878,7 +906,9 @@ func (m *Manager) SendMessage(id, text string, files []sessionstypes.FileAttachm
 		})
 	}
 
+	m.signal(sess, attention.TurnStarted)
 	if err := p.SendMessage(text, files); err != nil {
+		m.signal(sess, attention.TurnFailed)
 		sess.SetProcessing(false)
 		if len(files) > 0 {
 			sess.Lock()
@@ -930,6 +960,7 @@ func (m *Manager) StopGeneration(id string) error {
 	if !ok {
 		return ErrSessionNotFound
 	}
+	m.signal(sess, attention.TurnStopped)
 	if p := sess.Provider(); p != nil {
 		p.StopGeneration()
 	}
@@ -959,6 +990,7 @@ func (m *Manager) ClearSession(id string) error {
 		return ErrSessionNotFound
 	}
 
+	m.signal(sess, attention.TurnStopped)
 	old := sess.SwapProvider(nil)
 	sess.Lock()
 	sess.Messages = []sessionstypes.Message{}
@@ -979,6 +1011,7 @@ func (m *Manager) ClearSession(id string) error {
 	}
 
 	if sess.ProjectID != "" {
+		m.signal(sess, attention.SessionEnded)
 		return ErrResumeRequired
 	}
 	spec, slot, err := m.respawnSpec(sess)
@@ -1054,6 +1087,13 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 	switch eventType {
 	case events.HandlerLLMEvent:
 		msg = map[string]any{"type": events.HandlerLLMEvent, "sessionId": sess.ID, "event": data}
+		if tracked(sess) {
+			sig, text := classifyLLMEvent(data)
+			m.attn.Signal(sess.ID, sig)
+			if text != "" {
+				m.attn.Reply(sess.ID, text)
+			}
+		}
 
 	case events.HandlerStatsUpdate:
 		var stats sessionstypes.SessionStats
@@ -1064,10 +1104,12 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 		sess.Stats = stats
 		current := sess.Stats
 		sess.Unlock()
+		m.signal(sess, attention.Activity)
 		msg = map[string]any{"type": events.HandlerStatsUpdate, "sessionId": sess.ID, "stats": current}
 
 	case events.HandlerMessageComplete:
 		sess.SetProcessing(false)
+		m.signal(sess, completionSignal(data))
 		msg = map[string]any{"type": events.HandlerMessageComplete, "sessionId": sess.ID}
 		m.persist(sess)
 
@@ -1076,6 +1118,7 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 			return
 		}
 		sess.SetProcessing(false)
+		m.signal(sess, attention.ProcessExited)
 		msg = map[string]any{"type": events.WSMsgProcessExited, "sessionId": sess.ID}
 		m.persist(sess)
 		if fn := m.exitHandler(); fn != nil {
@@ -1087,10 +1130,12 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 		}
 
 	case "raw_output":
+		m.signal(sess, attention.Activity)
 		msg = map[string]any{"type": events.WSMsgRawOutput, "sessionId": sess.ID, "text": string(data)}
 
 	case "error":
 		sess.SetProcessing(false)
+		m.signal(sess, attention.TurnFailed)
 		msg = map[string]any{"type": events.WSMsgError, "sessionId": sess.ID, "message": string(data)}
 
 	default:
@@ -1123,6 +1168,8 @@ type Summary struct {
 	MessageCount  int               `json:"messageCount"`
 	LastMessageAt string            `json:"lastMessageAt,omitempty"`
 	Host          map[string]string `json:"host,omitempty"`
+
+	Attention *attention.Attention `json:"attention,omitempty"`
 }
 
 func summarize(sess *sessionstypes.Session) Summary {
@@ -1151,8 +1198,8 @@ func lastMessageAt(msgs []sessionstypes.Message) string {
 	return msgs[len(msgs)-1].Timestamp
 }
 
-// List returns every non-headless session this manager knows about — live,
-// in-memory-but-idle, and persisted-only (merged in from disk, relayLLM's
+// List returns every session this manager knows about except headless runs
+// not marked as agents — live, in-memory-but-idle, and persisted-only (merged in from disk, relayLLM's
 // own ListSessions behavior) — sorted by id.
 func (m *Manager) List() []Summary {
 	m.mu.Lock()
@@ -1163,16 +1210,22 @@ func (m *Manager) List() []Summary {
 			continue
 		}
 		seen[id] = true
-		if slot.sess.Headless {
+		if slot.sess.Headless && !slot.sess.Agent {
 			continue
 		}
-		out = append(out, summarize(slot.sess))
+		row := summarize(slot.sess)
+		if !slot.launching {
+			if a, ok := m.attn.Get(id); ok {
+				row.Attention = &a
+			}
+		}
+		out = append(out, row)
 	}
 	m.mu.Unlock()
 
 	if persisted, err := m.store.LoadAll(); err == nil {
 		for _, sess := range persisted {
-			if seen[sess.ID] || sess.Headless {
+			if seen[sess.ID] || (sess.Headless && !sess.Agent) {
 				continue
 			}
 			out = append(out, summarize(sess))

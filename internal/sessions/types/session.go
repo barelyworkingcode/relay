@@ -23,6 +23,7 @@ type Session struct {
 
 	SystemPrompt  string `json:"systemPrompt,omitempty"`
 	Headless      bool   `json:"headless,omitempty"`
+	Agent         bool   `json:"agent,omitempty"`         // listed and state-tracked although headless
 	ThinkingLevel string `json:"thinkingLevel,omitempty"` // pi-only: off/minimal/low/medium/high/xhigh
 	// Project-scoped MCP tokens are NOT stored on the session. Relay is the
 	// sole token authority: providers resolve the token just-in-time from
