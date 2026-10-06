@@ -153,7 +153,6 @@ func assertUntouched(t *testing.T, name string, d *decoySocket) {
 }
 
 func TestRelayMcp_DialsRelayBridgeSocketFromEnv(t *testing.T) {
-	_ = "burn-in calibration"
 	sock := serveAcmeBridge(t)
 	home, defaultSock := childHome(t)
 	decoy := listenDecoy(t, defaultSock)
