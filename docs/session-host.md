@@ -1,7 +1,7 @@
 # Session host (`relay-sessions`)
 
 The canonical reference for contracts C5 and C6: the binary that hosts every
-terminal, Claude Code, pi and chat session relay launches, the internal API
+terminal, Claude Code, pi, Codex and chat session relay launches, the internal API
 relay drives it through, and the shim every session actually runs under.
 Code carries the present tense; the *why* is here.
 
@@ -150,11 +150,11 @@ between them. Non-200 answers and transport failures both collapse to
 
 Body is `hostapi.LaunchRequest` (v1). `handleLaunch` is a thin dispatcher —
 `kind: "pty"` routes to `internal/sessions/terminal.Manager`, `kind:
-"claude"|"pi"|"chat"` routes to `internal/sessions/session.Manager` — each of
+"claude"|"pi"|"codex"|"chat"` routes to `internal/sessions/session.Manager` — each of
 which owns its own shim-spawn (or direct-spawn) mechanics end to end,
 including the identity Hello wait. On success: `201` with
 `{session_id, root_pid, body}`. `root_pid` is the shim's pid for a `pty`
-launch and `0` for a provider-hosted (claude/pi/chat) launch. `ClaudeProvider`
+launch and `0` for a provider-hosted (claude/pi/codex/chat) launch. `ClaudeProvider`
 reports a process root, but only to `/permission`'s ancestry walk; `/launch`
 does not report it (see [Known gaps](#what-is-not-built-yet)).
 
@@ -169,14 +169,14 @@ Error codes C5 names explicitly, each mapped from a manager error:
 
 | HTTP | code | meaning |
 |---|---|---|
-| 400 | `invalid_spec` | malformed or self-contradictory request, including a new `claude`, `pi` or `chat` launch with a blank model (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
+| 400 | `invalid_spec` | malformed or self-contradictory request, including a new `claude`, `pi`, `codex` or `chat` launch with a blank model (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`codex`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
 | 409 | `session_exists` | this session id is already live |
 | 502 | `identity_refused` | the shim's Hello did not bind |
 | 500 | `spawn_failed` | the target process could not be started |
 
 ### A session names its model
 
-A new `claude`, `pi` or `chat` launch must name a model. Blank means empty
+A new `claude`, `pi`, `codex` or `chat` launch must name a model. Blank means empty
 after trimming whitespace, and a missing field is blank.
 
 - relay: `AuthorizeLaunch` (`cmd/relay/session_launch.go`) refuses it with
@@ -567,9 +567,9 @@ A tracked session reports what it is doing: one of seven states, a reply excerpt
 
 ### Which sessions are tracked
 
-A session is tracked when its provider is `claude` or `pi` and it is not headless, or it is headless and was launched with settings `"agent": true`. Chat sessions and headless sessions without `agent` get no state, no frames, no `attention` field and no log lines, and their visibility in `GET /api/sessions` does not change.
+A session is tracked when its provider is `claude`, `pi` or `codex` and it is not headless, or it is headless and was launched with settings `"agent": true`. Chat sessions and headless sessions without `agent` get no state, no frames, no `attention` field and no log lines, and their visibility in `GET /api/sessions` does not change.
 
-The flag is opt-in on purpose. Inside relay-sessions an unattended agent and a scheduled routine run are the same thing (`headless`); the kind comes from the model. Listing every headless Claude or pi session would make routine runs appear in the list. `agent: true` keeps them where they are, fails closed when absent, and needs no change in another repo. A headless session with `agent: true` is listed; a headless session without it is not.
+The flag is opt-in on purpose. Inside relay-sessions an unattended agent and a scheduled routine run are the same thing (`headless`); the kind comes from the model. Listing every headless Claude, pi or Codex session would make routine runs appear in the list. `agent: true` keeps them where they are, fails closed when absent, and needs no change in another repo. A headless session with `agent: true` is listed; a headless session without it is not.
 
 ### States
 
@@ -605,7 +605,7 @@ Reaching `ended` removes the session's entry. A signal for a session with no ent
 
 ### Events to signals
 
-Claude and pi share one path in `handleProviderEvent` and the manager methods.
+Claude, pi and Codex share one path in `handleProviderEvent` and the manager methods.
 
 | Source | Signal |
 |---|---|
@@ -624,7 +624,7 @@ Claude and pi share one path in `handleProviderEvent` and the manager methods.
 | `error` (a pi model failure) | TurnFailed |
 | `process_exited`, after the displaced-source check | ProcessExited |
 
-A Claude Stop kills the process, so the state reads `idle`, then `ended` a moment later. pi has no question path yet, so `asking` is reachable only for Claude.
+A Claude Stop kills the process, so the state reads `idle`, then `ended` a moment later. pi and Codex have no question path yet, so `asking` is reachable only for Claude: a Codex session reports six of the seven states.
 
 ### Frames
 
@@ -652,6 +652,74 @@ A sweep runs every 5 s while any session is `running`, and stops as soon as none
 ### Log line
 
 Every state change writes one Info line: `session state`, with `op=session.state status=ok duration_ms=0 session_id from to`. `from` is empty on the first change. The line never carries text, a prompt or an excerpt.
+
+## Codex sessions
+
+A session whose model is `codex/<slug>` runs `codex app-server` and speaks its newline-delimited JSON-RPC over stdio (no `jsonrpc` field). The provider is `internal/sessions/provider/codex.go`. `deriveSessionKind` maps the `codex/` prefix to kind `codex`; the provider passes the slug to Codex and never picks a model. An empty slug fails `Start` with `codex session has no model`.
+
+### Launch
+
+On this machine the child is `<codex> app-server` under the shim, with the sandbox profile and launch identity, like pi. Its working directory is the session directory. Its environment is the shared base plus `ensurePath`, `RELAY_SESSION_ID` and `RELAY_BRIDGE_SOCKET`; no relay credential and no `CODEX_*` variable is added. No model key is minted: Codex brings its own login and relay never reads, moves or supplies it. The binary is `CodexConfig.Binary`, else the first hit of `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, then `PATH`.
+
+On an SSH host the provider runs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir, [codex_path, "app-server"], {RELAY_SESSION_ID})]`. `codex_path` is `HostSpec.CodexPath`, which `buildHostSpec` copies from the `command` of the host's `codex` template. An empty path fails `Start` with `host "<id>" has no codex path: set its codex template's command`. A host session is not sandboxed and gets no identity ([ssh-hosts.md](ssh-hosts.md#codex-on-a-host)).
+
+The gate is the kind template `codex`: a console project needs `codex` in `allowed_templates`; a host project needs a valid `codex` host template. Relay tools do not reach Codex: with `useRelayTools` on, the provider logs a warning and starts anyway. Project tool policy (`deniedTools`) does not apply, as for pi; the seatbelt profile is the file and socket boundary. `headless` and `agent` behave as for every kind, and there are no Codex-specific settings.
+
+`Start` runs the handshake under a 30 s cap; any error or timeout kills the child and returns the error. A failed `Start` emits no `process_exited`; the manager reports the launch failure itself.
+
+1. `initialize` with `clientInfo` `{name: "relay", version: "1"}`, then the `initialized` notification.
+2. `thread/start` with `cwd`, `model` (the slug), `approvalPolicy: "never"`, `sandbox: "danger-full-access"` and `developerInstructions` (the system prompt, omitted when empty). When the session state holds a thread id, `thread/resume` with `threadId` and the same params runs instead.
+3. Each message is `turn/start` with `threadId` and one text input; the reply's `turn.id` is kept. `StopGeneration` sends `turn/interrupt` for that turn. A JSON-RPC error reply to `turn/start` emits `error`, then `message_complete`.
+
+`approvalPolicy: "never"` and `danger-full-access` are deliberate: relay's sandbox is the boundary, and Codex's own prompts would have nobody to answer them. `GetState` returns `{"threadId": "…"}`. `DeleteSession` does nothing; Codex's transcripts stay where Codex keeps them. Attachments are ignored with a warning, and the text is sent alone.
+
+### Model catalog
+
+`GET /api/models` gains a "Codex" group from `FetchCodexModels`, which runs `<codex> debug models` (8 s timeout, 5 minute cache) and parses stdout only, so stderr noise cannot break the parse. It lists the rows whose `visibility` is `list`, as `{"label": <display_name>, "value": "codex/<slug>", "group": "Codex", "provider": "codex"}`. Both capabilities are false. With Codex absent or the call failing the group is dropped silently.
+
+### Events to relay's events
+
+| Codex | Emitted |
+|---|---|
+| `turn/started` | `system/init` (model slug, directory) and `message_start` |
+| `item/agentMessage/delta` | a text block start on the item's first delta, then `text_delta` |
+| `item/completed`, `agentMessage` | the block stops; with no delta seen for the item: start, one delta of its text, stop |
+| `item/started`, `commandExecution` | a `tool_use` block named `shell`, input `{"command": …}` |
+| `item/completed`, `commandExecution` | `tool_result` with the aggregated output; an error when `exitCode` is non-zero or `status` is `failed` |
+| `error` | `system/api_error` with the nested message and `willRetry` |
+| `turn/completed`, completed or interrupted | the assistant message joins `session.Messages`, then `message_complete` |
+| `turn/completed`, failed | `error` with the nested message, shortened, then `message_complete` (as pi) |
+| any other method in codex-cli 0.160.0's `ServerNotification` list, and any other known item type | nothing |
+| a method outside that list, an item type outside 0.160.0's `ThreadItem` list, or a line that is not JSON | one `codex: unrecognised event` warning per method per spawn, plus `raw_output`; the session keeps running |
+| the child exits | `process_exited`, through the drain and `waitForExit` path pi uses; stderr goes through the provider-stderr path |
+
+The known sets are pinned in the provider. Codex marks `app-server` experimental, so the pinned set plus the warn-and-continue rule is the guard against a later version.
+
+### Server requests
+
+Every request Codex sends is answered at once, so a turn never waits on relay.
+
+| Request | Answer |
+|---|---|
+| `item/commandExecution/requestApproval`, `item/fileChange/requestApproval` | `{"decision": "decline"}` and a warning |
+| `applyPatchApproval`, `execCommandApproval` | `{"decision": "denied"}` and a warning |
+| `mcpServer/elicitation/request` | `{"action": "decline"}` |
+| `item/tool/requestUserInput` | error `-32601` `unsupported by relay`, and a warning |
+| `item/permissions/requestApproval`, `item/tool/call`, `account/chatgptAuthTokens/refresh`, `attestation/generate`, anything else | error `-32601` `unsupported by relay`, and a warning |
+
+Under `approvalPolicy: "never"` an approval request means something outside relay forced one, such as a managed Codex policy. Declining lets the turn go on without granting anything. `item/tool/requestUserInput` is experimental and off by default, and nothing in eve can answer it, so it is refused rather than mapped to `asking`.
+
+### Recommended console template
+
+A Codex session on this machine needs a `codex` template with these folders, and the project must list `codex` in `allowed_templates`:
+
+```json
+{ "id": "codex", "name": "Codex", "sandbox": true,
+  "read": ["/opt/homebrew", "~/.gitconfig", "~/.zshenv", "~/.zprofile", "~/.zshrc"],
+  "read_write": ["~/.codex", "~/.cache", "~/Library/Caches"] }
+```
+
+`~/.codex` holds Codex's login and transcripts. Codex's own `config.toml` is not touched.
 
 ## Logging and trace IDs
 
@@ -939,15 +1007,15 @@ launch if it slips through, rather than being dropped: a dropped entry would
 leave a tool silently unreachable. A template is sandboxed unless it says
 otherwise: `sandbox` absent means sandboxed, and only an explicit
 `"sandbox": false` opts out. `read`, `read_write` and `deny` are ignored only
-for a terminal launch of a template that says `"sandbox": false`; a claude, pi
-or chat session on a console project always sandboxes and always applies its
+for a terminal launch of a template that says `"sandbox": false`; a claude, pi,
+codex or chat session on a console project always sandboxes and always applies its
 kind template's folders, whatever that template's `sandbox` says. A stored template without
 the field is sandboxed from the upgrade that introduced this rule on, with the
 folders it already lists; nothing rewrites it to `false`, so an operator who
 wants it unconfined says so.
 
-A **claude, pi or chat session** is not launched from a template, but it reads
-its folders from the template named for its kind: `claude-code`, `pi` and
+A **claude, pi, codex or chat session** is not launched from a template, but it reads
+its folders from the template named for its kind: `claude-code`, `pi`, `codex` and
 `chat` (`kindTemplateIDs`). A missing template is not a refusal; the session
 gets only what every session gets, and relay logs which template to add.
 
@@ -960,8 +1028,8 @@ template. To keep the shell out of the credential directories, add
 **A project opts in to templates.** `allowed_templates` on the project record
 is an array: empty is none, a lone `"*"` is every template, otherwise the ids
 listed (`"*"` beside other entries is refused). It gates every launch: a
-terminal template, and the `claude-code`, `pi` or `chat` template a claude, pi
-or chat session reads, so a project needs `claude-code` listed to run Claude
+terminal template, and the `claude-code`, `pi`, `codex` or `chat` template a
+claude, pi, codex or chat session reads, so a project needs `claude-code` listed to run Claude
 sessions. An unlisted template is refused `template_not_allowed`; a launch
 naming no project is refused `project_required` for every kind, so there are
 no ad-hoc terminals. A project created without the field holds none. Projects
@@ -978,8 +1046,8 @@ project with a `host_id` that is the host's `terminal_templates`, and console
 templates are never offered. A host project may launch every template of its
 host; `allowed_templates` gates console templates only. A claude session on a
 host project passes the kind gate iff the host has a `claude-code` template;
-a chat session keeps the console `allowed_templates` gate; pi is refused on a
-host. A host template never sandboxes: it cannot set `"sandbox": true` or
+a codex session passes it iff the host has a `codex` template; a chat session
+keeps the console `allowed_templates` gate; pi is refused on a host. A host template never sandboxes: it cannot set `"sandbox": true` or
 carry `read` or `read_write`, and one that omits `sandbox` launches
 unconfined. An empty `command` there runs the host's login shell rather
 than relay's `$SHELL`. Shape, seeding and launch argv are in
@@ -1004,7 +1072,7 @@ provider. Relay never turns the listener on for you.
 
 Three rules the measurement turned up. **Exec does not need a read grant on the
 binary**, so a system binary runs without one; **a symlink does**: a tool that
-lives behind a link (`~/.local/bin/claude`, `~/.bun/bin/pi`) needs the
+lives behind a link (`~/.local/bin/claude`, `~/.bun/bin/pi`, a Homebrew `codex`) needs the
 directory holding the link and the directory holding its target. And the
 kernel matches the path *it* resolved, in the volume's own letter case, so
 `sandbox.resolve` asks the kernel for the on-disk spelling of every grant: a
