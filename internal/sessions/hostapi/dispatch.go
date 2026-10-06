@@ -192,6 +192,9 @@ func sessionLaunchStatus(err error) (int, string) {
 	if errors.Is(err, session.ErrSessionExists) {
 		return 409, ErrSessionExists
 	}
+	if errors.Is(err, session.ErrDroppedIn) {
+		return 409, "dropped_in"
+	}
 	if errors.Is(err, provider.ErrIdentityRefused) {
 		return 502, ErrIdentityRefused
 	}

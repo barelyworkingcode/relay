@@ -41,6 +41,7 @@ type entry struct {
 	last    time.Time
 	excerpt []rune
 	dead    bool
+	held    bool
 }
 
 type Board struct {
@@ -60,7 +61,7 @@ func NewBoard(clk clock.Clock, sink Sink) *Board {
 func (b *Board) Signal(sessionID string, sig Signal) {
 	var e *entry
 	for {
-		e = b.lookup(sessionID, sig == Launching)
+		e = b.lookup(sessionID, sig == Launching || sig == DroppedIn)
 		if e == nil {
 			return
 		}
@@ -69,7 +70,7 @@ func (b *Board) Signal(sessionID string, sig Signal) {
 			break
 		}
 		e.mu.Unlock()
-		if sig != Launching {
+		if sig != Launching && sig != DroppedIn {
 			return
 		}
 	}
@@ -85,7 +86,7 @@ func (b *Board) Reply(sessionID, text string) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.dead {
+	if e.dead || e.held {
 		return
 	}
 	e.last = b.clk.Now()
@@ -122,7 +123,7 @@ func (b *Board) sweep() {
 	now := b.clk.Now()
 	for _, e := range list {
 		e.mu.Lock()
-		if !e.dead && e.state == Running && now.Sub(e.last) >= StallAfter {
+		if !e.dead && !e.held && e.state == Running && now.Sub(e.last) >= StallAfter {
 			b.apply(e, StallTimeout, e.last.Add(StallAfter))
 		}
 		e.mu.Unlock()
@@ -141,15 +142,15 @@ func (b *Board) lookup(id string, create bool) *entry {
 }
 
 // countRunning keeps b.running in step with entries entering and leaving
-// running. The sweep loop runs only while a session can stall, and stops as
+// running; a held entry never stalls, so it does not count. The sweep loop runs only while a session can stall, and stops as
 // soon as none can, so an idle board holds no goroutine or timer.
-func (b *Board) countRunning(prev, next State) {
-	if (prev == Running) == (next == Running) {
+func (b *Board) countRunning(was, now bool) {
+	if was == now {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if next == Running {
+	if now {
 		b.running++
 		if b.stopSweep == nil {
 			b.stopSweep = make(chan struct{})
@@ -177,9 +178,22 @@ func (b *Board) sweepLoop(stop <-chan struct{}) {
 
 // apply runs under e.mu. since overrides the transition time when non-zero.
 func (b *Board) apply(e *entry, sig Signal, since time.Time) {
+	if e.held && sig != HandedBack && sig != SessionEnded {
+		return
+	}
 	now := b.clk.Now()
 	prev := e.state
 	next := Next(prev, sig)
+	wasCounted := prev == Running && !e.held
+	switch sig {
+	case DroppedIn:
+		e.held = true
+	case HandedBack:
+		if !e.held {
+			return
+		}
+		e.held = false
+	}
 	if sig != StallTimeout {
 		e.last = now
 	}
@@ -195,13 +209,13 @@ func (b *Board) apply(e *entry, sig Signal, since time.Time) {
 			since = now
 		}
 		e.state, e.since = next, since
-		b.countRunning(prev, next)
 		slog.Info("session state", "op", "session.state", "status", "ok", "duration_ms", 0,
 			"session_id", e.id, "from", string(prev), "to", string(next))
 		if b.sink != nil {
 			b.sink.StateChanged(Change{SessionID: e.id, State: next, Since: since})
 		}
 	}
+	b.countRunning(wasCounted, next == Running && !e.held)
 	if next == Ended || (sig == LaunchFailed && prev == Starting) {
 		e.dead = true
 		b.mu.Lock()
