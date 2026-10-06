@@ -144,7 +144,7 @@ changed) and has no configuration: ten runs is the count.
 2. Reading/writing settings, pidfiles, logs, or the bridge socket → call `mkSandboxRelayHome(t)` first.
 3. Need a working router → `newTestRouter(t, settings, mgr)`.
 4. Exercising a manifest-registering service → `NewFakeService(t, FakeServiceOptions{...})`. The relayLLM contract is covered by `integration_fake_relayllm_test.go`.
-5. Need a real spawned subprocess → the `cmd/testservice` / `cmd/testmcp` binaries, built on demand via `buildTestServiceBinary(t)` / `buildTestMcpBinary(t)`, never an `exec.Command` mock.
+5. Need a real spawned subprocess → the `cmd/testservice` / `cmd/testmcp` binaries, built on demand via `buildTestServiceBinary(t)` / `buildTestMcpBinary(t)`, never an `exec.Command` mock. A binary that a test runs inside a timed budget is built in `TestMain` through `buildTestBinaries`, never lazily inside the test.
 6. Live-tier tests carry `//go:build live` and `t.Skip` gracefully when the
    real binary they need is absent — `../relayLLM` unbuilt, or Google Chrome
    not installed. A developer without one must see a skip, never a failure.
