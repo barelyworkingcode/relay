@@ -78,3 +78,22 @@ func TestPiStart_ShimStartFails_LeaksNoFDs(t *testing.T) {
 
 	assertFailedStartsLeakNoFDs(t, p.Start)
 }
+
+func TestFDLeakCheck_UnrelatedCloseIsNotALeak(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	first := true
+	assertFailedStartsLeakNoFDs(t, func() error {
+		if first {
+			first = false
+			_ = r.Close()
+			_ = w.Close()
+		}
+		return fs.ErrNotExist
+	})
+}
