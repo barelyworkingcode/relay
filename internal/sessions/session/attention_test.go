@@ -126,7 +126,7 @@ const textDelta = `{"type":"assistant","delta":{"type":"text_delta","text":"hi"}
 // failed turn (isError, or pi's error event) is errored.
 func TestAttention_ClaudeAndPiShareStateSequence(t *testing.T) {
 	const want = "starting,idle,running,turn_done,idle,running,turn_done,errored,running,turn_done,errored"
-	for _, kind := range []string{session.KindClaude, session.KindPi} {
+	for _, kind := range []string{session.KindClaude, session.KindPi, session.KindCodex} {
 		t.Run(kind, func(t *testing.T) {
 			h := newAttnHarness(t, nil)
 			h.create(t, "11111111-0000-0000-0000-000000000001", kind, "")
