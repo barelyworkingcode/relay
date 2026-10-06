@@ -92,7 +92,31 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// This is deliberate: only the top-level process builds. Helper children
+	// inherit the suite root and must not run `go build`, often inside their
+	// parent's deadline.
+	var binDir string
+	if ownsRoot {
+		var err error
+		binDir, err = os.MkdirTemp("/tmp", "relay-bin-")
+		if err == nil {
+			err = buildTestBinaries(binDir)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "build test binaries: %v\n", err)
+			if binDir != "" {
+				_ = os.RemoveAll(binDir)
+			}
+			_ = removeOwnedRoot()
+			os.Exit(1)
+		}
+		relayBinPath = filepath.Join(binDir, "relay")
+	}
+
 	code := m.Run()
+	if binDir != "" {
+		_ = os.RemoveAll(binDir)
+	}
 
 	bridge.SetConfigDirForTest("")
 	v := isolationViolations(root, tripwire, bridge.ConfigDir())
