@@ -120,6 +120,7 @@ type PiProvider struct {
 	stopIdle     chan struct{}
 	stopIdleOnce sync.Once
 	waitDone     chan struct{}
+	exit         *spawnExit
 	drainTimeout time.Duration
 	// killed is per spawn: a restarted spawn gets a fresh one, so an old
 	// spawn's late exit can't read the new spawn's flag.
@@ -419,6 +420,7 @@ func (p *PiProvider) Start() (err error) {
 	p.stopIdle = make(chan struct{})
 	p.stopIdleOnce = sync.Once{}
 	p.waitDone = make(chan struct{})
+	p.exit = &spawnExit{done: make(chan struct{})}
 	p.drainTimeout = providerDrainTimeout
 	p.killed = &atomic.Bool{}
 	p.touchActivity()
@@ -426,7 +428,7 @@ func (p *PiProvider) Start() (err error) {
 	out := newSpawnOutput(stdoutR, stderrR)
 	go p.readStdout(stdoutR, sawStdout, out.stdoutDone)
 	go func() { out.stderrTail <- logStderr() }()
-	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, gen)
+	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, p.exit, gen)
 	go p.idleWatcher(p.stopIdle)
 
 	slog.Info("pi process started", "session", p.session.ID, "model", p.modelID, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
@@ -502,7 +504,8 @@ func (p *PiProvider) readStdout(r io.ReadCloser, sawStdout *atomic.Bool, done ch
 // idleWatcher and waitForExit take their spawn's own cmd and channels as
 // arguments: after Kill then Start, a goroutine re-reading the fields would
 // race the next Start and could close that spawn's waitDone.
-func (p *PiProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool, gen uint64) {
+func (p *PiProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool, exit *spawnExit, gen uint64) {
+	defer close(exit.done)
 	err := cmd.Wait()
 	p.alive.Store(false)
 	close(waitDone)
@@ -1162,6 +1165,7 @@ func (p *PiProvider) Kill() {
 		return
 	}
 
+	exit := p.exit
 	if p.killed != nil {
 		p.killed.Store(true)
 	}
@@ -1195,6 +1199,11 @@ func (p *PiProvider) Kill() {
 		}
 		_ = p.cmd.Process.Kill()
 		<-p.waitDone
+	}
+	// waitDone means reaped; the exit is delivered or dropped only once the
+	// drain and the handler finish. The handler must not call Kill.
+	if exit != nil {
+		<-exit.done
 	}
 
 	slog.Info("pi process killed", "session", p.session.ID)

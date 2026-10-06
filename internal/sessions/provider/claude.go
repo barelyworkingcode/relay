@@ -1283,6 +1283,7 @@ func (p *ClaudeProvider) Kill() {
 		return
 	}
 
+	exit := p.exit
 	if p.killed != nil {
 		p.killed.Store(true)
 	}
@@ -1310,6 +1311,11 @@ func (p *ClaudeProvider) Kill() {
 		}
 		_ = p.cmd.Process.Kill()
 		<-p.waitDone
+	}
+	// waitDone means reaped; the exit is delivered or dropped only once the
+	// drain and the handler finish. The handler must not call Kill.
+	if exit != nil {
+		<-exit.done
 	}
 
 	slog.Info("claude process killed", "session", p.session.ID)

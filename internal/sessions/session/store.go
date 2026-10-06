@@ -39,7 +39,27 @@ func (s *Store) Save(sess *sessionstypes.Session) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.dir, sess.ID+".json"), data, 0o600)
+	// Temp file then rename: a process that dies or a write that fails
+	// mid-save leaves the old record whole. The temp name has no .json
+	// suffix, so LoadAll skips a leftover.
+	tmp, err := os.CreateTemp(s.dir, "."+sess.ID+"-*.tmp")
+	if err != nil {
+		return fmt.Errorf("session: save %s: %w", sess.ID, err)
+	}
+	tmpName := tmp.Name()
+	_, werr := tmp.Write(data)
+	cerr := tmp.Close()
+	if werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmpName, filepath.Join(s.dir, sess.ID+".json"))
+	}
+	if werr != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("session: save %s: %w", sess.ID, werr)
+	}
+	return nil
 }
 
 func (s *Store) Load(id string) (*sessionstypes.Session, error) {
