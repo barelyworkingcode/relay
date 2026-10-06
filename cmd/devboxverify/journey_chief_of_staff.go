@@ -19,14 +19,14 @@ import (
 )
 
 const (
-	cosID           = "chief-of-staff-send"
-	cosScope        = "chief-of-staff"
-	cosOrigin       = "chief-of-staff"
-	cosDeniedScope  = "outside chief-of-staff scope"
-	cosDeniedClass  = "class not granted"
-	cosEventMessage = "session_message"
-	cosWait         = 15 * time.Second
-	cosTurnWait     = 60 * time.Second
+	cosID             = "chief-of-staff-send"
+	cosScope          = "chief-of-staff"
+	cosOrigin         = "chief-of-staff"
+	cosDeniedScope    = "outside chief-of-staff scope"
+	cosDeniedClass    = "class not granted"
+	cosReadOnlyReason = "chief-of-staff scope is read-only"
+	cosWait           = 15 * time.Second
+	cosTurnWait       = 60 * time.Second
 )
 
 // cosHist is one message of a session_joined history.
@@ -137,6 +137,17 @@ func (c *cosConn) closeCode() int {
 		return ce.Code
 	}
 	return 0
+}
+
+// closeReason is the reason text of the close frame the server sent, or "".
+func (c *cosConn) closeReason() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var ce *websocket.CloseError
+	if errors.As(c.closeErr, &ce) {
+		return ce.Text
+	}
+	return ""
 }
 
 func (c *cosConn) send(v any) error {
@@ -265,6 +276,7 @@ type cosRun struct {
 	NegProjects, NegMessage, NegUnscoped frontendResponse
 	WSJoinWriteErr                       string
 	WSCloseCode                          int
+	WSCloseReason                        string
 	WSClosed                             bool
 
 	RejoinSeen bool
@@ -368,6 +380,7 @@ func driveChiefOfStaff(ctx context.Context, e env, obs, cos *cosConn, run string
 	case <-ctx.Done():
 	}
 	r.WSCloseCode = cos.closeCode()
+	r.WSCloseReason = cos.closeReason()
 
 	_ = obs.send(map[string]string{"type": "join_session", "sessionId": id})
 	r.RejoinSeen = obs.waitFor(ctx, cosWait, cosJoined(id, 2))
@@ -413,7 +426,7 @@ func auditJSONRows(ctx context.Context, e env, args ...string) ([]audit.AuditEve
 // written or the wait ends.
 func sessionMessageRows(ctx context.Context, e env, id string) ([]audit.AuditEvent, string) {
 	for deadline := time.Now().Add(5 * time.Second); ; {
-		rows, err := auditJSONRows(ctx, e, "--event", cosEventMessage, "--grep", id, "--json", "--tail", "50")
+		rows, err := auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionMessage), "--grep", id, "--json", "--tail", "50")
 		if err != nil {
 			return nil, err.Error()
 		}
@@ -452,7 +465,7 @@ func rowArgs(row audit.AuditEvent) cosArgs {
 func messageRowsFor(rows []audit.AuditEvent, id, phase string) []audit.AuditEvent {
 	var out []audit.AuditEvent
 	for _, row := range rows {
-		if row.Event == cosEventMessage && row.Phase == phase && rowArgs(row).SessionID == id {
+		if row.Event == string(audit.AuditEventSessionMessage) && row.Phase == phase && rowArgs(row).SessionID == id {
 			out = append(out, row)
 		}
 	}
@@ -564,6 +577,8 @@ func classifyChiefOfStaff(r cosRun) result {
 		return fail("the chief-of-staff /ws stayed open after a join_session frame")
 	case r.WSCloseCode != websocket.ClosePolicyViolation:
 		return fail("the chief-of-staff /ws closed with code %d, want 1008", r.WSCloseCode)
+	case r.WSCloseReason != cosReadOnlyReason:
+		return fail("the chief-of-staff /ws closed with reason %q, want %q", r.WSCloseReason, cosReadOnlyReason)
 	case countType(r.CosFrames, "session_joined") > 0:
 		return fail("a session_joined frame reached the chief-of-staff /ws")
 	case !r.RejoinSeen:
@@ -660,7 +675,7 @@ func classifyAudit(r cosRun) string {
 	switch {
 	case args.TextBytes != len(cosSendText(r.CosText)):
 		return fmt.Sprintf("intent text_bytes %d, want %d", args.TextBytes, len(cosSendText(r.CosText)))
-	case args.Text != nil && !strings.Contains(*args.Text, "-cos"):
+	case args.Text != nil && !strings.Contains(*args.Text, cosSendText(r.CosText)):
 		return fmt.Sprintf("intent text %q does not contain the chief-of-staff text", *args.Text)
 	}
 	for _, d := range []struct{ method, path, reason string }{

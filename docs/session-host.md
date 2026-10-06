@@ -170,7 +170,6 @@ aligns it with the session's stored messages and sets `origin` on the matching
 history entries. A person's message has no `origin`.
 
 ### `POST /launch`
-### `POST /launch`
 
 Body is `hostapi.LaunchRequest` (v1). `handleLaunch` is a thin dispatcher —
 `kind: "pty"` routes to `internal/sessions/terminal.Manager`, `kind:

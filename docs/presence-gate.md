@@ -277,7 +277,7 @@ obtains nothing. There is no confirmation step for a send, by owner decision:
 every send is marked with its origin in the transcript and recorded before
 delivery as a `session_message` row.
 
-## The nonce model: single-use## The nonce model: single-use, operation-and-argument-bound, 120 seconds
+## The nonce model: single-use, operation-and-argument-bound, 120 seconds
 
 A presence check, on success, mints a nonce bound to **both** the operation
 name and a digest of that operation's normalised arguments. It is single-use

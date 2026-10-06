@@ -788,7 +788,6 @@ relay audit --event session_message                # every Chief of Staff send; 
 ```
 
 ## Issuance and revocation
-## Issuance and revocation
 
 `credential_issued` and `credential_revoked` record that a credential came into
 existence or stopped existing. They are a **different fact from a

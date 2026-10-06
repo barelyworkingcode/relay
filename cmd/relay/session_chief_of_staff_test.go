@@ -217,6 +217,7 @@ func TestChiefOfStaffSend_BadRequestsNeverReachTheHost(t *testing.T) {
 		{"no session id", `{"text":"hello"}`, 400, "session_id_required"},
 		{"no text", `{"sessionId":"s-1"}`, 400, "text_required"},
 		{"empty text", `{"sessionId":"s-1","text":""}`, 400, "text_required"},
+		{"whitespace-only text", `{"sessionId":"s-1","text":" \t\n "}`, 400, "text_required"},
 		{"over 64 KiB", tooBig, 413, "body_too_large"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

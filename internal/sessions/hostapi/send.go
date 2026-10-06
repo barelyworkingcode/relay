@@ -51,7 +51,11 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			attrs = append(attrs, "error", err.Error())
 		}
-		slog.InfoContext(ctx, "session send", attrs...)
+		if status == "ok" {
+			slog.InfoContext(ctx, "session send", attrs...)
+			return
+		}
+		slog.WarnContext(ctx, "session send", attrs...)
 	}
 
 	if !s.sessions.IsListed(req.SessionID) {

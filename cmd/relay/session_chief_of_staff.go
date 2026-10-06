@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
@@ -58,7 +60,7 @@ func (d sessionRouteDeps) handleChiefOfStaffMessage(w http.ResponseWriter, r *ht
 		writeChiefOfStaffError(w, http.StatusBadRequest, "session_id_required", "sessionId is required")
 		return
 	}
-	if body.Text == "" {
+	if strings.TrimSpace(body.Text) == "" {
 		writeChiefOfStaffError(w, http.StatusBadRequest, "text_required", "text is required")
 		return
 	}
@@ -81,7 +83,7 @@ func (d sessionRouteDeps) handleChiefOfStaffMessage(w http.ResponseWriter, r *ht
 		return
 	}
 
-	resp, hostErr, err := d.host().Send(r.Context(), hostapi.SendRequest{SessionID: body.SessionID, Text: body.Text, Origin: origin})
+	resp, hostErr, err := d.host().Send(context.WithoutCancel(r.Context()), hostapi.SendRequest{SessionID: body.SessionID, Text: body.Text, Origin: origin})
 
 	outcome, errCode := audit.AuditOutcomeOK, ""
 	status, wireCode, message := http.StatusAccepted, "", ""
@@ -128,7 +130,7 @@ func (d sessionRouteDeps) handleChiefOfStaffMessage(w http.ResponseWriter, r *ht
 	if errCode != "" {
 		logErr = errCode
 	}
-	slog.InfoContext(r.Context(), "chief of staff send", append(attrs, "status", "error", "error", logErr)...)
+	slog.WarnContext(r.Context(), "chief of staff send", append(attrs, "status", "error", "error", logErr)...)
 	writeChiefOfStaffError(w, status, wireCode, message)
 }
 

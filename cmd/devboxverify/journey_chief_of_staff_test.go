@@ -36,7 +36,7 @@ func chiefOfStaffBase() cosRun {
 		Person: ok, Send: frontendResponse{Status: http.StatusAccepted, Body: []byte(`{"sessionId":"s1","origin":"chief-of-staff"}`)},
 		List: ok, ListRow: listedAttention{Found: true, HasState: true, State: "idle"},
 		NegProjects: denied, NegMessage: denied, NegUnscoped: denied,
-		WSClosed: true, WSCloseCode: websocket.ClosePolicyViolation, RejoinSeen: true,
+		WSClosed: true, WSCloseCode: websocket.ClosePolicyViolation, WSCloseReason: cosReadOnlyReason, RejoinSeen: true,
 		Frames: []cosFrame{
 			{Type: "llm_event", SessionID: sid, InitModel: agentModelID},
 			{Type: "user_message", SessionID: sid, Text: "Reply with exactly: " + person},
@@ -85,6 +85,7 @@ func TestClassifyChiefOfStaff(t *testing.T) {
 		{"unscoped send allowed", func(r *cosRun) { r.NegUnscoped.Status = http.StatusAccepted }, notPass},
 		{"scoped /ws stays open", func(r *cosRun) { r.WSClosed, r.WSCloseCode = false, 0 }, notPass},
 		{"scoped /ws closes with the wrong code", func(r *cosRun) { r.WSCloseCode = websocket.CloseNormalClosure }, notPass},
+		{"scoped /ws closes with the wrong reason", func(r *cosRun) { r.WSCloseReason = "bye" }, notPass},
 		{"scoped /ws answers a join", func(r *cosRun) { r.CosFrames = append(r.CosFrames, cosFrame{Type: "session_joined", SessionID: "s1"}) }, notPass},
 		{"forged person origin recorded live", func(r *cosRun) { r.Frames[1].Origin = cosOrigin }, notPass},
 		{"chief-of-staff text unmarked live", func(r *cosRun) { r.Frames[2].Origin = "" }, notPass},
@@ -106,6 +107,9 @@ func TestClassifyChiefOfStaff(t *testing.T) {
 		}, notPass},
 		{"intent text lacks the send", func(r *cosRun) {
 			r.Rows[0] = cosRow("intent", "pending", `{"session_id":"s1","origin":"chief-of-staff","text":"hello"}`)
+		}, notPass},
+		{"intent text has the nonce marker but not the full send", func(r *cosRun) {
+			r.Rows[0] = cosRow("intent", "pending", `{"session_id":"s1","origin":"chief-of-staff","text":"verify-n1-cos","text_bytes":33}`)
 		}, notPass},
 		{"a row holds the person's text", func(r *cosRun) {
 			r.Rows[1] = cosRow("completion", "ok", `{"session_id":"s1","origin":"chief-of-staff","text":"verify-n1-person"}`)
