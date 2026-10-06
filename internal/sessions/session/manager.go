@@ -194,7 +194,8 @@ func (m *Manager) eventSink() sessionstypes.EventSink {
 // restart fails: that restart reports the killed spawn's exit on the
 // caller's goroutine. ChatProvider has no OS process to wait on, so its
 // Kill invokes fn synchronously on the caller's own goroutine too — fn
-// must tolerate either.
+// must tolerate either. Kill returns only after fn does, so fn must not call
+// Kill on that provider or wait on anything a Kill caller may hold.
 func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 	m.mu.Lock()
 	m.onExit = fn
@@ -317,13 +318,14 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 	m.mu.Unlock()
 
 	if relaunch != nil {
-		relaunch.Kill()
-		// Cleared, not left dangling: startProvider below also kills
-		// whatever provider it displaces (the same guard that protects a
-		// concurrent ad-hoc respawn), and reused is the same *Session this
-		// relaunch was read from — leaving the field set would hand
-		// startProvider a reference this call already tore down itself.
+		// Cleared before Kill, not left dangling: Kill delivers the old
+		// provider's process_exited itself, and handleProviderEvent drops
+		// that exit only once the old provider is no longer installed
+		// (reporting it would revoke the key just minted for this resume).
+		// startProvider also kills whatever provider it displaces, and
+		// reused is the same *Session this relaunch was read from.
 		reused.SetProvider(nil)
+		relaunch.Kill()
 	}
 
 	sess, err := m.resolveSessionForCreate(spec, reused)
@@ -475,10 +477,10 @@ func (m *Manager) newProvider(sess *sessionstypes.Session, spec CreateSpec) (ses
 	// runToolLoop), never before — so the write below, sequenced before any
 	// such goroutine is created, happens-before every read of it. This is
 	// what lets handleProviderEvent tell "this provider's own exit" apart
-	// from a stale event a just-displaced provider fires after Kill()
-	// already returned (Kill() unblocks on the process dying; the event
-	// arrives after, on the exiting provider's own goroutine — a resumed
-	// session's brand new provider can already be live by then).
+	// from the event a just-displaced provider delivers during its own
+	// Kill() (Kill returns only after process_exited reached the handler,
+	// on the exiting provider's own goroutine; a resume clears the
+	// session's provider first, so that exit is not the live one's).
 	var self sessionstypes.Provider
 	handler := func(eventType string, data json.RawMessage) {
 		m.handleProviderEvent(sess, self, eventType, data)
@@ -1111,8 +1113,8 @@ func (m *Manager) persist(sess *sessionstypes.Session) {
 // instance that actually emitted it (nil for the synthetic message_complete
 // StopGeneration manufactures itself). source is only consulted in the
 // "process_exited" case: a provider Create already displaced via
-// CreateSpec.Resume's relaunch path can still fire its own delayed exit
-// event afterward (newProvider's own comment on self) — reporting
+// CreateSpec.Resume's relaunch path delivers its own exit event while being
+// killed (newProvider's own comment on self) — reporting
 // that as sess's exit would tear down the replacement provider's own,
 // already-live credentials, not the dead one's.
 func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessionstypes.Provider, eventType string, data json.RawMessage) {

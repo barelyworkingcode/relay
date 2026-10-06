@@ -62,10 +62,6 @@ func newCodexAttnHarness(t *testing.T, fixture string, env map[string]string) (*
 		session.Config{Clock: h.clk, Codex: provider.CodexConfig{Binary: bin}},
 		session.NewStore(t.TempDir()), nil)
 	h.mgr.SetAttentionSink(h.rec)
-	// The provider closes its wait channel before it delivers process_exited,
-	// so StopAll can return while the manager's exit-time persist is still
-	// about to write into the store dir. Wait for that event so TempDir
-	// removal never races it.
 	exited := make(chan struct{})
 	var exitOnce sync.Once
 	h.mgr.SetExitHandler(func(string, int) { exitOnce.Do(func() { close(exited) }) })
@@ -73,8 +69,8 @@ func newCodexAttnHarness(t *testing.T, fixture string, env map[string]string) (*
 		h.mgr.StopAll()
 		select {
 		case <-exited:
-		case <-time.After(10 * time.Second):
-			t.Error("provider exit event never arrived")
+		default:
+			t.Error("StopAll returned before the exit handler ran")
 		}
 	})
 

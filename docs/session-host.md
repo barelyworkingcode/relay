@@ -230,6 +230,10 @@ Resume is exempt on both sides. It sends the session's stored model back
 through the same path, and a stored model may be blank. `pty` launches carry
 no model and are unaffected.
 
+A resume that relaunches a live provider takes it out of the session before
+killing it, so the old provider's exit, delivered during `Kill()`, is dropped
+and does not revoke the key the resume just minted.
+
 ### A system model cannot host a chat
 
 relayLLM marks a model reserved for system use with `"system": true` on its
@@ -851,15 +855,18 @@ open indefinitely; past the deadline, whatever it writes is dropped. The
 deadline bounds reads, not handler time: a handler slower than the deadline
 loses whatever backlog is still unread when it passes.
 
-Only the provider's current spawn emits `process_exited`. After `Kill()` then
-`Start()` on the same provider, the old spawn's drain can finish once the new
-spawn is live; that exit is logged at `Debug` (`provider exit from a
-superseded spawn dropped`) and dropped, with no crash `Warn`. A restart
-(`SetPermissionMode` on a live spawn) supersedes the spawn before it calls
-`Kill()`, so the killed spawn's exit is dropped the same way even when it
-finishes draining before `Start()` runs: a restart emits no `process_exited`.
-If the restart's `Start()` fails, the session is dead, so the restart waits
-for the killed spawn's drain and emits that spawn's `process_exited` itself.
+Only the provider's current spawn emits `process_exited`. `Kill()` returns
+only once its spawn's exit is delivered or dropped, so it waits for the drain
+(at most `providerDrainTimeout`) and the handler. The handler must not call
+`Kill()` on its own provider. The 3 s fallback times the process alone: it
+fires on the reap, not on the drain or the handler. A `Start()` on a spawn that
+exited on its own and is still draining drops that exit; it is logged at
+`Debug` (`provider exit from a superseded spawn dropped`), with no crash
+`Warn`. A restart (`SetPermissionMode` on a live spawn) supersedes the spawn
+before it calls `Kill()`, so the killed spawn's exit is dropped the same way:
+a restart emits no `process_exited`. If the restart's `Start()` fails, the
+session is dead, so the restart emits that spawn's `process_exited` itself,
+after `Kill()` has waited out its drain.
 The manager's exit path then runs as for any exit: the WS frame, and
 `SessionExited` to relay, which audits `session_end`.
 
@@ -1302,7 +1309,7 @@ in-memory override across the exec boundary.
   relaysessions-hook.sock         # C6 hook socket: /permission
   sessions/
     terminal_logs/                # pty session logs
-    sessions/                     # session.Store's persisted claude/pi/chat records
+    sessions/                     # session.Store's persisted claude/pi/chat records (each Save writes a temp file, then renames it over <id>.json)
     pi-sessions/                  # pi's own JSONL transcripts (internal/sessions/provider/pi.go)
     profiles/<session id>.sb      # C7 SBPL sandbox profiles, one per sandboxed launch
     .migrated-from-relayllm       # migrate.Run's idempotency marker, written once

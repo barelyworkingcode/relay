@@ -51,11 +51,11 @@ func TestProviderExit_GrandchildHoldingStdoutDoesNotBlockExit(t *testing.T) {
 
 const msgSupersededExitDropped = "provider exit from a superseded spawn dropped"
 
-// The first spawn leaves a grandchild holding its stderr, and the drain
-// deadline is far off, so that spawn's drain can finish only when the test
-// kills the grandchild after the second Start has returned. The second spawn
-// is still sleeping, so any process_exited after the restart belongs to the
-// first.
+// The first spawn leaves a grandchild holding its stderr and exits on its own,
+// so its drain stays pending after the reap. The test restarts the provider
+// without Kill, then kills the grandchild so the first spawn's drain finishes
+// under the new generation. The second spawn is still running, so any
+// process_exited after the restart belongs to the first.
 func TestProviderExit_RestartedSpawnGetsNoStaleProcessExited(t *testing.T) {
 	prev := providerDrainTimeout
 	providerDrainTimeout = 30 * time.Second
@@ -75,9 +75,9 @@ func TestProviderExit_RestartedSpawnGetsNoStaleProcessExited(t *testing.T) {
 			var restarted atomic.Bool
 			stale := make(chan json.RawMessage, 1)
 			script := "if [ ! -e '" + pidFile + "' ]; then\n" +
-				"sleep 60 >/dev/null &\necho $! > '" + pidFile + ".tmp'\nmv '" + pidFile + ".tmp' '" + pidFile + "'\nfi\n" +
+				"sleep 60 >/dev/null &\necho $! > '" + pidFile + ".tmp'\nmv '" + pidFile + ".tmp' '" + pidFile + "'\nexit 0\nfi\n" +
 				"exec sleep 30\n"
-			p := spawnFake(t, kind, id, script, func(ev string, data json.RawMessage) {
+			sk := spawnFake(t, kind, id, script, func(ev string, data json.RawMessage) {
 				if ev == "process_exited" && restarted.Load() {
 					select {
 					case stale <- data:
@@ -85,6 +85,16 @@ func TestProviderExit_RestartedSpawnGetsNoStaleProcessExited(t *testing.T) {
 					}
 				}
 			})
+			var waitDone chan struct{}
+			var exitOf func() *spawnExit
+			switch p := sk.(type) {
+			case *ClaudeProvider:
+				waitDone, exitOf = p.waitDone, func() *spawnExit { return p.exit }
+			case *PiProvider:
+				waitDone, exitOf = p.waitDone, func() *spawnExit { return p.exit }
+			default:
+				t.Fatalf("unexpected provider type %T", sk)
+			}
 			waitForFile(t, pidFile)
 			data, err := os.ReadFile(pidFile)
 			if err != nil {
@@ -94,8 +104,13 @@ func TestProviderExit_RestartedSpawnGetsNoStaleProcessExited(t *testing.T) {
 				t.Fatalf("parse grandchild pid %q: %v", data, err)
 			}
 
-			p.Kill()
-			if err := p.Start(); err != nil {
+			select {
+			case <-waitDone:
+			case <-time.After(10 * time.Second):
+				t.Fatal("first spawn was not reaped")
+			}
+			old := exitOf()
+			if err := sk.Start(); err != nil {
 				t.Fatalf("restart: %v", err)
 			}
 			restarted.Store(true)
@@ -104,15 +119,16 @@ func TestProviderExit_RestartedSpawnGetsNoStaleProcessExited(t *testing.T) {
 			}
 			grandchild = 0
 
-			deadline := time.Now().Add(5 * time.Second)
-			for !loggedSupersededDrop(logs.all(), id, kind) {
-				if time.Now().After(deadline) {
-					t.Fatalf("no %q record for %s; stale process_exited delivered: %v", msgSupersededExitDropped, id, len(stale) > 0)
-				}
-				time.Sleep(10 * time.Millisecond)
+			select {
+			case <-old.done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("first spawn's exit was neither delivered nor dropped")
+			}
+			if !loggedSupersededDrop(logs.all(), id, kind) {
+				t.Fatalf("no %q record for %s; stale process_exited delivered: %v", msgSupersededExitDropped, id, len(stale) > 0)
 			}
 			if len(stale) > 0 {
-				t.Fatalf("the killed spawn's process_exited %s reached the handler after the restart", <-stale)
+				t.Fatalf("the first spawn's process_exited %s reached the handler after the restart", <-stale)
 			}
 		})
 	}

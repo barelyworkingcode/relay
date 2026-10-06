@@ -138,6 +138,7 @@ type CodexProvider struct {
 	warned   map[string]struct{}
 
 	waitDone     chan struct{}
+	exit         *spawnExit
 	drainTimeout time.Duration
 	// killed is per spawn so an old spawn's late exit cannot read the new
 	// spawn's flag.
@@ -344,13 +345,14 @@ func (p *CodexProvider) Start() (err error) {
 	p.exitMu.Unlock()
 	p.alive.Store(true)
 	p.waitDone = make(chan struct{})
+	p.exit = &spawnExit{done: make(chan struct{})}
 	p.drainTimeout = providerDrainTimeout
 	p.killed = &atomic.Bool{}
 
 	out := newSpawnOutput(stdoutR, stderrR)
 	go p.readStdout(stdoutR, sawStdout, out.stdoutDone)
 	go func() { out.stderrTail <- logStderr() }()
-	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, gen)
+	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, p.exit, gen)
 
 	slog.Info("codex process started", "session", p.session.ID, "model", p.slug, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
 
@@ -495,7 +497,8 @@ func (p *CodexProvider) readStdout(r io.ReadCloser, sawStdout *atomic.Bool, done
 
 // waitForExit takes its spawn's own cmd and channels as arguments: after Kill
 // then Start, a goroutine re-reading the fields would race the next Start.
-func (p *CodexProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool, gen uint64) {
+func (p *CodexProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool, exit *spawnExit, gen uint64) {
+	defer close(exit.done)
 	err := cmd.Wait()
 	p.alive.Store(false)
 	close(waitDone)
@@ -904,6 +907,7 @@ func (p *CodexProvider) Kill() {
 	if p.cmd == nil || p.cmd.Process == nil {
 		return
 	}
+	exit := p.exit
 	if p.killed != nil {
 		p.killed.Store(true)
 	}
@@ -924,6 +928,11 @@ func (p *CodexProvider) Kill() {
 		}
 		_ = p.cmd.Process.Kill()
 		<-p.waitDone
+	}
+	// waitDone means reaped; the exit is delivered or dropped only once the
+	// drain and the handler finish. The handler must not call Kill.
+	if exit != nil {
+		<-exit.done
 	}
 	slog.Info("codex process killed", "session", p.session.ID)
 }

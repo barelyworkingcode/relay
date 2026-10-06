@@ -113,13 +113,11 @@ func (p *fakeProvider) Sent() []string {
 	return out
 }
 
-// delayedExitProvider models claude.go's/pi.go's real Kill/exit-event
-// relationship: Kill() returns as soon as the process is considered dead,
-// but the process_exited event fires afterward, on its own goroutine — see
-// claude.go's waitForExit, which closes waitDone (what Kill's own wait
-// unblocks on) before calling p.handler. exitGate lets a test control
-// exactly when that delayed call lands, to land it after a resuming Create
-// has already published a replacement provider.
+// delayedExitProvider models a displaced provider whose process_exited
+// arrives on its own goroutine, after the replacement is already published.
+// The real providers deliver the exit before Kill returns; the manager still
+// has to drop a displaced provider's exit whenever it lands. exitGate
+// controls exactly when that call lands.
 type delayedExitProvider struct {
 	fakeProvider
 	handler  sessionstypes.EventHandler
