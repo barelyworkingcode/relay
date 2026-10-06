@@ -47,9 +47,10 @@ type Board struct {
 	clk  clock.Clock
 	sink Sink
 
-	mu       sync.Mutex
-	entries  map[string]*entry
-	sweeping bool
+	mu        sync.Mutex
+	entries   map[string]*entry
+	running   int
+	stopSweep chan struct{}
 }
 
 func NewBoard(clk clock.Clock, sink Sink) *Board {
@@ -111,7 +112,7 @@ func (b *Board) Get(sessionID string) (Attention, bool) {
 // stalled. Asking sessions wait on a person and never stall.
 func (b *Board) Sweep() { b.sweep() }
 
-func (b *Board) sweep() int {
+func (b *Board) sweep() {
 	b.mu.Lock()
 	list := make([]*entry, 0, len(b.entries))
 	for _, e := range b.entries {
@@ -126,7 +127,6 @@ func (b *Board) sweep() int {
 		}
 		e.mu.Unlock()
 	}
-	return len(list)
 }
 
 func (b *Board) lookup(id string, create bool) *entry {
@@ -136,28 +136,41 @@ func (b *Board) lookup(id string, create bool) *entry {
 	if e == nil && create {
 		e = &entry{id: id}
 		b.entries[id] = e
-		if !b.sweeping {
-			b.sweeping = true
-			go b.sweepLoop()
-		}
 	}
 	return e
 }
 
-// sweepLoop exits after a sweep that finds no entries; the flag is cleared
-// under b.mu, the same lock lookup uses to start a new loop, so no entry is
-// left without one.
-func (b *Board) sweepLoop() {
+// countRunning keeps b.running in step with entries entering and leaving
+// running. The sweep loop runs only while a session can stall, and stops as
+// soon as none can, so an idle board holds no goroutine or timer.
+func (b *Board) countRunning(prev, next State) {
+	if (prev == Running) == (next == Running) {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if next == Running {
+		b.running++
+		if b.stopSweep == nil {
+			b.stopSweep = make(chan struct{})
+			go b.sweepLoop(b.stopSweep)
+		}
+		return
+	}
+	b.running--
+	if b.running == 0 && b.stopSweep != nil {
+		close(b.stopSweep)
+		b.stopSweep = nil
+	}
+}
+
+func (b *Board) sweepLoop(stop <-chan struct{}) {
 	for {
-		<-b.clk.After(SweepInterval)
-		if b.sweep() == 0 {
-			b.mu.Lock()
-			if len(b.entries) == 0 {
-				b.sweeping = false
-				b.mu.Unlock()
-				return
-			}
-			b.mu.Unlock()
+		select {
+		case <-stop:
+			return
+		case <-b.clk.After(SweepInterval):
+			b.sweep()
 		}
 	}
 }
@@ -182,6 +195,7 @@ func (b *Board) apply(e *entry, sig Signal, since time.Time) {
 			since = now
 		}
 		e.state, e.since = next, since
+		b.countRunning(prev, next)
 		slog.Info("session state", "op", "session.state", "status", "ok", "duration_ms", 0,
 			"session_id", e.id, "from", string(prev), "to", string(next))
 		if b.sink != nil {

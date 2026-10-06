@@ -83,6 +83,10 @@ type PermissionManager struct {
 	sink    types.EventSink
 	clock   clk.Clock
 
+	// observer is called outside mu with a session's remaining pending count
+	// after every change to it.
+	observer func(sessionID string, pending int)
+
 	// hookTokens tracks live per-session permission-hook credentials
 	// (MintHookToken/ValidateHookToken/RevokeHookToken). Keyed by the
 	// SHA-256 hash of the plaintext, never the plaintext itself, so a copy
@@ -98,6 +102,28 @@ func NewPermissionManager() *PermissionManager {
 		clock:          clk.DefaultClock,
 		hookTokens:     make(map[[32]byte]string),
 		hookTokenOwner: make(map[string][32]byte),
+	}
+}
+
+// SetPendingObserver registers fn to learn each session's pending count after
+// CreateRequest, Resolve, Cleanup and DenyAllForSession. Set it before use.
+func (m *PermissionManager) SetPendingObserver(fn func(sessionID string, pending int)) {
+	m.observer = fn
+}
+
+func (m *PermissionManager) pendingFor(sessionID string) int {
+	n := 0
+	for _, p := range m.pending {
+		if p.sessionID == sessionID {
+			n++
+		}
+	}
+	return n
+}
+
+func (m *PermissionManager) observe(sessionID string, pending int) {
+	if m.observer != nil {
+		m.observer(sessionID, pending)
 	}
 }
 
@@ -135,11 +161,12 @@ func (m *PermissionManager) NotifySession(sessionID string, msg map[string]any) 
 // callers that don't track it.
 func (m *PermissionManager) CreateRequest(sessionID, toolName, toolInput, toolUseID string) (PermissionRequest, chan PermissionDecision) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	id := uuid.New().String()
 	ch := make(chan PermissionDecision, 1)
 	m.pending[id] = pendingPermission{sessionID: sessionID, ch: ch}
+	n := m.pendingFor(sessionID)
+	m.mu.Unlock()
+	m.observe(sessionID, n)
 
 	return PermissionRequest{
 		ID:        id,
@@ -170,8 +197,10 @@ func (m *PermissionManager) PendingSessionID(permissionID string) (string, bool)
 func (m *PermissionManager) Resolve(permissionID string, decision PermissionDecision) bool {
 	m.mu.Lock()
 	p, ok := m.pending[permissionID]
+	n := 0
 	if ok {
 		delete(m.pending, permissionID)
+		n = m.pendingFor(p.sessionID)
 	}
 	m.mu.Unlock()
 
@@ -180,6 +209,7 @@ func (m *PermissionManager) Resolve(permissionID string, decision PermissionDeci
 	}
 
 	p.ch <- decision
+	m.observe(p.sessionID, n)
 	return true
 }
 
@@ -207,8 +237,16 @@ func (m *PermissionManager) PendingIDs() []string {
 // Cleanup removes a pending request (e.g., on timeout).
 func (m *PermissionManager) Cleanup(permissionID string) {
 	m.mu.Lock()
+	p, ok := m.pending[permissionID]
 	delete(m.pending, permissionID)
+	n := 0
+	if ok {
+		n = m.pendingFor(p.sessionID)
+	}
 	m.mu.Unlock()
+	if ok {
+		m.observe(p.sessionID, n)
+	}
 }
 
 // WaitForDecision blocks until the pending request identified by id resolves
@@ -249,10 +287,14 @@ func (m *PermissionManager) DenyAllForSession(sessionID, reason string) {
 			delete(m.pending, id)
 		}
 	}
+	n := m.pendingFor(sessionID)
 	m.mu.Unlock()
 
 	for _, ch := range chans {
 		ch <- PermissionDecision{Decision: "deny", Reason: reason}
+	}
+	if len(chans) > 0 {
+		m.observe(sessionID, n)
 	}
 }
 

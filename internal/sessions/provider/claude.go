@@ -1025,8 +1025,11 @@ func (p *ClaudeProvider) translateResult(raw json.RawMessage) {
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
 		TotalCostUsd float64 `json:"total_cost_usd"`
+		IsError      bool    `json:"is_error"`
+		Subtype      string  `json:"subtype"`
 	}
-	if err := json.Unmarshal(raw, &result); err == nil && result.Usage != nil {
+	parsed := json.Unmarshal(raw, &result) == nil
+	if parsed && result.Usage != nil {
 		stats := sessionstypes.SessionStats{
 			InputTokens:         result.Usage.InputTokens,
 			OutputTokens:        result.Usage.OutputTokens,
@@ -1049,7 +1052,11 @@ func (p *ClaudeProvider) translateResult(raw json.RawMessage) {
 		statsData, _ := json.Marshal(stats)
 		p.handler(events.HandlerStatsUpdate, statsData)
 	}
-	p.handler(events.HandlerMessageComplete, nil)
+	var complete json.RawMessage
+	if parsed && (result.IsError || strings.HasPrefix(result.Subtype, "error")) {
+		complete = json.RawMessage(`{"isError":true}`)
+	}
+	p.handler(events.HandlerMessageComplete, complete)
 }
 
 // ---------------------------------------------------------------------------

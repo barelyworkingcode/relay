@@ -50,6 +50,8 @@ const (
 	WSMsgThinkingLevelChanged = "thinking_level_changed"
 	WSMsgPermissionRequest    = "permission_request"
 	WSMsgError                = "error"
+	WSMsgSessionState         = "session_state"
+	WSMsgTurnDone             = "turn_done"
 
 	// --- Server → Client (outbound, terminal) ---
 	WSMsgTerminalCreated = "terminal_created"

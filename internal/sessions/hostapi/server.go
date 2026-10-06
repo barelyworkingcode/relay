@@ -115,6 +115,7 @@ func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Se
 	s.hub = api.NewHub()
 	s.sessionWS = api.NewSessionHandlers(s.hub, sessions, cfg.Permissions)
 	sessions.SetEventSink(s.sessionWS)
+	sessions.SetAttentionSink(s.sessionWS)
 	if cfg.Permissions != nil {
 		cfg.Permissions.SetEventSink(s.sessionWS)
 	}

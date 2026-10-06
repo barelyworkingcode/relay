@@ -55,6 +55,7 @@ Areas: sessions, sandbox, templates, audit.
 | Permission-mode restart (SSH hosts) | API | change permission mode on an SSH-host session | HTTP | — | permission-mode-restart (always NOTRUN: world has no hosts) | eve > session > chat input > Toggle plan mode | none |
 | Terminal templates: list, add, edit, remove | Settings > Templates | Settings > Templates > Add | HTTP `/api/terminal/templates` | — | none | Settings > Templates > + Add template; row > Edit / Remove | `settings.json` `terminal_templates` |
 | Web chat tool search | chat | a web chat whose relay tools cost more than a tenth of the model's context hides them behind `tool_search` / `call_tool` | n/a (host-side, no route) | — | chat-tool-search-tokens | none (turns on by itself) | `sessions/chat.json` `toolSearch` |
+| Agent state and turn excerpts | API (eve) | a live claude or pi session → `session_state` and `turn_done` on `/ws`; `attention` on `GET /api/sessions` | HTTP [proxy] | — | — | none until the agent board ships in eve | none (API only: `POST /api/sessions` settings `agent: true`) |
 
 ### G2 · Give an agent access to one project and nothing else — must-have
 Intent: grant a project its folder, mail account and chosen tools, and nothing wider.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/logging"
+	"github.com/barelyworkingcode/relay/internal/sessions/attention"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
@@ -66,6 +67,27 @@ func NewSessionHandlers(hub *Hub, mgr *session.Manager, perms *permission.Permis
 	hub.RegisterHandler(events.WSMsgSetPermissionMode, sh.handleSetPermissionMode)
 	hub.OnDisconnect(sh.handleDisconnect)
 	return sh
+}
+
+// StateChanged implements attention.Sink. It broadcasts to every connection,
+// joined or not, so a board watching all sessions needs no join_session.
+func (sh *SessionHandlers) StateChanged(c attention.Change) {
+	sh.hub.Broadcast(mustJSON(map[string]any{
+		"type":      events.WSMsgSessionState,
+		"sessionId": c.SessionID,
+		"state":     string(c.State),
+		"since":     attention.FormatTime(c.Since),
+	}))
+}
+
+// TurnDone implements attention.Sink.
+func (sh *SessionHandlers) TurnDone(d attention.TurnDone) {
+	sh.hub.Broadcast(mustJSON(map[string]any{
+		"type":      events.WSMsgTurnDone,
+		"sessionId": d.SessionID,
+		"excerpt":   d.Excerpt,
+		"at":        attention.FormatTime(d.At),
+	}))
 }
 
 // HasViewers reports whether any connection is currently joined to sessionID.

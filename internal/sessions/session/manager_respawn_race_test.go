@@ -150,6 +150,7 @@ func TestManager_RespawnDuringResume_SendMessage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				r := newRaceRig(t, tc.resumeStartErr)
+				defer r.mgr.StopAll()
 				defer r.releaseStart()
 				defer r.releaseAlive()
 

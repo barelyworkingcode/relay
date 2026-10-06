@@ -561,6 +561,98 @@ is fully closed by the time the target spawns (step 1), and fd 4 is
 `CLOSE_ON_EXEC` (set at open), so `exec(2)` closes it in the child
 automatically.
 
+## Agent state
+
+A tracked session reports what it is doing: one of seven states, a reply excerpt when a turn ends, and a stall check. The logic is `internal/sessions/attention`; the manager feeds it signals and `api.SessionHandlers` turns its output into `/ws` frames.
+
+### Which sessions are tracked
+
+A session is tracked when its provider is `claude` or `pi` and it is not headless, or it is headless and was launched with settings `"agent": true`. Chat sessions and headless sessions without `agent` get no state, no frames, no `attention` field and no log lines, and their visibility in `GET /api/sessions` does not change.
+
+The flag is opt-in on purpose. Inside relay-sessions an unattended agent and a scheduled routine run are the same thing (`headless`); the kind comes from the model. Listing every headless Claude or pi session would make routine runs appear in the list. `agent: true` keeps them where they are, fails closed when absent, and needs no change in another repo. A headless session with `agent: true` is listed; a headless session without it is not.
+
+### States
+
+| State | Meaning |
+|---|---|
+| `starting` | The provider is launching. |
+| `idle` | Launched, waiting for a message, or the last turn finished or was stopped. |
+| `running` | A turn is in progress. |
+| `asking` | The turn waits on a person: a question, or a pending permission. |
+| `errored` | The turn failed, the process died mid-turn, or the launch failed. |
+| `stalled` | Running with no event for 300 s. |
+| `ended` | The session is gone. |
+
+### Transitions
+
+A blank cell means no change. `Launching` from any state, or from none, gives `starting`. `SessionEnded` from any state gives `ended`.
+
+| Signal | starting | idle | running | asking | stalled | errored |
+|---|---|---|---|---|---|---|
+| Launched | idle | | | | | |
+| LaunchFailed | errored, entry dropped | | | | | |
+| TurnStarted | running | running | | | | running |
+| Activity | | | resets the stall clock | | running | |
+| Asked | | | asking | | asking | |
+| Answered | | | | running | | |
+| StallTimeout | | | stalled | | | |
+| TurnEnded | | | idle | idle | idle | |
+| TurnFailed | | | errored | errored | errored | |
+| TurnStopped | | | idle | idle | idle | |
+| ProcessExited | ended | ended | errored | errored | errored | |
+
+Reaching `ended` removes the session's entry. A signal for a session with no entry is ignored, except `Launching`, which creates one.
+
+### Events to signals
+
+Claude and pi share one path in `handleProviderEvent` and the manager methods.
+
+| Source | Signal |
+|---|---|
+| `Create` resolves a tracked session | Launching |
+| `Create` or a restart: the provider start fails, or the manager is stopping, or it succeeds | LaunchFailed, SessionEnded or Launched |
+| `SendMessage`, just before the provider call; if that call errors | TurnStarted; TurnFailed |
+| `StopGeneration`, `ClearSession`, before the kill or abort | TurnStopped |
+| `ClearSession` on a project-bound session (provider left dead) | SessionEnded |
+| `EndSession`, `DeleteSession`, `StopAll`, before the kill | SessionEnded |
+| `llm_event`, `stats_update`, `raw_output` | Activity |
+| `llm_event` with an assistant `text_delta` | the text joins the turn's excerpt |
+| `llm_event` of type `system`, subtype `question` | Asked |
+| `llm_event` of type `result`, subtype `tool_result` | Answered |
+| Pending permissions for the session rise above 0, or fall to 0 (the `/permission` hook and the SSH `control_request`) | Asked, Answered |
+| `message_complete` with data `{"isError":true}`, or without it | TurnFailed, TurnEnded |
+| `error` (a pi model failure) | TurnFailed |
+| `process_exited`, after the displaced-source check | ProcessExited |
+
+A Claude Stop kills the process, so the state reads `idle`, then `ended` a moment later. pi has no question path yet, so `asking` is reachable only for Claude.
+
+### Frames
+
+Both frames go out through `Hub.Broadcast`: every `/ws` connection gets them, whether or not it joined the session. Times are RFC 3339 UTC strings with three-digit milliseconds, like the other frames.
+
+```json
+{"type":"session_state","sessionId":"<id>","state":"idle","since":"2026-10-05T14:03:07.123Z"}
+{"type":"turn_done","sessionId":"<id>","excerpt":"<last 500 runes>","at":"2026-10-05T14:03:07.123Z"}
+```
+
+`turn_done` goes out once when a turn leaves `running`, `asking` or `stalled` through a turn-end, failure or stop signal, and always before that transition's `session_state`. A second end signal outside a turn sends nothing, so a stop's synthetic `message_complete` and pi's late `agent_end` add no frame. The excerpt is the last 500 runes of the turn's reply, cut on a rune boundary, and resets when the next turn starts.
+
+Frames for one session arrive in order: a transition and its frames happen under that session's lock. Broadcasting excerpts gives no new reach, since `/ws` is open only to credentials that can already `join_session` any session.
+
+A launch that fails sends `errored` for an id that never appears in the list. A client treats it as transient.
+
+### List field
+
+`GET /api/sessions` rows for live tracked sessions carry `"attention": {"state": "...", "since": "..."}`. The field is absent for untracked, persisted-only and ended sessions: `ended` reaches a client only as a frame. `since` equals the `since` of the last `session_state` frame for that session.
+
+### Stall
+
+A sweep runs every 5 s while any entry exists and stops after a sweep that finds none. A `running` session whose last event is 300 s old becomes `stalled`, with `since` set to the last event plus 300 s. Any activity returns it to `running`. An `asking` session waits on a person and never stalls. The 300 s is a constant, not a setting.
+
+### Log line
+
+Every state change writes one Info line: `session state`, with `op=session.state status=ok duration_ms=0 session_id from to`. `from` is empty on the first change. The line never carries text, a prompt or an excerpt.
+
 ## Logging and trace IDs
 
 relay-sessions logs through `internal/logging`: JSON lines on stderr, service
