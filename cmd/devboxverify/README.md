@@ -484,7 +484,7 @@ session-drop-in-host.
 `loopback-<nonce>` targeting `localhost` and a project `Drop-in Host <nonce>` on
 a fresh folder; a headless agent session there runs the same turn, which may end
 `idle` or `errored`. `POST /api/sessions/{id}/drop-in` answers 201 with a
-`claudeSessionId` that is a UUID and a terminal id; the agent's `process_exited`
+`claudeSessionId` that is a UUID and equals the `session_id` of the agent's `system/init` event, and a terminal id; the agent's `process_exited`
 frame follows and its list row has `live` false; within 20 s the host's process
 table (`ssh -o BatchMode=yes localhost ps`) holds a `claude` command with
 `--resume <that uuid>`. `/exit` is sent to the terminal; with no `terminal_exit`
@@ -493,7 +493,7 @@ has exactly one `op=session.drop_in` line with `status` ok, `host`
 `loopback-<nonce>` and the terminal's id. The session, terminal, project and
 host are deleted whatever the outcome. BLOCKED when the loopback host or its
 project cannot be created, the host launch is refused (setup P10), or
-`system/init`, when present, does not report `claude-haiku-4-5-20251001`.
+`system/init` does not report `claude-haiku-4-5-20251001`.
 - Proves the handoff and the `--resume <uuid>` launch on the host. That the
   conversation resumes over SSH needs a `claude` signed in for SSH logins on the
   host (setup P10) and a test-machine pass.
@@ -733,8 +733,9 @@ None of this drifts `verify.sh`.
   The box's own public key is in the login user's `authorized_keys`, the SSH
   client trusts the box's host key without a prompt, and `claude` is on the
   login shell's PATH for a non-interactive SSH command (check with
-  `ssh localhost 'command -v claude'`). Without any of these the journey reads
-  BLOCKED. For the conversation to resume on the host, that `claude` must also
+  `ssh localhost 'command -v claude'`). Without the key or the host-key trust
+  the journey reads BLOCKED; with no `claude` on that PATH it reads FAIL ("no
+  system/init"), because the first turn never starts. For the conversation to resume on the host, that `claude` must also
   be signed in for SSH logins (a login keychain is not reachable from an SSH
   session); without it the first turn errors and the journey still checks the
   handoff and the `--resume` launch.

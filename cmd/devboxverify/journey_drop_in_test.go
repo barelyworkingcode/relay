@@ -13,13 +13,16 @@ import (
 
 func ptr[T any](v T) *T { return &v }
 
+const convID = "7b0f5c1e-3a2d-4e8f-9c61-2d4a8b7e0f13"
+
 func dropInLegBase(host string, local bool) dropInLeg {
 	const sid, marker = "s1", "verify-n1-done"
 	l := dropInLeg{
-		Host: host, Marker: marker, DialStatus: http.StatusSwitchingProtocols,
+		ClaudeID: convID,
+		Host:     host, Marker: marker, DialStatus: http.StatusSwitchingProtocols,
 		Create: frontendResponse{Status: http.StatusCreated}, SessionID: sid, JoinSeen: true,
 		Message:    frontendResponse{Status: http.StatusOK},
-		Frames:     []dropFrame{{Type: "llm_event", SessionID: sid, InitModel: agentModelID}},
+		Frames:     []dropFrame{{Type: "llm_event", SessionID: sid, InitModel: agentModelID, InitConvID: convID}},
 		IdleBefore: true, TerminalID: "t1", MarkerSeen: true, ExitSeen: true, IdleAfter: true,
 		LogLines: []dropInLogLine{{Status: "ok", Host: host, TerminalID: "t1"}},
 		Delete:   frontendResponse{Status: http.StatusNoContent},
@@ -28,7 +31,7 @@ func dropInLegBase(host string, local bool) dropInLeg {
 	l.HeldExited, l.HeldFound, l.HeldLive = true, true, ptr(false)
 	l.HeldList = frontendResponse{Status: http.StatusOK}
 	if !local {
-		l.ClaudeID, l.ResumeSeen = "7b0f5c1e-3a2d-4e8f-9c61-2d4a8b7e0f13", true
+		l.ResumeSeen = true
 	}
 	if local {
 		l.CheckAudit = true
@@ -60,6 +63,8 @@ func TestLegProblem(t *testing.T) {
 		{"log line names another host", func(l *dropInLeg) { l.LogLines[0].Host = "elsewhere" }, stateFail},
 		{"log line names another terminal", func(l *dropInLeg) { l.LogLines[0].TerminalID = "t2" }, stateFail},
 		{"delete failed", func(l *dropInLeg) { l.Delete.Status = http.StatusInternalServerError }, stateFail},
+		{"drop-in returned another conversation id", func(l *dropInLeg) { l.Frames[0].InitConvID = "00000000-0000-4000-8000-000000000000" }, stateFail},
+		{"init carries no conversation id", func(l *dropInLeg) { l.Frames[0].InitConvID = "" }, stateFail},
 	}
 	check := func(t *testing.T, host string, local bool, cases []mutCase[dropInLeg]) {
 		checkMuts(t, func() dropInLeg { return dropInLegBase(host, local) }, func(l dropInLeg) result {
@@ -83,11 +88,7 @@ func TestLegProblem(t *testing.T) {
 	})
 	t.Run("host", func(t *testing.T) {
 		check(t, "loopback-n1", false, append(slices.Clone(shared), []mutCase[dropInLeg]{
-			{"first turn errored, as with a claude that cannot sign in", func(l *dropInLeg) { l.TurnErrored = true }, statePass},
-			{"first turn errored without init", func(l *dropInLeg) { l.TurnErrored, l.Frames = true, nil }, stateFail},
-			{"first turn errored, then no handoff", func(l *dropInLeg) {
-				l.TurnErrored, l.Frames, l.Refusal = true, nil, "status 409 turn_failed"
-			}, stateFail},
+			{"no handoff after the first turn", func(l *dropInLeg) { l.Refusal = "status 409 turn_failed" }, stateFail},
 			{"first turn ended without init and not errored", func(l *dropInLeg) { l.Frames = nil }, stateFail},
 			{"model not Haiku 4.5", func(l *dropInLeg) { l.Frames[0].InitModel = "claude-haiku-5" }, stateBlocked},
 			{"message route answered an error", func(l *dropInLeg) { l.Message = frontendResponse{Status: http.StatusBadGateway} }, notPass},
@@ -100,8 +101,31 @@ func TestLegProblem(t *testing.T) {
 	})
 }
 
+func TestFirstTurnEnded(t *testing.T) {
+	st := func(s string) dropFrame { return dropFrame{Type: "session_state", SessionID: "s1", State: s} }
+	cases := []struct {
+		name                   string
+		fs                     []dropFrame
+		host                   bool
+		wantEnded, wantErrored bool
+	}{
+		{"local idle", []dropFrame{st("running"), st("idle")}, false, true, false},
+		{"host idle", []dropFrame{st("running"), st("idle")}, true, true, false},
+		{"host errored", []dropFrame{st("running"), st("errored")}, true, true, true},
+		{"local errored is no end", []dropFrame{st("running"), st("errored")}, false, false, false},
+		{"still running", []dropFrame{st("running")}, true, false, false},
+		{"another session's idle", []dropFrame{st("running"), {Type: "session_state", SessionID: "s2", State: "idle"}}, true, false, false},
+	}
+	for _, c := range cases {
+		ended, errored := firstTurnEnded(c.fs, "s1", c.host)
+		if ended != c.wantEnded || errored != c.wantErrored {
+			t.Errorf("%s: firstTurnEnded = %v, %v, want %v, %v", c.name, ended, errored, c.wantEnded, c.wantErrored)
+		}
+	}
+}
+
 func TestResumeLaunched(t *testing.T) {
-	const id = "7b0f5c1e-3a2d-4e8f-9c61-2d4a8b7e0f13"
+	const id = convID
 	cases := []struct {
 		name, ps string
 		want     bool
@@ -111,6 +135,8 @@ func TestResumeLaunched(t *testing.T) {
 		{"id without resume", "/opt/bin/claude --session-id " + id + "\n", false},
 		{"resume of the id by another program", "/usr/bin/other --resume " + id + "\n", false},
 		{"an ssh client carrying the command", "ssh -tt localhost cd /w && claude --resume " + id + "\n", false},
+		{"headless relaunch with --print", "/opt/bin/claude --print --resume " + id + "\n", false},
+		{"headless relaunch with -p", "/opt/bin/claude -p hi --resume " + id + "\n", false},
 		{"empty table", "", false},
 	}
 	for _, c := range cases {
@@ -134,8 +160,13 @@ func TestClassifyDropInHost(t *testing.T) {
 		{"host leg passes", func(*dropInHostRun) {}, statePass},
 		{"loopback host not created", func(r *dropInHostRun) { r.Setup = "POST /api/hosts status 502" }, stateBlocked},
 		{"host leg fails", func(r *dropInHostRun) { r.Leg.ResumeSeen = false }, stateFail},
+		{"first turn errored, as with a claude that cannot sign in", func(r *dropInHostRun) { r.Leg.TurnErrored = true }, statePass},
+		{"terminal deleted, no exit frame", func(r *dropInHostRun) { r.Leg.Deleted = true }, statePass},
 		{"teardown left a host behind", func(r *dropInHostRun) { r.Teardown = "; teardown: DELETE host status 500" }, stateFail},
-	}, nil)
+	}, map[string]string{
+		"first turn errored, as with a claude that cannot sign in": "ended errored",
+		"terminal deleted, no exit frame":                          "terminal deleted instead",
+	})
 }
 
 func toolRefusedBase() toolRefusedRun {
@@ -188,6 +219,8 @@ func TestParseDropFrame(t *testing.T) {
 			dropFrame{Type: "llm_event", SessionID: "s1"}},
 		{"init", `{"type":"llm_event","sessionId":"s1","event":{"type":"system","subtype":"init","model":"m"}}`,
 			dropFrame{Type: "llm_event", SessionID: "s1", InitModel: "m"}},
+		{"init with its conversation id", `{"type":"llm_event","sessionId":"s1","event":{"type":"system","subtype":"init","model":"m","session_id":"c1"}}`,
+			dropFrame{Type: "llm_event", SessionID: "s1", InitModel: "m", InitConvID: "c1"}},
 		{"terminal output", `{"type":"terminal_output","terminalId":"t1","data":"` + enc + `"}`,
 			dropFrame{Type: "terminal_output", TerminalID: "t1", Data: []byte("hi")}},
 		{"terminal join carries scrollback", `{"type":"terminal_joined","terminalId":"t1","scrollback":"` + enc + `"}`,
@@ -195,7 +228,7 @@ func TestParseDropFrame(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := parseDropFrame([]byte(c.raw))
-		if got.Type != c.want.Type || got.SessionID != c.want.SessionID || got.InitModel != c.want.InitModel ||
+		if got.Type != c.want.Type || got.SessionID != c.want.SessionID || got.InitModel != c.want.InitModel || got.InitConvID != c.want.InitConvID ||
 			got.ToolName != c.want.ToolName || got.TerminalID != c.want.TerminalID || string(got.Data) != string(c.want.Data) {
 			t.Errorf("%s: parsed %+v, want %+v", c.name, got, c.want)
 		}

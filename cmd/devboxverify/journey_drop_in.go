@@ -47,6 +47,7 @@ type dropFrame struct {
 	SessionID  string
 	State      string // session_state
 	InitModel  string // llm_event system/init
+	InitConvID string // llm_event system/init: the agent's own conversation id
 	ToolName   string // llm_event: a tool_use block finished streaming
 	TerminalID string // terminal_*
 	Data       []byte // terminal_output data, terminal_joined scrollback
@@ -64,6 +65,7 @@ func parseDropFrame(raw []byte) dropFrame {
 			Type             string `json:"type"`
 			Subtype          string `json:"subtype"`
 			Model            string `json:"model"`
+			SessionID        string `json:"session_id"`
 			ContentBlockStop bool   `json:"content_block_stop"`
 			ContentBlock     *struct {
 				Type string `json:"type"`
@@ -81,7 +83,7 @@ func parseDropFrame(raw []byte) dropFrame {
 	case "llm_event":
 		switch {
 		case f.Event.Type == "system" && f.Event.Subtype == "init":
-			out.InitModel = f.Event.Model
+			out.InitModel, out.InitConvID = f.Event.Model, f.Event.SessionID
 		case f.Event.Type == "assistant" && f.Event.ContentBlockStop && f.Event.ContentBlock != nil && f.Event.ContentBlock.Type == "tool_use":
 			out.ToolName = f.Event.ContentBlock.Name
 		}
@@ -149,6 +151,30 @@ func initModel(fs []dropFrame, id string) string {
 		}
 	}
 	return ""
+}
+
+// initConversation is the conversation id the agent's first system/init event
+// reports.
+func initConversation(fs []dropFrame, id string) string {
+	for _, f := range fs {
+		if f.SessionID == id && f.InitModel != "" {
+			return f.InitConvID
+		}
+	}
+	return ""
+}
+
+// firstTurnEnded reads whether the first turn is over: running then idle, or on
+// the host door also running then errored (the host's claude may not be signed
+// in). errored is true when the turn ended that way.
+func firstTurnEnded(fs []dropFrame, id string, hostDoor bool) (ended, errored bool) {
+	if stateSeq(id, 0, "running", "idle")(fs) {
+		return true, false
+	}
+	if hostDoor && stateSeq(id, 0, "running", "errored")(fs) {
+		return true, true
+	}
+	return false, false
 }
 
 var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
@@ -379,6 +405,7 @@ type dropInLeg struct {
 	Frames       []dropFrame
 	IdleBefore   bool   // the first turn ended: an idle frame, or on the host door an errored one
 	TurnErrored  bool   // host door: the first turn ended errored (the host's claude cannot sign in)
+	Deleted      bool   // host door: the terminal ended by DELETE, not /exit
 	ClaudeID     string // host door: claudeSessionId from the 201 body
 	ResumeSeen   bool   // host door: the host's process table holds claude --resume <ClaudeID>
 	ResumeErr    string // host door: the last error reading the process table
@@ -517,15 +544,14 @@ func driveDropInLeg(ctx context.Context, e env, launch, run, projectID, name, ma
 	if l.Message.Status != http.StatusOK {
 		return l
 	}
-	turnEnd := stateSeq(id, 0, "running", "idle")
-	if hostDoor {
-		errored := stateSeq(id, 0, "running", "errored")
-		turnEnd = func(fs []dropFrame) bool { return stateSeq(id, 0, "running", "idle")(fs) || errored(fs) }
-	}
-	if l.IdleBefore = log.waitFor(ctx, agentFrameWait, turnEnd); !l.IdleBefore {
+	l.IdleBefore = log.waitFor(ctx, agentFrameWait, func(fs []dropFrame) bool {
+		ended, _ := firstTurnEnded(fs, id, hostDoor)
+		return ended
+	})
+	if !l.IdleBefore {
 		return l
 	}
-	l.TurnErrored = hostDoor && !stateSeq(id, 0, "running", "idle")(log.snapshot())
+	_, l.TurnErrored = firstTurnEnded(log.snapshot(), id, hostDoor)
 	l.Mark = len(log.snapshot())
 	attach(ctx, &l, log, conn)
 	if l.TerminalID == "" {
@@ -584,7 +610,7 @@ func attachLocal(e env, run string) attachFunc {
 		}
 		var res bridge.DropInAttachResult
 		_ = json.Unmarshal(ack.Data, &res)
-		l.TerminalID = res.TerminalID
+		l.TerminalID, l.ClaudeID = res.TerminalID, res.ClaudeSessionID
 		out := &termOut{}
 		go func() {
 			for {
@@ -660,7 +686,7 @@ func attachHost(e env, launch, run string) attachFunc {
 		}
 		if l.ExitSeen = log.waitFor(ctx, 15*time.Second, exited); !l.ExitSeen {
 			del := frontendDo(ctx, e, run, http.MethodDelete, "/api/terminals/"+tid, nil)
-			l.ExitSeen = del.Status/100 == 2
+			l.ExitSeen, l.Deleted = del.Status/100 == 2, true
 		}
 	}
 }
@@ -682,12 +708,15 @@ func hostProcessTable(ctx context.Context) ([]byte, string) {
 }
 
 // resumeLaunched holds when a command line in ps output runs claude with
-// --resume <id>.
+// --resume <id> and no --print or -p, which would make it a headless relaunch.
 func resumeLaunched(ps, id string) bool {
 	for _, line := range strings.Split(ps, "\n") {
 		f := strings.Fields(line)
 		if len(f) == 0 || filepath.Base(f[0]) != "claude" {
 			continue // the process itself, not a shell or ssh client carrying its command line
+		}
+		if slices.Contains(f, "--print") || slices.Contains(f, "-p") {
+			continue
 		}
 		for i := 0; i+1 < len(f); i++ {
 			if f[i] == "--resume" && f[i+1] == id {
@@ -765,6 +794,8 @@ func legProblem(l dropInLeg, local bool) *result {
 		return fail("list row live is not false while the terminal holds the session")
 	case !local && !validUUID(l.ClaudeID):
 		return fail("drop-in answer carries claudeSessionId %q, want a UUID", l.ClaudeID)
+	case initConversation(l.Frames, l.SessionID) != l.ClaudeID:
+		return fail("drop-in returned claudeSessionId %s but the session's conversation is %s", l.ClaudeID, initConversation(l.Frames, l.SessionID))
 	case !local && !l.ResumeSeen:
 		return fail("no claude --resume %s in the host's process table within 20 s (%s)", l.ClaudeID, l.ResumeErr)
 	case local && !l.MarkerSeen:
@@ -823,8 +854,15 @@ func classifyDropInHost(r dropInHostRun) result {
 	if r.Teardown != "" {
 		return result{dropInHostID, stateFail, "host leg passed" + r.Teardown}
 	}
-	return result{dropInHostID, statePass, fmt.Sprintf("agent on host %s taken over through the HTTP door: 201 with a claudeSessionId, headless process stopped and row live false, claude --resume <that id> in the host's process table, terminal ended, idle again, one ok log line",
-		r.Leg.Host)}
+	turn, end := "first turn ended idle", "terminal ended on /exit"
+	if r.Leg.TurnErrored {
+		turn = "first turn ended errored (the host's claude is not signed in, so the conversation did not resume)"
+	}
+	if r.Leg.Deleted {
+		end = "no terminal_exit after /exit, terminal deleted instead"
+	}
+	return result{dropInHostID, statePass, fmt.Sprintf("agent on host %s taken over through the HTTP door: 201 with a claudeSessionId equal to the session's conversation id, headless process stopped and row live false, claude --resume <that id> in the host's process table, idle again, one ok log line; %s; %s",
+		r.Leg.Host, turn, end)}
 }
 
 // ---- session-drop-in-tool-refused ----
