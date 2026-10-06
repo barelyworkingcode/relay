@@ -42,6 +42,15 @@ func selectTests(repoDir, base, head string) ([]PackageTests, int, error) {
 		return nil, 0, nil
 	}
 
+	// The three-dot diff above compares against the merge-base, so the base
+	// copy must come from there too: a function main changed after the fork
+	// would otherwise look changed by the PR.
+	mergeBase, err := git(repoDir, "merge-base", base, head)
+	if err != nil {
+		return nil, 0, fmt.Errorf("git merge-base failed: %w (%s, %s)", err, base, head)
+	}
+	mergeBase = strings.TrimSpace(mergeBase)
+
 	inBuild, err := defaultBuildTestFiles(repoDir)
 	if err != nil {
 		return nil, 0, err
@@ -62,7 +71,7 @@ func selectTests(repoDir, base, head string) ([]PackageTests, int, error) {
 
 	var result []PackageTests
 	for ip, files := range byPkg {
-		tests, err := changedInPackage(repoDir, base, head, ip, files)
+		tests, err := changedInPackage(repoDir, mergeBase, head, ip, files)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -79,13 +88,13 @@ func selectTests(repoDir, base, head string) ([]PackageTests, int, error) {
 func defaultBuildTestFiles(repoDir string) (map[string]string, error) {
 	mod, err := runIn(repoDir, "go", "list", "-m")
 	if err != nil {
-		return nil, fmt.Errorf("go list -m failed: %w", err)
+		return nil, fmt.Errorf("go list -m failed: %w (.)", err)
 	}
 	modPath := strings.TrimSpace(mod)
 	out, err := runIn(repoDir, "go", "list", "-e", "-f",
 		"{{.ImportPath}}\t{{join .TestGoFiles \" \"}}\t{{join .XTestGoFiles \" \"}}", "./...")
 	if err != nil {
-		return nil, fmt.Errorf("go list failed: %w", err)
+		return nil, fmt.Errorf("go list failed: %w (%s/...)", err, modPath)
 	}
 	files := map[string]string{}
 	for _, line := range nonEmptyLines(out) {

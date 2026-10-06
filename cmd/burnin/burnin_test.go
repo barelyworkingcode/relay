@@ -199,16 +199,36 @@ func TestAddedAndChangedSelectedUnchangedNot(t *testing.T) {
 func TestDocCommentIgnoredSignatureCounts(t *testing.T) {
 	r := newRepo(t)
 	r.write("a/a.go", pkgFile("a"))
-	r.write("a/a_test.go", tf("a", fn("TestS", "t.Log(1)")))
+	r.write("a/a_test.go", tf("a", fn("TestS", "_ = 1")))
 	base := r.commit()
 
-	r.write("a/a_test.go", tf("a", "// TestS now has a doc comment.\n"+fn("TestS", "t.Log(1)")))
+	r.write("a/a_test.go", tf("a", "// TestS now has a doc comment.\n"+fn("TestS", "_ = 1")))
 	docOnly := r.commit()
 	requireSelection(t, selection(t, r, base, docOnly))
 
-	r.write("a/a_test.go", tf("a", "func TestS(tt *testing.T) {\n\ttt.Log(1)\n}"))
+	r.write("a/a_test.go", tf("a", "func TestS(_ *testing.T) {\n\t_ = 1\n}"))
 	sig := r.commit()
 	requireSelection(t, selection(t, r, docOnly, sig), pt("a", "TestS"))
+}
+
+func TestBranchBehindMainSelectsOnlyItsOwnChange(t *testing.T) {
+	r := newRepo(t)
+	r.write("a/a.go", pkgFile("a"))
+	r.write("a/a_test.go", tf("a", fn("TestB", "t.Log(1)"), fn("TestZ", "t.Log(2)")))
+	fork := r.commit()
+
+	r.git("checkout", "-q", "-b", "pr")
+	r.write("a/a_test.go", tf("a", fn("TestB", "t.Log(10)"), fn("TestZ", "t.Log(2)")))
+	prHead := r.commit()
+
+	r.git("checkout", "-q", "main")
+	r.write("a/a_test.go", tf("a", fn("TestB", "t.Log(1)"), fn("TestZ", "t.Log(20)")))
+	mainTip := r.commit()
+	if mainTip == fork {
+		t.Fatal("main did not move past the fork point")
+	}
+
+	requireSelection(t, selection(t, r, mainTip, prHead), pt("a", "TestB"))
 }
 
 func TestMovesWithinPackageIgnoredAcrossPackageSelected(t *testing.T) {
@@ -336,6 +356,8 @@ func TestRunRepeatsUnderRaceAndReportsEveryFailingPackage(t *testing.T) {
 	r.write("a/a.go", pkgFile("a"))
 	r.write("a/a_test.go", tf("a", fn("TestFlaky", "t.Log(0)")))
 	r.write("b/b.go", pkgFile("b"))
+	r.write("c/c.go", pkgFile("c"))
+	r.write("c/c_test.go", tf("c", fn("TestSteady", "t.Log(0)")))
 	r.write("b/race_on_test.go", "//go:build race\n\npackage b\n\nconst raceOn = true\n")
 	r.write("b/race_off_test.go", "//go:build !race\n\npackage b\n\nconst raceOn = false\n")
 	recorder := func(extra string) string {
@@ -354,6 +376,7 @@ func TestRunRepeatsUnderRaceAndReportsEveryFailingPackage(t *testing.T) {
 	r.write("a/a_test.go", "package a\n\nimport \"testing\"\n\nvar flakyRuns int\n\n"+
 		fn("TestFlaky", "flakyRuns++\n\tif flakyRuns == 3 {\n\t\tt.Fatal(\"third run\")\n\t}")+"\n")
 	r.write("b/b_test.go", recorder("t.Log(1)"))
+	r.write("c/c_test.go", tf("c", fn("TestSteady", `t.Fatal("always")`)))
 	head := r.commit()
 
 	record := filepath.Join(t.TempDir(), "record.txt")
@@ -362,20 +385,24 @@ func TestRunRepeatsUnderRaceAndReportsEveryFailingPackage(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit %d, want 1\n%s%s", code, stdout, stderr)
 	}
-	var aErrs, errLines int
+	errPkgs := map[string]int{}
+	var errLines int
 	for _, line := range strings.Split(stdout+stderr, "\n") {
-		if strings.HasPrefix(line, "::error") {
-			errLines++
+		if !strings.HasPrefix(line, "::error") {
+			continue
 		}
-		if strings.HasPrefix(line, "::error::burn-in: example.com/acme/a ") {
-			aErrs++
-			if !strings.Contains(line, "-run ^(TestFlaky)$") {
-				t.Fatalf("error line does not name the test: %q", line)
+		errLines++
+		for pkg, run := range map[string]string{"a": "TestFlaky", "c": "TestSteady"} {
+			if strings.HasPrefix(line, "::error::burn-in: example.com/acme/"+pkg+" ") {
+				errPkgs[pkg]++
+				if !strings.Contains(line, "-run ^("+run+")$") {
+					t.Fatalf("error line does not name the test: %q", line)
+				}
 			}
 		}
 	}
-	if aErrs != 1 || errLines != 1 {
-		t.Fatalf("want exactly one ::error line, for package a; got %d for a, %d total\n%s%s", aErrs, errLines, stdout, stderr)
+	if errPkgs["a"] != 1 || errPkgs["c"] != 1 || errLines != 2 {
+		t.Fatalf("want one ::error line each for a and c; got %v, %d total\n%s%s", errPkgs, errLines, stdout, stderr)
 	}
 	data, err := os.ReadFile(record)
 	if err != nil {
