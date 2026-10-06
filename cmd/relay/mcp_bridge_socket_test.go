@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,39 +20,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 )
-
-var (
-	relayBinOnce sync.Once
-	relayBinPath string
-	relayBinErr  error
-)
-
-// buildRelayBinary builds ./cmd/relay once per run. The stdio server has to
-// run as its own process under an environment the test controls, which
-// runCLISubprocess cannot give it: that helper always adds --config-dir.
-func buildRelayBinary(t *testing.T) string {
-	t.Helper()
-	relayBinOnce.Do(func() {
-		dir, err := os.MkdirTemp("/tmp", "relay-bin-")
-		if err != nil {
-			relayBinErr = err
-			return
-		}
-		path := filepath.Join(dir, "relay")
-		cmd := exec.Command("go", "build", "-o", path, "./cmd/relay")
-		cmd.Dir = repoRoot(t)
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			relayBinErr = err
-			return
-		}
-		relayBinPath = path
-	})
-	if relayBinErr != nil {
-		t.Fatalf("build cmd/relay: %v", relayBinErr)
-	}
-	return relayBinPath
-}
 
 // decoySocket accepts and drops every connection, counting them.
 type decoySocket struct{ accepted atomic.Int32 }
@@ -94,10 +60,11 @@ type relayMcpRun struct {
 // and XDG_CONFIG_HOME, feeds it initialize and tools/list, then closes stdin.
 func runRelayMcp(t *testing.T, home, dir string, env []string, args ...string) relayMcpRun {
 	t.Helper()
+	bin := relayBinary(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	argv := append(append([]string{}, args...), "mcp", "--token", testToken)
-	cmd := exec.CommandContext(ctx, buildRelayBinary(t), argv...)
+	cmd := exec.CommandContext(ctx, bin, argv...)
 	cmd.Dir = dir
 	cmd.Env = append([]string{"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "PATH=/usr/bin:/bin"}, env...)
 	cmd.Stdin = strings.NewReader(
