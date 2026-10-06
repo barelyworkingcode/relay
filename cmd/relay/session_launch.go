@@ -45,12 +45,13 @@ const (
 	KindPTY    = "pty"
 	KindClaude = "claude"
 	KindPi     = "pi"
+	KindCodex  = "codex"
 	KindChat   = "chat"
 )
 
 func validKind(k string) bool {
 	switch k {
-	case KindPTY, KindClaude, KindPi, KindChat:
+	case KindPTY, KindClaude, KindPi, KindCodex, KindChat:
 		return true
 	default:
 		return false
@@ -647,13 +648,14 @@ func lexicalDirWithin(dir, projectPath string) bool {
 	return true
 }
 
-// kindTemplateIDs names the template a claude, pi or chat session reads its
+// kindTemplateIDs names the template a claude, pi, codex or chat session reads its
 // sandbox folders from. Those kinds are not launched from a template, but they
 // run the same tools, so the template that describes a tool's folders is the
 // one place they are written down.
 var kindTemplateIDs = map[string]string{
 	KindClaude: "claude-code",
 	KindPi:     "pi",
+	KindCodex:  "codex",
 	KindChat:   "chat",
 }
 
@@ -677,7 +679,7 @@ func chatModelRequiredMessage(name string) string {
 // Every other kind is gated by allowed_templates.
 func kindAllowed(settings *config.Settings, proj *config.Project, kind string) bool {
 	id := kindTemplateIDs[kind]
-	if kind == KindClaude && proj != nil && proj.IsHosted() {
+	if (kind == KindClaude || kind == KindCodex) && proj != nil && proj.IsHosted() {
 		_, ok := findTemplate(settings, proj, id)
 		return ok
 	}
@@ -851,12 +853,12 @@ func resolveTemplateEnv(t config.TerminalTemplate, settings *config.Settings) (m
 	return env, nil
 }
 
-// wantsSandbox is C7's default table: on for claude/pi/chat unconditionally,
+// wantsSandbox is C7's default table: on for claude/pi/codex/chat unconditionally,
 // and for a pty launch on unless the template explicitly opts out with
 // "sandbox": false (this function does not special-case any template id).
 func wantsSandbox(kind string, tmpl *config.TerminalTemplate) bool {
 	switch kind {
-	case KindClaude, KindPi, KindChat:
+	case KindClaude, KindPi, KindCodex, KindChat:
 		return true
 	default:
 		return tmpl == nil || tmpl.Sandboxed()
@@ -1006,6 +1008,15 @@ func buildHostSpec(settings *config.Settings, hostID string) (*sessiontypes.Host
 		spec.ClaudePath = h.Probe.ClaudePath
 		spec.Shell = h.Probe.Shell
 		spec.OS = h.Probe.OS
+	}
+	// Codex's path comes from the host's own codex template, not the probe; a
+	// template that fails host validation is ignored, so the launch is refused
+	// the same as when none exists.
+	for _, t := range h.TerminalTemplates {
+		if t.ID == "codex" && config.ValidateHostTemplate(t) == nil {
+			spec.CodexPath = t.Command
+			break
+		}
 	}
 	return spec, nil
 }
