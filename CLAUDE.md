@@ -78,6 +78,7 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 | commit | `gofmt`, `go build`, `go vet` — seconds |
 | push | `go test ./...` |
 | PR and `main` (GitHub Actions) | `go test ./...` and `go test -race ./...`, in parallel |
+| PR (GitHub Actions) | `burn-in`: added or changed `TestXxx` functions, `go test -race -count=10` |
 
 Run `-race` locally on the package you touched when changing anything
 concurrent (supervisors, listeners, the audit writer, pollers); leave the full
