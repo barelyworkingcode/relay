@@ -96,6 +96,7 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay service unregister` | yes | no | yes |
 | `relay service restart` | yes | no | yes |
 | `relay sandbox` | yes | no | no (needs an interactive terminal) |
+| `relay drop-in` | yes | no | no (needs an interactive terminal) |
 | `relay mcpExec` / `relay mcp call` | yes (dials the bridge) | no | yes |
 | `relay mcp --token TOKEN` (stdio server) | yes | no | yes |
 
@@ -1233,6 +1234,35 @@ is in no registered project; the directory is in several projects and
 `--project` is missing (the matching projects are listed) or names one that does
 not hold it; the template does not exist; or the template is not in the
 project's allowed templates.
+
+## `relay drop-in`
+
+Takes a headless Claude session over in your own terminal. Relay waits for the
+session's current turn to end, stops its headless process, and starts an
+ordinary terminal from the project's `claude-code` template that resumes the
+same conversation (`claude --resume`). This terminal shows that one. Design:
+[`docs/session-host.md`](session-host.md).
+
+```
+relay drop-in <session-id>
+```
+
+There are no flags. Before relay answers, it prints
+`relay: handing over <id>; waiting up to 60 s for the current turn to end` on
+stderr; on exit it prints `relay: handed back <id>`. The exit status is
+Claude's. Ending the terminal, by quitting Claude, closing the window or
+SIGHUP, hands the session back as idle. It is not gated: there is no presence
+prompt, as for `relay sandbox`. The same drop-in is `POST
+/api/sessions/{id}/drop-in` (class `execute`), which answers with the new
+terminal for a client to join.
+
+It refuses, with a message and a non-zero exit, when: it is run inside a relay
+session; stdin or stdout is not a terminal; relay is not running; no id is
+given; the session does not exist, is not a Claude session, is not headless or
+has not run a turn yet; a tool is running (the message names it) or the turn
+does not end within 60 s; a terminal already has the session; or the
+project's authorization refuses a `claude-code` terminal. A refusal stops
+nothing: the session keeps running.
 
 ## `relay mcpExec` (also `relay mcp call`)
 
