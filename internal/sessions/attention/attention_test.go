@@ -271,3 +271,94 @@ func TestBoard_OneLogLinePerChangeWithoutText(t *testing.T) {
 		}
 	}
 }
+
+func state(t *testing.T, b *attention.Board, id string) attention.State {
+	t.Helper()
+	a, ok := b.Get(id)
+	if !ok {
+		t.Fatalf("no entry for %s", id)
+	}
+	return a.State
+}
+
+func TestBoard_DroppedInReportsRunningFromAnyStateOrNoEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(b *attention.Board)
+	}{
+		{"no entry", func(*attention.Board) {}},
+		{"idle", func(b *attention.Board) { idle(b, "p1") }},
+		{"asking", func(b *attention.Board) {
+			idle(b, "p1")
+			b.Signal("p1", attention.TurnStarted)
+			b.Signal("p1", attention.Asked)
+		}},
+		{"errored", func(b *attention.Board) {
+			idle(b, "p1")
+			b.Signal("p1", attention.TurnStarted)
+			b.Signal("p1", attention.TurnFailed)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _, _ := newBoard(t)
+			tc.setup(b)
+			b.Signal("p1", attention.DroppedIn)
+			if got := state(t, b, "p1"); got != attention.Running {
+				t.Fatalf("state = %s, want running", got)
+			}
+		})
+	}
+}
+
+func TestBoard_HeldEntryIgnoresEverythingButHandedBackAndSessionEnded(t *testing.T) {
+	b, r, clk := newBoard(t)
+	idle(b, "p1")
+	b.Signal("p1", attention.DroppedIn)
+	frames := r.seq()
+
+	for _, sig := range []attention.Signal{
+		attention.ProcessExited, attention.Activity, attention.Asked, attention.TurnEnded,
+		attention.TurnFailed, attention.TurnStopped, attention.TurnStarted, attention.StallTimeout,
+	} {
+		b.Signal("p1", sig)
+	}
+	b.Reply("p1", "late text")
+	clk.Advance(2 * attention.StallAfter)
+	b.Sweep()
+
+	if got := state(t, b, "p1"); got != attention.Running {
+		t.Fatalf("held state = %s, want running", got)
+	}
+	if got := r.seq(); got != frames {
+		t.Fatalf("held entry emitted frames: %s, was %s", got, frames)
+	}
+}
+
+func TestBoard_HandedBackIdlesWithoutTurnDoneAndReleasesHold(t *testing.T) {
+	b, r, _ := newBoard(t)
+	idle(b, "p1")
+	b.Signal("p1", attention.DroppedIn)
+	b.Signal("p1", attention.HandedBack)
+	b.Signal("p1", attention.HandedBack) // idempotent
+
+	if got, want := r.seq(), "starting,idle,running,idle"; got != want {
+		t.Fatalf("frames = %s, want %s", got, want)
+	}
+	b.Signal("p1", attention.TurnStarted)
+	if got := state(t, b, "p1"); got != attention.Running {
+		t.Fatalf("after hand-back a turn does not start: %s", got)
+	}
+}
+
+func TestBoard_SessionEndedStillEndsHeldEntry(t *testing.T) {
+	b, r, _ := newBoard(t)
+	idle(b, "p1")
+	b.Signal("p1", attention.DroppedIn)
+	b.Signal("p1", attention.SessionEnded)
+	if _, ok := b.Get("p1"); ok {
+		t.Fatal("held session still has an entry after SessionEnded")
+	}
+	if got, want := r.seq(), "starting,idle,running,ended"; got != want {
+		t.Fatalf("frames = %s, want %s", got, want)
+	}
+}

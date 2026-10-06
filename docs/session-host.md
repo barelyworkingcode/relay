@@ -67,7 +67,8 @@ check entirely rather than refusing every launch.
 
 - **the internal socket** (`RelaySessionsInternalSocketPath(configDir)`,
   `<configDir>/relaysessions-internal.sock`) — dialed only by relay itself,
-  carrying `POST /launch`, `POST /terminate`, and (mounted alongside them,
+  carrying `POST /launch`, `POST /terminate`, `POST /handoff`, `POST /handback`
+  (see [Drop-in](#drop-in)), and (mounted alongside them,
   on the same mux — see [What is not built yet](#what-is-not-built-yet) gap
   2) the eve-facing session/terminal/model HTTP+WS surface relay's
   front-door dispatcher reaches by forwarding on eve's behalf;
@@ -75,10 +76,10 @@ check entirely rather than refusing every launch.
   `<configDir>/relaysessions-hook.sock`) — dialed by `relay-sessions hook`
   processes, carrying `POST /permission`.
 
-Both routes are reserved at the protocol level, not just by convention:
+These routes are reserved at the protocol level, not just by convention:
 `internal/bridge/manifest.go`'s `Manifest.Validate` refuses any manifest —
 including relay-sessions' own — that declares a route equal to or nested
-under `/launch` or `/terminate`. The risk this closes is relay-sessions
+under `/launch`, `/terminate`, `/handoff` or `/handback`. The risk this closes is relay-sessions
 advertising either path in its *public* manifest, which would expose its
 peer-verification-free internal API to any ordinary frontend caller through
 the manifest dispatcher's unverified reverse proxy. A different service
@@ -600,8 +601,12 @@ A blank cell means no change. `Launching` from any state, or from none, gives `s
 | TurnFailed | | | errored | errored | errored | |
 | TurnStopped | | | idle | idle | idle | |
 | ProcessExited | ended | ended | errored | errored | errored | |
+| DroppedIn | running, held | running, held | running, held | running, held | running, held | running, held |
+| HandedBack | | | idle (held entries only), released | | | |
 
-Reaching `ended` removes the session's entry. A signal for a session with no entry is ignored, except `Launching`, which creates one.
+Reaching `ended` removes the session's entry. A signal for a session with no entry is ignored, except `Launching` and `DroppedIn`, which create one.
+
+A **held** entry (after `DroppedIn`) reads `running` while a terminal has the session. It ignores every signal except `HandedBack` and `SessionEnded`, the stall sweep skips it, and it does not keep the sweep loop alive. `HandedBack` moves it to `idle` and never sends `turn_done`: the terminal's work is not a turn this host saw.
 
 ### Events to signals
 
@@ -615,6 +620,8 @@ Claude, pi and Codex share one path in `handleProviderEvent` and the manager met
 | `StopGeneration`, `ClearSession`, before the kill or abort | TurnStopped |
 | `ClearSession` on a project-bound session (provider left dead) | SessionEnded |
 | `EndSession`, `DeleteSession`, `StopAll`, before the kill | SessionEnded |
+| `Handoff`, after the hold is set and before the kill | DroppedIn |
+| `HandBack` on a held session | HandedBack |
 | `llm_event`, `stats_update`, `raw_output` | Activity |
 | `llm_event` with an assistant `text_delta` | the text joins the turn's excerpt |
 | `llm_event` of type `system`, subtype `question` | Asked |
@@ -722,6 +729,44 @@ A Codex session on this machine needs a `codex` template with these folders, and
 ```
 
 `~/.codex` holds Codex's login and transcripts. Codex's own `config.toml` is not touched.
+
+## Drop-in
+
+A terminal can take over a headless Claude session. relay hosts the terminal; this host stops the headless process, holds the session and hands it back when the terminal exits. relay's side (the HTTP route, the bridge door and `relay drop-in`) is in [`docs/cli.md`](cli.md).
+
+### `POST /handoff`
+
+Body `{session_id}`. Internal peer only, like `/launch`. Answers `200 {session_id, claude_session_id}` or an error `{error, message}`; the request can stay open up to `hostapi.HandoffWait` (60 s). `session.Manager.Handoff` decides:
+
+| Status | `error` | When |
+|---|---|---|
+| 404 | `session_not_found` | no such session |
+| 409 | `not_claude` | the provider is not `claude` |
+| 409 | `not_headless` | the session is not headless |
+| 409 | `dropped_in` | a terminal already holds it |
+| 409 | `tool_running` | a tool call is open; the message names the earliest |
+| 409 | `turn_timeout` | the turn did not end within the wait |
+| 409 | `no_conversation` | no Claude conversation id yet |
+
+A session with no live process can be taken over; it loads from disk first. If a turn is in flight and no tool is open, the request waits for the turn to end, a tool to open, the timeout or the caller to go away. It does not poll. A tool call opens on an assistant `content_block_stop` of a `tool_use` block and closes on its `tool_result`; `message_complete`, `error`, `process_exited`, `StopGeneration` and `ClearSession` clear them all. Waiting through a tool could last without bound, and stopping mid-tool leaves a half-finished call, so a running tool refuses at once.
+
+On success the manager sets the hold under its lock, marks the id terminating (relay's `session_end` reads `closed`), signals `DroppedIn` and kills the process. The provider and slot stay in place, so `process_exited` still reaches relay, which ends the identity and profile and marks the ledger `dormant`.
+
+### `POST /handback`
+
+Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears the hold and signals `HandedBack`, so the session reads `idle`. A later message needs a resume, as for any session whose process is gone.
+
+### The terminal
+
+`LaunchRequest.drop_in_for` (pty only) names the held session the terminal takes over. `/launch` answers `409 not_held` unless that session is held and no other terminal already has it. The link from terminal id to session id is recorded before the terminal starts, and removed if the start fails. When the terminal exits, `onTerminalExit` calls `HandBack`, so closing the window or a killed client never leaves a session held. The hold is in memory: a relay-sessions restart drops it.
+
+### While held
+
+`SendMessage` and a resuming `Create` return `session.ErrDroppedIn`. HTTP answers `409 {"error":"dropped_in","message"}`, `/launch` answers `409 dropped_in`, and a WS `send_message` gets an `error` frame with `code: "dropped_in"`.
+
+### Launch session id
+
+A new Claude session starts with `--session-id <fresh uuid>`, so the conversation id is known before Claude reports it. A session that already has a conversation id starts with `--resume <id>`; the two flags never appear together. The uuid is not the relay session id: after `clear_session` and a resume, the same id would collide with the existing transcript. `GetState` still persists only the id from `system/init`.
 
 ## Logging and trace IDs
 
@@ -1563,7 +1608,8 @@ what works.
 | binary entry, `service` mode | `cmd/relaysessions/main.go` |
 | shim (`exec` mode) | `internal/sessions/shim/shim.go` |
 | hook client (`hook` mode) | `internal/sessions/hook/` |
-| internal API server, `/launch`/`/terminate`/`/permission`, and the mounted eve-facing surface | `internal/sessions/hostapi/{server,dispatch,types}.go` |
+| internal API server, `/launch`/`/terminate`/`/permission`, and the mounted eve-facing surface | `internal/sessions/hostapi/{server,dispatch,types}.go` (`/launch`, `/terminate`, `/handoff`, `/handback`) |
+| drop-in hold and tool tracking | `internal/sessions/session/dropin.go` |
 | terminal (pty) sessions | `internal/sessions/terminal/` |
 | provider-hosted (claude/pi/chat) sessions | `internal/sessions/session/`, `internal/sessions/provider/` |
 | provider stderr logging (Warn until first stdout, redaction) | `internal/sessions/provider/stderr.go` |
@@ -1576,4 +1622,4 @@ what works.
 | relay-side HTTP routes, resume, accounting | `cmd/relay/session_routes.go` |
 | built-in service record, helper path resolution | `internal/service/builtin_sessions.go` |
 | cdhash pinning | `internal/service/codesign_darwin.go`, `internal/service/helper_verify.go` |
-| the two manifest routes' reservation | `internal/bridge/manifest.go`, `internal/config/models.go` (`RelaySessionsManifestRoutes`) |
+| the reserved internal routes' reservation | `internal/bridge/manifest.go`, `internal/config/models.go` (`RelaySessionsManifestRoutes`) |

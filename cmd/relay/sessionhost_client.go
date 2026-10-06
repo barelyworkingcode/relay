@@ -68,6 +68,10 @@ func (c *sessionHostClient) resolve() (*EnhancedService, peertoken.Process, erro
 }
 
 func (c *sessionHostClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return c.doWithin(ctx, sessionHostRequestTimeout, method, path, body)
+}
+
+func (c *sessionHostClient) doWithin(ctx context.Context, timeout time.Duration, method, path string, body any) (*http.Response, error) {
 	es, process, err := c.resolve()
 	if err != nil {
 		return nil, err
@@ -94,7 +98,7 @@ func (c *sessionHostClient) do(ctx context.Context, method, path string, body an
 	}
 
 	client := &http.Client{
-		Timeout: sessionHostRequestTimeout,
+		Timeout: timeout,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return dialVerifiedUnix(ctx, es.InternalSocket, process)
@@ -159,6 +163,55 @@ func (c *sessionHostClient) Terminate(ctx context.Context, sessionID, reason str
 	defer func() { _ = httpResp.Body.Close() }()
 	if httpResp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("%w: /terminate returned %d", errSessionHostUnavailable, httpResp.StatusCode)
+	}
+	return nil
+}
+
+// Handoff POSTs {session_id} to relay-sessions' /handoff, which waits up to
+// hostapi.HandoffWait for the current turn to end, then stops the headless
+// process and holds the session. A 404 or 409 answer comes back as refusal
+// (nothing is held); every other failure is err, and the caller cannot tell
+// whether the host held the session before the failure.
+func (c *sessionHostClient) Handoff(ctx context.Context, sessionID string) (claudeSessionID string, refusal *hostapi.ErrorResponse, err error) {
+	httpResp, err := c.doWithin(ctx, hostapi.HandoffWait+sessionHostRequestTimeout, http.MethodPost, "/handoff", hostapi.HandoffRequest{SessionID: sessionID})
+	if err != nil {
+		return "", nil, err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes))
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: read /handoff response: %v", errSessionHostUnavailable, err)
+	}
+	switch httpResp.StatusCode {
+	case http.StatusOK:
+		var out hostapi.HandoffResponse
+		if err := json.Unmarshal(data, &out); err != nil {
+			return "", nil, fmt.Errorf("%w: parse /handoff response: %v", errSessionHostUnavailable, err)
+		}
+		return out.ClaudeSessionID, nil, nil
+	case http.StatusNotFound, http.StatusConflict:
+		var eb hostapi.ErrorResponse
+		_ = json.Unmarshal(data, &eb)
+		if eb.Error == "" {
+			eb.Error = fmt.Sprintf("http_%d", httpResp.StatusCode)
+		}
+		return "", &eb, nil
+	default:
+		return "", nil, fmt.Errorf("%w: /handoff returned %d", errSessionHostUnavailable, httpResp.StatusCode)
+	}
+}
+
+// Handback POSTs {session_id} to relay-sessions' /handback. The host answers
+// 204 whether or not the session was held, so a caller can send it after any
+// failure without knowing how far the handoff got.
+func (c *sessionHostClient) Handback(ctx context.Context, sessionID string) error {
+	httpResp, err := c.do(ctx, http.MethodPost, "/handback", hostapi.HandbackRequest{SessionID: sessionID})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	if httpResp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("%w: /handback returned %d", errSessionHostUnavailable, httpResp.StatusCode)
 	}
 	return nil
 }

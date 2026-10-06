@@ -25,6 +25,7 @@ func TestSessionRouteClasses_MatchesTheC1Table(t *testing.T) {
 		"POST /api/sessions":                  control.ClassExecute,
 		"POST /api/sessions/{$}":              control.ClassExecute,
 		"POST /api/sessions/{id}/resume":      control.ClassExecute,
+		"POST /api/sessions/{id}/drop-in":     control.ClassExecute,
 		"GET /api/terminal/templates":         control.ClassRead,
 		"GET /api/terminal/templates/{id}":    control.ClassRead,
 		"POST /api/terminal/templates":        control.ClassConfigure,

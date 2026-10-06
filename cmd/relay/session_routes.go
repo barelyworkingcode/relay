@@ -244,6 +244,7 @@ func RegisterSessionRoutes(rr *control.RouteRegistrar, deps sessionRouteDeps) {
 	rr.Handle(classFor("POST", "/api/sessions"), "POST /api/sessions", deps.handleCreateSession)
 	rr.Handle(classFor("POST", "/api/sessions/{$}"), "POST /api/sessions/{$}", deps.handleCreateSession)
 	rr.Handle(classFor("POST", "/api/sessions/{id}/resume"), "POST /api/sessions/{id}/resume", deps.handleResumeSession)
+	rr.Handle(classFor("POST", "/api/sessions/{id}/drop-in"), "POST /api/sessions/{id}/drop-in", deps.handleDropIn)
 	rr.Handle(classFor("GET", "/api/terminals"), "GET /api/terminals", deps.handleProxyList)
 	rr.Handle(classFor("GET", "/api/sessions"), "GET /api/sessions", deps.handleProxyList)
 }

@@ -277,6 +277,10 @@ var bridgeHandlers = map[string]bridgeHandler{
 	// the launch core's own authorization, not this transport.
 	ReqSandboxAttach: {handle: handleSandboxAttach},
 
+	// This is deliberate: ungated like ReqSandboxAttach, with the same two
+	// caller checks. The launch core authorizes before anything is stopped.
+	ReqDropInAttach: {handle: handleDropInAttach},
+
 	// This is deliberate: unlike every requireAdmin entry above, admin_op
 	// carries no bearer. ADR-015 and ADR-016 both refuse to spend the 0600
 	// socket's ambient trust twice, and admin_secret is a sealed value the
