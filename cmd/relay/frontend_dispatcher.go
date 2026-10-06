@@ -122,7 +122,11 @@ func (d *FrontendDispatcher) proxyWS(svc *EnhancedService, w http.ResponseWriter
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go forwardDispatchedWS(clientConn, upstreamConn, &wg, closeBoth)
+	if chiefOfStaffScopeFromContext(r.Context()) {
+		go refuseClientFrames(clientConn, &wg, closeBoth)
+	} else {
+		go forwardDispatchedWS(clientConn, upstreamConn, &wg, closeBoth)
+	}
 	go forwardDispatchedWS(upstreamConn, clientConn, &wg, closeBoth)
 	wg.Wait()
 	closeBoth() // redundant once.Do call as a safety net so the pingers always exit
@@ -161,6 +165,32 @@ func forwardDispatchedWS(src, dst *websocket.Conn, wg *sync.WaitGroup, closeBoth
 			return
 		}
 	}
+}
+
+// chiefOfStaffReadOnlyReason is the close reason a scoped viewer sees when it
+// writes.
+const chiefOfStaffReadOnlyReason = "chief-of-staff scope is read-only"
+
+// refuseClientFrames replaces the client-to-upstream pump for a scoped
+// connection: no client data frame is ever forwarded. The first one ends both
+// sides with close code 1008. Control frames stay with gorilla's handlers, so
+// pongs still extend the read deadline.
+func refuseClientFrames(src *websocket.Conn, wg *sync.WaitGroup, closeBoth func()) {
+	defer wg.Done()
+	defer closeBoth()
+
+	_ = src.SetReadDeadline(time.Now().Add(wsPongWait()))
+	src.SetPongHandler(func(string) error {
+		return src.SetReadDeadline(time.Now().Add(wsPongWait()))
+	})
+	if _, _, err := src.NextReader(); err != nil {
+		return
+	}
+	_ = src.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.ClosePolicyViolation, chiefOfStaffReadOnlyReason),
+		time.Now().Add(time.Second),
+	)
 }
 
 // WriteControl is safe to call concurrently with the single data writer

@@ -94,6 +94,11 @@ const (
 	AuditEventSessionBound  = "session_bound"
 	AuditEventSessionEnd    = "session_end"
 	AuditEventSessionResume = "session_resume"
+
+	// SessionMessage records one message a non-person origin (the Chief of
+	// Staff) sent into a session through relay: an intent row before
+	// delivery and a completion row after, sharing one id.
+	AuditEventSessionMessage = "session_message"
 )
 
 // Denied means a known credential was refused a tool it may not use;
@@ -911,6 +916,15 @@ func (r *AuditRecorder) RedactCallArgs(args json.RawMessage) (out json.RawMessag
 		return nil, 0, false
 	}
 	return RedactArgs(args, r.cfg.MaxArgBytes, r.cfg.RedactKeys)
+}
+
+// CapText cuts s to this recorder's max_arg_bytes on a rune boundary and
+// reports whether it cut anything.
+func (r *AuditRecorder) CapText(s string) (out string, truncated bool) {
+	if r == nil || len(s) <= r.cfg.MaxArgBytes {
+		return s, false
+	}
+	return TruncateRunes(s, r.cfg.MaxArgBytes), true
 }
 
 // PreviewResult returns a capped preview of a tool result, or "" when preview

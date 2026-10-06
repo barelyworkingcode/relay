@@ -116,6 +116,30 @@ const (
 	ErrSpawnFailed     = "spawn_failed"     // 500
 )
 
+// Error codes POST /send names.
+const (
+	ErrSessionNotFound   = "session_not_found"  // 404
+	ErrAlreadyProcessing = "already_processing" // 409
+	ErrResumeRequired    = "resume_required"    // 409
+	ErrSendFailed        = "send_failed"        // 500
+)
+
+// SendRequest is POST /send's body: one marked user message for a listed
+// session. Origin must be the Chief of Staff origin; relay's own handler is
+// the only caller and the only place that sets it.
+type SendRequest struct {
+	SessionID string `json:"session_id"`
+	Text      string `json:"text"`
+	Origin    string `json:"origin"`
+}
+
+// SendResponse is POST /send's 202 body. At is RFC 3339 with milliseconds, UTC.
+type SendResponse struct {
+	SessionID string `json:"session_id"`
+	Origin    string `json:"origin"`
+	At        string `json:"at"`
+}
+
 // TerminateRequest is C5's POST /terminate body.
 type TerminateRequest struct {
 	SessionID string `json:"session_id"`

@@ -301,6 +301,7 @@ func (s *Server) ListenInternal() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/launch", s.handleLaunch)
 	mux.HandleFunc("/terminate", s.handleTerminate)
+	mux.HandleFunc("/send", s.handleSend)
 
 	// The eve-facing manifest surface (internal/config's
 	// RelaySessionsManifestRoutes: /api/terminals/, /api/sessions/,

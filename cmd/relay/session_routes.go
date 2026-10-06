@@ -246,6 +246,7 @@ func RegisterSessionRoutes(rr *control.RouteRegistrar, deps sessionRouteDeps) {
 	rr.Handle(classFor("POST", "/api/sessions/{id}/resume"), "POST /api/sessions/{id}/resume", deps.handleResumeSession)
 	rr.Handle(classFor("GET", "/api/terminals"), "GET /api/terminals", deps.handleProxyList)
 	rr.Handle(classFor("GET", "/api/sessions"), "GET /api/sessions", deps.handleProxyList)
+	rr.Handle(control.ClassChiefOfStaff, "POST /api/chief-of-staff/messages", deps.handleChiefOfStaffMessage)
 }
 
 // maxSessionCreateBodyBytes bounds a create/resume request body -- generous

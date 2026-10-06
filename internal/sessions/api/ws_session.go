@@ -221,7 +221,7 @@ func (sh *SessionHandlers) handleJoinSession(c *Conn, raw []byte) {
 	}
 	if claudeSessionID != "" {
 		if h, err := provider.ReadClaudeHistory(directory, sess.GetHost(), claudeSessionID); err == nil && len(h) > 0 {
-			history = h
+			history = session.MarkOrigins(h, messages)
 		} else if err != nil {
 			slog.Debug("claude history unavailable, using session messages", "session", req.SessionID, "error", err)
 		}

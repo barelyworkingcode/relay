@@ -146,6 +146,34 @@ func (c *sessionHostClient) Launch(ctx context.Context, spec hostapi.LaunchReque
 	return &out, nil, nil
 }
 
+// Send POSTs one marked user message to relay-sessions' /send, peer-verified
+// like /launch. Exactly one of (resp, errBody) is set on a nil error; err is
+// nil only for a real HTTP round trip.
+func (c *sessionHostClient) Send(ctx context.Context, req hostapi.SendRequest) (resp *hostapi.SendResponse, errBody *hostapi.ErrorResponse, err error) {
+	httpResp, err := c.do(ctx, http.MethodPost, "/send", req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes))
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: read /send response: %v", errSessionHostUnavailable, err)
+	}
+	if httpResp.StatusCode != http.StatusAccepted {
+		var eb hostapi.ErrorResponse
+		_ = json.Unmarshal(data, &eb)
+		if eb.Error == "" {
+			eb.Error = fmt.Sprintf("http_%d", httpResp.StatusCode)
+		}
+		return nil, &eb, nil
+	}
+	var out hostapi.SendResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, nil, fmt.Errorf("%w: parse /send response: %v", errSessionHostUnavailable, err)
+	}
+	return &out, nil, nil
+}
+
 // Terminate POSTs {session_id, reason} to relay-sessions' /terminate.
 // Best-effort by design: a caller cleaning up after a project delete or a
 // SessionExited report logs a failure rather than treating it as fatal to

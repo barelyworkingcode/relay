@@ -18,6 +18,9 @@ const (
 	ClassGrant     CapabilityClass = "grant"
 	ClassExecute   CapabilityClass = "execute"
 	ClassProxy     CapabilityClass = "proxy"
+	// ClassChiefOfStaff is held only inside the Chief of Staff request scope,
+	// never by a credential, and is reachable on the socket alone.
+	ClassChiefOfStaff CapabilityClass = "chief_of_staff"
 )
 
 // Transport names which listener a request arrived on.
@@ -34,6 +37,8 @@ const (
 var (
 	ErrNoCredential    = errors.New("no credential")
 	ErrClassNotGranted = errors.New("class not granted")
+	ErrOutsideScope    = errors.New("outside chief-of-staff scope")
+	ErrUnknownScope    = errors.New("unknown scope")
 )
 
 // Authorizer decides whether the credential on a request may exercise class.
@@ -64,7 +69,7 @@ type ControlDecision struct {
 // unknown class is reachable nowhere, the fail-closed default.
 func ClassReachableOn(c CapabilityClass, t Transport) bool {
 	switch c {
-	case ClassExecute, ClassProxy:
+	case ClassExecute, ClassProxy, ClassChiefOfStaff:
 		return t == TransportSocket
 	case ClassRead, ClassConfigure, ClassGrant:
 		return t == TransportSocket || t == TransportTCP
