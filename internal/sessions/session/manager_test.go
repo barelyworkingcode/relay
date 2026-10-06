@@ -762,11 +762,10 @@ func TestManager_Create_Resume_DeadProvider_DifferentModelKey_NewProviderReceive
 
 // TestManager_ResumeDifferentKey_StaleExitFromReplacedProvider_DoesNotTearDownNewSession
 // reproduces the exact race a resume-with-a-different-key relaunch opens up:
-// Create's own relaunch.Kill() (B3's already-covered path) returns as soon as
-// the old provider's process is dead, but — mirroring claude.go/pi.go exactly
-// — its process_exited event fires afterward, on its own goroutine, gated
-// here so the test can land it after the resumed session already has a new,
-// live provider published. Before the fix, handleProviderEvent had no way to
+// Create's own relaunch.Kill() (B3's already-covered path) displaces the old
+// provider; its process_exited event is gated here on its own goroutine so
+// the test can land it after the resumed session already has a new, live
+// provider published. Before the fix, handleProviderEvent had no way to
 // tell that stale event apart from the new provider's own exit, so it
 // reported sess.ID as exited — which is exactly what would tear down the
 // resumed session's just-minted credentials at the relay layer.
@@ -815,9 +814,8 @@ func TestManager_ResumeDifferentKey_StaleExitFromReplacedProvider_DoesNotTearDow
 		t.Fatalf("Create resume with changed key: %v", err)
 	}
 
-	// The old provider's own Kill() (inside the resume above) already
-	// returned; its delayed process_exited event has not fired yet. Let it
-	// land now, well after the resumed session's new provider is already
+	// The old provider was displaced by the resume above; its gated
+	// process_exited event has not fired yet. Let it land now, well after the resumed session's new provider is already
 	// published — exactly the scheduling this race depends on.
 	close(exitGate)
 	select {
