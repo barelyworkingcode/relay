@@ -103,7 +103,8 @@ times each under the race detector, so the flake fails on the PR that wrote it.
 It adds no CPU load of its own: no `-p`, `-cpu` or `-shuffle`, one package at a
 time.
 
-- **Changed** means the declaration text differs between the PR base and head:
+- **Changed** means the declaration text differs between the merge-base of
+  the PR's base and its head:
   the `func` line through the closing brace, comments and whitespace inside
   included, the doc comment above excluded. A function the base does not have
   is new, so a rename runs the new name and a move to another package runs
@@ -118,7 +119,8 @@ time.
   a picked function run with it.
 - **Helper-only gap.** A PR that changes only a helper in a `_test.go` file, or
   `TestMain`, selects nothing and the job passes. The selection does not follow
-  call graphs.
+  call graphs. Nor does a test that enters the default build unchanged (a
+  `live` tag removed, or a move out of a tagged file).
 - **A PR that changes no test** passes with "nothing to run".
 - **Failure** prints `::error::burn-in: <package> failed under go test -race
   -count=10 -run <regex>`, naming the package and its tests. Every package runs
@@ -132,8 +134,9 @@ go run ./cmd/burnin -list origin/main HEAD
 go run ./cmd/burnin origin/main HEAD
 ```
 
-The program is stdlib-only (`go/parser` selects, `git show <base>:<path>`
-supplies the base copy) and has no configuration: ten runs is the count.
+The program is stdlib-only (`go/parser` selects, `git show` at the merge-base
+supplies the base copy, so a branch behind `main` never picks up tests `main`
+changed) and has no configuration: ten runs is the count.
 
 ## Adding a test
 
