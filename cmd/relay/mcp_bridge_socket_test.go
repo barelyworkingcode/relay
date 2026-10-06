@@ -58,6 +58,9 @@ type relayMcpRun struct {
 
 // runRelayMcp runs `relay [args] mcp --token …` with exactly env plus HOME
 // and XDG_CONFIG_HOME, feeds it initialize and tools/list, then closes stdin.
+// The stdio server has to run as its own process under an environment the
+// test controls, which runCLISubprocess cannot give it: that helper always
+// adds --config-dir.
 func runRelayMcp(t *testing.T, home, dir string, env []string, args ...string) relayMcpRun {
 	t.Helper()
 	bin := relayBinary(t)

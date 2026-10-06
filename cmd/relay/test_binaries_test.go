@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -14,20 +15,20 @@ var relayBinPath string
 // buildTestBinaries builds every binary a test runs inside a timed budget
 // into dir. This is deliberate: a build started inside a test's own deadline
 // spends that deadline on the compiler, so these builds happen in TestMain,
-// before any budget opens. repoRoot(t) needs a *testing.T, so the module
-// root is found by walking up from the working directory.
+// before any budget opens.
 func buildTestBinaries(dir string) error {
-	root, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("working directory: %w", err)
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return fmt.Errorf("runtime.Caller failed: cannot locate test_binaries_test.go")
 	}
+	root := filepath.Dir(file)
 	for {
 		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
 			break
 		}
 		parent := filepath.Dir(root)
 		if parent == root {
-			return fmt.Errorf("no go.mod above the working directory")
+			return fmt.Errorf("no go.mod above %s", file)
 		}
 		root = parent
 	}
