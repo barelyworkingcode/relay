@@ -761,7 +761,7 @@ func TestManager_Create_Resume_DeadProvider_DifferentModelKey_NewProviderReceive
 }
 
 // TestManager_ResumeDifferentKey_StaleExitFromReplacedProvider_DoesNotTearDownNewSession
-// reproduces the exact race a resume-with-a-different-key relaunch opens up:
+// models a late displaced exit after a resume-with-a-different-key relaunch:
 // Create's own relaunch.Kill() (B3's already-covered path) displaces the old
 // provider; its process_exited event is gated here on its own goroutine so
 // the test can land it after the resumed session already has a new, live
@@ -815,8 +815,8 @@ func TestManager_ResumeDifferentKey_StaleExitFromReplacedProvider_DoesNotTearDow
 	}
 
 	// The old provider was displaced by the resume above; its gated
-	// process_exited event has not fired yet. Let it land now, well after the resumed session's new provider is already
-	// published — exactly the scheduling this race depends on.
+	// process_exited event has not fired yet. Let it land now, well after
+	// the resumed session's new provider is already published.
 	close(exitGate)
 	select {
 	case <-delivered:

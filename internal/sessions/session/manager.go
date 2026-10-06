@@ -194,7 +194,8 @@ func (m *Manager) eventSink() sessionstypes.EventSink {
 // restart fails: that restart reports the killed spawn's exit on the
 // caller's goroutine. ChatProvider has no OS process to wait on, so its
 // Kill invokes fn synchronously on the caller's own goroutine too — fn
-// must tolerate either.
+// must tolerate either. Kill returns only after fn does, so fn must not call
+// Kill on that provider or wait on anything a Kill caller may hold.
 func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 	m.mu.Lock()
 	m.onExit = fn
