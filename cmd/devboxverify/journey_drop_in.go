@@ -47,7 +47,6 @@ type dropFrame struct {
 	SessionID  string
 	State      string // session_state
 	InitModel  string // llm_event system/init
-	InitConvID string // llm_event system/init: the agent's own conversation id
 	ToolName   string // llm_event: a tool_use block finished streaming
 	TerminalID string // terminal_*
 	Data       []byte // terminal_output data, terminal_joined scrollback
@@ -83,7 +82,7 @@ func parseDropFrame(raw []byte) dropFrame {
 	case "llm_event":
 		switch {
 		case f.Event.Type == "system" && f.Event.Subtype == "init":
-			out.InitModel, out.InitConvID = f.Event.Model, f.Event.SessionID
+			out.InitModel = f.Event.Model
 		case f.Event.Type == "assistant" && f.Event.ContentBlockStop && f.Event.ContentBlock != nil && f.Event.ContentBlock.Type == "tool_use":
 			out.ToolName = f.Event.ContentBlock.Name
 		}
@@ -148,17 +147,6 @@ func initModel(fs []dropFrame, id string) string {
 	for _, f := range fs {
 		if f.SessionID == id && f.InitModel != "" {
 			return f.InitModel
-		}
-	}
-	return ""
-}
-
-// initConversation is the conversation id the agent's first system/init event
-// reports.
-func initConversation(fs []dropFrame, id string) string {
-	for _, f := range fs {
-		if f.SessionID == id && f.InitModel != "" {
-			return f.InitConvID
 		}
 	}
 	return ""
@@ -395,40 +383,42 @@ func launchHeadlessAgent(ctx context.Context, e env, launch, projectID, name str
 
 // dropInLeg is everything one leg (local door or host door) saw.
 type dropInLeg struct {
-	Host, Marker string // expected host in the log line; the turn's marker
-	DialStatus   int
-	DialErr      string
-	Create       frontendResponse
-	SessionID    string
-	JoinSeen     bool
-	Message      frontendResponse
-	Frames       []dropFrame
-	IdleBefore   bool   // the first turn ended: an idle frame, or on the host door an errored one
-	TurnErrored  bool   // host door: the first turn ended errored (the host's claude cannot sign in)
-	Deleted      bool   // host door: the terminal ended by DELETE, not /exit
-	ClaudeID     string // host door: claudeSessionId from the 201 body
-	ResumeSeen   bool   // host door: the host's process table holds claude --resume <ClaudeID>
-	ResumeErr    string // host door: the last error reading the process table
-	Mark         int    // frames received before the drop-in request
-	CheckHeld    bool   // the hold shows: process exit, live:false
-	Refusal      string
-	TerminalID   string
-	HeldRunning  bool
-	HeldExited   bool
-	HeldList     frontendResponse
-	HeldFound    bool
-	HeldLive     *bool
-	MarkerSeen   bool
-	ScreenTail   string // the last of the terminal's text when the marker never came
-	ExitSeen     bool   // exit frame or terminal_exit after /exit
-	ClosedConn   bool   // local: no exit frame in 15 s, the connection was closed instead
-	IdleAfter    bool
-	LogLines     []dropInLogLine
-	LogErr       string
-	CheckAudit   bool
-	EndRow       *audit.AuditEvent
-	LaunchRow    *audit.AuditEvent
-	Delete       frontendResponse
+	Host, Marker   string // expected host in the log line; the turn's marker
+	DialStatus     int
+	DialErr        string
+	Create         frontendResponse
+	SessionID      string
+	JoinSeen       bool
+	Message        frontendResponse
+	Frames         []dropFrame
+	IdleBefore     bool   // the first turn ended: an idle frame, or on the host door an errored one
+	TurnErrored    bool   // host door: the first turn ended errored (the host's claude cannot sign in)
+	Deleted        bool   // host door: the terminal ended by DELETE, not /exit
+	ClaudeID       string // host door: claudeSessionId from the 201 body
+	ResumeSeen     bool   // host door: the host's process table holds claude --resume <ClaudeID>
+	TranscriptSeen bool   // host door: the host's transcript <ClaudeID>.jsonl holds the first turn's prompt
+	TranscriptErr  string // host door: why the transcript could not be read
+	ResumeErr      string // host door: the last error reading the process table
+	Mark           int    // frames received before the drop-in request
+	CheckHeld      bool   // the hold shows: process exit, live:false
+	Refusal        string
+	TerminalID     string
+	HeldRunning    bool
+	HeldExited     bool
+	HeldList       frontendResponse
+	HeldFound      bool
+	HeldLive       *bool
+	MarkerSeen     bool
+	ScreenTail     string // the last of the terminal's text when the marker never came
+	ExitSeen       bool   // exit frame or terminal_exit after /exit
+	ClosedConn     bool   // local: no exit frame in 15 s, the connection was closed instead
+	IdleAfter      bool
+	LogLines       []dropInLogLine
+	LogErr         string
+	CheckAudit     bool
+	EndRow         *audit.AuditEvent
+	LaunchRow      *audit.AuditEvent
+	Delete         frontendResponse
 }
 
 type dropInRun struct {
@@ -674,6 +664,7 @@ func attachHost(e env, launch, run string) attachFunc {
 		if !validUUID(l.ClaudeID) {
 			return
 		}
+		l.TranscriptSeen, l.TranscriptErr = hostTranscriptHolds(ctx, l.ClaudeID, l.Marker)
 		_ = wsSend(conn, map[string]string{"type": "join_terminal", "terminalId": tid})
 		l.ResumeSeen = pollUntil(ctx, dropInResumeWait, func() bool {
 			var out []byte
@@ -705,6 +696,24 @@ func hostProcessTable(ctx context.Context) ([]byte, string) {
 		return out, "ssh ps: " + err.Error()
 	}
 	return out, ""
+}
+
+// hostTranscriptHolds reports whether Claude's transcript for conversation id
+// on the loopback host holds marker, which proves id is the agent's own
+// conversation: the first turn's prompt is written there even when the turn
+// errors. The init event relay forwards carries no conversation id.
+func hostTranscriptHolds(ctx context.Context, id, marker string) (bool, string) {
+	if !validUUID(id) {
+		return false, "not a UUID"
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := "grep -l -F -- '" + marker + "' ~/.claude/projects/*/" + id + ".jsonl"
+	out, err := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", dropInHostTarget, cmd).Output()
+	if err != nil {
+		return false, "ssh grep: " + err.Error()
+	}
+	return strings.TrimSpace(string(out)) != "", ""
 }
 
 // resumeLaunched holds when a command line in ps output runs claude with
@@ -794,8 +803,8 @@ func legProblem(l dropInLeg, local bool) *result {
 		return fail("list row live is not false while the terminal holds the session")
 	case !local && !validUUID(l.ClaudeID):
 		return fail("drop-in answer carries claudeSessionId %q, want a UUID", l.ClaudeID)
-	case initConversation(l.Frames, l.SessionID) != l.ClaudeID:
-		return fail("drop-in returned claudeSessionId %s but the session's conversation is %s", l.ClaudeID, initConversation(l.Frames, l.SessionID))
+	case !local && !l.TranscriptSeen:
+		return fail("the host's transcript for claudeSessionId %s does not hold the first turn's prompt (%s)", l.ClaudeID, l.TranscriptErr)
 	case !local && !l.ResumeSeen:
 		return fail("no claude --resume %s in the host's process table within 20 s (%s)", l.ClaudeID, l.ResumeErr)
 	case local && !l.MarkerSeen:

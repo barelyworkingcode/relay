@@ -484,7 +484,7 @@ session-drop-in-host.
 `loopback-<nonce>` targeting `localhost` and a project `Drop-in Host <nonce>` on
 a fresh folder; a headless agent session there runs the same turn, which may end
 `idle` or `errored`. `POST /api/sessions/{id}/drop-in` answers 201 with a
-`claudeSessionId` that is a UUID and equals the `session_id` of the agent's `system/init` event, and a terminal id; the agent's `process_exited`
+`claudeSessionId` that is a UUID, and a terminal id; the host's `~/.claude/projects/*/<claudeSessionId>.jsonl` holding the first turn's prompt, read over ssh; the agent's `process_exited`
 frame follows and its list row has `live` false; within 20 s the host's process
 table (`ssh -o BatchMode=yes localhost ps`) holds a `claude` command with
 `--resume <that uuid>`. `/exit` is sent to the terminal; with no `terminal_exit`

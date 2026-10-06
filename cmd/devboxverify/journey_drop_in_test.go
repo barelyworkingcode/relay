@@ -22,7 +22,7 @@ func dropInLegBase(host string, local bool) dropInLeg {
 		Host:     host, Marker: marker, DialStatus: http.StatusSwitchingProtocols,
 		Create: frontendResponse{Status: http.StatusCreated}, SessionID: sid, JoinSeen: true,
 		Message:    frontendResponse{Status: http.StatusOK},
-		Frames:     []dropFrame{{Type: "llm_event", SessionID: sid, InitModel: agentModelID, InitConvID: convID}},
+		Frames:     []dropFrame{{Type: "llm_event", SessionID: sid, InitModel: agentModelID}},
 		IdleBefore: true, TerminalID: "t1", MarkerSeen: true, ExitSeen: true, IdleAfter: true,
 		LogLines: []dropInLogLine{{Status: "ok", Host: host, TerminalID: "t1"}},
 		Delete:   frontendResponse{Status: http.StatusNoContent},
@@ -31,7 +31,7 @@ func dropInLegBase(host string, local bool) dropInLeg {
 	l.HeldExited, l.HeldFound, l.HeldLive = true, true, ptr(false)
 	l.HeldList = frontendResponse{Status: http.StatusOK}
 	if !local {
-		l.ResumeSeen = true
+		l.ResumeSeen, l.TranscriptSeen = true, true
 	}
 	if local {
 		l.CheckAudit = true
@@ -63,8 +63,6 @@ func TestLegProblem(t *testing.T) {
 		{"log line names another host", func(l *dropInLeg) { l.LogLines[0].Host = "elsewhere" }, stateFail},
 		{"log line names another terminal", func(l *dropInLeg) { l.LogLines[0].TerminalID = "t2" }, stateFail},
 		{"delete failed", func(l *dropInLeg) { l.Delete.Status = http.StatusInternalServerError }, stateFail},
-		{"drop-in returned another conversation id", func(l *dropInLeg) { l.Frames[0].InitConvID = "00000000-0000-4000-8000-000000000000" }, stateFail},
-		{"init carries no conversation id", func(l *dropInLeg) { l.Frames[0].InitConvID = "" }, stateFail},
 	}
 	check := func(t *testing.T, host string, local bool, cases []mutCase[dropInLeg]) {
 		checkMuts(t, func() dropInLeg { return dropInLegBase(host, local) }, func(l dropInLeg) result {
@@ -95,6 +93,7 @@ func TestLegProblem(t *testing.T) {
 			{"claudeSessionId empty", func(l *dropInLeg) { l.ClaudeID = "" }, stateFail},
 			{"claudeSessionId not a UUID", func(l *dropInLeg) { l.ClaudeID = "s1" }, stateFail},
 			{"no claude --resume on the host", func(l *dropInLeg) { l.ResumeSeen = false }, stateFail},
+			{"host transcript for the id lacks the first prompt", func(l *dropInLeg) { l.TranscriptSeen = false }, stateFail},
 			{"terminal never ended", func(l *dropInLeg) { l.ExitSeen = false }, stateFail},
 			{"host launch refused", func(l *dropInLeg) { l.Create, l.SessionID = frontendResponse{Status: http.StatusBadGateway}, "" }, stateBlocked},
 		}...))
@@ -220,7 +219,7 @@ func TestParseDropFrame(t *testing.T) {
 		{"init", `{"type":"llm_event","sessionId":"s1","event":{"type":"system","subtype":"init","model":"m"}}`,
 			dropFrame{Type: "llm_event", SessionID: "s1", InitModel: "m"}},
 		{"init with its conversation id", `{"type":"llm_event","sessionId":"s1","event":{"type":"system","subtype":"init","model":"m","session_id":"c1"}}`,
-			dropFrame{Type: "llm_event", SessionID: "s1", InitModel: "m", InitConvID: "c1"}},
+			dropFrame{Type: "llm_event", SessionID: "s1", InitModel: "m"}},
 		{"terminal output", `{"type":"terminal_output","terminalId":"t1","data":"` + enc + `"}`,
 			dropFrame{Type: "terminal_output", TerminalID: "t1", Data: []byte("hi")}},
 		{"terminal join carries scrollback", `{"type":"terminal_joined","terminalId":"t1","scrollback":"` + enc + `"}`,
@@ -228,7 +227,7 @@ func TestParseDropFrame(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := parseDropFrame([]byte(c.raw))
-		if got.Type != c.want.Type || got.SessionID != c.want.SessionID || got.InitModel != c.want.InitModel || got.InitConvID != c.want.InitConvID ||
+		if got.Type != c.want.Type || got.SessionID != c.want.SessionID || got.InitModel != c.want.InitModel ||
 			got.ToolName != c.want.ToolName || got.TerminalID != c.want.TerminalID || string(got.Data) != string(c.want.Data) {
 			t.Errorf("%s: parsed %+v, want %+v", c.name, got, c.want)
 		}
