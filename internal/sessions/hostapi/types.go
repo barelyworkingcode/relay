@@ -38,7 +38,10 @@
 // at /launch.
 package hostapi
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // LaunchRequest is C5's POST /launch body (v1). Only the fields this
 // skeleton acts on are typed strictly; everything else round-trips as
@@ -73,6 +76,9 @@ type LaunchRequest struct {
 	Identity       *IdentitySpec   `json:"identity"`
 	ModelKey       string          `json:"model_key,omitempty"`
 	SessionRequest json.RawMessage `json:"session_request,omitempty"`
+	// DropInFor names the held agent session this pty terminal takes over
+	// (pty only). When the terminal exits, that session is handed back.
+	DropInFor string `json:"drop_in_for,omitempty"`
 }
 
 // PTYSpec is C5's non-null "pty" object.
@@ -114,7 +120,27 @@ const (
 	ErrSessionExists   = "session_exists"   // 409
 	ErrIdentityRefused = "identity_refused" // 502
 	ErrSpawnFailed     = "spawn_failed"     // 500
+	ErrNotHeld         = "not_held"         // 409
 )
+
+// HandoffWait is the longest POST /handoff waits for the current turn to end.
+const HandoffWait = 60 * time.Second
+
+// HandoffRequest is POST /handoff's body.
+type HandoffRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+// HandoffResponse is POST /handoff's 200 body.
+type HandoffResponse struct {
+	SessionID       string `json:"session_id"`
+	ClaudeSessionID string `json:"claude_session_id"`
+}
+
+// HandbackRequest is POST /handback's body.
+type HandbackRequest struct {
+	SessionID string `json:"session_id"`
+}
 
 // TerminateRequest is C5's POST /terminate body.
 type TerminateRequest struct {

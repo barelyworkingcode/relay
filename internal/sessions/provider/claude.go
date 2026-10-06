@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	"github.com/barelyworkingcode/relay/internal/sessions/hook"
@@ -104,6 +106,11 @@ type ClaudeProvider struct {
 	root atomic.Pointer[sessionstypes.ProcessRoot]
 
 	claudeSessionID string
+	// pinnedSessionID is the id a fresh conversation is launched with, so the
+	// conversation id is known before claude reports it. A fresh uuid, not the
+	// relay session id: after clear_session the same id would collide with the
+	// existing transcript.
+	pinnedSessionID string
 	model           string
 	directory       string
 
@@ -279,6 +286,8 @@ func (p *ClaudeProvider) buildClaudeArgs(mcpConfigPath, sysPromptPath string) []
 
 	if p.claudeSessionID != "" {
 		args = append(args, "--resume", p.claudeSessionID)
+	} else if p.pinnedSessionID != "" {
+		args = append(args, "--session-id", p.pinnedSessionID)
 	}
 
 	if sysPromptPath != "" {
@@ -355,6 +364,10 @@ func buildHostExec(spec *sessionstypes.HostSpec, dir string, args []string, sess
 func (p *ClaudeProvider) Start() error {
 	p.root.Store(nil)
 	p.cleanupSpawnFiles()
+	p.pinnedSessionID = ""
+	if p.claudeSessionID == "" {
+		p.pinnedSessionID = uuid.NewString()
+	}
 	spawn := &claudeSpawnState{}
 
 	var cmd *exec.Cmd

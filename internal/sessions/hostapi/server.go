@@ -73,7 +73,8 @@ type Server struct {
 
 	exitMu      sync.Mutex
 	exitHandler func(id string, rootPID, exitCode int, reason string)
-	terminating map[string]bool // session ids this host's own /terminate is closing; read/cleared by the exit callback to tell "closed" apart from an unrelated "exit"
+	dropIns     map[string]string // terminal id -> held agent session id, guarded by exitMu
+	terminating map[string]bool   // session ids this host's own /terminate is closing; read/cleared by the exit callback to tell "closed" apart from an unrelated "exit"
 
 	// hub/sessionWS/terminalWS are the eve-facing manifest surface: one Hub
 	// shared by both handler sets, mounted at /ws, plus the HTTP handlers
@@ -102,6 +103,7 @@ func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Se
 		sessions:    sessions,
 		launching:   make(map[string]bool),
 		terminating: make(map[string]bool),
+		dropIns:     make(map[string]string),
 	}
 	terminals.SetExitHandler(s.onTerminalExit)
 	sessions.SetExitHandler(s.onSessionExit)
@@ -202,11 +204,39 @@ func (s *Server) onTerminalExit(id string, exitCode int) {
 		reason = "closed"
 	}
 	s.reportExit(id, rootPID, exitCode, reason)
+	if agentID, ok := s.takeDropIn(id); ok {
+		s.sessions.HandBack(agentID)
+	}
 	// Both fire on every terminal exit: reportExit is the bridge-facing
 	// SessionExited report, BroadcastExit is the WS-facing terminal_exit
 	// frame a joined eve viewer needs. See New's own comment on why this is
 	// a direct call here rather than a second SetExitHandler registration.
 	s.terminalWS.BroadcastExit(id, exitCode)
+}
+
+// linkDropIn records that terminalID takes over agentID. It refuses unless
+// the agent is held and no other terminal already has it.
+func (s *Server) linkDropIn(terminalID, agentID string) bool {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	if !s.sessions.Held(agentID) {
+		return false
+	}
+	for _, linked := range s.dropIns {
+		if linked == agentID {
+			return false
+		}
+	}
+	s.dropIns[terminalID] = agentID
+	return true
+}
+
+func (s *Server) takeDropIn(terminalID string) (string, bool) {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	agentID, ok := s.dropIns[terminalID]
+	delete(s.dropIns, terminalID)
+	return agentID, ok
 }
 
 // onSessionExit is session.Manager's exit hook. No table entry exists for a
@@ -301,6 +331,8 @@ func (s *Server) ListenInternal() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/launch", s.handleLaunch)
 	mux.HandleFunc("/terminate", s.handleTerminate)
+	mux.HandleFunc("/handoff", s.handleHandoff)
+	mux.HandleFunc("/handback", s.handleHandback)
 
 	// The eve-facing manifest surface (internal/config's
 	// RelaySessionsManifestRoutes: /api/terminals/, /api/sessions/,
@@ -617,8 +649,19 @@ func (s *Server) launchTerminal(w http.ResponseWriter, req LaunchRequest) {
 		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, err.Error())
 		return
 	}
+	if req.DropInFor != "" {
+		// Linked before the terminal starts so even an instant exit hands the
+		// session back.
+		if !s.linkDropIn(req.SessionID, req.DropInFor) {
+			writeErr(w, http.StatusConflict, ErrNotHeld, fmt.Sprintf("session %q is not held for a drop-in", req.DropInFor))
+			return
+		}
+	}
 	sess, err := s.terminals.Create(spec)
 	if err != nil {
+		if req.DropInFor != "" {
+			s.takeDropIn(req.SessionID)
+		}
 		status, code := terminalLaunchStatus(err)
 		writeErr(w, status, code, err.Error())
 		return
@@ -747,6 +790,54 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 			})
 			s.sessions.EndSession(req.SessionID)
 		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleHandoff implements POST /handoff: stop id's headless Claude process
+// and hold the session for a terminal. It can stay open up to HandoffWait.
+func (s *Server) handleHandoff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.checkInternalPeer(r) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	var req HandoffRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SessionID == "" {
+		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "session_id is required")
+		return
+	}
+	claudeID, err := s.sessions.Handoff(r.Context(), req.SessionID, HandoffWait, func() { s.markTerminating(req.SessionID) })
+	var herr *session.HandoffError
+	switch {
+	case err == nil:
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(HandoffResponse{SessionID: req.SessionID, ClaudeSessionID: claudeID})
+	case errors.As(err, &herr):
+		writeErr(w, http.StatusConflict, herr.Code, herr.Message)
+	case errors.Is(err, session.ErrSessionNotFound):
+		writeErr(w, http.StatusNotFound, "session_not_found", fmt.Sprintf("no session %s", req.SessionID))
+	default:
+		writeErr(w, http.StatusServiceUnavailable, "handoff_cancelled", err.Error())
+	}
+}
+
+// handleHandback implements POST /handback: always 204, idempotent.
+func (s *Server) handleHandback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.checkInternalPeer(r) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	var req HandbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.SessionID != "" {
+		s.sessions.HandBack(req.SessionID)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

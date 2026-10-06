@@ -80,6 +80,10 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "resume_required", "message": err.Error()})
+	case errors.Is(err, session.ErrDroppedIn):
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "dropped_in", "message": err.Error()})
 	case errors.Is(err, session.ErrAlreadyProcessing):
 		w.WriteHeader(http.StatusConflict)
 	default:

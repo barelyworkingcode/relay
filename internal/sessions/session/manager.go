@@ -93,6 +93,10 @@ type sessionSlot struct {
 	// with. Zero value for a slot Get filled from a lazy disk load — this
 	// process never authorized that session's launch, so it never restarts.
 	spec CreateSpec
+
+	// held is true while a terminal owns the session's conversation. Guarded
+	// by Manager.mu.
+	held bool
 }
 
 // Manager owns the set of sessions this host is hosting: live ones with a
@@ -118,6 +122,8 @@ type Manager struct {
 	// from handleProviderEvent's "process_exited" case, usually on the
 	// provider's own waitForExit goroutine (see SetExitHandler).
 	onExit func(id string, exitCode int)
+
+	tools toolBoard
 
 	collMu     sync.Mutex
 	collectors map[string]*ResponseCollector
@@ -273,6 +279,10 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 		if !spec.Resume {
 			m.mu.Unlock()
 			return nil, fmt.Errorf("%w: %s", ErrSessionExists, spec.SessionID)
+		}
+		if existing.held {
+			m.mu.Unlock()
+			return nil, ErrDroppedIn
 		}
 		if existing.launching {
 			m.mu.Unlock()
@@ -864,6 +874,9 @@ func (m *Manager) SendMessage(id, text string, files []sessionstypes.FileAttachm
 	if !ok {
 		return ErrSessionNotFound
 	}
+	if m.Held(id) {
+		return ErrDroppedIn
+	}
 	if !sess.TryStartProcessing() {
 		return ErrAlreadyProcessing
 	}
@@ -961,6 +974,7 @@ func (m *Manager) StopGeneration(id string) error {
 		return ErrSessionNotFound
 	}
 	m.signal(sess, attention.TurnStopped)
+	m.tools.clear(id)
 	if p := sess.Provider(); p != nil {
 		p.StopGeneration()
 	}
@@ -991,6 +1005,7 @@ func (m *Manager) ClearSession(id string) error {
 	}
 
 	m.signal(sess, attention.TurnStopped)
+	m.tools.clear(id)
 	old := sess.SwapProvider(nil)
 	sess.Lock()
 	sess.Messages = []sessionstypes.Message{}
@@ -1087,6 +1102,7 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 	switch eventType {
 	case events.HandlerLLMEvent:
 		msg = map[string]any{"type": events.HandlerLLMEvent, "sessionId": sess.ID, "event": data}
+		m.trackTools(sess, data)
 		if tracked(sess) {
 			sig, text := classifyLLMEvent(data)
 			m.attn.Signal(sess.ID, sig)
@@ -1109,6 +1125,7 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 
 	case events.HandlerMessageComplete:
 		sess.SetProcessing(false)
+		m.tools.clear(sess.ID)
 		m.signal(sess, completionSignal(data))
 		msg = map[string]any{"type": events.HandlerMessageComplete, "sessionId": sess.ID}
 		m.persist(sess)
@@ -1118,6 +1135,7 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 			return
 		}
 		sess.SetProcessing(false)
+		m.tools.clear(sess.ID)
 		m.signal(sess, attention.ProcessExited)
 		msg = map[string]any{"type": events.WSMsgProcessExited, "sessionId": sess.ID}
 		m.persist(sess)
@@ -1135,6 +1153,7 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 
 	case "error":
 		sess.SetProcessing(false)
+		m.tools.clear(sess.ID)
 		m.signal(sess, attention.TurnFailed)
 		msg = map[string]any{"type": events.WSMsgError, "sessionId": sess.ID, "message": string(data)}
 
