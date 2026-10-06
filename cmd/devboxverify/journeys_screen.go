@@ -44,6 +44,7 @@ var screenJourneys = []journey{
 	{chatResumeID, []string{"sessions", "audit"}, []string{"project:acme"}, phaseScreen, 180 * time.Second, runChatResume},
 	{chatToolSearchID, []string{"sessions", "audit"}, nil, phaseScreen, 240 * time.Second, runChatToolSearch},
 	{agentStateID, []string{"sessions"}, []string{"project:acme"}, phaseScreen, 180 * time.Second, runAgentState},
+	{cosID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runChiefOfStaffSend},
 	{disabledID, []string{"mcps", "grants"}, nil, phaseScreen, 45 * time.Second, runDisabledTool},
 	{narrowID, []string{"grants", "projects", "sandbox"}, nil, phaseScreen, 45 * time.Second, runGrantNarrowing},
 	{svcStartID, []string{"services"}, nil, phaseScreen, 30 * time.Second, runServiceStartStop},

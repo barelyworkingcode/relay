@@ -247,6 +247,29 @@ tokens needs a credential of its own:
 
 The same applies to `POST /api/enrolments` and `DELETE /api/enrolments/{id}`.
 
+### The chief-of-staff scope
+
+A caller holding `proxy` may narrow one request to the Chief of Staff's doors
+by sending the header `X-Relay-Scope: chief-of-staff`. The scope is a
+per-request narrowing, not a credential: nothing is minted, stored or moved,
+so entering it raises no presence prompt.
+
+| Request | Result |
+|---|---|
+| no `X-Relay-Scope` | as before; class `chief_of_staff` is refused, `class not granted` |
+| scope, caller lacks `proxy` | 403 `class not granted` |
+| scope, caller holds `proxy` | `GET /api/sessions`, `GET /ws` and `POST /api/chief-of-staff/messages` only; every other route is 403 `outside chief-of-staff scope` |
+| any other, empty or repeated value | 403 `unknown scope` |
+
+- `chief_of_staff` is a class only the scope reaches. It is socket-only, like
+  `proxy`, and it is not mintable: the mintable classes stay at five.
+- A scoped `/ws` receives hub broadcasts only (`session_state`, `turn_done`,
+  `session_ended`, `terminal_closed`). Its first data frame from the client
+  closes it with 1008 `chief-of-staff scope is read-only`; the dispatcher
+  enforces this, not the session host.
+- The scope moves no credential. It only removes routes from what `proxy`
+  reaches, so a caller can narrow itself and cannot widen anything.
+
 ### The login credential
 
 An interactive login at `http://localhost:PORT/relay/login` mints an ordinary

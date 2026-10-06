@@ -56,6 +56,7 @@ Areas: sessions, sandbox, templates, audit.
 | Terminal templates: list, add, edit, remove | Settings > Templates | Settings > Templates > Add | HTTP `/api/terminal/templates` | — | none | Settings > Templates > + Add template; row > Edit / Remove | `settings.json` `terminal_templates` |
 | Web chat tool search | chat | a web chat whose relay tools cost more than a tenth of the model's context hides them behind `tool_search` / `call_tool` | n/a (host-side, no route) | — | chat-tool-search-tokens | none (turns on by itself) | `sessions/chat.json` `toolSearch` |
 | Agent state and turn excerpts | API (eve) | a live claude or pi session → `session_state` and `turn_done` on `/ws`; `attention` on `GET /api/sessions` | HTTP [proxy] | — | session-agent-state | none until the agent board ships in eve | none (API only: `POST /api/sessions` settings `agent: true`) |
+| Chief of Staff scope: read every session, send marked | API (eve) | `X-Relay-Scope: chief-of-staff` → `GET /api/sessions`, read-only `/ws`, `POST /api/chief-of-staff/messages` | HTTP [proxy, scoped] | — | chief-of-staff-send | none until eve's Chief of Staff thread ships | none (API only) |
 
 ### G2 · Give an agent access to one project and nothing else — must-have
 Intent: grant a project its folder, mail account and chosen tools, and nothing wider.
@@ -109,6 +110,7 @@ Areas: audit.
 | Issuance and config-change rows carrying the presence id | background | any owner gate passed | CLI, HTTP | owner gate | gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos | n/a | n/a |
 | Session launch rows | background | any launch | HTTP, bridge | — | session-chat-lifecycle, terminal-lifecycle | n/a | n/a |
 | Refusal rows | background | any refused launch | HTTP, bridge | — | blank-model-refused, oversized-launch-audit-capped | n/a | n/a |
+| Chief of Staff send rows (intent then completion; refused unless recorded) | background | any send in the chief-of-staff scope | HTTP | — | chief-of-staff-send | n/a | n/a |
 | Export the log | Settings > Tool Calls | Export | HTTP `POST /api/audit/export` [configure] | — | none | Settings > Tool Calls > Export | `relay audit --json` |
 | Reveal the log file | Settings > Tool Calls | Reveal log | screen | — | none | Settings > Tool Calls > Reveal Log | `relay audit --path` |
 
@@ -279,7 +281,7 @@ areas:
   sessions:
     code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**]
     tests: [cmd/relay/session_*_test.go, cmd/relay/router_sessions_test.go, cmd/relay/mount_session_test.go, cmd/relaysessions/*_test.go, internal/sessions/**/*_test.go]
-    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, session-agent-state, slow-route-keepalive, session-host-restart, verify-fixtures-removed]
+    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, session-agent-state, slow-route-keepalive, session-host-restart, verify-fixtures-removed, chief-of-staff-send]
   sandbox:
     code: [cmd/relay/sandbox_*.go, cmd/relay/session_sandbox*.go, internal/bridge/sandbox*.go, internal/sessions/sandbox/**]
     tests: [cmd/relay/sandbox_*_test.go, cmd/relay/session_sandbox*_test.go, internal/sessions/sandbox/**/*_test.go]
@@ -303,7 +305,7 @@ areas:
   audit:
     code: [cmd/relay/audit_*.go, cmd/relay/ipc_audit.go, internal/audit/**]
     tests: [cmd/relay/audit_*_test.go, cmd/relay/settings_audit_ui_test.go, internal/audit/*_test.go]
-    journeys: [blank-model-refused, oversized-launch-audit-capped, tool-call-audited, gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, context-number-resave, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos]
+    journeys: [blank-model-refused, oversized-launch-audit-capped, tool-call-audited, gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, context-number-resave, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos, chief-of-staff-send]
   services:
     code: [cmd/relay/service_*.go, cmd/relay/cli_service.go, cmd/relay/enhanced_services.go, cmd/relay/ipc_service*.go, internal/service/**]
     tests: [cmd/relay/service_*_test.go, cmd/relay/cli_service*_test.go, cmd/relay/enhanced_services*_test.go, cmd/relay/ipc_service*_test.go, cmd/relay/settings_service*_test.go, cmd/relay/launch_*_test.go, internal/service/*_test.go]
@@ -319,7 +321,7 @@ areas:
   credentials:
     code: [cmd/relay/credential_*.go, cmd/relay/api_credential.go, cmd/relay/frontend_*.go, internal/control/**, internal/peertoken/**]
     tests: [cmd/relay/credential_*_test.go, cmd/relay/api_credential*_test.go, cmd/relay/frontend_*_test.go, cmd/relay/transport_enforcement_test.go]
-    journeys: [gate-credential-mint-pos, execute-credential-renewal, gate-credential-mint-neg, gate-credential-revoke-neg, slow-route-keepalive, gate-credential-revoke-pos]
+    journeys: [gate-credential-mint-pos, execute-credential-renewal, gate-credential-mint-neg, gate-credential-revoke-neg, slow-route-keepalive, gate-credential-revoke-pos, chief-of-staff-send]
   remote:
     code: [cmd/relay/enrol*.go, cmd/relay/ipc_enrolments.go, cmd/relay/remote_*.go, internal/enrolment/**]
     tests: [cmd/relay/enrol*_test.go, cmd/relay/ipc_enrolment*_test.go, cmd/relay/remote_*_test.go, cmd/relay/audit_remote_test.go, cmd/relay/settings_enrolments*_test.go, internal/enrolment/*_test.go]
