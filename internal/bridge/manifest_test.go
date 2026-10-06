@@ -123,7 +123,7 @@ func TestManifestValidate_EmptyRoutesRejected(t *testing.T) {
 // any ordinary frontend caller reach them through the unverified proxy path
 // instead.
 func TestManifestValidate_SessionHostRoutesRejected(t *testing.T) {
-	for _, route := range []string{"/launch", "/terminate", "/launch/", "/terminate/sub"} {
+	for _, route := range []string{"/launch", "/terminate", "/launch/", "/terminate/sub", "/send", "/send/"} {
 		m := Manifest{Routes: []string{"/api/terminals/", route}}
 		if err := m.Validate(); err == nil {
 			t.Errorf("manifest declaring route %q was accepted", route)
