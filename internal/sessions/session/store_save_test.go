@@ -2,6 +2,8 @@ package session_test
 
 import (
 	"os"
+	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -9,34 +11,31 @@ import (
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
+const saveChildEnv = "RELAY_TEST_SAVE_CHILD_DIR"
+
 // A write that fails part way must leave the previous record whole and no
-// stray file behind. RLIMIT_FSIZE of 0 makes every write return EFBIG, which
-// is how a process dying mid-write looks to the next reader.
+// stray file behind. The failing Save runs in a child process with
+// RLIMIT_FSIZE of 0, so every write returns EFBIG, which is how a process
+// dying mid-write looks to the next reader. The limit is process-wide, so it
+// never touches the test runner itself.
 func TestStoreSave_FailedWriteKeepsOldRecord(t *testing.T) {
-	store := session.NewStore(t.TempDir())
+	dir := t.TempDir()
+	store := session.NewStore(dir)
 	sess := &sessionstypes.Session{ID: testSessionID, ProjectID: "p1", Name: "v1", Model: "m", ProviderType: "claude"}
 	if err := store.Save(sess); err != nil {
 		t.Fatalf("Save v1: %v", err)
 	}
 
-	var old syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &old); err != nil {
-		t.Fatalf("getrlimit: %v", err)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStoreSaveChildHelper$")
+	cmd.Env = append(os.Environ(), saveChildEnv+"="+dir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("child failed: %v\n%s", err, out)
 	}
-	zero := old
-	zero.Cur = 0
-	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &zero); err != nil {
-		t.Fatalf("setrlimit: %v", err)
-	}
-	sess.Name = "v2"
-	saveErr := store.Save(sess)
-	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &old); err != nil {
-		t.Fatalf("restore RLIMIT_FSIZE: %v", err)
+	if !strings.Contains(string(out), "SAVE_ERROR") {
+		t.Fatalf("Save v2 succeeded with writes forbidden, want an error; child output:\n%s", out)
 	}
 
-	if saveErr == nil {
-		t.Fatal("Save v2 succeeded with writes forbidden, want an error")
-	}
 	got, err := store.Load(testSessionID)
 	if err != nil {
 		t.Fatalf("Load after failed Save: %v", err)
@@ -54,5 +53,25 @@ func TestStoreSave_FailedWriteKeepsOldRecord(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Errorf("store dir lists %v, want only %s.json", names, testSessionID)
+	}
+}
+
+// Runs only as the child of TestStoreSave_FailedWriteKeepsOldRecord.
+func TestStoreSaveChildHelper(t *testing.T) {
+	dir := os.Getenv(saveChildEnv)
+	if dir == "" {
+		return
+	}
+	var lim syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &lim); err != nil {
+		t.Fatalf("getrlimit: %v", err)
+	}
+	lim.Cur = 0
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &lim); err != nil {
+		t.Fatalf("setrlimit: %v", err)
+	}
+	sess := &sessionstypes.Session{ID: testSessionID, ProjectID: "p1", Name: "v2", Model: "m", ProviderType: "claude"}
+	if err := session.NewStore(dir).Save(sess); err != nil {
+		os.Stdout.WriteString("SAVE_ERROR\n")
 	}
 }
