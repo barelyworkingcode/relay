@@ -461,6 +461,29 @@ session is deleted whatever the outcome.
   reads idle then ended, not ended alone. Run on Claude Haiku
   `claude-haiku-4-5-20251001`; any other model reads BLOCKED.
 
+**session-codex** (screen). A Codex session in Acme Corp (`POST /api/sessions`
+with eve's body: model `codex/gpt-6-luna`, settings `{"useRelayTools":true}`,
+`appendClaudeMd` true) answers one message sent over `/ws`: `join_session`,
+then `send_message` "Reply with exactly: verify-<nonce>-codex". A connection
+dialled before the launch, with the run credential, sees every frame. PASS when
+`GET /api/models` lists `codex/gpt-6-luna`; the launch answers 201;
+`system/init` names model `gpt-6-luna`; assistant text deltas and one
+`turn_done` whose excerpt contains the marker arrive before the first `idle`
+frame that follows `running`; the list row has `attention.state` `idle` with
+`since` equal to that frame's; `end_session` gives `ended` and the row then has
+no `attention`; and `DELETE` answers 2xx. Every other outcome is FAIL with the
+status and detail, including Codex missing, a 403 launch refusal (setup P10)
+and a different model. The journey adds no NOTRUN or BLOCKED of its own; only
+a missing run or execute credential reads as before. The session is deleted
+whatever the outcome.
+- Lives in: `internal/sessions/provider/codex.go`, `internal/sessions/session`
+  (attention), `internal/sessions/api/ws_session.go`.
+- Reached by: `GET /api/models`, `POST /api/sessions` with P4,
+  `GET /api/sessions` with the run credential, `/ws` on the frontend socket.
+- Traps: the turn waits up to 120 s for the idle frame, inside the 180 s
+  budget. Codex signs in with its own login, so a missing `codex` binary or
+  login shows as a launch failure or a missing model row.
+
 **disabled-tool-refused** (screen). In a live session in Verify Grant,
 `testmcp_ping` answers; a `PUT /api/projects/{id}` with `disabled_tools`
 naming it returns 200 within 10 s without a prompt; the same session no
@@ -673,6 +696,14 @@ None of this drifts `verify.sh`.
   `claude-code`; the `claude-code` template exists; and, if Acme restricts
   models, Acme allows `haiku`. Without it the journey reads BLOCKED on the
   launch refusal.
+- **P10. Codex.** The `session-codex` journey launches `codex/gpt-6-luna`. Done
+  once on the devbox console, like P9: add a `codex` console template with
+  read `/opt/homebrew`, `~/.gitconfig`, `~/.zshenv`, `~/.zprofile`, `~/.zshrc`
+  and read_write `~/.codex`, `~/.cache`, `~/Library/Caches`; add `codex` to
+  Acme Corp's allowed templates (this widens a grant, so it raises a presence
+  prompt); and, if Acme restricts models, allow `codex/gpt-6-luna`. Codex must
+  be installed and signed in. Without it the journey FAILs on the launch
+  refusal or the missing model row.
 
 ## Verifying a PR
 
