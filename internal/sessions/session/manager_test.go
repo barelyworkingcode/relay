@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -919,5 +920,29 @@ func TestManager_BuildProvider_ThreadsSandboxAndIdentityIntoClaudeAndPi(t *testi
 				t.Fatalf("Create error = %v, want provider.ErrShimRequired -- SandboxProfile never reached %sConfig", err, kind)
 			}
 		})
+	}
+}
+
+func TestList_ReportsHeadlessAndOmitsItForChats(t *testing.T) {
+	h := newAttnHarness(t, nil)
+	h.create(t, "55555555-0000-0000-0000-000000000001", session.KindClaude, `{"headless":true,"agent":true}`)
+	h.create(t, "55555555-0000-0000-0000-000000000002", session.KindClaude, "")
+
+	row, ok := h.row("55555555-0000-0000-0000-000000000001")
+	if !ok || !row.Headless {
+		t.Fatalf("headless agent: listed=%v headless=%v, want listed and headless", ok, row.Headless)
+	}
+	b, _ := json.Marshal(row)
+	if !strings.Contains(string(b), `"headless":true`) {
+		t.Errorf("headless row JSON = %s, want headless:true", b)
+	}
+
+	row, ok = h.row("55555555-0000-0000-0000-000000000002")
+	if !ok {
+		t.Fatal("ordinary chat not listed")
+	}
+	b, _ = json.Marshal(row)
+	if strings.Contains(string(b), `"headless"`) {
+		t.Errorf("ordinary chat JSON = %s, want no headless key", b)
 	}
 }
