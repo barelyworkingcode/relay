@@ -505,21 +505,22 @@ session-drop-in-host.
 
 **session-drop-in-host** (screen). Eve's door on an SSH host: a host
 `loopback-<nonce>` targeting `localhost` and a project `Drop-in Host <nonce>` on
-a fresh folder; a headless agent session there runs the same turn, which may end
-`idle` or `errored`. `POST /api/sessions/{id}/drop-in` answers 201 with a
+a fresh folder; a headless agent session there runs the same turn, which must
+end `idle`. `POST /api/sessions/{id}/drop-in` answers 201 with a
 `claudeSessionId` that is a UUID, and a terminal id; the host's `~/.claude/projects/*/<claudeSessionId>.jsonl` holding the first turn's prompt, read over ssh; the agent's `process_exited`
 frame follows and its list row has `live` false; within 20 s the host's process
 table (`ssh -o BatchMode=yes localhost ps`) holds a `claude` command with
-`--resume <that uuid>`. `/exit` is sent to the terminal; with no `terminal_exit`
+`--resume <that uuid>`, and the first turn's marker shows in the terminal
+within 60 s, a folder-trust prompt answered Yes. `/exit` is sent to the terminal; with no `terminal_exit`
 in 15 s the terminal is deleted instead. An `idle` frame follows, and the log
 has exactly one `op=session.drop_in` line with `status` ok, `host`
 `loopback-<nonce>` and the terminal's id. The session, terminal, project and
 host are deleted whatever the outcome. BLOCKED when the loopback host or its
 project cannot be created, the host launch is refused (setup P11), or
 `system/init` does not report `claude-haiku-4-5-20251001`.
-- Proves the handoff and the `--resume <uuid>` launch on the host. That the
-  conversation resumes over SSH needs a `claude` signed in for SSH logins on the
-  host (setup P11) and a test-machine pass.
+- Proves the handoff, the `--resume <uuid>` launch on the host and that the
+  conversation resumed there. A host `claude` that cannot sign in over SSH
+  (setup P11) reads FAIL: the first turn errors.
 - Lives in: as session-drop-in.
 - Reached by: as session-drop-in, with the terminal over `/ws`.
 - Traps: the project folder is `grant-dropin-<nonce>` under the state folder so
@@ -766,10 +767,12 @@ None of this drifts `verify.sh`.
   login shell's PATH for a non-interactive SSH command (check with
   `ssh localhost 'command -v claude'`). Without the key or the host-key trust
   the journey reads BLOCKED; with no `claude` on that PATH it reads FAIL ("no
-  system/init"), because the first turn never starts. For the conversation to resume on the host, that `claude` must also
-  be signed in for SSH logins (a login keychain is not reachable from an SSH
-  session); without it the first turn errors and the journey still checks the
-  handoff and the `--resume` launch.
+  system/init"), because the first turn never starts. That `claude` must also
+  sign in for SSH logins. An SSH session starts with the login keychain
+  locked, and an unlock in one SSH session does not carry to the next, so the
+  login user's `~/.zshenv` unlocks it when `SSH_CONNECTION` is set (check with
+  `ssh localhost 'claude -p "say ok" </dev/null'`). Without it the first turn
+  errors and the journey reads FAIL.
 
 ## Verifying a PR
 

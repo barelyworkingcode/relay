@@ -159,11 +159,13 @@ func TestClassifyDropInHost(t *testing.T) {
 		{"host leg passes", func(*dropInHostRun) {}, statePass},
 		{"loopback host not created", func(r *dropInHostRun) { r.Setup = "POST /api/hosts status 502" }, stateBlocked},
 		{"host leg fails", func(r *dropInHostRun) { r.Leg.ResumeSeen = false }, stateFail},
-		{"first turn errored, as with a claude that cannot sign in", func(r *dropInHostRun) { r.Leg.TurnErrored = true }, statePass},
+		{"first turn errored, as with a claude that cannot sign in", func(r *dropInHostRun) { r.Leg.TurnErrored = true }, stateFail},
+		{"marker missing from the resumed terminal", func(r *dropInHostRun) { r.Leg.MarkerSeen = false }, stateFail},
 		{"terminal deleted, no exit frame", func(r *dropInHostRun) { r.Leg.Deleted = true }, statePass},
 		{"teardown left a host behind", func(r *dropInHostRun) { r.Teardown = "; teardown: DELETE host status 500" }, stateFail},
 	}, map[string]string{
 		"first turn errored, as with a claude that cannot sign in": "ended errored",
+		"marker missing from the resumed terminal":                 "never appeared in the resumed terminal",
 		"terminal deleted, no exit frame":                          "terminal deleted instead",
 	})
 }

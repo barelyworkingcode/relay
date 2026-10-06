@@ -392,7 +392,7 @@ type dropInLeg struct {
 	Message        frontendResponse
 	Frames         []dropFrame
 	IdleBefore     bool   // the first turn ended: an idle frame, or on the host door an errored one
-	TurnErrored    bool   // host door: the first turn ended errored (the host's claude cannot sign in)
+	TurnErrored    bool   // host door: the first turn ended errored, as when the host's claude cannot sign in; a FAIL
 	Deleted        bool   // host door: the terminal ended by DELETE, not /exit
 	ClaudeID       string // host door: claudeSessionId from the 201 body
 	ResumeSeen     bool   // host door: the host's process table holds claude --resume <ClaudeID>
@@ -637,9 +637,9 @@ func attachLocal(e env, run string) attachFunc {
 }
 
 // attachHost is eve's door: POST /api/sessions/{id}/drop-in, then the
-// handoff and the host's --resume launch observed. The launch is read from the
-// host's process table over SSH, not from terminal output, which a claude that
-// cannot sign in would not show.
+// handoff, the host's --resume launch and the resumed conversation observed.
+// The launch is read from the host's process table over SSH, so a claude that
+// cannot sign in still shows whether the launch happened.
 func attachHost(e env, launch, run string) attachFunc {
 	return func(ctx context.Context, l *dropInLeg, log *dropLog, conn *websocket.Conn) {
 		resp := frontendDoTimeout(ctx, e, launch, http.MethodPost, "/api/sessions/"+l.SessionID+"/drop-in", []byte(`{}`), 75*time.Second)
@@ -671,6 +671,15 @@ func attachHost(e env, launch, run string) attachFunc {
 			out, l.ResumeErr = hostProcessTable(ctx)
 			return resumeLaunched(string(out), l.ClaudeID)
 		})
+		if l.ResumeSeen {
+			text := func() string { return terminalText(log.snapshot(), tid) }
+			send := func(k string) {
+				_ = wsSend(conn, map[string]string{"type": "terminal_input", "terminalId": tid, "data": base64.StdEncoding.EncodeToString([]byte(k))})
+			}
+			if l.MarkerSeen = awaitMarker(ctx, l.Marker, text, send); !l.MarkerSeen {
+				l.ScreenTail = tail(text(), 300)
+			}
+		}
 		_ = wsSend(conn, map[string]string{"type": "terminal_input", "terminalId": tid, "data": base64.StdEncoding.EncodeToString([]byte("/exit\r"))})
 		exited := func(fs []dropFrame) bool {
 			return frameSeen(0, func(f dropFrame) bool { return f.Type == "terminal_exit" && f.TerminalID == tid })(fs)
@@ -747,9 +756,7 @@ func rowReason(row *audit.AuditEvent) string {
 }
 
 // legProblem is nil when the leg held every promise. A refusal that says the
-// world is not as expected reads BLOCKED; anything else is a FAIL. On the host
-// door the first turn may end errored, since the host's claude may not be
-// signed in; what it proves is the handoff and the --resume launch.
+// world is not as expected reads BLOCKED; anything else is a FAIL.
 func legProblem(l dropInLeg, local bool) *result {
 	id := dropInHostID
 	if local {
@@ -787,6 +794,8 @@ func legProblem(l dropInLeg, local bool) *result {
 		return block("model is not Haiku: " + m)
 	case !l.IdleBefore:
 		return fail("the first turn ended neither idle nor errored")
+	case l.TurnErrored:
+		return fail("the first turn ended errored: the host's claude did not answer, so there is no conversation to resume")
 	case l.Refusal == "inside_session" || l.Refusal == "peer_confined":
 		return block("drop-in refused " + l.Refusal + ": run the harness from an operator shell")
 	case l.Refusal != "":
@@ -807,7 +816,7 @@ func legProblem(l dropInLeg, local bool) *result {
 		return fail("the host's transcript for claudeSessionId %s does not hold the first turn's prompt (%s)", l.ClaudeID, l.TranscriptErr)
 	case !local && !l.ResumeSeen:
 		return fail("no claude --resume %s in the host's process table within 20 s (%s)", l.ClaudeID, l.ResumeErr)
-	case local && !l.MarkerSeen:
+	case !l.MarkerSeen:
 		return fail("the first turn's marker %q never appeared in the resumed terminal; it ended with %q", l.Marker, l.ScreenTail)
 	case !local && !l.ExitSeen:
 		return fail("no terminal_exit within 15 s of /exit, and DELETE /api/terminals failed")
@@ -863,15 +872,12 @@ func classifyDropInHost(r dropInHostRun) result {
 	if r.Teardown != "" {
 		return result{dropInHostID, stateFail, "host leg passed" + r.Teardown}
 	}
-	turn, end := "first turn ended idle", "terminal ended on /exit"
-	if r.Leg.TurnErrored {
-		turn = "first turn ended errored (the host's claude is not signed in, so the conversation did not resume)"
-	}
+	end := "terminal ended on /exit"
 	if r.Leg.Deleted {
 		end = "no terminal_exit after /exit, terminal deleted instead"
 	}
-	return result{dropInHostID, statePass, fmt.Sprintf("agent on host %s taken over through the HTTP door: 201 with a claudeSessionId equal to the session's conversation id, headless process stopped and row live false, claude --resume <that id> in the host's process table, idle again, one ok log line; %s; %s",
-		r.Leg.Host, turn, end)}
+	return result{dropInHostID, statePass, fmt.Sprintf("agent on host %s taken over through the HTTP door: 201 with a claudeSessionId equal to the session's conversation id, headless process stopped and row live false, claude --resume <that id> in the host's process table, the first turn's marker in the resumed terminal, idle again, one ok log line; first turn ended idle; %s",
+		r.Leg.Host, end)}
 }
 
 // ---- session-drop-in-tool-refused ----
