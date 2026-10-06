@@ -1175,6 +1175,8 @@ type Summary struct {
 	MessageCount  int               `json:"messageCount"`
 	LastMessageAt string            `json:"lastMessageAt,omitempty"`
 	Host          map[string]string `json:"host,omitempty"`
+	// Headless is the same Session.Headless flag the drop-in handoff checks.
+	Headless bool `json:"headless,omitempty"`
 
 	Attention *attention.Attention `json:"attention,omitempty"`
 }
@@ -1195,6 +1197,7 @@ func summarize(sess *sessionstypes.Session) Summary {
 		MessageCount:  len(sess.Messages),
 		LastMessageAt: lastMessageAt(sess.Messages),
 		Host:          sess.Host.Chip(),
+		Headless:      sess.Headless,
 	}
 }
 

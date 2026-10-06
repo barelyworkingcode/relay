@@ -645,6 +645,8 @@ A launch that fails sends `errored` for an id that never appears in the list. A 
 
 `GET /api/sessions` rows for live tracked sessions carry `"attention": {"state": "...", "since": "..."}`. The field is absent for untracked, persisted-only and ended sessions: `ended` reaches a client only as a frame. `since` equals the `since` of the last `session_state` frame for that session.
 
+Rows for headless sessions (listed only when launched with `"agent": true`) also carry `"headless": true`, the flag the drop-in handoff requires; the key is absent for ordinary chats.
+
 ### Stall
 
 A sweep runs every 5 s while any session is `running`, and stops as soon as none is. A `running` session whose last event is 300 s old becomes `stalled`, with `since` set to the last event plus 300 s. Any activity returns it to `running`. An `asking` session waits on a person and never stalls. The 300 s is a constant, not a setting.
