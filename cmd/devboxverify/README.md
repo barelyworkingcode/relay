@@ -448,8 +448,8 @@ frame and its excerpt contains the marker; the list row then has
 `attention.state` `idle` with `since` equal to the idle frame's; after the end
 the row has no `attention`; and `<configdir>/logs/relaysessions.log` has
 exactly one `op=session.state` line per frame seen for the session, none of
-them containing the marker. BLOCKED when the `system/init` model lacks
-`haiku` (the detail names the id), or a launch is refused (setup P9). The
+them containing the marker. BLOCKED when the `system/init` model is not
+`claude-haiku-4-5-20251001` (the detail names the id), or a launch is refused (setup P9). The
 session is deleted whatever the outcome.
 - Lives in: `internal/sessions/attention/`, `internal/sessions/session`
   (`SetAttentionSink`, `Summary.Attention`), `internal/sessions/api/ws_session.go`.

@@ -91,6 +91,25 @@ func (l *frameLog) waitFor(ctx context.Context, d time.Duration, pred func([]age
 	}
 }
 
+// idleAfterRunning skips the launch's starting → idle frame, which the
+// connection always sees because it dials before the launch.
+func idleAfterRunning(id string) func([]agentFrame) bool {
+	return func(fs []agentFrame) bool {
+		running := false
+		for _, f := range fs {
+			if f.Type != "session_state" || f.SessionID != id {
+				continue
+			}
+			if f.State == "running" {
+				running = true
+			} else if running && f.State == "idle" {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 func hasState(id, state string) func([]agentFrame) bool {
 	return func(fs []agentFrame) bool {
 		for _, f := range fs {
@@ -213,7 +232,7 @@ func driveAgentState(ctx context.Context, e env, conn *websocket.Conn, log *fram
 		r.Message, _ = chatTurn(ctx, e, run, id, "Reply with exactly: "+r.Marker)
 	}
 	if r.Message.Status == http.StatusOK {
-		idle := hasState(id, "idle")
+		idle := idleAfterRunning(id)
 		if r.IdleWaitErr = !log.waitFor(ctx, agentFrameWait, idle); !r.IdleWaitErr {
 			r.IdleList = frontendDo(ctx, e, run, http.MethodGet, "/api/sessions", nil)
 			r.IdleRow = listedRow(r.IdleList.Body, id)

@@ -160,6 +160,18 @@ func TestAttention_PermissionRequestAsksThenResolveResumes(t *testing.T) {
 	}
 }
 
+func TestAttention_HarnessQuestionAsksThenToolResultResumes(t *testing.T) {
+	h := newAttnHarness(t, nil)
+	h.create(t, "11111111-0000-0000-0000-000000000001", session.KindClaude, "")
+	h.send(t, "11111111-0000-0000-0000-000000000001")
+	h.emit("11111111-0000-0000-0000-000000000001", "llm_event", `{"type":"system","subtype":"question"}`)
+	h.emit("11111111-0000-0000-0000-000000000001", "llm_event", `{"type":"result","subtype":"tool_result"}`)
+
+	if got, want := h.rec.seq(), "starting,idle,running,asking,running"; got != want {
+		t.Fatalf("sequence = %s, want %s", got, want)
+	}
+}
+
 func TestAttention_StopGenerationIdlesWithOneTurnDone(t *testing.T) {
 	h := newAttnHarness(t, nil)
 	h.create(t, "11111111-0000-0000-0000-000000000001", session.KindClaude, "")

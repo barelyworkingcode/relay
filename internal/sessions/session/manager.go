@@ -1198,8 +1198,8 @@ func lastMessageAt(msgs []sessionstypes.Message) string {
 	return msgs[len(msgs)-1].Timestamp
 }
 
-// List returns every session except headless non-agent runs this manager knows about — live,
-// in-memory-but-idle, and persisted-only (merged in from disk, relayLLM's
+// List returns every session this manager knows about except headless runs
+// not marked as agents — live, in-memory-but-idle, and persisted-only (merged in from disk, relayLLM's
 // own ListSessions behavior) — sorted by id.
 func (m *Manager) List() []Summary {
 	m.mu.Lock()

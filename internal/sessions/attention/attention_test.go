@@ -265,8 +265,9 @@ func TestBoard_OneLogLinePerChangeWithoutText(t *testing.T) {
 	}
 	for i, w := range wants {
 		m := lines[i]
-		if m["op"] != "session.state" || m["session_id"] != "p1" || m["from"] != w.from || m["to"] != w.to {
-			t.Errorf("line %d = %v, want op=session.state session_id=p1 from=%q to=%q", i, m, w.from, w.to)
+		if m["op"] != "session.state" || m["status"] != "ok" || m["duration_ms"] != float64(0) ||
+			m["session_id"] != "p1" || m["from"] != w.from || m["to"] != w.to {
+			t.Errorf("line %d = %v, want op=session.state status=ok duration_ms=0 session_id=p1 from=%q to=%q", i, m, w.from, w.to)
 		}
 	}
 }

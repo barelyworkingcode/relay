@@ -23,8 +23,6 @@ const (
 	ExcerptRunes  = 500
 )
 
-// SessionEnded is the contract's Ended signal; the State constant Ended
-// already owns that name in this package.
 type Signal int
 
 const (
@@ -40,6 +38,7 @@ const (
 	TurnStopped
 	ProcessExited
 	StallTimeout
+	// SessionEnded, not Ended: the State constant Ended owns that name.
 	SessionEnded
 )
 
