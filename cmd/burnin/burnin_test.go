@@ -17,6 +17,15 @@ import (
 var builtTool string
 
 func TestMain(m *testing.M) {
+	// This is deliberate: git exports GIT_DIR, GIT_INDEX_FILE and friends to
+	// hooks, and a test run from a hook inherits them. Every fixture git call,
+	// the in-process selection and the built tool would then act on the
+	// repository that ran the hook instead of the case's own temp repo.
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "GIT_") {
+			os.Unsetenv(name)
+		}
+	}
 	dir, err := os.MkdirTemp("", "burnin-tool-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mkdir temp:", err)
@@ -51,9 +60,22 @@ func newRepo(t *testing.T) *repo {
 	t.Setenv("GOWORK", "off")
 	t.Setenv("GOTOOLCHAIN", "local")
 	r := &repo{t: t, dir: t.TempDir()}
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(r.dir))
 	r.git("init", "-q", "-b", "main")
+	gitDir := r.git("rev-parse", "--absolute-git-dir")
+	if want := filepath.Join(r.dir, ".git"); !sameDir(gitDir, want) {
+		t.Fatalf("fixture git dir = %s, want %s", gitDir, want)
+	}
 	r.write("go.mod", "module example.com/acme\n\ngo 1.21\n")
 	return r
+}
+
+// sameDir compares directories after resolving symlinks (macOS temp dirs sit
+// behind /var -> /private/var).
+func sameDir(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
 }
 
 func (r *repo) git(args ...string) string {
