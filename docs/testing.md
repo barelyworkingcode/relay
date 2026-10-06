@@ -138,6 +138,10 @@ The program is stdlib-only (`go/parser` selects, `git show` at the merge-base
 supplies the base copy, so a branch behind `main` never picks up tests `main`
 changed) and has no configuration: ten runs is the count.
 
+Cost, measured on CI: a PR changing one `cmd/relay` test ran the whole job in
+about 3 minutes, about 1 of them on `cmd/relay` (its race build, the
+`TestMain` build and ten runs).
+
 ## Adding a test
 
 1. Pick the tier (ADR-001). ~95% belong in the default hermetic tier.
