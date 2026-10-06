@@ -50,6 +50,7 @@ Areas: sessions, sandbox, templates, audit.
 | Persistent sessions | API | `GET`/`DELETE /api/projects/{id}/persistent-sessions` | HTTP | — | slow-route-keepalive (`GET`, unreachable host) | eve > New Session > New > Remote sessions > Reattach / Kill | none |
 | Proxied calls after a slow relay route | API (eve) | eve's keep-alive socket: a relay route slower than 10 s, then `GET /api/models` | HTTP [read, proxy] | — | slow-route-keepalive | n/a | n/a |
 | `relay sandbox <template>` | CLI | from a project folder, `relay sandbox world-probe` | CLI / bridge | — | acme-sandbox-reach | none | `relay sandbox <template>` |
+| Drop in to a headless Claude session | CLI, API (eve) | `relay drop-in <id>`; `POST /api/sessions/{id}/drop-in` | CLI / bridge, HTTP [execute] | — | session-drop-in, session-drop-in-host, session-drop-in-tool-refused | none until eve's Drop in button | `relay drop-in <session-id>` |
 | Sandbox containment (own project only) | sandbox | any sandboxed session | bridge | — | acme-sandbox-reach | n/a | n/a |
 | Launch audit row, size-capped | audit | any refused launch | bridge | — | oversized-launch-audit-capped | n/a | n/a |
 | Permission-mode restart (SSH hosts) | API | change permission mode on an SSH-host session | HTTP | — | permission-mode-restart (always NOTRUN: world has no hosts) | eve > session > chat input > Toggle plan mode | none |
@@ -279,7 +280,7 @@ areas:
   sessions:
     code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**]
     tests: [cmd/relay/session_*_test.go, cmd/relay/router_sessions_test.go, cmd/relay/mount_session_test.go, cmd/relaysessions/*_test.go, internal/sessions/**/*_test.go]
-    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, session-agent-state, slow-route-keepalive, session-host-restart, verify-fixtures-removed]
+    journeys: [session-drop-in, session-drop-in-host, session-drop-in-tool-refused, blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, session-agent-state, slow-route-keepalive, session-host-restart, verify-fixtures-removed]
   sandbox:
     code: [cmd/relay/sandbox_*.go, cmd/relay/session_sandbox*.go, internal/bridge/sandbox*.go, internal/sessions/sandbox/**]
     tests: [cmd/relay/sandbox_*_test.go, cmd/relay/session_sandbox*_test.go, internal/sessions/sandbox/**/*_test.go]

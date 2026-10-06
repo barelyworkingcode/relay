@@ -73,6 +73,11 @@ const (
 	// stream (docs/sandbox-command.md). It is in bridgeHandlers only:
 	// remoteHandlers and the enrolment table have no entry for it.
 	ReqSandboxAttach = "SandboxAttach"
+
+	// ReqDropInAttach takes a headless Claude session over in a relay-hosted
+	// terminal and turns the connection into that terminal's byte stream. Like
+	// ReqSandboxAttach it is in bridgeHandlers only.
+	ReqDropInAttach = "DropInAttach"
 )
 
 const (
@@ -84,9 +89,9 @@ const (
 
 	RespProjectDescription = "ProjectDescription"
 
-	// RespAttached acknowledges a ReqSandboxAttach: Data is a
-	// SandboxAttachResult, and every later frame on the connection is a
-	// StreamFrame in each direction.
+	// RespAttached acknowledges a ReqSandboxAttach (Data is a
+	// SandboxAttachResult) or a ReqDropInAttach (a DropInAttachResult). Every
+	// later frame on the connection is a StreamFrame in each direction.
 	RespAttached = "Attached"
 )
 
