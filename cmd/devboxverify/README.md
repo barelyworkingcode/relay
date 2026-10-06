@@ -461,6 +461,45 @@ session is deleted whatever the outcome.
   reads idle then ended, not ended alone. Run on Claude Haiku
   `claude-haiku-4-5-20251001`; any other model reads BLOCKED.
 
+**session-drop-in** (screen). A headless agent session in Acme Corp (model
+`haiku`, settings `{"headless":true,"agent":true}`) runs one turn, "Reply with
+exactly: verify-<nonce>-done", and is taken over twice. Local leg, the CLI's
+door: `DropInAttach` on `relay.sock`. PASS when a `running` frame and the
+agent's `process_exited` frame follow the answer, the list row has `live` false,
+the marker appears in the resumed terminal's output (a folder-trust prompt is
+answered with Enter), `/exit` ends the terminal (no exit frame in 15 s: the
+connection is closed instead, and the detail says so), an `idle` frame follows,
+`<configdir>/logs/relay.log` has exactly one `op=session.drop_in` line with
+`status` ok and `host` console, the audit has a `session_end` row for the agent
+with reason `closed` and a `session_launch` row for the terminal. Host leg, eve's
+door: a host `loopback-<nonce>` targeting `localhost` and a project
+`Drop-in Host <nonce>` on a fresh folder; the same turn; `POST
+/api/sessions/{id}/drop-in` answers 201; the terminal joined over `/ws` shows
+the marker; `/exit` gives `terminal_exit` and an `idle` frame; the log line has
+`host` `loopback-<nonce>`. The session, terminal, project and host are deleted
+whatever the outcome. BLOCKED when the loopback host or its project cannot be
+created, the host launch is refused (setup P10), or `system/init` does not
+report `claude-haiku-4-5-20251001`.
+- Lives in: `cmd/relay/session_dropin.go`, `internal/bridge/dropin.go`,
+  `internal/sessions/session/dropin.go`, `internal/sessions/hostapi`.
+- Reached by: `POST /api/sessions` with P4, the message route with the run
+  credential, the drop-in route with P4, `/ws`, `relay.sock`.
+- Traps: the project folder is `grant-dropin-<nonce>` under the state folder so
+  verify-fixtures-removed finds it. A killed run leaves the host, project and
+  terminal until that journey runs.
+
+**session-drop-in-tool-refused** (screen). A headless agent session in Acme
+Corp (same model and settings) is asked to run `sleep 20` with Bash. When the
+`tool_use` `content_block_stop` frame arrives, `POST /api/sessions/{id}/drop-in`
+with P4 must answer 409 `tool_running` with Bash named in its message, in under
+5 s. PASS also needs the agent still `live` in the list, no terminal started by
+the call, and exactly one `op=session.drop_in` line for the session with
+`status` denied and `error` tool_running. BLOCKED when no tool call arrives
+within 60 s, or `system/init` is not `claude-haiku-4-5-20251001`. The session is
+deleted whatever the outcome.
+- Lives in: `internal/sessions/session/dropin.go` (`Handoff`), `cmd/relay/session_dropin.go`.
+- Reached by: as session-drop-in.
+
 **disabled-tool-refused** (screen). In a live session in Verify Grant,
 `testmcp_ping` answers; a `PUT /api/projects/{id}` with `disabled_tools`
 naming it returns 200 within 10 s without a prompt; the same session no
@@ -559,8 +598,9 @@ host under every live session.
 template is deleted if present and checked gone. Every `devboxverify-probe-*` MCP and
 `devboxverify-crash-*` service is unregistered (both ungated) and every
 `Verify Grant *` and `Unreachable Host *` project deleted, from this run or a
-crashed one, with their state folders. Then every host named `blackhole-*`
-with target `192.0.2.1` is deleted. Every terminal whose directory is under a
+crashed one, with their state folders. Every `Drop-in Host *` project is deleted
+too. Then every host named `blackhole-*` with target `192.0.2.1`, and every host
+named `loopback-*` with target `localhost`, is deleted. Every terminal whose directory is under a
 `grant-*` state folder or the World root is deleted, whatever its state. PASS
 when none is left and no prompt appeared.
 - Lives in: `cmd/relay/mcp_ops.go`, `cmd/relay/service_ops.go`,
@@ -673,6 +713,13 @@ None of this drifts `verify.sh`.
   `claude-code`; the `claude-code` template exists; and, if Acme restricts
   models, Acme allows `haiku`. Without it the journey reads BLOCKED on the
   launch refusal.
+- **P10. Loopback SSH.** The `session-drop-in` journey's host leg adds a host
+  that targets `localhost`, so relay runs `claude` over SSH to the box itself.
+  The box's own public key is in the login user's `authorized_keys`, the SSH
+  client trusts the box's host key without a prompt, and `claude` is on the
+  login shell's PATH for a non-interactive SSH command (check with
+  `ssh localhost 'command -v claude'`). Without any of these the host leg reads
+  BLOCKED.
 
 ## Verifying a PR
 
