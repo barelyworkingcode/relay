@@ -24,6 +24,7 @@ var staticClaudeModels = []sessionstypes.ModelInfo{
 // relay's model broker.
 type ModelsConfig struct {
 	PiBinary    string
+	CodexBinary string
 	ModelSocket string
 
 	// dial overrides how the broker catalog fetch reaches ModelSocket.
@@ -119,6 +120,7 @@ func HandleModels(cfg ModelsConfig, w http.ResponseWriter, r *http.Request) {
 
 	models := append([]sessionstypes.ModelInfo{}, staticClaudeModels...)
 	models = append(models, provider.FetchPiModels(r.Context(), cfg.PiBinary)...)
+	models = append(models, provider.FetchCodexModels(r.Context(), cfg.CodexBinary)...)
 
 	taken := make(map[string]bool, len(models))
 	for _, m := range models {

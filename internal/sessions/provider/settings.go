@@ -39,6 +39,7 @@ func ProviderSettings() map[string][]SettingField {
 
 	return map[string][]SettingField{
 		"claude": {},
+		"codex":  {},
 		"pi":     piFields,
 		"chat":   chatFields,
 	}

@@ -461,6 +461,29 @@ session is deleted whatever the outcome.
   reads idle then ended, not ended alone. Run on Claude Haiku
   `claude-haiku-4-5-20251001`; any other model reads BLOCKED.
 
+**session-codex** (screen). A Codex session in Acme Corp (`POST /api/sessions`
+with eve's body: model `codex/gpt-6-luna`, settings `{"useRelayTools":true}`,
+`appendClaudeMd` true) answers one message sent over `/ws`: `join_session`,
+then `send_message` "Reply with exactly: verify-<nonce>-codex". A connection
+dialled before the launch, with the run credential, sees every frame. PASS when
+`GET /api/models` lists `codex/gpt-6-luna`; the launch answers 201;
+`system/init` names model `gpt-6-luna`; assistant text deltas and one
+`turn_done` whose excerpt contains the marker arrive before the first `idle`
+frame that follows `running`; the list row has `attention.state` `idle` with
+`since` equal to that frame's; `end_session` gives `ended` and the row then has
+no `attention`; and `DELETE` answers 2xx. Every other outcome is FAIL with the
+status and detail, including Codex missing, a 403 launch refusal (setup P10)
+and a different model. The journey adds no NOTRUN or BLOCKED of its own; only
+a missing run or execute credential reads as before. The session is deleted
+whatever the outcome.
+- Lives in: `internal/sessions/provider/codex.go`, `internal/sessions/session`
+  (attention), `internal/sessions/api/ws_session.go`.
+- Reached by: `GET /api/models`, `POST /api/sessions` with P4,
+  `GET /api/sessions` with the run credential, `/ws` on the frontend socket.
+- Traps: the turn waits up to 120 s for the idle frame, inside the 180 s
+  budget. Codex signs in with its own login, so a missing `codex` binary or
+  login shows as a launch failure or a missing model row.
+
 **session-drop-in** (screen). A headless agent session in Acme Corp (model
 `haiku`, settings `{"headless":true,"agent":true}`) runs one turn, "Reply with
 exactly: verify-<nonce>-done", and is taken over through the CLI's door:
@@ -492,11 +515,11 @@ in 15 s the terminal is deleted instead. An `idle` frame follows, and the log
 has exactly one `op=session.drop_in` line with `status` ok, `host`
 `loopback-<nonce>` and the terminal's id. The session, terminal, project and
 host are deleted whatever the outcome. BLOCKED when the loopback host or its
-project cannot be created, the host launch is refused (setup P10), or
+project cannot be created, the host launch is refused (setup P11), or
 `system/init` does not report `claude-haiku-4-5-20251001`.
 - Proves the handoff and the `--resume <uuid>` launch on the host. That the
   conversation resumes over SSH needs a `claude` signed in for SSH logins on the
-  host (setup P10) and a test-machine pass.
+  host (setup P11) and a test-machine pass.
 - Lives in: as session-drop-in.
 - Reached by: as session-drop-in, with the terminal over `/ws`.
 - Traps: the project folder is `grant-dropin-<nonce>` under the state folder so
@@ -728,7 +751,15 @@ None of this drifts `verify.sh`.
   `claude-code`; the `claude-code` template exists; and, if Acme restricts
   models, Acme allows `haiku`. Without it the journey reads BLOCKED on the
   launch refusal.
-- **P10. Loopback SSH.** The `session-drop-in-host` journey adds a host
+- **P10. Codex.** The `session-codex` journey launches `codex/gpt-6-luna`. Done
+  once on the devbox console, like P9: add a `codex` console template with
+  read `/opt/homebrew`, `~/.gitconfig`, `~/.zshenv`, `~/.zprofile`, `~/.zshrc`
+  and read_write `~/.codex`, `~/.cache`, `~/Library/Caches`; add `codex` to
+  Acme Corp's allowed templates (this widens a grant, so it raises a presence
+  prompt); and, if Acme restricts models, allow `codex/gpt-6-luna`. Codex must
+  be installed and signed in. Without it the journey FAILs on the launch
+  refusal or the missing model row.
+- **P11. Loopback SSH.** The `session-drop-in-host` journey adds a host
   that targets `localhost`, so relay runs `claude` over SSH to the box itself.
   The box's own public key is in the login user's `authorized_keys`, the SSH
   client trusts the box's host key without a prompt, and `claude` is on the

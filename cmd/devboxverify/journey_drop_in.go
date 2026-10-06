@@ -768,7 +768,7 @@ func legProblem(l dropInLeg, local bool) *result {
 		r := launchRefusal(id, "/api/sessions", l.Host, l.Create)
 		if !local && r.State == stateFail {
 			r.State = stateBlocked
-			r.Detail = "host launch refused (setup P10): " + r.Detail
+			r.Detail = "host launch refused (setup P11): " + r.Detail
 		}
 		return &r
 	case !l.JoinSeen:
@@ -854,7 +854,7 @@ func classifyDropIn(r dropInRun) result {
 
 func classifyDropInHost(r dropInHostRun) result {
 	if r.Setup != "" {
-		return blocked(dropInHostID, "loopback host not set up (setup P10): "+r.Setup+r.Teardown)
+		return blocked(dropInHostID, "loopback host not set up (setup P11): "+r.Setup+r.Teardown)
 	}
 	if p := legProblem(r.Leg, false); p != nil {
 		p.Detail += r.Teardown
