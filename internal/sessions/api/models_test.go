@@ -64,6 +64,7 @@ func TestHandleModels_MergeGolden(t *testing.T) {
 
 	cfg := ModelsConfig{
 		PiBinary:    filepath.Join(dir, "no-such-pi-binary"),
+		CodexBinary: filepath.Join(dir, "no-such-codex-binary"),
 		ModelSocket: sock,
 	}
 
@@ -109,7 +110,8 @@ func TestHandleModels_OmitsSystemBrokerRows(t *testing.T) {
 	t.Cleanup(broker.Close)
 
 	cfg := ModelsConfig{
-		PiBinary: filepath.Join(t.TempDir(), "no-such-pi-binary"),
+		PiBinary:    filepath.Join(t.TempDir(), "no-such-pi-binary"),
+		CodexBinary: filepath.Join(t.TempDir(), "no-such-codex-binary"),
 		dial: func(ctx context.Context) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", broker.Listener.Addr().String())
 		},

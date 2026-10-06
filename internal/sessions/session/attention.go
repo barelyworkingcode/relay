@@ -15,7 +15,7 @@ func tracked(sess *sessionstypes.Session) bool {
 	if sess == nil {
 		return false
 	}
-	if sess.ProviderType != KindClaude && sess.ProviderType != KindPi {
+	if sess.ProviderType != KindClaude && sess.ProviderType != KindPi && sess.ProviderType != KindCodex {
 		return false
 	}
 	return !sess.Headless || sess.Agent

@@ -377,7 +377,7 @@ func TestMissingFixtures(t *testing.T) {
 func contractNeeds() map[string][]string {
 	want := map[string][]string{"acme-sandbox-reach": {"project:acme", "project:globex", "file:acme/PROJECT.md", "file:globex/PROJECT.md"}}
 	for _, id := range []string{"blank-model-refused", "oversized-launch-audit-capped", "acme-tools-through-bridge", "tool-call-audited",
-		"session-chat-lifecycle", "terminal-lifecycle", "model-list-and-completion", "session-chat-resume", "session-agent-state"} {
+		"session-chat-lifecycle", "terminal-lifecycle", "model-list-and-completion", "session-chat-resume", "session-agent-state", "session-codex"} {
 		want[id] = []string{"project:acme"}
 	}
 	for _, j := range slices.Concat(dialogNegJourneys(), noDoorJourneys()) {

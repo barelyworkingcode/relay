@@ -522,6 +522,34 @@ process on the host; they are allowed (their built-in tools run locally, which
 is the same trade the console makes) but their `appendClaudeMd` read of
 `<dir>/CLAUDE.md` is skipped for a host project.
 
+### Codex on a host
+
+A `codex/<slug>` session on a host project passes the kind gate iff its host
+has a valid `codex` template (`config.TemplatesForProject`; the
+`allowed_templates` list gates console templates only). The probe does not look
+for Codex: the host's Codex path is the `command` of its `codex` template, an
+absolute path the operator sets, and `buildHostSpec` copies it to
+`HostSpec.CodexPath` (json `codex_path`, omitted when empty). With no
+template the launch is refused (403), and with an empty
+command `Start` fails with `host "<id>" has no codex path: set its codex
+template's command`.
+
+```json
+"terminal_templates": [
+  { "id": "codex", "name": "Codex", "command": "/opt/homebrew/bin/codex" }
+]
+```
+
+`Start()` execs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir,
+[codex_path, "app-server"], {RELAY_SESSION_ID})]` and speaks Codex's
+JSON-RPC over the pipes ([session-host.md](session-host.md#codex-sessions)).
+The host session is not sandboxed and gets no model key or launch identity;
+Codex signs in with its own credentials on the host. Codex's approval prompts
+are off (`approvalPolicy: "never"`), so, as for Claude on a host, the host
+account's own permissions are the boundary. There are no relay tools on a
+host: with `useRelayTools` on, the provider logs a warning and starts anyway.
+Resume reuses the stored thread id.
+
 **Terminals on a host** are launched by relay-sessions, not relayLLM; see
 *Terminals on a host* above.
 

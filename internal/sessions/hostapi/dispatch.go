@@ -25,7 +25,7 @@ const kindPTY = "pty"
 
 func isProviderKind(kind string) bool {
 	switch kind {
-	case session.KindClaude, session.KindPi, session.KindChat:
+	case session.KindClaude, session.KindPi, session.KindCodex, session.KindChat:
 		return true
 	default:
 		return false
