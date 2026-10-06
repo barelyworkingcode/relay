@@ -34,6 +34,21 @@ outside it is not a relay bug, however real.
    volume, and every call is in the audit log with its outcome. A grant that
    lets it do more than the operator could reasonably tell from the screen
    is a relay bug (see out-of-scope 1).
+3a. **Agent output steering the Chief of Staff.** Agent replies reach eve's
+   Chief of Staff as turn excerpts, so an agent steered by content it read can
+   write text aimed at the Chief of Staff and, through it, at every other
+   agent. Agent output is untrusted data, and relay does not judge it. Relay
+   limits and records. A request in the chief-of-staff scope reaches the
+   session list, a `/ws` it cannot write to, and one send route: no tool
+   call, file read, terminal, permission answer, session start, stop or
+   resume, and no config change. Each send goes to one listed session, at
+   most one per turn (mid-turn the answer is `already_processing`), carries
+   the `chief-of-staff` origin in the transcript, and has a `session_message`
+   record written before delivery; a send that cannot be recorded is refused.
+   What the receiving agent then does is its own grant (out-of-scope 4).
+   Relay does not promise that a frontend routes its Chief of Staff messages
+   through the scope, or that it never marks a message the person typed: the
+   mark records which door a frontend chose.
 4. **A peer on the network or in the browser** (a machine that can reach a
    relay listener, or a web page open on this Mac reaching relay's localhost
    ports). It gets nothing without a credential: no tool call, no config
@@ -75,3 +90,7 @@ scope).
   can't name all three is out of scope.
 - Races relay's own launch path must win (microsecond windows, one try per
   launch) are theoretical until reproduced. Examples: #57, #110.
+- A request in the chief-of-staff scope that reaches anything outside its
+  three doors, a message marked `chief-of-staff` that did not come through
+  the scope, or a scoped send with no intent record, is a relay bug against
+  asset A or C.

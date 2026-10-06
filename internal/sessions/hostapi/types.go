@@ -123,6 +123,31 @@ const (
 	ErrNotHeld         = "not_held"         // 409
 )
 
+// Error codes POST /send names.
+const (
+	ErrSessionNotFound   = "session_not_found"  // 404
+	ErrAlreadyProcessing = "already_processing" // 409
+	ErrResumeRequired    = "resume_required"    // 409
+	ErrDroppedIn         = "dropped_in"         // 409
+	ErrSendFailed        = "send_failed"        // 500
+)
+
+// SendRequest is POST /send's body: one marked user message for a listed
+// session. Origin must be the Chief of Staff origin; relay's own handler is
+// the only caller and the only place that sets it.
+type SendRequest struct {
+	SessionID string `json:"session_id"`
+	Text      string `json:"text"`
+	Origin    string `json:"origin"`
+}
+
+// SendResponse is POST /send's 202 body. At is RFC 3339 with milliseconds, UTC.
+type SendResponse struct {
+	SessionID string `json:"session_id"`
+	Origin    string `json:"origin"`
+	At        string `json:"at"`
+}
+
 // HandoffWait is the longest POST /handoff waits for the current turn to end.
 const HandoffWait = 60 * time.Second
 

@@ -147,6 +147,31 @@ between them. Non-200 answers and transport failures both collapse to
 `errSessionHostUnavailable`. Response bodies are read through
 `maxSessionHostResponseBytes`.
 
+### `POST /send`
+
+The internal socket also carries `POST /send`, the delivery half of the
+chief-of-staff send. relay's handler for `POST /api/chief-of-staff/messages`
+writes the intent audit row, then calls `sessionHostClient.Send`, which posts
+`{session_id, text, origin}`. The host checks the peer as it does for
+`/launch`, and `/send` is in `sessionHostReservedRoutes`, so no manifest can
+declare it. Only listed sessions can receive: an unlisted session answers
+`not_found`. A turn already running answers `already_processing`, and a session
+that is not live answers `resume_required`. A session a drop-in terminal holds
+answers `dropped_in` (409); relay's route passes it through as 409
+`dropped_in`. The answer is `{session_id,
+origin, at}`.
+
+`origin` is set only on this route. No inbound decoder on the public surface
+has an `origin` field, so a claim in a body elsewhere is ignored and the
+message records as the person's.
+
+`Message.origin` (`json:"origin,omitempty"`) is stored with the message by
+`SendMessageAs`. The live `user_message` frame carries it too:
+`{"type":"user_message","sessionId":"<id>","text":"…","origin":"chief-of-staff"}`.
+Claude's own JSONL history has no origin, so on join `session.MarkOrigins`
+aligns it with the session's stored messages and sets `origin` on the matching
+history entries. A person's message has no `origin`.
+
 ### `POST /launch`
 
 Body is `hostapi.LaunchRequest` (v1). `handleLaunch` is a thin dispatcher —

@@ -331,6 +331,7 @@ func (s *Server) ListenInternal() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/launch", s.handleLaunch)
 	mux.HandleFunc("/terminate", s.handleTerminate)
+	mux.HandleFunc("/send", s.handleSend)
 	mux.HandleFunc("/handoff", s.handleHandoff)
 	mux.HandleFunc("/handback", s.handleHandback)
 

@@ -32,7 +32,8 @@ presence prompt refused before the gated act it guards ran, see
 `session_end` / `session_resume` (see [below](#session-host-events);
 `session_bound` is a reserved fourth kind nothing writes yet), and — for
 records relay writes about itself rather than about a caller — `mcp_down` /
-`mcp_up` (see below).
+`mcp_up` (see below). `session_message` is the record of a send in the
+chief-of-staff scope (see [below](#chief-of-staff-messages)).
 
 `throttled` is deliberately distinct from `denied` and `tool_error`: it is the
 only one of the three that says the grant was legitimate and the *pattern of
@@ -755,6 +756,35 @@ tree — a real, open gap, not an oversight, per
 relay audit --event session_launch                 # every launch attempt, allowed or refused
 relay audit --event session_end                     # every relay-sessions exit report
 relay audit --kind project_session                  # every tool/model call made from inside a session, and every presence refusal a session caller hit
+```
+
+### Chief of Staff messages
+
+`session_message` records a message sent into a session through
+`POST /api/chief-of-staff/messages`, the one send route of the
+[chief-of-staff scope](tokens.md#the-chief-of-staff-scope). Each send writes two
+rows with the same `id`: an `intent` row (`outcome: pending`, written durably
+before anything is delivered) and a `completion` row once the session host
+answers.
+
+```json
+{"id":"7b1e…","ts":"2026-10-05T14:03:07.123Z","event":"session_message","phase":"intent","actor":{"kind":"control","auth":"token","cred_id":"launch:service:eve"},"args":{"session_id":"3af1…","origin":"chief-of-staff","text":"…","text_bytes":31},"outcome":"pending"}
+{"id":"7b1e…","ts":"2026-10-05T14:03:07.141Z","dur_ms":18,"event":"session_message","phase":"completion","args":{"session_id":"3af1…","origin":"chief-of-staff","text_bytes":31},"outcome":"ok"}
+```
+
+- **Fail-closed.** With auditing off, or when the intent row cannot be
+  written, the route answers 503 `audit_unavailable` and nothing is sent.
+- **Fields.** `args.session_id`, `args.origin` and `args.text_bytes` are always
+  present. `args.text` is on the intent row only, and only with `audit.log_args`;
+  it is cut to `audit.max_arg_bytes` on a rune boundary, with
+  `text_truncated` set when it was.
+- **Completion outcome.** `ok`, `not_found` or `error`. An `error` row names
+  the cause in `error`: `already_processing`, `resume_required`, `dropped_in`,
+  `send_failed` or `session_host_unavailable`.
+- A message the person types is not a `session_message` row.
+
+```
+relay audit --event session_message                # every Chief of Staff send; DETAIL reads session=<id> origin=chief-of-staff <phase>
 ```
 
 ## Issuance and revocation

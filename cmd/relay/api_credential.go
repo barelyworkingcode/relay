@@ -370,36 +370,97 @@ func bearerToken(r *http.Request) (string, bool) {
 // store.Get(): a credential minted moments ago by a CLI or IPC process in
 // this same install must authenticate on its very next request, the same
 // reasoning RemoteServer.currentSettings applies to enrolments (issue #21).
+//
+// The caller is resolved first, so every refusal below names the credential
+// that attempted it; the scope rules then only ever narrow what it holds.
 func (a *credentialAuthorizer) Authorize(r *http.Request, class control.CapabilityClass) error {
-	if id, ok := frontendIdentityFromContext(r.Context()); ok {
-		*r = *r.WithContext(withAPICredentialID(r.Context(), launchIdentityCredentialID(id)))
-		if !slices.Contains(frontendConsumerClasses, class) {
+	holds, err := a.resolveCaller(r)
+	if err != nil {
+		return err
+	}
+	scopes := r.Header.Values(scopeHeader)
+	if len(scopes) == 0 {
+		// ClassChiefOfStaff exists only inside the scope; no credential or
+		// launch identity holds it outright.
+		if class == control.ClassChiefOfStaff || !holds(class) {
 			return control.ErrClassNotGranted
 		}
 		return nil
 	}
+	if len(scopes) != 1 || scopes[0] != chiefOfStaffScope {
+		return control.ErrUnknownScope
+	}
+	// The scope narrows proxy: a caller without it has nothing to narrow.
+	if !holds(control.ClassProxy) {
+		return control.ErrClassNotGranted
+	}
+	if !chiefOfStaffReaches(r, class) {
+		return control.ErrOutsideScope
+	}
+	*r = *r.WithContext(withChiefOfStaffScope(r.Context()))
+	return nil
+}
+
+// resolveCaller attaches the caller's credential id to r and returns what the
+// caller holds. Only an unresolved bearer (control.ErrNoCredential) leaves
+// the context untouched, since there is no credential to name.
+func (a *credentialAuthorizer) resolveCaller(r *http.Request) (holds func(control.CapabilityClass) bool, err error) {
+	if id, ok := frontendIdentityFromContext(r.Context()); ok {
+		*r = *r.WithContext(withAPICredentialID(r.Context(), launchIdentityCredentialID(id)))
+		return func(c control.CapabilityClass) bool { return slices.Contains(frontendConsumerClasses, c) }, nil
+	}
 	token, ok := bearerToken(r)
 	if !ok {
-		return control.ErrNoCredential
+		return nil, control.ErrNoCredential
 	}
 	cred := authenticateAPICredential(config.FreshSettings(a.store), token)
 	if cred == nil {
-		return control.ErrNoCredential
+		return nil, control.ErrNoCredential
 	}
 	// This is subtle: *http.Request is passed by pointer but WithContext
 	// returns a copy, so the only way to hand the resolved id back to the
 	// caller through this fixed Authorize(r, class) error signature is to
 	// overwrite what r points to in place, rather than returning a new
-	// request the caller would have to remember to use. Attached as soon as
-	// the bearer resolves to a credential, before the class check, so a
-	// class refusal still names the credential that attempted it — only an
-	// unresolved bearer (control.ErrNoCredential) leaves the context untouched,
-	// since there is no credential to name.
+	// request the caller would have to remember to use.
 	*r = *r.WithContext(withAPICredentialID(r.Context(), cred.ID))
-	if !cred.Grants(class) {
-		return control.ErrClassNotGranted
+	return cred.Grants, nil
+}
+
+// Chief of Staff scope: a per-request narrowing of proxy. Nothing is minted
+// or stored, so entering it needs no presence prompt.
+const (
+	scopeHeader       = "X-Relay-Scope"
+	chiefOfStaffScope = "chief-of-staff"
+)
+
+// chiefOfStaffProxyReach lists the proxy-class doors a scoped request may
+// still use, as "METHOD path". The catch-all mount serves them all under one
+// pattern, so the match is on the request's own method and path.
+var chiefOfStaffProxyReach = []string{"GET /api/sessions", "GET /ws"}
+
+func chiefOfStaffReaches(r *http.Request, class control.CapabilityClass) bool {
+	switch class {
+	case control.ClassChiefOfStaff:
+		return true
+	case control.ClassProxy:
+		return slices.Contains(chiefOfStaffProxyReach, r.Method+" "+r.URL.Path)
 	}
-	return nil
+	return false
+}
+
+type chiefOfStaffScopeCtxKey struct{}
+
+// withChiefOfStaffScope is set only by Authorize, after the scope header was
+// accepted for a caller holding proxy.
+func withChiefOfStaffScope(ctx context.Context) context.Context {
+	return context.WithValue(ctx, chiefOfStaffScopeCtxKey{}, true)
+}
+
+// chiefOfStaffScopeFromContext reports whether Authorize admitted this
+// request under the Chief of Staff scope.
+func chiefOfStaffScopeFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(chiefOfStaffScopeCtxKey{}).(bool)
+	return v
 }
 
 type frontendIdentityCtxKey struct{}

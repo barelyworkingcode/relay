@@ -877,6 +877,13 @@ func (m *Manager) StopAll() {
 // if this process launched it, with the spec it was launched with (see
 // respawnSpec); anything else also answers ErrResumeRequired.
 func (m *Manager) SendMessage(id, text string, files []sessionstypes.FileAttachment) error {
+	return m.SendMessageAs(id, text, files, "")
+}
+
+// SendMessageAs is SendMessage with the message's origin recorded on the
+// transcript entry and the live user_message frame. An empty origin is a
+// person's message and leaves both unmarked.
+func (m *Manager) SendMessageAs(id, text string, files []sessionstypes.FileAttachment, origin string) error {
 	sess, ok := m.Get(id)
 	if !ok {
 		return ErrSessionNotFound
@@ -915,15 +922,20 @@ func (m *Manager) SendMessage(id, text string, files []sessionstypes.FileAttachm
 		Role:      "user",
 		Content:   contentJSON,
 		Files:     files,
+		Origin:    origin,
 	})
 	sess.Unlock()
 
 	if sink := m.eventSink(); sink != nil {
-		sink.SendToSession(id, map[string]any{
+		frame := map[string]any{
 			"type":      events.WSMsgUserMessage,
 			"sessionId": id,
 			"text":      text,
-		})
+		}
+		if origin != "" {
+			frame["origin"] = origin
+		}
+		sink.SendToSession(id, frame)
 	}
 
 	m.signal(sess, attention.TurnStarted)
@@ -1227,6 +1239,20 @@ func lastMessageAt(msgs []sessionstypes.Message) string {
 	return msgs[len(msgs)-1].Timestamp
 }
 
+// isListed is the one predicate for "a person can see this session": a
+// headless run is hidden unless it is marked as an agent.
+func isListed(sess *sessionstypes.Session) bool {
+	return !sess.Headless || sess.Agent
+}
+
+// IsListed reports whether id is a known session that List would show.
+// Unlisted sessions answer false exactly like unknown ones, so a caller
+// cannot tell a hidden routine run from a missing id.
+func (m *Manager) IsListed(id string) bool {
+	sess, ok := m.Get(id)
+	return ok && isListed(sess)
+}
+
 // List returns every session this manager knows about except headless runs
 // not marked as agents — live, in-memory-but-idle, and persisted-only (merged in from disk, relayLLM's
 // own ListSessions behavior) — sorted by id.
@@ -1239,7 +1265,7 @@ func (m *Manager) List() []Summary {
 			continue
 		}
 		seen[id] = true
-		if slot.sess.Headless && !slot.sess.Agent {
+		if !isListed(slot.sess) {
 			continue
 		}
 		row := summarize(slot.sess)
@@ -1254,7 +1280,7 @@ func (m *Manager) List() []Summary {
 
 	if persisted, err := m.store.LoadAll(); err == nil {
 		for _, sess := range persisted {
-			if seen[sess.ID] || (sess.Headless && !sess.Agent) {
+			if seen[sess.ID] || !isListed(sess) {
 				continue
 			}
 			out = append(out, summarize(sess))

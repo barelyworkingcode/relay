@@ -539,6 +539,46 @@ deleted whatever the outcome.
 - Lives in: `internal/sessions/session/dropin.go` (`Handoff`), `cmd/relay/session_dropin.go`.
 - Reached by: as session-drop-in.
 
+**chief-of-staff-send** (screen). A headless agent session in Acme Corp
+(model `haiku`, settings `{"headless":true,"agent":true}`) takes two turns.
+Two connections are dialled on `/ws` before the launch with the run
+credential: an observer, and one with the header `X-Relay-Scope:
+chief-of-staff`. The person's turn is `POST /api/sessions/{id}/message` with
+"Reply with exactly: verify-<nonce>-person" and a forged `"origin":
+"chief-of-staff"` in the body. The Chief of Staff's turn is `POST
+/api/chief-of-staff/messages` with the scope header, "Reply with exactly:
+verify-<nonce>-cos". PASS when the send answers 202 with origin
+`chief-of-staff`; the scoped connection sees running, a `turn_done` whose
+excerpt holds the cos marker, then idle, and the scoped `GET /api/sessions`
+row is idle; scoped `GET /api/projects` and scoped `POST
+/api/sessions/{id}/message` answer 403, and unscoped `POST
+/api/chief-of-staff/messages` answers 403; a `join_session` frame on the scoped
+connection closes it with 1008 and no `session_joined` arrives; the observer's
+live `user_message` frames and its re-joined history carry no origin on the
+person's text and `chief-of-staff` on the cos text; `relay audit --event
+session_message` has, for the session, exactly one intent (outcome `pending`)
+and one completion (`ok`) sharing an id, with `args.origin` `chief-of-staff`,
+`args.session_id` the session and a `ts`; the intent's `text_bytes` equals the byte length of the sent text, and its `text`, when logged, contains `-cos`; no
+`session_message` row contains the person marker; and `relay audit --event
+control_decision` has denied rows with `outside chief-of-staff scope` for the
+two scoped requests and `class not granted` for the unscoped one. BLOCKED when
+the `system/init` model is not `claude-haiku-4-5-20251001`, a launch is
+refused, the run credential is missing, or the audit log is unreadable. The session
+is ended and deleted whatever the outcome.
+- Lives in: `cmd/relay/session_chief_of_staff.go`, `cmd/relay/api_credential.go`
+  (the scope), `cmd/relay/frontend_dispatcher.go` (read-only `/ws`),
+  `internal/sessions/hostapi` (`POST /send`), `internal/sessions/session`
+  (`SendMessageAs`, `MarkOrigins`), `internal/audit`.
+- Reached by: `POST /api/sessions` with P4; the run credential for the message
+  route, `/ws` and the delete; `relay audit --event session_message --json` and
+  `--event control_decision --json`.
+- Traps: the person's turn is awaited to idle before the send, or the send
+  answers 409 `already_processing`. The control_decision rows are matched by
+  method, path and time, so a scoped `GET /api/projects` from another caller in
+  the same second could satisfy the check. The session list is read with the
+  scope header, which narrows the run credential for that request only. Run on
+  Claude Haiku `claude-haiku-4-5-20251001`; any other model reads BLOCKED.
+
 **disabled-tool-refused** (screen). In a live session in Verify Grant,
 `testmcp_ping` answers; a `PUT /api/projects/{id}` with `disabled_tools`
 naming it returns 200 within 10 s without a prompt; the same session no

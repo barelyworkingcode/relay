@@ -271,6 +271,12 @@ own comment for why shrinking the digest to the gating subset would be
 wrong), so a grant answered for one shape still cannot be redeemed for a
 different one.
 
+Entering the [chief-of-staff scope](tokens.md#the-chief-of-staff-scope) and
+sending in it are not gated either. The scope only narrows `proxy`, so it
+obtains nothing. There is no confirmation step for a send, by owner decision:
+every send is marked with its origin in the transcript and recorded before
+delivery as a `session_message` row.
+
 ## The nonce model: single-use, operation-and-argument-bound, 120 seconds
 
 A presence check, on success, mints a nonce bound to **both** the operation

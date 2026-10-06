@@ -51,7 +51,14 @@ type Message struct {
 	Files     []FileAttachment `json:"files,omitempty"`
 	ToolName  string           `json:"toolName,omitempty"`  // set when Role="tool"
 	ToolUseID string           `json:"toolUseId,omitempty"` // set when Role="tool" so the client can pair the result back to its tool_use block
+	// Origin names who wrote a user message when it was not the person at
+	// the keyboard; empty means the person.
+	Origin string `json:"origin,omitempty"`
 }
+
+// OriginChiefOfStaff marks a user message the Chief of Staff sent through
+// relay's own scoped route.
+const OriginChiefOfStaff = "chief-of-staff"
 
 // SessionStats tracks token usage and cost.
 type SessionStats struct {
