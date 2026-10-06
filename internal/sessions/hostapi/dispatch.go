@@ -25,7 +25,7 @@ const kindPTY = "pty"
 
 func isProviderKind(kind string) bool {
 	switch kind {
-	case session.KindClaude, session.KindPi, session.KindChat:
+	case session.KindClaude, session.KindPi, session.KindCodex, session.KindChat:
 		return true
 	default:
 		return false
@@ -191,6 +191,9 @@ func terminalLaunchStatus(err error) (int, string) {
 func sessionLaunchStatus(err error) (int, string) {
 	if errors.Is(err, session.ErrSessionExists) {
 		return 409, ErrSessionExists
+	}
+	if errors.Is(err, session.ErrDroppedIn) {
+		return 409, "dropped_in"
 	}
 	if errors.Is(err, provider.ErrIdentityRefused) {
 		return 502, ErrIdentityRefused

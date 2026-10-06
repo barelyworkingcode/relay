@@ -1,7 +1,7 @@
 # Session host (`relay-sessions`)
 
 The canonical reference for contracts C5 and C6: the binary that hosts every
-terminal, Claude Code, pi and chat session relay launches, the internal API
+terminal, Claude Code, pi, Codex and chat session relay launches, the internal API
 relay drives it through, and the shim every session actually runs under.
 Code carries the present tense; the *why* is here.
 
@@ -67,7 +67,8 @@ check entirely rather than refusing every launch.
 
 - **the internal socket** (`RelaySessionsInternalSocketPath(configDir)`,
   `<configDir>/relaysessions-internal.sock`) — dialed only by relay itself,
-  carrying `POST /launch`, `POST /terminate`, and (mounted alongside them,
+  carrying `POST /launch`, `POST /terminate`, `POST /handoff`, `POST /handback`
+  (see [Drop-in](#drop-in)), and (mounted alongside them,
   on the same mux — see [What is not built yet](#what-is-not-built-yet) gap
   2) the eve-facing session/terminal/model HTTP+WS surface relay's
   front-door dispatcher reaches by forwarding on eve's behalf;
@@ -75,10 +76,10 @@ check entirely rather than refusing every launch.
   `<configDir>/relaysessions-hook.sock`) — dialed by `relay-sessions hook`
   processes, carrying `POST /permission`.
 
-Both routes are reserved at the protocol level, not just by convention:
+These routes are reserved at the protocol level, not just by convention:
 `internal/bridge/manifest.go`'s `Manifest.Validate` refuses any manifest —
 including relay-sessions' own — that declares a route equal to or nested
-under `/launch` or `/terminate`. The risk this closes is relay-sessions
+under `/launch`, `/terminate`, `/handoff` or `/handback`. The risk this closes is relay-sessions
 advertising either path in its *public* manifest, which would expose its
 peer-verification-free internal API to any ordinary frontend caller through
 the manifest dispatcher's unverified reverse proxy. A different service
@@ -173,11 +174,11 @@ history entries. A person's message has no `origin`.
 
 Body is `hostapi.LaunchRequest` (v1). `handleLaunch` is a thin dispatcher —
 `kind: "pty"` routes to `internal/sessions/terminal.Manager`, `kind:
-"claude"|"pi"|"chat"` routes to `internal/sessions/session.Manager` — each of
+"claude"|"pi"|"codex"|"chat"` routes to `internal/sessions/session.Manager` — each of
 which owns its own shim-spawn (or direct-spawn) mechanics end to end,
 including the identity Hello wait. On success: `201` with
 `{session_id, root_pid, body}`. `root_pid` is the shim's pid for a `pty`
-launch and `0` for a provider-hosted (claude/pi/chat) launch. `ClaudeProvider`
+launch and `0` for a provider-hosted (claude/pi/codex/chat) launch. `ClaudeProvider`
 reports a process root, but only to `/permission`'s ancestry walk; `/launch`
 does not report it (see [Known gaps](#what-is-not-built-yet)).
 
@@ -192,14 +193,14 @@ Error codes C5 names explicitly, each mapped from a manager error:
 
 | HTTP | code | meaning |
 |---|---|---|
-| 400 | `invalid_spec` | malformed or self-contradictory request, including a new `claude`, `pi` or `chat` launch with a blank model (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
+| 400 | `invalid_spec` | malformed or self-contradictory request, including a new `claude`, `pi`, `codex` or `chat` launch with a blank model (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`codex`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
 | 409 | `session_exists` | this session id is already live |
 | 502 | `identity_refused` | the shim's Hello did not bind |
 | 500 | `spawn_failed` | the target process could not be started |
 
 ### A session names its model
 
-A new `claude`, `pi` or `chat` launch must name a model. Blank means empty
+A new `claude`, `pi`, `codex` or `chat` launch must name a model. Blank means empty
 after trimming whitespace, and a missing field is blank.
 
 - relay: `AuthorizeLaunch` (`cmd/relay/session_launch.go`) refuses it with
@@ -590,9 +591,9 @@ A tracked session reports what it is doing: one of seven states, a reply excerpt
 
 ### Which sessions are tracked
 
-A session is tracked when its provider is `claude` or `pi` and it is not headless, or it is headless and was launched with settings `"agent": true`. Chat sessions and headless sessions without `agent` get no state, no frames, no `attention` field and no log lines, and their visibility in `GET /api/sessions` does not change.
+A session is tracked when its provider is `claude`, `pi` or `codex` and it is not headless, or it is headless and was launched with settings `"agent": true`. Chat sessions and headless sessions without `agent` get no state, no frames, no `attention` field and no log lines, and their visibility in `GET /api/sessions` does not change.
 
-The flag is opt-in on purpose. Inside relay-sessions an unattended agent and a scheduled routine run are the same thing (`headless`); the kind comes from the model. Listing every headless Claude or pi session would make routine runs appear in the list. `agent: true` keeps them where they are, fails closed when absent, and needs no change in another repo. A headless session with `agent: true` is listed; a headless session without it is not.
+The flag is opt-in on purpose. Inside relay-sessions an unattended agent and a scheduled routine run are the same thing (`headless`); the kind comes from the model. Listing every headless Claude, pi or Codex session would make routine runs appear in the list. `agent: true` keeps them where they are, fails closed when absent, and needs no change in another repo. A headless session with `agent: true` is listed; a headless session without it is not.
 
 ### States
 
@@ -623,12 +624,16 @@ A blank cell means no change. `Launching` from any state, or from none, gives `s
 | TurnFailed | | | errored | errored | errored | |
 | TurnStopped | | | idle | idle | idle | |
 | ProcessExited | ended | ended | errored | errored | errored | |
+| DroppedIn | running, held | running, held | running, held | running, held | running, held | running, held |
+| HandedBack | | | idle (held entries only), released | | | |
 
-Reaching `ended` removes the session's entry. A signal for a session with no entry is ignored, except `Launching`, which creates one.
+Reaching `ended` removes the session's entry. A signal for a session with no entry is ignored, except `Launching` and `DroppedIn`, which create one.
+
+A **held** entry (after `DroppedIn`) reads `running` while a terminal has the session. It ignores every signal except `HandedBack` and `SessionEnded`, the stall sweep skips it, and it does not keep the sweep loop alive. `HandedBack` moves it to `idle` and never sends `turn_done`: the terminal's work is not a turn this host saw.
 
 ### Events to signals
 
-Claude and pi share one path in `handleProviderEvent` and the manager methods.
+Claude, pi and Codex share one path in `handleProviderEvent` and the manager methods.
 
 | Source | Signal |
 |---|---|
@@ -638,6 +643,8 @@ Claude and pi share one path in `handleProviderEvent` and the manager methods.
 | `StopGeneration`, `ClearSession`, before the kill or abort | TurnStopped |
 | `ClearSession` on a project-bound session (provider left dead) | SessionEnded |
 | `EndSession`, `DeleteSession`, `StopAll`, before the kill | SessionEnded |
+| `Handoff`, after the hold is set and before the kill | DroppedIn |
+| `HandBack` on a held session | HandedBack |
 | `llm_event`, `stats_update`, `raw_output` | Activity |
 | `llm_event` with an assistant `text_delta` | the text joins the turn's excerpt |
 | `llm_event` of type `system`, subtype `question` | Asked |
@@ -647,7 +654,7 @@ Claude and pi share one path in `handleProviderEvent` and the manager methods.
 | `error` (a pi model failure) | TurnFailed |
 | `process_exited`, after the displaced-source check | ProcessExited |
 
-A Claude Stop kills the process, so the state reads `idle`, then `ended` a moment later. pi has no question path yet, so `asking` is reachable only for Claude.
+A Claude Stop kills the process, so the state reads `idle`, then `ended` a moment later. pi and Codex have no question path yet, so `asking` is reachable only for Claude: a Codex session reports six of the seven states.
 
 ### Frames
 
@@ -668,6 +675,8 @@ A launch that fails sends `errored` for an id that never appears in the list. A 
 
 `GET /api/sessions` rows for live tracked sessions carry `"attention": {"state": "...", "since": "..."}`. The field is absent for untracked, persisted-only and ended sessions: `ended` reaches a client only as a frame. `since` equals the `since` of the last `session_state` frame for that session.
 
+Rows for headless sessions (listed only when launched with `"agent": true`) also carry `"headless": true`, the flag the drop-in handoff requires; the key is absent for ordinary chats.
+
 ### Stall
 
 A sweep runs every 5 s while any session is `running`, and stops as soon as none is. A `running` session whose last event is 300 s old becomes `stalled`, with `since` set to the last event plus 300 s. Any activity returns it to `running`. An `asking` session waits on a person and never stalls. The 300 s is a constant, not a setting.
@@ -675,6 +684,112 @@ A sweep runs every 5 s while any session is `running`, and stops as soon as none
 ### Log line
 
 Every state change writes one Info line: `session state`, with `op=session.state status=ok duration_ms=0 session_id from to`. `from` is empty on the first change. The line never carries text, a prompt or an excerpt.
+
+## Codex sessions
+
+A session whose model is `codex/<slug>` runs `codex app-server` and speaks its newline-delimited JSON-RPC over stdio (no `jsonrpc` field). The provider is `internal/sessions/provider/codex.go`. `deriveSessionKind` maps the `codex/` prefix to kind `codex`; the provider passes the slug to Codex and never picks a model. An empty slug fails `Start` with `codex session has no model`.
+
+### Launch
+
+On this machine the child is `<codex> app-server` under the shim, with the sandbox profile and launch identity, like pi. Its working directory is the session directory. Its environment is the shared base plus `ensurePath`, `RELAY_SESSION_ID` and `RELAY_BRIDGE_SOCKET`; no relay credential and no `CODEX_*` variable is added. No model key is minted: Codex brings its own login and relay never reads, moves or supplies it. The binary is `CodexConfig.Binary`, else the first hit of `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, then `PATH`.
+
+On an SSH host the provider runs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir, [codex_path, "app-server"], {RELAY_SESSION_ID})]`. `codex_path` is `HostSpec.CodexPath`, which `buildHostSpec` copies from the `command` of the host's `codex` template. An empty path fails `Start` with `host "<id>" has no codex path: set its codex template's command`. A host session is not sandboxed and gets no identity ([ssh-hosts.md](ssh-hosts.md#codex-on-a-host)).
+
+The gate is the kind template `codex`: a console project needs `codex` in `allowed_templates`; a host project needs a valid `codex` host template. Relay tools do not reach Codex: with `useRelayTools` on, the provider logs a warning and starts anyway. Project tool policy (`deniedTools`) does not apply, as for pi; the seatbelt profile is the file and socket boundary. `headless` and `agent` behave as for every kind, and there are no Codex-specific settings.
+
+`Start` runs the handshake under a 30 s cap; any error or timeout kills the child and returns the error. A failed `Start` emits no `process_exited`; the manager reports the launch failure itself.
+
+1. `initialize` with `clientInfo` `{name: "relay", version: "1"}`, then the `initialized` notification.
+2. `thread/start` with `cwd`, `model` (the slug), `approvalPolicy: "never"`, `sandbox: "danger-full-access"` and `developerInstructions` (the system prompt, omitted when empty). When the session state holds a thread id, `thread/resume` with `threadId` and the same params runs instead.
+3. Each message is `turn/start` with `threadId` and one text input; the reply's `turn.id` is kept. `StopGeneration` sends `turn/interrupt` for that turn. A JSON-RPC error reply to `turn/start` emits `error`, then `message_complete`.
+
+`approvalPolicy: "never"` and `danger-full-access` are deliberate: relay's sandbox is the boundary, and Codex's own prompts would have nobody to answer them. `GetState` returns `{"threadId": "…"}`. `DeleteSession` does nothing; Codex's transcripts stay where Codex keeps them. Attachments are ignored with a warning, and the text is sent alone.
+
+### Model catalog
+
+`GET /api/models` gains a "Codex" group from `FetchCodexModels`, which runs `<codex> debug models` (8 s timeout, 5 minute cache) and parses stdout only, so stderr noise cannot break the parse. It lists the rows whose `visibility` is `list`, as `{"label": <display_name>, "value": "codex/<slug>", "group": "Codex", "provider": "codex"}`. Both capabilities are false. With Codex absent or the call failing the group is dropped silently.
+
+### Events to relay's events
+
+| Codex | Emitted |
+|---|---|
+| `turn/started` | `system/init` (model slug, directory) and `message_start` |
+| `item/agentMessage/delta` | a text block start on the item's first delta, then `text_delta` |
+| `item/completed`, `agentMessage` | the block stops; with no delta seen for the item: start, one delta of its text, stop |
+| `item/started`, `commandExecution` | a `tool_use` block named `shell`, input `{"command": …}` |
+| `item/completed`, `commandExecution` | `tool_result` with the aggregated output; an error when `exitCode` is non-zero or `status` is `failed` |
+| `error` | `system/api_error` with the nested message and `willRetry` |
+| `turn/completed`, completed or interrupted | the assistant message joins `session.Messages`, then `message_complete` |
+| `turn/completed`, failed | `error` with the nested message, shortened, then `message_complete` (as pi) |
+| any other method in codex-cli 0.160.0's `ServerNotification` list, and any other known item type | nothing |
+| a method outside that list, an item type outside 0.160.0's `ThreadItem` list, or a line that is not JSON | one `codex: unrecognised event` warning per method per spawn, plus `raw_output`; the session keeps running |
+| the child exits | `process_exited`, through the drain and `waitForExit` path pi uses; stderr goes through the provider-stderr path |
+
+The known sets are pinned in the provider. Codex marks `app-server` experimental, so the pinned set plus the warn-and-continue rule is the guard against a later version.
+
+### Server requests
+
+Every request Codex sends is answered at once, so a turn never waits on relay.
+
+| Request | Answer |
+|---|---|
+| `item/commandExecution/requestApproval`, `item/fileChange/requestApproval` | `{"decision": "decline"}` and a warning |
+| `applyPatchApproval`, `execCommandApproval` | `{"decision": "denied"}` and a warning |
+| `mcpServer/elicitation/request` | `{"action": "decline"}` |
+| `item/tool/requestUserInput` | error `-32601` `unsupported by relay`, and a warning |
+| `item/permissions/requestApproval`, `item/tool/call`, `account/chatgptAuthTokens/refresh`, `attestation/generate`, anything else | error `-32601` `unsupported by relay`, and a warning |
+
+Under `approvalPolicy: "never"` an approval request means something outside relay forced one, such as a managed Codex policy. Declining lets the turn go on without granting anything. `item/tool/requestUserInput` is experimental and off by default, and nothing in eve can answer it, so it is refused rather than mapped to `asking`.
+
+### Recommended console template
+
+A Codex session on this machine needs a `codex` template with these folders, and the project must list `codex` in `allowed_templates`:
+
+```json
+{ "id": "codex", "name": "Codex", "sandbox": true,
+  "read": ["/opt/homebrew", "~/.gitconfig", "~/.zshenv", "~/.zprofile", "~/.zshrc"],
+  "read_write": ["~/.codex", "~/.cache", "~/Library/Caches"] }
+```
+
+`~/.codex` holds Codex's login and transcripts. Codex's own `config.toml` is not touched.
+
+## Drop-in
+
+A terminal can take over a headless Claude session. relay hosts the terminal; this host stops the headless process, holds the session and hands it back when the terminal exits. relay's side (the HTTP route, the bridge door and `relay drop-in`) is in [`docs/cli.md`](cli.md).
+
+### `POST /handoff`
+
+Body `{session_id}`. Internal peer only, like `/launch`. Answers `200 {session_id, claude_session_id}` or an error `{error, message}`; the request can stay open up to `hostapi.HandoffWait` (60 s). `session.Manager.Handoff` decides:
+
+| Status | `error` | When |
+|---|---|---|
+| 404 | `session_not_found` | no such session |
+| 409 | `not_claude` | the provider is not `claude` |
+| 409 | `not_headless` | the session is not headless |
+| 409 | `dropped_in` | a terminal already holds it |
+| 409 | `tool_running` | a tool call is open; the message names the earliest |
+| 409 | `turn_timeout` | the turn did not end within the wait |
+| 409 | `no_conversation` | no Claude conversation id yet |
+
+A session with no live process can be taken over; it loads from disk first. If a turn is in flight and no tool is open, the request waits for the turn to end, a tool to open, the timeout or the caller to go away. It does not poll. A tool call opens on an assistant `content_block_stop` of a `tool_use` block and closes on its `tool_result`; `message_complete`, `error`, `process_exited`, `StopGeneration` and `ClearSession` clear them all. Waiting through a tool could last without bound, and stopping mid-tool leaves a half-finished call, so a running tool refuses at once.
+
+On success the manager sets the hold under its lock, marks the id terminating (relay's `session_end` reads `closed`), signals `DroppedIn` and kills the process. The provider and slot stay in place, so `process_exited` still reaches relay, which ends the identity and profile and marks the ledger `dormant`.
+
+### `POST /handback`
+
+Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears the hold and signals `HandedBack`, so the session reads `idle`. A later message needs a resume, as for any session whose process is gone.
+
+### The terminal
+
+`LaunchRequest.drop_in_for` (pty only) names the held session the terminal takes over. `/launch` answers `409 not_held` unless that session is held and no other terminal already has it. The link from terminal id to session id is recorded before the terminal starts, and removed if the start fails. When the terminal exits, `onTerminalExit` calls `HandBack`, so closing the window or a killed client never leaves a session held. The hold is in memory: a relay-sessions restart drops it.
+
+### While held
+
+`SendMessage` and a resuming `Create` return `session.ErrDroppedIn`. HTTP answers `409 {"error":"dropped_in","message"}`, `/launch` answers `409 dropped_in`, and a WS `send_message` gets an `error` frame with `code: "dropped_in"`.
+
+### Launch session id
+
+A new Claude session starts with `--session-id <fresh uuid>`, so the conversation id is known before Claude reports it. A session that already has a conversation id starts with `--resume <id>`; the two flags never appear together. The uuid is not the relay session id: after `clear_session` and a resume, the same id would collide with the existing transcript. `GetState` still persists only the id from `system/init`.
 
 ## Logging and trace IDs
 
@@ -962,15 +1077,15 @@ launch if it slips through, rather than being dropped: a dropped entry would
 leave a tool silently unreachable. A template is sandboxed unless it says
 otherwise: `sandbox` absent means sandboxed, and only an explicit
 `"sandbox": false` opts out. `read`, `read_write` and `deny` are ignored only
-for a terminal launch of a template that says `"sandbox": false`; a claude, pi
-or chat session on a console project always sandboxes and always applies its
+for a terminal launch of a template that says `"sandbox": false`; a claude, pi,
+codex or chat session on a console project always sandboxes and always applies its
 kind template's folders, whatever that template's `sandbox` says. A stored template without
 the field is sandboxed from the upgrade that introduced this rule on, with the
 folders it already lists; nothing rewrites it to `false`, so an operator who
 wants it unconfined says so.
 
-A **claude, pi or chat session** is not launched from a template, but it reads
-its folders from the template named for its kind: `claude-code`, `pi` and
+A **claude, pi, codex or chat session** is not launched from a template, but it reads
+its folders from the template named for its kind: `claude-code`, `pi`, `codex` and
 `chat` (`kindTemplateIDs`). A missing template is not a refusal; the session
 gets only what every session gets, and relay logs which template to add.
 
@@ -983,8 +1098,8 @@ template. To keep the shell out of the credential directories, add
 **A project opts in to templates.** `allowed_templates` on the project record
 is an array: empty is none, a lone `"*"` is every template, otherwise the ids
 listed (`"*"` beside other entries is refused). It gates every launch: a
-terminal template, and the `claude-code`, `pi` or `chat` template a claude, pi
-or chat session reads, so a project needs `claude-code` listed to run Claude
+terminal template, and the `claude-code`, `pi`, `codex` or `chat` template a
+claude, pi, codex or chat session reads, so a project needs `claude-code` listed to run Claude
 sessions. An unlisted template is refused `template_not_allowed`; a launch
 naming no project is refused `project_required` for every kind, so there are
 no ad-hoc terminals. A project created without the field holds none. Projects
@@ -1001,8 +1116,8 @@ project with a `host_id` that is the host's `terminal_templates`, and console
 templates are never offered. A host project may launch every template of its
 host; `allowed_templates` gates console templates only. A claude session on a
 host project passes the kind gate iff the host has a `claude-code` template;
-a chat session keeps the console `allowed_templates` gate; pi is refused on a
-host. A host template never sandboxes: it cannot set `"sandbox": true` or
+a codex session passes it iff the host has a `codex` template; a chat session
+keeps the console `allowed_templates` gate; pi is refused on a host. A host template never sandboxes: it cannot set `"sandbox": true` or
 carry `read` or `read_write`, and one that omits `sandbox` launches
 unconfined. An empty `command` there runs the host's login shell rather
 than relay's `$SHELL`. Shape, seeding and launch argv are in
@@ -1027,7 +1142,7 @@ provider. Relay never turns the listener on for you.
 
 Three rules the measurement turned up. **Exec does not need a read grant on the
 binary**, so a system binary runs without one; **a symlink does**: a tool that
-lives behind a link (`~/.local/bin/claude`, `~/.bun/bin/pi`) needs the
+lives behind a link (`~/.local/bin/claude`, `~/.bun/bin/pi`, a Homebrew `codex`) needs the
 directory holding the link and the directory holding its target. And the
 kernel matches the path *it* resolved, in the volume's own letter case, so
 `sandbox.resolve` asks the kernel for the on-disk spelling of every grant: a
@@ -1516,7 +1631,8 @@ what works.
 | binary entry, `service` mode | `cmd/relaysessions/main.go` |
 | shim (`exec` mode) | `internal/sessions/shim/shim.go` |
 | hook client (`hook` mode) | `internal/sessions/hook/` |
-| internal API server, `/launch`/`/terminate`/`/permission`, and the mounted eve-facing surface | `internal/sessions/hostapi/{server,dispatch,types}.go` |
+| internal API server, `/launch`/`/terminate`/`/permission`, and the mounted eve-facing surface | `internal/sessions/hostapi/{server,dispatch,types}.go` (`/launch`, `/terminate`, `/handoff`, `/handback`) |
+| drop-in hold and tool tracking | `internal/sessions/session/dropin.go` |
 | terminal (pty) sessions | `internal/sessions/terminal/` |
 | provider-hosted (claude/pi/chat) sessions | `internal/sessions/session/`, `internal/sessions/provider/` |
 | provider stderr logging (Warn until first stdout, redaction) | `internal/sessions/provider/stderr.go` |
@@ -1529,4 +1645,4 @@ what works.
 | relay-side HTTP routes, resume, accounting | `cmd/relay/session_routes.go` |
 | built-in service record, helper path resolution | `internal/service/builtin_sessions.go` |
 | cdhash pinning | `internal/service/codesign_darwin.go`, `internal/service/helper_verify.go` |
-| the two manifest routes' reservation | `internal/bridge/manifest.go`, `internal/config/models.go` (`RelaySessionsManifestRoutes`) |
+| the reserved internal routes' reservation | `internal/bridge/manifest.go`, `internal/config/models.go` (`RelaySessionsManifestRoutes`) |

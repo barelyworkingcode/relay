@@ -244,6 +244,7 @@ func RegisterSessionRoutes(rr *control.RouteRegistrar, deps sessionRouteDeps) {
 	rr.Handle(classFor("POST", "/api/sessions"), "POST /api/sessions", deps.handleCreateSession)
 	rr.Handle(classFor("POST", "/api/sessions/{$}"), "POST /api/sessions/{$}", deps.handleCreateSession)
 	rr.Handle(classFor("POST", "/api/sessions/{id}/resume"), "POST /api/sessions/{id}/resume", deps.handleResumeSession)
+	rr.Handle(classFor("POST", "/api/sessions/{id}/drop-in"), "POST /api/sessions/{id}/drop-in", deps.handleDropIn)
 	rr.Handle(classFor("GET", "/api/terminals"), "GET /api/terminals", deps.handleProxyList)
 	rr.Handle(classFor("GET", "/api/sessions"), "GET /api/sessions", deps.handleProxyList)
 	rr.Handle(control.ClassChiefOfStaff, "POST /api/chief-of-staff/messages", deps.handleChiefOfStaffMessage)
@@ -336,7 +337,7 @@ func (d sessionRouteDeps) handleCreateSession(w http.ResponseWriter, r *http.Req
 // Eve's POST /api/sessions body carries no explicit kind (C11: session
 // create is unchanged), so relay infers one from the model identifier
 // exactly as relayLLM's session manager used to: Claude's own aliases
-// select KindClaude, a "pi/..." model selects KindPi, and every other
+// select KindClaude, a "pi/..." model selects KindPi, a "codex/..." model selects KindCodex, and every other
 // relayLLM ProviderType (ollama, openai, llama, mlx) collapses to KindChat
 // -- all four speak through relay's own model endpoint now, so the
 // distinction among them is the session host's chat provider's concern, not
@@ -348,6 +349,9 @@ func deriveSessionKind(model string) string {
 	}
 	if strings.HasPrefix(model, "pi/") {
 		return KindPi
+	}
+	if strings.HasPrefix(model, "codex/") {
+		return KindCodex
 	}
 	return KindChat
 }

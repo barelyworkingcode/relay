@@ -10,6 +10,7 @@ type HostSpec struct {
 	SSHArgv    []string `json:"ssh_argv"`
 	NodePath   string   `json:"node_path,omitempty"`
 	ClaudePath string   `json:"claude_path,omitempty"`
+	CodexPath  string   `json:"codex_path,omitempty"`
 	Shell      string   `json:"shell,omitempty"`
 	OS         string   `json:"os,omitempty"`
 }

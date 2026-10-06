@@ -293,6 +293,10 @@ func (sh *SessionHandlers) handleSendMessage(c *Conn, raw []byte) {
 		sendResumeRequired(c, req.SessionID, err)
 		return
 	}
+	if errors.Is(err, session.ErrDroppedIn) {
+		sendCodedError(c, "dropped_in", req.SessionID, err)
+		return
+	}
 	sendWSError(c, err.Error())
 }
 
@@ -304,6 +308,8 @@ func sendFailureCode(err error) string {
 		return "already_processing"
 	case errors.Is(err, session.ErrResumeRequired):
 		return "resume_required"
+	case errors.Is(err, session.ErrDroppedIn):
+		return "dropped_in"
 	}
 	return "send_failed"
 }
@@ -534,9 +540,13 @@ func (sh *SessionHandlers) removeViewer(connID uint64, sessionID string) {
 // relayLLM ancestor: relayLLM never refused to respawn, so it never needed
 // one. message is for the user to read, never for the client to branch on.
 func sendResumeRequired(c *Conn, sessionID string, err error) {
+	sendCodedError(c, "resume_required", sessionID, err)
+}
+
+func sendCodedError(c *Conn, code, sessionID string, err error) {
 	c.Write(mustJSON(map[string]any{
 		"type":      events.WSMsgError,
-		"code":      "resume_required",
+		"code":      code,
 		"sessionId": sessionID,
 		"message":   err.Error(),
 	}))

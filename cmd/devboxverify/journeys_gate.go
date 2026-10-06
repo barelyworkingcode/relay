@@ -929,7 +929,7 @@ func withPrefix(ids []string, prefix string) []string {
 
 func verifyProjects(rs []grantRecord) (ids []string) {
 	for _, g := range rs {
-		if strings.HasPrefix(g.Name, grantNamePrefix) || strings.HasPrefix(g.Name, unreachableHostPrefix) {
+		if strings.HasPrefix(g.Name, grantNamePrefix) || strings.HasPrefix(g.Name, unreachableHostPrefix) || strings.HasPrefix(g.Name, dropInProjectName) {
 			ids = append(ids, g.ID)
 		}
 	}
@@ -953,7 +953,8 @@ func listHosts(ctx context.Context, e env, token string) ([]hostEntry, error) {
 func blackholeHosts(hs []hostEntry) []string {
 	var ids []string
 	for _, h := range hs {
-		if strings.HasPrefix(h.Name, blackholePrefix) && h.Target == blackholeTarget {
+		if strings.HasPrefix(h.Name, blackholePrefix) && h.Target == blackholeTarget ||
+			strings.HasPrefix(h.Name, dropInHostPrefix) && h.Target == dropInHostTarget {
 			ids = append(ids, h.ID)
 		}
 	}

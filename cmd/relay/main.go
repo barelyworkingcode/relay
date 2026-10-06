@@ -82,10 +82,12 @@ func main() {
 		runGrantCommand(args[1:])
 	case "sandbox":
 		runSandboxCommand(args[1:])
+	case "drop-in":
+		runDropInCommand(args[1:])
 	case "mcpList":
 		exitError("mcpList has been removed. Use: relay mcpExec --token <TOKEN> --list")
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [service|mcp|mcpExec|audit|enrol|credential|login|eve|grant|sandbox]\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [service|mcp|mcpExec|audit|enrol|credential|login|eve|grant|sandbox|drop-in]\n", args[0])
 		os.Exit(1)
 	}
 }

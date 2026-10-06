@@ -222,6 +222,10 @@ func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
 			ModelSocket:  cfg.modelSocket,
 			ShimBinary:   shimBinary,
 		},
+		Codex: provider.CodexConfig{
+			ShimBinary:   shimBinary,
+			BridgeSocket: cfg.bridgeSocket,
+		},
 		Chat: provider.ChatConfig{
 			ModelSocket:     cfg.modelSocket,
 			ShimBinary:      shimBinary,

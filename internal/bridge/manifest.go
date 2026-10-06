@@ -191,9 +191,9 @@ func (m *Manifest) Validate() error {
 	return nil
 }
 
-// sessionHostReservedRoutes are relay-sessions' internal routes: a manifest
-// may never claim any of them, or a path nested under one.
-var sessionHostReservedRoutes = []string{"/launch", "/terminate", "/send"}
+// sessionHostReservedRoutes are C5's relay-sessions-internal routes: a
+// manifest may never claim any of them, or a path nested under one.
+var sessionHostReservedRoutes = []string{"/launch", "/terminate", "/handoff", "/handback", "/send"}
 
 func isSessionHostReservedRoute(route string) bool {
 	for _, reserved := range sessionHostReservedRoutes {

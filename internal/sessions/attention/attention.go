@@ -40,6 +40,10 @@ const (
 	StallTimeout
 	// SessionEnded, not Ended: the State constant Ended owns that name.
 	SessionEnded
+	// DroppedIn marks a session a terminal holds; the board then ignores
+	// every signal but HandedBack and SessionEnded.
+	DroppedIn
+	HandedBack
 )
 
 // Next is the whole state machine. cur "" means no entry. A pair with no row
@@ -48,6 +52,13 @@ func Next(cur State, sig Signal) State {
 	switch sig {
 	case Launching:
 		return Starting
+	case DroppedIn:
+		return Running
+	case HandedBack:
+		if cur == Running {
+			return Idle
+		}
+		return cur
 	case SessionEnded:
 		return Ended
 	}
