@@ -55,7 +55,7 @@ Areas: sessions, sandbox, templates, audit.
 | Permission-mode restart (SSH hosts) | API | change permission mode on an SSH-host session | HTTP | — | permission-mode-restart (always NOTRUN: world has no hosts) | eve > session > chat input > Toggle plan mode | none |
 | Terminal templates: list, add, edit, remove | Settings > Templates | Settings > Templates > Add | HTTP `/api/terminal/templates` | — | none | Settings > Templates > + Add template; row > Edit / Remove | `settings.json` `terminal_templates` |
 | Web chat tool search | chat | a web chat whose relay tools cost more than a tenth of the model's context hides them behind `tool_search` / `call_tool` | n/a (host-side, no route) | — | chat-tool-search-tokens | none (turns on by itself) | `sessions/chat.json` `toolSearch` |
-| Agent state and turn excerpts | API (eve) | a live claude or pi session → `session_state` and `turn_done` on `/ws`; `attention` on `GET /api/sessions` | HTTP [proxy] | — | — | none until the agent board ships in eve | none (API only: `POST /api/sessions` settings `agent: true`) |
+| Agent state and turn excerpts | API (eve) | a live claude or pi session → `session_state` and `turn_done` on `/ws`; `attention` on `GET /api/sessions` | HTTP [proxy] | — | session-agent-state | none until the agent board ships in eve | none (API only: `POST /api/sessions` settings `agent: true`) |
 
 ### G2 · Give an agent access to one project and nothing else — must-have
 Intent: grant a project its folder, mail account and chosen tools, and nothing wider.
@@ -279,7 +279,7 @@ areas:
   sessions:
     code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**]
     tests: [cmd/relay/session_*_test.go, cmd/relay/router_sessions_test.go, cmd/relay/mount_session_test.go, cmd/relaysessions/*_test.go, internal/sessions/**/*_test.go]
-    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, slow-route-keepalive, session-host-restart, verify-fixtures-removed]
+    journeys: [blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, session-agent-state, slow-route-keepalive, session-host-restart, verify-fixtures-removed]
   sandbox:
     code: [cmd/relay/sandbox_*.go, cmd/relay/session_sandbox*.go, internal/bridge/sandbox*.go, internal/sessions/sandbox/**]
     tests: [cmd/relay/sandbox_*_test.go, cmd/relay/session_sandbox*_test.go, internal/sessions/sandbox/**/*_test.go]

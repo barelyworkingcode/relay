@@ -438,6 +438,29 @@ whatever the outcome; a restore that fails is a FAIL.
   with prompt tokens, the row shows 0 and the journey FAILs: the model host
   must report usage (setup P8 step 4).
 
+**session-agent-state** (screen). A headless agent session in Acme Corp
+(`POST /api/sessions` with model `haiku` and settings `{"headless":true,"agent":true}`)
+runs one turn, "Reply with exactly: verify-<nonce>-done", and is then ended
+over `/ws`. A connection dialled before the launch, with the run credential,
+sees every `session_state` frame. PASS when the frames for the session include
+running, idle and ended in that order; one `turn_done` arrives before the idle
+frame and its excerpt contains the marker; the list row then has
+`attention.state` `idle` with `since` equal to the idle frame's; after the end
+the row has no `attention`; and `<configdir>/logs/relaysessions.log` has
+exactly one `op=session.state` line per frame seen for the session, none of
+them containing the marker. BLOCKED when the `system/init` model lacks
+`haiku` (the detail names the id), or a launch is refused (setup P9). The
+session is deleted whatever the outcome.
+- Lives in: `internal/sessions/attention/`, `internal/sessions/session`
+  (`SetAttentionSink`, `Summary.Attention`), `internal/sessions/api/ws_session.go`.
+- Reached by: `POST /api/sessions` with P4, the message route and
+  `GET /api/sessions` with the run credential, `/ws` on the frontend socket.
+- Traps: the connection never joins before the launch, so the id is unknown
+  until the 201; the state frames reach it anyway, and it joins afterwards for
+  the `system/init` event. Claude's Stop kills the process, so `end_session`
+  reads idle then ended, not ended alone. Run on Claude Haiku
+  `claude-haiku-4-5-20251001`; any other model reads BLOCKED.
+
 **disabled-tool-refused** (screen). In a live session in Verify Grant,
 `testmcp_ping` answers; a `PUT /api/projects/{id}` with `disabled_tools`
 naming it returns 200 within 10 s without a prompt; the same session no
@@ -645,6 +668,11 @@ None of this drifts `verify.sh`.
   project: it asks for the tide code of a port and `tides_lookup` answers
   `TIDE-` plus the first 8 hex digits of the SHA-256 of the lower-cased,
   trimmed port name.
+- **P9. Agent state.** The `session-agent-state` journey launches a `claude-code`
+  session on `haiku`. In Settings, Acme Corp's allowed templates include
+  `claude-code`; the `claude-code` template exists; and, if Acme restricts
+  models, Acme allows `haiku`. Without it the journey reads BLOCKED on the
+  launch refusal.
 
 ## Verifying a PR
 
