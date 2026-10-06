@@ -71,6 +71,7 @@ helpers only through another package. Such a package still needs its own
 | commit | `gofmt -l`, `go build ./...`, `go vet ./...` | `.githooks/pre-commit` |
 | push | `go test ./...`, skipped when the pushed commits touch no Go sources, fixtures or web assets | `.githooks/pre-push` |
 | PR, and every push to `main` | `gofmt`, `go vet`, `go test ./...` and `go test -race ./...` as two parallel jobs | `.github/workflows/ci.yml` |
+| PR | `burn-in`: each added or changed `TestXxx` function, `go test -race -count=10` | `.github/workflows/burn-in.yml`, `cmd/burnin` |
 
 Install the hooks once per clone: `git config core.hooksPath .githooks`.
 
@@ -93,6 +94,46 @@ critical path.
 
 `golangci-lint` (`.golangci.yml`) is not wired into any gate — run it by hand
 with `golangci-lint run ./...`.
+
+## Burn-in
+
+A new test that fails one run in ten passes its own PR and fails someone else's
+later. The `burn-in` job repeats the test functions a PR adds or changes, ten
+times each under the race detector, so the flake fails on the PR that wrote it.
+It adds no CPU load of its own: no `-p`, `-cpu` or `-shuffle`, one package at a
+time.
+
+- **Changed** means the declaration text differs between the PR base and head:
+  the `func` line through the closing brace, comments and whitespace inside
+  included, the doc comment above excluded. A function the base does not have
+  is new, so a rename runs the new name and a move to another package runs
+  there. A function moved to another file of the same package with identical
+  text does not run. A deleted test does not run.
+- **Default build only.** A file counts only when `go list` puts it in its
+  package's test files on the runner (macOS). Files behind the `live` or
+  `leakprobe` tags, under `testdata/`, or for another OS are skipped, and
+  `-list` says how many.
+- **Never run:** `Example`, `Benchmark` and `Fuzz` functions, and `TestMain`.
+  Only top-level `func TestXxx(t *testing.T)` functions are picked. Subtests of
+  a picked function run with it.
+- **Helper-only gap.** A PR that changes only a helper in a `_test.go` file, or
+  `TestMain`, selects nothing and the job passes. The selection does not follow
+  call graphs.
+- **A PR that changes no test** passes with "nothing to run".
+- **Failure** prints `::error::burn-in: <package> failed under go test -race
+  -count=10 -run <regex>`, naming the package and its tests. Every package runs
+  even after one fails.
+
+Preview the selection before pushing, and reproduce a failure with the same
+command without `-list`:
+
+```bash
+go run ./cmd/burnin -list origin/main HEAD
+go run ./cmd/burnin origin/main HEAD
+```
+
+The program is stdlib-only (`go/parser` selects, `git show <base>:<path>`
+supplies the base copy) and has no configuration: ten runs is the count.
 
 ## Adding a test
 
