@@ -29,7 +29,7 @@ func TestSandboxSpec_RwFileGrantNeedsAFileName(t *testing.T) {
 		Deny:      []string{"~/acme-deny"},
 	}
 
-	spec, err := sandboxSpecForLaunch(store.Get(), &proj, proj.Path, KindPTY, tmpl)
+	spec, err := sandboxSpecForLaunch(store.Get(), &proj, proj.Path, KindPTY, tmpl, nil)
 	if err != nil {
 		t.Fatalf("sandboxSpecForLaunch: %v", err)
 	}

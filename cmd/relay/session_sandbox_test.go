@@ -366,7 +366,7 @@ func TestSandboxSpecForLaunch_PiSessionsIsReadWriteAllowed(t *testing.T) {
 	relayDir := bridge.ConfigDir()
 	wantGrant := filepath.Join(relayDir, "sessions", "pi-sessions")
 
-	spec, err := sandboxSpecForLaunch(settings, &proj, proj.Path, KindPi, nil)
+	spec, err := sandboxSpecForLaunch(settings, &proj, proj.Path, KindPi, nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxSpecForLaunch: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestSandboxSpecForLaunch_PiSessionsIsReadWriteAllowed(t *testing.T) {
 	}
 
 	for _, kind := range []string{KindClaude, KindChat, KindPTY} {
-		other, err := sandboxSpecForLaunch(settings, &proj, proj.Path, kind, nil)
+		other, err := sandboxSpecForLaunch(settings, &proj, proj.Path, kind, nil, nil)
 		if err != nil {
 			t.Fatalf("sandboxSpecForLaunch(%s): %v", kind, err)
 		}

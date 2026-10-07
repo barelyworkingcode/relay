@@ -243,6 +243,9 @@ type sessionLaunchAuditFields struct {
 	Sandbox     bool
 	Origin      string
 	PromptBytes int
+
+	ReadOnlyProjects bool
+	ReadRoots        int
 }
 
 type sessionLaunchAuditArgs struct {
@@ -256,6 +259,8 @@ type sessionLaunchAuditArgs struct {
 	Sandbox            bool   `json:"sandbox"`
 	Origin             string `json:"origin,omitempty"`
 	PromptBytes        int    `json:"prompt_bytes,omitempty"`
+	ReadOnlyProjects   bool   `json:"read_only_projects,omitempty"`
+	ReadRoots          int    `json:"read_roots,omitempty"`
 }
 
 // maxAuditErrorRunes leaves room for a refusal's fixed text around one
@@ -276,6 +281,7 @@ func newSessionLaunchAuditEvent(f sessionLaunchAuditFields, outcome, errMsg stri
 		SessionID: f.SessionID, SessionKind: capAuditText(f.Kind, maxRefusalNameRunes), TemplateID: f.TemplateID,
 		Directory: directory, DirectoryTruncated: directory != f.Directory, Sandbox: f.Sandbox,
 		Origin: f.Origin, PromptBytes: f.PromptBytes,
+		ReadOnlyProjects: f.ReadOnlyProjects, ReadRoots: f.ReadRoots,
 	})
 	return audit.AuditEvent{
 		ID:      audit.NewAuditID(),
@@ -430,6 +436,20 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		return nil, forbidden("persist_session_invalid", "persist_session applies only to a persist template of a host project", baseFields)
 	}
 
+	readOnly, err := readOnlyProjectsSetting(req.ClientSettings)
+	if err != nil {
+		return nil, invalidRequest("invalid_settings", err.Error(), baseFields)
+	}
+	if readOnly {
+		baseFields.ReadOnlyProjects = true
+		if req.Kind != KindClaude {
+			return nil, invalidRequest("read_only_needs_claude", "readOnlyProjects applies only to a claude session", baseFields)
+		}
+		if proj != nil && proj.IsHosted() {
+			return nil, forbidden("read_only_local_only", "readOnlyProjects is not available on a host project", baseFields)
+		}
+	}
+
 	// An SSH-hosted project's target runs on the far end, where a profile
 	// written on this disk confines nothing — and sandboxing the local `ssh`
 	// client instead only breaks it (SH §5.2: "SSH host terminal: off").
@@ -556,7 +576,12 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		if grants == nil {
 			grants = templateForKind(settings, proj, req.Kind)
 		}
-		profilePath, err := writeSessionSandboxProfile(settings, proj, directory, sessionID, req.Kind, grants)
+		var readOnlyRoots []string
+		if readOnly {
+			readOnlyRoots = readOnlyProjectRoots(settings)
+			baseFields.ReadRoots = len(readOnlyRoots)
+		}
+		profilePath, err := writeSessionSandboxProfile(settings, proj, directory, sessionID, req.Kind, grants, readOnlyRoots)
 		if err != nil {
 			return nil, invalidRequest("sandbox_unavailable", err.Error(), baseFields)
 		}

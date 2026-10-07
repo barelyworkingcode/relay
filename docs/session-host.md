@@ -229,6 +229,45 @@ Error codes C5 names explicitly, each mapped from a manager error:
 | 502 | `identity_refused` | the shim's Hello did not bind |
 | 500 | `spawn_failed` | the target process could not be started |
 
+### Read-only projects (`settings.readOnlyProjects`)
+
+A claude session started with `settings.readOnlyProjects: true` reads every
+registered local project and writes none of them. It is an API-only option on
+`POST /api/sessions`; a value that is not a bool is `400 invalid_settings`, a
+non-claude kind is `400 read_only_needs_claude`, and a host project is
+`403 read_only_local_only`.
+
+The profile is the enforcement. `readOnlyProjectRoots` lists every project
+that is neither remote nor hosted and has a path, each resolved with
+`EvalSymlinks` (a path that no longer resolves is skipped with a warning).
+`sandboxSpecForLaunch` takes that list as `readOnlyRoots`: the roots join the
+read grants, and the session's own project directory is left out of the
+read-write grants. Read-write is then the temp directories, `/dev` and the
+template's `read_write`, which is where the Claude CLI keeps its own state.
+The template's `deny` list and the socket and TCP rules are unchanged. A nil
+`readOnlyRoots` is every other launch, whose profile does not change. A
+template whose `read_write` names a project folder, or a parent of one such as
+`~`, still makes it writable: that is the operator's grant, so a template used
+for these sessions must not name one.
+
+`buildClaudeArgs` also passes `--tools Read,Grep,Glob` and
+`--strict-mcp-config`, so the model is offered only those built-ins and the
+relay tools `--mcp-config` carries when `useRelayTools` is set. This keeps
+the tool list honest; the profile, not the list, refuses a write.
+
+The setting is stored in the ledger record's session request. A resume goes
+back through `AuthorizeLaunch`, so its profile is rebuilt from the projects
+registered at that moment.
+
+A project create, delete, or update that changes `path`, kind or `host_id`
+changes the roots under a live profile. `ProjectOps` then calls
+`SessionCleanup.endReadOnlySessions`, which sends `/terminate` with reason
+`read_only_roots_changed` for every live ledger session whose stored settings
+carry the option, through the same identity and model-key teardown as
+`cleanupProject`. The ledger records stay, and the sessions go dormant for a
+resume. The `session_launch` audit args carry `read_only_projects: true` and
+`read_roots: N`.
+
 ### A session names its model
 
 A new `claude`, `pi`, `codex` or `chat` launch must name a model. Blank means empty

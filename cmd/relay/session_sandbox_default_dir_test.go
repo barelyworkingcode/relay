@@ -28,7 +28,7 @@ func defaultRelayDirUnderTempHome(t *testing.T) string {
 func claudeSpecForTest(t *testing.T) sandbox.Spec {
 	t.Helper()
 	noDeveloperTools(t)
-	spec, err := sandboxSpecForLaunch(&config.Settings{}, nil, t.TempDir(), KindClaude, nil)
+	spec, err := sandboxSpecForLaunch(&config.Settings{}, nil, t.TempDir(), KindClaude, nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxSpecForLaunch: %v", err)
 	}

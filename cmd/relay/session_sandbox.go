@@ -65,8 +65,8 @@ func sessionPiSessionsDir() string {
 // "this session wants sandboxing" into an SBPL file on disk and returns its
 // absolute path. Every failure is a refusal to launch — there is no branch
 // that returns an empty path and lets the caller spawn anyway.
-func writeSessionSandboxProfile(settings *config.Settings, proj *config.Project, directory, sessionID, kind string, tmpl *config.TerminalTemplate) (string, error) {
-	spec, err := sandboxSpecForLaunch(settings, proj, directory, kind, tmpl)
+func writeSessionSandboxProfile(settings *config.Settings, proj *config.Project, directory, sessionID, kind string, tmpl *config.TerminalTemplate, readOnlyRoots []string) (string, error) {
+	spec, err := sandboxSpecForLaunch(settings, proj, directory, kind, tmpl, readOnlyRoots)
 	if err != nil {
 		return "", err
 	}
@@ -112,7 +112,12 @@ func sandboxProfilePath(result *LaunchResult) string {
 // tool needs to run lives in the template, not in this function: the project's
 // own directory, the temp directories and /dev every process uses, and the
 // developer tools are the only grants that do not come from one.
-func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, directory, kind string, tmpl *config.TerminalTemplate) (sandbox.Spec, error) {
+//
+// A non-nil readOnlyRoots (empty included) is a read-only-projects session:
+// every root is read-only and the session's own project directory is not
+// granted for writing, so the profile, not the tool list, keeps every project
+// folder unwritable. nil is every other launch's profile.
+func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, directory, kind string, tmpl *config.TerminalTemplate, readOnlyRoots []string) (sandbox.Spec, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return sandbox.Spec{}, fmt.Errorf("resolve home directory: %w", err)
@@ -148,7 +153,7 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	}
 
 	readWrite := []string{}
-	if workDir != "" {
+	if workDir != "" && readOnlyRoots == nil {
 		readWrite = append(readWrite, workDir)
 	}
 	// Both temp directories, deliberately: the session's own TMPDIR is
@@ -192,6 +197,7 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 		}
 		deny = append(denyDirs, denyFiles...)
 	}
+	read = append(read, readOnlyRoots...)
 	ensureGrantDirs(readWrite)
 
 	spec := sandbox.Spec{
