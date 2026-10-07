@@ -62,18 +62,16 @@ func TestParseReadOnlyFrame_InitToolsAndServers(t *testing.T) {
 }
 
 // The probes only mean something if a refusal by the profile reads differently
-// from a command that failed or never ran. The fixtures sit under $HOME because
-// the system temp directory is granted read-write.
+// from a command that failed or never ran. The profile grants no temp directory,
+// so the fixtures under the stand-in home are refused for want of a grant.
 func TestRunProfileProbe_TellsAProfileRefusalFromOtherFailures(t *testing.T) {
 	if err := sandbox.Available(); err != nil {
 		t.Skip(err)
 	}
-	base, err := os.MkdirTemp(home, "devboxverify-ro-test-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(base) })
-	base, _ = filepath.EvalSymlinks(base)
+	old := home
+	home = resolvedTempDir(t)
+	t.Cleanup(func() { home = old })
+	base := home
 	granted, ungranted := filepath.Join(base, "granted"), filepath.Join(base, "ungranted")
 	for _, d := range []string{granted, ungranted} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -86,9 +84,8 @@ func TestRunProfileProbe_TellsAProfileRefusalFromOtherFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tmp, _ := filepath.EvalSymlinks(os.TempDir())
 	profile, err := sandbox.Write(filepath.Join(t.TempDir(), "profiles"), "probe-test", sandbox.Spec{
-		Read: []string{granted}, ReadWrite: []string{tmp, "/dev"},
+		Read: []string{granted}, ReadWrite: []string{"/dev"},
 	})
 	if err != nil {
 		t.Fatal(err)
