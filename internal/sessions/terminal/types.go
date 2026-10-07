@@ -35,6 +35,8 @@ type CreateSpec struct {
 	Env         map[string]string
 	Cols, Rows  uint16
 	IdleTimeout time.Duration
+	// Origin is who asked for the terminal, empty for the person.
+	Origin string
 
 	// Host is non-nil for an SSH-backed terminal (../relay/docs/ssh-hosts.md).
 	// Identity must be nil when Host is set: C5 names identity "null for

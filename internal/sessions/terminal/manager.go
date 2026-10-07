@@ -37,6 +37,7 @@ type Summary struct {
 	State      string            `json:"state"`
 	ExitCode   int               `json:"exitCode,omitempty"`
 	Host       map[string]string `json:"host,omitempty"`
+	Origin     string            `json:"origin,omitempty"`
 }
 
 // sessionSlot is one entry in Manager's table, including the window between
@@ -231,6 +232,7 @@ func (m *Manager) ListSummary() []Summary {
 			State:      state,
 			ExitCode:   exitCode,
 			Host:       s.Host.Chip(),
+			Origin:     s.Origin,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

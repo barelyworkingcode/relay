@@ -258,7 +258,7 @@ so entering it raises no presence prompt.
 |---|---|
 | no `X-Relay-Scope` | as before; class `chief_of_staff` is refused, `class not granted` |
 | scope, caller lacks `proxy` | 403 `class not granted` |
-| scope, caller holds `proxy` | `GET /api/sessions`, `GET /ws` and `POST /api/chief-of-staff/messages` only; every other route is 403 `outside chief-of-staff scope` |
+| scope, caller holds `proxy` | `GET /api/sessions`, `GET /ws`, `POST /api/chief-of-staff/messages` and `POST /api/chief-of-staff/sessions` only; every other route is 403 `outside chief-of-staff scope` |
 | any other, empty or repeated value | 403 `unknown scope` |
 
 - `chief_of_staff` is a class only the scope reaches. It is socket-only, like
@@ -269,6 +269,10 @@ so entering it raises no presence prompt.
   enforces this, not the session host.
 - The scope moves no credential. It only removes routes from what `proxy`
   reaches, so a caller can narrow itself and cannot widen anything.
+- `POST /api/chief-of-staff/sessions` starts a session narrower than the
+  `POST /api/sessions` that `proxy` already reaches: relay builds the
+  settings and the origin, and `AuthorizeLaunch` and the project's policy
+  still decide. See `docs/session-host.md`.
 
 ### The login credential
 

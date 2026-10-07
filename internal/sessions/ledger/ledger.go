@@ -44,6 +44,9 @@ type Record struct {
 	TemplateID string    `json:"template_id,omitempty"`
 	Created    time.Time `json:"created"`
 	State      State     `json:"state"`
+	// Origin is who started the session when it was not the person; a resume
+	// carries it back to the host.
+	Origin string `json:"origin,omitempty"`
 	// SessionRequest is the exact eve-facing create body relay pushed to
 	// relay-sessions (after policy merge) — kept so a resume can rebuild an
 	// equivalent LaunchSpec without asking the (possibly gone) original

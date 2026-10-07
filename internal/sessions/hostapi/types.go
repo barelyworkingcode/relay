@@ -79,6 +79,9 @@ type LaunchRequest struct {
 	// DropInFor names the held agent session this pty terminal takes over
 	// (pty only). When the terminal exits, that session is handed back.
 	DropInFor string `json:"drop_in_for,omitempty"`
+	// Origin names who asked for this session when it was not the person at
+	// a frontend. The host accepts only the Chief of Staff origin.
+	Origin string `json:"origin,omitempty"`
 }
 
 // PTYSpec is C5's non-null "pty" object.

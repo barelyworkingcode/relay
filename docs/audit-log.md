@@ -787,6 +787,27 @@ answers.
 relay audit --event session_message                # every Chief of Staff send; DETAIL reads session=<id> origin=chief-of-staff <phase>
 ```
 
+### Chief of Staff starts
+
+`POST /api/chief-of-staff/sessions` writes a `session_launch` row for every
+start that passes the body checks, allowed or refused, and a headless start
+also writes the `session_message` pair above for its prompt. The launch row's
+args gain two fields, both `omitempty`:
+
+- `args.origin`: `chief-of-staff` for a start through this route.
+- `args.prompt_bytes`: the size of the trimmed prompt. The prompt text is
+  never in a launch row.
+
+A refusal after the audit-ready check (unknown or remote project, project on a
+host, folder outside the project, a terminal start without a Claude model, a
+model the project does not allow, a system-only model, or a policy refusal from
+`AuthorizeLaunch`) is a `denied` row carrying the same two fields. An
+`AuthorizeLaunch` refusal of the request itself or of a setup step
+(`sandbox_unavailable`, `model_endpoint_unavailable`, the extra-args cap and
+the like) is an `error` row carrying the same two fields. With auditing off the
+route answers 503 `audit_unavailable` and starts nothing. A resume keeps the `origin` the session
+was started with.
+
 ## Issuance and revocation
 
 `credential_issued` and `credential_revoked` record that a credential came into
