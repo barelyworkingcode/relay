@@ -65,7 +65,7 @@ func TestClassifyChiefOfStaff(t *testing.T) {
 		{"all signals present", func(*cosRun) {}, statePass},
 		{"run credential refused on /ws", func(r *cosRun) { r.DialStatus, r.DialErr = http.StatusUnauthorized, "bad handshake" }, stateBlocked},
 		{"launch refused", func(r *cosRun) { r.Create, r.SessionID = frontendResponse{Status: http.StatusForbidden}, "" }, stateBlocked},
-		{"model not Haiku 4.5", func(r *cosRun) { r.Frames[0].InitModel = "claude-haiku-5" }, stateBlocked},
+		{"model not Haiku 5.5", func(r *cosRun) { r.Frames[0].InitModel = "claude-haiku-5" }, stateBlocked},
 		{"audit log unreadable", func(r *cosRun) { r.RowsErr = "relay audit failed" }, stateBlocked},
 		{"log_args off: no text", func(r *cosRun) {
 			r.Rows[0] = cosRow("intent", "pending", `{"session_id":"s1","origin":"chief-of-staff","text_bytes":33}`)
