@@ -75,7 +75,7 @@ func TestLegProblem(t *testing.T) {
 	t.Run("local", func(t *testing.T) {
 		check(t, "console", true, append(slices.Clone(shared), []mutCase[dropInLeg]{
 			{"no init event", func(l *dropInLeg) { l.Frames = nil }, stateFail},
-			{"model not Haiku 4.5", func(l *dropInLeg) { l.Frames[0].InitModel = "claude-haiku-5" }, stateBlocked},
+			{"model not Haiku 5.5", func(l *dropInLeg) { l.Frames[0].InitModel = "claude-haiku-5" }, stateBlocked},
 			{"marker missing from the terminal", func(l *dropInLeg) { l.MarkerSeen = false }, stateFail},
 			{"no running frame at the hold", func(l *dropInLeg) { l.HeldRunning = false }, stateFail},
 			{"exit never came, connection closed", func(l *dropInLeg) { l.ExitSeen, l.ClosedConn = false, true }, statePass},
@@ -88,7 +88,7 @@ func TestLegProblem(t *testing.T) {
 		check(t, "loopback-n1", false, append(slices.Clone(shared), []mutCase[dropInLeg]{
 			{"no handoff after the first turn", func(l *dropInLeg) { l.Refusal = "status 409 turn_failed" }, stateFail},
 			{"first turn ended without init and not errored", func(l *dropInLeg) { l.Frames = nil }, stateFail},
-			{"model not Haiku 4.5", func(l *dropInLeg) { l.Frames[0].InitModel = "claude-haiku-5" }, stateBlocked},
+			{"model not Haiku 5.5", func(l *dropInLeg) { l.Frames[0].InitModel = "claude-haiku-5" }, stateBlocked},
 			{"message route answered an error", func(l *dropInLeg) { l.Message = frontendResponse{Status: http.StatusBadGateway} }, notPass},
 			{"claudeSessionId empty", func(l *dropInLeg) { l.ClaudeID = "" }, stateFail},
 			{"claudeSessionId not a UUID", func(l *dropInLeg) { l.ClaudeID = "s1" }, stateFail},
@@ -192,7 +192,7 @@ func TestClassifyToolRefused(t *testing.T) {
 		{"socket unreachable", func(r *toolRefusedRun) { r.DialStatus, r.DialErr = 0, "dial unix" }, stateBlocked},
 		{"launch refused", func(r *toolRefusedRun) { r.Create, r.SessionID = frontendResponse{Status: http.StatusForbidden}, "" }, stateBlocked},
 		{"no tool call", func(r *toolRefusedRun) { r.ToolName = "" }, stateBlocked},
-		{"model not Haiku 4.5", func(r *toolRefusedRun) { r.Frames[0].InitModel = "claude-haiku-5" }, stateBlocked},
+		{"model not Haiku 5.5", func(r *toolRefusedRun) { r.Frames[0].InitModel = "claude-haiku-5" }, stateBlocked},
 		{"drop-in succeeded", func(r *toolRefusedRun) { r.DropIn = frontendResponse{Status: http.StatusCreated} }, notPass},
 		{"another refusal code", func(r *toolRefusedRun) { r.DropIn.Error = "turn_timeout" }, notPass},
 		{"message does not name the tool", func(r *toolRefusedRun) { r.DropIn.Body = []byte(`{"error":"tool_running","message":"busy"}`) }, notPass},

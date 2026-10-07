@@ -449,7 +449,7 @@ frame and its excerpt contains the marker; the list row then has
 the row has no `attention`; and `<configdir>/logs/relaysessions.log` has
 exactly one `op=session.state` line per frame seen for the session, none of
 them containing the marker. BLOCKED when the `system/init` model is not
-`claude-haiku-4-5-20251001` (the detail names the id), or a launch is refused (setup P9). The
+`claude-haiku-5-5` (the detail names the id), or a launch is refused (setup P9). The
 session is deleted whatever the outcome.
 - Lives in: `internal/sessions/attention/`, `internal/sessions/session`
   (`SetAttentionSink`, `Summary.Attention`), `internal/sessions/api/ws_session.go`.
@@ -459,7 +459,7 @@ session is deleted whatever the outcome.
   until the 201; the state frames reach it anyway, and it joins afterwards for
   the `system/init` event. Claude's Stop kills the process, so `end_session`
   reads idle then ended, not ended alone. Run on Claude Haiku
-  `claude-haiku-4-5-20251001`; any other model reads BLOCKED.
+  `claude-haiku-5-5`; any other model reads BLOCKED.
 
 **session-codex** (screen). A Codex session in Acme Corp (`POST /api/sessions`
 with eve's body: model `codex/gpt-6-luna`, settings `{"useRelayTools":true}`,
@@ -496,7 +496,7 @@ connection is closed instead, and the detail says so), an `idle` frame follows,
 `status` ok and `host` console, the audit has a `session_end` row for the agent
 with reason `closed` and a `session_launch` row for the terminal. The session
 and terminal are deleted whatever the outcome. BLOCKED when `system/init` does
-not report `claude-haiku-4-5-20251001`. The HTTP door on a host is
+not report `claude-haiku-5-5`. The HTTP door on a host is
 session-drop-in-host.
 - Lives in: `cmd/relay/session_dropin.go`, `internal/bridge/dropin.go`,
   `internal/sessions/session/dropin.go`, `internal/sessions/hostapi`.
@@ -517,7 +517,7 @@ has exactly one `op=session.drop_in` line with `status` ok, `host`
 `loopback-<nonce>` and the terminal's id. The session, terminal, project and
 host are deleted whatever the outcome. BLOCKED when the loopback host or its
 project cannot be created, the host launch is refused (setup P11), or
-`system/init` does not report `claude-haiku-4-5-20251001`.
+`system/init` does not report `claude-haiku-5-5`.
 - Proves the handoff, the `--resume <uuid>` launch on the host and that the
   conversation resumed there. A host `claude` that cannot sign in over SSH
   (setup P11) reads FAIL: the first turn errors.
@@ -534,7 +534,7 @@ with P4 must answer 409 `tool_running` with Bash named in its message, in under
 5 s. PASS also needs the agent still `live` in the list, no terminal started by
 the call, and exactly one `op=session.drop_in` line for the session with
 `status` denied and `error` tool_running. BLOCKED when no tool call arrives
-within 60 s, or `system/init` is not `claude-haiku-4-5-20251001`. The session is
+within 60 s, or `system/init` is not `claude-haiku-5-5`. The session is
 deleted whatever the outcome.
 - Lives in: `internal/sessions/session/dropin.go` (`Handoff`), `cmd/relay/session_dropin.go`.
 - Reached by: as session-drop-in.
@@ -562,7 +562,7 @@ and one completion (`ok`) sharing an id, with `args.origin` `chief-of-staff`,
 `session_message` row contains the person marker; and `relay audit --event
 control_decision` has denied rows with `outside chief-of-staff scope` for the
 two scoped requests and `class not granted` for the unscoped one. BLOCKED when
-the `system/init` model is not `claude-haiku-4-5-20251001`, a launch is
+the `system/init` model is not `claude-haiku-5-5`, a launch is
 refused, the run credential is missing, or the audit log is unreadable. The session
 is ended and deleted whatever the outcome.
 - Lives in: `cmd/relay/session_chief_of_staff.go`, `cmd/relay/api_credential.go`
@@ -577,7 +577,7 @@ is ended and deleted whatever the outcome.
   method, path and time, so a scoped `GET /api/projects` from another caller in
   the same second could satisfy the check. The session list is read with the
   scope header, which narrows the run credential for that request only. Run on
-  Claude Haiku `claude-haiku-4-5-20251001`; any other model reads BLOCKED.
+  Claude Haiku `claude-haiku-5-5`; any other model reads BLOCKED.
 
 **disabled-tool-refused** (screen). In a live session in Verify Grant,
 `testmcp_ping` answers; a `PUT /api/projects/{id}` with `disabled_tools`
