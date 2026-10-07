@@ -248,6 +248,7 @@ func RegisterSessionRoutes(rr *control.RouteRegistrar, deps sessionRouteDeps) {
 	rr.Handle(classFor("GET", "/api/terminals"), "GET /api/terminals", deps.handleProxyList)
 	rr.Handle(classFor("GET", "/api/sessions"), "GET /api/sessions", deps.handleProxyList)
 	rr.Handle(control.ClassChiefOfStaff, "POST /api/chief-of-staff/messages", deps.handleChiefOfStaffMessage)
+	rr.Handle(control.ClassChiefOfStaff, "POST /api/chief-of-staff/sessions", deps.handleChiefOfStaffStart)
 }
 
 // maxSessionCreateBodyBytes bounds a create/resume request body -- generous
@@ -419,7 +420,7 @@ func (d sessionRouteDeps) launch(ctx context.Context, req LaunchRequest) (*Launc
 		if system, err := d.systemModel(ctx, req.Model); err == nil && system {
 			refusal := forbidden("model_system_only",
 				fmt.Sprintf("model %q is reserved for system use and cannot host a chat session", req.Model),
-				sessionLaunchAuditFields{Actor: callerAuditActor(req.Caller), ProjectID: req.ProjectID, Kind: req.Kind})
+				sessionLaunchAuditFields{Actor: callerAuditActor(req.Caller), ProjectID: req.ProjectID, Kind: req.Kind, Origin: req.Origin, PromptBytes: req.PromptBytes})
 			d.auditor.Record(refusal.Audit)
 			return nil, nil, refusal, nil
 		}

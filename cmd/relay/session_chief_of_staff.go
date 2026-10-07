@@ -43,7 +43,6 @@ func writeChiefOfStaffError(w http.ResponseWriter, status int, code, message str
 // completion pair. The text reaches the log only through audit.log_args.
 func (d sessionRouteDeps) handleChiefOfStaffMessage(w http.ResponseWriter, r *http.Request) {
 	const origin = sessiontypes.OriginChiefOfStaff
-	start := time.Now()
 
 	var body chiefOfStaffMessageBody
 	r.Body = http.MaxBytesReader(w, r.Body, maxChiefOfStaffBodyBytes)
@@ -69,24 +68,43 @@ func (d sessionRouteDeps) handleChiefOfStaffMessage(w http.ResponseWriter, r *ht
 		return
 	}
 
+	status, code, message, at := d.sendChiefOfStaffText(r.Context(), callerAuditActor(resolveLaunchCaller(r, d.store)), body.SessionID, body.Text)
+	if status == http.StatusAccepted {
+		writeJSON(w, http.StatusAccepted, chiefOfStaffMessageResult{SessionID: body.SessionID, Origin: origin, At: at})
+		return
+	}
+	writeChiefOfStaffError(w, status, code, message)
+}
+
+// deliverChiefOfStaffText sends text to a session as the Chief of Staff and
+// records the intent and completion rows. The caller has already checked that
+// auditing is ready. It answers 202 with empty code and message on success.
+func (d sessionRouteDeps) deliverChiefOfStaffText(ctx context.Context, actor audit.AuditActor, sessionID, text string) (status int, code, message string) {
+	status, code, message, _ = d.sendChiefOfStaffText(ctx, actor, sessionID, text)
+	return status, code, message
+}
+
+func (d sessionRouteDeps) sendChiefOfStaffText(ctx context.Context, actor audit.AuditActor, sessionID, text string) (status int, wireCode, message, at string) {
+	const origin = sessiontypes.OriginChiefOfStaff
+	start := time.Now()
+
 	id := audit.NewAuditID()
 	intent := audit.AuditEvent{
 		ID: id, TS: time.Now(), Event: audit.AuditEventSessionMessage, Phase: audit.AuditPhaseIntent,
-		Actor:   callerAuditActor(resolveLaunchCaller(r, d.store)),
-		Args:    d.sessionMessageArgs(body, origin, true),
+		Actor:   actor,
+		Args:    d.sessionMessageArgs(sessionID, text, origin, true),
 		Outcome: audit.AuditOutcomePending,
 	}
 	if err := d.auditor.RecordDurable(intent); err != nil {
-		slog.WarnContext(r.Context(), "chief of staff send refused: intent not recorded",
-			"op", "chief_of_staff.send", "status", "error", "session_id", body.SessionID, "error", err.Error())
-		writeChiefOfStaffError(w, http.StatusServiceUnavailable, "audit_unavailable", "the audit log could not record the message")
-		return
+		slog.WarnContext(ctx, "chief of staff send refused: intent not recorded",
+			"op", "chief_of_staff.send", "status", "error", "session_id", sessionID, "error", err.Error())
+		return http.StatusServiceUnavailable, "audit_unavailable", "the audit log could not record the message", ""
 	}
 
-	resp, hostErr, err := d.host().Send(context.WithoutCancel(r.Context()), hostapi.SendRequest{SessionID: body.SessionID, Text: body.Text, Origin: origin})
+	resp, hostErr, err := d.host().Send(context.WithoutCancel(ctx), hostapi.SendRequest{SessionID: sessionID, Text: text, Origin: origin})
 
 	outcome, errCode := audit.AuditOutcomeOK, ""
-	status, wireCode, message := http.StatusAccepted, "", ""
+	status, wireCode, message = http.StatusAccepted, "", ""
 	switch {
 	case err != nil:
 		outcome, errCode = audit.AuditOutcomeError, "session_host_unavailable"
@@ -117,37 +135,36 @@ func (d sessionRouteDeps) handleChiefOfStaffMessage(w http.ResponseWriter, r *ht
 	completion := intent
 	completion.Phase = audit.AuditPhaseCompletion
 	completion.DurMs = time.Since(start).Milliseconds()
-	completion.Args = d.sessionMessageArgs(body, origin, false)
+	completion.Args = d.sessionMessageArgs(sessionID, text, origin, false)
 	completion.Outcome = outcome
 	completion.Error = errCode
 	d.auditor.Record(completion)
 
-	attrs := []any{"op", "chief_of_staff.send", "session_id", body.SessionID, "origin", origin,
+	attrs := []any{"op", "chief_of_staff.send", "session_id", sessionID, "origin", origin,
 		"duration_ms", time.Since(start).Milliseconds()}
 	if status == http.StatusAccepted {
-		slog.InfoContext(r.Context(), "chief of staff send", append(attrs, "status", "ok")...)
-		writeJSON(w, http.StatusAccepted, chiefOfStaffMessageResult{SessionID: body.SessionID, Origin: origin, At: resp.At})
-		return
+		slog.InfoContext(ctx, "chief of staff send", append(attrs, "status", "ok")...)
+		return status, "", "", resp.At
 	}
 	logErr := wireCode
 	if errCode != "" {
 		logErr = errCode
 	}
-	slog.WarnContext(r.Context(), "chief of staff send", append(attrs, "status", "error", "error", logErr)...)
-	writeChiefOfStaffError(w, status, wireCode, message)
+	slog.WarnContext(ctx, "chief of staff send", append(attrs, "status", "error", "error", logErr)...)
+	return status, wireCode, message, ""
 }
 
 // sessionMessageArgs builds a session_message row's args. The text is carried
 // only on the intent row and only when audit.log_args is on, cut to
 // max_arg_bytes; the byte count is always recorded.
-func (d sessionRouteDeps) sessionMessageArgs(body chiefOfStaffMessageBody, origin string, withText bool) json.RawMessage {
+func (d sessionRouteDeps) sessionMessageArgs(sessionID, body, origin string, withText bool) json.RawMessage {
 	args := map[string]any{
-		"session_id": body.SessionID,
+		"session_id": sessionID,
 		"origin":     origin,
-		"text_bytes": len(body.Text),
+		"text_bytes": len(body),
 	}
 	if withText && d.auditor.LogArgs() {
-		text, truncated := d.auditor.CapText(body.Text)
+		text, truncated := d.auditor.CapText(body)
 		args["text"] = text
 		if truncated {
 			args["text_truncated"] = true

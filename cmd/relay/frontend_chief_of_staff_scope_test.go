@@ -20,11 +20,12 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sessions/testutil"
 )
 
-// The Chief of Staff scope narrows `proxy`: three doors and nothing else.
+// The Chief of Staff scope narrows `proxy`: four doors and nothing else.
 var chiefOfStaffDoors = map[string]bool{
 	"GET /api/sessions":                 true,
 	"GET /ws":                           true,
 	"POST /api/chief-of-staff/messages": true,
+	"POST /api/chief-of-staff/sessions": true,
 }
 
 const (
@@ -197,7 +198,7 @@ func TestChiefOfStaffScopeReach(t *testing.T) {
 			for _, must := range []string{
 				"POST /api/terminals", "POST /api/sessions", "POST /api/sessions/{id}/resume",
 				"POST /api/mcps", "POST /api/mcps/{id}/enumerate", "POST /api/services/{id}/start",
-				"POST /api/chief-of-staff/messages",
+				"POST /api/chief-of-staff/messages", "POST /api/chief-of-staff/sessions", "PUT /api/projects/{id}",
 			} {
 				if !have[must] {
 					t.Fatalf("pattern %q is not in the scanned set; the scan lost a door it must try", must)
@@ -270,10 +271,27 @@ func TestChiefOfStaffScopeEntry(t *testing.T) {
 	}
 }
 
-// Without the scope header the send door is closed to everyone, whatever they
+// Without the scope header the send and start doors are closed to everyone, whatever they
 // hold, and nothing reaches the session host.
 func TestChiefOfStaffScopeSendDoorClosedWithoutScope(t *testing.T) {
 	const send = `{"sessionId":"s-1","text":"hello"}`
+	t.Run("start door, bearer holding all five classes", func(t *testing.T) {
+		s := startCoSServer(t)
+		host := &cosHost{svc: NewFakeService(t, FakeServiceOptions{ServiceID: config.RelaySessionsServiceID, Manifest: fakeSessionsManifest()})}
+		s.f.registerFakeSessionsHost(t, host.svc, selfPeerToken(t).Process())
+
+		status, _ := s.do(t, "POST", "/api/chief-of-staff/sessions", bearerHeader(s.bearer(t, allFiveClasses...), false),
+			`{"projectId":"p1","prompt":"go","model":"haiku"}`)
+		if status != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", status)
+		}
+		if got := decisionReasons(t, s.rec); got[reasonNotGranted] != 1 || len(got) != 1 {
+			t.Fatalf("refusals = %v, want one %q", got, reasonNotGranted)
+		}
+		if n := len(host.svc.Requests()); n != 0 {
+			t.Fatalf("host got %d request(s) from an unscoped caller", n)
+		}
+	})
 	t.Run("bearer holding all five classes", func(t *testing.T) {
 		s := startCoSServer(t)
 		host := &cosHost{svc: NewFakeService(t, FakeServiceOptions{ServiceID: config.RelaySessionsServiceID, Manifest: fakeSessionsManifest()})}

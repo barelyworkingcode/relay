@@ -172,6 +172,35 @@ Claude's own JSONL history has no origin, so on join `session.MarkOrigins`
 aligns it with the session's stored messages and sets `origin` on the matching
 history entries. A person's message has no `origin`.
 
+### Session origin
+
+A session carries an `origin` when someone other than the person at a
+frontend started it. The only value is `chief-of-staff`, set by relay's
+handler for `POST /api/chief-of-staff/sessions` (the Chief of Staff start) and
+never read from a request body: `LaunchRequest.Origin` has no decoder.
+`hostapi.LaunchRequest.Origin` (`json:"origin,omitempty"`) carries it to
+relay-sessions, which answers 400 `invalid_spec` to any other non-empty value.
+
+The host stores it on `Session.Origin` (terminals: `terminal.Session.Origin`)
+and relay stores it on `ledger.Record.Origin`. A resume takes the origin from
+the ledger record, never from the caller, so a resumed session keeps it.
+`GET /api/sessions` and `GET /api/terminals` rows include `"origin"` when set.
+
+The start route is `POST /api/chief-of-staff/sessions`, body
+`{projectId, folder?, prompt, model, mode?}`, 64 KiB at most. `mode` is
+`headless` (the default: a `claude`, `pi`, `codex` or `chat` session chosen by
+the model, with relay-built settings `{"headless":true,"agent":true}` so it
+shows in the session list and on the board) or `terminal` (a `pty` session on
+the `claude-code` template with `--model <model> -- <prompt>`, Claude models
+only). `folder` is relative to the project and is resolved through symlinks;
+a path that leaves the project root is refused, and a project on an SSH host
+is refused. Headless delivers the prompt through the same core as the messages
+route; if delivery fails the session is terminated with reason
+`chief_of_staff_start_failed` and the route answers 502 `prompt_not_delivered`.
+A terminal start appears in `GET /api/terminals` with its origin and does not
+join the Chief of Staff roster, which tracks agent sessions only. Success is
+201 `{sessionId, name, projectId, directory, mode, kind, origin, at}`.
+
 ### `POST /launch`
 
 Body is `hostapi.LaunchRequest` (v1). `handleLaunch` is a thin dispatcher —
