@@ -49,6 +49,17 @@ outside it is not a relay bug, however real.
    Relay does not promise that a frontend routes its Chief of Staff messages
    through the scope, or that it never marks a message the person typed: the
    mark records which door a frontend chose.
+3b. **A read-only-projects session** (`settings.readOnlyProjects`, claude
+   only, started by a frontend that holds execute). It reads every registered
+   local project, and that read reach is new: a session otherwise reads only
+   its own project. Relay promises it writes none of them and reads nothing
+   outside the project folders, the template's grants and the paths the
+   Claude CLI needs. The sandbox profile is the enforcement; the tool list is
+   not. A caller that can start sessions can start one with this option, so
+   the option widens read reach for that caller only as far as the projects
+   already registered. The set of readable projects is fixed when the
+   profile is written, and a project change ends the live sessions that hold
+   one.
 4. **A peer on the network or in the browser** (a machine that can reach a
    relay listener, or a web page open on this Mac reaching relay's localhost
    ports). It gets nothing without a credential: no tool call, no config
@@ -90,6 +101,9 @@ scope).
   can't name all three is out of scope.
 - Races relay's own launch path must win (microsecond windows, one try per
   launch) are theoretical until reproduced. Examples: #57, #110.
+- A read-only-projects session that writes to a project folder, or reads a
+  path no project, template grant or CLI need names, or a profile that
+  outlives a project change, is a relay bug against asset D.
 - A request in the chief-of-staff scope that reaches anything outside its
   three doors, a message marked `chief-of-staff` that did not come through
   the scope, or a scoped send with no intent record, is a relay bug against

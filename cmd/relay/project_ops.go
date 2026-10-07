@@ -255,6 +255,7 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 		}
 		return config.Project{}, err
 	}
+	o.SessionCleanup.endReadOnlySessions(readOnlyRootsChanged)
 	return created, nil
 }
 
@@ -306,6 +307,7 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 	var updated config.Project
 	var found bool
 	var updateErr error
+	var before config.Project
 	if err := o.runCommitted(ctx, func() error {
 		queued := sync.OnceValue(surfaces)
 		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
@@ -317,6 +319,10 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 				if unapproved := project.UnapprovedWidening(project.UpdateWidensGrant(*live, f, recheckSurfaces), widened); len(unapproved) > 0 {
 					return fmt.Errorf("%w: %s", errProjectChangedDuringApproval, strings.Join(unapproved, ", "))
 				}
+			}
+			before = config.Project{}
+			if live, _ := config.FindProjectByID(s, id); live != nil {
+				before = *live
 			}
 			updated, found, updateErr = project.ApplyUpdate(s, id, f, queued)
 			if updateErr != nil {
@@ -352,6 +358,9 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 	}
 	if !found {
 		return config.Project{}, false, nil
+	}
+	if before.Path != updated.Path || before.Kind != updated.Kind || before.HostID != updated.HostID {
+		o.SessionCleanup.endReadOnlySessions(readOnlyRootsChanged)
 	}
 	return updated, true, nil
 }
@@ -422,6 +431,7 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 	// delete"). A zero SessionCleanup (a caller with no session-host wiring)
 	// is a no-op, guarded by sessionRouteDeps.ready() inside cleanupProject.
 	o.SessionCleanup.cleanupProject(id)
+	o.SessionCleanup.endReadOnlySessions(readOnlyRootsChanged)
 	return removed, true, nil
 }
 

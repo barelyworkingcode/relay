@@ -205,6 +205,27 @@ func useRelayTools(raw json.RawMessage) bool {
 	return *s.UseRelayTools
 }
 
+// readOnlyBuiltinTools is the whole built-in tool set of a read-only-projects
+// session: --tools replaces Claude's default set, so nothing that writes or
+// runs a command is offered. The sandbox profile is the enforcement; this
+// keeps the model from being offered tools the profile would only refuse.
+const readOnlyBuiltinTools = "Read,Grep,Glob"
+
+// readOnlyProjects reports the session's own readOnlyProjects setting, parsed
+// from session.Settings. Malformed or absent settings default to false.
+func readOnlyProjects(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var s struct {
+		ReadOnlyProjects *bool `json:"readOnlyProjects"`
+	}
+	if json.Unmarshal(raw, &s) != nil || s.ReadOnlyProjects == nil {
+		return false
+	}
+	return *s.ReadOnlyProjects
+}
+
 // warnRelayToolsUnavailable is the one relay-tools-unavailable Warn shared by
 // the chat and claude providers, fired only when a session actually asked
 // for useRelayTools.
@@ -319,6 +340,12 @@ func (p *ClaudeProvider) buildClaudeArgs(mcpConfigPath, sysPromptPath string) []
 		args = append(args, "--permission-prompt-tool", "stdio")
 	} else if mcpConfigPath != "" {
 		args = append(args, "--mcp-config", mcpConfigPath)
+	}
+
+	// --strict-mcp-config keeps a project's or user's own MCP servers out;
+	// only the --mcp-config above (relay's tools) can load.
+	if readOnlyProjects(p.session.Settings) {
+		args = append(args, "--tools", readOnlyBuiltinTools, "--strict-mcp-config")
 	}
 
 	return args

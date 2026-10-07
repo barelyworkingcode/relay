@@ -59,6 +59,7 @@ Areas: sessions, sandbox, templates, audit.
 | Codex session | API (eve) | eve starts a session on a `codex/<slug>` model → `POST /api/sessions`; the models come from `GET /api/models` (group Codex) | HTTP [execute] | — | session-codex | eve > New Session > Codex model | `settings.json` `terminal_templates` `codex`, `projects[].allowed_templates`; for a host, `hosts[].terminal_templates` `codex` |
 | Agent state and turn excerpts | API (eve) | a live claude, pi or codex session → `session_state` and `turn_done` on `/ws`; `attention` on `GET /api/sessions`; codex reports six of the seven states, never `asking` | HTTP [proxy] | — | session-agent-state | none until the agent board ships in eve | none (API only: `POST /api/sessions` settings `agent: true`) |
 | Chief of Staff scope: read every session, send marked | API (eve) | `X-Relay-Scope: chief-of-staff` → `GET /api/sessions`, read-only `/ws`, `POST /api/chief-of-staff/messages` | HTTP [proxy, scoped] | — | chief-of-staff-send | none until eve's Chief of Staff thread ships | none (API only) |
+| Read-only project access for a claude session | API (eve) | `POST /api/sessions` with `settings.readOnlyProjects: true` → the session reads every local project and writes none; a project add, move or remove ends it | HTTP [execute] | — | none | none until eve's Chief of Staff reads projects | none (API only) |
 
 ### G2 · Give an agent access to one project and nothing else — must-have
 Intent: grant a project its folder, mail account and chosen tools, and nothing wider.
