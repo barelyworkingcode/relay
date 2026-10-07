@@ -18,7 +18,7 @@ import (
 func TestLive_ReadOnlyProjectsProfileEnforces(t *testing.T) {
 	const sandboxExec = "/usr/bin/sandbox-exec"
 	if _, err := os.Stat(sandboxExec); err != nil {
-		t.Skipf("sandbox-exec unavailable: %v", err)
+		t.Fatalf("sandbox-exec unavailable: %v", err)
 	}
 	// The fixtures sit under the real home directory, not temp: temp is
 	// readable and writable to every session, so a probe there proves nothing.

@@ -66,7 +66,7 @@ func TestParseReadOnlyFrame_InitToolsAndServers(t *testing.T) {
 // so the fixtures under the stand-in home are refused for want of a grant.
 func TestRunProfileProbe_TellsAProfileRefusalFromOtherFailures(t *testing.T) {
 	if err := sandbox.Available(); err != nil {
-		t.Skip(err)
+		t.Fatalf("sandbox unavailable: %v", err)
 	}
 	old := home
 	home = resolvedTempDir(t)
