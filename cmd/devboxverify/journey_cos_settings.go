@@ -16,7 +16,6 @@ const (
 	cosConfigPath    = "/api/chief-of-staff/config"
 	cosModelLabel    = "Chief of Staff model"
 	cosProjectLabel  = "Chief of Staff project"
-	cosNotSet        = "Not set"
 	cosPickModel     = "Haiku"
 	cosPickModelName = "haiku"
 	cosTemplateLine  = "It doesn't allow the claude-code template."
@@ -58,11 +57,10 @@ type cosFixture struct {
 	GrantName, AcmeName, AcmeID string
 }
 
-// cosPage is what the Projects page shows: its static text and the project
-// pop-up's menu.
+// cosPage is what the Projects page shows: its static text and whether the
+// project pop-up is there.
 type cosPage struct {
 	Texts        []string
-	ProjectItems []string
 	ProjectFound bool
 }
 
@@ -86,9 +84,14 @@ type cosSteps interface {
 	// Poll reads the setting until done holds or within passes.
 	Poll(ctx context.Context, within time.Duration, done func(cosConfig) bool) (cosConfig, bool)
 	OpenProjects(ctx context.Context) error
+	// ChooseModel and ChooseProject select an option by typing its text into
+	// the focused pop-up and return once the pop-up shows it.
 	ChooseModel(ctx context.Context, title string) error
-	Page(ctx context.Context, within time.Duration, done func(cosPage) bool) (cosPage, error)
 	ChooseProject(ctx context.Context, title string) error
+	// ProbeProject types title into the project pop-up and reports whether
+	// the pop-up ever showed it within the bounded window.
+	ProbeProject(ctx context.Context, title string) (selected bool, err error)
+	Page(ctx context.Context, within time.Duration, done func(cosPage) bool) (cosPage, error)
 	// Close closes the Settings window if the journey opened it.
 	Close(ctx context.Context) error
 }
@@ -102,6 +105,8 @@ type cosSettingsRun struct {
 	OpenErr    error
 	ModelErr   error
 	PageErr    error
+	ProbeErr   error
+	GrantPick  bool // the pop-up accepted the Verify Grant project
 	Page       cosPage
 	ChooseErr  error
 	Applied    cosConfig
@@ -139,9 +144,14 @@ func runCosSettingsWith(ctx context.Context, s cosSteps) (r cosSettingsRun) {
 		return r
 	}
 	r.Page, r.PageErr = s.Page(ctx, cosUIWait, func(p cosPage) bool {
-		return p.hasText(r.Fix.grantLine()) && (slices.Contains(p.ProjectItems, r.Fix.AcmeName) || p.hasTextPrefix(r.Fix.acmeReason()))
+		return p.ProjectFound && p.hasText(r.Fix.grantLine())
 	})
 	if r.PageErr != nil || r.Page.hasTextPrefix(r.Fix.acmeReason()) || !r.pageOK() {
+		return r
+	}
+	// Waits: none possible: an absent option raises nothing; bounded
+	// observation of the pop-up for 5 s.
+	if r.GrantPick, r.ProbeErr = s.ProbeProject(ctx, r.Fix.GrantName); r.ProbeErr != nil || r.GrantPick {
 		return r
 	}
 	if r.ChooseErr = s.ChooseProject(ctx, r.Fix.AcmeName); r.ChooseErr != nil {
@@ -157,8 +167,7 @@ func runCosSettingsWith(ctx context.Context, s cosSteps) (r cosSettingsRun) {
 }
 
 func (r cosSettingsRun) pageOK() bool {
-	return r.Page.ProjectFound && r.Page.hasText(r.Fix.grantLine()) &&
-		slices.Contains(r.Page.ProjectItems, r.Fix.AcmeName) && !slices.Contains(r.Page.ProjectItems, r.Fix.GrantName)
+	return r.Page.ProjectFound && r.Page.hasText(r.Fix.grantLine())
 }
 
 // restoreCosConfig puts the setting back exactly as base read: the same
@@ -198,7 +207,7 @@ func classifyCosSettings(r cosSettingsRun) result {
 	if r.RestoreErr != nil {
 		return fail("restore: " + r.RestoreErr.Error())
 	}
-	for _, err := range []error{r.OpenErr, r.ModelErr, r.PageErr, r.ChooseErr} {
+	for _, err := range []error{r.OpenErr, r.ModelErr, r.PageErr, r.ProbeErr, r.ChooseErr} {
 		if errors.Is(err, errAXDriver) {
 			return blocked(id, err.Error())
 		}
@@ -218,16 +227,16 @@ func classifyCosSettings(r cosSettingsRun) result {
 		return fail(`no pop-up labelled "` + cosProjectLabel + `" on the page`)
 	case !r.Page.hasText(r.Fix.grantLine()):
 		return fail(fmt.Sprintf("no line %q on the page", r.Fix.grantLine()))
-	case slices.Contains(r.Page.ProjectItems, r.Fix.GrantName):
-		return fail(r.Fix.GrantName + " is in the project pop-up, but it cannot run the Chief of Staff")
-	case !slices.Contains(r.Page.ProjectItems, r.Fix.AcmeName):
-		return fail(fmt.Sprintf("%s is not in the project pop-up; it lists %q", r.Fix.AcmeName, r.Page.ProjectItems))
+	case r.ProbeErr != nil:
+		return fail("project pop-up: " + r.ProbeErr.Error())
+	case r.GrantPick:
+		return fail(r.Fix.GrantName + " can be selected in the project pop-up, but it cannot run the Chief of Staff")
 	case r.ChooseErr != nil:
-		return fail("project pop-up: " + r.ChooseErr.Error())
+		return fail(fmt.Sprintf("choosing %s in the project pop-up: %s", r.Fix.AcmeName, r.ChooseErr.Error()))
 	case !r.AppliedOK:
 		return fail(fmt.Sprintf("5 s after the choice GET shows %+v, want %s with model %s", r.Applied, r.Fix.AcmeID, cosPickModelName))
 	}
-	detail := "Haiku chosen in the model pop-up; " + r.Fix.GrantName + " listed with its reason and left out of the menu; " +
+	detail := "Haiku chosen in the model pop-up; " + r.Fix.GrantName + " listed with its reason and not selectable; " +
 		r.Fix.AcmeName + " chosen; GET serves it with model haiku; setting restored"
 	if r.CloseErr != nil {
 		detail += "; close: " + r.CloseErr.Error()
@@ -244,8 +253,7 @@ func runCosSettings(ctx context.Context, e env) result {
 // class.
 type liveCosSteps struct {
 	liveSettingsSteps
-	token         string
-	projectOpened bool
+	token string
 }
 
 func (s *liveCosSteps) Setup(ctx context.Context) (cosFixture, result, bool) {
@@ -345,65 +353,109 @@ func (s *liveCosSteps) pressTab(ctx context.Context, label string) error {
 	return tab.press()
 }
 
-// findPopUp finds a page's pop-up by its label. A pop-up whose AXTitle shows
-// the chosen option hides the label, so it is also found by holding the
-// marker item.
-func findPopUp(page []*axNode, label, marker string) *axNode {
-	var byItem *axNode
+// findPopUp finds a pop-up by its AXTitle, which WebKit sets to the
+// select's aria-label. The pop-up's AXValue is the selected option's text.
+func findPopUp(page []*axNode, label string) *axNode {
 	for _, n := range page {
-		if n.Role != "AXPopUpButton" {
-			continue
-		}
-		if n.Label == label {
+		if n.Role == "AXPopUpButton" && n.Label == label {
 			return n
 		}
-		if byItem == nil && slices.Contains(axPopUpTitles(n), marker) {
-			byItem = n
-		}
 	}
-	return byItem
+	return nil
 }
 
-// choose picks title in the pop-up. It opens the pop-up once, only when the
-// page exposes no menu items for it.
-func (s *liveCosSteps) choose(ctx context.Context, label, marker, title string) error {
-	opened := false
+// typeInto focuses a pop-up and types title into it, without Return and
+// without opening its menu: WebKit's type-ahead selects the option that
+// starts with the text. Opening the menu would block Accessibility reads of
+// the page.
+func (s *liveCosSteps) typeInto(ctx context.Context, label, title string) error {
 	pop, release, err := pollNode(ctx, cosUIWait, func() (*axNode, func(), error) {
 		win, release, err := s.settingsWindow()
 		if err != nil || win == nil {
 			return nil, release, err
 		}
-		pop := findPopUp(flatten(win), label, marker)
-		if pop == nil {
-			return nil, release, nil
-		}
-		if len(axPopUpItems(pop)) == 0 {
-			if !opened {
-				opened = true
-				if err := axPopUpOpen(pop); err != nil {
-					return nil, release, err
-				}
-			}
-			return nil, release, nil
-		}
-		return pop, release, nil
+		return findNode(win, func(n *axNode) bool { return n.Role == "AXPopUpButton" && n.Label == label }, release)
 	})
 	if err != nil {
 		return err
 	}
 	if pop == nil {
-		return fmt.Errorf("no pop-up labelled %q with items", label)
+		return fmt.Errorf("no pop-up labelled %q", label)
 	}
 	defer release()
-	return axPopUpChoose(pop, title)
+	if err := axFocus(pop); err != nil {
+		return err
+	}
+	return axTypeText(s.e.RelayPID, title)
+}
+
+// popUpValue reads the pop-up's selected text from a fresh snapshot; the page
+// re-renders after a change.
+func (s *liveCosSteps) popUpValue(label string) (string, error) {
+	win, release, err := s.settingsWindow()
+	defer release()
+	if err != nil {
+		return "", err
+	}
+	if win == nil {
+		return "", fmt.Errorf("no %q window", settingsWindowTitle)
+	}
+	pop := findPopUp(flatten(win), label)
+	if pop == nil {
+		return "", fmt.Errorf("no pop-up labelled %q", label)
+	}
+	return pop.Value, nil
+}
+
+// watch polls the pop-up every 200 ms for up to within and reports whether
+// its value ever equalled title. It stops at the first match.
+func (s *liveCosSteps) watch(ctx context.Context, label, title string, within time.Duration) (bool, error) {
+	var lastErr error
+	for deadline := time.Now().Add(within); ; {
+		switch v, err := s.popUpValue(label); {
+		case err != nil:
+			lastErr = err
+		case v == title:
+			return true, nil
+		default:
+			lastErr = nil
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return false, lastErr
+		}
+		time.Sleep(cosPollGap)
+	}
+}
+
+func (s *liveCosSteps) choose(ctx context.Context, label, title string) error {
+	if err := s.typeInto(ctx, label, title); err != nil {
+		return err
+	}
+	// Waits: none possible: the WebView exposes no event to an out-of-process
+	// Accessibility reader. Poll every 200 ms for up to 5 s.
+	ok, err := s.watch(ctx, label, title, cosUIWait)
+	if !ok {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("pop-up %q does not show %q 5 s after typing it", label, title)
+	}
+	return nil
 }
 
 func (s *liveCosSteps) ChooseModel(ctx context.Context, title string) error {
-	return s.choose(ctx, cosModelLabel, "Opus", title)
+	return s.choose(ctx, cosModelLabel, title)
 }
 
 func (s *liveCosSteps) ChooseProject(ctx context.Context, title string) error {
-	return s.choose(ctx, cosProjectLabel, cosNotSet, title)
+	return s.choose(ctx, cosProjectLabel, title)
+}
+
+func (s *liveCosSteps) ProbeProject(ctx context.Context, title string) (bool, error) {
+	if err := s.typeInto(ctx, cosProjectLabel, title); err != nil {
+		return false, err
+	}
+	return s.watch(ctx, cosProjectLabel, title, cosUIWait)
 }
 
 func (s *liveCosSteps) readPage() (cosPage, error) {
@@ -422,16 +474,7 @@ func (s *liveCosSteps) readPage() (cosPage, error) {
 			p.Texts = append(p.Texts, n.Label)
 		}
 	}
-	if pop := findPopUp(nodes, cosProjectLabel, cosNotSet); pop != nil {
-		p.ProjectFound = true
-		if len(axPopUpItems(pop)) == 0 && !s.projectOpened {
-			s.projectOpened = true
-			if err := axPopUpOpen(pop); err != nil {
-				return p, err
-			}
-		}
-		p.ProjectItems = axPopUpTitles(pop)
-	}
+	p.ProjectFound = findPopUp(nodes, cosProjectLabel) != nil
 	return p, nil
 }
 

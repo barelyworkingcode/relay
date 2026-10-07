@@ -34,6 +34,8 @@ type fakeCos struct {
 	page       cosPage
 	chooseErr  error
 	closeErr   error
+	probeErr   error
+	grantPick  bool // the pop-up accepts the Verify Grant project
 	noApply    bool // the choice never reaches relay
 	applyOnErr bool // the choice reaches relay although the press reports an error
 	stuckAfter bool // a restore write is accepted but never shows
@@ -96,6 +98,10 @@ func (f *fakeCos) Page(_ context.Context, _ time.Duration, done func(cosPage) bo
 	f.calls = append(f.calls, "page")
 	return f.page, f.pageErr
 }
+func (f *fakeCos) ProbeProject(_ context.Context, title string) (bool, error) {
+	f.calls = append(f.calls, "probe "+title)
+	return f.grantPick, f.probeErr
+}
 func (f *fakeCos) ChooseProject(context.Context, string) error {
 	f.calls = append(f.calls, "project")
 	if f.chooseErr != nil {
@@ -118,7 +124,6 @@ func (f *fakeCos) Close(ctx context.Context) error {
 func goodCosPage() cosPage {
 	return cosPage{
 		Texts:        []string{"Chief of Staff", cosGrantName + ": It doesn't allow the claude-code template."},
-		ProjectItems: []string{"Not set", "Acme"},
 		ProjectFound: true,
 	}
 }
@@ -147,7 +152,6 @@ func TestRunCosSettings(t *testing.T) {
 		{"driver error reading the page", func(f *fakeCos) { f.pageErr = driver }, stateBlocked, "accessibility driver", cosConfig{}},
 		{"Acme shows a reason", func(f *fakeCos) {
 			f.page.Texts = append(f.page.Texts, "Acme: It has a permission policy.")
-			f.page.ProjectItems = []string{"Not set"}
 		}, stateBlocked, "Acme", cosConfig{}},
 		{"window does not open", func(f *fakeCos) { f.openErr = errors.New("no Projects tab") }, stateFail, "Projects", cosConfig{}},
 		{"model pop-up missing", func(f *fakeCos) { f.modelErr = errors.New("no pop-up") }, stateFail, "model pop-up", cosConfig{}},
@@ -158,11 +162,12 @@ func TestRunCosSettings(t *testing.T) {
 		{"reason text differs", func(f *fakeCos) {
 			f.page.Texts = []string{cosGrantName + ": It has a permission policy."}
 		}, stateFail, "claude-code template", cosConfig{}},
-		{"Verify Grant is in the menu", func(f *fakeCos) { f.page.ProjectItems = []string{"Not set", cosGrantName, "Acme"} }, stateFail, "cannot run", cosConfig{}},
-		{"Acme is not in the menu and shows no reason", func(f *fakeCos) { f.page.ProjectItems = []string{"Not set"} }, stateFail, "not in the project pop-up", cosConfig{}},
-		{"project pop-up missing", func(f *fakeCos) { f.page.ProjectFound, f.page.ProjectItems = false, nil }, stateFail, "pop-up", cosConfig{}},
+		{"Verify Grant can be selected", func(f *fakeCos) { f.grantPick = true }, stateFail, "can be selected", cosConfig{}},
+		{"driver error probing Verify Grant", func(f *fakeCos) { f.probeErr = driver }, stateBlocked, "accessibility driver", cosConfig{}},
+		{"probe fails", func(f *fakeCos) { f.probeErr = errors.New("no pop-up") }, stateFail, "project pop-up", cosConfig{}},
+		{"project pop-up missing", func(f *fakeCos) { f.page.ProjectFound = false }, stateFail, "pop-up", cosConfig{}},
 		{"page unreadable", func(f *fakeCos) { f.pageErr = errors.New("no window") }, stateFail, "Projects page", cosConfig{}},
-		{"Acme cannot be chosen", func(f *fakeCos) { f.chooseErr = errors.New("no item") }, stateFail, "project pop-up", cosConfig{}},
+		{"Acme cannot be chosen", func(f *fakeCos) { f.chooseErr = errors.New("no item") }, stateFail, "choosing Acme", cosConfig{}},
 		{"the choice never reaches relay", func(f *fakeCos) { f.noApply = true }, stateFail, "5 s after the choice", cosConfig{}},
 		{"restore write refused", func(f *fakeCos) { f.deleteErr = errors.New("DELETE: status 500") }, stateFail, "restore", cosConfig{true, cosAcmeID, "haiku", 100}},
 		{"restore does not read back", func(f *fakeCos) { f.stuckAfter = true }, stateFail, "read back", cosConfig{true, cosAcmeID, "haiku", 100}},
@@ -278,60 +283,32 @@ func TestParseCosConfig(t *testing.T) {
 	}
 }
 
-func popUp(label string, titles ...string) *axNode {
-	p := &axNode{Role: "AXPopUpButton", Label: label}
-	menu := &axNode{Role: "AXMenu"}
-	for _, t := range titles {
-		menu.Children = append(menu.Children, &axNode{Role: "AXMenuItem", Label: t, press: func() error { return nil }})
-	}
-	p.Children = []*axNode{menu}
-	return p
-}
-
 func TestFindPopUp(t *testing.T) {
-	byLabel := popUp(cosProjectLabel, "Not set", "Acme")
-	titled := popUp("Sonnet", "Haiku", "Sonnet", "Opus")
-	other := popUp("Default project", "None", "Acme")
-	cases := []struct {
-		name   string
-		page   []*axNode
-		label  string
-		marker string
-		want   *axNode
-	}{
-		{"by label", flatten(&axNode{Children: []*axNode{other, byLabel}}), cosProjectLabel, cosNotSet, byLabel},
-		{"label wins over an earlier marker match", []*axNode{popUp("x", "Not set"), byLabel}, cosProjectLabel, cosNotSet, byLabel},
-		{"by marker item when the title shows the choice", []*axNode{other, titled}, cosModelLabel, "Opus", titled},
-		{"none", []*axNode{other}, cosModelLabel, "Opus", nil},
-		{"a button that is not a pop-up is skipped", []*axNode{{Role: "AXButton", Label: cosProjectLabel}}, cosProjectLabel, cosNotSet, nil},
+	project := &axNode{Role: "AXPopUpButton", Label: cosProjectLabel, Value: "Not set"}
+	model := &axNode{Role: "AXPopUpButton", Label: cosModelLabel, Value: "Sonnet"}
+	notPopUp := &axNode{Role: "AXButton", Label: cosModelLabel}
+	page := []*axNode{{Role: "AXPopUpButton", Label: "Default project"}, notPopUp, project, model}
+	if got := findPopUp(page, cosProjectLabel); got != project {
+		t.Errorf("project pop-up: got %v", got)
 	}
-	for _, c := range cases {
-		if got := findPopUp(c.page, c.label, c.marker); got != c.want {
-			t.Errorf("%s: wrong pop-up (%v)", c.name, got)
-		}
+	if got := findPopUp(page, cosModelLabel); got != model {
+		t.Errorf("model pop-up: got %v (a button with the same label must not match)", got)
+	}
+	if got := findPopUp(page[:2], cosProjectLabel); got != nil {
+		t.Errorf("absent pop-up: got %v", got)
 	}
 }
 
-func TestAXPopUpChoose(t *testing.T) {
-	var pressed []string
-	pop := &axNode{Role: "AXPopUpButton", Children: []*axNode{{Role: "AXMenu"}}}
-	for _, title := range []string{"Not set", "Acme", "Acme Two"} {
-		pop.Children[0].Children = append(pop.Children[0].Children, &axNode{Role: "AXMenuItem", Label: title, press: func() error {
-			pressed = append(pressed, title)
-			return nil
-		}})
+func TestRunCosSettingsProbesGrantBeforeChoosingAcme(t *testing.T) {
+	f := newFakeCos()
+	runCosSettingsWith(context.Background(), f)
+	if got, want := strings.Join(f.calls[:4], ","), "model,page,probe "+cosGrantName+",project"; got != want {
+		t.Errorf("calls = %q, want it to start %q", got, want)
 	}
-	if err := axPopUpChoose(pop, "Acme"); err != nil || fmt.Sprint(pressed) != "[Acme]" {
-		t.Errorf("choose Acme: err %v, pressed %v", err, pressed)
-	}
-	if err := axPopUpChoose(pop, "Missing"); err == nil {
-		t.Error("choosing a missing title succeeded")
-	}
-	pop.Children[0].Children = append(pop.Children[0].Children, &axNode{Role: "AXMenuItem", Label: "Acme", press: func() error { return nil }})
-	if err := axPopUpChoose(pop, "Acme"); err == nil {
-		t.Error("choosing a title held twice succeeded")
-	}
-	if got := axPopUpTitles(pop); fmt.Sprint(got) != "[Not set Acme Acme Two Acme]" {
-		t.Errorf("titles = %v", got)
+	f = newFakeCos()
+	f.grantPick = true
+	runCosSettingsWith(context.Background(), f)
+	if strings.Contains(strings.Join(f.calls, ","), "project") {
+		t.Errorf("chose a project after the Verify Grant probe was accepted: %v", f.calls)
 	}
 }

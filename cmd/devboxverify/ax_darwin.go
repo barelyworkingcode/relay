@@ -67,12 +67,31 @@ static int ax_press(axref el) {
 	CFRelease(name);
 	return err;
 }
+
+static int ax_focus(axref el) {
+	return AXUIElementSetAttributeValue((AXUIElementRef)el, kAXFocusedAttribute, kCFBooleanTrue);
+}
+
+// Posts each UTF-16 unit as a key down and a key up to one process.
+static int ax_type(int pid, const UniChar *units, long n) {
+	for (long i = 0; i < n; i++) {
+		for (int down = 1; down >= 0; down--) {
+			CGEventRef ev = CGEventCreateKeyboardEvent(NULL, 0, down ? true : false);
+			if (!ev) return -1;
+			CGEventKeyboardSetUnicodeString(ev, 1, &units[i]);
+			CGEventPostToPid((pid_t)pid, ev);
+			CFRelease(ev);
+		}
+	}
+	return 0;
+}
 */
 import "C"
 
 import (
 	"errors"
 	"fmt"
+	"unicode/utf16"
 	"unsafe"
 )
 
@@ -161,6 +180,9 @@ func (s *axSnapshot) node(el C.axref) (*axNode, error) {
 	if n.Help, err = s.text(el, "AXHelp"); err != nil {
 		return nil, err
 	}
+	if n.Value, err = s.text(el, "AXValue"); err != nil {
+		return nil, err
+	}
 	for _, attr := range []string{"AXTitle", "AXDescription", "AXValue"} {
 		if n.Label, err = s.text(el, attr); err != nil || n.Label != "" {
 			break
@@ -174,6 +196,12 @@ func (s *axSnapshot) node(el C.axref) (*axNode, error) {
 	n.press = func() error {
 		if code := C.ax_press(held); code != 0 {
 			return axErr("AXPress", code)
+		}
+		return nil
+	}
+	n.focus = func() error {
+		if code := C.ax_focus(held); code != 0 {
+			return axErr("AXFocused", code)
 		}
 		return nil
 	}
@@ -233,54 +261,28 @@ func axExtras(pid int) (*axNode, func(), error) {
 
 func axWindows(pid int) ([]*axNode, func(), error) { return axRoots(pid, "AXWindows") }
 
-// axPopUpItems lists the menu items under a pop-up button in menu order. A
-// pop-up that exposes none is closed; axPopUpOpen shows them.
-func axPopUpItems(pop *axNode) []*axNode {
-	var out []*axNode
-	for _, n := range flatten(pop) {
-		if n.Role == "AXMenuItem" {
-			out = append(out, n)
-		}
+// axFocus sets AXFocused on an element, so that key events posted to its
+// process reach it even while the app is in the background.
+func axFocus(n *axNode) error {
+	if n.focus == nil {
+		return errors.New("node cannot take focus")
 	}
-	return out
+	return n.focus()
 }
 
-// axPopUpTitles is the title of each item axPopUpItems returns.
-func axPopUpTitles(pop *axNode) []string {
-	var out []string
-	for _, n := range axPopUpItems(pop) {
-		out = append(out, n.Label)
+// axTypeText posts text to a process as key events, one pair per UTF-16 unit
+// and no Return. A focused pop-up selects the option that starts with it.
+func axTypeText(pid int, text string) error {
+	units := utf16.Encode([]rune(text))
+	if len(units) == 0 {
+		return nil
 	}
-	return out
-}
-
-// axPopUpOpen presses a pop-up button. Like a status item, a pop-up may open
-// its menu and still report the press as unanswered, so the caller judges by
-// what appeared.
-func axPopUpOpen(pop *axNode) error {
-	if err := pop.press(); err != nil && !errors.Is(err, errAXCannotComplete) {
-		return err
+	buf := make([]C.UniChar, len(units))
+	for i, u := range units {
+		buf[i] = C.UniChar(u)
 	}
-	return nil
-}
-
-// axPopUpChoose presses the one item whose title is exactly title.
-func axPopUpChoose(pop *axNode, title string) error {
-	var match *axNode
-	for _, n := range axPopUpItems(pop) {
-		if n.Label != title {
-			continue
-		}
-		if match != nil {
-			return fmt.Errorf("pop-up has more than one item titled %q", title)
-		}
-		match = n
-	}
-	if match == nil {
-		return fmt.Errorf("pop-up has no item titled %q", title)
-	}
-	if err := match.press(); err != nil && !errors.Is(err, errAXCannotComplete) {
-		return err
+	if code := C.ax_type(C.int(pid), &buf[0], C.long(len(buf))); code != 0 {
+		return axErr("post keys", code)
 	}
 	return nil
 }

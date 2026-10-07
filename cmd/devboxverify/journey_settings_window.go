@@ -17,11 +17,14 @@ const (
 
 // axNode is one element of an Accessibility snapshot. Label is the first
 // non-empty of AXTitle, AXDescription and a string AXValue. press is nil in
-// a synthetic tree.
+// a synthetic tree. focus is nil likewise.
 type axNode struct {
 	Role, Subrole, Label, Help string
-	Children                   []*axNode
-	press                      func() error
+	// Value is AXValue alone; Label prefers AXTitle.
+	Value    string
+	Children []*axNode
+	press    func() error
+	focus    func() error
 }
 
 // flatten returns the tree in document order, which is the order the page
