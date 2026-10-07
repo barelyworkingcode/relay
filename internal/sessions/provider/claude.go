@@ -877,6 +877,8 @@ func (p *ClaudeProvider) translateAssistant(raw json.RawMessage) {
 		ContentBlock     *json.RawMessage `json:"content_block,omitempty"`
 		Delta            *json.RawMessage `json:"delta,omitempty"`
 		ContentBlockStop *bool            `json:"content_block_stop,omitempty"`
+		Error            string           `json:"error,omitempty"`
+		APIErrorStatus   int              `json:"api_error_status,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &ev); err != nil {
 		p.emitter.EmitVersionedRaw(raw)
@@ -887,7 +889,7 @@ func (p *ClaudeProvider) translateAssistant(raw json.RawMessage) {
 
 	switch {
 	case ev.Message != nil:
-		p.translateAssistantSnapshot(*ev.Message)
+		p.translateAssistantSnapshot(*ev.Message, ev.Error, ev.APIErrorStatus)
 
 	case ev.Delta != nil && ev.Index != nil:
 		p.firstTokenNano.CompareAndSwap(0, time.Now().UnixNano())
@@ -913,7 +915,7 @@ type claudeSnapContentBlock struct {
 	Input    json.RawMessage `json:"input,omitempty"`
 }
 
-func (p *ClaudeProvider) translateAssistantSnapshot(messageRaw json.RawMessage) {
+func (p *ClaudeProvider) translateAssistantSnapshot(messageRaw json.RawMessage, errCode string, errStatus int) {
 	var m struct {
 		ID      string                   `json:"id"`
 		Content []claudeSnapContentBlock `json:"content"`
@@ -926,10 +928,16 @@ func (p *ClaudeProvider) translateAssistantSnapshot(messageRaw json.RawMessage) 
 	p.snapMu.Lock()
 	defer p.snapMu.Unlock()
 
-	if m.ID != p.snapMessageID {
+	// An error snapshot always opens its own message so the marker is never
+	// swallowed by a repeated id.
+	if errCode != "" || m.ID != p.snapMessageID {
 		p.snapMessageID = m.ID
 		p.snapNextIdx = 0
-		p.emitter.MessageStart(m.ID)
+		if errCode != "" {
+			p.emitter.MessageStartError(m.ID, errCode, errStatus)
+		} else {
+			p.emitter.MessageStart(m.ID)
+		}
 	}
 
 	for _, block := range m.Content {
@@ -1064,9 +1072,10 @@ func (p *ClaudeProvider) translateResult(raw json.RawMessage) {
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
-		TotalCostUsd float64 `json:"total_cost_usd"`
-		IsError      bool    `json:"is_error"`
-		Subtype      string  `json:"subtype"`
+		TotalCostUsd   float64 `json:"total_cost_usd"`
+		IsError        bool    `json:"is_error"`
+		Subtype        string  `json:"subtype"`
+		APIErrorStatus int     `json:"api_error_status"`
 	}
 	parsed := json.Unmarshal(raw, &result) == nil
 	if parsed && result.Usage != nil {
@@ -1095,6 +1104,9 @@ func (p *ClaudeProvider) translateResult(raw json.RawMessage) {
 	var complete json.RawMessage
 	if parsed && (result.IsError || strings.HasPrefix(result.Subtype, "error")) {
 		complete = json.RawMessage(`{"isError":true}`)
+		if result.APIErrorStatus > 0 {
+			complete = json.RawMessage(fmt.Sprintf(`{"isError":true,"apiErrorStatus":%d}`, result.APIErrorStatus))
+		}
 	}
 	p.handler(events.HandlerMessageComplete, complete)
 }

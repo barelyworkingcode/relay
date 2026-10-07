@@ -699,6 +699,8 @@ Claude, pi and Codex share one path in `handleProviderEvent` and the manager met
 | `error` (a pi model failure) | TurnFailed |
 | `process_exited`, after the displaced-source check | ProcessExited |
 
+A failed Claude turn also says so on the session's own frames. The assistant `message_start` llm_event of a turn the CLI ended with an API error carries `"error":"<code>"` (for example `authentication_failed`), plus `"apiErrorStatus":<n>` when the line has one. The `message_complete` frame carries `"isError":true`, plus `"apiErrorStatus":<n>` when the CLI's result has one. A normal turn carries none of these keys.
+
 A Claude Stop kills the process, so the state reads `idle`, then `ended` a moment later. pi and Codex have no question path yet, so `asking` is reachable only for Claude: a Codex session reports six of the seven states.
 
 ### Frames
