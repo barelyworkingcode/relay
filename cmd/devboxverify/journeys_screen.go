@@ -50,6 +50,7 @@ var screenJourneys = []journey{
 	{dropInRefusedID, []string{"sessions"}, []string{"project:acme"}, phaseScreen, 180 * time.Second, runDropInToolRefused},
 	{cosID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runChiefOfStaffSend},
 	{cosStartID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runCosStart},
+	{cosOutsideID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, gateTimeout, runCosStartOutsideRoot},
 	{disabledID, []string{"mcps", "grants"}, nil, phaseScreen, 45 * time.Second, runDisabledTool},
 	{narrowID, []string{"grants", "projects", "sandbox"}, nil, phaseScreen, 45 * time.Second, runGrantNarrowing},
 	{svcStartID, []string{"services"}, nil, phaseScreen, 30 * time.Second, runServiceStartStop},

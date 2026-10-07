@@ -56,7 +56,6 @@ var gateSetupJourneys = slices.Concat(
 		{mcpPosID, []string{"mcps", "presence", "audit"}, nil, phaseScreen, gateTimeout, runMcpPos},
 		{grantPosID, []string{"projects", "grants", "presence", "audit"}, nil, phaseScreen, gateTimeout, runGrantPos},
 		{servicePosID, []string{"services", "presence", "audit"}, nil, phaseScreen, gateTimeout, runServicePos},
-		{cosOutsideID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, gateTimeout, runCosStartOutsideRoot},
 	},
 )
 
