@@ -36,6 +36,10 @@ func dropInSession(t *testing.T, inTurn bool) (*attnHarness, *fakeProvider) {
 	p.RestoreState([]byte(`{"claudeSessionId":"` + dropConvID + `"}`))
 	if inTurn {
 		h.send(t, dropID)
+		// This is subtle: the attention board's sweep timer shares the fake
+		// clock. Once it is registered, a later waiter count is the
+		// handoff's own deadline.
+		testutil.WaitFor(t, 2*time.Second, func() bool { return h.clk.Waiters() >= 1 })
 	}
 	return h, p
 }
@@ -69,9 +73,11 @@ func wantRefusal(t *testing.T, err error, code string) *session.HandoffError {
 	return he
 }
 
+// waitForHandoffWait expects the board's sweep timer plus the handoff
+// deadline, so it only suits sessions made with inTurn set.
 func (h *attnHarness) waitForHandoffWait(t *testing.T) {
 	t.Helper()
-	testutil.WaitFor(t, 2*time.Second, func() bool { return h.clk.Waiters() >= 1 })
+	testutil.WaitFor(t, 2*time.Second, func() bool { return h.clk.Waiters() >= 2 })
 }
 
 func TestHandoff_IdleSessionIsStoppedOnceHeldAndSlotKept(t *testing.T) {
