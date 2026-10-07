@@ -116,7 +116,7 @@ func sandboxProfilePath(result *LaunchResult) string {
 // A non-nil readOnlyRoots (empty included) is a read-only-projects session:
 // every root is read-only and the session's own project directory is not
 // granted for writing, so the profile, not the tool list, keeps every project
-// folder unwritable. nil leaves the profile exactly as it was.
+// folder unwritable. nil is every other launch's profile.
 func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, directory, kind string, tmpl *config.TerminalTemplate, readOnlyRoots []string) (sandbox.Spec, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
