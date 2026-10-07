@@ -16,7 +16,7 @@ func agentStateBase() agentStateRun {
 		Create: frontendResponse{Status: http.StatusCreated}, SessionID: sid, JoinSeen: true, Message: ok,
 		Frames: []agentFrame{
 			st("starting", "t0"), {Type: "session_joined", SessionID: sid, Model: "haiku"},
-			{Type: "llm_event", SessionID: sid, InitModel: "claude-haiku-4-5-20251001"},
+			{Type: "llm_event", SessionID: sid, InitModel: "claude-haiku-5-5"},
 			st("running", "t1"),
 			{Type: "turn_done", SessionID: sid, Excerpt: "ok " + marker},
 			st("idle", "t2"), st("ended", "t3"),
@@ -37,7 +37,7 @@ func TestClassifyAgentState(t *testing.T) {
 		{"socket unreachable", func(r *agentStateRun) { r.DialStatus, r.DialErr = 0, "dial unix" }, stateBlocked},
 		{"launch refused", func(r *agentStateRun) { r.Create, r.SessionID = frontendResponse{Status: http.StatusForbidden}, "" }, stateBlocked},
 		{"never joined", func(r *agentStateRun) { r.JoinSeen = false }, notPass},
-		{"model not Haiku 4.5", func(r *agentStateRun) { r.Frames[2].InitModel = "claude-haiku-5" }, stateBlocked},
+		{"model not Haiku 5.5", func(r *agentStateRun) { r.Frames[2].InitModel = "claude-haiku-5" }, stateBlocked},
 		{"no init event", func(r *agentStateRun) { r.Frames[2].InitModel = "" }, notPass},
 		{"message timed out", func(r *agentStateRun) { r.Message = frontendResponse{TimedOut: true} }, notPass},
 		{"delete failed", func(r *agentStateRun) { r.Delete.Status = http.StatusInternalServerError }, notPass},

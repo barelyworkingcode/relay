@@ -20,7 +20,7 @@ import (
 const (
 	agentStateID   = "session-agent-state"
 	agentModel     = "haiku"
-	agentModelID   = "claude-haiku-4-5-20251001"
+	agentModelID   = "claude-haiku-5-5"
 	agentFrameWait = 15 * time.Second
 )
 
