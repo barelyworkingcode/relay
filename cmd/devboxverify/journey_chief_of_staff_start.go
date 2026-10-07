@@ -92,14 +92,20 @@ type cosStartRun struct {
 }
 
 func runCosStart(ctx context.Context, e env) (out result) {
-	_, run, res, ok := screenCreds(e, cosStartID)
-	if !ok {
-		return res
-	}
 	acme, acmeID, err := grantedAcme(ctx, e)
 	if err != nil {
 		return blocked(cosStartID, err.Error())
 	}
+	run, revoke, res, ok := mintCosStartCred(ctx, e)
+	if !ok {
+		return res
+	}
+	// Registered first so it runs last: the session deletes below use the credential.
+	defer func() {
+		if d := revoke(); d != "" && out.State == statePass {
+			out = result{cosStartID, stateFail, d}
+		}
+	}()
 	r := cosStartRun{Project: acme.Name, Marker: "verify-" + e.Nonce + "-start", TermPrompt: "verify-" + e.Nonce + "-term"}
 	// Dialled before the start so the connection is ready when the id is known.
 	obs, status, err := dialCos(ctx, e, run, false)
@@ -160,6 +166,36 @@ func runCosStart(ctx context.Context, e env) (out result) {
 		}
 	}
 	return result{}
+}
+
+// mintCosStartCred mints the caller the start needs. Deliberate: the scope
+// needs class proxy and the launch core (AuthorizeLaunch) needs class
+// execute, and the run credential and P4 each hold only one of them. The
+// credential lives 1h, so a run that dies before revoking it leaves nothing
+// live past the hour. revoke returns a failure detail, or "" when it worked.
+func mintCosStartCred(ctx context.Context, e env) (token string, revoke func() string, res result, ok bool) {
+	name := "devbox-verify-cos-" + e.Nonce
+	cli, d := gatedCLI(ctx, e, fmt.Sprintf("named %q", name),
+		"credential", "mint", "--name", name, "--class", "proxy", "--class", "execute", "--ttl", "1h")
+	id, token := parseMintOutput(cli.Stdout)
+	if r, bad := positiveRefusal(cosStartID, cli.Stderr, d); bad {
+		return "", nil, r, false
+	}
+	switch {
+	case cli.Exit != 0:
+		return "", nil, cliExitFail(cosStartID, "credential mint", cli), false
+	case id == "" || !isToken(token):
+		return "", nil, result{cosStartID, stateFail, "credential mint printed no id or no 64-hex token"}, false
+	}
+	revoke = func() string {
+		bg := context.WithoutCancel(ctx)
+		c, _ := gatedCLI(bg, e, fmt.Sprintf("%q", id), "credential", "revoke", "--id", id)
+		if c.Exit != 0 {
+			return fmt.Sprintf("revoking credential %s failed (exit %d: %s); it expires within the hour", id, c.Exit, lastLine(c.Stderr))
+		}
+		return ""
+	}
+	return token, revoke, result{}, true
 }
 
 func classifyCosStart(r cosStartRun) result {
