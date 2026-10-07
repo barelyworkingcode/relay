@@ -110,6 +110,7 @@ func renderSettingsDocument(settings *config.Settings, runningIDs []string, tool
 		"__RUNNING_IDS_JSON__", mustMarshalJSON("running_ids", runningIDs),
 		"__PROJECTS_JSON__", mustMarshalJSON("projects", projectsToNativeView(projects)),
 		"__DEFAULT_PROJECT_JSON__", mustMarshalJSON("default_project", settings.DefaultProject),
+		"__CHIEF_OF_STAFF_JSON__", mustMarshalJSON("chief_of_staff", chiefOfStaffViewOf(settings)),
 		"__HOSTS_JSON__", mustMarshalJSON("hosts", hostsToView(hosts)),
 		"__MCP_TOOL_CACHE_JSON__", mustMarshalJSON("mcp_tool_cache", toolCache),
 		"__MCP_SCOPE_FIELDS_JSON__", mustMarshalJSON("mcp_scope_fields", scopeFields),

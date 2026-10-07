@@ -80,6 +80,7 @@ Creating a project and widening a grant are `project.grant`, an owner gate. Jour
 | Show a project's grant | CLI | `relay grant --json` | CLI | — | preflight | Settings > Projects > Edit | `relay grant --json` |
 | Scope values (`contextSchema`) | Settings > Projects | project form > scope field | HTTP `/api/mcps/{id}/scope_fields` | owner gate if widening | context-number-resave (partial) | Settings > Projects > Edit > scope field | none |
 | Default project (home/work) | Settings > Projects | Default project picker | HTTP `PUT /api/default_project/{mode}` | — | none | Settings > Projects > Default projects > Home / Work | `settings.json` `default_project` |
+| Chief of Staff project, model and daily limit | Settings > Projects | Chief of Staff panel | HTTP GET [read], PUT/DELETE [configure] /api/chief-of-staff/config | — | cos-settings | Settings > Projects > Chief of Staff | eve's data/settings.json chiefOfStaff |
 | Rotate a project token | Settings > Projects | project > Rotate token | HTTP `POST /api/projects/{id}/rotate_token` [grant] | owner gate | gate-project-rotate-token-pos, gate-project-rotate-token-neg | Settings > Projects > Edit > Bearer Token > Rotate | none |
 | Reveal a project token | Settings > Projects | project > eye icon | screen | — | none | Settings > Projects > Edit > Bearer Token > Show | none |
 | Regenerate SKILL.md | Settings > Projects | project > Regen Skill | HTTP `POST /api/projects/{id}/regen_skill` | — | none | Settings > Projects > Regen Skill | none |
@@ -298,7 +299,7 @@ areas:
   projects:
     code: [cmd/relay/project_*.go, cmd/relay/ipc_projects.go, cmd/relay/skills.go, internal/project/**]
     tests: [cmd/relay/project_*_test.go, cmd/relay/ipc_project*_test.go, cmd/relay/settings_project*_test.go, cmd/relay/skills_test.go, internal/project/*_test.go]
-    journeys: [v1-conversion-refusal, gate-project-grant-neg, gate-project-rotate-token-neg, gate-project-grant-pos, stale-derived-access-edit, context-number-resave, grant-narrowing-live, gate-project-rotate-token-pos, verify-fixtures-removed, cos-read-only-profile]
+    journeys: [v1-conversion-refusal, gate-project-grant-neg, gate-project-rotate-token-neg, gate-project-grant-pos, stale-derived-access-edit, context-number-resave, grant-narrowing-live, gate-project-rotate-token-pos, verify-fixtures-removed, cos-read-only-profile, cos-settings]
   grants:
     code: [cmd/relay/grant_cmd.go, cmd/relay/router.go, internal/project/apply.go, internal/project/grant_widening.go, internal/membership/**]
     tests: [cmd/relay/grant_*_test.go, cmd/relay/router_*_test.go, cmd/relay/scope_*_test.go, cmd/relay/settings_scope*_test.go, internal/membership/*_test.go]
@@ -350,7 +351,7 @@ areas:
   settings-ui:
     code: [web/**, cmd/relay/settings_html.go, cmd/relay/ipc_handlers.go, cmd/relay/ipc_overview.go, cmd/relay/overview_seed.go, internal/webassets/**]
     tests: [cmd/relay/settings_*_test.go, cmd/relay/ipc_handlers_test.go, cmd/relay/ipc_contract_test.go]
-    journeys: [settings-window-services]
+    journeys: [settings-window-services, cos-settings]
 ```
 
 ## Notes

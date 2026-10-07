@@ -67,12 +67,31 @@ static int ax_press(axref el) {
 	CFRelease(name);
 	return err;
 }
+
+static int ax_focus(axref el) {
+	return AXUIElementSetAttributeValue((AXUIElementRef)el, kAXFocusedAttribute, kCFBooleanTrue);
+}
+
+// Posts each UTF-16 unit as a key down and a key up to one process.
+static int ax_type(int pid, const UniChar *units, long n) {
+	for (long i = 0; i < n; i++) {
+		for (int down = 1; down >= 0; down--) {
+			CGEventRef ev = CGEventCreateKeyboardEvent(NULL, 0, down ? true : false);
+			if (!ev) return -1;
+			CGEventKeyboardSetUnicodeString(ev, 1, &units[i]);
+			CGEventPostToPid((pid_t)pid, ev);
+			CFRelease(ev);
+		}
+	}
+	return 0;
+}
 */
 import "C"
 
 import (
 	"errors"
 	"fmt"
+	"unicode/utf16"
 	"unsafe"
 )
 
@@ -161,6 +180,9 @@ func (s *axSnapshot) node(el C.axref) (*axNode, error) {
 	if n.Help, err = s.text(el, "AXHelp"); err != nil {
 		return nil, err
 	}
+	if n.Value, err = s.text(el, "AXValue"); err != nil {
+		return nil, err
+	}
 	for _, attr := range []string{"AXTitle", "AXDescription", "AXValue"} {
 		if n.Label, err = s.text(el, attr); err != nil || n.Label != "" {
 			break
@@ -174,6 +196,12 @@ func (s *axSnapshot) node(el C.axref) (*axNode, error) {
 	n.press = func() error {
 		if code := C.ax_press(held); code != 0 {
 			return axErr("AXPress", code)
+		}
+		return nil
+	}
+	n.focus = func() error {
+		if code := C.ax_focus(held); code != 0 {
+			return axErr("AXFocused", code)
 		}
 		return nil
 	}
@@ -232,3 +260,29 @@ func axExtras(pid int) (*axNode, func(), error) {
 }
 
 func axWindows(pid int) ([]*axNode, func(), error) { return axRoots(pid, "AXWindows") }
+
+// axFocus sets AXFocused on an element, so that key events posted to its
+// process reach it even while the app is in the background.
+func axFocus(n *axNode) error {
+	if n.focus == nil {
+		return errors.New("node cannot take focus")
+	}
+	return n.focus()
+}
+
+// axTypeText posts text to a process as key events, one pair per UTF-16 unit
+// and no Return. A focused pop-up selects the option that starts with it.
+func axTypeText(pid int, text string) error {
+	units := utf16.Encode([]rune(text))
+	if len(units) == 0 {
+		return nil
+	}
+	buf := make([]C.UniChar, len(units))
+	for i, u := range units {
+		buf[i] = C.UniChar(u)
+	}
+	if code := C.ax_type(C.int(pid), &buf[0], C.long(len(buf))); code != 0 {
+		return axErr("post keys", code)
+	}
+	return nil
+}

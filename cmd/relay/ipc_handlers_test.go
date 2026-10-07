@@ -41,6 +41,7 @@ func TestIPCDispatch_AllDeclaredMessageTypesHaveHandlers(t *testing.T) {
 		MsgListMcpTools,
 		MsgListModels,
 		MsgSetDefaultProject,
+		MsgSetChiefOfStaff,
 	}
 	for _, m := range required {
 		if _, ok := ipcHandlers[m]; !ok {

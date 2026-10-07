@@ -10,6 +10,9 @@ import {
 import {
     DEFAULT_MODES, projMode, modeLabel, isDefaultEligible, eligibleDefaultProjects, effectiveDefaultId, defaultModesFor, defaultProjectAttentionRows
 } from './lib/project_mode.js';
+import {
+    CHIEF_OF_STAFF_MODELS, suitableChiefOfStaffProjects, unsuitableChiefOfStaffRows
+} from './lib/chief_of_staff.js';
 
 // Initial data injected by relay's renderSettingsHTML via the shell template.
 const EXTERNAL_MCPS_INIT = window.__RELAY_INIT__.externalMcps;
@@ -17,6 +20,16 @@ const SERVICES_INIT = window.__RELAY_INIT__.services;
 const RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
 const PROJECTS_INIT = window.__RELAY_INIT__.projects;
 const DEFAULT_PROJECT_INIT = window.__RELAY_INIT__.defaultProject || null;
+// relay's Chief of Staff setting, {configured, projectId?, model?, dailyModelCalls?}.
+const CHIEF_OF_STAFF_INIT = window.__RELAY_INIT__.chiefOfStaff || { configured: false };
+const COS_DEFAULT_MODEL = 'sonnet';
+const COS_DEFAULT_DAILY_CALLS = 100;
+function cosDraftFrom(view) {
+    return {
+        model: (view && view.configured && view.model) || COS_DEFAULT_MODEL,
+        dailyModelCalls: (view && view.configured && view.dailyModelCalls) || COS_DEFAULT_DAILY_CALLS,
+    };
+}
 // Hosts — machines reached over ssh a project's directory can live on
 // (docs/ssh-hosts.md). Seeded like projects: the list is small, and both the
 // Hosts tab and the project form's Where control need it on the first paint.
@@ -134,6 +147,10 @@ let state = {
     // Projects tab.
     projects: PROJECTS_INIT,
     defaultProject: DEFAULT_PROJECT_INIT,  // the raw default_project block {home?, work?}, or null when never configured
+    chiefOfStaff: CHIEF_OF_STAFF_INIT,     // the stored setting as the GET route shapes it
+    // Model and limit as shown. Kept apart from the stored view because a
+    // change made while no project is set saves nothing until one is picked.
+    cosDraft: cosDraftFrom(CHIEF_OF_STAFF_INIT),
     mcpToolCache: MCP_TOOL_CACHE_INIT,     // mcpId -> [{name, description, category}]
     mcpScopeFields: MCP_SCOPE_FIELDS_INIT, // mcpId -> [ScopeFieldView]; NO KEY = relay has never seen that MCP
     editingProjectId: null,                 // null = list, 'new' = create form, '<id>' = edit
@@ -1602,6 +1619,7 @@ window.onSettingsReloaded = function(data) {
     state.runningServices = data.running_ids.reduce(function(m, id) { m[id] = true; return m; }, {});
     if (data.projects) state.projects = data.projects;
     if ('default_project' in data) state.defaultProject = data.default_project || null;
+    if (data.chief_of_staff) applyChiefOfStaffView(data.chief_of_staff);
     if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
     if (data.mcp_scope_fields) state.mcpScopeFields = data.mcp_scope_fields;
     if (data.enrolments) state.enrolments = data.enrolments;
@@ -2070,6 +2088,7 @@ function renderProjects() {
     // Below the cards, not above: its options repeat every project name, and
     // the cards are what a reader scans by name first.
     html += renderProjDefaults();
+    html += renderChiefOfStaff();
 
     return html;
 }
@@ -2110,6 +2129,85 @@ function renderProjDefaults() {
     html += renderProjDefaultSelect('work', 'projDefaultWork', 'onchange="setDefaultProject(\'work\', this.value)"');
     html += '</div></div>';
     return html;
+}
+
+// The Chief of Staff panel (docs/architecture.md, "Chief of Staff setting").
+// The project select lists only projects that suit the selected model; the
+// ones the model rules out are named below it with the reason.
+function renderChiefOfStaff() {
+    if (!(state.projects || []).some(p => !isRemoteProject(p))) return '';
+    const stored = state.chiefOfStaff && state.chiefOfStaff.configured ? state.chiefOfStaff : null;
+    const model = state.cosDraft.model;
+    const suitable = suitableChiefOfStaffProjects(state.projects, model);
+    const storedId = stored ? stored.projectId : '';
+    let html = '<div class="proj-defaults" id="cosPanel">';
+    html += '<div class="proj-section-title">Chief of Staff</div>';
+    html += '<p class="proj-section-help">Where eve\'s Chief of Staff runs. This overrides eve\'s settings file.</p>';
+    html += '<div class="cos-row">';
+    html += '<label for="cosProject">Project</label>';
+    html += '<select id="cosProject" aria-label="Chief of Staff project" onchange="setChiefOfStaffProject(this.value)">';
+    html += '<option value=""' + (storedId ? '' : ' selected') + '>Not set</option>';
+    let storedListed = false;
+    for (const p of suitable) {
+        const sel = p.id === storedId;
+        storedListed = storedListed || sel;
+        html += '<option value="' + esc(p.id) + '"' + (sel ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+    }
+    if (storedId && !storedListed) {
+        const gone = (state.projects || []).find(p => p.id === storedId);
+        html += '<option value="' + esc(storedId) + '" selected disabled>' + esc(gone ? gone.name : 'Removed project') + '</option>';
+    }
+    html += '</select>';
+    html += '<label for="cosModel">Model</label>';
+    html += '<select id="cosModel" aria-label="Chief of Staff model" onchange="setChiefOfStaffModel(this.value)">';
+    for (const m of CHIEF_OF_STAFF_MODELS) {
+        html += '<option value="' + m + '"' + (m === model ? ' selected' : '') + '>' + esc(m.charAt(0).toUpperCase() + m.slice(1)) + '</option>';
+    }
+    html += '</select>';
+    html += '<label for="cosDailyCalls">Daily model calls</label>';
+    html += '<input type="number" id="cosDailyCalls" aria-label="Chief of Staff daily model calls" min="1" max="10000" step="1" value="' +
+        esc(String(state.cosDraft.dailyModelCalls)) + '" onchange="setChiefOfStaffDailyCalls(this.value)">';
+    html += '</div>';
+    const rows = unsuitableChiefOfStaffRows(state.projects, model);
+    if (rows.length) {
+        html += '<div class="proj-section-help cos-unsuitable-title">Can\'t run the Chief of Staff</div>';
+        html += '<ul class="cos-unsuitable" id="cosUnsuitable">';
+        for (const r of rows) html += '<li>' + esc(r.text) + '</li>';
+        html += '</ul>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// Saves all three values while a project is set; "Not set" clears. With no
+// project set a model or limit change only updates the draft.
+function saveChiefOfStaff(projectId) {
+    state.projectError = null;
+    const calls = Number(state.cosDraft.dailyModelCalls);
+    ipc(JSON.stringify({
+        type: 'set_chief_of_staff',
+        project_id: projectId || '',
+        model: state.cosDraft.model,
+        daily_model_calls: Number.isInteger(calls) ? calls : 0,
+    }));
+}
+
+function setChiefOfStaffProject(projectId) {
+    saveChiefOfStaff(projectId);
+}
+
+function setChiefOfStaffModel(model) {
+    if (!CHIEF_OF_STAFF_MODELS.includes(model)) return;
+    state.cosDraft.model = model;
+    const stored = state.chiefOfStaff && state.chiefOfStaff.configured ? state.chiefOfStaff : null;
+    if (stored) saveChiefOfStaff(stored.projectId);
+    else render('push');
+}
+
+function setChiefOfStaffDailyCalls(value) {
+    state.cosDraft.dailyModelCalls = value;
+    const stored = state.chiefOfStaff && state.chiefOfStaff.configured ? state.chiefOfStaff : null;
+    if (stored) saveChiefOfStaff(stored.projectId);
 }
 
 function renderProjDefaultSelect(mode, id, onchange) {
@@ -4100,6 +4198,17 @@ window.onDefaultProjectUpdated = function(view) {
     state.defaultProject = view || {};
     state.projectError = null;
     if (state.page === 'projects' || state.page === 'overview') render('push');
+};
+
+function applyChiefOfStaffView(view) {
+    state.chiefOfStaff = view;
+    if (view.configured) state.cosDraft = cosDraftFrom(view);
+}
+
+window.onChiefOfStaffUpdated = function(view) {
+    applyChiefOfStaffView(view || { configured: false });
+    state.projectError = null;
+    if (state.page === 'projects') render('push');
 };
 
 window.onProjectTokenRotated = function(id, plaintext) {
@@ -7427,7 +7536,7 @@ Object.assign(window, {
     captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldTouched, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addProjMount, removeProjMount, setProjMountAccess,
     isProjTemplatesWildcard, setProjTemplatesWildcard, toggleProjTemplate,
-    renderProjDefaults, renderProjDefaultSelect, renderProjModeChips, setDefaultProject, setProjMode,
+    renderProjDefaults, renderProjDefaultSelect, renderChiefOfStaff, setChiefOfStaffProject, setChiefOfStaffModel, setChiefOfStaffDailyCalls, renderProjModeChips, setDefaultProject, setProjMode,
     openProjModelPicker, requestModelCatalog, repaintProjModelPicker, setProjModelSearch, toggleProjModel, toggleProjModelsOther, renderProjModelList, renderProjModelPicker, renderProjModelPickerBody,
     blankTemplateForm, cancelTemplateEdit, captureTemplateFormInputs, editTemplate, newTemplate, removeTemplate, renderTemplateForm, saveTemplateForm, templateFormFromExisting, templateLines,
     cancelHostTemplateEdit, captureHostTemplateFormInputs, closeHostTemplateForm, editHostTemplate, editingHostRecord, hostTemplateCommandLine, newHostTemplate, removeHostTemplate, renderHostTemplateForm, renderHostTemplates, saveHostTemplateForm,

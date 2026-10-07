@@ -461,6 +461,66 @@ func (o *ProjectOps) SetDefaultProject(ctx context.Context, mode config.ProjectM
 	return effective, nil
 }
 
+// SetChiefOfStaff stores where eve's Chief of Staff runs and returns the
+// stored block. Not gated and not audited: like a default project it is a
+// label and widens no grant. A refusal declines the write and comes back as
+// *config.ChiefOfStaffError, never errProjectSaveFailed.
+func (o *ProjectOps) SetChiefOfStaff(ctx context.Context, c config.ChiefOfStaffConfig) (config.ChiefOfStaffConfig, error) {
+	var refusal error
+	var stored config.ChiefOfStaffConfig
+	if err := o.runCommitted(ctx, func() error {
+		return config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if refusal = s.SetChiefOfStaff(c); refusal != nil {
+				return refusal
+			}
+			stored = *s.ChiefOfStaff
+			return nil
+		})
+	}); err != nil {
+		if refusal != nil {
+			var cosErr *config.ChiefOfStaffError
+			if errors.As(refusal, &cosErr) {
+				slog.Warn("chief of staff setting refused", "op", "chief_of_staff.config", "status", "refused", "code", cosErr.Code)
+			}
+			return config.ChiefOfStaffConfig{}, refusal
+		}
+		return config.ChiefOfStaffConfig{}, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
+	}
+	slog.Info("chief of staff setting saved", "op", "chief_of_staff.config", "status", "ok",
+		"project_id", stored.ProjectID, "model", stored.Model, "daily_model_calls", stored.DailyModelCalls)
+	return stored, nil
+}
+
+// errChiefOfStaffNothingToClear declines the write when there is no block, so
+// the settings file stays byte-identical.
+var errChiefOfStaffNothingToClear = errors.New("no chief of staff setting to clear")
+
+// ClearChiefOfStaff removes relay's Chief of Staff setting. Clearing an
+// absent block succeeds without a write.
+func (o *ProjectOps) ClearChiefOfStaff(ctx context.Context) error {
+	cleared := false
+	err := o.runCommitted(ctx, func() error {
+		return config.WithDeclinable(o.Store, func(s *config.Settings) error {
+			if s.ChiefOfStaff == nil {
+				return errChiefOfStaffNothingToClear
+			}
+			s.ClearChiefOfStaff()
+			cleared = true
+			return nil
+		})
+	})
+	if errors.Is(err, errChiefOfStaffNothingToClear) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %w", errProjectSaveFailed, err)
+	}
+	if cleared {
+		slog.Info("chief of staff setting cleared", "op", "chief_of_staff.config", "status", "ok", "cleared", true)
+	}
+	return nil
+}
+
 func effectiveDefaultProjects(s *config.Settings) config.DefaultProjects {
 	return config.DefaultProjects{
 		Home: s.DefaultProjectFor(config.ProjectModeHome),

@@ -49,6 +49,7 @@ func buildPage(html string) string {
 		"__RUNNING_IDS_JSON__", fixtureRunningIDs,
 		"__PROJECTS_JSON__", fixtureProjects,
 		"__DEFAULT_PROJECT_JSON__", fixtureDefaultProject,
+		"__CHIEF_OF_STAFF_JSON__", fixtureChiefOfStaff,
 		"__HOSTS_JSON__", fixtureHosts,
 		"__TEMPLATES_JSON__", fixtureTemplates,
 		"__MCP_TOOL_CACHE_JSON__", fixtureMcpToolCache,
@@ -101,6 +102,9 @@ const fixtureProjects = `[
 
 // The raw default_project block, as pushFullSettings carries it.
 const fixtureDefaultProject = `{"home":"proj-internal","work":"proj-acme"}`
+
+// The Chief of Staff view, as the GET route and pushFullSettings carry it.
+const fixtureChiefOfStaff = `{"configured":false}`
 
 // ssh_argv is present because the real hostView carries it to the tray;
 // it never reaches eve (docs/ssh-hosts.md).
@@ -196,6 +200,7 @@ var mockBridgeScript = `<script>
   var FIXTURE_REMOTE = ` + inlineJSON(fixtureRemote) + `;
   var FIXTURE_MODEL_CATALOG = ` + inlineJSON(fixtureModelCatalog) + `;
   var FIXTURE_DEFAULT_PROJECT = ` + inlineJSON(fixtureDefaultProject) + `;
+  var FIXTURE_CHIEF_OF_STAFF = ` + inlineJSON(fixtureChiefOfStaff) + `;
   window.webkit = { messageHandlers: { ipc: { postMessage: function (raw) {
     var msg; try { msg = JSON.parse(raw); } catch (e) { console.warn('[devui] bad ipc', raw); return; }
     console.log('[devui ipc →]', msg);
@@ -211,6 +216,12 @@ var mockBridgeScript = `<script>
       case 'set_default_project':
         FIXTURE_DEFAULT_PROJECT[msg.mode] = msg.project_id || '';
         window.onDefaultProjectUpdated({ home: FIXTURE_DEFAULT_PROJECT.home || '', work: FIXTURE_DEFAULT_PROJECT.work || '' });
+        break;
+      case 'set_chief_of_staff':
+        FIXTURE_CHIEF_OF_STAFF = msg.project_id
+          ? { configured: true, projectId: msg.project_id, model: msg.model, dailyModelCalls: msg.daily_model_calls }
+          : { configured: false };
+        window.onChiefOfStaffUpdated(FIXTURE_CHIEF_OF_STAFF);
         break;
       case 'list_mcp_tools': window.onMcpToolsListed(msg.mcp_id, FIXTURE_TOOLS[msg.mcp_id] || []); break;
       case 'enumerate_scope_field': window.onScopeFieldEnumerated(enumerate(msg)); break;
