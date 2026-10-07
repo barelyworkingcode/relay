@@ -238,6 +238,11 @@ func TestReviewFix_B2_WinningResumeSecretStillBindsAfterConcurrentLoser(t *testi
 	var mu sync.Mutex
 	claimed := false
 	var winnerSessionID, winnerSecret string
+	// Subtle: the winner stays inside the host until the other request has
+	// answered, so the two requests overlap however the scheduler runs them.
+	// The loser meets resumeGuard or session_exists and never waits on the winner.
+	firstDone := make(chan struct{})
+	var firstOnce sync.Once
 	var fs *FakeService
 	fs = NewFakeService(t, FakeServiceOptions{
 		ServiceID: config.RelaySessionsServiceID,
@@ -264,6 +269,7 @@ func TestReviewFix_B2_WinningResumeSecretStillBindsAfterConcurrentLoser(t *testi
 				_, _ = w.Write([]byte(`{"error":"session_exists","message":"session is already live"}`))
 				return
 			}
+			<-firstDone
 			fakeLaunchHandler(&fs, func(id string) string { return `{"session_id":"` + id + `"}` })(w, r)
 		},
 	})
@@ -285,6 +291,7 @@ func TestReviewFix_B2_WinningResumeSecretStillBindsAfterConcurrentLoser(t *testi
 			defer wg.Done()
 			rec := httptest.NewRecorder()
 			f.mux.ServeHTTP(rec, req)
+			firstOnce.Do(func() { close(firstDone) })
 			codes[i] = rec.Code
 		}(i, req)
 	}
