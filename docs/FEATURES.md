@@ -59,6 +59,7 @@ Areas: sessions, sandbox, templates, audit.
 | Codex session | API (eve) | eve starts a session on a `codex/<slug>` model → `POST /api/sessions`; the models come from `GET /api/models` (group Codex) | HTTP [execute] | — | session-codex | eve > New Session > Codex model | `settings.json` `terminal_templates` `codex`, `projects[].allowed_templates`; for a host, `hosts[].terminal_templates` `codex` |
 | Agent state and turn excerpts | API (eve) | a live claude, pi or codex session → `session_state` and `turn_done` on `/ws`; `attention` on `GET /api/sessions`; codex reports six of the seven states, never `asking` | HTTP [proxy] | — | session-agent-state | none until the agent board ships in eve | none (API only: `POST /api/sessions` settings `agent: true`) |
 | Chief of Staff scope: read every session, send marked | API (eve) | `X-Relay-Scope: chief-of-staff` → `GET /api/sessions`, read-only `/ws`, `POST /api/chief-of-staff/messages` | HTTP [proxy, scoped] | — | chief-of-staff-send | none until eve's Chief of Staff thread ships | none (API only) |
+| Chief of Staff start: an agent in a project folder | API (eve) | `X-Relay-Scope: chief-of-staff` → `POST /api/chief-of-staff/sessions` `{projectId, folder?, prompt, model, mode?}`; the started session shows in `GET /api/sessions` (headless) or `GET /api/terminals` (terminal) with `origin: chief-of-staff` | HTTP [proxy, scoped] | — | none yet | none until eve's Chief of Staff thread ships | none (API only) |
 
 ### G2 · Give an agent access to one project and nothing else — must-have
 Intent: grant a project its folder, mail account and chosen tools, and nothing wider.
@@ -113,6 +114,7 @@ Areas: audit.
 | Session launch rows | background | any launch | HTTP, bridge | — | session-chat-lifecycle, terminal-lifecycle | n/a | n/a |
 | Refusal rows | background | any refused launch | HTTP, bridge | — | blank-model-refused, oversized-launch-audit-capped | n/a | n/a |
 | Chief of Staff send rows (intent then completion; refused unless recorded) | background | any send in the chief-of-staff scope | HTTP | — | chief-of-staff-send | n/a | n/a |
+| Chief of Staff start rows (`session_launch` with `origin` and `prompt_bytes`; refused unless recorded) | background | any start in the chief-of-staff scope | HTTP | — | none yet | n/a | n/a |
 | Export the log | Settings > Tool Calls | Export | HTTP `POST /api/audit/export` [configure] | — | none | Settings > Tool Calls > Export | `relay audit --json` |
 | Reveal the log file | Settings > Tool Calls | Reveal log | screen | — | none | Settings > Tool Calls > Reveal Log | `relay audit --path` |
 

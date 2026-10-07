@@ -162,6 +162,13 @@ type LaunchRequest struct {
 	AppendClaudeMd bool
 
 	ExtraArgs []string
+
+	// Origin is who asked, when it was not the person at a frontend. Only a
+	// door that knows its caller sets it; no decoder reads it from a body.
+	Origin string
+	// PromptBytes is the size of the prompt a door will deliver after the
+	// launch; it is recorded in the audit row and never gates anything.
+	PromptBytes int
 }
 
 // LaunchRefusal is a SH §3.2 check's refusal. Status is what R-S4b should
@@ -234,6 +241,8 @@ type sessionLaunchAuditFields struct {
 	TemplateID  string
 	Directory   string
 	Sandbox     bool
+	Origin      string
+	PromptBytes int
 }
 
 type sessionLaunchAuditArgs struct {
@@ -243,8 +252,10 @@ type sessionLaunchAuditArgs struct {
 	Directory   string `json:"directory,omitempty"`
 	// DirectoryTruncated is set because a real directory name may itself
 	// end in "…", so the marker alone cannot tell a capped value apart.
-	DirectoryTruncated bool `json:"directory_truncated,omitempty"`
-	Sandbox            bool `json:"sandbox"`
+	DirectoryTruncated bool   `json:"directory_truncated,omitempty"`
+	Sandbox            bool   `json:"sandbox"`
+	Origin             string `json:"origin,omitempty"`
+	PromptBytes        int    `json:"prompt_bytes,omitempty"`
 }
 
 // maxAuditErrorRunes leaves room for a refusal's fixed text around one
@@ -264,6 +275,7 @@ func newSessionLaunchAuditEvent(f sessionLaunchAuditFields, outcome, errMsg stri
 	args, _ := json.Marshal(sessionLaunchAuditArgs{
 		SessionID: f.SessionID, SessionKind: capAuditText(f.Kind, maxRefusalNameRunes), TemplateID: f.TemplateID,
 		Directory: directory, DirectoryTruncated: directory != f.Directory, Sandbox: f.Sandbox,
+		Origin: f.Origin, PromptBytes: f.PromptBytes,
 	})
 	return audit.AuditEvent{
 		ID:      audit.NewAuditID(),
@@ -337,7 +349,7 @@ var mintModelKey = func(t *ModelKeyTable, projectID, label string) (string, erro
 func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessions *ledger.Ledger, req LaunchRequest) (*LaunchResult, *LaunchRefusal) {
 	settings := config.FreshSettings(store)
 
-	baseFields := sessionLaunchAuditFields{Actor: callerAuditActor(req.Caller), ProjectID: req.ProjectID, Kind: req.Kind}
+	baseFields := sessionLaunchAuditFields{Actor: callerAuditActor(req.Caller), ProjectID: req.ProjectID, Kind: req.Kind, Origin: req.Origin, PromptBytes: req.PromptBytes}
 
 	if !callerGrantsExecute(req.Caller) {
 		return nil, forbidden("caller_not_authorized", "caller does not hold execute on the frontend socket", baseFields)
@@ -359,6 +371,10 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		if !ok || rec.State != ledger.StateDormant || rec.ProjectID != req.ProjectID {
 			return nil, forbidden("session_not_resumable", "session is not a dormant session of this project", baseFields)
 		}
+		// A resume keeps the origin the ledger recorded, whatever the caller
+		// says.
+		req.Origin = rec.Origin
+		baseFields.Origin = rec.Origin
 	}
 
 	// Every launch names a project: a project's allowed_templates is what
@@ -441,6 +457,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		ExtraArgs:      req.ExtraArgs,
 		IdleTimeoutSec: 86400,
 		SessionRequest: sessionRequest,
+		Origin:         req.Origin,
 	}
 
 	if proj != nil {
@@ -554,6 +571,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 			ProjectID:      req.ProjectID,
 			Directory:      directory,
 			Created:        time.Now().UTC(),
+			Origin:         req.Origin,
 			State:          ledger.StateLive,
 			SessionRequest: sessionRequest,
 		}

@@ -21,9 +21,12 @@ type Session struct {
 	Stats         SessionStats    `json:"stats"`
 	ProviderState json.RawMessage `json:"providerState,omitempty"`
 
-	SystemPrompt  string `json:"systemPrompt,omitempty"`
-	Headless      bool   `json:"headless,omitempty"`
-	Agent         bool   `json:"agent,omitempty"`         // listed and state-tracked although headless
+	SystemPrompt string `json:"systemPrompt,omitempty"`
+	Headless     bool   `json:"headless,omitempty"`
+	Agent        bool   `json:"agent,omitempty"` // listed and state-tracked although headless
+	// Origin names who started the session when it was not the person at a
+	// frontend (OriginChiefOfStaff).
+	Origin        string `json:"origin,omitempty"`
 	ThinkingLevel string `json:"thinkingLevel,omitempty"` // pi-only: off/minimal/low/medium/high/xhigh
 	// Project-scoped MCP tokens are NOT stored on the session. Relay is the
 	// sole token authority: providers resolve the token just-in-time from

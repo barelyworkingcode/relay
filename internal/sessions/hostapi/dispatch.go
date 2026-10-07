@@ -54,12 +54,25 @@ func decodeHostSpec(raw json.RawMessage) (*sessionstypes.HostSpec, error) {
 	return &h, nil
 }
 
+// checkLaunchOrigin refuses any origin the host does not recognise: relay is
+// the only caller, and the Chief of Staff is the only origin it stamps on a
+// launch, so a stray value means a bug or a forged request, never a feature.
+func checkLaunchOrigin(origin string) error {
+	if origin != "" && origin != sessionstypes.OriginChiefOfStaff {
+		return fmt.Errorf("hostapi: unknown launch origin %q", origin)
+	}
+	return nil
+}
+
 // buildTerminalSpec translates a "pty" LaunchRequest into
 // terminal.CreateSpec, field by field: the two types were designed
 // independently (C5's wire contract vs. this package's own Go shape) and
 // happen to share almost every name, which is exactly the situation where
 // assuming instead of checking hides a mismatch.
 func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
+	if err := checkLaunchOrigin(req.Origin); err != nil {
+		return terminal.CreateSpec{}, err
+	}
 	host, err := decodeHostSpec(req.Host)
 	if err != nil {
 		return terminal.CreateSpec{}, err
@@ -73,6 +86,7 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 		Env:         req.Env,
 		IdleTimeout: time.Duration(req.IdleTimeoutSec) * time.Second,
 		Host:        host,
+		Origin:      req.Origin,
 	}
 	if req.PTY != nil {
 		spec.Cols = uint16(req.PTY.Cols)
@@ -99,6 +113,9 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 // SessionRequest is absent (a resume, or a caller that never set it), the
 // same fallback shape terminal.CreateSpec's own top-level fields get.
 func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
+	if err := checkLaunchOrigin(req.Origin); err != nil {
+		return session.CreateSpec{}, err
+	}
 	var sr sessionRequestBody
 	if len(req.SessionRequest) > 0 {
 		if err := json.Unmarshal(req.SessionRequest, &sr); err != nil {
@@ -147,6 +164,7 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		Host:           host,
 		ModelKey:       req.ModelKey,
 		Resume:         req.Resume,
+		Origin:         req.Origin,
 	}
 	// session.CreateSpec has no validate() of its own to lean on the way
 	// terminal.CreateSpec does (buildTerminalSpec's own comment): an empty

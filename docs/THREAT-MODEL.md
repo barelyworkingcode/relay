@@ -39,9 +39,17 @@ outside it is not a relay bug, however real.
    write text aimed at the Chief of Staff and, through it, at every other
    agent. Agent output is untrusted data, and relay does not judge it. Relay
    limits and records. A request in the chief-of-staff scope reaches the
-   session list, a `/ws` it cannot write to, and one send route: no tool
-   call, file read, terminal, permission answer, session start, stop or
-   resume, and no config change. Each send goes to one listed session, at
+   session list, a `/ws` it cannot write to, one send route and one start
+   route: no tool call, file read, terminal of its own choosing, permission
+   answer, session stop or resume, and no config change. The start route
+   launches an agent in a registered local project, in the project root or a
+   folder inside it (symlinks resolved). It goes through `AuthorizeLaunch`, so
+   the project's policy, allowed models and templates and the sandbox apply.
+   A headless agent runs `bypassPermissions` as every headless agent does, so
+   its reach is what its sandbox and project grant allow. The session carries
+   the `chief-of-staff` origin and a `session_launch` row with `origin` and
+   `prompt_bytes` is written; a start that cannot be recorded is refused.
+   Each send goes to one listed session, at
    most one per turn (mid-turn the answer is `already_processing`), carries
    the `chief-of-staff` origin in the transcript, and has a `session_message`
    record written before delivery; a send that cannot be recorded is refused.
@@ -91,6 +99,7 @@ scope).
 - Races relay's own launch path must win (microsecond windows, one try per
   launch) are theoretical until reproduced. Examples: #57, #110.
 - A request in the chief-of-staff scope that reaches anything outside its
-  three doors, a message marked `chief-of-staff` that did not come through
+  four doors, a session start outside the project root or in a project on an
+  SSH host, a message marked `chief-of-staff` that did not come through
   the scope, or a scoped send with no intent record, is a relay bug against
   asset A or C.

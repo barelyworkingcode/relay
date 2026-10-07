@@ -221,6 +221,8 @@ type CreateSpec struct {
 	Directory string
 	Name      string
 	Model     string
+	// Origin is who asked for the session, empty for the person.
+	Origin string
 
 	Settings       json.RawMessage
 	SystemPrompt   string
@@ -438,6 +440,7 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 		Stats:          sessionstypes.SessionStats{},
 		Headless:       parsed.Headless,
 		Agent:          parsed.Agent,
+		Origin:         spec.Origin,
 		PermissionMode: mode,
 		Policy:         parsed.PermissionPolicy,
 		Host:           spec.Host,
@@ -1210,6 +1213,8 @@ type Summary struct {
 	Host          map[string]string `json:"host,omitempty"`
 	// Headless is the same Session.Headless flag the drop-in handoff checks.
 	Headless bool `json:"headless,omitempty"`
+	// Origin is set when someone other than the person started the session.
+	Origin string `json:"origin,omitempty"`
 
 	Attention *attention.Attention `json:"attention,omitempty"`
 }
@@ -1231,6 +1236,7 @@ func summarize(sess *sessionstypes.Session) Summary {
 		LastMessageAt: lastMessageAt(sess.Messages),
 		Host:          sess.Host.Chip(),
 		Headless:      sess.Headless,
+		Origin:        sess.Origin,
 	}
 }
 

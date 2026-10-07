@@ -45,6 +45,7 @@ type Session struct {
 	Directory  string
 	Host       *sessionstypes.HostSpec
 	CreatedAt  string
+	Origin     string
 
 	cmd *exec.Cmd
 	// ptmx is an atomic.Pointer, not a plain field under s.mu: if Write had
@@ -210,6 +211,7 @@ func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode i
 		Name:        spec.Name,
 		Directory:   spec.Directory,
 		Host:        spec.Host,
+		Origin:      spec.Origin,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 		cmd:         cmd,
 		targetPID:   outcome.targetPID,
