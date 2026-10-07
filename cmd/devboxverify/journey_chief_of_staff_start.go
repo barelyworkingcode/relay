@@ -178,15 +178,6 @@ func mintCosStartCred(ctx context.Context, e env) (token string, revoke func() s
 	cli, d := gatedCLI(ctx, e, fmt.Sprintf("named %q", name),
 		"credential", "mint", "--name", name, "--class", "proxy", "--class", "execute", "--ttl", "1h")
 	id, token := parseMintOutput(cli.Stdout)
-	if r, bad := positiveRefusal(cosStartID, cli.Stderr, d); bad {
-		return "", nil, r, false
-	}
-	switch {
-	case cli.Exit != 0:
-		return "", nil, cliExitFail(cosStartID, "credential mint", cli), false
-	case id == "" || !isToken(token):
-		return "", nil, result{cosStartID, stateFail, "credential mint printed no id or no 64-hex token"}, false
-	}
 	revoke = func() string {
 		bg := context.WithoutCancel(ctx)
 		c, _ := gatedCLI(bg, e, fmt.Sprintf("%q", id), "credential", "revoke", "--id", id)
@@ -194,6 +185,24 @@ func mintCosStartCred(ctx context.Context, e env) (token string, revoke func() s
 			return fmt.Sprintf("revoking credential %s failed (exit %d: %s); it expires within the hour", id, c.Exit, lastLine(c.Stderr))
 		}
 		return ""
+	}
+	// A mint that printed an id and then failed a check is still revoked.
+	refuse := func(r result) (string, func() string, result, bool) {
+		if id != "" {
+			if d := revoke(); d != "" {
+				r.Detail += "; " + d
+			}
+		}
+		return "", nil, r, false
+	}
+	if r, bad := positiveRefusal(cosStartID, cli.Stderr, d); bad {
+		return refuse(r)
+	}
+	switch {
+	case cli.Exit != 0:
+		return refuse(cliExitFail(cosStartID, "credential mint", cli))
+	case id == "" || !isToken(token):
+		return refuse(result{cosStartID, stateFail, "credential mint printed no id or no 64-hex token"})
 	}
 	return token, revoke, result{}, true
 }
