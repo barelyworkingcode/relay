@@ -20,11 +20,12 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sessions/testutil"
 )
 
-// The Chief of Staff scope narrows `proxy`: three doors and nothing else.
+// The Chief of Staff scope narrows `proxy`: four doors and nothing else.
 var chiefOfStaffDoors = map[string]bool{
 	"GET /api/sessions":                 true,
 	"GET /ws":                           true,
 	"POST /api/chief-of-staff/messages": true,
+	"POST /api/chief-of-staff/sessions": true,
 }
 
 const (
@@ -197,7 +198,7 @@ func TestChiefOfStaffScopeReach(t *testing.T) {
 			for _, must := range []string{
 				"POST /api/terminals", "POST /api/sessions", "POST /api/sessions/{id}/resume",
 				"POST /api/mcps", "POST /api/mcps/{id}/enumerate", "POST /api/services/{id}/start",
-				"POST /api/chief-of-staff/messages",
+				"POST /api/chief-of-staff/messages", "POST /api/chief-of-staff/sessions", "PUT /api/projects/{id}",
 			} {
 				if !have[must] {
 					t.Fatalf("pattern %q is not in the scanned set; the scan lost a door it must try", must)
