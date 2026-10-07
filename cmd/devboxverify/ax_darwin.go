@@ -232,3 +232,55 @@ func axExtras(pid int) (*axNode, func(), error) {
 }
 
 func axWindows(pid int) ([]*axNode, func(), error) { return axRoots(pid, "AXWindows") }
+
+// axPopUpItems lists the menu items under a pop-up button in menu order. A
+// pop-up that exposes none is closed; axPopUpOpen shows them.
+func axPopUpItems(pop *axNode) []*axNode {
+	var out []*axNode
+	for _, n := range flatten(pop) {
+		if n.Role == "AXMenuItem" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// axPopUpTitles is the title of each item axPopUpItems returns.
+func axPopUpTitles(pop *axNode) []string {
+	var out []string
+	for _, n := range axPopUpItems(pop) {
+		out = append(out, n.Label)
+	}
+	return out
+}
+
+// axPopUpOpen presses a pop-up button. Like a status item, a pop-up may open
+// its menu and still report the press as unanswered, so the caller judges by
+// what appeared.
+func axPopUpOpen(pop *axNode) error {
+	if err := pop.press(); err != nil && !errors.Is(err, errAXCannotComplete) {
+		return err
+	}
+	return nil
+}
+
+// axPopUpChoose presses the one item whose title is exactly title.
+func axPopUpChoose(pop *axNode, title string) error {
+	var match *axNode
+	for _, n := range axPopUpItems(pop) {
+		if n.Label != title {
+			continue
+		}
+		if match != nil {
+			return fmt.Errorf("pop-up has more than one item titled %q", title)
+		}
+		match = n
+	}
+	if match == nil {
+		return fmt.Errorf("pop-up has no item titled %q", title)
+	}
+	if err := match.press(); err != nil && !errors.Is(err, errAXCannotComplete) {
+		return err
+	}
+	return nil
+}

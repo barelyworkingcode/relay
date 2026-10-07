@@ -56,6 +56,7 @@ var screenJourneys = []journey{
 	{svcStartID, []string{"services"}, nil, phaseScreen, 30 * time.Second, runServiceStartStop},
 	{svcCrashID, []string{"services"}, nil, phaseScreen, 30 * time.Second, runServiceRestart},
 	{settingsWindowID, []string{"services", "tray", "settings-ui"}, nil, phaseScreen, 60 * time.Second, runSettingsWindow},
+	{cosSettingsID, []string{"projects", "settings-ui"}, []string{"project:acme"}, phaseScreen, 60 * time.Second, runCosSettings},
 	{slowRouteID, []string{"credentials", "sessions", "hosts"}, nil, phaseScreen, gateTimeout, runSlowRouteKeepalive},
 	// Last: it restarts the session host under every live session.
 	{hostRstID, []string{"services", "sessions"}, nil, phaseScreen, 30 * time.Second, runSessionHostRestart},

@@ -640,6 +640,29 @@ stopped through the API, and the window closed if the journey opened it.
   job holds no Accessibility grant. A Services Edit form left open hides the
   cards.
 
+**cos-settings** (screen). The Chief of Staff panel in Settings > Projects
+saves what the person picks. The journey reads `GET /api/chief-of-staff/config`
+with the run credential, opens Settings from the tray (as
+settings-window-services), presses Projects and chooses Haiku in the model
+pop-up. The page must show the static text `Verify Grant <nonce>: It doesn't
+allow the claude-code template.`, the project pop-up's menu must lack that
+project and hold Acme. Acme is chosen, and GET must show `configured:true`,
+Acme's id and model `haiku` within 5 s (polled every 200 ms; the WebView
+raises no event a harness can read). The earlier setting is then put back
+(`PUT` of the earlier block, or `DELETE` when it was unset), read back, and the
+window closed if the journey opened it. The restore runs on every path past
+the first read; a restore that does not read back is FAIL.
+- Lives in: `web/src/app.js` and `web/src/lib/chief_of_staff.js` (the panel),
+  `cmd/relay/ipc_projects.go` (`set_chief_of_staff`),
+  `cmd/relay/project_routes.go` (the three routes), `internal/config/chief_of_staff.go`
+  (the suitability table).
+- Reached by: Accessibility from the harness (the pop-ups are found by their
+  `aria-label`s, or by the items they hold); the run credential for the
+  routes (read and configure classes, no presence prompt).
+- Traps: BLOCKED when Acme shows a reason line (fixture), when
+  gate-project-grant-pos left no Verify Grant project, with no run credential,
+  under the LaunchAgent recipe, and without the Accessibility grant (P7).
+
 **slow-route-keepalive** (screen). A relay route that runs past the 10 s
 read deadline must not poison the connection it arrived on. The journey adds
 host `blackhole-<nonce>` (target `192.0.2.1`, which drops packets) and

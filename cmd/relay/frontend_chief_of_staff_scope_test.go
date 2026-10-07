@@ -199,6 +199,7 @@ func TestChiefOfStaffScopeReach(t *testing.T) {
 				"POST /api/terminals", "POST /api/sessions", "POST /api/sessions/{id}/resume",
 				"POST /api/mcps", "POST /api/mcps/{id}/enumerate", "POST /api/services/{id}/start",
 				"POST /api/chief-of-staff/messages", "POST /api/chief-of-staff/sessions", "PUT /api/projects/{id}",
+				"GET /api/chief-of-staff/config", "PUT /api/chief-of-staff/config", "DELETE /api/chief-of-staff/config",
 			} {
 				if !have[must] {
 					t.Fatalf("pattern %q is not in the scanned set; the scan lost a door it must try", must)
