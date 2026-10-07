@@ -42,9 +42,7 @@ func parseReadOnlyFrame(raw []byte) readOnlyFrame {
 			Type       string   `json:"type"`
 			Subtype    string   `json:"subtype"`
 			Tools      []string `json:"tools"`
-			MCPServers []struct {
-				Name string `json:"name"`
-			} `json:"mcp_servers"`
+			MCPServers []string `json:"mcp_servers"`
 		} `json:"event"`
 	}
 	_ = json.Unmarshal(raw, &f)
@@ -52,9 +50,7 @@ func parseReadOnlyFrame(raw []byte) readOnlyFrame {
 	if f.Type == "llm_event" && f.Event.Type == "system" {
 		out.Subtype = f.Event.Subtype
 		out.Tools = f.Event.Tools
-		for _, s := range f.Event.MCPServers {
-			out.Servers = append(out.Servers, s.Name)
-		}
+		out.Servers = f.Event.MCPServers
 	}
 	return out
 }

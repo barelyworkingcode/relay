@@ -48,7 +48,7 @@ func TestClassifyReadOnlyProfile(t *testing.T) {
 
 func TestParseReadOnlyFrame_InitToolsAndServers(t *testing.T) {
 	raw := []byte(`{"type":"llm_event","sessionId":"s1","event":{"type":"system","subtype":"init",` +
-		`"tools":["Read","mcp__relay__ping","Glob","Grep"],"mcp_servers":[{"name":"relay","status":"connected"}]}}`)
+		`"tools":["Read","mcp__relay__ping","Glob","Grep"],"mcp_servers":["relay"]}}`)
 	f := parseReadOnlyFrame(raw)
 	if f.SessionID != "s1" || f.Subtype != "init" || !slices.Equal(f.Servers, []string{"relay"}) {
 		t.Fatalf("frame = %+v", f)
