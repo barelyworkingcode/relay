@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -170,8 +172,12 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 	if mode == chiefOfStaffModeHeadless {
 		status, _, _ := d.deliverChiefOfStaffText(r.Context(), fields.Actor, result.SessionID, prompt)
 		if status != http.StatusAccepted {
-			_ = d.host().Terminate(r.Context(), result.SessionID, "chief_of_staff_start_failed")
-			writeChiefOfStaffError(w, http.StatusBadGateway, "prompt_not_delivered", "the session started but the prompt could not be delivered; it was ended")
+			message := "the session started but the prompt could not be delivered; it was ended"
+			if err := d.host().Terminate(context.WithoutCancel(r.Context()), result.SessionID, "chief_of_staff_start_failed"); err != nil {
+				slog.ErrorContext(r.Context(), "chief of staff start: terminate after undelivered prompt failed", "session", result.SessionID, "error", err)
+				message = "the session started but the prompt could not be delivered; it could not be ended and may still be running"
+			}
+			writeChiefOfStaffError(w, http.StatusBadGateway, "prompt_not_delivered", message)
 			return
 		}
 	}

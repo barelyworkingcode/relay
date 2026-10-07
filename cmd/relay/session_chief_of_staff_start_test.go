@@ -360,6 +360,32 @@ func TestChiefOfStaffStart_UndeliveredPromptEndsTheSession(t *testing.T) {
 	}
 }
 
+// A system-only model is refused for a headless start, and the denied row
+// carries the same origin and prompt size as every other start refusal.
+func TestChiefOfStaffStart_SystemModelRefusalRowCarriesOrigin(t *testing.T) {
+	x := newCoSStartFx(t)
+	sys := &fakeSystemModel{system: true}
+	req := x.withExecuteCredential(t, httptest.NewRequest(http.MethodPost, cosStartRoute,
+		strings.NewReader(startBody(t, map[string]any{"model": "acme-sys", "prompt": "  héllo  "}))))
+	w := httptest.NewRecorder()
+	x.muxWithSystemModel(sys.lookup).ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden || errorCode(t, w) != "model_system_only" {
+		t.Fatalf("got %d %s, want 403 model_system_only", w.Code, w.Body.String())
+	}
+	rows := launchRows(t, x.rec)
+	if len(rows) != 1 || rows[0].Outcome != "denied" {
+		t.Fatalf("want one denied session_launch row, got %+v", rows)
+	}
+	a := rowArgs(t, rows[0])
+	if a["origin"] != "chief-of-staff" || a["prompt_bytes"] != float64(len("héllo")) {
+		t.Fatalf("denied row args = %v, want origin chief-of-staff and prompt_bytes %d", a, len("héllo"))
+	}
+	if got := x.calls("/launch"); len(got) != 0 {
+		t.Fatalf("a refused start reached the host: %d launch requests", len(got))
+	}
+}
+
 // hookedRecorder runs onHeader the moment the handler starts its response.
 type hookedRecorder struct {
 	*httptest.ResponseRecorder

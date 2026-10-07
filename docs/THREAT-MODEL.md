@@ -48,7 +48,8 @@ outside it is not a relay bug, however real.
    A headless agent runs `bypassPermissions` as every headless agent does, so
    its reach is what its sandbox and project grant allow. The session carries
    the `chief-of-staff` origin and a `session_launch` row with `origin` and
-   `prompt_bytes` is written; a start that cannot be recorded is refused.
+   `prompt_bytes` is written. A start is refused when auditing is off or not wired; a headless
+   start ends when its durable `session_message` intent row cannot be written.
    Each send goes to one listed session, at
    most one per turn (mid-turn the answer is `already_processing`), carries
    the `chief-of-staff` origin in the transcript, and has a `session_message`

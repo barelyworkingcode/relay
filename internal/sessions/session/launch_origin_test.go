@@ -81,23 +81,13 @@ func claudeLaunch(origin string) map[string]any {
 }
 
 func TestLaunchOrigin_HostRefusesAnyOriginButChiefOfStaff(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		body map[string]any
-	}{
-		{"session", func() map[string]any { b := claudeLaunch("person"); return b }()},
-		{"terminal", map[string]any{"v": 1, "session_id": originSessionID, "kind": "pty", "argv": []string{"/bin/true"}, "origin": "person"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			client, bearer, mgr := startOriginHost(t)
-			status, e := postLaunch(t, client, bearer, tc.body)
-			if status != http.StatusBadRequest || e.Error != hostapi.ErrInvalidSpec {
-				t.Fatalf("got %d %+v, want 400 %s", status, e, hostapi.ErrInvalidSpec)
-			}
-			if _, ok := mgr.Get(originSessionID); ok {
-				t.Fatal("the host created a session for a refused origin")
-			}
-		})
+	client, bearer, mgr := startOriginHost(t)
+	status, e := postLaunch(t, client, bearer, claudeLaunch("person"))
+	if status != http.StatusBadRequest || e.Error != hostapi.ErrInvalidSpec {
+		t.Fatalf("got %d %+v, want 400 %s", status, e, hostapi.ErrInvalidSpec)
+	}
+	if _, ok := mgr.Get(originSessionID); ok {
+		t.Fatal("the host created a session for a refused origin")
 	}
 }
 

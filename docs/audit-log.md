@@ -800,9 +800,12 @@ args gain two fields, both `omitempty`:
 
 A refusal after the audit-ready check (unknown or remote project, project on a
 host, folder outside the project, a terminal start without a Claude model, a
-model the project does not allow, any `AuthorizeLaunch` refusal) is a `denied`
-row carrying the same two fields. With auditing off the route answers 503
-`audit_unavailable` and starts nothing. A resume keeps the `origin` the session
+model the project does not allow, a system-only model, or a policy refusal from
+`AuthorizeLaunch`) is a `denied` row carrying the same two fields. An
+`AuthorizeLaunch` refusal of the request itself or of a setup step
+(`sandbox_unavailable`, `model_endpoint_unavailable`, the extra-args cap and
+the like) is an `error` row carrying the same two fields. With auditing off the
+route answers 503 `audit_unavailable` and starts nothing. A resume keeps the `origin` the session
 was started with.
 
 ## Issuance and revocation
