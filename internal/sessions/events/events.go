@@ -147,7 +147,9 @@ type AssistantMessage struct {
 
 type AssistantMessageStartEvent struct {
 	assistantEnvelope
-	Message AssistantMessage `json:"message"`
+	Message        AssistantMessage `json:"message"`
+	Error          string           `json:"error,omitempty"`
+	APIErrorStatus int              `json:"apiErrorStatus,omitempty"`
 }
 
 type ContentBlock struct {
@@ -304,6 +306,19 @@ func (e *EventEmitter) MessageStart(id string) {
 			Role:    "assistant",
 			Content: []any{},
 		},
+	})
+}
+
+func (e *EventEmitter) MessageStartError(id, code string, status int) {
+	e.emit(AssistantMessageStartEvent{
+		assistantEnvelope: newAssistantEnv(),
+		Message: AssistantMessage{
+			ID:      id,
+			Role:    "assistant",
+			Content: []any{},
+		},
+		Error:          code,
+		APIErrorStatus: status,
 	})
 }
 
