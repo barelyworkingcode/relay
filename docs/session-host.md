@@ -206,9 +206,7 @@ A claude session started with `settings.readOnlyProjects: true` reads every
 registered local project and writes none of them. It is an API-only option on
 `POST /api/sessions`; a value that is not a bool is `400 invalid_settings`, a
 non-claude kind is `400 read_only_needs_claude`, and a host project is
-`403 read_only_local_only`. A template that opts out of the sandbox is
-`403 read_only_needs_sandbox`: without a profile nothing would enforce the
-read-only promise.
+`403 read_only_local_only`.
 
 The profile is the enforcement. `readOnlyProjectRoots` lists every project
 that is neither remote nor hosted and has a path, each resolved with

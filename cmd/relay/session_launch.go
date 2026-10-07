@@ -439,9 +439,6 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	// client instead only breaks it (SH §5.2: "SSH host terminal: off").
 	sandbox := wantsSandbox(req.Kind, tmpl) && !(proj != nil && proj.IsHosted())
 	baseFields.Sandbox = sandbox
-	if readOnly && !sandbox {
-		return nil, forbidden("read_only_needs_sandbox", "readOnlyProjects needs a sandboxed template", baseFields)
-	}
 
 	sessionRequest, refusal := buildSessionRequest(req, proj, directory, baseFields)
 	if refusal != nil {
