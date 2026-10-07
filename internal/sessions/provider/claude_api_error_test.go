@@ -7,11 +7,11 @@ import (
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
-const apiErrorAssistantLine = `{"type":"assistant","message":{"id":"cb966323-a1e6-4a58-bf50-e861c7b95c0c","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","type":"message","content":[{"type":"text","text":"Failed to authenticate. API Error: 401 API key is invalid."}]},"parent_tool_use_id":null,"session_id":"4dcfe507-e03c-4665-8224-6f16b08995cd","uuid":"a757b241-8f1a-45f9-891d-1013d77b6005","error":"authentication_failed","is_api_error_message":true}`
+const apiErrorAssistantLine = `{"type":"assistant","message":{"id":"00000000-0000-0000-0000-000000000001","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","type":"message","content":[{"type":"text","text":"Failed to authenticate. API Error: 401 API key is invalid."}]},"parent_tool_use_id":null,"session_id":"00000000-0000-0000-0000-000000000002","uuid":"00000000-0000-0000-0000-000000000003","error":"authentication_failed","is_api_error_message":true}`
 
 const apiErrorResultLine = `{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"Failed to authenticate. API Error: 401 API key is invalid.","num_turns":1,"total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
 
-func messageStartEvents(t *testing.T, line string) []map[string]any {
+func messageStartEvents(t *testing.T, lines ...string) []map[string]any {
 	t.Helper()
 	var starts []map[string]any
 	p := NewClaudeProvider(&sessionstypes.Session{Model: "sonnet"}, func(ev string, data json.RawMessage) {
@@ -28,7 +28,9 @@ func messageStartEvents(t *testing.T, line string) []map[string]any {
 			}
 		}
 	}, ClaudeConfig{}, nil)
-	p.processLine(json.RawMessage(line), nil)
+	for _, line := range lines {
+		p.processLine(json.RawMessage(line), nil)
+	}
 	return starts
 }
 
@@ -92,5 +94,17 @@ func TestClaudeResult_APIErrorStatusReachesMessageComplete(t *testing.T) {
 	}
 	if d["apiErrorStatus"] != float64(401) {
 		t.Fatalf("apiErrorStatus = %v, want 401", d["apiErrorStatus"])
+	}
+}
+
+func TestClaudeAssistant_APIErrorReusingMessageIDStillEmitsMessageStart(t *testing.T) {
+	normal := `{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"hello"}]}}`
+	errLine := `{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"Failed to authenticate."}]},"error":"authentication_failed"}`
+	starts := messageStartEvents(t, normal, errLine)
+	if len(starts) != 2 {
+		t.Fatalf("message_start count = %d, want 2", len(starts))
+	}
+	if got := starts[1]["error"]; got != "authentication_failed" {
+		t.Fatalf("second message_start error = %v, want %q", got, "authentication_failed")
 	}
 }
