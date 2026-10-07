@@ -1152,6 +1152,16 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 		m.tools.clear(sess.ID)
 		m.signal(sess, completionSignal(data))
 		msg = map[string]any{"type": events.HandlerMessageComplete, "sessionId": sess.ID}
+		var failed struct {
+			IsError        bool `json:"isError"`
+			APIErrorStatus int  `json:"apiErrorStatus"`
+		}
+		if len(data) > 0 && json.Unmarshal(data, &failed) == nil && failed.IsError {
+			msg["isError"] = true
+			if failed.APIErrorStatus > 0 {
+				msg["apiErrorStatus"] = failed.APIErrorStatus
+			}
+		}
 		m.persist(sess)
 
 	case "process_exited":
