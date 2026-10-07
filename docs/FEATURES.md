@@ -59,7 +59,7 @@ Areas: sessions, sandbox, templates, audit.
 | Codex session | API (eve) | eve starts a session on a `codex/<slug>` model → `POST /api/sessions`; the models come from `GET /api/models` (group Codex) | HTTP [execute] | — | session-codex | eve > New Session > Codex model | `settings.json` `terminal_templates` `codex`, `projects[].allowed_templates`; for a host, `hosts[].terminal_templates` `codex` |
 | Agent state and turn excerpts | API (eve) | a live claude, pi or codex session → `session_state` and `turn_done` on `/ws`; `attention` on `GET /api/sessions`; codex reports six of the seven states, never `asking` | HTTP [proxy] | — | session-agent-state | none until the agent board ships in eve | none (API only: `POST /api/sessions` settings `agent: true`) |
 | Chief of Staff scope: read every session, send marked | API (eve) | `X-Relay-Scope: chief-of-staff` → `GET /api/sessions`, read-only `/ws`, `POST /api/chief-of-staff/messages` | HTTP [proxy, scoped] | — | chief-of-staff-send | none until eve's Chief of Staff thread ships | none (API only) |
-| Read-only project access for a claude session | API (eve) | `POST /api/sessions` with `settings.readOnlyProjects: true` → the session reads every local project and writes none; a project add, move or remove ends it | HTTP [execute] | — | none | none until eve's Chief of Staff reads projects | none (API only) |
+| Read-only project access for a claude session | API (eve) | `POST /api/sessions` with `settings.readOnlyProjects: true` → the session reads every local project and writes none; a project add, move or remove ends it | HTTP [execute] | — | cos-read-only-profile | none until eve's Chief of Staff reads projects | none (API only) |
 
 ### G2 · Give an agent access to one project and nothing else — must-have
 Intent: grant a project its folder, mail account and chosen tools, and nothing wider.
@@ -284,11 +284,11 @@ areas:
   sessions:
     code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**]
     tests: [cmd/relay/session_*_test.go, cmd/relay/router_sessions_test.go, cmd/relay/mount_session_test.go, cmd/relaysessions/*_test.go, internal/sessions/**/*_test.go]
-    journeys: [session-drop-in, session-drop-in-host, session-drop-in-tool-refused, blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, session-agent-state, session-codex, slow-route-keepalive, session-host-restart, verify-fixtures-removed, chief-of-staff-send]
+    journeys: [session-drop-in, session-drop-in-host, session-drop-in-tool-refused, blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, session-agent-state, session-codex, slow-route-keepalive, session-host-restart, verify-fixtures-removed, chief-of-staff-send, cos-read-only-profile]
   sandbox:
     code: [cmd/relay/sandbox_*.go, cmd/relay/session_sandbox*.go, internal/bridge/sandbox*.go, internal/sessions/sandbox/**]
     tests: [cmd/relay/sandbox_*_test.go, cmd/relay/session_sandbox*_test.go, internal/sessions/sandbox/**/*_test.go]
-    journeys: [oversized-launch-audit-capped, acme-sandbox-reach, acme-tools-through-bridge, gate-credential-mint-neg, gate-credential-revoke-neg, gate-mcp-register-neg, gate-service-register-neg, gate-eve-enrolment-open-neg, gate-eve-passkey-revoke-neg, gate-enrolment-create-neg, gate-enrolment-sign-neg, gate-enrolment-update-neg, gate-enrolment-revoke-neg, gate-login-bootstrap-mint-neg, gate-login-passkey-revoke-neg, gate-project-grant-neg, gate-project-rotate-token-neg, gate-remote-configure-neg, gate-mcp-oauth-start-neg, gate-sealed-reset-neg, grant-narrowing-live]
+    journeys: [oversized-launch-audit-capped, acme-sandbox-reach, acme-tools-through-bridge, gate-credential-mint-neg, gate-credential-revoke-neg, gate-mcp-register-neg, gate-service-register-neg, gate-eve-enrolment-open-neg, gate-eve-passkey-revoke-neg, gate-enrolment-create-neg, gate-enrolment-sign-neg, gate-enrolment-update-neg, gate-enrolment-revoke-neg, gate-login-bootstrap-mint-neg, gate-login-passkey-revoke-neg, gate-project-grant-neg, gate-project-rotate-token-neg, gate-remote-configure-neg, gate-mcp-oauth-start-neg, gate-sealed-reset-neg, grant-narrowing-live, cos-read-only-profile]
   templates:
     code: [cmd/relay/template_*.go, cmd/relay/ipc_templates.go]
     tests: [cmd/relay/template_*_test.go, cmd/relay/ipc_templates_test.go, cmd/relay/settings_templates_ui_test.go]
@@ -296,7 +296,7 @@ areas:
   projects:
     code: [cmd/relay/project_*.go, cmd/relay/ipc_projects.go, cmd/relay/skills.go, internal/project/**]
     tests: [cmd/relay/project_*_test.go, cmd/relay/ipc_project*_test.go, cmd/relay/settings_project*_test.go, cmd/relay/skills_test.go, internal/project/*_test.go]
-    journeys: [v1-conversion-refusal, gate-project-grant-neg, gate-project-rotate-token-neg, gate-project-grant-pos, stale-derived-access-edit, context-number-resave, grant-narrowing-live, gate-project-rotate-token-pos, verify-fixtures-removed]
+    journeys: [v1-conversion-refusal, gate-project-grant-neg, gate-project-rotate-token-neg, gate-project-grant-pos, stale-derived-access-edit, context-number-resave, grant-narrowing-live, gate-project-rotate-token-pos, verify-fixtures-removed, cos-read-only-profile]
   grants:
     code: [cmd/relay/grant_cmd.go, cmd/relay/router.go, internal/project/apply.go, internal/project/grant_widening.go, internal/membership/**]
     tests: [cmd/relay/grant_*_test.go, cmd/relay/router_*_test.go, cmd/relay/scope_*_test.go, cmd/relay/settings_scope*_test.go, internal/membership/*_test.go]
