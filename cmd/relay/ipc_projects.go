@@ -31,6 +31,12 @@ type ipcSetDefaultProjectMsg struct {
 	ProjectID string             `json:"project_id"`
 }
 
+type ipcSetChiefOfStaffMsg struct {
+	ProjectID       string `json:"project_id"`
+	Model           string `json:"model"`
+	DailyModelCalls int    `json:"daily_model_calls"`
+}
+
 type ipcListMcpToolsMsg struct {
 	McpID string `json:"mcp_id"`
 }
@@ -233,6 +239,31 @@ func ipcSetDefaultProject(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	ctx.UI.EmitEvent("onDefaultProjectUpdated", marshalForUI(defaultProjectViewOf(defaults)))
+}
+
+// ipcSetChiefOfStaff runs inline: the op is ungated. An empty project_id
+// clears the setting.
+func ipcSetChiefOfStaff(ctx *IPCContext, raw json.RawMessage) {
+	msg, ok := unmarshalIPC[ipcSetChiefOfStaffMsg](raw, "set_chief_of_staff")
+	if !ok || ctx.ProjectOps == nil {
+		return
+	}
+	if msg.ProjectID == "" {
+		if err := ctx.ProjectOps.ClearChiefOfStaff(ctx.Ctx); err != nil {
+			ctx.UI.EmitEvent("onProjectError", err.Error())
+			return
+		}
+		ctx.UI.EmitEvent("onChiefOfStaffUpdated", marshalForUI(chiefOfStaffView{}))
+		return
+	}
+	stored, err := ctx.ProjectOps.SetChiefOfStaff(ctx.Ctx, config.ChiefOfStaffConfig{
+		ProjectID: msg.ProjectID, Model: msg.Model, DailyModelCalls: msg.DailyModelCalls,
+	})
+	if err != nil {
+		ctx.UI.EmitEvent("onProjectError", err.Error())
+		return
+	}
+	ctx.UI.EmitEvent("onChiefOfStaffUpdated", marshalForUI(chiefOfStaffViewFromConfig(stored)))
 }
 
 // ipcListMcpTools emits an empty list rather than an error when the MCP is

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"path/filepath"
 
@@ -103,6 +104,27 @@ type setDefaultProjectRequest struct {
 }
 
 const errDefaultProjectIDRequired = `project_id is required; send "" to clear the default`
+
+// setChiefOfStaffRequest takes pointers so a missing key is not a zero value.
+// DailyModelCalls is a float64 so a fractional number reaches the range check
+// as daily_model_calls_invalid rather than a decode error.
+type setChiefOfStaffRequest struct {
+	ProjectID       *string  `json:"projectId"`
+	Model           *string  `json:"model"`
+	DailyModelCalls *float64 `json:"dailyModelCalls"`
+}
+
+const maxChiefOfStaffConfigBodyBytes = 4 << 10
+
+func writeChiefOfStaffConfigError(w http.ResponseWriter, err error) {
+	var cosErr *config.ChiefOfStaffError
+	if errors.As(err, &cosErr) {
+		writeChiefOfStaffError(w, http.StatusBadRequest, cosErr.Code, cosErr.Message)
+		return
+	}
+	slog.Error("chief of staff setting: save failed", "op", "chief_of_staff.config", "status", "error", "error", err.Error())
+	writeChiefOfStaffError(w, http.StatusInternalServerError, "save_failed", "failed to save settings")
+}
 
 // ProjectsChangedFn is fired after any successful project mutation so the
 // tray UI can refresh. nil = no fan-out.
@@ -274,6 +296,53 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 			return
 		}
 		writeJSON(w, http.StatusOK, defaultProjectViewOf(defaults))
+	})
+
+	// The Chief of Staff setting. The scope header never reaches these doors:
+	// Authorize refuses read and configure inside the chief-of-staff scope, so
+	// the Chief of Staff cannot repoint itself.
+	rr.Handle(control.ClassRead, "GET /api/chief-of-staff/config", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, chiefOfStaffViewOf(config.FreshSettings(store)))
+	})
+
+	rr.Handle(control.ClassConfigure, "PUT /api/chief-of-staff/config", func(w http.ResponseWriter, r *http.Request) {
+		var body setChiefOfStaffRequest
+		r.Body = http.MaxBytesReader(w, r.Body, maxChiefOfStaffConfigBodyBytes)
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				writeChiefOfStaffError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body is larger than 4 KiB")
+				return
+			}
+			writeChiefOfStaffError(w, http.StatusBadRequest, "invalid_body", `body must be JSON {"projectId","model","dailyModelCalls"}`)
+			return
+		}
+		if body.ProjectID == nil || body.Model == nil || body.DailyModelCalls == nil {
+			writeChiefOfStaffError(w, http.StatusBadRequest, "invalid_body", "projectId, model and dailyModelCalls are all required")
+			return
+		}
+		calls := -1 // a fraction is refused as daily_model_calls_invalid, after the earlier checks
+		if *body.DailyModelCalls == math.Trunc(*body.DailyModelCalls) && math.Abs(*body.DailyModelCalls) <= math.MaxInt32 {
+			calls = int(*body.DailyModelCalls)
+		}
+		stored, err := ops.SetChiefOfStaff(r.Context(), config.ChiefOfStaffConfig{
+			ProjectID: *body.ProjectID, Model: *body.Model, DailyModelCalls: calls,
+		})
+		if err != nil {
+			writeChiefOfStaffConfigError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, chiefOfStaffViewFromConfig(stored))
+	})
+
+	rr.Handle(control.ClassConfigure, "DELETE /api/chief-of-staff/config", func(w http.ResponseWriter, r *http.Request) {
+		if err := ops.ClearChiefOfStaff(r.Context()); err != nil {
+			writeChiefOfStaffConfigError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, chiefOfStaffView{})
 	})
 
 	// MCP listing for the Eve project dialog's "Allowed MCPs" picker.

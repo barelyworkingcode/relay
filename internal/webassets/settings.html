@@ -430,6 +430,9 @@ textarea:focus {
 .proj-defaults { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 10px; }
 .proj-defaults-row { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 8px 10px; align-items: center; }
 .proj-defaults-row label { margin: 0; }
+.cos-row { display: grid; grid-template-columns: auto 1fr; gap: 8px 10px; align-items: center; }
+.cos-row label { margin: 0; }
+.cos-unsuitable { margin: 0; padding-left: 18px; color: var(--text-3); font-size: 11px; }
 .proj-kind-label { font-size: 13px; color: var(--text); padding: 4px 0; }
 .proj-card-path { color: var(--text-2); font-size: 11px; font-family: var(--mono); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-card-meta { color: var(--text-3); font-size: 11px; margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -701,6 +704,7 @@ window.__RELAY_INIT__ = {
   runningIds: __RUNNING_IDS_JSON__,
   projects: __PROJECTS_JSON__,
   defaultProject: __DEFAULT_PROJECT_JSON__,
+  chiefOfStaff: __CHIEF_OF_STAFF_JSON__,
   hosts: __HOSTS_JSON__,
   templates: __TEMPLATES_JSON__,
   mcpToolCache: __MCP_TOOL_CACHE_JSON__,
@@ -1112,12 +1116,55 @@ window.__RELAY_INIT__ = {
     return defaultProjectGaps(projects, defaults).map((gap) => ({ text: gapText(gap), tab: "projects" }));
   }
 
+  // web/src/lib/chief_of_staff.js
+  var CHIEF_OF_STAFF_MODELS = ["haiku", "sonnet", "opus"];
+  function isWildcardList(list) {
+    return list.length === 1 && list[0] === "*";
+  }
+  function modelAllowed(p, model) {
+    const models = p.allowed_models || [];
+    return models.length === 0 || isWildcardList(models) || models.includes(model);
+  }
+  function templateAllowed(p, id) {
+    const templates = p.allowed_templates || [];
+    return isWildcardList(templates) || templates.includes(id);
+  }
+  function chiefOfStaffUnsuitable(p, model) {
+    if (p.kind === "remote") return "It's an access profile.";
+    if (p.host_id) return "It runs on an SSH host.";
+    if (p.permission_policy) return "It has a permission policy.";
+    if (!modelAllowed(p, model)) return "It doesn't allow the " + model + " model.";
+    if (!templateAllowed(p, "claude-code")) return "It doesn't allow the claude-code template.";
+    return "";
+  }
+  function byName(a, b) {
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  }
+  function localProjects(projects) {
+    return (projects || []).filter((p) => p.kind !== "remote");
+  }
+  function suitableChiefOfStaffProjects(projects, model) {
+    return localProjects(projects).filter((p) => chiefOfStaffUnsuitable(p, model) === "").sort(byName);
+  }
+  function unsuitableChiefOfStaffRows(projects, model) {
+    return localProjects(projects).sort(byName).map((p) => ({ id: p.id, name: p.name, reason: chiefOfStaffUnsuitable(p, model) })).filter((r) => r.reason !== "").map((r) => ({ id: r.id, name: r.name, reason: r.reason, text: r.name + ": " + r.reason }));
+  }
+
   // web/src/app.js
   var EXTERNAL_MCPS_INIT = window.__RELAY_INIT__.externalMcps;
   var SERVICES_INIT = window.__RELAY_INIT__.services;
   var RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
   var PROJECTS_INIT = window.__RELAY_INIT__.projects;
   var DEFAULT_PROJECT_INIT = window.__RELAY_INIT__.defaultProject || null;
+  var CHIEF_OF_STAFF_INIT = window.__RELAY_INIT__.chiefOfStaff || { configured: false };
+  var COS_DEFAULT_MODEL = "sonnet";
+  var COS_DEFAULT_DAILY_CALLS = 100;
+  function cosDraftFrom(view) {
+    return {
+      model: view && view.configured && view.model || COS_DEFAULT_MODEL,
+      dailyModelCalls: view && view.configured && view.dailyModelCalls || COS_DEFAULT_DAILY_CALLS
+    };
+  }
   var HOSTS_INIT = window.__RELAY_INIT__.hosts || [];
   var TEMPLATES_INIT = window.__RELAY_INIT__.templates || [];
   var MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
@@ -1203,6 +1250,11 @@ window.__RELAY_INIT__ = {
     projects: PROJECTS_INIT,
     defaultProject: DEFAULT_PROJECT_INIT,
     // the raw default_project block {home?, work?}, or null when never configured
+    chiefOfStaff: CHIEF_OF_STAFF_INIT,
+    // the stored setting as the GET route shapes it
+    // Model and limit as shown. Kept apart from the stored view because a
+    // change made while no project is set saves nothing until one is picked.
+    cosDraft: cosDraftFrom(CHIEF_OF_STAFF_INIT),
     mcpToolCache: MCP_TOOL_CACHE_INIT,
     // mcpId -> [{name, description, category}]
     mcpScopeFields: MCP_SCOPE_FIELDS_INIT,
@@ -2404,6 +2456,7 @@ window.__RELAY_INIT__ = {
     }, {});
     if (data.projects) state.projects = data.projects;
     if ("default_project" in data) state.defaultProject = data.default_project || null;
+    if (data.chief_of_staff) applyChiefOfStaffView(data.chief_of_staff);
     if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
     if (data.mcp_scope_fields) state.mcpScopeFields = data.mcp_scope_fields;
     if (data.enrolments) state.enrolments = data.enrolments;
@@ -2693,6 +2746,7 @@ window.__RELAY_INIT__ = {
       }
     }
     html += renderProjDefaults();
+    html += renderChiefOfStaff();
     return html;
   }
   function renderScopeGapBanner() {
@@ -2723,6 +2777,74 @@ window.__RELAY_INIT__ = {
     html += renderProjDefaultSelect("work", "projDefaultWork", `onchange="setDefaultProject('work', this.value)"`);
     html += "</div></div>";
     return html;
+  }
+  function renderChiefOfStaff() {
+    if (!(state.projects || []).some((p) => !isRemoteProject(p))) return "";
+    const stored = state.chiefOfStaff && state.chiefOfStaff.configured ? state.chiefOfStaff : null;
+    const model = state.cosDraft.model;
+    const suitable = suitableChiefOfStaffProjects(state.projects, model);
+    const storedId = stored ? stored.projectId : "";
+    let html = '<div class="proj-defaults" id="cosPanel">';
+    html += '<div class="proj-section-title">Chief of Staff</div>';
+    html += `<p class="proj-section-help">Where eve's Chief of Staff runs. This overrides eve's settings file.</p>`;
+    html += '<div class="cos-row">';
+    html += '<label for="cosProject">Project</label>';
+    html += '<select id="cosProject" aria-label="Chief of Staff project" onchange="setChiefOfStaffProject(this.value)">';
+    html += '<option value=""' + (storedId ? "" : " selected") + ">Not set</option>";
+    let storedListed = false;
+    for (const p of suitable) {
+      const sel = p.id === storedId;
+      storedListed = storedListed || sel;
+      html += '<option value="' + esc(p.id) + '"' + (sel ? " selected" : "") + ">" + esc(p.name) + "</option>";
+    }
+    if (storedId && !storedListed) {
+      const gone = (state.projects || []).find((p) => p.id === storedId);
+      html += '<option value="' + esc(storedId) + '" selected disabled>' + esc(gone ? gone.name : "Removed project") + "</option>";
+    }
+    html += "</select>";
+    html += '<label for="cosModel">Model</label>';
+    html += '<select id="cosModel" aria-label="Chief of Staff model" onchange="setChiefOfStaffModel(this.value)">';
+    for (const m of CHIEF_OF_STAFF_MODELS) {
+      html += '<option value="' + m + '"' + (m === model ? " selected" : "") + ">" + esc(m.charAt(0).toUpperCase() + m.slice(1)) + "</option>";
+    }
+    html += "</select>";
+    html += '<label for="cosDailyCalls">Daily model calls</label>';
+    html += '<input type="number" id="cosDailyCalls" aria-label="Chief of Staff daily model calls" min="1" max="10000" step="1" value="' + esc(String(state.cosDraft.dailyModelCalls)) + '" onchange="setChiefOfStaffDailyCalls(this.value)">';
+    html += "</div>";
+    const rows = unsuitableChiefOfStaffRows(state.projects, model);
+    if (rows.length) {
+      html += `<div class="proj-section-help cos-unsuitable-title">Can't run the Chief of Staff</div>`;
+      html += '<ul class="cos-unsuitable" id="cosUnsuitable">';
+      for (const r of rows) html += "<li>" + esc(r.text) + "</li>";
+      html += "</ul>";
+    }
+    html += "</div>";
+    return html;
+  }
+  function saveChiefOfStaff(projectId) {
+    state.projectError = null;
+    const calls = Number(state.cosDraft.dailyModelCalls);
+    ipc(JSON.stringify({
+      type: "set_chief_of_staff",
+      project_id: projectId || "",
+      model: state.cosDraft.model,
+      daily_model_calls: Number.isInteger(calls) ? calls : 0
+    }));
+  }
+  function setChiefOfStaffProject(projectId) {
+    saveChiefOfStaff(projectId);
+  }
+  function setChiefOfStaffModel(model) {
+    if (!CHIEF_OF_STAFF_MODELS.includes(model)) return;
+    state.cosDraft.model = model;
+    const stored = state.chiefOfStaff && state.chiefOfStaff.configured ? state.chiefOfStaff : null;
+    if (stored) saveChiefOfStaff(stored.projectId);
+    else render("push");
+  }
+  function setChiefOfStaffDailyCalls(value) {
+    state.cosDraft.dailyModelCalls = value;
+    const stored = state.chiefOfStaff && state.chiefOfStaff.configured ? state.chiefOfStaff : null;
+    if (stored) saveChiefOfStaff(stored.projectId);
   }
   function renderProjDefaultSelect(mode, id, onchange) {
     const current = effectiveDefaultId(state.projects, state.defaultProject, mode);
@@ -4066,6 +4188,15 @@ window.__RELAY_INIT__ = {
     state.defaultProject = view || {};
     state.projectError = null;
     if (state.page === "projects" || state.page === "overview") render("push");
+  };
+  function applyChiefOfStaffView(view) {
+    state.chiefOfStaff = view;
+    if (view.configured) state.cosDraft = cosDraftFrom(view);
+  }
+  window.onChiefOfStaffUpdated = function(view) {
+    applyChiefOfStaffView(view || { configured: false });
+    state.projectError = null;
+    if (state.page === "projects") render("push");
   };
   window.onProjectTokenRotated = function(id, plaintext) {
     state.rotatingProjectId = null;
@@ -6692,6 +6823,10 @@ That browser's credential stops authenticating on its next request and it has to
     toggleProjTemplate,
     renderProjDefaults,
     renderProjDefaultSelect,
+    renderChiefOfStaff,
+    setChiefOfStaffProject,
+    setChiefOfStaffModel,
+    setChiefOfStaffDailyCalls,
     renderProjModeChips,
     setDefaultProject,
     setProjMode,

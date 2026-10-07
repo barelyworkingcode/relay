@@ -17,6 +17,10 @@ func (s *Settings) Clone() *Settings {
 	cp.Projects = cloneProjects(s.Projects)
 	cp.Hosts = cloneHosts(s.Hosts)
 	cp.DefaultProject = cloneDefaultProjects(s.DefaultProject)
+	if s.ChiefOfStaff != nil {
+		c := *s.ChiefOfStaff
+		cp.ChiefOfStaff = &c
+	}
 	cp.Enrolments = cloneEnrolments(s.Enrolments)
 	cp.Audit = cloneAuditConfig(s.Audit)
 	cp.Remote = cloneRemoteConfig(s.Remote)

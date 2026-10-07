@@ -34,6 +34,9 @@ type Settings struct {
 	// an upgraded install stays byte-identical and raises no Needs-attention
 	// row. Read a default through DefaultProjectFor, never the raw id.
 	DefaultProject *DefaultProjects `json:"default_project,omitempty"`
+	// ChiefOfStaff is where eve's Chief of Staff runs. nil: relay has no setting,
+	// and eve uses its own data/settings.json.
+	ChiefOfStaff *ChiefOfStaffConfig `json:"chief_of_staff,omitempty"`
 	// AdminSecret is sealed (§4.1): it is a plaintext bearer the bridge
 	// accepts for a handful of admin ops, not a value relay only checks.
 	AdminSecret Secret `json:"admin_secret,omitempty"`

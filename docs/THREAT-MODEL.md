@@ -58,6 +58,8 @@ outside it is not a relay bug, however real.
    Relay does not promise that a frontend routes its Chief of Staff messages
    through the scope, or that it never marks a message the person typed: the
    mark records which door a frontend chose.
+   The scope also can't change where the Chief of Staff runs: the
+   `/api/chief-of-staff/config` routes are refused inside it.
 3b. **A read-only-projects session** (`settings.readOnlyProjects`, claude
    only, started by a frontend that holds execute). It reads every registered
    local project, and that read reach is new: a session otherwise reads only

@@ -91,3 +91,24 @@ type defaultProjectView struct {
 func defaultProjectViewOf(d config.DefaultProjects) defaultProjectView {
 	return defaultProjectView{Home: d.Home, Work: d.Work}
 }
+
+// chiefOfStaffView is the one shape HTTP, IPC and the first paint share.
+// A stored block with an invalid shape reads as not configured.
+type chiefOfStaffView struct {
+	Configured      bool   `json:"configured"`
+	ProjectID       string `json:"projectId,omitempty"`
+	Model           string `json:"model,omitempty"`
+	DailyModelCalls int    `json:"dailyModelCalls,omitempty"`
+}
+
+func chiefOfStaffViewOf(s *config.Settings) chiefOfStaffView {
+	c, ok := s.ChiefOfStaffSetting()
+	if !ok {
+		return chiefOfStaffView{}
+	}
+	return chiefOfStaffViewFromConfig(c)
+}
+
+func chiefOfStaffViewFromConfig(c config.ChiefOfStaffConfig) chiefOfStaffView {
+	return chiefOfStaffView{Configured: true, ProjectID: c.ProjectID, Model: c.Model, DailyModelCalls: c.DailyModelCalls}
+}

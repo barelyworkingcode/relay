@@ -409,6 +409,46 @@ store untouched. Relay checks shape only, not that the project's mode includes
 the preset's mode. Like mode and defaults it is a label, not a grant: nothing
 that decides access, launch or routing reads it.
 
+### Chief of Staff setting
+
+`chief_of_staff` in `settings.json` says where eve's Chief of Staff runs:
+`{"project_id","model","daily_model_calls"}`. Absent means relay has no
+setting and eve uses its own `data/settings.json` block. Like a default
+project it is a label, not a grant: it needs no presence gate, `GatedOps`
+entry or audit row, and it stays out of the grant digests.
+
+- Suitability (`config.ChiefOfStaffUnsuitable`, mirrored by
+  `web/src/lib/chief_of_staff.js` with the same reason text). The first hit
+  wins: an access profile, a project on an SSH host, a permission policy, a
+  model the project's `allowed_models` rules out, a project without the
+  `claude-code` template. Relay doesn't check eve's MCP grant, because it
+  hardcodes no service id.
+- `SetChiefOfStaff` validates in this order and a refusal leaves settings
+  untouched: `project_id_required`, `model_invalid` (haiku, sonnet or opus),
+  `daily_model_calls_invalid` (1 to 10000), `project_not_found`,
+  `project_unsuitable`. `ProjectOps.SetChiefOfStaff` and `ClearChiefOfStaff`
+  share `SetDefaultProject`'s shape; clearing an absent block writes nothing.
+- `ChiefOfStaffSetting` returns the stored block when its shape is valid and
+  does not check the project: a stale pick must reach eve and the screen,
+  never be silently replaced.
+- `GET /api/chief-of-staff/config` (`ClassRead`) answers
+  `{"configured":true,"projectId","model","dailyModelCalls"}` or
+  `{"configured":false}`. `PUT` (`ClassConfigure`) takes all three keys, refuses
+  unknown keys and bodies over 4 KiB, and answers the GET shape or
+  `{error, message}` (400, 413, 500 `save_failed`). `DELETE` answers
+  `{"configured":false}` and repeats safely. A request in the chief-of-staff
+  scope is refused on all three, so the Chief of Staff cannot repoint itself.
+- IPC `set_chief_of_staff {project_id, model, daily_model_calls}` (empty
+  `project_id` clears) answers `onChiefOfStaffUpdated(view)` or
+  `onProjectError`. `pushFullSettings` and the first paint carry the same view
+  as `chief_of_staff` and `chiefOfStaff`.
+- The panel sits under "Default projects". The project select lists only
+  suitable local projects for the selected model, and a stored project that
+  no longer suits stays as a selected, disabled option. A "Can't run the
+  Chief of Staff" list gives each other local project's reason. Changes save
+  while a project is set; with Not set, model and limit apply when a project
+  is picked.
+
 ### Remote client enrolment
 
 An **enrolment** (`internal/enrolment`, `settings.json` → `enrolments`) binds one
