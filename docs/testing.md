@@ -160,6 +160,76 @@ about 3 minutes, about 1 of them on `cmd/relay` (its race build, the
    relay agrees with a user agent it did not also write. Neither covers real authenticator
    hardware or Safari; both gaps are named in `docs/testing-roadmap.md`.
 
+## The test-approver build
+
+The `testapprover` build answers the presence prompt for `project.grant` and
+refuses every other gated op, so a verify journey can create a project with
+no one at the screen. Why, and why it cannot reach a release:
+[`docs/presence-gate.md`](presence-gate.md#the-test-approver-build).
+
+```bash
+./build.sh --test-approver     # builds with -tags testapprover
+```
+
+It installs to `~/Applications/RelayTestApprover.app`. The real tray in
+`/Applications/Relay.app` is not touched, stopped or reopened. It refuses to
+run while a process runs from that bundle, and it rejects `--release`.
+`--test` is allowed.
+
+Both trays use the same ports and config dir, so only one runs. Swap in place.
+`$CFG` is relay's config dir.
+
+1. Unlock the signing keychain before the build (the devbox keychain command
+   in the machine notes), then run `./build.sh --test-approver`.
+2. Find the release tray's pid: it is in the name of the socket
+   `relay-frontend-<pid>.sock` in `$CFG`. Stop it and wait for it to exit:
+
+   ```bash
+   PID=<pid>
+   kill -TERM $PID && caffeinate -w $PID
+   ```
+
+3. Start the test tray: `open ~/Applications/RelayTestApprover.app`.
+4. Wait until `relay service list` shows `relaysessions running`, then
+   `relay service restart --id eve-verify`. Before that wait the restart does
+   nothing.
+5. Check the signal below, then run the journey.
+
+**The signal.** The test tray's binary contains the bytes `-tags=testapprover`
+(its embedded build info). A release binary does not. Find the running
+executable from the pid, then count the bytes:
+
+```bash
+EXE=$(ps -p <pid> -o comm=)
+LC_ALL=C /usr/bin/grep -c -a -e '-tags=testapprover' "$EXE"   # >=1 test build, 0 release
+go version -m "$EXE" | /usr/bin/grep -e '-tags='            # the same, with the Go toolchain
+```
+
+**Swap back.** The journey is not finished until the release tray is back.
+
+```bash
+PID=<pid of the test tray, from relay-frontend-<pid>.sock>
+kill -TERM $PID && caffeinate -w $PID
+open /Applications/Relay.app
+# wait until `relay service list` shows relaysessions running
+relay service restart --id eve-verify
+curl -s http://127.0.0.1:3100/api/auth/status     # no "trusted" field
+```
+
+Then the one-line release check: on the running release tray the count is 0.
+
+```bash
+LC_ALL=C /usr/bin/grep -c -a -e '-tags=testapprover' "$(ps -p <new pid> -o comm=)"   # prints 0
+```
+
+**Risks while swapped.**
+
+- Every gated op but `project.grant` is refused, including mint, revoke,
+  enrolment and service registration. Do other work after the swap back.
+- Relay's own `devboxverify` refuses the test build.
+- Project `SKILL.md` files written while the test tray runs may name the test
+  bundle path. They are rewritten when the release tray restarts.
+
 ## Not covered by the suite
 
 - Cocoa tray UI (menu, dock) — exercise via `scripts/demo.sh`.

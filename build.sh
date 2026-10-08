@@ -6,6 +6,9 @@
 #   ./build.sh                  # build + install + launch
 #   ./build.sh --test           # run hermetic test suite first; abort install on failure
 #   ./build.sh --release        # sign, notarize, emit /tmp/Relay.dmg (implies --test)
+#   ./build.sh --test-approver  # build with the test approver (tag testapprover) into
+#                               # ~/Applications/RelayTestApprover.app; the running tray
+#                               # is not stopped and the app is not launched; not with --release
 #
 # Tests run BEFORE install so a broken binary never lands in /Applications.
 # Use --test on every developer-machine build: the suite otherwise runs only at
@@ -17,11 +20,13 @@ APP="Relay.app"
 DEST="/Applications/$APP"
 RELEASE=false
 RUN_TESTS=false
+TEST_APPROVER=false
 
 for arg in "$@"; do
     case "$arg" in
         --release) RELEASE=true; RUN_TESTS=true ;;
         --test)    RUN_TESTS=true ;;
+        --test-approver) TEST_APPROVER=true ;;
         --help|-h)
             # Print the header comment block (lines 3..first non-comment after).
             awk 'NR>=3 && /^[^#]/ {exit} NR>=3 {sub(/^# ?/,""); print}' "$0"
@@ -32,6 +37,19 @@ for arg in "$@"; do
             exit 1 ;;
     esac
 done
+
+if $TEST_APPROVER && $RELEASE; then
+    echo "--test-approver cannot be combined with --release" >&2
+    exit 1
+fi
+if $TEST_APPROVER; then
+    DEST="$HOME/Applications/RelayTestApprover.app"
+    # Refuse while a process runs from that bundle: replacing it under a live tray.
+    if pgrep -f '[R]elayTestApprover.app/Contents/MacOS/relay' >/dev/null 2>&1; then
+        echo "a process is running from $DEST; stop it first" >&2
+        exit 1
+    fi
+fi
 
 # Regenerate the settings UI bundle (web/src/* -> internal/webassets/settings.html) FIRST,
 # so BOTH the test suite and the build below embed the current source rather than
@@ -52,7 +70,10 @@ stop_relay() {
     echo "relay did not exit after SIGTERM; sending SIGKILL" >&2
     pkill -KILL -x relay 2>/dev/null || true
 }
-stop_relay
+# The test-approver install leaves the real tray alone.
+if ! $TEST_APPROVER; then
+    stop_relay
+fi
 
 # Run the hermetic test suite up front. Mirrors what .githooks/pre-push runs —
 # keeps the install path consistent with the push gate.
@@ -128,7 +149,24 @@ echo "relay-sessions signed: cdhash=$HELPER_CDHASH team=${HELPER_TEAM:-<ad-hoc>}
 # before relay ever starts or trusts the relay-sessions service.
 echo "Building relay..."
 RELAY_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
-CGO_ENABLED=1 go build -ldflags "-X main.buildVersion=$RELAY_VERSION -X main.HelperCDHash=$HELPER_CDHASH -X main.HelperTeam=$HELPER_TEAM" -o relay ./cmd/relay
+RELAY_TAGS=()
+if $TEST_APPROVER; then
+    RELAY_TAGS=(-tags testapprover)
+fi
+CGO_ENABLED=1 go build ${RELAY_TAGS[@]+"${RELAY_TAGS[@]}"} -ldflags "-X main.buildVersion=$RELAY_VERSION -X main.HelperCDHash=$HELPER_CDHASH -X main.HelperTeam=$HELPER_TEAM" -o relay ./cmd/relay
+
+# A release-path binary must not carry the test approver; a test-approver
+# binary must. Checked before anything is staged or installed.
+if $TEST_APPROVER; then
+    CHECK_MODE=present
+else
+    CHECK_MODE=absent
+fi
+if ! scripts/check-test-approver.sh "$CHECK_MODE" relay; then
+    echo "✗ test-approver check ($CHECK_MODE) failed; install aborted" >&2
+    rm -f relay
+    exit 1
+fi
 
 cat relay > "$STAGE/$APP/Contents/MacOS/relay"
 chmod +x "$STAGE/$APP/Contents/MacOS/relay"
@@ -146,6 +184,7 @@ codesign "${SIGN_ARGS[@]}" "$STAGE/$APP"
 codesign --verify --deep --strict --verbose=2 "$STAGE/$APP"
 
 # Move to destination
+mkdir -p "$(dirname "$DEST")"
 rm -rf "$DEST"
 mv "$STAGE/$APP" "$DEST"
 rm -rf "$STAGE"
@@ -181,6 +220,6 @@ if $RELEASE; then
     xcrun stapler staple "$DMG_OUT"
 
     echo "DMG ready: $DMG_OUT"
-else
+elif ! $TEST_APPROVER; then
     open "$DEST"
 fi

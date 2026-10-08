@@ -240,7 +240,12 @@ An owner gate is a step that needs the owner's credential or presence. An
 agent inside the product (a relay session, or eve's chat agent) must never
 complete one. The devbox harness may, with the operator's test credentials:
 `devboxpresence` answers relay's presence prompt with the devbox admin
-password. There is never an API or flag that skips a gate.
+password. A release build has no API or flag that skips a gate. The
+`testapprover` build (`./build.sh --test-approver`, run in place of the
+release tray) answers `project.grant` alone and refuses every other owner
+gate. It is checked absent from every release binary, and its approvals are
+audited with `presence_approver`. See
+[`docs/testing.md`](testing.md#the-test-approver-build).
 
 Each gate has two journeys. The **positive** passes the gate as the owner
 would and checks the effect and its audit row with the presence id. The
@@ -337,7 +342,7 @@ areas:
     tests: [cmd/relay/host_*_test.go, cmd/relay/settings_hosts_ui_test.go, internal/sshhost/*_test.go]
     journeys: [permission-mode-restart, slow-route-keepalive, verify-fixtures-removed]
   presence:
-    code: [cmd/relay/presence_gate.go, cmd/relay/admin_ops.go, cmd/relay/admin_read_ops.go, internal/presence/**]
+    code: [cmd/relay/presence_gate.go, cmd/relay/presence_provider*.go, cmd/relay/admin_ops.go, cmd/relay/admin_read_ops.go, internal/presence/**]
     tests: [cmd/relay/presence_*_test.go, cmd/relay/gate_*_test.go, cmd/relay/config_queue_*_test.go, internal/presence/*_test.go]
     journeys: [gate-credential-mint-pos, execute-credential-renewal, gate-credential-mint-neg, gate-credential-revoke-neg, gate-mcp-register-neg, gate-service-register-neg, gate-eve-enrolment-open-neg, gate-eve-passkey-revoke-neg, gate-enrolment-create-neg, gate-enrolment-sign-neg, gate-enrolment-update-neg, gate-enrolment-revoke-neg, gate-login-bootstrap-mint-neg, gate-login-passkey-revoke-neg, gate-project-grant-neg, gate-project-rotate-token-neg, gate-remote-configure-neg, gate-mcp-oauth-start-neg, gate-sealed-reset-neg, gate-enrolment-create-pos, gate-enrolment-sign-pos, gate-enrolment-update-pos, gate-enrolment-revoke-pos, gate-login-bootstrap-mint-pos, gate-login-passkey-revoke-pos, gate-mcp-oauth-start-pos, gate-remote-configure-pos, gate-sealed-reset-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-eve-passkey-revoke-pos, gate-credential-revoke-pos]
   sealed:

@@ -61,7 +61,7 @@ var errPresenceGateNotWired = errors.New("presence gate is not wired for this op
 func requireGate(gate *presence.Gate, ctx context.Context, op string, d presence.Digest, reason string, attempt presenceAttempt) (presence.Grant, error) {
 	pending := attempt.begin(ctx)
 	if gate == nil {
-		pending.refused(op, errPresenceGateNotWired)
+		pending.refused(op, errPresenceGateNotWired, "")
 		return presence.Grant{}, errPresenceGateNotWired
 	}
 	if extend, ok := readDeadlineExtenderFromContext(ctx); ok {
@@ -69,7 +69,18 @@ func requireGate(gate *presence.Gate, ctx context.Context, op string, d presence
 		defer extend(frontendRouteReadDeadline)
 	}
 	grant, err := gate.Require(ctx, op, d, reason)
-	pending.refused(op, err)
+	approver := ""
+	if err != nil && errors.Is(err, presence.ErrRefused) {
+		approver = gate.Approver()
+	}
+	pending.refused(op, err, approver)
+	if err == nil {
+		if approver = gate.Approver(); approver != "" {
+			if aerr := pending.approved(op, approver, grant.ID()); aerr != nil {
+				return presence.Grant{}, aerr
+			}
+		}
+	}
 	return grant, err
 }
 

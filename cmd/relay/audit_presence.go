@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -21,7 +23,12 @@ type presenceAttempt struct {
 type presenceRefusalRecorder interface {
 	Enabled() bool
 	RecordPresenceRefusal(audit.PresenceRefusal)
+	RecordPresenceApproval(audit.PresenceApproval) error
 }
+
+// errTestApprovalUnrecorded refuses a non-person approval that has nowhere to
+// be recorded: such an act never proceeds unlogged.
+var errTestApprovalUnrecorded = errors.New("presence approval could not be recorded")
 
 var _ presenceRefusalRecorder = (*audit.AuditRecorder)(nil)
 
@@ -52,19 +59,41 @@ func (a presenceAttempt) begin(ctx context.Context) *pendingPresenceRefusal {
 	}
 }
 
-func (p *pendingPresenceRefusal) refused(op string, err error) {
+func (p *pendingPresenceRefusal) refused(op string, err error, approver string) {
 	if p == nil || err == nil {
 		return
 	}
 	p.rec.RecordPresenceRefusal(audit.PresenceRefusal{
-		Op:      op,
-		Subject: p.sub,
-		Via:     p.via,
-		Actor:   p.actor,
-		Start:   p.start,
-		Dur:     time.Since(p.start),
-		Reason:  err.Error(),
+		Op:       op,
+		Subject:  p.sub,
+		Via:      p.via,
+		Actor:    p.actor,
+		Start:    p.start,
+		Dur:      time.Since(p.start),
+		Reason:   err.Error(),
+		Approver: approver,
 	})
+}
+
+// approved records a non-person approval durably. A nil receiver means
+// nothing can record it, so the approval is refused.
+func (p *pendingPresenceRefusal) approved(op, approver, presenceID string) error {
+	if p == nil {
+		return errTestApprovalUnrecorded
+	}
+	if err := p.rec.RecordPresenceApproval(audit.PresenceApproval{
+		Op:         op,
+		Subject:    p.sub,
+		Via:        p.via,
+		Actor:      p.actor,
+		Start:      p.start,
+		Dur:        time.Since(p.start),
+		PresenceID: presenceID,
+		Approver:   approver,
+	}); err != nil {
+		return fmt.Errorf("%w: %v", errTestApprovalUnrecorded, err)
+	}
+	return nil
 }
 
 // presenceRequester attributes a refused prompt to whoever asked. It is

@@ -412,6 +412,10 @@ type AuditEvent struct {
 	// exists to make detectable. Empty for an ungated record.
 	PresenceID string `json:"presence_id,omitempty"`
 
+	// PresenceApprover names the non-person that answered a gated act's
+	// presence check. Absent where a person answered.
+	PresenceApprover string `json:"presence_approver,omitempty"`
+
 	// Set only on model_call / model_list events (spec-model-broker.md §7,
 	// docs/model-endpoint.md's Audit section). ModelKeyLabel names the rmk_
 	// key's label the caller authenticated with, never the key itself —

@@ -25,6 +25,16 @@ type Provider interface {
 	Evaluate(ctx context.Context, reason string) error
 }
 
+// UnattendedProvider is a Provider that answers without a person. It is told
+// the operation the Gate already validated, so it can approve a fixed few and
+// refuse the rest. LocalAuthProvider does not implement it.
+type UnattendedProvider interface {
+	Provider
+	EvaluateOp(ctx context.Context, op, reason string) error
+	// Approver names the non-person answering. It is never empty.
+	Approver() string
+}
+
 var (
 	ErrNoSession   = errors.New("no session can display a presence prompt")
 	ErrRefused     = errors.New("presence was refused")
@@ -137,6 +147,15 @@ func NewGate(p Provider) (*Gate, error) {
 	return &Gate{provider: p, clock: realClock{}, nonces: make(map[string]*nonce)}, nil
 }
 
+// Approver names the non-person that answers this Gate's prompts, or "" when
+// a person does.
+func (g *Gate) Approver() string {
+	if u, ok := g.provider.(UnattendedProvider); ok {
+		return u.Approver()
+	}
+	return ""
+}
+
 // Require is the whole production path: prompt, mint a nonce, redeem it
 // immediately. It is the only path production uses, so the live window
 // between a successful prompt and the act is microseconds — the 120s bound
@@ -169,7 +188,13 @@ func (g *Gate) Request(ctx context.Context, op string, d Digest, reason string) 
 	if sess, ok := CallerSessionFromContext(ctx); ok && !sess.GraphicAccess {
 		return Grant{}, ErrNoSession
 	}
-	if err := g.provider.Evaluate(ctx, reason); err != nil {
+	var err error
+	if u, ok := g.provider.(UnattendedProvider); ok {
+		err = u.EvaluateOp(ctx, op, reason)
+	} else {
+		err = g.provider.Evaluate(ctx, reason)
+	}
+	if err != nil {
 		return Grant{}, err
 	}
 	// This is subtle: the owner can answer the prompt in the window after

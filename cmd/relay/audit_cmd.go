@@ -267,7 +267,13 @@ func auditPresenceRefusalDetail(ev audit.AuditEvent) string {
 	if ev.Subject != "" {
 		parts = append(parts, collapseWhitespace(ev.Subject))
 	}
-	parts = append(parts, "via="+ev.Via, collapseWhitespace(ev.Error))
+	parts = append(parts, "via="+ev.Via)
+	if ev.Error != "" {
+		parts = append(parts, collapseWhitespace(ev.Error))
+	}
+	if ev.PresenceApprover != "" {
+		parts = append(parts, "approver="+collapseWhitespace(ev.PresenceApprover))
+	}
 	if ev.IssuanceTruncated {
 		parts = append(parts, "(truncated)")
 	}

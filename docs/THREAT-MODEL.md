@@ -87,6 +87,27 @@ The audit trail (asset C) is part of every promise above. Examples: #147 (a
 cancelled presence prompt left no audit row), #150 (caller-controlled
 terminal escapes in `relay audit`'s table).
 
+## The test-approver build
+
+`./build.sh --test-approver` makes a tray whose presence provider approves
+`project.grant` with no person and refuses every other gated op. It exists so
+verify journeys can create a project on the devbox. It is not a promise
+relay makes to a user: no release carries it, and a release has no switch that
+skips a gate (attacker 5's promise holds). The promises that cover it:
+
+- **Absent from release (assets A, B).** `build.sh` and a Go test check that
+  no release binary holds the approver or the tag. A release that holds it is
+  a relay bug against attacker 5.
+- **One op only (asset B).** The approver cannot approve a credential,
+  enrolment or service operation; unlisted ops are refused, not passed to a
+  dialog.
+- **Recorded (asset C).** Each approval is a `control_decision` row with
+  `presence_approver`, written before the act; an unrecordable approval
+  refuses the act.
+
+Running the test build deliberately is the operator's choice on a test
+machine and is out of scope as a finding.
+
 ## Out of scope: not a relay bug
 
 1. **Grants the operator chose knowingly**, e.g. granting a broad folder,

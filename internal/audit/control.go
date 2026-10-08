@@ -100,6 +100,7 @@ type PresenceRefusal struct {
 	Start            time.Time
 	Dur              time.Duration
 	Reason           string
+	Approver         string
 }
 
 // Via set and Path empty is what tells a presence refusal apart from a route
@@ -118,6 +119,7 @@ func PresenceRefusalEvent(p PresenceRefusal) AuditEvent {
 		Subject:           subject,
 		Via:               p.Via,
 		IssuanceTruncated: cut,
+		PresenceApprover:  p.Approver,
 	}
 }
 
@@ -129,4 +131,40 @@ func (r *AuditRecorder) RecordPresenceRefusal(p PresenceRefusal) {
 		return
 	}
 	r.Record(PresenceRefusalEvent(p))
+}
+
+// PresenceApproval is one gated op a non-person approver let through. A
+// person's approval writes no such row; PresenceID ties it to the act's own
+// row.
+type PresenceApproval struct {
+	Op, Subject, Via string
+	Actor            AuditActor
+	Start            time.Time
+	Dur              time.Duration
+	PresenceID       string
+	Approver         string
+}
+
+func PresenceApprovalEvent(p PresenceApproval) AuditEvent {
+	subject, cut := CapControlString(p.Subject, auditMaxIssuanceFieldBytes)
+	return AuditEvent{
+		ID:                NewAuditID(),
+		TS:                p.Start.UTC(),
+		DurMs:             p.Dur.Milliseconds(),
+		Event:             AuditEventControlDecision,
+		Actor:             p.Actor,
+		Outcome:           AuditOutcomeOK,
+		Method:            p.Op,
+		Subject:           subject,
+		Via:               p.Via,
+		IssuanceTruncated: cut,
+		PresenceID:        p.PresenceID,
+		PresenceApprover:  p.Approver,
+	}
+}
+
+// RecordPresenceApproval is durable: an approval that cannot be recorded must
+// refuse the act, so the caller needs the error.
+func (r *AuditRecorder) RecordPresenceApproval(p PresenceApproval) error {
+	return r.RecordDurable(PresenceApprovalEvent(p))
 }
