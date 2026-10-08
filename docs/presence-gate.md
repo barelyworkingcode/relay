@@ -459,15 +459,54 @@ that nothing currently calls it. `presencetest` additionally panics in its
 own `init()` unless the process is running under `go test` — a second,
 independent line of defense if the import guard is ever weakened.
 
-There is no environment variable, settings field, build tag, or
+There is no environment variable, settings field, or
 `SetPresenceForTest`-shaped global anywhere in this feature that could
 disable or weaken the gate; a grep-based test enforces that absence directly.
+A release build has no way to skip a gate. The one build tag,
+`testapprover`, links a provider that answers `project.grant` alone and
+refuses every other gated op (next section). It is checked absent from every
+release binary, by `build.sh` and by a Go test.
 This is deliberate and total, in the spirit of the house rule that a
 weakening introduced to make a test convenient is the weakening most likely
 to survive into production: rather than build a seam and discipline everyone
 never to flip it, there is no seam to flip. Tests wire a fake provider the
 same way they wire a sandboxed config directory — by constructing the thing
 under test with it directly — which adds no production-visible API at all.
+
+## The test-approver build
+
+**Why it exists.** The devbox verify journeys run with no person at the
+screen, and a LocalAuthentication dialog cannot be answered from a script. One
+journey needs it: eve's project-mode-new creates a project, which is
+`project.grant` through `POST /api/projects` on the frontend socket. The
+`testapprover` build answers that one op. `credential.*`, the enrolment ops,
+`service.register` and every other gated op stay with a person: the approver
+refuses them, and a journey that needs one stays a screen journey.
+
+**The seam.** `presence.UnattendedProvider` is an optional interface on a
+provider: `EvaluateOp(ctx, op, reason)` and `Approver()`. `Gate.Request`
+calls `EvaluateOp` instead of `Evaluate` when the provider implements it. The
+op reaches it only after the `GatedOps` check and the caller-session check, so
+an SSH bridge caller is still refused with `ErrNoSession` before the approver
+is asked. `LocalAuthProvider` does not implement the interface; the release
+path is unchanged.
+
+**Unlisted ops are refused, never passed on.** The approver has no person to
+fall back to. Handing an unlisted op to the dialog would hang a journey on a
+prompt nobody can see, or let a stale dialog approve it. `EvaluateOp` returns
+`testapprover.ErrNotAllowed`, which wraps `presence.ErrRefused`, and the
+refusal is recorded like any other. The allowlist is a fixed `switch` with no
+variable, setter or configuration to extend it.
+
+**Where it can and cannot exist.** The package
+`internal/presence/testapprover` is imported by one file in `cmd/relay`,
+behind `//go:build testapprover`; a Go test fails if any other non-test file
+imports it. Its `init` panics unless it runs under `go test` or the build
+info names the tag. `build.sh` runs `scripts/check-test-approver.sh absent`
+on every normal and `--release` binary before it installs anything, and
+`present` on a `--test-approver` binary. Every approval is recorded before the
+act runs; see [`docs/audit-log.md`](audit-log.md#presence-approvals-the-test-build).
+How to run the build: [`docs/testing.md`](testing.md#the-test-approver-build).
 
 ## Residual risks, named rather than solved
 

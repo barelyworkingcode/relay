@@ -200,3 +200,42 @@ func TestPresence_ProbeTakesAnExplicitPeerFD(t *testing.T) {
 		}
 	}
 }
+
+// TestPresence_TestApproverIsBuildTagged: every non-test file importing the
+// test approver carries exactly the testapprover build constraint, so no
+// default build can link it; at least one such file must exist, or the scan
+// proves nothing.
+func TestPresence_TestApproverIsBuildTagged(t *testing.T) {
+	const importPath = "github.com/barelyworkingcode/relay/internal/presence/testapprover"
+	root := moduleRoot(t)
+	fset := token.NewFileSet()
+	found := 0
+	for _, path := range nonTestSourceFiles(t, root, ".go") {
+		f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", path, err)
+		}
+		imports := false
+		for _, imp := range f.Imports {
+			if strings.Trim(imp.Path.Value, `"`) == importPath {
+				imports = true
+			}
+		}
+		if !imports {
+			continue
+		}
+		found++
+		var constraints []string
+		for _, line := range strings.Split(readFile(t, path), "\n") {
+			if strings.HasPrefix(line, "//go:build") {
+				constraints = append(constraints, strings.TrimSpace(line))
+			}
+		}
+		if len(constraints) != 1 || constraints[0] != "//go:build testapprover" {
+			t.Errorf("%s imports the test approver with constraints %q; want exactly //go:build testapprover", path, constraints)
+		}
+	}
+	if found == 0 {
+		t.Fatal("no non-test file imports the test approver; the scan would pass vacuously")
+	}
+}
