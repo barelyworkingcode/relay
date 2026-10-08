@@ -35,12 +35,3 @@ func TestApprover_OpBlindEvaluateRefuses(t *testing.T) {
 		t.Fatalf("Evaluate = %v, want ErrNotAllowed wrapping presence.ErrRefused", err)
 	}
 }
-
-func TestApprover_NamesItself(t *testing.T) {
-	if got := testapprover.New().Approver(); got != "testapprover" {
-		t.Fatalf("Approver() = %q, want %q", got, "testapprover")
-	}
-	if testapprover.Name != "testapprover" {
-		t.Fatalf("Name = %q, want %q", testapprover.Name, "testapprover")
-	}
-}

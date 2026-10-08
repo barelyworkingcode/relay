@@ -179,8 +179,8 @@ run while a process runs from that bundle, and it rejects `--release`.
 Both trays use the same ports and config dir, so only one runs. Swap in place.
 `$CFG` is relay's config dir.
 
-1. Unlock the signing keychain before the build (the devbox keychain command
-   in the machine notes), then run `./build.sh --test-approver`.
+1. Unlock the keychain that holds the Developer ID signing identity, then
+   run `./build.sh --test-approver`.
 2. Find the release tray's pid: it is in the name of the socket
    `relay-frontend-<pid>.sock` in `$CFG`. Stop it and wait for it to exit:
 

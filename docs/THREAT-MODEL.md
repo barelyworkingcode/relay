@@ -105,9 +105,6 @@ skips a gate (attacker 5's promise holds). The promises that cover it:
   `presence_approver`, written before the act; an unrecordable approval
   refuses the act.
 
-Running the test build deliberately is the operator's choice on a test
-machine and is out of scope as a finding.
-
 ## Out of scope: not a relay bug
 
 1. **Grants the operator chose knowingly**, e.g. granting a broad folder,

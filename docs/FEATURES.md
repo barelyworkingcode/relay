@@ -115,6 +115,7 @@ Areas: audit.
 | Issuance and config-change rows carrying the presence id | background | any owner gate passed | CLI, HTTP | owner gate | gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos | n/a | n/a |
 | Session launch rows | background | any launch | HTTP, bridge | — | session-chat-lifecycle, terminal-lifecycle | n/a | n/a |
 | Refusal rows | background | any refused launch | HTTP, bridge | — | blank-model-refused, oversized-launch-audit-capped | n/a | n/a |
+| Test-approver answer rows (`presence_approver`; written only by the `testapprover` build, approvals refused unless recorded) | background | any presence answer in the test build | HTTP, CLI | owner gate | none | n/a | n/a |
 | Chief of Staff send rows (intent then completion; refused unless recorded) | background | any send in the chief-of-staff scope | HTTP | — | chief-of-staff-send | n/a | n/a |
 | Chief of Staff start rows (`session_launch` with `origin` and `prompt_bytes`; refused unless recorded) | background | any start in the chief-of-staff scope | HTTP | — | cos-start, cos-start-outside-root | n/a | n/a |
 | Export the log | Settings > Tool Calls | Export | HTTP `POST /api/audit/export` [configure] | — | none | Settings > Tool Calls > Export | `relay audit --json` |
