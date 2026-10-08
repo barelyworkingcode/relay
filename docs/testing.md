@@ -226,7 +226,9 @@ LC_ALL=C /usr/bin/grep -c -a -e '-tags=testapprover' "$(ps -p <new pid> -o comm=
 
 - Every gated op but `project.grant` is refused, including mint, revoke,
   enrolment and service registration. Do other work after the swap back.
-- Relay's own `devboxverify` refuses the test build.
+- Relay's own `devboxverify` preflight refuses a tray that is not running
+  from `RELAY_BIN`; with `RELAY_BIN` pointed at the test bundle, its gate
+  journeys fail on the refusals.
 - Project `SKILL.md` files written while the test tray runs may name the test
   bundle path. They are rewritten when the release tray restarts.
 

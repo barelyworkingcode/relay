@@ -41,7 +41,7 @@ func TestRequireGate_TestApproverAuditsEveryGatedOp(t *testing.T) {
 				t.Fatalf("requireGate(%s) = %v, grant valid %v; want a refusal", op, err, grant.Valid())
 			}
 			if row.Outcome != audit.AuditOutcomeDenied || row.Method != op || row.PresenceApprover != "testapprover" ||
-				row.Error != testapprover.ErrNotAllowed.Error() || row.PresenceID != "" {
+				row.Error != "presence was refused by the test approver" || row.PresenceID != "" {
 				t.Errorf("denial row = %+v, want denied by testapprover with %q", row, testapprover.ErrNotAllowed)
 			}
 		})

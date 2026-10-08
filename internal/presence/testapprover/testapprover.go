@@ -5,7 +5,6 @@ package testapprover
 
 import (
 	"context"
-	"fmt"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -16,9 +15,14 @@ import (
 // Name is the approver's name in the audit log.
 const Name = "testapprover"
 
-// ErrNotAllowed wraps presence.ErrRefused so every caller treats it as a
-// refusal.
-var ErrNotAllowed = fmt.Errorf("presence was refused by the test approver: %w", presence.ErrRefused)
+// ErrNotAllowed matches presence.ErrRefused under errors.Is, so every caller
+// treats it as a refusal, while its text names the test approver alone.
+var ErrNotAllowed error = notAllowed{}
+
+type notAllowed struct{}
+
+func (notAllowed) Error() string        { return "presence was refused by the test approver" }
+func (notAllowed) Is(target error) bool { return target == presence.ErrRefused }
 
 // Approver approves exactly one operation. The list is the switch in
 // EvaluateOp; there is deliberately nothing to extend at run time.
