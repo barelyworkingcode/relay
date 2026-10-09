@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
@@ -185,11 +186,26 @@ func SendReloadMcp(id, token string) error {
 // tests can shorten it to exercise the idle-reset behavior deterministically.
 var bridgeTimeout = 10 * time.Minute
 
+var clientTraceID atomic.Value // string
+
+// SetClientTraceID sets the trace ID every request from this process carries
+// when it names none of its own. "" sends none. main calls it once.
+func SetClientTraceID(id string) { clientTraceID.Store(id) }
+
+// ClientTraceID returns the ID set by SetClientTraceID, or "".
+func ClientTraceID() string {
+	id, _ := clientTraceID.Load().(string)
+	return id
+}
+
 func (c *Client) send(req BridgeRequest) (*BridgeResponse, error) {
 	return c.sendStreaming(req, nil)
 }
 
 func (c *Client) sendStreaming(req BridgeRequest, onProgress func(ProgressUpdate)) (*BridgeResponse, error) {
+	if req.TraceID == "" {
+		req.TraceID = ClientTraceID()
+	}
 	conn, err := net.Dial("unix", c.sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to Relay bridge at %s: %w (is the Relay tray app running?)", c.sockPath, err)

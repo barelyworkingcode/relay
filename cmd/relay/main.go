@@ -48,6 +48,12 @@ func main() {
 		os.Exit(1)
 	}
 	bridge.SetConfigDir(configDir)
+	args, traceID, err := selectTraceFlag(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	bridge.SetClientTraceID(traceID)
 
 	// Only the tray and the server create the config dir. A client names an
 	// instance, never makes one, so its log goes to the dir only when the dir
@@ -113,7 +119,7 @@ func main() {
 	case "mcpList":
 		exitError("mcpList has been removed. Use: relay mcpExec --token <TOKEN> --list")
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [serve|service|mcp|mcpExec|audit|enrol|credential|login|eve|grant|project|sandbox|drop-in]\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [--trace ID] [serve|service|mcp|mcpExec|audit|enrol|credential|login|eve|grant|project|sandbox|drop-in]\n", args[0])
 		os.Exit(1)
 	}
 }

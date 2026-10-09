@@ -9,6 +9,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
@@ -60,7 +61,7 @@ func (a *App) emitSettingsEvent(name string, args ...interface{}) {
 		} else {
 			data, err := json.Marshal(arg)
 			if err != nil {
-				slog.Error("failed to marshal settings event arg, skipping event", "event", name, "argIndex", len(jsArgs), "error", err)
+				slog.Error("failed to marshal settings event arg, skipping event", "settings_event", name, "argIndex", len(jsArgs), "error", err)
 				return
 			}
 			jsArgs = append(jsArgs, string(data))
@@ -505,5 +506,13 @@ func (a *App) onSettingsIpc(body string) {
 		slog.Warn("unknown IPC message type", "type", msg.Type)
 		return
 	}
-	handler(a.ipcCtx, raw)
+	// Deliberate: each message gets its own copy and trace, so a screen action
+	// is one trace and a caller cannot choose it.
+	ctx := *a.ipcCtx
+	base := ctx.Ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx.Ctx = logging.ContextWithTrace(base, logging.NewTraceID())
+	handler(&ctx, raw)
 }

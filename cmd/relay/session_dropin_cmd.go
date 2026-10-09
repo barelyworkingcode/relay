@@ -52,7 +52,7 @@ func dropInMain(args []string) int {
 		return sandboxFail("%v", err)
 	}
 	fmt.Fprintf(os.Stderr, "relay: handing over %s; waiting up to 60 s for the current turn to end\n", id)
-	if err := writeStreamLine(conn, bridge.BridgeRequest{Type: bridge.ReqDropInAttach, Arguments: arg}); err != nil {
+	if err := writeStreamLine(conn, bridge.BridgeRequest{Type: bridge.ReqDropInAttach, Arguments: arg, TraceID: bridge.ClientTraceID()}); err != nil {
 		return sandboxFail("could not reach relay: %v", err)
 	}
 
