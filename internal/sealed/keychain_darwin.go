@@ -353,9 +353,7 @@ func (k *keychainKeyring) copyItem() ([]byte, error) {
 	// could not use it," and resolveSealer's message for ErrKeyUnreadable
 	// already tells them to go look rather than reporting the key as
 	// absent.
-	return nil, fmt.Errorf("%w: the login keychain did not answer within %s for %s/%s -- "+
-		"consistent with a confirmation dialog waiting on a human relay will not wait for",
-		ErrKeyUnreadable, keychainReadTimeout, k.service, k.account)
+	return nil, errCopyTimeout(k.service, k.account)
 }
 
 // deleteItem carries the same keychainReadTimeout bound as copyItem, for
@@ -384,7 +382,5 @@ func (k *keychainKeyring) deleteItem() error {
 	if ok {
 		return err
 	}
-	return fmt.Errorf("sealed: deleting keychain item %s/%s did not complete within %s -- "+
-		"consistent with a confirmation dialog waiting on a human relay will not wait for",
-		k.service, k.account, keychainReadTimeout)
+	return errDeleteTimeout(k.service, k.account)
 }

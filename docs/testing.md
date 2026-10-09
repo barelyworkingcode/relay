@@ -104,7 +104,10 @@ one.
 ### The default config dir
 
 The seams never act on the default config dir (`bridge.DefaultConfigDir()`,
-symlinks resolved; a path that does not resolve counts as the default). There
+symlinks resolved; a config dir that does not resolve, or a default dir that
+fails to resolve for a reason other than not existing, counts as the default.
+A default dir that does not exist, as on a CI runner, makes every existing dir
+a non-default one, so no non-default dir touches the login keychain). There
 the test build approves `project.grant` alone and refuses every other gated
 op, reads no test file, uses the login keychain, and `debug clock` refuses
 with "the clock is fixed on the default config dir". That keeps the in-place

@@ -64,7 +64,7 @@ listener mints its own.
 - **Domain.** The core's noun: `server`, `project`, `grant`, `chief_of_staff`,
   `mcp`, `tool`, `bridge`, `credential`, `doors`, `enrolment`, `remote`, `login`, `eve`,
   `sealed`, `service`, `host`, `host_template`, `template`, `file`, `audit`,
-  `session`, `terminal`, `sandbox`, `model`, `chat`.
+  `session`, `terminal`, `sandbox`, `model`, `chat`, `status`, `files`.
 - **Reused names.** Where a name in `presence.GatedOps`, an `adminOps` entry or
   an existing boundary `op` already names the operation, the key is that exact
   string (`credential.mint`, `project.rotate_token`, `remote.configure`,
@@ -404,7 +404,7 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 |---|---|---|---|
 | `model.request` | At the end of a model request; poll paths stay silent on success | model endpoint (unix, TCP) | none (existing keys) |
 | `model.host.register` | At the end of `appRouter.RegisterModelHost` | bridge `register_model_host` | `service_id` |
-| `model.list` | In relay-sessions `HandleModels` | forwarded `GET /api/models` | `count` |
+| `model.list` | In relay-sessions `HandleModels` | forwarded `GET /api/models`, `relay model list` | `count` |
 
 ### Chat
 

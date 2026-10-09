@@ -69,7 +69,7 @@ func adminFilesWatch(ctx context.Context, r *appRouter, args json.RawMessage) (_
 		case raw := <-c.out:
 			progress(bridge.ProgressUpdate{Data: raw})
 		case <-ctx.Done():
-			return marshalAdminResult(filesWatchResult{ProjectID: req.ProjectID})
+			return marshalAdminResult(filesWatchResult(req))
 		case <-c.done:
 			return nil, errors.New("files.watch: the frame queue overflowed; run it again")
 		}
