@@ -1593,9 +1593,9 @@ Operator-only. The same act as the tray's **Reset Sealed Store…**:
 it permanently deletes `settings.json`, the CA files and the keychain item,
 and starts over with a fresh key. The prompt names what it destroys and is the
 only confirmation; there is no `--yes` and no `--force`. A cancelled prompt
-deletes nothing. `--json` prints `{"reset":true}`. The keychain item is shared
-by every instance that runs as the same user, so approving it from a test
-instance destroys the installed store too. See
+deletes nothing. `--json` prints `{"reset":true}`. Each config dir has its own
+keychain item, so a reset on one instance leaves every other instance's store,
+the installed app's included, untouched. See
 [`docs/sealed-config.md`](sealed-config.md#break-glass-and-why-there-is-no-offline-recovery-code).
 
 ## `relay model`
