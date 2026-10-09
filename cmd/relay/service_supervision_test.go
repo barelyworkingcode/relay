@@ -287,6 +287,7 @@ func TestSupervision_StableRunResetsAttemptCounter(t *testing.T) {
 	}
 	clock.Advance(service.ServiceRestartMaxDelay)
 	secondPID := waitForPIDChange(t, reg, cfg.ID, firstPID)
+	waitForPhase(t, reg, cfg.ID, service.SupervisionRunning)
 
 	// While the second generation is alive (it sleeps 150ms of real time
 	// before exiting), jump the fake clock past the stable window -- this is
