@@ -67,9 +67,10 @@ func validKind(k string) bool {
 type LaunchCaller struct {
 	Identity   *service.Identity
 	Credential *config.APICredential
-	// Operator is set only by the bridge's sandbox door, for a request whose
-	// connection reached the 0600 socket and is not a member of any relay
-	// session. No other door may set it: it grants execute unconditionally.
+	// Operator is set only by a bridge door that passed
+	// bridge.RequireOperatorCaller: a request whose connection reached the 0600
+	// socket, is not a member of any relay session and is not sandboxed. No
+	// other door may set it: it grants execute unconditionally.
 	Operator *OperatorCaller
 }
 

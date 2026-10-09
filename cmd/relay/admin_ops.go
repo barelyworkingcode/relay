@@ -84,6 +84,20 @@ var adminOps = map[string]adminOpEntry{
 	"project.token.rotate": {handle: adminProjectTokenRotate, caller: adminCallerOperator, gates: []string{"project.rotate_token"}},
 	"project.token.reveal": {handle: adminProjectTokenReveal, caller: adminCallerOperator, gates: []string{"project.reveal_token"}},
 	"project.skill.regen":  {handle: adminProjectSkillRegen, caller: adminCallerOperator},
+
+	"session.start":            {handle: adminSessionStart, caller: adminCallerOperator},
+	"session.list":             {handle: adminSessionList, caller: adminCallerOperator},
+	"session.message":          {handle: adminSessionMessage, caller: adminCallerOperator},
+	"session.stop":             {handle: adminSessionStop, caller: adminCallerOperator},
+	"session.resume":           {handle: adminSessionResume, caller: adminCallerOperator},
+	"session.mode":             {handle: adminSessionMode, caller: adminCallerOperator},
+	"terminal.start":           {handle: adminTerminalStart, caller: adminCallerOperator},
+	"terminal.list":            {handle: adminTerminalList, caller: adminCallerOperator},
+	"terminal.log":             {handle: adminTerminalLog, caller: adminCallerOperator},
+	"terminal.stop":            {handle: adminTerminalStop, caller: adminCallerOperator},
+	"terminal.persistent.list": {handle: adminTerminalPersistentList, caller: adminCallerOperator},
+	"terminal.persistent.kill": {handle: adminTerminalPersistentKill, caller: adminCallerOperator},
+	"files.watch":              {handle: adminFilesWatch, caller: adminCallerOperator},
 }
 
 // Deliberate: doors.list is added at init rather than in the literal, because
