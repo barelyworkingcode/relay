@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/base64"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,4 +107,62 @@ func TestClassifyCosOutside(t *testing.T) {
 			checkState(t, classifyCosOutside(r, pid), c.want)
 		})
 	}
+}
+
+func hostPS(sid string) string {
+	script := base64.StdEncoding.EncodeToString([]byte("exec env 'RELAY_SESSION_ID'='" + sid + "' '/usr/bin/claude' '--print'"))
+	return "/bin/zsh -l\n/usr/bin/ssh -o BatchMode=yes localhost -T -- sh -c 'eval \"$(printf %s " + script + " | base64 -d)\"'\n"
+}
+
+func cosHostBase() cosHostRun {
+	ok := frontendResponse{Status: http.StatusOK}
+	const sid, hid = "s1", "h1"
+	row := func(event, phase, outcome string) audit.AuditEvent {
+		return audit.AuditEvent{Event: event, Phase: phase, Outcome: outcome,
+			Args: []byte(`{"session_id":"s1","origin":"chief-of-staff","host_id":"h1"}`)}
+	}
+	return cosHostRun{
+		HostID: hid, Host: "loopback-n1-cos", Project: "Drop-in Host cos n1", Marker: "verify-n1-host", Marker2: "verify-n1-host2",
+		DialStatus: http.StatusSwitchingProtocols,
+		Create:     frontendResponse{Status: http.StatusCreated, Body: []byte(`{"sessionId":"s1","mode":"headless","origin":"chief-of-staff"}`)},
+		SessionID:  sid, JoinSeen: true,
+		List:   frontendResponse{Status: http.StatusOK, Body: []byte(`{"sessions":[{"id":"s1","origin":"chief-of-staff"}]}`)},
+		PS:     hostPS(sid),
+		Send:   frontendResponse{Status: http.StatusAccepted},
+		Launch: []audit.AuditEvent{row("session_launch", "", "ok")},
+		Msgs: []audit.AuditEvent{row("session_message", "intent", "pending"), row("session_message", "completion", "ok"),
+			row("session_message", "intent", "pending"), row("session_message", "completion", "ok")},
+		Delete: ok,
+	}
+}
+
+func TestClassifyCosStartHost(t *testing.T) {
+	checkMuts(t, cosHostBase, classifyCosStartHost, []mutCase[cosHostRun]{
+		{"all signals present", func(*cosHostRun) {}, statePass},
+		{"host or project not set up", func(r *cosHostRun) { r.Setup = "POST /api/hosts status 500" }, stateBlocked},
+		{"run credential refused on /ws", func(r *cosHostRun) { r.DialStatus, r.DialErr = http.StatusUnauthorized, "bad" }, stateBlocked},
+		{"start refused", func(r *cosHostRun) { r.Create, r.SessionID = frontendResponse{Status: http.StatusForbidden}, "" }, stateFail},
+		{"start answers no origin", func(r *cosHostRun) { r.Create.Body = []byte(`{"sessionId":"s1","mode":"headless"}`) }, stateFail},
+		{"never joined", func(r *cosHostRun) { r.JoinSeen = false }, stateFail},
+		{"no first turn_done", func(r *cosHostRun) { r.TurnWaitErr = true }, stateFail},
+		{"list row unmarked", func(r *cosHostRun) { r.List.Body = []byte(`{"sessions":[{"id":"s1"}]}`) }, stateFail},
+		{"process list unreadable", func(r *cosHostRun) { r.PSErr = "ps failed" }, stateFail},
+		{"no ssh child", func(r *cosHostRun) { r.PS = "/bin/zsh -l\n" }, stateFail},
+		{"ssh child lacks -T", func(r *cosHostRun) { r.PS = strings.Replace(r.PS, " -T -- ", " -tt -- ", 1) }, stateFail},
+		{"ssh child names another session", func(r *cosHostRun) { r.PS = hostPS("s2") }, stateFail},
+		{"send refused", func(r *cosHostRun) { r.Send.Status = http.StatusForbidden }, stateFail},
+		{"no second turn_done", func(r *cosHostRun) { r.Turn2Err = true }, stateFail},
+		{"audit unreadable", func(r *cosHostRun) { r.RowsErr = "relay audit failed" }, stateBlocked},
+		{"launch row missing", func(r *cosHostRun) { r.Launch = nil }, stateFail},
+		{"launch row without host_id", func(r *cosHostRun) {
+			r.Launch[0].Args = []byte(`{"session_id":"s1","origin":"chief-of-staff"}`)
+		}, stateFail},
+		{"launch row not ok", func(r *cosHostRun) { r.Launch[0].Outcome = "error" }, stateFail},
+		{"launch row unmarked", func(r *cosHostRun) { r.Launch[0].Args = []byte(`{"session_id":"s1","host_id":"h1"}`) }, stateFail},
+		{"send intent missing", func(r *cosHostRun) { r.Msgs = append(r.Msgs[:2:2], r.Msgs[3]) }, stateFail},
+		{"send completion missing", func(r *cosHostRun) { r.Msgs = r.Msgs[:3] }, stateFail},
+		{"message row unmarked", func(r *cosHostRun) { r.Msgs[2].Args = []byte(`{"session_id":"s1"}`) }, stateFail},
+		{"session not deleted", func(r *cosHostRun) { r.Delete.Status = http.StatusInternalServerError }, stateFail},
+		{"fixtures not removed", func(r *cosHostRun) { r.Teardown = "; teardown: DELETE host status 500" }, stateFail},
+	}, nil)
 }

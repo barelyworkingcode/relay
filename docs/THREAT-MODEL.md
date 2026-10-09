@@ -42,13 +42,17 @@ outside it is not a relay bug, however real.
    session list, a `/ws` it cannot write to, one send route and one start
    route: no tool call, file read, terminal of its own choosing, permission
    answer, session stop or resume, and no config change. The start route
-   launches an agent in a registered local project, in the project root or a
-   folder inside it (symlinks resolved). It goes through `AuthorizeLaunch`, so
+   launches an agent in a registered project, local or on an SSH host, in
+   the project root or a folder inside it (symlinks resolved for a local
+   project; a hosted project's folder is checked as text, as for any hosted
+   launch). A remote (mTLS) project is refused, and so is a terminal start on
+   a host. It goes through `AuthorizeLaunch`, so
    the project's policy, allowed models and templates and the sandbox apply.
    A headless agent runs `bypassPermissions` as every headless agent does, so
-   its reach is what its sandbox and project grant allow. The session carries
+   its reach is what its sandbox and project grant allow. On an SSH host it
+   runs as the host account with no sandbox, like every host session. The session carries
    the `chief-of-staff` origin and a `session_launch` row with `origin` and
-   `prompt_bytes` is written. A start is refused when auditing is off or not wired; a headless
+   `prompt_bytes` (and `host_id` for a hosted project) is written. A start is refused when auditing is off or not wired; a headless
    start ends when its durable `session_message` intent row cannot be written.
    Each send goes to one listed session, at
    most one per turn (mid-turn the answer is `already_processing`), carries
@@ -134,7 +138,7 @@ scope).
   path no project, template grant or CLI need names, or a profile that
   outlives a project change, is a relay bug against asset D.
 - A request in the chief-of-staff scope that reaches anything outside its
-  four doors, a session start outside the project root or in a project on an
-  SSH host, a message marked `chief-of-staff` that did not come through
+  four doors, a session start outside the project root or in a remote
+  (mTLS) project, a message marked `chief-of-staff` that did not come through
   the scope, or a scoped send with no intent record, is a relay bug against
   asset A or C.
