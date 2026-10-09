@@ -6,12 +6,14 @@ package sshhost
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -190,6 +192,34 @@ func LoginShellCommandForOS(hostOS, cwd string, env map[string]string) string {
 // launcher so no login shell's quoting rules can misparse it.
 func RemoteCommand(cwd string, argv []string, env map[string]string) string {
 	return launcherFor(buildScript(cwd, argv, env))
+}
+
+// plainNodePath matches a node path a POSIX or Windows login shell parses as
+// one word, so it can stay unquoted and a bare "node" launcher keeps the exact
+// form eve's ssh-command.js produces.
+var plainNodePath = regexp.MustCompile(`^[A-Za-z0-9_./:+@%,=-]+$`)
+
+// NodeLauncher is the remote command that runs a Node script given as source:
+// the same form eve's nodeLauncher builds, with the probe's node path in place
+// of a bare "node". The source is gzipped then base64'd, so the login shell
+// only ever parses [A-Za-z0-9+/=] inside the double-quoted -e argument, and a
+// Windows host's cmd.exe line limit is not hit by the plain base64 form.
+// gzip output is not byte-identical across zlib and Go's compress/gzip; the
+// decoded script is.
+func NodeLauncher(nodePath, src string) string {
+	var buf bytes.Buffer
+	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression) // level is valid
+	_, _ = zw.Write([]byte(src))
+	_ = zw.Close()
+	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+	node := nodePath
+	switch {
+	case node == "":
+		node = "node"
+	case !plainNodePath.MatchString(node):
+		node = shQuote(node)
+	}
+	return node + ` -e "eval(require('zlib').gunzipSync(Buffer.from('` + b64 + `','base64')).toString())"`
 }
 
 // runner execs name with args and returns combined-separated stdout/stderr.
