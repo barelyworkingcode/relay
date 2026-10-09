@@ -20,10 +20,9 @@ func openAuditWriter(path string, maxBytes int64, generations int) (io.WriteClos
 // thin wrapper over audit.LogPath: relay's log directory (serviceLogDir) is
 // main's to resolve, not internal/audit's.
 func auditLogPath() (string, error) {
-	dir, err := serviceLogDir()
-	if err != nil {
-		return "", err
-	}
+	// Stat-only: a reader of the audit log never creates the config dir or its
+	// logs; the missing file is reported by the caller, naming the path.
+	dir, _ := existingServiceLogDir()
 	return audit.LogPath(dir), nil
 }
 

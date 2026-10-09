@@ -61,11 +61,15 @@ func main() {
 	// LaunchServices sends a GUI app's stderr to /dev/null, which would
 	// otherwise lose every slog line; tee to <config-dir>/logs/relay.log too.
 	logOut := io.Writer(os.Stderr)
-	if info, err := os.Stat(configDir); err == nil && info.IsDir() {
-		if logDir, err := serviceLogDir(); err == nil {
-			if rw, err := openRotatingLog(filepath.Join(logDir, "relay.log")); err == nil {
-				logOut = io.MultiWriter(os.Stderr, rw)
-			}
+	logDir, haveLogDir := existingServiceLogDir()
+	if len(args) == 0 || args[0] == "serve" {
+		var err error
+		logDir, err = serviceLogDir()
+		haveLogDir = err == nil
+	}
+	if haveLogDir {
+		if rw, err := openRotatingLog(filepath.Join(logDir, "relay.log")); err == nil {
+			logOut = io.MultiWriter(os.Stderr, rw)
 		}
 	}
 	logging.Install(logOut, logging.Options{DefaultService: relayServiceID})
