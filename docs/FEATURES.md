@@ -226,7 +226,7 @@ Areas: audit.
 | `G4.04` | Issuance and config-change rows | Each passed owner gate writes an issuance or config-change row carrying the presence id. | n/a | `relay audit --event config_change` | none | none | `audit:credential_issued=ok` `audit:credential_revoked=ok` `audit:config_change=ok` | `pending:#289` `journey:gate-credential-mint-pos` `journey:gate-mcp-register-pos` `journey:gate-project-grant-pos` `journey:gate-service-register-pos` `journey:gate-project-rotate-token-pos` `journey:gate-eve-enrolment-open-pos` `journey:gate-credential-revoke-pos` |
 | `G4.05` | Session launch rows | Each launch, allowed or refused, writes a `session_launch` row with project, kind and outcome. | n/a | `relay audit --event session_launch` | `http:POST /api/sessions` `http:POST /api/terminals` `cli:relay audit` | none | `audit:session_launch=ok` | `pending:#289` `journey:session-chat-lifecycle` `journey:terminal-lifecycle` |
 | `G4.06` | Refusal rows | A refused launch or a refused control-plane call writes a denied row with the reason. | n/a | `relay audit --outcome denied` | `cli:relay audit` | none | `audit:session_launch=denied` `audit:control_decision=denied` | `pending:#289` `journey:blank-model-refused` `journey:oversized-launch-audit-capped` |
-| `G4.07` | Test-approver answer rows | The test-approver build records each presence answer as a `control_decision` row carrying `presence_approver` before it acts, and refuses every op but `project.grant`. | n/a | `relay audit --event control_decision` | `cli:relay audit` | none | `audit:control_decision=ok#presence_approver` `audit:control_decision=denied` | `pending:#289` |
+| `G4.07` | Test-approver answer rows | The test build records each presence answer as a `control_decision` row carrying `presence_approver` before it acts. On a non-default config dir it answers each gate per op from `X/test-presence.json`; on the default config dir it approves only `project.grant`. | n/a | `relay audit --event control_decision` | `cli:relay audit` | none | `audit:control_decision=ok#presence_approver` `audit:control_decision=denied` | `pending:#289` |
 | `G4.08` | Chief of Staff send rows | A scoped send writes an intent row and then a completion row; a send that cannot be recorded is refused. | n/a | `relay audit --event session_message` | `http:POST /api/chief-of-staff/messages` | none | `audit:session_message=pending` `audit:session_message=ok` `event:chief_of_staff.send=denied/audit_unavailable` | `pending:#289` `journey:chief-of-staff-send` |
 | `G4.09` | Chief of Staff start rows | A scoped start writes a `session_launch` row with `origin`, `prompt_bytes` and, for a hosted project, `host_id`; a start that cannot be recorded is refused. | n/a | `relay audit --event session_launch` | `http:POST /api/chief-of-staff/sessions` | none | `audit:session_launch=ok` `event:chief_of_staff.start=denied/audit_unavailable` | `pending:#289` `journey:cos-start` `journey:cos-start-outside-root` `journey:cos-start-host` |
 | `G4.10` | Export the log | An export writes the filtered rows to a file named `toolcalls-export-<timestamp>.jsonl` beside the audit log and answers its path. | Settings > Tool Calls > Export | `relay audit --json` | `http:POST /api/audit/export` `ipc:export_audit` | none | `event:audit.export=ok#count` `out:http:POST /api/audit/export#.path` | `pending:#289` |
@@ -418,11 +418,12 @@ agent inside the product (a relay session, or eve's chat agent) must never
 complete one. The devbox harness may, with the operator's test credentials:
 `devboxpresence` answers relay's presence prompt with the devbox admin
 password. A release build has no API or flag that skips a gate. The
-`testapprover` build (`./build.sh --test-approver`, run in place of the
-release tray) answers `project.grant` alone and refuses every other owner
-gate. It is checked absent from every release binary, and its approvals are
-audited with `presence_approver`. See
-[`docs/testing.md`](testing.md#the-test-approver-build).
+test build (`./build.sh --test-build`, tag `relaytest`, run in place of the
+release tray) answers each owner gate per op from `X/test-presence.json` on a
+non-default config dir, and on the default config dir approves only
+`project.grant`. It is checked absent from every release binary, and its
+approvals are audited with `presence_approver`. See
+[`docs/testing.md`](testing.md#the-test-build).
 
 Each gate has two journeys. The **positive** passes the gate as the owner
 would and checks the effect and its audit row with the presence id. The
