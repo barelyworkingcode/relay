@@ -76,7 +76,7 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 |---|---|
 | commit | `gofmt`, `go build`, `go vet` — seconds |
 | push | `go build ./...`, `go vet ./...` |
-| PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags testapprover ./cmd/relay`, and a step that fails on any `_test.go` outside `e2e/` |
+| PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags relaytest ./...`, the test-build absent/present check, and a step that fails on any `_test.go` outside `e2e/` |
 
 ## House rules
 

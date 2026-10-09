@@ -228,6 +228,7 @@ func serviceList() {
 		return
 	}
 	statuses := listed.Statuses
+	now := cliNow("relay service list")
 
 	w := newTabWriter()
 	fmt.Fprintln(w, "ID\tNAME\tCOMMAND\tURL\tAUTOSTART\tCAPABILITIES\tSTATE")
@@ -244,21 +245,21 @@ func serviceList() {
 		if urlStr == "" {
 			urlStr = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", svc.ID, svc.DisplayName, cmd, urlStr, auto, capabilitiesColumn(svc.Capabilities), serviceStateColumn(svc.ID, statuses))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", svc.ID, svc.DisplayName, cmd, urlStr, auto, capabilitiesColumn(svc.Capabilities), serviceStateColumn(svc.ID, statuses, now))
 	}
 	w.Flush()
 }
 
 // serviceStateColumn renders one row's STATE cell. "-" means not supervised:
 // never started this session, or the operator stopped it.
-func serviceStateColumn(id string, statuses map[string]service.SupervisionStatus) string {
+func serviceStateColumn(id string, statuses map[string]service.SupervisionStatus, now time.Time) string {
 	st, ok := statuses[id]
 	if !ok {
 		return "-"
 	}
 	switch st.Phase {
 	case service.SupervisionRestarting:
-		wait := time.Until(st.NextAttempt).Round(time.Second)
+		wait := st.NextAttempt.Sub(now).Round(time.Second)
 		if wait < 0 {
 			wait = 0
 		}

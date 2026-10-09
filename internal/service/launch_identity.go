@@ -148,9 +148,9 @@ func NewLaunches() *Launches {
 	}
 }
 
-// SetClockForTest overrides the clock BeginWithTTL and the reap-on-access
-// check read, so a TTL expiry test never sleeps in real time.
-func (t *Launches) SetClockForTest(now func() time.Time) {
+// SetClock overrides the clock BeginWithTTL and the reap-on-access check
+// read. nil restores wall time.
+func (t *Launches) SetClock(now func() time.Time) {
 	if now == nil {
 		now = time.Now
 	}

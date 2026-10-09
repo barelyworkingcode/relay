@@ -34,8 +34,15 @@ jobs:
         run: go build ./...
       - name: go vet
         run: go vet ./...
-      - name: go vet (test approver build)
-        run: go vet -tags testapprover ./cmd/relay
+      - name: go vet (test build)
+        run: go vet -tags relaytest ./...
+      - name: release binary lacks the test seams
+        run: |
+          out=$(mktemp -d)
+          go build -o "$out/release" ./cmd/relay
+          go build -tags relaytest -o "$out/tagged" ./cmd/relay
+          scripts/check-test-build.sh absent "$out/release"
+          scripts/check-test-build.sh present "$out/tagged"
       - name: no unit tests outside e2e
         run: |
           stray=$(find . -name '*_test.go' -not -path './e2e/*' -not -path './.git/*')
