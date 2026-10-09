@@ -21,7 +21,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/projectfs"
-	"github.com/barelyworkingcode/relay/internal/sealed"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
 
@@ -202,13 +201,13 @@ func (a *App) removeReadyFile() {
 func startServerCore(opts serverOptions) (*App, error) {
 	platform := opts.Platform
 
-	// The keychain keyring is constructed here and NOWHERE else in the
-	// program (§5.3.3, AC-29): this is the tray's own path, and the ACL
-	// binds to whatever code identity SecTrustedApplicationCreateFromPath
-	// reads from it. A CLI process carries relay's own code identity too,
-	// so a second call site here would satisfy the very ACL this design
-	// depends on the CLI never asking — TestSeal_NoCLIPathReachesTheKeychain
-	// is what keeps that true.
+	// The keyring is constructed here and NOWHERE else in the program
+	// (§5.3.3, AC-29), through newKeyring (keystore.go): this is the tray's
+	// own path, and the ACL binds to whatever code identity
+	// SecTrustedApplicationCreateFromPath reads from it. A CLI process
+	// carries relay's own code identity too, so a second call site here would
+	// satisfy the very ACL this design depends on the CLI never asking —
+	// TestSeal_NoCLIPathReachesTheKeychain is what keeps that true.
 	configDir := bridge.ConfigDir()
 	releaseOwnership, err := config.AcquireTrayOwnership(configDir)
 	if err != nil {
@@ -229,7 +228,13 @@ func startServerCore(opts serverOptions) (*App, error) {
 		releaseOwnership()
 		return nil, err
 	}
-	keyring := sealed.NewKeychainKeyring(resolveRelayBin())
+	keyring, err := newKeyring(configDir)
+	if err != nil {
+		releaseOwnership()
+		return nil, err
+	}
+	// Built once and handed to every consumer; there is no package-level clock.
+	clock := newServerClock(configDir)
 	store, err := config.ResolveSealedStore(configDir, keyring)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve the sealed store: %w", err)
@@ -294,7 +299,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 	// place: here. The hermetic suite never calls runTrayApp, so it never
 	// reaches this line — presence.LocalAuthProviderConstructions() staying
 	// at zero across `go test ./...` is what AC-20 checks instead of hoping.
-	presenceProvider := newPresenceProvider()
+	presenceProvider := newPresenceProvider(configDir)
 	presenceGate, err := presence.NewGate(presenceProvider)
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct the presence gate: %w", err)
@@ -317,10 +322,12 @@ func startServerCore(opts serverOptions) (*App, error) {
 	)
 
 	extMgr.SetStderrLog(openMcpStderrLog)
+	extMgr.SetClock(clock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	registry := service.NewRegistry()
+	registry.Clock = clock
 	serviceQueue, err := config.NewCommandQueue(32)
 	if err != nil {
 		cancel()
@@ -339,6 +346,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 		serviceQueue:     serviceQueue,
 		presenceGate:     presenceGate,
 		sealedKeyring:    keyring,
+		clock:            clock,
 		configDir:        configDir,
 		sealStatus:       sealStatus,
 		lastHealth:       map[string]mcpbroker.HealthEvent{},
@@ -453,7 +461,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 	// and has no Settings tab of its own, so it is wired straight onto the
 	// router rather than threaded through IPCContext the way the other five
 	// cores are.
-	credentialOps := &CredentialOps{Store: store, Queue: serviceQueue, Gate: presenceGate, Issuance: issuanceAuditorOrNil(rec)}
+	credentialOps := &CredentialOps{Store: store, Queue: serviceQueue, Gate: presenceGate, Issuance: issuanceAuditorOrNil(rec), Clock: clock}
 	router.credentialOps = credentialOps
 
 	// auditOps is the one core behind both the Tool Calls tab (via
@@ -488,6 +496,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 		Queue: serviceQueue,
 		Audit: rec,
 		Gate:  presenceGate,
+		Clock: clock,
 	}
 	app.loginOps = loginOps
 	app.ipcCtx.LoginOps = loginOps
@@ -505,6 +514,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 		Audit:  rec,
 		Gate:   presenceGate,
 		Notify: platform.Notify,
+		Clock:  clock,
 	}
 	app.eveEnrolmentOps = eveEnrolmentOps
 	router.eveEnrolmentOps = eveEnrolmentOps
@@ -540,6 +550,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 		Issuance:        issuanceAuditorOrNil(rec),
 		NotifyReconcile: bridge.SendReconcile,
 		NotifyReloadMcp: bridge.SendReloadMcp,
+		Clock:           clock,
 	}
 	app.ipcCtx.McpOps = mcpOps
 	router.mcpOps = mcpOps
@@ -557,6 +568,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 	// server admits a service holding the frontend capability by them. It lives only in memory, so a
 	// crashed relay leaves no identity behind.
 	launches := service.NewLaunches()
+	launches.SetClock(clock.Now)
 	registry.Launches = launches
 	router.launches = launches
 
@@ -583,6 +595,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 	router.modelHosts = modelHosts
 	modelKeys := NewModelKeyTable()
 	app.modelEndpoint = NewModelEndpointServer(store, launches, modelKeys, modelHosts)
+	app.modelEndpoint.catalog.SetClock(clock.Now)
 	app.modelEndpoint.AuditHook = func(ev ModelCallAudit) {
 		recordModelCall(rec, ev)
 	}
@@ -686,15 +699,31 @@ func startServerCore(opts serverOptions) (*App, error) {
 		Agents:  hostPool,
 	}
 	app.ipcCtx.HostOps = hostOps
+	router.hostOps = hostOps
+	router.modelCatalog = app.ipcCtx.ModelCatalog
+	router.mcpSurfaces = extMgr.AllMcpSurfaces
+	router.openURL = platform.OpenURL
+	router.overview = func() overviewSeed { return app.buildOverviewSeed(config.DisplaySettings(store)) }
+	// The doors catalogue collects the routes both muxes register, so it is
+	// built before the frontend server and handed its recorder.
+	_, headless := platform.(*headlessPlatform)
+	doors := newDoorCatalog(headless)
+	router.headless = headless
+	router.resetSealed = app.resetSealed
+	router.doors = doors
 	templateOps := &TemplateOps{Store: store, Queue: serviceQueue}
 	app.ipcCtx.TemplateOps = templateOps
 	app.ipcCtx.HostTemplateOps = &HostTemplateOps{Store: store, Queue: serviceQueue}
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, templateOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec), launches, sessionDeps)
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, templateOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store, clock), audit.ControlAuditorOrNil(rec), launches, sessionDeps, doors.recordRoute, clock)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start frontend server: %w", err)
 	}
 	frontend.routeDeps.loginOps = loginOps
 	frontend.FileOps().Hosts = hostPool
+	// The router reaches the instances the frontend server holds, so a CLI
+	// door and an HTTP door share one watch hub and one tmux lister.
+	router.fileOps = frontend.FileOps()
+	router.persistentSessions = frontend.routeDeps.persistentSessionOps
 	app.addrMu.Lock()
 	app.frontendServer = frontend
 	app.addrMu.Unlock()
@@ -717,6 +746,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 			// the wrong thing.
 			return nil, fmt.Errorf("failed to bind API listener (%s): %w", apiSource, err)
 		}
+		doors.recordLoginRoutes(frontend.LoginPatterns())
 		app.goFunc(func() {
 			if err := frontend.ServeLoopback(); err != nil {
 				slog.Error("API listener exited with error", "error", err)
@@ -787,7 +817,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 	// made `remote.listen` the one setting in relay that needed a quit, and
 	// made `audit.enabled: false` a refusal that only held until the next
 	// launch. onConfigCommitted drives the convergence from here on.
-	remote := NewRemoteSupervisor(ctx, store, router, rec, projectOps, extMgr.AllMcpSurfaces, app.goFunc)
+	remote := NewRemoteSupervisor(ctx, store, router, rec, projectOps, extMgr.AllMcpSurfaces, app.goFunc, clock)
 	app.addrMu.Lock()
 	app.remote = remote
 	app.addrMu.Unlock()

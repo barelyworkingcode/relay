@@ -88,6 +88,15 @@ var errProjectUpdateTargetMissing = errors.New("project to update not found")
 // door must treat this as an internal failure, not a validation refusal.
 var errProjectTokenUnrecorded = errors.New("the token was rotated but could not be recorded in the audit log, so it was not returned; rotate again")
 
+// errProjectTokenUnavailable means the project exists but its token cannot be
+// unsealed here, for example on a degraded sealed store.
+var errProjectTokenUnavailable = errors.New("the project token cannot be unsealed")
+
+// errProjectTokenRevealUnrecorded means the disclosure could not be recorded in
+// the audit log, so the token was not returned. Nothing changed; the caller
+// runs it again.
+var errProjectTokenRevealUnrecorded = errors.New("the token could not be recorded in the audit log, so it was not returned; nothing changed, run it again")
+
 // errProjectHosted refuses a skill regen for a project whose directory
 // lives on a Host: proj.Path is meaningful only on that host, and
 // project.ValidateShape already refuses generate_skill on a hosted project
@@ -106,7 +115,7 @@ func projectEventErr(err error) error {
 	if errors.Is(err, errProjectChangedDuringApproval) {
 		return fmt.Errorf("%w: %w", errEventConflict, err)
 	}
-	return asInvalid(err, errProjectSaveFailed, errProjectTokenUnrecorded)
+	return asInvalid(err, errProjectSaveFailed, errProjectTokenUnrecorded, errProjectTokenUnavailable, errProjectTokenRevealUnrecorded)
 }
 
 // projectCreateDigest binds a project.grant grant to exactly the shape being
@@ -638,6 +647,39 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (_
 		return "", false, nil
 	}
 	return newPlaintext, true, nil
+}
+
+// RevealToken returns a project's current token to the operator. The gate runs
+// first, then the disclosure is recorded, and only then does the plaintext
+// leave: a record that cannot be written refuses the act, as for rotation. It
+// writes no settings, so it takes no lane in the config queue.
+func (o *ProjectOps) RevealToken(ctx context.Context, id, via, credID string) (_ string, found bool, err error) {
+	ev := logging.BeginEvent(ctx, "project.reveal_token")
+	defer func() {
+		ev.Set("project_id", id)
+		endEvent(ev, foundOrErr(projectEventErr(err), found || err != nil))
+	}()
+	if err := requireIssuanceAuditor(o.Issuance); err != nil {
+		return "", false, err
+	}
+	grant, err := requireGate(o.Gate, ctx, "project.reveal_token",
+		singleStringDigest("project.reveal_token", "project_id", id), fmt.Sprintf("reveal the token for the project %q", id),
+		presenceAttempt{auditor: o.Issuance, via: via, credID: credID, subject: id})
+	if err != nil {
+		return "", false, err
+	}
+	proj, _ := config.FindProjectByID(config.FreshSettings(o.Store), id)
+	if proj == nil {
+		return "", false, nil
+	}
+	token, ok := proj.Token.Reveal()
+	if !ok || token == "" {
+		return "", true, errProjectTokenUnavailable
+	}
+	if auditErr := recordProjectTokenRevealed(o.Issuance, id, via, credID, grant.ID()); auditErr != nil {
+		return "", true, fmt.Errorf("%w: %w", errProjectTokenRevealUnrecorded, auditErr)
+	}
+	return token, true, nil
 }
 
 // DescribeGrant is the RemoteConfigurer half of ADR-018 decision 4's read

@@ -29,6 +29,10 @@ type Transport string
 const (
 	TransportSocket Transport = "socket"
 	TransportTCP    Transport = "tcp"
+	// TransportBridge appears only in audit records and the doors document.
+	// ClassReachableOn does not route on it: a class is never registered on
+	// the bridge through a RouteRegistrar.
+	TransportBridge Transport = "bridge"
 )
 
 // ErrNoCredential and ErrClassNotGranted are the authorization outcomes with
@@ -98,6 +102,19 @@ type RouteRegistrar struct {
 	Auditor      ControlAuditor
 	Reserve      RouteReserver
 	CredentialID CredentialID
+	// Record is told every route that is actually registered, after the
+	// reachability check, so the doors document lists what a mux serves and
+	// nothing it refused to register.
+	Record func(RouteInfo)
+}
+
+// RouteInfo describes one registered route. Gates names the presence
+// operations its handler may require.
+type RouteInfo struct {
+	Pattern   string
+	Class     CapabilityClass
+	Transport Transport
+	Gates     []string
 }
 
 // AuthorizationStatus maps an authorization refusal to its HTTP response.
@@ -112,6 +129,13 @@ func AuthorizationStatus(err error) int {
 // Handle registers h for pattern under class, gated by Transport. A route
 // unreachable on this transport is not registered at all.
 func (rr *RouteRegistrar) Handle(class CapabilityClass, pattern string, h http.HandlerFunc) {
+	rr.HandleGated(class, nil, pattern, h)
+}
+
+// HandleGated is Handle for a route whose handler may require a presence
+// operation. gates is documentation for the doors document: the gate itself
+// stays in the core the handler calls.
+func (rr *RouteRegistrar) HandleGated(class CapabilityClass, gates []string, pattern string, h http.HandlerFunc) {
 	if rr.Reserve != nil {
 		rr.Reserve.ReserveRelayRoute(pattern)
 	}
@@ -119,6 +143,9 @@ func (rr *RouteRegistrar) Handle(class CapabilityClass, pattern string, h http.H
 		return
 	}
 	rr.Mux.HandleFunc(pattern, rr.authorize(class, h))
+	if rr.Record != nil {
+		rr.Record(RouteInfo{Pattern: pattern, Class: class, Transport: rr.Transport, Gates: gates})
+	}
 }
 
 func (rr *RouteRegistrar) authorize(class CapabilityClass, h http.HandlerFunc) http.HandlerFunc {

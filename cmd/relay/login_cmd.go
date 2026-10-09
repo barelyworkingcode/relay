@@ -14,19 +14,6 @@ import (
 // admin_op and lets LoginOps — the same core the Passkeys tab and the
 // tray's own "Show Login Code..." item share — do the work. `list` is a
 // tray read too: the running tray is the only reader of the configuration.
-//
-// ADR-016 decision 2 kept this subcommand specifically because the tray's
-// menu is unreachable over SSH; ADR-017 §3.2 withdraws that affordance on
-// purpose — a session that cannot show a presence prompt refuses here
-// exactly as it does for every other gated operation, with no exemption.
-func runLoginCommand(args []string) {
-	runSubcommands("login", []cliSubcommand{
-		{"enrol", func(_ []string) { loginEnrol() }},
-		{"list", func(_ []string) { loginList() }},
-		{"revoke", loginRevoke},
-	}, args)
-}
-
 func loginEnrol() {
 	client := requireService("relay login enrol")
 	raw, err := client.AdminOp("login.bootstrap.mint", nil)

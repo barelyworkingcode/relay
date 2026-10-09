@@ -39,6 +39,15 @@ var presenceWaitReadDeadline = time.Duration(0)
 // on first use, or worse, a check some future call site forgets to add.
 var errPresenceGateNotWired = errors.New("presence gate is not wired for this operation")
 
+// presenceUnanswered marks a context error that ended a presence wait: the
+// prompt was never answered. Its text and unwrap chain are the context error's
+// own, so the caller's message, the audit row's error and errors.Is against
+// the context error do not change; only the event's reason does.
+type presenceUnanswered struct{ err error }
+
+func (e *presenceUnanswered) Error() string { return e.err.Error() }
+func (e *presenceUnanswered) Unwrap() error { return e.err }
+
 // requireGate is Gate.Require with the nil-gate-refuses branch every gated
 // core needs (ADR-017 implementation spec §6.7), plus the read-deadline
 // suspension a frontend HTTP caller needs (see presenceWaitReadDeadline):
@@ -68,7 +77,10 @@ func requireGate(gate *presence.Gate, ctx context.Context, op string, d presence
 		extend(presenceWaitReadDeadline)
 		defer extend(frontendRouteReadDeadline)
 	}
-	grant, err := gate.Require(ctx, op, d, reason)
+	grant, err := gate.Require(withTestCallerSession(ctx), op, d, reason)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		err = &presenceUnanswered{err: err}
+	}
 	approver := ""
 	if err != nil && errors.Is(err, presence.ErrRefused) {
 		approver = gate.Approver()

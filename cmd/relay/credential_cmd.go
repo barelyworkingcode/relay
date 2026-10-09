@@ -12,20 +12,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
-// Control-plane credentials are minted on the host, by the user who owns the
-// config dir. Mint and revoke are brokered (ADR-017 decision 2): this
-// process holds no sealer and cannot write settings.json itself (§5.4), so
-// it dials the running tray over admin_op and lets CredentialOps — the same
-// core the gate lives in — do the work. `list` is a tray read too: the
-// running tray is the only reader of the configuration.
-func runCredentialCommand(args []string) {
-	runSubcommands("credential", []cliSubcommand{
-		{"mint", credentialMint},
-		{"list", credentialList},
-		{"revoke", credentialRevoke},
-	}, args)
-}
-
 // capabilityClasses is the whole vocabulary. A class string outside it is
 // refused rather than stored: Grants compares against these constants, so a
 // typo'd class would leave the credential inert with nothing on any operator
@@ -102,7 +88,7 @@ func credentialMint(args []string) {
 	fmt.Printf("  id:      %s\n", result.Credential.ID)
 	fmt.Printf("  classes: %s\n", formatClasses(result.Credential.Classes))
 	fmt.Printf("  created: %s\n", result.Credential.Created)
-	fmt.Printf("  expires: %s\n", formatCredentialExpiry(result.Credential, time.Now()))
+	fmt.Printf("  expires: %s\n", formatCredentialExpiry(result.Credential, cliNow("relay credential mint")))
 	fmt.Printf("  token:   %s\n", result.Token)
 	fmt.Println("  this token is shown ONCE and is not recoverable — only its SHA-256 is stored")
 	fmt.Println("  present it as: Authorization: Bearer <token>")
@@ -129,7 +115,7 @@ func credentialList(args []string) {
 	fs.Parse(args)
 
 	listed := adminRead[credentialListResult]("relay credential list", "credential.list", nil).Credentials
-	now := time.Now()
+	now := cliNow("relay credential list")
 
 	shown := make([]config.APICredential, 0, len(listed))
 	for _, item := range listed {

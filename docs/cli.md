@@ -66,6 +66,17 @@ Two consequences follow immediately, and both are covered in full below:
   relay can tell — from the kernel, not from anything the caller sends — that
   the session it is running in cannot show a prompt on the console.
 
+**Verbs for the Settings window and the tray are operator-only.** Every verb
+added to reach what only the Settings window or the tray did before
+(`relay project create`, `relay status`, `relay session start` and the rest of
+this document's later sections) runs only from your own terminal. The server
+refuses it from inside a relay session and from any sandboxed process, with
+`this command cannot be run from inside a relay session or a sandbox`, and
+writes a denied `control_decision` row. The same peer check `relay sandbox`
+makes decides it. The verbs that predate this rule (`relay credential`,
+`relay enrol`, `relay mcp register` and the others above) keep the caller rule
+they had. `relay doors` lists every door, its credential class and its gates.
+
 ### Quick reference
 
 | Command | Needs service | Prompts | Works over SSH |
@@ -99,6 +110,33 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay service register` | yes | **yes** | no |
 | `relay service unregister` | yes | no | yes |
 | `relay service restart` | yes | no | yes |
+| `relay status` | yes | no | yes |
+| `relay doors` | yes | no | yes |
+| `relay debug clock` (test build only) | yes | no | yes |
+| `relay remote show` | yes | no | yes |
+| `relay remote set` | yes | **yes** | no |
+| `relay host probe` | yes | no | yes |
+| `relay host disconnect` | yes | no | yes |
+| `relay sealed reset` | yes | **yes** | no |
+| `relay login sessions` | yes | no | yes |
+| `relay login sign-out` | yes | no | yes |
+| `relay project create` | yes | **yes** | no |
+| `relay project edit` | yes | **yes** when it widens a grant | no when it widens, yes otherwise |
+| `relay project remove` | yes | no | yes |
+| `relay project rotate-token` | yes | **yes** | no |
+| `relay project token` | yes | **yes** | no |
+| `relay project regen-skill` | yes | no | yes |
+| `relay mcp authenticate` | yes | **yes** | no |
+| `relay mcp reset-permissions` | yes | no | yes |
+| `relay mcp scope-fields` | yes | no | yes |
+| `relay service start / stop` | yes | no | yes |
+| `relay service action` | yes | no | yes |
+| `relay service config` | yes | no | yes |
+| `relay model list` | yes | no | yes |
+| `relay session start / list / message / stop / resume / mode` | yes | no | yes |
+| `relay terminal start / list / log / stop` | yes | no | yes |
+| `relay terminal persistent-list / persistent-kill` | yes | no | yes |
+| `relay files watch` | yes | no | yes |
 | `relay sandbox` | yes | no | no (needs an interactive terminal) |
 | `relay drop-in` | yes | no | no (needs an interactive terminal) |
 | `relay mcpExec` / `relay mcp call` | yes (dials the bridge) | no | yes |
@@ -110,14 +148,18 @@ presence-gated ones add the console-session check.
 
 ### Machine-readable output
 
-Today, `relay audit`, `relay grant`, `relay enrol requests` and `relay logs`
-accept `--json` and emit the same data as structured JSON instead of a table
-(`relay logs --json` prints each log line exactly as stored).
+`relay audit`, `relay grant`, `relay enrol requests`, `relay logs` and every
+verb added for the Settings window and the tray accept `--json` and emit the
+same data as structured JSON instead of a text line or table
+(`relay logs --json` prints each log line exactly as stored). A `--json` run
+prints one line on stdout. On failure stdout is empty, stderr carries
+`error: ...` and the exit code is 1. A verb that takes a request body takes
+`--file F`, the matching HTTP route's JSON body, or `-` for stdin.
 `relay mcpExec --list` (and its `relay mcp call --list` spelling) spells its
 machine-readable form `--schema` instead: plain `--list` prints a table,
 and `--schema` switches it to JSON that also includes each tool's input
-schema — what a SKILL.md generator consumes. No other subcommand has a
-machine-readable form yet.
+schema — what a SKILL.md generator consumes. The older
+`list` subcommands print tables only.
 
 ## `relay serve`
 
@@ -999,6 +1041,8 @@ is **not** a control-plane credential and authorises exactly one thing.
 relay login enrol
 relay login list
 relay login revoke --id ID
+relay login sessions [--json]
+relay login sign-out --id ID [--json]
 ```
 
 ### `login enrol`
@@ -1053,6 +1097,28 @@ lifetimes — a browser that logged in earlier keeps working, up to twelve
 hours, until its own control-plane credential expires or is revoked with
 `relay credential revoke` (or Settings → Passkeys → Signed-in Browsers →
 Sign out).
+
+### `login sessions`
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Lists the
+signed-in browser sessions the Passkeys tab shows under **Signed-in
+Browsers**: name, credential id, created and expires. `--json` prints
+`{"sessions":[{"id","name","created","expires"}]}`. It never prints a token
+or a hash.
+
+```
+$ relay login sessions
+NAME                 ID        CREATED               EXPIRES
+browser (Acme Mac)   cr_a1b2   2026-10-09T08:00:00Z  2026-10-09T20:00:00Z
+```
+
+### `login sign-out`
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Ends one
+browser session by its id from `relay login sessions`, the same act as
+**Sign out** in the Passkeys tab. It refuses an id that is not a browser login
+session; use `relay credential revoke` for that. `--json` prints
+`{"id","name"}`.
 
 ## `relay eve`
 
@@ -1120,7 +1186,16 @@ first, and signs out every session that passkey minted.
 
 ```
 relay project update --id ID --files-read-only=true|false
+relay project create (--name N --path P | --file F) [--json]
+relay project edit --id ID --file F [--json]
+relay project remove --id ID [--json]
+relay project rotate-token --id ID [--json]
+relay project token --id ID [--json]
+relay project regen-skill --id ID [--json]
 ```
+
+The verbs after `project update` are operator-only and call the cores the
+Projects tab and the `/api/projects` routes call.
 
 ### `project update`
 
@@ -1135,6 +1210,50 @@ $ relay project update --id p_acme --files-read-only=true
 project Acme (p_acme): file changes are refused (files_read_only)
 ```
 
+### `project create`
+
+Needs service: yes. Prompts: yes (`project.grant`). Works over SSH: no.
+`--name` and `--path` create a project with no MCP access; `--file F` takes the
+`POST /api/projects` body for everything else (`-` reads stdin). A relative
+`--path` resolves against the current directory. `--json` prints the project as
+`POST /api/projects` returns it.
+
+### `project edit`
+
+Needs service: yes. Prompts: yes when the body widens a grant, no when it only
+narrows. Works over SSH: only when it narrows. `--file F` takes the
+`PUT /api/projects/{id}` body, which includes `kind` for a local-to-remote
+conversion and the scope values (`contextSchema`) of each MCP. `relay mcp
+scope-fields` lists the fields a scope accepts. `--json` prints the project.
+
+### `project remove`
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Removes the project.
+`--json` prints `{"id","name"}`.
+
+### `project rotate-token`
+
+Needs service: yes. Prompts: yes (`project.rotate_token`). Works over SSH: no.
+Rotates the project's bearer token and prints the new token once, alone on one
+line so `$(...)` captures it; `--json` prints `{"token"}`. The old token stops
+working. The issuance row in the audit log carries the presence id.
+
+### `project token`
+
+Needs service: yes. Prompts: yes (`project.reveal_token`). Works over SSH: no.
+Prints the project's current bearer token alone on one line; `--json` prints
+`{"token"}`. It is the CLI reveal of what the Settings window shows behind
+the eye icon, and it is stricter: operator-only, behind a presence prompt, and
+recorded as `credential_disclosed` in the audit log before the token prints. A
+cancelled prompt prints nothing and records a denied `control_decision` row. A
+degraded sealed store refuses with `the project token cannot be unsealed`.
+There is no HTTP route for it.
+
+### `project regen-skill`
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Rewrites the project's
+SKILL.md from its current grant. `--json` prints `{"path"}`.
+
 ## `relay mcp`
 
 External MCP registration: what relay connects to or spawns, over stdio or
@@ -1145,6 +1264,9 @@ relay mcp register --name NAME [--id ID] --command CMD [--args ARG...] [--env K=
                     [--transport stdio|http] [--url URL] [--tcc-services LIST]
 relay mcp unregister --id ID | --name NAME
 relay mcp list
+relay mcp authenticate --id ID [--json]
+relay mcp reset-permissions --id ID [--json]
+relay mcp scope-fields --id ID [--json]
 relay mcp call --token TOKEN --list | --tool NAME [--args JSON]   # see relay mcpExec, below
 ```
 
@@ -1174,9 +1296,34 @@ Usage of mcp register:
 Needs service: yes. Prompts: yes. Works over SSH: no.
 
 Registering an HTTP MCP that answers 401 during discovery still persists
-the record — you then finish authentication from the Settings window's
-**Authenticate** button; there is no CLI door for that step, because OAuth
-here means opening a real browser and running a local callback listener.
+the record — you then finish authentication with `relay mcp authenticate`
+(below) or the Settings window's **Authenticate** button.
+
+### `mcp authenticate`
+
+Needs service: yes. Prompts: yes (`mcp.oauth.start`). Works over SSH: no.
+Operator-only. Runs the OAuth flow of the Authenticate button for an HTTP MCP.
+Under the tray it opens your browser. Under `relay serve` there is no browser,
+so it prints the authorization URL on its own line as soon as it has one, then
+`authenticated ID` when the callback lands. `--json` prints one line
+`{"id","authenticated":true}` under the tray, and two lines under `relay
+serve`: `{"id","authorization_url"}` on arrival, then
+`{"id","authenticated":true,"authorization_url"}`. It never prints the OAuth
+state or a token.
+
+### `mcp reset-permissions`
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Resets the
+macOS privacy (TCC) grants for an MCP registered with `--tcc-services`, the
+act of **Reset Permissions** in the MCP Servers tab. It refuses an MCP with no
+such services. `--json` prints the result the tab shows.
+
+### `mcp scope-fields`
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Lists the
+scope fields an MCP's `contextSchema` declares, with their allowed values, as
+`GET /api/mcps/{id}/scope_fields` returns them. A project's scope values are
+written with `relay project edit`.
 
 #### The record it writes
 
@@ -1276,8 +1423,20 @@ relay service register --name NAME [--id ID] --command CMD [--args ARG...]
                         [--capability frontend|manifest|models|model_host ...]
 relay service unregister --id ID | --name NAME
 relay service restart --id ID | --name NAME
+relay service start --id ID | --name NAME [--json]
+relay service stop --id ID | --name NAME [--json]
+relay service action --id SVC --action ACT [--row JSON] [--json]
+relay service config --id SVC [--set FILE] [--json]
 relay service list
 ```
+
+`start`, `stop`, `action` and `config` are operator-only. `start` and `stop`
+are the Start and Stop buttons and the tray's service rows; they print
+`{"id"}` with `--json`. `action` runs one action a service's manifest declares,
+as the Service Inspector does, and prints `{"service_id","action_id","ok":true}`.
+`config` prints a service's config file as `{"service_id","text"}`; with `--set
+FILE` (`-` for stdin) it saves the file and prints `{"service_id","restarted"}`.
+None of them prompts.
 
 ### `service register`
 
@@ -1418,6 +1577,183 @@ stopped it). Supervision state exists only in the tray's memory, never in
 `settings.json`; `service.list` (ungated) carries it beside the records, and
 neither `env` nor `working_dir` is sent.
 
+## `relay status`
+
+```
+relay [--config-dir DIR] status [--json]
+```
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Prints what
+the Overview tab shows: the version, the sealed-store warning, the config and
+logs folders, each MCP's health and each service's runtime and restart
+supervision. The text form is one line. `--json` prints:
+
+```
+{"version","seal_status","paths":{"config","logs"},
+ "mcp_health":{ID:{...}},"service_runtime":{ID:{"pid","started_at"}},
+ "service_supervision":{ID:{"phase","attempt",...}}}
+```
+
+`seal_status` is empty when the sealed store is healthy and the reason when it
+is degraded. A service's log is `paths.logs` plus `<id>.log`.
+
+## `relay remote`
+
+```
+relay remote show [--json]
+relay remote set --file F [--json]
+```
+
+`show` needs the service, never prompts and prints the remote-listener
+settings the Remote Clients tab shows (`GET /api/remote`): `enabled`, `listen`,
+the `effective` address, `audit_enabled`, the enrolment-request listener and the
+CA fingerprint. `set` replaces the whole record with a `PUT /api/remote` body
+(`enabled`, `listen`, `enrolment_requests`, `enrolment_listen`, `remove`), so a
+field the body leaves out is cleared. It prompts (`remote.configure`) when the
+change widens what a remote client reaches, and then refuses over SSH. Both are
+operator-only.
+
+## `relay host`
+
+```
+relay host probe --id ID [--json]
+relay host disconnect --id ID [--json]
+```
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. `probe`
+re-runs the SSH discovery of the Hosts tab's Probe button and stores the
+result; an unreachable host is not an error, it reads `unreachable`.
+`disconnect` closes the host's live SSH connection. Both print the host as
+`POST /api/hosts/{id}/probe` returns it with `--json`, and the text form is one
+line with the host's status. An unknown id exits 1 with `host not found`.
+
+## `relay sealed`
+
+```
+relay sealed reset [--json]
+```
+
+Needs service: yes. Prompts: yes (`sealed.reset`). Works over SSH: no.
+Operator-only. The same act as the tray's **Reset Sealed Store…**:
+it permanently deletes `settings.json`, the CA files and the keychain item,
+and starts over with a fresh key. The prompt names what it destroys and is the
+only confirmation; there is no `--yes` and no `--force`. A cancelled prompt
+deletes nothing. `--json` prints `{"reset":true}`. The keychain item is shared
+by every instance that runs as the same user, so approving it from a test
+instance destroys the installed store too. See
+[`docs/sealed-config.md`](sealed-config.md#break-glass-and-why-there-is-no-offline-recovery-code).
+
+## `relay model`
+
+```
+relay model list [--json]
+```
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Lists the
+models the model picker offers, as the Settings window shows them (system-only
+models omitted). `--json` prints the catalogue view.
+
+## `relay session`
+
+Sessions of the session host (`docs/session-host.md`). All operator-only, none
+gated: a session launches as the operator caller, the one `relay sandbox` uses,
+and the launch is audited.
+
+```
+relay session start --project ID --model M [--name N] [--directory D]
+                    [--settings JSON] [--system-prompt S] [--append-claude-md]
+relay session start --file F            # POST /api/sessions body
+relay session list
+relay session message --id ID (--text T | --file F)
+relay session stop --id ID
+relay session resume --id ID
+relay session mode --id ID --mode M
+```
+
+`start --json` prints the `POST /api/sessions` body. `list --json` prints
+`GET /api/sessions`. `message` waits for the reply and prints `{"text","stats"}`
+with `--json`; `--file` takes `{"text","files"}`. `stop` prints `{"id"}`.
+`resume` prints `{"session_id","resumed"}`: `resumed` is false when the session
+is already live. `mode` changes a session's permission mode through the session
+host and prints `{"session_id","mode"}`; for a local claude session the host
+answers `resume_required`.
+
+## `relay terminal`
+
+```
+relay terminal start --project ID --template T [--name N] [--directory D]
+                     [--cols C] [--rows R] [--persist-session NAME]
+                     [--extra-arg A]...
+relay terminal start --file F           # POST /api/terminals body
+relay terminal list
+relay terminal log --id ID
+relay terminal stop --id ID
+relay terminal persistent-list --project ID
+relay terminal persistent-kill --project ID --name NAME
+```
+
+All operator-only, none gated. `start --json` prints the `POST /api/terminals`
+body and `list --json` the `GET /api/terminals` body. `log` prints the raw
+terminal log; `--json` prints `{"id","log"}`. `stop` prints `{"id"}`.
+`persistent-list` prints `GET /api/projects/{id}/persistent-sessions` for a
+project on an SSH host, and `persistent-kill` prints `{"project_id","name"}`.
+
+## `relay files`
+
+```
+relay files watch --project ID [--until TYPE] [--timeout DURATION] [--json]
+```
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Streams the
+frames eve's file tree receives on `/ws/files` for one project (`host_status`,
+`watch_ok`, `watch_error`, `fs_event`), one JSON line per frame, from the same
+watch hub. It runs until you interrupt it, `--timeout` passes, or a frame of
+`--until TYPE` arrives. `watch_ok` is the signal that the watch is live.
+
+## `relay debug` (test build only)
+
+A build made with `-tags relaytest` (`./build.sh --test-build`) has one more
+command. In a release build `relay debug` is `unknown command: debug`, exit
+1, and `relay doors` lists no door for it. See
+[`docs/testing.md`](testing.md#the-test-build).
+
+### `debug clock`
+
+```
+relay [--config-dir X] debug clock [--json]
+relay [--config-dir X] debug clock set <RFC3339> [--json]
+relay [--config-dir X] debug clock advance <duration> [--json]
+```
+
+Reads or moves the clock the running server judges time by: credential
+expiry, login and enrolment windows, restart backoff, token expiry and the
+other decisions [`docs/testing.md`](testing.md#the-test-build) lists. It
+reaches the server through the `debug.clock` admin op, which only an operator
+terminal may call. A relay session or a sandbox is refused.
+
+Text output is two lines, `now:` (UTC, RFC 3339 with fraction) and `offset:`
+(a Go duration from wall time). `--json` prints
+`{"now":"2026-10-01T01:30:00.000Z","offset_ms":-741600000}`. `advance` takes a
+Go duration greater than 0; go back with `set`. The clock lives in memory, so
+a server restart returns it to wall time. On the default config dir it
+refuses: the clock is fixed there.
+
+Exit 0 on success. Exit 1 when there is no server, the caller is refused, or
+the server errors. Exit 2 on a usage error.
+
+## `relay doors`
+
+```
+relay [--config-dir DIR] doors [--json]
+```
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Lists every
+HTTP route, IPC op, bridge request and CLI verb of the running server, built
+from the tables the server dispatches from. Each door names its credential
+class and the presence gates its core may require. It lists no id, path,
+address or config value. The model endpoint, remote mTLS and enrolment-request
+listeners are not listed.
+
 ## `relay sandbox`
 
 Runs a terminal template in your own terminal, for the project holding the
@@ -1550,9 +1886,8 @@ case the default would have matched anyway, but naming it removes the
 question.
 
 **2. Create an access profile that reaches it**, from the Settings window
-(kind: Access profile — there is no CLI door to create a project or profile
-itself; `relay grant` and `relay enrol` only read and enrol against one that
-already exists):
+(kind: Access profile — `relay project create` and `relay project edit` make
+and change a project from the CLI; the Settings window is the everyday way):
 
 ```
 name             Hermes Mail
@@ -1632,12 +1967,14 @@ table, covered under `relay audit` above.)
   `relay login enrol` and never again.
 - **A passkey's public key.** `relay login list` shows name, an abbreviated
   credential id, creation time, and sign count — never the key itself.
-- **A project's or access profile's token.** `relay grant` shows the grant's
-  *shape* — MCPs, mode, tools, real scope values — deliberately without ever
-  reading or printing the sealed token. If you need a project's actual
-  bearer token, the legitimate place to get it is the Settings window
-  (Projects → Bearer Token), which is a different reveal path from anything
-  the CLI does.
+- **A project's or access profile's token, except on request.** `relay grant`
+  shows the grant's *shape* — MCPs, mode, tools, real scope values —
+  deliberately without ever reading or printing the sealed token. A project's
+  bearer token reaches a terminal in two cases only: `relay project rotate-token`
+  prints the new token once, and `relay project token` reveals the current one
+  behind a presence prompt and records it in the audit log before it prints.
+  The Settings window (Projects → Bearer Token) shows it behind the eye icon.
+  An access profile's token is never printed.
 - **An enrolment's private key**, after the moment `enrol create` writes its
   bundle to disk. The bundle directory is the only copy; losing it means
   revoking and re-enrolling. `enrol sign` never has one to withhold in the
@@ -1710,7 +2047,7 @@ sealed fields as unavailable rather than failing to load. Every mutating
 command refuses by name (the same "relay is not running"-shaped family of
 messages, or a more specific one naming the sealed value it could not
 reach) rather than writing around the problem. The only way out is the
-tray's **Reset Sealed Store…** menu item — behind its own presence prompt,
+tray's **Reset Sealed Store…** menu item or `relay sealed reset` — behind its own presence prompt,
 naming exactly what it is about to destroy (every project and its token,
 every control-plane credential, every enrolment and the CA that signed
 them, every passkey) — which deletes `settings.json`, the CA files, and the
@@ -1723,9 +2060,10 @@ that will not open) is refused: the tray logs why and keeps its current
 settings. A change the tray makes at the same moment builds on your valid edit
 rather than overwriting it. There is no import command.
 
-There is deliberately **no CLI equivalent, no flag, and no offline recovery
-code** for this. A second door into the sealed store is exactly what the
-whole design spends its effort closing on the first one; see
+The same reset is `relay sealed reset`, through the same presence prompt. There
+is deliberately **no `--yes`, no `--force` flag, and no offline recovery code**
+for this: a second door into the sealed store that skips the prompt is exactly
+what the whole design spends its effort closing; see
 [`docs/sealed-config.md`](sealed-config.md#break-glass-and-why-there-is-no-offline-recovery-code).
 
 ---

@@ -62,7 +62,7 @@ listener mints its own.
 - **Pattern.** `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`: `<domain>.<action>` or
   `<domain>.<object>.<action>`.
 - **Domain.** The core's noun: `server`, `project`, `grant`, `chief_of_staff`,
-  `mcp`, `tool`, `bridge`, `credential`, `enrolment`, `remote`, `login`, `eve`,
+  `mcp`, `tool`, `bridge`, `credential`, `doors`, `enrolment`, `remote`, `login`, `eve`,
   `sealed`, `service`, `host`, `host_template`, `template`, `file`, `audit`,
   `session`, `terminal`, `sandbox`, `model`, `chat`.
 - **Reused names.** Where a name in `presence.GatedOps`, an `adminOps` entry or
@@ -93,7 +93,7 @@ listener mints its own.
 | `presence_no_session` | No session can show a presence prompt. |
 | `presence_unavailable` | Presence checking is unavailable or not wired for the operation. |
 | `presence_invalid` | The presence grant is invalid. |
-| `presence_timeout` | Reserved. Not written yet. |
+| `presence_timeout` | The presence prompt went unanswered until the requester left. |
 | `unauthorized` | No or wrong credential. |
 | `not_granted` | The credential's class or scope does not allow it. |
 | `read_only` | The target is read-only. |
@@ -165,12 +165,13 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 |---|---|---|---|
 | `project.list` | Before the list is returned | `GET /api/projects` | `count` |
 | `project.get` | Before the project is returned | `GET /api/projects/{id}` | `project_id` |
-| `project.create` | At the end of `ProjectOps.Create` | `POST /api/projects`, Settings | `project_id`, `kind` |
-| `project.update` | At the end of `ProjectOps.Update` | `PUT /api/projects/{id}`, `relay project update`, Settings | `project_id`, `gated` |
-| `project.remove` | At the end of `ProjectOps.Remove` | `DELETE /api/projects/{id}`, Settings | `project_id` |
+| `project.create` | At the end of `ProjectOps.Create` | `POST /api/projects`, `relay project create`, Settings | `project_id`, `kind` |
+| `project.update` | At the end of `ProjectOps.Update` | `PUT /api/projects/{id}`, `relay project update`, `relay project edit`, Settings | `project_id`, `gated` |
+| `project.remove` | At the end of `ProjectOps.Remove` | `DELETE /api/projects/{id}`, `relay project remove`, Settings | `project_id` |
 | `project.default.set` | At the end of `SetDefaultProject` | `PUT /api/default_project/{mode}`, Settings | `mode`, `project_id` |
-| `project.rotate_token` | At the end of `RotateToken` | `POST /api/projects/{id}/rotate_token`, Settings | `project_id` |
-| `project.regen_skill` | At the end of `RegenSkill` | `POST /api/projects/{id}/regen_skill`, Settings | `project_id` |
+| `project.rotate_token` | At the end of `RotateToken` | `POST /api/projects/{id}/rotate_token`, `relay project rotate-token`, Settings | `project_id` |
+| `project.reveal_token` | At the end of `RevealToken` | `relay project token` | `project_id` |
+| `project.regen_skill` | At the end of `RegenSkill` | `POST /api/projects/{id}/regen_skill`, `relay project regen-skill`, Settings | `project_id` |
 | `project.disabled_tools.set` | At the end of `SetDisabledTools` | Settings | `project_id`, `mcp_id`, `count` |
 | `project.describe` | At the end of `appRouter.DescribeProject` | bridge `describe_project` | `project_id` |
 
@@ -198,12 +199,12 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 |---|---|---|---|
 | `mcp.list` | Before the list is returned | `GET /api/mcps`, `relay mcp list` | `count` |
 | `mcp.tools.list` | Before the tool list is returned | `GET /api/mcps/{id}/tools` | `mcp_id`, `count` |
-| `mcp.scope_fields.get` | Before the fields are returned | `GET /api/mcps/{id}/scope_fields` | `mcp_id` |
+| `mcp.scope_fields.get` | Before the fields are returned | `GET /api/mcps/{id}/scope_fields`, `relay mcp scope-fields` | `mcp_id` |
 | `mcp.scope_field.enumerate` | Before the values are returned | `POST /api/mcps/{id}/enumerate` | `mcp_id`, `field` |
 | `mcp.register` | At the end of `McpOps.Add` | `POST /api/mcps`, `relay mcp register`, Settings | `mcp_id`, `transport` |
 | `mcp.unregister` | At the end of `McpOps.Remove` | `DELETE /api/mcps/{id}`, `relay mcp unregister`, Settings | `mcp_id` |
-| `mcp.oauth.start` | At the end of `McpOps.StartOAuth` | Settings | `mcp_id` |
-| `mcp.permissions.reset` | At the end of `McpOps.ResetPermissions` | Settings | `mcp_id` |
+| `mcp.oauth.start` | At the end of `McpOps.StartOAuth` | `relay mcp authenticate`, Settings | `mcp_id` |
+| `mcp.permissions.reset` | At the end of `McpOps.ResetPermissions` | `relay mcp reset-permissions`, Settings | `mcp_id` |
 | `mcp.reconcile` | When the external MCP set is reconciled | bridge `reconcile_external_mcps` | none |
 | `mcp.reload` | When one external MCP is reloaded | bridge `reload_external_mcp` | `mcp_id` |
 | `mcp.state` | When an MCP is published and on each health report (background) | none (background) | `mcp_id`, `state` (`state` is `up`, `down`, `restart_failed`, `restarted` or `abandoned`) |
@@ -225,6 +226,18 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `credential.mint` | At the end of `CredentialOps.Mint` | `relay credential mint` | `credential_id`, `classes` |
 | `credential.revoke` | At the end of `CredentialOps.Revoke` | `relay credential revoke` | `credential_id` |
 
+### Status
+
+| Event | When written | Doors | Fields |
+|---|---|---|---|
+| `status.view` | Before the status document is returned | `relay status` | none |
+
+### Doors
+
+| Event | When written | Doors | Fields |
+|---|---|---|---|
+| `doors.list` | Before the doors document is returned | `relay doors` | `count` |
+
 ### Enrolment
 
 | Event | When written | Doors | Fields |
@@ -245,8 +258,8 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
-| `remote.config.get` | Before the config is returned | `GET /api/remote` | none |
-| `remote.configure` | At the end of `SetRemoteConfig` | `PUT /api/remote`, Settings | `enabled` |
+| `remote.config.get` | Before the config is returned | `GET /api/remote`, `relay remote show` | none |
+| `remote.configure` | At the end of `SetRemoteConfig` | `PUT /api/remote`, `relay remote set`, Settings | `enabled` |
 
 ### Login
 
@@ -255,7 +268,8 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `login.list` | Before the list is printed | `relay login list` | `count` |
 | `login.bootstrap.mint` | At the end of `LoginOps.MintBootstrap` | `relay login enrol`, tray | none |
 | `login.passkey.revoke` | At the end of `RevokePasskey` | `relay login revoke`, Settings | `passkey_id` |
-| `login.session.sign_out` | At the end of `SignOut` | Settings | `credential_id` |
+| `login.session.list` | Before the list is printed | `relay login sessions` | `count` |
+| `login.session.sign_out` | At the end of `SignOut` | `relay login sign-out`, Settings | `credential_id` |
 | `login.page` | In `serveDocument` | `GET /relay/login` | none |
 | `login.challenge` | In `serveChallenge` | `POST /relay/login/challenge` | none |
 | `login.passkey.register` | In `serveVerify`, when the body registers a passkey | `POST /relay/login/verify` | `passkey_id` (exactly one of this and `login.sign_in` per request) |
@@ -277,7 +291,7 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
-| `sealed.reset` | At the end of `resetSealedStore` | tray | none |
+| `sealed.reset` | At the end of `resetSealedStore` | `relay sealed reset`, tray | none |
 
 ### Services
 
@@ -289,13 +303,15 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `service.create` | At the end of `ServiceOps.Create` / `Update` | `POST` and `PUT /api/services`, Settings | `service_id` |
 | `service.update` | At the end of `ServiceOps.Create` / `Update` | `POST` and `PUT /api/services`, Settings | `service_id` |
 | `service.unregister` | At the end of `ServiceOps.Remove` | `DELETE /api/services/{id}`, `relay service unregister`, Settings | `service_id` |
-| `service.start` | At the end of `ServiceOps.Start` / `Stop` | `POST /api/services/{id}/start` and `/stop`, Settings, tray menu | `service_id` |
-| `service.stop` | At the end of `ServiceOps.Start` / `Stop` | `POST /api/services/{id}/start` and `/stop`, Settings, tray menu | `service_id` |
+| `service.start` | At the end of `ServiceOps.Start` / `Stop` | `POST /api/services/{id}/start` and `/stop`, `relay service start` and `stop`, Settings, tray menu | `service_id` |
+| `service.stop` | At the end of `ServiceOps.Start` / `Stop` | `POST /api/services/{id}/start` and `/stop`, `relay service start` and `stop`, Settings, tray menu | `service_id` |
 | `service.restart` | At the end of `ServiceOps.Restart` | `relay service restart`, bridge `reload_service` | `service_id` |
 | `service.autostart.set` | At the end of `SetAutostart` | `PUT /api/services/{id}/autostart`, Settings | `service_id`, `autostart` |
 | `service.move` | At the end of `ServiceOps.Move` | `PUT /api/services/{id}/position`, Settings | `service_id`, `index` |
 | `service.menu.set` | At the end of `SetMenuHidden` | `PUT /api/services/{id}/menu`, Settings | `service_id`, `hidden` |
-| `service.config.save` | At the end of `SaveConfigFile` | Settings | `service_id`, `restarted` |
+| `service.config.save` | At the end of `SaveConfigFile` | `relay service config --set`, Settings | `service_id`, `restarted` |
+| `service.config.get` | At the end of `readServiceConfig` | `relay service config`, Settings | `service_id` |
+| `service.action` | At the end of `runServiceAction` | `relay service action`, Settings | `service_id`, `action_id` |
 | `service.state` | On spawn and on every phase change (background) | none (background) | `service_id`, `phase`, `attempt` (`phase` is `running`, `restarting` or `failed`; `exit_code` is optional) |
 
 ### Hosts
@@ -307,8 +323,8 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `host.create` | At the end of the matching `HostOps` method | `/api/hosts` routes, Settings | `host_id` |
 | `host.update` | At the end of the matching `HostOps` method | `/api/hosts` routes, Settings | `host_id` |
 | `host.remove` | At the end of the matching `HostOps` method | `/api/hosts` routes, Settings | `host_id` |
-| `host.probe` | At the end of the matching `HostOps` method | `/api/hosts` routes, Settings | `host_id` |
-| `host.disconnect` | At the end of the matching `HostOps` method | `/api/hosts` routes, Settings | `host_id` |
+| `host.probe` | At the end of the matching `HostOps` method | `/api/hosts` routes, `relay host probe`, Settings | `host_id` |
+| `host.disconnect` | At the end of the matching `HostOps` method | `/api/hosts` routes, `relay host disconnect`, Settings | `host_id` |
 | `host.pastetmp` | At the end of `FileOps.PasteTmp` | `POST /api/hosts/{id}/pastetmp` | `host_id` |
 
 ### Host templates
@@ -346,6 +362,7 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `file.git` | At the end of the matching `fileSession` method; when `FileOps.open` refuses, the route's `session` helper writes the same key | `POST /api/projects/{id}/files/*` | `project_id` |
 | `file.stream` | Once the body is fully written or fails | `GET /api/projects/{id}/files/stream` | `project_id` |
 | `file.ws.close` | At connection end in `serveFilesWS` | `GET /ws/files` | none |
+| `files.watch` | At the end of `adminFilesWatch`, when the peer leaves | `relay files watch` | `project_id` |
 
 ### Audit
 
@@ -359,18 +376,19 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
-| `session.list` | In `handleProxyList` | `GET /api/sessions` | `count` |
-| `terminal.list` | In `handleProxyList` | `GET /api/terminals` | `count` |
-| `session.launch` | In `launchAndRespond` | `POST /api/sessions`, `POST /api/terminals` | `session_id`, `project_id`, `kind` (on a refusal `reason` is the launch refusal code) |
-| `session.resume` | In `handleResumeSession` | `POST /api/sessions/{id}/resume` | `session_id`, `project_id` |
+| `session.list` | In `handleProxyList`, `listViaHost` | `GET /api/sessions`, `relay session list` | `count` |
+| `terminal.list` | In `handleProxyList`, `listViaHost` | `GET /api/terminals`, `relay terminal list` | `count` |
+| `session.launch` | In `launchWithEvent` | `POST /api/sessions`, `POST /api/terminals`, `relay session start`, `relay terminal start` | `session_id`, `project_id`, `kind` (on a refusal `reason` is the launch refusal code) |
+| `session.resume` | In `resumeSession` | `POST /api/sessions/{id}/resume`, `relay session resume` | `session_id`, `project_id` |
 | `session.drop_in` | In `dropIn` | `POST /api/sessions/{id}/drop-in`, bridge `drop_in_attach` (`relay drop-in`) | `session_id` (`host`, `terminal_id` (existing)) |
-| `session.persistent.list` | Before the list is returned | `GET /api/projects/{id}/persistent-sessions` | `project_id` |
-| `session.persistent.kill` | At the end of `PersistentSessionOps.Kill` | `DELETE /api/projects/{id}/persistent-sessions/{name}` | `project_id` |
+| `session.mode` | At the end of `adminSessionMode` | `relay session mode` | `session_id` |
+| `session.persistent.list` | Before the list is returned | `GET /api/projects/{id}/persistent-sessions`, `relay terminal persistent-list` | `project_id` |
+| `session.persistent.kill` | At the end of `PersistentSessionOps.Kill` | `DELETE /api/projects/{id}/persistent-sessions/{name}`, `relay terminal persistent-kill` | `project_id` |
 | `session.exited` | At the end of `appRouter.SessionExited` | bridge `session_exited` | `session_id` |
-| `session.delete` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message` | `session_id` |
-| `session.message` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message` | `session_id` |
-| `terminal.delete` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes | `terminal_id` |
-| `terminal.log` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes | `terminal_id` |
+| `session.delete` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message`, `relay session stop`, `relay session message` | `session_id` |
+| `session.message` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message`, `relay session stop`, `relay session message` | `session_id` |
+| `terminal.delete` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes, `relay terminal stop`, `relay terminal log` | `terminal_id` |
+| `terminal.log` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes, `relay terminal stop`, `relay terminal log` | `terminal_id` |
 | `session.ws.close` | At connection end in the relay-sessions hub | `/ws` | none |
 | `session.state` | On an agent state change (background, relay-sessions) | none (background) | none (existing keys) |
 
@@ -393,6 +411,20 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | Event | When written | Doors | Fields |
 |---|---|---|---|
 | `chat.turn` | At the end of a chat turn (relay-sessions) | `/ws` turn | none (existing keys) |
+
+### Test build only
+
+Written only by a `relaytest` build, on a config dir the test seams act on
+([`docs/testing.md`](testing.md#the-test-build)). A release build writes none
+of them. A wait for one uses `relay logs --follow --event <key>`.
+
+| Event | When written | Doors | Fields |
+|---|---|---|---|
+| `debug.presence.answer` | In the test approver's `EvaluateOp`, before it returns or, for `timeout`, before it blocks; `error` / `invalid` for an invalid outcome file | any presence-gated operation (background, trace of the caller) | `gated_op`, `answer` (`approve`, `deny` or `timeout`), `source` (`file` or `default`) |
+| `debug.keychain.fault` | In the file keyring, on each operation a fault changes, before the operation acts | any sealed-store operation (background, trace `""`) | `keychain_op` (`load`, `create` or `destroy`), `fault` |
+| `debug.clock.get` | In the `debug.clock` admin op for `get` (quiet on success) | `relay debug clock`, and every CLI view that reads the clock | `now`, `offset_ms` |
+| `debug.clock.set` | In the `debug.clock` admin op for `set`; `error` / `invalid` or `unavailable` | `relay debug clock set` | `now`, `offset_ms` |
+| `debug.clock.advance` | In the `debug.clock` admin op for `advance`; `error` / `invalid` or `unavailable` | `relay debug clock advance` | `now`, `offset_ms` |
 
 ## 8. Background events and how to wait on them
 

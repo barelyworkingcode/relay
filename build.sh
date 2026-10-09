@@ -6,8 +6,8 @@
 #   ./build.sh                  # build + install + launch
 #   ./build.sh --test           # run go vet first; abort install on failure
 #   ./build.sh --release        # sign, notarize, emit /tmp/Relay.dmg (implies --test)
-#   ./build.sh --test-approver  # build with the test approver (tag testapprover) into
-#                               # ~/Applications/RelayTestApprover.app; the running tray
+#   ./build.sh --test-build     # build with the test seams (tag relaytest) into
+#                               # ~/Applications/RelayTest.app; the running tray
 #                               # is not stopped and the app is not launched; not with --release
 #
 # go vet runs BEFORE install so a broken binary never lands in /Applications.
@@ -21,13 +21,13 @@ APP="Relay.app"
 DEST="/Applications/$APP"
 RELEASE=false
 RUN_TESTS=false
-TEST_APPROVER=false
+TEST_BUILD=false
 
 for arg in "$@"; do
     case "$arg" in
         --release) RELEASE=true; RUN_TESTS=true ;;
         --test)    RUN_TESTS=true ;;
-        --test-approver) TEST_APPROVER=true ;;
+        --test-build) TEST_BUILD=true ;;
         --help|-h)
             # Print the header comment block (lines 3..first non-comment after).
             awk 'NR>=3 && /^[^#]/ {exit} NR>=3 {sub(/^# ?/,""); print}' "$0"
@@ -39,14 +39,14 @@ for arg in "$@"; do
     esac
 done
 
-if $TEST_APPROVER && $RELEASE; then
-    echo "--test-approver cannot be combined with --release" >&2
+if $TEST_BUILD && $RELEASE; then
+    echo "--test-build cannot be combined with --release" >&2
     exit 1
 fi
-if $TEST_APPROVER; then
-    DEST="$HOME/Applications/RelayTestApprover.app"
+if $TEST_BUILD; then
+    DEST="$HOME/Applications/RelayTest.app"
     # Refuse while a process runs from that bundle: replacing it under a live tray.
-    if pgrep -f '[R]elayTestApprover.app/Contents/MacOS/relay' >/dev/null 2>&1; then
+    if pgrep -f '[R]elayTest.app/Contents/MacOS/relay' >/dev/null 2>&1; then
         echo "a process is running from $DEST; stop it first" >&2
         exit 1
     fi
@@ -71,8 +71,8 @@ stop_relay() {
     echo "relay did not exit after SIGTERM; sending SIGKILL" >&2
     pkill -KILL -x relay 2>/dev/null || true
 }
-# The test-approver install leaves the real tray alone.
-if ! $TEST_APPROVER; then
+# The test-build install leaves the real tray alone.
+if ! $TEST_BUILD; then
     stop_relay
 fi
 
@@ -146,20 +146,20 @@ echo "relay-sessions signed: cdhash=$HELPER_CDHASH team=${HELPER_TEAM:-<ad-hoc>}
 echo "Building relay..."
 RELAY_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 RELAY_TAGS=()
-if $TEST_APPROVER; then
-    RELAY_TAGS=(-tags testapprover)
+if $TEST_BUILD; then
+    RELAY_TAGS=(-tags relaytest)
 fi
 CGO_ENABLED=1 go build ${RELAY_TAGS[@]+"${RELAY_TAGS[@]}"} -ldflags "-X main.buildVersion=$RELAY_VERSION -X main.HelperCDHash=$HELPER_CDHASH -X main.HelperTeam=$HELPER_TEAM" -o relay ./cmd/relay
 
-# A release-path binary must not carry the test approver; a test-approver
+# A release-path binary must not carry the test seams; a test-build
 # binary must. Checked before anything is staged or installed.
-if $TEST_APPROVER; then
+if $TEST_BUILD; then
     CHECK_MODE=present
 else
     CHECK_MODE=absent
 fi
-if ! scripts/check-test-approver.sh "$CHECK_MODE" relay; then
-    echo "✗ test-approver check ($CHECK_MODE) failed; install aborted" >&2
+if ! scripts/check-test-build.sh "$CHECK_MODE" relay; then
+    echo "✗ test-build check ($CHECK_MODE) failed; install aborted" >&2
     rm -f relay
     exit 1
 fi
@@ -216,6 +216,6 @@ if $RELEASE; then
     xcrun stapler staple "$DMG_OUT"
 
     echo "DMG ready: $DMG_OUT"
-elif ! $TEST_APPROVER; then
+elif ! $TEST_BUILD; then
     open "$DEST"
 fi

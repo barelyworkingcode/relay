@@ -27,7 +27,7 @@ Event kinds are `call_tool`, `list_tools`, `list_skills`, `control_decision`
 (see [below](#control-plane-authorization-decisions) — this kind also covers a
 presence prompt refused before the gated act it guards ran, see
 [Presence refusals](#presence-refusals)), `credential_issued` /
-`credential_revoked` (see [below](#issuance-and-revocation)), `model_call` /
+`credential_revoked` / `credential_disclosed` (see [below](#issuance-and-revocation)), `model_call` /
 `model_list` (see [below](#the-model-endpoint)), `session_launch` /
 `session_end` / `session_resume` (see [below](#session-host-events);
 `session_bound` is a reserved fourth kind nothing writes yet), and — for
@@ -632,7 +632,7 @@ credential.mint  ci-deploy  via=cli  presence was refused
 ### Presence approvals (the test build)
 
 A person's approval writes no presence row; the gated act's own rows show it
-went through. The `testapprover` build is different: a non-person answered,
+went through. The test build is different: a non-person answered,
 so it writes one `control_decision` row with `outcome: "ok"` and a
 `presence_approver` field. A release build never writes this row.
 
@@ -640,7 +640,7 @@ so it writes one `control_decision` row with `outcome: "ok"` and a
 {"event":"control_decision","outcome":"ok","method":"project.grant","subject":"verify-1a2b","via":"http","presence_id":"p_9a2…","presence_approver":"testapprover"}
 ```
 
-`presence_approver` is the approver's name. It is absent where a person
+`presence_approver` is the approver's name, `testapprover`, whichever answer the outcome file gave. It is absent where a person
 answered, and on refusals made before the provider was asked (no session, gate
 not wired). When the test approver refuses an op it carries the field too:
 
@@ -874,7 +874,10 @@ was started with.
 ## Issuance and revocation
 
 `credential_issued` and `credential_revoked` record that a credential came into
-existence or stopped existing. They are a **different fact from a
+existence or stopped existing. `credential_disclosed` records that an existing
+one was handed to its holder: `relay project token` reveals a project token
+behind the `project.reveal_token` prompt, and nothing new came into existence,
+so `credential_issued` would be a lie. It never carries the token or its hash. They are a **different fact from a
 `control_decision`**, which says a caller was allowed to reach a route: most
 issuance is initiated from a CLI process that reaches no route at all, and the
 two HTTP routes that issue would otherwise record "this caller may call
@@ -992,6 +995,7 @@ which is the moment the secret reaches a holder:
 | `enrol create` | act, then record, then hand back the bundle path | the enrolment is **revoked**, which also removes the emitted bundle — the client private key is already on disk, so nothing less would be a refusal |
 | passkey registration | act, then record, then answer 201 | the stored passkey is removed, which is what makes it unable to sign in |
 | `rotate_token` | rotate, then record, then return | the new token is not returned; the old one is already dead either way, so rotate again |
+| project token reveal | gate, record, then return | the token is not returned; nothing changed, so run it again |
 
 A credential whose secret was never disclosed grants nothing to anybody, which
 is what makes each of these a real refusal rather than the theatre ADR-010
