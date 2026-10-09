@@ -97,7 +97,7 @@ func (d sessionRouteDeps) sendChiefOfStaffText(ctx context.Context, actor audit.
 		Outcome: audit.AuditOutcomePending,
 	}
 	if err := d.auditor.RecordDurable(intent); err != nil {
-		ev.End(logging.OutcomeError, "unavailable", err)
+		ev.End(logging.OutcomeDenied, "audit_unavailable", err)
 		return http.StatusServiceUnavailable, "audit_unavailable", "the audit log could not record the message", ""
 	}
 

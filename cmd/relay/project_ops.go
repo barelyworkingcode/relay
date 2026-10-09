@@ -395,7 +395,11 @@ func (o *ProjectOps) RegenSkill(ctx context.Context, lister SkillLister, id stri
 	ev := logging.BeginEvent(ctx, "project.regen_skill")
 	defer func() {
 		ev.Set("project_id", id)
-		endEvent(ev, foundOrErr(asInvalid(err, errProjectHosted, errProjectHasNoPath), found))
+		evErr := err
+		if errors.Is(err, errProjectHosted) || errors.Is(err, errProjectHasNoPath) {
+			evErr = markInvalid(err)
+		}
+		endEvent(ev, foundOrErr(evErr, found))
 	}()
 	proj, _ := config.FindProjectByID(config.FreshSettings(o.Store), id)
 	if proj == nil {

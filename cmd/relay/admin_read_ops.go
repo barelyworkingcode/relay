@@ -220,11 +220,11 @@ type grantViewResult struct {
 // that matches nothing: `relay grant` owns the wording of that refusal.
 func adminGrantView(ctx context.Context, r *appRouter, args json.RawMessage) (_ json.RawMessage, err error) {
 	ev := logging.BeginEvent(ctx, "grant.view")
-	defer func() { endEvent(ev, asInvalid(err)) }()
+	defer func() { endEvent(ev, err) }()
 	req := grantViewRequest{}
 	if len(args) > 0 {
 		if req, err = decodeAdminArgs[grantViewRequest]("grant.view", args); err != nil {
-			return nil, err
+			return nil, markInvalid(err)
 		}
 	}
 	s, err := adminReadSnapshot(r)

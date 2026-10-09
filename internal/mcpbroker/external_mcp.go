@@ -713,7 +713,11 @@ func (m *Manager) reportHealth(ev HealthEvent) {
 	case HealthRestarted:
 		state.Set("downtime_ms", ev.Downtime.Milliseconds()).End(logging.OutcomeOK, "", nil)
 	case HealthAbandoned:
-		state.End(logging.OutcomeError, "unavailable", ev.Err)
+		abandoned := errors.New("every grant that names it is down until relay is told to reload it")
+		if ev.Err != nil {
+			abandoned = fmt.Errorf("%w: %w", ev.Err, abandoned)
+		}
+		state.End(logging.OutcomeError, "unavailable", abandoned)
 	}
 
 	m.mu.RLock()

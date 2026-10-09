@@ -673,7 +673,7 @@ path fits in 103 bytes; export `RELAY_CONFIG_DIR` for children (clear it for
 the default dir); open the sealed store and wire the cores; bind the API
 listener from `api.listen` or `RELAY_API_LISTEN` (a bind failure or a
 non-loopback address is fatal); reconcile the model and remote listeners
-(non-fatal); write `ready.json`; log `relay server ready`. SIGTERM and SIGINT
+(non-fatal); write `ready.json`; write the `server.ready` event. SIGTERM and SIGINT
 run `cleanup`, which removes `ready.json` first, and exit `0`.
 
 The config dir names the instance. Everything an instance owns sits under it:

@@ -371,7 +371,7 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `session.message` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message` | `session_id` |
 | `terminal.delete` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes | `terminal_id` |
 | `terminal.log` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes | `terminal_id` |
-| `session.ws.close` | At connection end in the relay-sessions hub | `/ws` | `read_only` |
+| `session.ws.close` | At connection end in the relay-sessions hub | `/ws` | none |
 | `session.state` | On an agent state change (background, relay-sessions) | none (background) | none (existing keys) |
 
 ### Sandbox

@@ -157,7 +157,7 @@ func (tl *tail) read() ([]Line, error) {
 			l := ParseLine(raw)
 			// A line with no timestamp sorts beside the line before it.
 			if l.TS.IsZero() {
-				l.TS = tl.lastTS
+				l.Key = tl.lastTS
 			} else {
 				tl.lastTS = l.TS
 			}
@@ -175,7 +175,7 @@ func (tl *tail) read() ([]Line, error) {
 // SortLines orders lines by timestamp. It is stable, so equal timestamps keep
 // the file order Drain returned.
 func SortLines(lines []Line) {
-	sort.SliceStable(lines, func(i, j int) bool { return lines[i].TS.Before(lines[j].TS) })
+	sort.SliceStable(lines, func(i, j int) bool { return lines[i].Key.Before(lines[j].Key) })
 }
 
 // Watch arms kqueue on the logs directory and every open file. There is no

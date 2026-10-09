@@ -645,7 +645,7 @@ func modelEventOutcome(ev ModelCallAudit) (logging.Outcome, string, string) {
 	case "bad_request", "body_too_large", "trailing_data":
 		return outcome, "invalid", errText
 	case "rate_limited":
-		return outcome, "throttled", errText
+		return logging.OutcomeDenied, "throttled", errText
 	case "client_abort":
 		return outcome, "cancelled", errText
 	case "host_unavailable":

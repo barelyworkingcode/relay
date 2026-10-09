@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"regexp"
+	"sync"
 	"time"
 )
 
@@ -39,6 +40,7 @@ type Event struct {
 	attrs []slog.Attr
 	quiet bool
 	done  bool
+	mu    sync.Mutex
 }
 
 // BeginEvent starts one operation's clock. An invalid key makes End write an
@@ -57,6 +59,8 @@ func (e *Event) Set(key string, value any) *Event {
 	if e == nil || reservedEventKeys[key] || key == "" {
 		return e
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	switch v := value.(type) {
 	case string:
 		e.attrs = append(e.attrs, slog.String(key, Truncate(v)))
@@ -79,7 +83,9 @@ func (e *Event) Set(key string, value any) *Event {
 // Quiet marks a poll read: End writes nothing when the outcome is ok.
 func (e *Event) Quiet() *Event {
 	if e != nil {
+		e.mu.Lock()
 		e.quiet = true
+		e.mu.Unlock()
 	}
 	return e
 }
@@ -88,7 +94,14 @@ func (e *Event) Quiet() *Event {
 // before End returns, so a caller that ends the event before it answers has
 // its line on disk before the answer leaves.
 func (e *Event) End(outcome Outcome, reason string, err error) {
-	if e == nil || e.done {
+	if e == nil {
+		return
+	}
+	// Held for the whole write: End is idempotent under concurrent callers,
+	// and exactly one of them writes the line.
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.done {
 		return
 	}
 	e.done = true

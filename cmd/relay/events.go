@@ -23,6 +23,7 @@ var (
 	errEventInvalid   = errors.New("invalid request")
 	errEventConflict  = errors.New("conflict")
 	errEventThrottled = errors.New("throttled")
+	errEventAudit     = errors.New("audit log unavailable")
 	errEventUpstream  = errors.New("upstream failure")
 )
 
@@ -58,6 +59,22 @@ func upstreamErr(err error) error {
 		return err
 	}
 	return &eventError{kind: errEventUpstream, cause: err}
+}
+
+// markInvalid classes err as a caller mistake, keeping its text.
+func markInvalid(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &eventError{kind: errEventInvalid, cause: err}
+}
+
+// auditWriteFailed classes a failed audit write, keeping its text.
+func auditWriteFailed(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &eventError{kind: errEventAudit, cause: err}
 }
 
 // foundOrErr turns a "found == false" result with no error into errEventNotFound.
@@ -133,6 +150,10 @@ func eventOutcome(err error) (logging.Outcome, string) {
 	case errors.Is(err, errEnrolmentRequestsNotWired), errors.Is(err, errLoginOpsUnavailable),
 		errors.Is(err, errEveEnrolmentOpsUnavailable), errors.Is(err, errEvePasskeyOpsUnavailable):
 		return logging.OutcomeError, "unavailable"
+	case errors.Is(err, errEventAudit):
+		return logging.OutcomeDenied, "audit_unavailable"
+	case errors.Is(err, errReservedCredentialName):
+		return logging.OutcomeError, "invalid"
 	case errors.Is(err, errEventThrottled):
 		return logging.OutcomeDenied, "throttled"
 	case errors.Is(err, errEventUpstream), errors.Is(err, errPersistHostUnreachable):

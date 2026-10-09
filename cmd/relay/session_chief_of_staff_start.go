@@ -103,6 +103,7 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 		return
 	}
 	if !d.auditor.Ready() {
+		ev.End(logging.OutcomeDenied, "audit_unavailable", errors.New("audit_unavailable"))
 		writeChiefOfStaffError(w, http.StatusServiceUnavailable, "audit_unavailable", "auditing is off; the Chief of Staff cannot start a session")
 		return
 	}

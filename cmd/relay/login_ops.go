@@ -105,7 +105,7 @@ var errPasskeyNotFound = errors.New("no passkey found")
 func revokePasskey(store config.SettingsStore, id string) (config.Passkey, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return config.Passkey{}, errors.New("a passkey id is required")
+		return config.Passkey{}, markInvalid(errors.New("a passkey id is required"))
 	}
 
 	var removed config.Passkey
@@ -358,7 +358,7 @@ func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (_ config.Passk
 	ev := logging.BeginEvent(ctx, "login.passkey.revoke")
 	defer func() {
 		ev.Set("passkey_id", abbreviatePasskeyID(strings.TrimSpace(id)))
-		endEvent(ev, asInvalid(err))
+		endEvent(ev, err)
 	}()
 	if o == nil {
 		return config.Passkey{}, errLoginOpsUnavailable
@@ -403,7 +403,7 @@ func (o *LoginOps) SignOut(ctx context.Context, id string) (_ config.APICredenti
 	ev := logging.BeginEvent(ctx, "login.session.sign_out")
 	defer func() {
 		ev.Set("credential_id", id)
-		endEvent(ev, asInvalid(err))
+		endEvent(ev, err)
 	}()
 	if o == nil {
 		return config.APICredential{}, errLoginOpsUnavailable
@@ -413,7 +413,7 @@ func (o *LoginOps) SignOut(ctx context.Context, id string) (_ config.APICredenti
 		var err error
 		removed, err = revokeAPICredentialIf(o.Store, id, func(c config.APICredential) error {
 			if !isLoginCredential(c) {
-				return fmt.Errorf("credential %q is not a browser login session; revoke it with `relay credential revoke --id %s`", c.Name, c.ID)
+				return markInvalid(fmt.Errorf("credential %q is not a browser login session; revoke it with `relay credential revoke --id %s`", c.Name, c.ID))
 			}
 			return nil
 		})

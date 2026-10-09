@@ -177,7 +177,7 @@ func revokeAPICredentialIf(store config.SettingsStore, id string, permitted func
 		return config.APICredential{}, fmt.Errorf("save settings: %w", err)
 	}
 	if !found {
-		return config.APICredential{}, fmt.Errorf("no credential found with id %q", id)
+		return config.APICredential{}, notFoundf("no credential found with id %q", id)
 	}
 	if refusal != nil {
 		return config.APICredential{}, refusal

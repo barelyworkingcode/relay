@@ -42,6 +42,12 @@ func logsMain(args []string, traceID, configDir string, stdout, stderr io.Writer
 		return logsExitError
 	}
 
+	// Installed before any read so a signal that arrives early is held, not
+	// fatal.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigs)
+
 	logDir := filepath.Join(configDir, "logs")
 	tailer, err := logging.OpenTailer(logDir)
 	if err != nil {
@@ -102,13 +108,16 @@ func logsMain(args []string, traceID, configDir string, stdout, stderr io.Writer
 		return logsExitError
 	}
 
+	select {
+	case <-sigs:
+		return exit()
+	default:
+	}
+
 	if err := tailer.Watch(); err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return logsExitError
 	}
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigs)
 	go func() {
 		<-sigs
 		tailer.Wake()

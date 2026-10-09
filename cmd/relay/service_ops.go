@@ -1013,7 +1013,7 @@ func (o *ServiceOps) SaveConfigFile(ctx context.Context, id, text string) (res C
 	ev := logging.BeginEvent(ctx, "service.config.save")
 	defer func() {
 		ev.Set("service_id", id).Set("restarted", res.Restarted)
-		endEvent(ev, err)
+		endEvent(ev, serviceEventErr(err))
 	}()
 	err = o.runCommitted(ctx, func() error {
 		var innerErr error

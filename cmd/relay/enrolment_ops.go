@@ -1114,5 +1114,5 @@ func enrolmentEventErr(err error) error {
 		!errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
 		return nil
 	}
-	return asInvalid(err, errEnrolmentUnrecorded)
+	return err
 }

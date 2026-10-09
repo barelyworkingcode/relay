@@ -65,9 +65,14 @@ func (r credentialMintRequest) presenceDigest() presence.Digest {
 // second write on that evidence is worse than naming the cleanup command.
 func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via, credID string) (cred config.APICredential, plaintext string, err error) {
 	ev := logging.BeginEvent(ctx, "credential.mint")
+	validating := true
 	defer func() {
 		ev.Set("credential_id", cred.ID).Set("classes", audit.ClassStrings(cred.Classes))
-		endEvent(ev, asInvalid(err))
+		evErr := err
+		if validating {
+			evErr = markInvalid(err)
+		}
+		endEvent(ev, evErr)
 	}()
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -84,6 +89,7 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 		return config.APICredential{}, "", fmt.Errorf("a negative lifetime (%s) is not a credential; omit --ttl for one that never expires", req.TTL)
 	}
 
+	validating = false
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
 		return config.APICredential{}, "", err
 	}
@@ -113,7 +119,7 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 			// The mint already committed. The caller must treat a non-nil error
 			// here as "do not show the plaintext" regardless of what else it
 			// received.
-			return auditErr
+			return auditWriteFailed(auditErr)
 		}
 		return nil
 	})
@@ -127,11 +133,11 @@ func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (rem
 	ev := logging.BeginEvent(ctx, "credential.revoke")
 	defer func() {
 		ev.Set("credential_id", id)
-		endEvent(ev, asInvalid(err))
+		endEvent(ev, err)
 	}()
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return config.APICredential{}, errors.New("a credential id is required")
+		return config.APICredential{}, markInvalid(errors.New("a credential id is required"))
 	}
 
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
@@ -150,7 +156,7 @@ func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (rem
 		if revokeErr != nil {
 			return revokeErr
 		}
-		return recordIssuance(o.Issuance, audit.CredentialIssuance{
+		return auditWriteFailed(recordIssuance(o.Issuance, audit.CredentialIssuance{
 			Revoked:    true,
 			Credential: auditCredentialAPI,
 			Subject:    removed.ID,
@@ -159,7 +165,7 @@ func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (rem
 			Via:        via,
 			CredID:     credID,
 			PresenceID: grant.ID(),
-		})
+		}))
 	})
 	return removed, err
 }

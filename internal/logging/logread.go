@@ -16,8 +16,12 @@ func LogFileNames() []string {
 
 // Line is one stored log line with the three fields a filter reads.
 type Line struct {
-	Raw     []byte // as stored, without the newline
-	TS      time.Time
+	Raw []byte // as stored, without the newline
+	TS  time.Time
+	// Key orders merged lines. It equals TS, except that a line with no
+	// readable ts borrows the previous line's, so it sorts beside it while TS
+	// stays zero and the line fails a --since bound.
+	Key     time.Time
 	TraceID string
 	Event   string
 	JSON    bool
@@ -41,7 +45,7 @@ func ParseLine(raw []byte) Line {
 	l.JSON = true
 	l.TraceID, l.Event = f.TraceID, f.Event
 	if t, err := time.Parse(time.RFC3339Nano, f.TS); err == nil {
-		l.TS = t
+		l.TS, l.Key = t, t
 	}
 	return l
 }
