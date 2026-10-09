@@ -294,7 +294,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 	// place: here. The hermetic suite never calls runTrayApp, so it never
 	// reaches this line — presence.LocalAuthProviderConstructions() staying
 	// at zero across `go test ./...` is what AC-20 checks instead of hoping.
-	presenceProvider := newPresenceProvider()
+	presenceProvider := newPresenceProvider(configDir)
 	presenceGate, err := presence.NewGate(presenceProvider)
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct the presence gate: %w", err)
