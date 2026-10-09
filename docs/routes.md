@@ -62,8 +62,10 @@ The two refusals, in order:
 | `401` | `unauthorized` | No header, a header that is not `Bearer <token>`, an unknown or expired token, or no credentials configured. The cases are not told apart. |
 | `403` | `Forbidden` | The token is valid but its classes do not include the route's class. |
 
-These two refusals come from the door, before any handler runs. They write a
-`control_decision` audit row and no event (`docs/events.md` section 5).
+Both refusals come from the bearer middleware, before any handler runs, so
+neither writes a route event. A `401` writes only the `frontend.request` line
+and no `control_decision` row. A `403` also writes a `control_decision` audit
+row with `outcome: denied` (`docs/events.md` section 5).
 
 ## `X-Trace-Id`
 
@@ -130,7 +132,7 @@ otherwise:
 | Status | `status` | `reason` |
 |---|---|---|
 | 2xx | `ok` | absent |
-| `401` | `denied` | `unauthorized` |
+| `401` | `denied` | `unauthorized` (on `/api/*` the bearer middleware answers a `401` before any handler, so no event is written) |
 | `403` | `denied` | `not_granted` (or the presence reason above) |
 | `404` | `error` | `not_found` |
 | `409` | `error` | `conflict` |
@@ -140,7 +142,7 @@ otherwise:
 | other 4xx | `error` | `invalid` |
 | other 5xx | `error` | `internal` |
 
-Every route also writes a `control_decision` audit row (`docs/audit-log.md`):
+Every route also writes a `control_decision` audit row, except a `401` (`docs/audit-log.md`):
 `method`, `path`, `class`, `transport` (`socket` or `tcp`), `actor.cred_id`
 and `outcome` (`ok` or `denied`). Entries list only the rows a route adds
 beyond it: `config_change`, `credential_issued`, `credential_revoked`,
@@ -282,8 +284,7 @@ stopping are forwarded to the session host (section 3).
 - **Errors:**
   - `400` malformed JSON or an invalid field;
   - `403` the project is not available for a launch, the model or directory is
-    not allowed, or the model is reserved for system use. Event reason
-    `not_granted`;
+    not allowed, or the model is reserved for system use;
   - `413` body too large;
   - `502` the session host answered with a failure (`{"error":"launch failed"}`);
   - `503` the session ledger or the session host is unavailable.

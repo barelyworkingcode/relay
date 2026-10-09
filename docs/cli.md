@@ -113,6 +113,7 @@ they had. `relay doors` lists every door, its credential class and its gates.
 | `relay service restart` | yes | no | yes |
 | `relay status` | yes | no | yes |
 | `relay doors` | yes | no | yes |
+| `relay debug clock` (test build only) | yes | no | yes |
 | `relay remote show` | yes | no | yes |
 | `relay remote set` | yes | **yes** | no |
 | `relay host probe` | yes | no | yes |
@@ -1848,6 +1849,7 @@ relay service register --name NAME [--id ID] --command CMD [--args ARG...]
                         [--env K=V...] [--workdir DIR] [--url URL]
                         [--autostart[=true|false]]
                         [--capability frontend|manifest|models|model_host ...]
+                        [--allowed-model ID ...]
 relay service unregister --id ID | --name NAME
 relay service restart --id ID | --name NAME
 relay service start --id ID | --name NAME [--json]
@@ -1870,6 +1872,8 @@ None of them prompts.
 ```
 $ relay service register -h
 Usage of service register:
+  -allowed-model value
+    	grant the models capability access to this model id, repeatable; omitted or none given means no models; pass "*" for every model
   -args value
     	command arguments (repeatable)
   -autostart
@@ -1927,6 +1931,12 @@ start and say `Hello` and can do nothing else through relay — and the command
 says so in its output rather than leaving it silent. A relayScheduler-style
 service that both runs work through the front door and serves routes is
 `--capability frontend --capability manifest`.
+
+**`--allowed-model` names the model ids the `models` capability may call.**
+Repeat it once per model id; `*` allows every model. It has an effect only
+with `--capability models`. Like `--capability`, it is not absent-aware: a
+register with no `--allowed-model` sets the empty list, so the service can
+call no model, and the output says so on an `  allowed models:` line.
 
 No JSON form. A script reads the first line, `registered service "NAME" (ID)`,
 then `  capabilities: LIST` (`none` when empty), then optional `  allowed models:`
@@ -2590,6 +2600,37 @@ arrives (`error: watch PROJECT: TEXT`, after the frame is printed), when
 `--timeout` passes before `--until` is met (`error: timed out after 30s waiting
 for TYPE`), when `--project` is missing, or when relay is not running; `2` for an
 unknown flag.
+
+## `relay debug` (test build only)
+
+A build made with `-tags relaytest` (`./build.sh --test-build`) has one more
+command. In a release build `relay debug` is `unknown command: debug`, exit
+1, and `relay doors` lists no door for it. See
+[`docs/testing.md`](testing.md#the-test-build).
+
+### `debug clock`
+
+```
+relay [--config-dir X] debug clock [--json]
+relay [--config-dir X] debug clock set <RFC3339> [--json]
+relay [--config-dir X] debug clock advance <duration> [--json]
+```
+
+Reads or moves the clock the running server judges time by: credential
+expiry, login and enrolment windows, restart backoff, token expiry and the
+other decisions [`docs/testing.md`](testing.md#the-test-build) lists. It
+reaches the server through the `debug.clock` admin op, which only an operator
+terminal may call. A relay session or a sandbox is refused.
+
+Text output is two lines, `now:` (UTC, RFC 3339 with fraction) and `offset:`
+(a Go duration from wall time). `--json` prints
+`{"now":"2026-10-01T01:30:00.000Z","offset_ms":-741600000}`. `advance` takes a
+Go duration greater than 0; go back with `set`. The clock lives in memory, so
+a server restart returns it to wall time. On the default config dir it
+refuses: the clock is fixed there.
+
+Exit 0 on success. Exit 1 when there is no server, the caller is refused, or
+the server errors. Exit 2 on a usage error.
 
 ## `relay doors`
 
