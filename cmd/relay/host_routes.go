@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 func hostHTTPStatus(err error) int {
@@ -29,15 +30,20 @@ func writeHostError(w http.ResponseWriter, err error) {
 // from the config queue's post-commit event.
 func RegisterHostRoutes(rr *control.RouteRegistrar, ops *HostOps) {
 	rr.Handle(control.ClassRead, "GET /api/hosts", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, hostsToView(ops.List()))
+		hosts := ops.List()
+		logging.BeginEvent(r.Context(), "host.list").Set("count", len(hosts)).End(logging.OutcomeOK, "", nil)
+		writeJSON(w, http.StatusOK, hostsToView(hosts))
 	})
 
 	rr.Handle(control.ClassRead, "GET /api/hosts/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "host.get").Set("host_id", r.PathValue("id"))
 		h, err := ops.Get(r.PathValue("id"))
 		if err != nil {
+			endEvent(ev, err)
 			writeHostError(w, err)
 			return
 		}
+		ev.End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, hostToView(h))
 	})
 
@@ -114,7 +120,7 @@ func RegisterHostRoutes(rr *control.RouteRegistrar, ops *HostOps) {
 	})
 
 	rr.Handle(control.ClassConfigure, "POST /api/hosts/{id}/disconnect", func(w http.ResponseWriter, r *http.Request) {
-		updated, found, err := ops.Disconnect(r.PathValue("id"))
+		updated, found, err := ops.Disconnect(r.Context(), r.PathValue("id"))
 		if err != nil {
 			writeHostError(w, err)
 			return

@@ -11,6 +11,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/projectfs"
 	"github.com/barelyworkingcode/relay/internal/sessions/clock"
 )
@@ -162,19 +163,29 @@ func (fs *fileSession) reader(rawPath string) (projectfs.Backend, string, error)
 	return b, rel, err
 }
 
-func (fs *fileSession) List(ctx context.Context, p string, showHidden bool) ([]projectfs.Entry, error) {
+func (fs *fileSession) List(ctx context.Context, p string, showHidden bool) (entries []projectfs.Entry, err error) {
+	ev := logging.BeginEvent(ctx, "file.list")
+	defer func() {
+		ev.Set("project_id", fs.proj.ID)
+		endEvent(ev, err)
+	}()
 	b, rel, err := fs.reader(p)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := b.List(ctx, rel, showHidden)
+	entries, err = b.List(ctx, rel, showHidden)
 	if entries == nil && err == nil {
 		entries = []projectfs.Entry{}
 	}
 	return entries, err
 }
 
-func (fs *fileSession) Stat(ctx context.Context, p string) (projectfs.Info, error) {
+func (fs *fileSession) Stat(ctx context.Context, p string) (_ projectfs.Info, err error) {
+	ev := logging.BeginEvent(ctx, "file.stat")
+	defer func() {
+		ev.Set("project_id", fs.proj.ID)
+		endEvent(ev, err)
+	}()
 	b, rel, err := fs.reader(p)
 	if err != nil {
 		return projectfs.Info{}, err
@@ -182,7 +193,12 @@ func (fs *fileSession) Stat(ctx context.Context, p string) (projectfs.Info, erro
 	return b.Stat(ctx, rel)
 }
 
-func (fs *fileSession) Read(ctx context.Context, p string, maxBytes int64) (string, int64, error) {
+func (fs *fileSession) Read(ctx context.Context, p string, maxBytes int64) (_ string, _ int64, err error) {
+	ev := logging.BeginEvent(ctx, "file.read")
+	defer func() {
+		ev.Set("project_id", fs.proj.ID)
+		endEvent(ev, err)
+	}()
 	b, rel, err := fs.reader(p)
 	if err != nil {
 		return "", 0, err
@@ -201,7 +217,12 @@ func (fs *fileSession) Open(ctx context.Context, p string) (io.ReadCloser, proje
 	return b.Open(ctx, rel)
 }
 
-func (fs *fileSession) Search(ctx context.Context, o projectfs.SearchOpts) ([]projectfs.Match, bool, error) {
+func (fs *fileSession) Search(ctx context.Context, o projectfs.SearchOpts) (m []projectfs.Match, truncated bool, err error) {
+	ev := logging.BeginEvent(ctx, "file.search")
+	defer func() {
+		ev.Set("project_id", fs.proj.ID)
+		endEvent(ev, err)
+	}()
 	if _, err := projectfs.NewSearchMatcher(o); err != nil {
 		return nil, false, err
 	}
@@ -209,14 +230,19 @@ func (fs *fileSession) Search(ctx context.Context, o projectfs.SearchOpts) ([]pr
 	if err != nil {
 		return nil, false, err
 	}
-	m, truncated, err := b.Search(ctx, o)
+	m, truncated, err = b.Search(ctx, o)
 	if m == nil && err == nil {
 		m = []projectfs.Match{}
 	}
 	return m, truncated, err
 }
 
-func (fs *fileSession) Git(ctx context.Context, cwd string, args []string, maxBytes int64) (projectfs.GitResult, error) {
+func (fs *fileSession) Git(ctx context.Context, cwd string, args []string, maxBytes int64) (_ projectfs.GitResult, err error) {
+	ev := logging.BeginEvent(ctx, "file.git")
+	defer func() {
+		ev.Set("project_id", fs.proj.ID)
+		endEvent(ev, err)
+	}()
 	rel, err := projectfs.CleanRel(cwd)
 	if err != nil {
 		return projectfs.GitResult{}, err
@@ -231,7 +257,12 @@ func (fs *fileSession) Git(ctx context.Context, cwd string, args []string, maxBy
 	return b.Git(ctx, rel, args, maxBytes)
 }
 
-func (fs *fileSession) Write(ctx context.Context, p string, data []byte, encoding string, createOnly bool) (string, error) {
+func (fs *fileSession) Write(ctx context.Context, p string, data []byte, encoding string, createOnly bool) (_ string, err error) {
+	ev := logging.BeginEvent(ctx, "file.write")
+	defer func() {
+		ev.Set("project_id", fs.proj.ID)
+		endEvent(ev, err)
+	}()
 	args := map[string]any{"path": p, "bytes": len(data), "encoding": encoding, "create_only": createOnly}
 	rel, err := projectfs.CleanRel(p)
 	if err != nil {
@@ -253,7 +284,12 @@ func (fs *fileSession) Write(ctx context.Context, p string, data []byte, encodin
 	return rel, err
 }
 
-func (fs *fileSession) Mkdir(ctx context.Context, parent, name string) (string, error) {
+func (fs *fileSession) Mkdir(ctx context.Context, parent, name string) (_ string, err error) {
+	ev := logging.BeginEvent(ctx, "file.mkdir")
+	defer func() {
+		ev.Set("project_id", fs.proj.ID)
+		endEvent(ev, err)
+	}()
 	args := map[string]any{"path": projectfs.JoinRel(parent, name)}
 	rel, err := projectfs.CleanRel(parent)
 	if err != nil {
@@ -272,7 +308,12 @@ func (fs *fileSession) Mkdir(ctx context.Context, parent, name string) (string, 
 	return out, err
 }
 
-func (fs *fileSession) Rename(ctx context.Context, p, newName string) (string, error) {
+func (fs *fileSession) Rename(ctx context.Context, p, newName string) (_ string, err error) {
+	ev := logging.BeginEvent(ctx, "file.rename")
+	defer func() {
+		ev.Set("project_id", fs.proj.ID)
+		endEvent(ev, err)
+	}()
 	args := map[string]any{"path": p}
 	if projectfs.ValidateName(newName) == nil {
 		args["new_path"] = path.Join(path.Dir(p), newName)
@@ -297,7 +338,12 @@ func (fs *fileSession) Rename(ctx context.Context, p, newName string) (string, e
 	return out, err
 }
 
-func (fs *fileSession) Move(ctx context.Context, p, destDir string) (string, error) {
+func (fs *fileSession) Move(ctx context.Context, p, destDir string) (_ string, err error) {
+	ev := logging.BeginEvent(ctx, "file.move")
+	defer func() {
+		ev.Set("project_id", fs.proj.ID)
+		endEvent(ev, err)
+	}()
 	args := map[string]any{"path": p}
 	if p != "" {
 		args["new_path"] = path.Join(destDir, path.Base(p))
@@ -323,7 +369,12 @@ func (fs *fileSession) Move(ctx context.Context, p, destDir string) (string, err
 	return out, err
 }
 
-func (fs *fileSession) Delete(ctx context.Context, p string) (bool, error) {
+func (fs *fileSession) Delete(ctx context.Context, p string) (_ bool, err error) {
+	ev := logging.BeginEvent(ctx, "file.delete")
+	defer func() {
+		ev.Set("project_id", fs.proj.ID)
+		endEvent(ev, err)
+	}()
 	args := map[string]any{"path": p}
 	rel, err := projectfs.CleanRel(p)
 	if err != nil {
@@ -347,7 +398,12 @@ var pasteNameRE = regexp.MustCompile(`^eve-paste-[0-9]+-[0-9a-f]+\.(png|jpg|gif|
 // PasteTmp writes a pasted image into a host's temp directory. It has no
 // project, so it carries no read-only flag and its audit row has none of the
 // project fields.
-func (o *FileOps) PasteTmp(ctx context.Context, actor audit.AuditActor, hostID, name, dataB64 string) (string, error) {
+func (o *FileOps) PasteTmp(ctx context.Context, actor audit.AuditActor, hostID, name, dataB64 string) (_ string, err error) {
+	ev := logging.BeginEvent(ctx, "host.pastetmp")
+	defer func() {
+		ev.Set("host_id", hostID)
+		endEvent(ev, err)
+	}()
 	s := config.FreshSettings(o.Store)
 	var host *config.Host
 	if s != nil {

@@ -79,8 +79,9 @@ type ModelCallAudit struct {
 	Outcome    string
 	DurationMS int64
 
-	// traceID is set only by auditFor, from the request context.
+	// traceID and event are set only by auditFor, from the request context.
 	traceID string
+	event   *logging.Event
 }
 
 // modelCaller is what the auth resolver hands the rest of the handler: the
@@ -610,39 +611,80 @@ func modelLogStatus(ev ModelCallAudit) (slog.Level, string, string) {
 	}
 }
 
+// modelEventKey carries a request's model.request event from Handler to the
+// audit call that ends it, so its duration spans the whole request.
+type modelEventKey struct{}
+
+func modelEventFrom(ctx context.Context) *logging.Event {
+	ev, _ := ctx.Value(modelEventKey{}).(*logging.Event)
+	return ev
+}
+
+// modelEventOutcome maps a finished call to the outcome, stable reason and
+// error text its event line carries. The status and error text are what
+// modelLogStatus has always produced; the reason is new.
+func modelEventOutcome(ev ModelCallAudit) (logging.Outcome, string, string) {
+	_, status, errText := modelLogStatus(ev)
+	if status == "ok" {
+		return logging.OutcomeOK, "", ""
+	}
+	outcome := logging.OutcomeError
+	if status == "denied" {
+		outcome = logging.OutcomeDenied
+	}
+	switch ev.Outcome {
+	case "ok":
+		_, reason := logging.OutcomeForHTTPStatus(ev.Status)
+		return outcome, reason, errText
+	case "denied":
+		return outcome, "not_granted", errText
+	case "not_found", "unauthorized", "remote_project":
+		return outcome, ev.Outcome, errText
+	case "route_not_found":
+		return outcome, "not_found", errText
+	case "bad_request", "body_too_large", "trailing_data":
+		return outcome, "invalid", errText
+	case "rate_limited":
+		return logging.OutcomeDenied, "throttled", errText
+	case "client_abort":
+		return outcome, "cancelled", errText
+	case "host_unavailable":
+		return outcome, "unavailable", errText
+	}
+	return outcome, "internal", errText
+}
+
 // logModelRequest writes the one model.request line for a finished call. It
 // names the route and caller, never the query, headers, body or credentials.
 func logModelRequest(ev ModelCallAudit) {
+	line := ev.event
+	if line == nil {
+		line = logging.BeginEvent(logging.ContextWithTrace(context.Background(), ev.traceID), "model.request")
+	}
 	if ev.Outcome == "ok" && ev.Status < 400 && (ev.Method == http.MethodGet || ev.Method == http.MethodHead) {
 		if _, poll := modelPollPaths[ev.Path]; poll {
-			return
+			line.Quiet()
 		}
 	}
-	level, status, errText := modelLogStatus(ev)
-	attrs := []slog.Attr{
-		slog.String("op", "model.request"),
-		slog.String("status", status),
-		slog.Int64("duration_ms", ev.DurationMS),
-		slog.String("error", errText),
-		slog.String("method", logging.Truncate(ev.Method)),
-		slog.String("path", logging.Truncate(ev.Path)),
-		slog.Int("http_status", ev.Status),
-		slog.String("transport", ev.Transport),
-	}
+	line.Set("method", ev.Method).Set("path", ev.Path).Set("http_status", ev.Status).Set("transport", ev.Transport)
 	if ev.CallerKind != "" {
-		attrs = append(attrs, slog.String("caller_kind", ev.CallerKind))
+		line.Set("caller_kind", ev.CallerKind)
 	}
 	if ev.CallerName != "" {
-		attrs = append(attrs, slog.String("caller", logging.Truncate(ev.CallerName)))
+		line.Set("caller", ev.CallerName)
 	}
 	if ev.SessionID != "" {
-		attrs = append(attrs, slog.String("session_id", ev.SessionID))
+		line.Set("session_id", ev.SessionID)
 	}
 	if ev.CanonicalModel != "" {
-		attrs = append(attrs, slog.String("model", logging.Truncate(ev.CanonicalModel)))
+		line.Set("model", ev.CanonicalModel)
 	}
-	ctx := logging.ContextWithTrace(context.Background(), ev.traceID)
-	slog.LogAttrs(ctx, level, "model request", attrs...)
+	outcome, reason, errText := modelEventOutcome(ev)
+	var err error
+	if errText != "" {
+		err = errors.New(errText)
+	}
+	line.End(outcome, reason, err)
 }
 
 func (m *ModelEndpointServer) audit(ev ModelCallAudit) {
@@ -669,6 +711,7 @@ func (m *ModelEndpointServer) auditFor(caller modelCaller, transport string, r *
 		Outcome:           outcome,
 		DurationMS:        time.Since(start).Milliseconds(),
 		traceID:           logging.TraceFromContext(r.Context()),
+		event:             modelEventFrom(r.Context()),
 	}
 }
 
@@ -690,6 +733,7 @@ func (m *ModelEndpointServer) auditFor(caller modelCaller, transport string, r *
 func (m *ModelEndpointServer) Handler(transport string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(logging.ContextWithTrace(r.Context(), logging.TraceIDOrNew(r.Header.Get(logging.TraceHeader))))
+		r = r.WithContext(context.WithValue(r.Context(), modelEventKey{}, logging.BeginEvent(r.Context(), "model.request")))
 		start := time.Now()
 
 		if name, ok := modelbroker.MatchPassthrough(r.URL.Path); ok {

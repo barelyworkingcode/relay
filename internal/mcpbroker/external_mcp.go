@@ -397,6 +397,8 @@ func (m *Manager) finalizeConnection(id string, conn Connection, result *handsha
 		}
 	}
 	slog.Info("MCP connected", "id", id, "tools", len(result.Tools))
+	logging.BeginEvent(context.Background(), "mcp.state").Set("mcp_id", id).Set("state", "up").
+		End(logging.OutcomeOK, "", nil)
 	return true
 }
 
@@ -702,16 +704,20 @@ func (m *Manager) SetHealthObserver(fn func(HealthEvent)) {
 // an audit sink that took the manager's lock back would deadlock the
 // supervisor.
 func (m *Manager) reportHealth(ev HealthEvent) {
+	state := logging.BeginEvent(context.Background(), "mcp.state").Set("mcp_id", ev.ID).Set("state", ev.State).Set("attempt", ev.Attempt)
 	switch ev.State {
 	case HealthDown:
-		slog.Error("external MCP died; restarting", "id", ev.ID, "error", ev.Err)
+		state.End(logging.OutcomeError, "unavailable", ev.Err)
 	case HealthRestartFailed:
-		slog.Error("external MCP restart failed", "id", ev.ID, "attempt", ev.Attempt, "error", ev.Err)
+		state.End(logging.OutcomeError, "unavailable", ev.Err)
 	case HealthRestarted:
-		slog.Info("external MCP restarted", "id", ev.ID, "attempt", ev.Attempt, "downtime", ev.Downtime)
+		state.Set("downtime_ms", ev.Downtime.Milliseconds()).End(logging.OutcomeOK, "", nil)
 	case HealthAbandoned:
-		slog.Error("external MCP abandoned after repeated restart failures; every grant that names it is down until relay is told to reload it",
-			"id", ev.ID, "attempts", ev.Attempt, "error", ev.Err)
+		abandoned := errors.New("every grant that names it is down until relay is told to reload it")
+		if ev.Err != nil {
+			abandoned = fmt.Errorf("%w: %w", ev.Err, abandoned)
+		}
+		state.End(logging.OutcomeError, "unavailable", abandoned)
 	}
 
 	m.mu.RLock()

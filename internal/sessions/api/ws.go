@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/barelyworkingcode/relay/internal/logging"
 	clk "github.com/barelyworkingcode/relay/internal/sessions/clock"
 )
 
@@ -188,6 +189,7 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("websocket connected", "remote", r.RemoteAddr)
+	ev := logging.BeginEvent(r.Context(), "session.ws.close")
 
 	h.mu.RLock()
 	clock := h.clock
@@ -208,6 +210,7 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 		}
 		conn.Close()
 		slog.Info("websocket disconnected", "remote", r.RemoteAddr)
+		ev.End(logging.OutcomeOK, "", nil)
 	}()
 
 	for {

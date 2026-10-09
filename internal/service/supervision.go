@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 // Restart policy for a service relay is responsible for running (docs/service-manifest.md,
@@ -130,7 +132,24 @@ func (r *Registry) installSupervisor(cfg *config.ServiceConfig) *serviceSupervis
 	if old != nil {
 		old.cancel()
 	}
+	logServiceState(cfg.ID, SupervisionRunning, 0, nil)
 	return sup
+}
+
+// logServiceState writes one service.state event for a phase change. A service
+// that gave up is the only failed outcome; a restart being scheduled is a
+// state being reported, not an operation that failed.
+func logServiceState(id string, phase SupervisionPhase, attempt int, exitCode *int) {
+	ev := logging.BeginEvent(context.Background(), "service.state").
+		Set("service_id", id).Set("phase", string(phase)).Set("attempt", attempt)
+	if exitCode != nil {
+		ev.Set("exit_code", *exitCode)
+	}
+	if phase == SupervisionFailed {
+		ev.End(logging.OutcomeError, "unavailable", errors.New("restart budget exhausted"))
+		return
+	}
+	ev.End(logging.OutcomeOK, "", nil)
 }
 
 // retireSupervisor removes sup if it is still the supervisor of record -- a
@@ -267,6 +286,7 @@ func (r *Registry) scheduleRestart(sup *serviceSupervisor, exitCode int, ranFor 
 		sup.mu.Unlock()
 		slog.Error("service restart budget exhausted; staying down until an explicit start or restart",
 			"id", sup.id, "attempts", attempt-1, "last_exit_code", exitCode)
+		logServiceState(sup.id, SupervisionFailed, attempt-1, &exitCode)
 		return
 	}
 
@@ -291,6 +311,7 @@ func (r *Registry) scheduleRestart(sup *serviceSupervisor, exitCode int, ranFor 
 
 	slog.Warn("service exited unexpectedly; restart scheduled",
 		"id", sup.id, "attempt", attempt, "exit_code", exitCode, "delay", delay)
+	logServiceState(sup.id, SupervisionRestarting, attempt, &exitCode)
 
 	go r.restartAfterBackoff(sup, cfg, timer)
 }
@@ -326,6 +347,10 @@ func (r *Registry) restartAfterBackoff(sup *serviceSupervisor, cfg config.Servic
 	sup.nextAttempt = time.Time{}
 	sup.mu.Unlock()
 	slog.Info("service restarted", "id", sup.id, "pid", proc.cmd.Process.Pid)
+	sup.mu.Lock()
+	attempt := sup.attempt
+	sup.mu.Unlock()
+	logServiceState(sup.id, SupervisionRunning, attempt, nil)
 }
 
 // sleepClock waits for timer to fire or ctx to be cancelled, whichever

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"os"
 	"path/filepath"
@@ -330,7 +331,9 @@ type enrolmentRequestListResult struct {
 	Requests []enrolmentRequestListItem `json:"requests"`
 }
 
-func adminEnrolmentRequestList(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+func adminEnrolmentRequestList(ctx context.Context, r *appRouter, _ json.RawMessage) (_ json.RawMessage, err error) {
+	ev := logging.BeginEvent(ctx, "enrolment.request.list")
+	defer func() { endEvent(ev, err) }()
 	ops, err := requireEnrolmentOps(r)
 	if err != nil {
 		return nil, err
@@ -354,6 +357,7 @@ func adminEnrolmentRequestList(_ context.Context, r *appRouter, _ json.RawMessag
 			RequestedProfile: v.RequestedProfile,
 		})
 	}
+	ev.Set("count", len(items))
 	return marshalAdminResult(enrolmentRequestListResult{Requests: items})
 }
 
@@ -391,7 +395,7 @@ type enrolmentRequestRefuseRequest struct {
 	RequestID string `json:"request_id"`
 }
 
-func adminEnrolmentRequestRefuse(_ context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+func adminEnrolmentRequestRefuse(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
 	ops, err := requireEnrolmentOps(r)
 	if err != nil {
 		return nil, err
@@ -400,7 +404,7 @@ func adminEnrolmentRequestRefuse(_ context.Context, r *appRouter, args json.RawM
 	if err != nil {
 		return nil, err
 	}
-	if err := ops.Refuse(req.RequestID); err != nil {
+	if err := ops.Refuse(ctx, req.RequestID); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {
@@ -516,9 +520,12 @@ func adminMcpUnregister(ctx context.Context, r *appRouter, args json.RawMessage)
 	}
 	id, err := resolveMcpRef(r, req.ID, req.Name)
 	if err != nil {
+		// The core never runs for an unresolved target, so this is the
+		// operation's only event.
+		endEvent(logging.BeginEvent(ctx, "mcp.unregister"), err)
 		return nil, err
 	}
-	if err := ops.Remove(id, auditViaCLI, ""); err != nil {
+	if err := ops.Remove(ctx, id, auditViaCLI, ""); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {
@@ -573,9 +580,12 @@ func adminServiceUnregister(ctx context.Context, r *appRouter, args json.RawMess
 	}
 	id, err := resolveServiceRef(r, req.ID, req.Name)
 	if err != nil {
+		// The core never runs for an unresolved target, so this is the
+		// operation's only event.
+		endEvent(logging.BeginEvent(ctx, "service.unregister"), err)
 		return nil, err
 	}
-	if err := ops.Remove(id, auditViaCLI, ""); err != nil {
+	if err := ops.Remove(ctx, id, auditViaCLI, ""); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {
@@ -592,7 +602,7 @@ type serviceRestartRequest struct {
 	Name string `json:"name,omitempty"`
 }
 
-func adminServiceRestart(_ context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+func adminServiceRestart(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
 	req, err := decodeAdminArgs[serviceRestartRequest]("service.restart", args)
 	if err != nil {
 		return nil, err
@@ -602,9 +612,10 @@ func adminServiceRestart(_ context.Context, r *appRouter, args json.RawMessage) 
 	}
 	id, err := resolveServiceRef(r, req.ID, req.Name)
 	if err != nil {
+		endEvent(logging.BeginEvent(ctx, "service.restart"), err)
 		return nil, err
 	}
-	if err := r.serviceOps.Restart(id); err != nil {
+	if err := r.serviceOps.Restart(ctx, id); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {

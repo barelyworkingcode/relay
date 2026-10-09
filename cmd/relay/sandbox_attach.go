@@ -18,6 +18,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 )
@@ -105,7 +106,9 @@ var _ bridge.SandboxAttacher = (*appRouter)(nil)
 // SandboxAttach implements bridge.SandboxAttacher: it launches a terminal
 // through the same core the HTTP route uses, then joins it as a viewer so the
 // caller's bytes can be relayed. It leaves no session running on any error.
-func (r *appRouter) SandboxAttach(ctx context.Context, req bridge.SandboxAttachRequest) (bridge.SandboxAttachment, error) {
+func (r *appRouter) SandboxAttach(ctx context.Context, req bridge.SandboxAttachRequest) (_ bridge.SandboxAttachment, err error) {
+	ev := logging.BeginEvent(ctx, "sandbox.attach").Set("template", req.Template)
+	defer func() { endEvent(ev, err) }()
 	d := r.sessionDeps
 	if !d.ready() || d.sessions == nil {
 		return nil, &bridge.SandboxRefusal{Reason: bridge.SandboxReasonUnavailable, Message: "the session host is not available"}
@@ -117,6 +120,7 @@ func (r *appRouter) SandboxAttach(ctx context.Context, req bridge.SandboxAttachR
 		return nil, refusal
 	}
 
+	ev.Set("project_id", proj.ID)
 	pid := bridge.CallerPIDFromContext(ctx)
 	proc, parent := audit.ProcessNames(pid)
 	launchReq := LaunchRequest{
@@ -142,6 +146,7 @@ func (r *appRouter) SandboxAttach(ctx context.Context, req bridge.SandboxAttachR
 	}
 
 	// From here the session is running and relay owns ending it.
+	ev.Set("session_id", result.SessionID)
 	att, err := joinSandboxSession(ctx, d, result.SessionID, proj.Name)
 	if err != nil {
 		slog.Warn("sandbox: attach failed; ending the session", "session", result.SessionID, "error", err)

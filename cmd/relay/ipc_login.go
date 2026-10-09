@@ -65,7 +65,7 @@ func ipcSignOutLogin(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ID == "" {
 		return
 	}
-	removed, err := ctx.LoginOps.SignOut(msg.ID)
+	removed, err := ctx.LoginOps.SignOut(ctx.Ctx, msg.ID)
 	if err != nil {
 		ctx.UI.EmitEvent("onPasskeyError", err.Error())
 		return

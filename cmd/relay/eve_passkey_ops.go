@@ -11,6 +11,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -174,7 +175,12 @@ func (o *EvePasskeyOps) notifyConsole(title, body string) {
 // whose id is the list's only entry (decisions 12 and 13: a report is both
 // "here is my list" and "I did what you asked", and relay never lets its own
 // pending set outlive what would empty eve's last passkey).
-func (o *EvePasskeyOps) Report(list []evePasskeyReportEntry) error {
+func (o *EvePasskeyOps) Report(ctx context.Context, list []evePasskeyReportEntry) (err error) {
+	ev := logging.BeginEvent(ctx, "eve.passkey.report")
+	defer func() {
+		ev.Set("count", len(list))
+		endEvent(ev, err)
+	}()
 	if o == nil {
 		return errEvePasskeyOpsUnavailable
 	}
@@ -231,7 +237,12 @@ func (o *EvePasskeyOps) Revocations() []string {
 // (decision 9) -- so its whole effect is appending to
 // EvePasskeyRevocations; eve applies it on its own next poll or login
 // check.
-func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (config.EvePasskeyRevocation, error) {
+func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (_ config.EvePasskeyRevocation, err error) {
+	ev := logging.BeginEvent(ctx, "eve.passkey.revoke")
+	defer func() {
+		ev.Set("passkey_id", abbreviatePasskeyID(strings.TrimSpace(id)))
+		endEvent(ev, err)
+	}()
 	if o == nil {
 		return config.EvePasskeyRevocation{}, errEvePasskeyOpsUnavailable
 	}

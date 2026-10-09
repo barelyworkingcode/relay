@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 var (
@@ -48,11 +49,21 @@ func (o *TemplateOps) runQueued(ctx context.Context, fn func() error) error {
 	return o.Queue.DoCommitted(ctx, func(context.Context) error { return fn() })
 }
 
-func (o *TemplateOps) Create(ctx context.Context, t config.TerminalTemplate) error {
+func (o *TemplateOps) Create(ctx context.Context, t config.TerminalTemplate) (err error) {
+	ev := logging.BeginEvent(ctx, "template.create")
+	defer func() {
+		ev.Set("template_id", t.ID)
+		endEvent(ev, err)
+	}()
 	return o.put(ctx, t, true)
 }
 
-func (o *TemplateOps) Update(ctx context.Context, t config.TerminalTemplate) error {
+func (o *TemplateOps) Update(ctx context.Context, t config.TerminalTemplate) (err error) {
+	ev := logging.BeginEvent(ctx, "template.update")
+	defer func() {
+		ev.Set("template_id", t.ID)
+		endEvent(ev, err)
+	}()
 	return o.put(ctx, t, false)
 }
 
@@ -84,7 +95,12 @@ func (o *TemplateOps) put(ctx context.Context, t config.TerminalTemplate, create
 	})
 }
 
-func (o *TemplateOps) Remove(ctx context.Context, id string) error {
+func (o *TemplateOps) Remove(ctx context.Context, id string) (err error) {
+	ev := logging.BeginEvent(ctx, "template.remove")
+	defer func() {
+		ev.Set("template_id", id)
+		endEvent(ev, err)
+	}()
 	return o.runQueued(ctx, func() error {
 		found := false
 		if err := o.Store.With(func(s *config.Settings) {

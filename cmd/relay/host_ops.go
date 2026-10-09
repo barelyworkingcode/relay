@@ -9,6 +9,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
@@ -119,7 +120,12 @@ func (o *HostOps) Get(id string) (config.Host, error) {
 // Create adds the host, then probes it synchronously (docs/ssh-hosts.md:
 // "runs a probe synchronously, result included") so the caller sees whether
 // the host is reachable without a second round trip.
-func (o *HostOps) Create(ctx context.Context, f hostFields) (config.Host, error) {
+func (o *HostOps) Create(ctx context.Context, f hostFields) (created config.Host, err error) {
+	ev := logging.BeginEvent(ctx, "host.create")
+	defer func() {
+		ev.Set("host_id", created.ID)
+		endEvent(ev, err)
+	}()
 	// Checked before the receiver is ever touched, the same discipline
 	// ServiceOps.Create and McpOps.Add follow: a malformed request (name or
 	// target empty) must return without dereferencing o.Store, so a caller
@@ -132,7 +138,6 @@ func (o *HostOps) Create(ctx context.Context, f hostFields) (config.Host, error)
 		return config.Host{}, invalidHost("host target is required")
 	}
 
-	var created config.Host
 	var createErr error
 	if err := o.runQueued(ctx, func() error {
 		if err := o.Store.With(func(s *config.Settings) {
@@ -163,9 +168,12 @@ func (o *HostOps) Create(ctx context.Context, f hostFields) (config.Host, error)
 // Update patches the host, re-probing only when target, port or
 // identity_file changed (docs/ssh-hosts.md) — a rename alone must not pay
 // for a round trip to a machine that didn't change.
-func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (config.Host, bool, error) {
-	var updated config.Host
-	var found bool
+func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (updated config.Host, found bool, err error) {
+	ev := logging.BeginEvent(ctx, "host.update")
+	defer func() {
+		ev.Set("host_id", id)
+		endEvent(ev, foundOrErr(err, found || err != nil))
+	}()
 	var connectionChanged bool
 	var updateErr error
 	if err := o.runQueued(ctx, func() error {
@@ -207,6 +215,15 @@ func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (con
 // Remove refuses (found=true, refs non-empty) while any project still
 // references the host, naming them — settings.RemoveHost's own contract.
 func (o *HostOps) Remove(ctx context.Context, id string) (found bool, refs []string, err error) {
+	ev := logging.BeginEvent(ctx, "host.remove")
+	defer func() {
+		ev.Set("host_id", id)
+		evErr := err
+		if err == nil && found && len(refs) > 0 {
+			evErr = errEventConflict
+		}
+		endEvent(ev, foundOrErr(evErr, found || evErr != nil))
+	}()
 	err = o.runQueued(ctx, func() error {
 		if err := o.Store.With(func(s *config.Settings) { found, refs = s.RemoveHost(id) }); err != nil {
 			return fmt.Errorf("save settings: %w", err)
@@ -225,7 +242,13 @@ func (o *HostOps) Remove(ctx context.Context, id string) (found bool, refs []str
 // Probe re-runs the ssh discovery and persists the fresh result
 // unconditionally — the explicit "do it now" action, unlike Update's
 // conditional re-probe.
-func (o *HostOps) Probe(ctx context.Context, id string) (config.Host, bool, error) {
+func (o *HostOps) Probe(ctx context.Context, id string) (_ config.Host, current bool, err error) {
+	ev := logging.BeginEvent(ctx, "host.probe")
+	missing := false
+	defer func() {
+		ev.Set("host_id", id)
+		endEvent(ev, foundOrErr(err, !missing))
+	}()
 	var h config.Host
 	var found bool
 	if err := o.runQueued(ctx, func() error {
@@ -238,6 +261,7 @@ func (o *HostOps) Probe(ctx context.Context, id string) (config.Host, bool, erro
 		return config.Host{}, found, err
 	}
 	if !found {
+		missing = true
 		return config.Host{}, false, nil
 	}
 	probe, _ := sshhost.Probe(ctx, h)
@@ -275,11 +299,14 @@ func (o *HostOps) commitProbe(id string, generation uint64, probe config.HostPro
 // comment reasons about it: the caller wants "no master after this
 // returns", and the hostView's status will read unreachable/unknown from
 // the next Check either way.
-func (o *HostOps) Disconnect(id string) (config.Host, bool, error) { //nolint:unparam // deliberate: matches Probe's (host, found, error) shape so host_routes.go's two action handlers stay parallel
+func (o *HostOps) Disconnect(ctx context.Context, id string) (config.Host, bool, error) { //nolint:unparam // deliberate: matches Probe's (host, found, error) shape so host_routes.go's two action handlers stay parallel
+	ev := logging.BeginEvent(ctx, "host.disconnect").Set("host_id", id)
 	h, err := o.Get(id)
 	if err != nil {
+		endEvent(ev, err)
 		return config.Host{}, false, nil //nolint:nilerr // Get's only error is not-found; found=false is the signal here, not the error return
 	}
+	defer ev.End(logging.OutcomeOK, "", nil)
 	_ = sshhost.Disconnect(h)
 	o.dropAgent(h.ID)
 	invalidateHostStatusCache(h.ID)

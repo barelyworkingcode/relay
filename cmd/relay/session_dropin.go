@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -67,10 +66,10 @@ func (r *DropInRefusal) Error() string { return r.Message }
 // stopped, so a caller that may not launch cannot disturb a session. Once the
 // host holds the session, every failure hands it back.
 func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *DropInResult, refusal *DropInRefusal) {
-	start := time.Now()
+	ev := logging.BeginEvent(ctx, "session.drop_in")
 	host, terminalID := "", ""
 	defer func() {
-		d.logDropIn(ctx, req.SessionID, host, terminalID, refusal, time.Since(start))
+		endDropInEvent(ev, req.SessionID, host, terminalID, refusal)
 	}()
 
 	if !d.ready() || d.sessions == nil {
@@ -180,33 +179,23 @@ func (d sessionRouteDeps) handBack(ctx context.Context, sessionID string) {
 	}
 }
 
-// logDropIn writes the one session.drop_in line per request that reached the
-// core. A refusal below 500 is the caller's to fix (denied); 5xx is relay's.
-func (d sessionRouteDeps) logDropIn(ctx context.Context, sessionID, host, terminalID string, refusal *DropInRefusal, took time.Duration) {
-	level, status, code := slog.LevelInfo, "ok", ""
-	switch {
-	case refusal == nil:
-	case refusal.Status >= http.StatusInternalServerError:
-		level, status, code = slog.LevelError, "error", refusal.Code
-	default:
-		level, status, code = slog.LevelWarn, "denied", refusal.Code
-	}
+// endDropInEvent writes the one session.drop_in event per request that
+// reached the core. A refusal below 500 is the caller's to fix (denied); 5xx is
+// relay's. The error text is the refusal's code.
+func endDropInEvent(ev *logging.Event, sessionID, host, terminalID string, refusal *DropInRefusal) {
 	if host == "" {
 		host = "console"
 	}
 	if refusal != nil {
 		terminalID = ""
 	}
-	slog.LogAttrs(ctx, level, "session drop-in",
-		slog.String("op", "session.drop_in"),
-		slog.String("status", status),
-		slog.Int64("duration_ms", took.Milliseconds()),
-		slog.String("error", code),
-		slog.String("trace_id", logging.TraceFromContext(ctx)),
-		slog.String("session_id", sessionID),
-		slog.String("host", host),
-		slog.String("terminal_id", terminalID),
-	)
+	ev.Set("session_id", sessionID).Set("host", host).Set("terminal_id", terminalID)
+	if refusal == nil {
+		ev.End(logging.OutcomeOK, "", nil)
+		return
+	}
+	outcome, reason := refusalOutcome(refusal.Status, refusal.Code)
+	ev.End(outcome, reason, errors.New(refusal.Code))
 }
 
 type dropInWireBody struct {

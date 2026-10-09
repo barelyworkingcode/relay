@@ -72,7 +72,7 @@ func ipcExportAudit(ctx *IPCContext, raw json.RawMessage) {
 	fields := audit.AuditFieldsFromQuery(msg.AuditQuery)
 
 	ctx.GoFunc(func() {
-		path, err := ctx.AuditOps.Export(fields)
+		path, err := ctx.AuditOps.ExportContext(ctx.Ctx, fields)
 		if err != nil {
 			dispatchEmit(ctx, "onAuditError", err.Error())
 			return

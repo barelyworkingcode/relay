@@ -73,7 +73,7 @@ func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
 
 	// Remove blocks on the stopped process's exit, so it runs off the UI thread.
 	ctx.GoFunc(func() {
-		err := ctx.Ops.Remove(msg.ID, auditViaIPC, "")
+		err := ctx.Ops.Remove(ctx.Ctx, msg.ID, auditViaIPC, "")
 		ctx.Platform.DispatchToMain(func() {
 			if err != nil {
 				ctx.UI.EmitEvent("onSettingsError", err.Error())
@@ -115,7 +115,7 @@ func ipcUpdateServiceAutostart(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ID == "" {
 		return
 	}
-	if err := ctx.Ops.SetAutostart(msg.ID, msg.Autostart); err != nil {
+	if err := ctx.Ops.SetAutostart(ctx.Ctx, msg.ID, msg.Autostart); err != nil {
 		ctx.UI.EmitEvent("onSettingsError", err.Error())
 	}
 }
@@ -125,7 +125,7 @@ func ipcMoveService(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ID == "" || msg.Index == nil {
 		return
 	}
-	if err := ctx.Ops.Move(msg.ID, *msg.Index); err != nil {
+	if err := ctx.Ops.Move(ctx.Ctx, msg.ID, *msg.Index); err != nil {
 		ctx.UI.EmitEvent("onSettingsError", err.Error())
 	}
 }
@@ -135,7 +135,7 @@ func ipcUpdateServiceMenuHidden(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ID == "" {
 		return
 	}
-	if err := ctx.Ops.SetMenuHidden(msg.ID, msg.Hidden); err != nil {
+	if err := ctx.Ops.SetMenuHidden(ctx.Ctx, msg.ID, msg.Hidden); err != nil {
 		ctx.UI.EmitEvent("onSettingsError", err.Error())
 	}
 }
@@ -146,7 +146,7 @@ func ipcStartService(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ID == "" {
 		return
 	}
-	if err := ctx.Ops.Start(msg.ID); err != nil {
+	if err := ctx.Ops.Start(ctx.Ctx, msg.ID); err != nil {
 		ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("failed to start service: %v", err))
 	}
 	ctx.refreshServiceUI()
@@ -158,7 +158,7 @@ func ipcStopService(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	ctx.GoFunc(func() {
-		err := ctx.Ops.Stop(msg.ID)
+		err := ctx.Ops.Stop(ctx.Ctx, msg.ID)
 		ctx.Platform.DispatchToMain(func() {
 			if err != nil {
 				ctx.UI.EmitEvent("onSettingsError", err.Error())

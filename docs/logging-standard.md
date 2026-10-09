@@ -77,6 +77,14 @@ content:
 
 A service may add other keys. They hold names and ids, not values from a user.
 
+Two more keys are optional and belong to event lines, which a service writes
+once per operation (relay's catalogue is [`events.md`](events.md)):
+
+| Key | Meaning |
+|---|---|
+| `event` | The event key, equal to `op` and `msg`: `<domain>.<action>` in lower case. Only an event line has a top-level `event`. |
+| `reason` | A stable snake_case code that says why `status` is not `ok`. Present when `status` is `error` or `denied`, absent when it is `ok`. Unlike `error`, it is safe to assert on. |
+
 Lines that do not start with `{` are allowed. They are panics, stack traces and
 third-party output, because Relay merges stdout and stderr into one file. They
 carry no `trace_id`, and nothing validates them.
@@ -178,7 +186,7 @@ are not touched.
 
 | Repo | Today | Must change |
 |---|---|---|
-| relay | `slog` text handler to stderr, level from `RELAY_LOG_LEVEL` (default info). Teed to `logs/relay.log` by the rotating writer. Local-time RFC 3339. About 360 calls. No trace ID. A separate audit log with its own schema, UTC `ts` and uuid `id`. | Switch to the JSON handler with the nine keys. Create a trace ID at the frontend server, bridge, model endpoint and remote listener, and carry it in context. Pass it through the bridge request, MCP `_meta`, the frontend reverse proxy, WebSocket upgrade and start-of-action messages, session host, model broker and spawn env. Accept `trace_id` on the remote request and the mount attach preamble before any client sends it. Wrap child output instead of writing it raw. Forward `X-Trace-Id` on the model path; the `x-relay-*` strip does not touch it. A stdio MCP's stderr is captured, one whole line per write, at `logs/mcp/<id>.log` (8 MiB, one `.1` backup). Managed services get no trace ID; only an MCP spawn carries `RELAY_TRACE_ID`. Add `trace_id` to audit records. Drop or aggregate repeating lines. |
+| relay | JSON handler on `slog` with the nine keys, level from `RELAY_LOG_LEVEL`, teed to `logs/relay.log` by the rotating writer. The trace ID is created at the frontend server, bridge, model endpoint and remote listener and carried in context; `relay --trace ID` and `X-Trace-Id` name it. Audit records carry `trace_id`. One event line per operation with `event` and `reason` ([`events.md`](events.md)), read with `relay logs`. | The line format and trace need no change; a new operation adds a catalogue row. |
 | relay-sessions (in the relay repo) | Mix of stdlib `log` and `slog`. No level, local time. | Use the same handler as relay. Replace the stdlib `log` calls. |
 | relayLLM | `slog` default handler: local-time text, no level control, so `debug` lines never appear. Re-emits managed child process output verbatim. No ID. Strips inbound `x-relay-*` headers. | JSON handler, `RELAY_LOG_LEVEL`, UTC `ts`. Middleware that creates and validates the trace ID, and passes it on the bridge request, proxy headers and child env. Bound and redact the child-output passthrough. One `info` line per request. |
 | relayScheduler | `slog` default handler: local-time text, no level control. Run history is JSON files and is not a log. A job ID exists (`Task.ID`). The wire field `runId` holds a session or terminal id, so it is not a per-fire log key. Execution records use UTC. | JSON handler, `RELAY_LOG_LEVEL`, UTC `ts`. Accept a valid inbound trace ID or create one in the create and run-now handlers, and create one when a job fires. Add the header to every outbound call and WebSocket dial. Add `job_id` and a new `run_id` for each fire to each line; do not reuse the wire `runId`. |

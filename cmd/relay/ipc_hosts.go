@@ -116,7 +116,7 @@ func ipcDisconnectHost(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	ctx.GoFunc(func() {
-		updated, found, err := ctx.HostOps.Disconnect(msg.ID)
+		updated, found, err := ctx.HostOps.Disconnect(ctx.Ctx, msg.ID)
 		if err != nil {
 			dispatchEmit(ctx, "onHostError", err.Error())
 			return

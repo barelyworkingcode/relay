@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 // HostTemplateOps is TemplateOps's counterpart for a host's own templates
@@ -44,11 +45,21 @@ func (o *HostTemplateOps) List(hostID string) ([]config.TerminalTemplate, error)
 	return h.TerminalTemplates, nil
 }
 
-func (o *HostTemplateOps) Create(ctx context.Context, hostID string, t config.TerminalTemplate) error {
+func (o *HostTemplateOps) Create(ctx context.Context, hostID string, t config.TerminalTemplate) (err error) {
+	ev := logging.BeginEvent(ctx, "host_template.create")
+	defer func() {
+		ev.Set("host_id", hostID).Set("template_id", t.ID)
+		endEvent(ev, err)
+	}()
 	return o.put(ctx, hostID, t, true)
 }
 
-func (o *HostTemplateOps) Update(ctx context.Context, hostID string, t config.TerminalTemplate) error {
+func (o *HostTemplateOps) Update(ctx context.Context, hostID string, t config.TerminalTemplate) (err error) {
+	ev := logging.BeginEvent(ctx, "host_template.update")
+	defer func() {
+		ev.Set("host_id", hostID).Set("template_id", t.ID)
+		endEvent(ev, err)
+	}()
 	return o.put(ctx, hostID, t, false)
 }
 
@@ -77,7 +88,12 @@ func (o *HostTemplateOps) put(ctx context.Context, hostID string, t config.Termi
 	})
 }
 
-func (o *HostTemplateOps) Remove(ctx context.Context, hostID, id string) error {
+func (o *HostTemplateOps) Remove(ctx context.Context, hostID, id string) (err error) {
+	ev := logging.BeginEvent(ctx, "host_template.remove")
+	defer func() {
+		ev.Set("host_id", hostID).Set("template_id", id)
+		endEvent(ev, err)
+	}()
 	return o.mutate(ctx, hostID, func(ts []config.TerminalTemplate) ([]config.TerminalTemplate, error) {
 		out := slices.DeleteFunc(ts, func(x config.TerminalTemplate) bool { return x.ID == id })
 		if len(out) == len(ts) {

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
@@ -118,6 +119,7 @@ func HandleModels(cfg ModelsConfig, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ev := logging.BeginEvent(r.Context(), "model.list")
 	models := append([]sessionstypes.ModelInfo{}, staticClaudeModels...)
 	models = append(models, provider.FetchPiModels(r.Context(), cfg.PiBinary)...)
 	models = append(models, provider.FetchCodexModels(r.Context(), cfg.CodexBinary)...)
@@ -134,6 +136,7 @@ func HandleModels(cfg ModelsConfig, w http.ResponseWriter, r *http.Request) {
 		models[i].SupportsAttachments = models[i].SupportsAttachments || caps.SupportsAttachments
 	}
 
+	ev.Set("count", len(models)).End(logging.OutcomeOK, "", nil)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"models":           models,

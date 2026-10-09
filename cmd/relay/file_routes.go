@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/projectfs"
 )
 
@@ -93,9 +96,12 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 		return
 	}
 	// session opens the project for a request and answers the refusal itself.
-	session := func(w http.ResponseWriter, r *http.Request) *fileSession {
+	// ev is the route's own event, ended here only when the project cannot be
+	// opened; once a session exists its methods end their own.
+	session := func(w http.ResponseWriter, r *http.Request, ev *logging.Event) *fileSession {
 		fs, err := o.open(fileActor(o, r), r.PathValue("id"))
 		if err != nil {
+			endEvent(ev.Set("project_id", r.PathValue("id")), err)
 			writeFileError(w, r, err)
 			return nil
 		}
@@ -107,7 +113,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Path       string `json:"path"`
 			ShowHidden bool   `json:"show_hidden"`
 		}
-		fs := session(w, r)
+		fs := session(w, r, logging.BeginEvent(r.Context(), "file.list"))
 		if fs == nil {
 			return
 		}
@@ -126,7 +132,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 		var body struct {
 			Path string `json:"path"`
 		}
-		fs := session(w, r)
+		fs := session(w, r, logging.BeginEvent(r.Context(), "file.stat"))
 		if fs == nil {
 			return
 		}
@@ -146,7 +152,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Path     string `json:"path"`
 			MaxBytes int64  `json:"max_bytes"`
 		}
-		fs := session(w, r)
+		fs := session(w, r, logging.BeginEvent(r.Context(), "file.read"))
 		if fs == nil {
 			return
 		}
@@ -162,16 +168,23 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 	})
 
 	rr.Handle(control.ClassExecute, "GET /api/projects/{id}/files/stream", func(w http.ResponseWriter, r *http.Request) {
-		fs := session(w, r)
+		ev := logging.BeginEvent(r.Context(), "file.stream")
+		fs := session(w, r, ev)
 		if fs == nil {
 			return
 		}
+		ev.Set("project_id", fs.proj.ID)
 		rc, _, err := fs.Open(r.Context(), r.URL.Query().Get("path"))
 		if err != nil {
+			endEvent(ev, err)
 			writeFileError(w, r, err)
 			return
 		}
 		defer rc.Close()
+		// The event ends when the body is fully written or has failed, not
+		// when the headers go out.
+		var streamErr error
+		defer func() { endEvent(ev, streamErr) }()
 		w.Header().Set("Content-Type", "application/octet-stream")
 		// A console file is an *os.File, so Range, Content-Length and
 		// Accept-Ranges come from the standard library. A host body is a
@@ -185,6 +198,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 		// still reaches the client as an error.
 		n, rerr := rc.Read(buf)
 		if n == 0 && rerr != nil && rerr != io.EOF {
+			streamErr = rerr
 			writeFileError(w, r, rerr)
 			return
 		}
@@ -193,6 +207,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 		for {
 			if n > 0 {
 				if _, werr := w.Write(buf[:n]); werr != nil {
+					streamErr = fmt.Errorf("%w: %w", context.Canceled, werr)
 					return
 				}
 				if fl != nil {
@@ -200,6 +215,9 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 				}
 			}
 			if rerr != nil {
+				if rerr != io.EOF {
+					streamErr = rerr
+				}
 				return
 			}
 			n, rerr = rc.Read(buf)
@@ -213,7 +231,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Encoding   string `json:"encoding"`
 			CreateOnly bool   `json:"create_only"`
 		}
-		fs := session(w, r)
+		fs := session(w, r, logging.BeginEvent(r.Context(), "file.write"))
 		if fs == nil {
 			return
 		}
@@ -247,7 +265,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Parent string `json:"parent"`
 			Name   string `json:"name"`
 		}
-		fs := session(w, r)
+		fs := session(w, r, logging.BeginEvent(r.Context(), "file.mkdir"))
 		if fs == nil {
 			return
 		}
@@ -267,7 +285,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Path    string `json:"path"`
 			NewName string `json:"new_name"`
 		}
-		fs := session(w, r)
+		fs := session(w, r, logging.BeginEvent(r.Context(), "file.rename"))
 		if fs == nil {
 			return
 		}
@@ -287,7 +305,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Path    string `json:"path"`
 			DestDir string `json:"dest_dir"`
 		}
-		fs := session(w, r)
+		fs := session(w, r, logging.BeginEvent(r.Context(), "file.move"))
 		if fs == nil {
 			return
 		}
@@ -306,7 +324,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 		var body struct {
 			Path string `json:"path"`
 		}
-		fs := session(w, r)
+		fs := session(w, r, logging.BeginEvent(r.Context(), "file.delete"))
 		if fs == nil {
 			return
 		}
@@ -330,7 +348,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Globs         []string `json:"globs"`
 			MaxMatches    int      `json:"max_matches"`
 		}
-		fs := session(w, r)
+		fs := session(w, r, logging.BeginEvent(r.Context(), "file.search"))
 		if fs == nil {
 			return
 		}
@@ -354,7 +372,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Args     []string `json:"args"`
 			MaxBytes int64    `json:"max_bytes"`
 		}
-		fs := session(w, r)
+		fs := session(w, r, logging.BeginEvent(r.Context(), "file.git"))
 		if fs == nil {
 			return
 		}

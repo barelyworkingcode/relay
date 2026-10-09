@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 // RegisterPersistentSessionRoutes serves a hosted project's persistent
@@ -15,11 +16,14 @@ import (
 // class; killing ends remote work, so it is configure, like the host record.
 func RegisterPersistentSessionRoutes(rr *control.RouteRegistrar, ops *PersistentSessionOps) {
 	rr.Handle(control.ClassRead, "GET /api/projects/{id}/persistent-sessions", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "session.persistent.list").Set("project_id", r.PathValue("id"))
 		sessions, err := ops.List(r.Context(), r.PathValue("id"))
 		if err != nil {
+			endEvent(ev, err)
 			writePersistSessionError(w, err)
 			return
 		}
+		ev.End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, sessions)
 	})
 

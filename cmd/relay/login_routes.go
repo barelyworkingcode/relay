@@ -16,6 +16,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/login"
 )
 
@@ -99,7 +100,7 @@ func newLoginRoutes(store config.SettingsStore, verifier *login.WebAuthnVerifier
 // than discovered to already work.
 func (lr *loginRoutes) loginHandlers() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"GET /relay/login":            lr.serveDocument,
+		"GET /relay/login":            lr.servePage,
 		"POST /relay/login/challenge": lr.serveChallenge,
 		"POST /relay/login/verify":    lr.serveVerify,
 	}
@@ -172,7 +173,29 @@ type loginSignedInResponse struct {
 	Classes []control.CapabilityClass `json:"classes"`
 }
 
+// servePage ends login.page with the document's response status.
+func (lr *loginRoutes) servePage(w http.ResponseWriter, r *http.Request) {
+	ev := logging.BeginEvent(r.Context(), "login.page")
+	lr.serveDocument(newEventResponseWriter(w, func(status int) { endLoginEvent(ev, status, nil) }), r)
+}
+
+// endLoginEvent maps a login response status to its event outcome. A refused
+// ceremony answers 403, which is an authentication refusal here, not a missing
+// grant.
+func endLoginEvent(ev *logging.Event, status int, err error) {
+	if status == http.StatusForbidden {
+		if err == nil {
+			err = errors.New(http.StatusText(status))
+		}
+		ev.End(logging.OutcomeDenied, "unauthorized", err)
+		return
+	}
+	endEventHTTP(ev, status, http.StatusText(status))
+}
+
 func (lr *loginRoutes) serveChallenge(w http.ResponseWriter, r *http.Request) {
+	ev := logging.BeginEvent(r.Context(), "login.challenge")
+	w = newEventResponseWriter(w, func(status int) { endLoginEvent(ev, status, nil) })
 	var req loginChallengeRequest
 	if err := decodeLoginBody(w, r, &req); err != nil {
 		writeLoginRefusal(w, err)
@@ -212,25 +235,33 @@ func (lr *loginRoutes) serveChallenge(w http.ResponseWriter, r *http.Request) {
 }
 
 func (lr *loginRoutes) serveVerify(w http.ResponseWriter, r *http.Request) {
+	// A body that names no known ceremony is recorded as a failed sign-in.
+	refuse := func(err error) {
+		ev := logging.BeginEvent(r.Context(), "login.sign_in")
+		endLoginEvent(ev, loginStatus(err), err)
+		writeLoginRefusal(w, err)
+	}
 	var req loginVerifyRequest
 	if err := decodeLoginBody(w, r, &req); err != nil {
-		writeLoginRefusal(w, err)
+		refuse(err)
 		return
 	}
 	ceremony, err := parseLoginCeremony(req.Ceremony)
 	if err != nil {
-		writeLoginRefusal(w, err)
+		refuse(err)
 		return
 	}
 	switch ceremony {
 	case login.WebAuthnCeremonyRegister:
-		lr.register(w, r.Context(), req)
+		ev := logging.BeginEvent(r.Context(), "login.passkey.register")
+		lr.register(newEventResponseWriter(w, func(status int) { endLoginEvent(ev, status, nil) }), ev, r.Context(), req)
 	case login.WebAuthnCeremonyAssert:
-		lr.assert(w, r.Context(), req)
+		ev := logging.BeginEvent(r.Context(), "login.sign_in")
+		lr.assert(newEventResponseWriter(w, func(status int) { endLoginEvent(ev, status, nil) }), ev, r.Context(), req)
 	}
 }
 
-func (lr *loginRoutes) register(w http.ResponseWriter, ctx context.Context, req loginVerifyRequest) {
+func (lr *loginRoutes) register(w http.ResponseWriter, ev *logging.Event, ctx context.Context, req loginVerifyRequest) {
 	clientData, err := decodeLoginField(req.ClientDataJSON)
 	if err != nil {
 		writeLoginRefusal(w, err)
@@ -254,6 +285,7 @@ func (lr *loginRoutes) register(w http.ResponseWriter, ctx context.Context, req 
 	}
 
 	id := base64.RawURLEncoding.EncodeToString(result.CredentialID)
+	ev.Set("passkey_id", abbreviatePasskeyID(id))
 	now := time.Now().UTC()
 	passkey := config.Passkey{
 		ID:               id,
@@ -314,7 +346,7 @@ func (lr *loginRoutes) register(w http.ResponseWriter, ctx context.Context, req 
 	writeJSON(w, http.StatusCreated, loginRegisteredResponse{CredentialID: id, Name: passkey.Name})
 }
 
-func (lr *loginRoutes) assert(w http.ResponseWriter, ctx context.Context, req loginVerifyRequest) {
+func (lr *loginRoutes) assert(w http.ResponseWriter, ev *logging.Event, ctx context.Context, req loginVerifyRequest) {
 	clientData, err := decodeLoginField(req.ClientDataJSON)
 	if err != nil {
 		writeLoginRefusal(w, err)
@@ -362,6 +394,7 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, ctx context.Context, req lo
 	}
 
 	id := base64.RawURLEncoding.EncodeToString(result.CredentialID)
+	ev.Set("passkey_id", abbreviatePasskeyID(id))
 	token, expires, credID, saveErr := lr.ops.MintLoginSession(ctx, id, result.UpdateSignCount, result.SignCount)
 	if saveErr != nil || token == "" {
 		lr.recordLoginOutcome("", false, saveErr)
@@ -384,6 +417,7 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, ctx context.Context, req lo
 	}
 	lr.verifier.CeremonyCompleted()
 	lr.recordLoginOutcome(credID, true, nil)
+	ev.Set("credential_id", credID)
 	// The plaintext is deliberately absent from this line and from every
 	// other: the response body below is the only place it ever appears
 	// (ADR-016 decision 3).

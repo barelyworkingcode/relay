@@ -14,6 +14,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/sealed"
@@ -792,7 +793,7 @@ func (a *App) toggleService(menuItemID int) {
 	if a.registry.IsRunning(svcID) {
 		a.goFunc(func() {
 			if a.serviceOps != nil {
-				if err := a.serviceOps.Stop(svcID); err != nil {
+				if err := a.serviceOps.Stop(logging.ContextWithTrace(context.Background(), logging.NewTraceID()), svcID); err != nil {
 					slog.Error("service toggle failed", "id", svcID, "error", err)
 				}
 			} else {
@@ -810,7 +811,7 @@ func (a *App) toggleService(menuItemID int) {
 		a.goFunc(func() {
 			var err error
 			if a.serviceOps != nil {
-				err = a.serviceOps.Start(svcID)
+				err = a.serviceOps.Start(logging.ContextWithTrace(context.Background(), logging.NewTraceID()), svcID)
 			} else {
 				svc, _ := config.FindServiceByID(config.FreshSettings(a.store), svcID)
 				if svc == nil {

@@ -72,6 +72,7 @@ Two consequences follow immediately, and both are covered in full below:
 |---|---|---|---|
 | `relay grant` | yes | no | yes |
 | `relay audit` | no | no | yes |
+| `relay logs` | no | no | yes |
 | `relay credential list` | yes | no | yes |
 | `relay credential mint` | yes | **yes** | no |
 | `relay credential revoke` | yes | **yes** | no |
@@ -109,8 +110,9 @@ presence-gated ones add the console-session check.
 
 ### Machine-readable output
 
-Today, `relay audit`, `relay grant` and `relay enrol requests` accept
-`--json` and emit the same data as structured JSON instead of a table.
+Today, `relay audit`, `relay grant`, `relay enrol requests` and `relay logs`
+accept `--json` and emit the same data as structured JSON instead of a table
+(`relay logs --json` prints each log line exactly as stored).
 `relay mcpExec --list` (and its `relay mcp call --list` spelling) spells its
 machine-readable form `--schema` instead: plain `--list` prints a table,
 and `--schema` switches it to JSON that also includes each tool's input
@@ -250,6 +252,24 @@ the config dir rules above name. The stdio server honours the variable
 because it is the one command relay's own children spawn with it set to the
 socket of the relay that launched them. Whether each admin command should
 honour it is a separate decision.
+
+## The global `--trace` flag
+
+```
+relay --trace rlcheck-ok-0001 service restart --id acme
+```
+
+`--trace ID` or `--trace=ID` anywhere in the arguments before a bare `--` names
+the trace of this call. Every bridge request the command sends carries it, so
+the event lines and request lines it causes in relay's log carry it as
+`trace_id`, and `relay logs --trace ID` finds them. ID is 8 to 64 characters
+from `A-Z a-z 0-9 _ -` and does not start with `-`; otherwise the command exits
+`1` with `--trace needs a trace ID of 8 to 64 characters from A-Z a-z 0-9 _ -`.
+Given twice: `--trace given more than once`. Without the flag the server makes
+up a trace for the call. Like `--config-dir`, the flag is stripped before the
+subcommand parses; to pass a literal `--trace` through to a registered
+command's argv, write it `--args=--trace`. For `relay logs` the same value is
+the trace filter. A trace joins log lines and proves nothing about who acted.
 
 ## Privileged commands prompt — and here is what that looks like
 
@@ -504,6 +524,51 @@ are enforced in different places:
 
 A scope violation is always an error, never a quietly-empty result — an
 empty list from a granted tool means something else broke.
+
+## `relay logs`
+
+```
+relay [--config-dir DIR] [--trace ID] logs [--json] [--event KEY] [--since TIME] [--follow [--timeout DUR]]
+```
+
+Prints relay's log lines, filtered. It reads files, not the server, so it works
+with the server stopped and over SSH, and it never creates DIR or a log file.
+Event lines and their keys are described in [`events.md`](events.md).
+
+**Files read**, under `DIR/logs`: `relay.log.1`, `relay.log`,
+`relaysessions.log.1`, `relaysessions.log`. A missing one is skipped. The lines
+are merged and stable-sorted by `ts`. If neither relay log exists the command
+prints `error: no relay log in DIR/logs; is DIR a relay config dir?` and exits
+`2`.
+
+| Flag | Meaning |
+|---|---|
+| `--trace ID` (global) | Only lines whose `trace_id` is ID. |
+| `--event KEY` | Only lines whose `event` is KEY. KEY must be an event key such as `service.restart`, else exit `2`. |
+| `--since TIME` | Only lines at or after TIME: an RFC 3339 time (fraction and zone optional; no zone means UTC) or a positive Go duration such as `1h`, meaning now minus it. A line whose `ts` cannot be read fails the filter. |
+| `--json` | Print each matching line exactly as stored, one per line. Text mode is for people and is not a stable interface. |
+| `--follow` | Print the existing matches, then new lines as they are appended, until `--timeout` or SIGINT or SIGTERM. |
+| `--timeout DUR` | A positive duration. Only valid with `--follow`, else exit `2`. |
+
+Filters combine with AND. With no filter, lines that are not JSON (a panic,
+third-party output) print as stored; with any filter they never match.
+
+`--follow` reads from the descriptors the first read opened, at the offsets it
+stopped at, so no line is missed or repeated. It wakes on file changes (kqueue),
+not on a timer. When relay rotates a log it reads the old file to its end, opens
+the new one from the start, and keeps reading an old file a writer still holds
+until that file is deleted. `--follow --event KEY` prints the first match and
+exits `0`; a match already in the files counts, so it cannot lose a race with
+the operation that wrote it.
+
+| Exit | Meaning |
+|---|---|
+| `0` | At least one line was printed (with `--follow --event`: the first match). |
+| `1` | Nothing matched, or the timeout or a signal came before any match. |
+| `2` | Usage error, an unreadable log, or no relay log at DIR (the message names DIR). |
+
+An invalid `--trace` exits `1` from the global parser before `logs` runs; its
+message tells it apart from "no match".
 
 ## `relay credential`
 

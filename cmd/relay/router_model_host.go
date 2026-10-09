@@ -7,6 +7,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
 
@@ -15,7 +16,9 @@ import (
 // r.modelHosts. Own service id only, the same rule RegisterManifest applies:
 // a manifest or a model host registered under any other id would outlive
 // the process that serves it.
-func (r *appRouter) RegisterModelHost(ctx context.Context, req bridge.RegisterModelHostRequest, token string) error {
+func (r *appRouter) RegisterModelHost(ctx context.Context, req bridge.RegisterModelHostRequest, token string) (err error) {
+	ev := logging.BeginEvent(ctx, "model.host.register").Set("service_id", req.ServiceID)
+	defer func() { endEvent(ev, err) }()
 	id, err := r.requireServiceIdentity(ctx, token, service.OpRegisterModelHost)
 	if err != nil {
 		return err

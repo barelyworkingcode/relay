@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +14,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
 	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
@@ -260,6 +261,25 @@ const maxSessionCreateBodyBytes = 1 << 20
 // (both are bare, no trailing id), so LookupByPath's longest-prefix match
 // never reaches them on its own.
 func (d sessionRouteDeps) handleProxyList(w http.ResponseWriter, r *http.Request) {
+	var ev *logging.Event
+	if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/terminals") {
+		ev = logging.BeginEvent(r.Context(), "terminal.list")
+	} else {
+		ev = logging.BeginEvent(r.Context(), "session.list")
+	}
+	// The count is only known once the host has answered, so the answer is
+	// held until the event has been written.
+	buf := newBufferedResponse()
+	d.proxyList(buf, r)
+	if buf.status >= http.StatusBadRequest {
+		endEventHTTP(ev, buf.status, "session host list failed")
+	} else {
+		ev.Set("count", countListed(buf.body.Bytes())).End(logging.OutcomeOK, "", nil)
+	}
+	buf.replay(w)
+}
+
+func (d sessionRouteDeps) proxyList(w http.ResponseWriter, r *http.Request) {
 	if d.sessionRoutesUnavailable(w) {
 		return
 	}
@@ -397,13 +417,17 @@ func resolveLaunchCaller(r *http.Request, store config.SettingsStore) LaunchCall
 // launchAndRespond runs launch and answers eve -- the shared tail of both
 // create handlers.
 func (d sessionRouteDeps) launchAndRespond(ctx context.Context, w http.ResponseWriter, req LaunchRequest) {
-	_, resp, refusal, err := d.launch(ctx, req)
+	ev := logging.BeginEvent(ctx, "session.launch").Set("project_id", req.ProjectID).Set("kind", req.Kind)
+	result, resp, refusal, err := d.launch(ctx, req)
 	switch {
 	case refusal != nil:
+		endEvent(ev, refusal)
 		writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
 	case err != nil:
+		endEvent(ev, upstreamErr(err))
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "launch failed"})
 	default:
+		ev.Set("session_id", result.SessionID).End(logging.OutcomeOK, "", nil)
 		writeCreatedBody(w, resp.Body)
 	}
 }
@@ -440,7 +464,7 @@ func (d sessionRouteDeps) launch(ctx context.Context, req LaunchRequest) (*Launc
 
 	if !d.commitLaunch(ctx, result) {
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "project no longer exists"))
-		return nil, nil, nil, errors.New("project no longer exists")
+		return nil, nil, nil, notFoundf("project no longer exists")
 	}
 	d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, ""))
 	return result, resp, nil, nil
@@ -464,6 +488,8 @@ func (d sessionRouteDeps) handleResumeSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 	id := r.PathValue("id")
+	ev := logging.BeginEvent(r.Context(), "session.resume").Set("session_id", id)
+	w = newEventResponseWriter(w, func(status int) { endEventHTTP(ev, status, "session resume failed") })
 	caller := resolveLaunchCaller(r, d.store)
 	actor := callerAuditActor(caller)
 
@@ -477,6 +503,7 @@ func (d sessionRouteDeps) handleResumeSession(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
+	ev.Set("project_id", rec.ProjectID)
 	if rec.State == ledger.StateLive {
 		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeOK, "")
 		writeJSON(w, http.StatusOK, resumeResponseBody{SessionID: id, Resumed: false})
@@ -510,6 +537,7 @@ func (d sessionRouteDeps) handleResumeSession(w http.ResponseWriter, r *http.Req
 	result, refusal := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, req)
 	if refusal != nil {
 		d.auditor.Record(resumeAuditEvent(refusal.Audit))
+		endEvent(ev, refusal)
 		writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
 		return
 	}
@@ -748,4 +776,44 @@ func (d sessionRouteDeps) cleanupProject(projectID string) {
 		acc.end(d.modelKeys)
 	}
 	d.launches.EndByProject(projectID)
+}
+
+// bufferedResponse holds a handler's answer so the caller can write its event
+// before the answer leaves.
+type bufferedResponse struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func newBufferedResponse() *bufferedResponse {
+	return &bufferedResponse{header: http.Header{}, status: http.StatusOK}
+}
+
+func (b *bufferedResponse) Header() http.Header         { return b.header }
+func (b *bufferedResponse) WriteHeader(status int)      { b.status = status }
+func (b *bufferedResponse) Write(p []byte) (int, error) { return b.body.Write(p) }
+
+func (b *bufferedResponse) replay(w http.ResponseWriter) {
+	for k, v := range b.header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(b.status)
+	_, _ = w.Write(b.body.Bytes())
+}
+
+// countListed counts the entries of the first array in a session host list
+// answer ({"sessions": [...]} or {"terminals": [...]}).
+func countListed(body []byte) int {
+	var wrapper map[string]json.RawMessage
+	if json.Unmarshal(body, &wrapper) != nil {
+		return 0
+	}
+	for _, raw := range wrapper {
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) == nil {
+			return len(items)
+		}
+	}
+	return 0
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -62,7 +63,17 @@ func (r credentialMintRequest) presenceDigest() presence.Digest {
 // decision 5). The inert record is left in settings.json rather than swept —
 // the store has just demonstrated it cannot be written to reliably, and a
 // second write on that evidence is worse than naming the cleanup command.
-func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via, credID string) (config.APICredential, string, error) {
+func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via, credID string) (cred config.APICredential, plaintext string, err error) {
+	ev := logging.BeginEvent(ctx, "credential.mint")
+	validating := true
+	defer func() {
+		ev.Set("credential_id", cred.ID).Set("classes", audit.ClassStrings(cred.Classes))
+		evErr := err
+		if validating {
+			evErr = markInvalid(err)
+		}
+		endEvent(ev, evErr)
+	}()
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return config.APICredential{}, "", errors.New("a credential name is required")
@@ -78,6 +89,7 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 		return config.APICredential{}, "", fmt.Errorf("a negative lifetime (%s) is not a credential; omit --ttl for one that never expires", req.TTL)
 	}
 
+	validating = false
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
 		return config.APICredential{}, "", err
 	}
@@ -89,8 +101,6 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 		return config.APICredential{}, "", err
 	}
 
-	var cred config.APICredential
-	var plaintext string
 	err = o.runCommitted(ctx, func() error {
 		var mintErr error
 		cred, plaintext, mintErr = mintAPICredential(o.Store, credentialMintRequest{Name: name, Classes: req.Classes, TTL: req.TTL})
@@ -109,7 +119,7 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 			// The mint already committed. The caller must treat a non-nil error
 			// here as "do not show the plaintext" regardless of what else it
 			// received.
-			return auditErr
+			return auditWriteFailed(auditErr)
 		}
 		return nil
 	})
@@ -119,10 +129,15 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 // Revoke narrows, so an audit failure is reported rather than undone: a
 // failing log must not be the reason a compromised credential stays live —
 // the opposite balance from Mint, where the gap is the whole attack.
-func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (config.APICredential, error) {
+func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (removed config.APICredential, err error) {
+	ev := logging.BeginEvent(ctx, "credential.revoke")
+	defer func() {
+		ev.Set("credential_id", id)
+		endEvent(ev, err)
+	}()
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return config.APICredential{}, errors.New("a credential id is required")
+		return config.APICredential{}, markInvalid(errors.New("a credential id is required"))
 	}
 
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
@@ -135,14 +150,13 @@ func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (con
 		return config.APICredential{}, err
 	}
 
-	var removed config.APICredential
 	err = o.runCommitted(ctx, func() error {
 		var revokeErr error
 		removed, revokeErr = revokeAPICredential(o.Store, id)
 		if revokeErr != nil {
 			return revokeErr
 		}
-		return recordIssuance(o.Issuance, audit.CredentialIssuance{
+		return auditWriteFailed(recordIssuance(o.Issuance, audit.CredentialIssuance{
 			Revoked:    true,
 			Credential: auditCredentialAPI,
 			Subject:    removed.ID,
@@ -151,7 +165,7 @@ func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (con
 			Via:        via,
 			CredID:     credID,
 			PresenceID: grant.ID(),
-		})
+		}))
 	})
 	return removed, err
 }

@@ -335,8 +335,8 @@ func handleReloadMcp(ctx context.Context, req *BridgeRequest, router ToolRouter)
 	return BridgeResponse{Type: RespOK}
 }
 
-func handleReloadService(_ context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	if err := router.ReloadService(req.Name); err != nil {
+func handleReloadService(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	if err := router.ReloadService(ctx, req.Name); err != nil {
 		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespOK}

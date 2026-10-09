@@ -87,7 +87,7 @@ func sandboxMain(args []string) int {
 	if err != nil {
 		return sandboxFail("%v", err)
 	}
-	if err := writeStreamLine(conn, bridge.BridgeRequest{Type: bridge.ReqSandboxAttach, Arguments: arg}); err != nil {
+	if err := writeStreamLine(conn, bridge.BridgeRequest{Type: bridge.ReqSandboxAttach, Arguments: arg, TraceID: bridge.ClientTraceID()}); err != nil {
 		return sandboxFail("could not reach relay: %v", err)
 	}
 

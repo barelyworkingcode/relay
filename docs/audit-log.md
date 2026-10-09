@@ -338,6 +338,16 @@ A bounded in-memory ring of the most recent `ring_size` events backs the Tool
 Calls tab's first paint and its live tail, so opening the tab never re-reads the
 file.
 
+## Events are not audit records
+
+`relay logs` and the event lines in `logs/relay.log` (`docs/events.md`) are a
+diagnostic view of what relay did, one line per operation with an outcome and
+a trace. They never replace an audit record: they carry no actor or authority,
+are bounded by log rotation, and a failure to write one never refuses an
+operation. Issuance is still recorded here before the secret leaves. The
+`trace_id` on an audit record is the same ID an event line carries, so a
+reader can go from one to the other.
+
 ## Two records for a remote call
 
 A local call is one record, written after the call completes. A call from the

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
@@ -184,7 +185,16 @@ func (o *McpOps) Get(id string) (config.ExternalMcp, error) {
 	return *mcp, nil
 }
 
-func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (config.ExternalMcp, error) {
+func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (_ config.ExternalMcp, err error) {
+	ev := logging.BeginEvent(ctx, "mcp.register")
+	defer func() {
+		ev.Set("mcp_id", f.resolvedID()).Set("transport", mcpTransport(f.Transport))
+		if errors.Is(err, mcpbroker.ErrAuthRequired) {
+			endEvent(ev, nil)
+			return
+		}
+		endEvent(ev, err)
+	}()
 	id := f.resolvedID()
 	if id == "" {
 		return config.ExternalMcp{}, invalidMcp("display name is required")
@@ -287,7 +297,12 @@ func (o *McpOps) persist(cfg config.ExternalMcp, via, credID, presenceID string)
 	return nil
 }
 
-func (o *McpOps) Remove(id, via, credID string) error {
+func (o *McpOps) Remove(ctx context.Context, id, via, credID string) (err error) {
+	ev := logging.BeginEvent(ctx, "mcp.unregister")
+	defer func() {
+		ev.Set("mcp_id", id)
+		endEvent(ev, err)
+	}()
 	// No requireGate call here (ADR-018 step 3, §5.1): unregistering only
 	// narrows what the caller already reaches, and re-registering under
 	// the same id still hits Add's gate. requireIssuanceAuditor and
@@ -335,7 +350,12 @@ func (o *McpOps) Remove(id, via, credID string) error {
 // dependency. The IPC envelope is the only caller today (ADR-014 section 4
 // -- OAuth needs a local callback listener and a real browser, so it has no
 // HTTP route), and it supplies ctx.Platform.OpenURL.
-func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string), via, credID string) (*config.OAuthState, error) {
+func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string), via, credID string) (_ *config.OAuthState, err error) {
+	ev := logging.BeginEvent(ctx, "mcp.oauth.start")
+	defer func() {
+		ev.Set("mcp_id", id)
+		endEvent(ev, err)
+	}()
 	mcp, err := o.Get(id)
 	if err != nil {
 		return nil, err
@@ -404,7 +424,12 @@ func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string)
 // fires TCC prompts from relay's own signed, LSUIElement bundle, which only
 // exists on the machine relay is running on. There is no API shape for "make
 // the desktop this process is attached to show a permission dialog."
-func (o *McpOps) ResetPermissions(id string) (ResetMcpPermissionsResult, error) {
+func (o *McpOps) ResetPermissions(ctx context.Context, id string) (_ ResetMcpPermissionsResult, err error) {
+	ev := logging.BeginEvent(ctx, "mcp.permissions.reset")
+	defer func() {
+		ev.Set("mcp_id", id)
+		endEvent(ev, err)
+	}()
 	mcp, err := o.Get(id)
 	if err != nil {
 		return ResetMcpPermissionsResult{}, err
@@ -414,4 +439,13 @@ func (o *McpOps) ResetPermissions(id string) (ResetMcpPermissionsResult, error) 
 		return ResetMcpPermissionsResult{}, err
 	}
 	return *result, nil
+}
+
+// mcpTransport names the transport a register request selects: only "http"
+// is distinct, anything else starts a local process.
+func mcpTransport(t string) string {
+	if t == "http" {
+		return "http"
+	}
+	return "stdio"
 }

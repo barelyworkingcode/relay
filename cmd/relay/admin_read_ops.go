@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
 
@@ -46,7 +46,9 @@ func (i credentialListItem) credential() config.APICredential {
 	return config.APICredential{ID: i.ID, Name: i.Name, Classes: i.Classes, Created: i.Created, Expires: i.Expires}
 }
 
-func adminCredentialList(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+func adminCredentialList(ctx context.Context, r *appRouter, _ json.RawMessage) (_ json.RawMessage, err error) {
+	ev := logging.BeginEvent(ctx, "credential.list")
+	defer func() { endEvent(ev, err) }()
 	s, err := adminReadSnapshot(r)
 	if err != nil {
 		return nil, err
@@ -55,6 +57,7 @@ func adminCredentialList(_ context.Context, r *appRouter, _ json.RawMessage) (js
 	for _, c := range s.APICredentials {
 		items = append(items, credentialListItem{ID: c.ID, Name: c.Name, Classes: c.Classes, Created: c.Created, Expires: c.Expires})
 	}
+	ev.Set("count", len(items))
 	return marshalAdminResult(credentialListResult{Credentials: items})
 }
 
@@ -77,7 +80,9 @@ type serviceListResult struct {
 	Statuses map[string]service.SupervisionStatus `json:"statuses"`
 }
 
-func adminServiceList(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+func adminServiceList(ctx context.Context, r *appRouter, _ json.RawMessage) (_ json.RawMessage, err error) {
+	ev := logging.BeginEvent(ctx, "service.list")
+	defer func() { endEvent(ev, err) }()
 	ops, err := requireServiceOps(r)
 	if err != nil {
 		return nil, err
@@ -97,6 +102,7 @@ func adminServiceList(_ context.Context, r *appRouter, _ json.RawMessage) (json.
 	if statuses == nil {
 		statuses = map[string]service.SupervisionStatus{}
 	}
+	ev.Set("count", len(items))
 	return marshalAdminResult(serviceListResult{Services: items, Statuses: statuses})
 }
 
@@ -116,7 +122,9 @@ type mcpListResult struct {
 	Mcps []mcpListItem `json:"mcps"`
 }
 
-func adminMcpList(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+func adminMcpList(ctx context.Context, r *appRouter, _ json.RawMessage) (_ json.RawMessage, err error) {
+	ev := logging.BeginEvent(ctx, "mcp.list")
+	defer func() { endEvent(ev, err) }()
 	s, err := adminReadSnapshot(r)
 	if err != nil {
 		return nil, err
@@ -128,6 +136,7 @@ func adminMcpList(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawM
 			Command: m.Command, Args: m.Args, URL: m.URL, HTTP: m.IsHTTP(),
 		})
 	}
+	ev.Set("count", len(items))
 	return marshalAdminResult(mcpListResult{Mcps: items})
 }
 
@@ -137,24 +146,32 @@ type loginListResult struct {
 	Passkeys []passkeyView `json:"passkeys"`
 }
 
-func adminLoginList(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+func adminLoginList(ctx context.Context, r *appRouter, _ json.RawMessage) (_ json.RawMessage, err error) {
+	ev := logging.BeginEvent(ctx, "login.list")
+	defer func() { endEvent(ev, err) }()
 	s, err := adminReadSnapshot(r)
 	if err != nil {
 		return nil, err
 	}
-	return marshalAdminResult(loginListResult{Passkeys: passkeyViews(s)})
+	views := passkeyViews(s)
+	ev.Set("count", len(views))
+	return marshalAdminResult(loginListResult{Passkeys: views})
 }
 
 type eveListResult struct {
 	Passkeys []evePasskeyView `json:"passkeys"`
 }
 
-func adminEveList(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+func adminEveList(ctx context.Context, r *appRouter, _ json.RawMessage) (_ json.RawMessage, err error) {
+	ev := logging.BeginEvent(ctx, "eve.list")
+	defer func() { endEvent(ev, err) }()
 	s, err := adminReadSnapshot(r)
 	if err != nil {
 		return nil, err
 	}
-	return marshalAdminResult(eveListResult{Passkeys: evePasskeyViews(s)})
+	views := evePasskeyViews(s)
+	ev.Set("count", len(views))
+	return marshalAdminResult(eveListResult{Passkeys: views})
 }
 
 // enrolmentListItem is an enrolment record's public facts: the certificate
@@ -173,7 +190,9 @@ type enrolmentListResult struct {
 	Enrolments []enrolmentListItem `json:"enrolments"`
 }
 
-func adminEnrolmentList(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+func adminEnrolmentList(ctx context.Context, r *appRouter, _ json.RawMessage) (_ json.RawMessage, err error) {
+	ev := logging.BeginEvent(ctx, "enrolment.list")
+	defer func() { endEvent(ev, err) }()
 	s, err := adminReadSnapshot(r)
 	if err != nil {
 		return nil, err
@@ -185,6 +204,7 @@ func adminEnrolmentList(_ context.Context, r *appRouter, _ json.RawMessage) (jso
 			CLIAdmin: e.CLIAdmin, Budget: e.Budget, CreatedAt: e.CreatedAt,
 		})
 	}
+	ev.Set("count", len(items))
 	return marshalAdminResult(enrolmentListResult{Enrolments: items})
 }
 
@@ -198,12 +218,13 @@ type grantViewResult struct {
 
 // adminGrantView answers with an empty list, not an error, for a selector
 // that matches nothing: `relay grant` owns the wording of that refusal.
-func adminGrantView(_ context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+func adminGrantView(ctx context.Context, r *appRouter, args json.RawMessage) (_ json.RawMessage, err error) {
+	ev := logging.BeginEvent(ctx, "grant.view")
+	defer func() { endEvent(ev, err) }()
 	req := grantViewRequest{}
 	if len(args) > 0 {
-		var err error
 		if req, err = decodeAdminArgs[grantViewRequest]("grant.view", args); err != nil {
-			return nil, err
+			return nil, markInvalid(err)
 		}
 	}
 	s, err := adminReadSnapshot(r)
@@ -215,6 +236,7 @@ func adminGrantView(_ context.Context, r *appRouter, args json.RawMessage) (json
 	for _, p := range records {
 		views = append(views, newGrantView(s, p))
 	}
+	ev.Set("count", len(views))
 	return marshalAdminResult(grantViewResult{Grants: views})
 }
 
@@ -230,9 +252,9 @@ func resolveServiceRef(r *appRouter, id, name string) (string, error) {
 		return resolved, nil
 	}
 	if id != "" {
-		return "", fmt.Errorf("no service found with id %q", id)
+		return "", notFoundf("no service found with id %q", id)
 	}
-	return "", fmt.Errorf("no service found with name %q", name)
+	return "", notFoundf("no service found with name %q", name)
 }
 
 func resolveMcpRef(r *appRouter, id, name string) (string, error) {
@@ -244,7 +266,7 @@ func resolveMcpRef(r *appRouter, id, name string) (string, error) {
 		return resolved, nil
 	}
 	if id != "" {
-		return "", fmt.Errorf("no mcp found with id %q", id)
+		return "", notFoundf("no mcp found with id %q", id)
 	}
-	return "", fmt.Errorf("no mcp found with name %q", name)
+	return "", notFoundf("no mcp found with name %q", name)
 }

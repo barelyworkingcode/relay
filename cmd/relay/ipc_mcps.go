@@ -92,7 +92,7 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 	// loop on. It is still dispatched off the main thread, like this file's
 	// other IPC handlers.
 	ctx.GoFunc(func() {
-		if err := ctx.McpOps.Remove(msg.ID, auditViaIPC, ""); err != nil {
+		if err := ctx.McpOps.Remove(ctx.Ctx, msg.ID, auditViaIPC, ""); err != nil {
 			dispatchEmit(ctx, "onExternalMcpError", err.Error())
 			return
 		}

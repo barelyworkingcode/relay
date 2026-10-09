@@ -407,7 +407,9 @@ func (r *appRouter) ambiguousToolNames(stored *config.StoredToken, s *config.Set
 	return ambiguous
 }
 
-func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessage, error) {
+func (r *appRouter) ListTools(ctx context.Context, token string) (_ json.RawMessage, err error) {
+	ev := logging.BeginEvent(ctx, "tool.list").Set("transport", callTransport(ctx))
+	defer func() { endEvent(ev, err) }()
 	au := r.beginAudit(ctx, audit.AuditEventListTools)
 
 	auth, err := r.resolveAuth(ctx, token, service.OpProjectTools)
@@ -418,12 +420,14 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 	}
 	au.setActor(auth)
 	stored, settings := auth.stored, auth.settings
+	ev.Set("project_id", stored.ProjectID)
 
 	tools := make([]mcp.Tool, 0)
 	for _, listing := range r.listableToolsByMcp(stored, settings) {
 		tools = append(tools, listing.tools...)
 	}
 
+	ev.Set("count", len(tools))
 	au.setToolCount(len(tools))
 	au.done(audit.AuditOutcomeOK, nil)
 	return json.Marshal(tools)
@@ -604,7 +608,18 @@ func grantedMcpIDsForToken(stored *config.StoredToken, s *config.Settings) []str
 // CallTool is the one chokepoint every tool call funnels through, including
 // refused ones -- a denied or unauthenticated call is precisely what a
 // security review is looking for, so it is audited too.
-func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
+func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (result json.RawMessage, err error) {
+	ev := logging.BeginEvent(ctx, "tool.call").Set("tool", name).Set("transport", callTransport(ctx))
+	// evErr overrides err for the event when the failure belongs to the MCP
+	// rather than to relay's own checks.
+	var evErr error
+	defer func() {
+		ev.Set("tool_error", err == nil && resultIsError(result))
+		if evErr == nil {
+			evErr = err
+		}
+		endEvent(ev, evErr)
+	}()
 	au := r.beginAudit(ctx, audit.AuditEventCallTool)
 	au.setTool(name, args)
 
@@ -616,6 +631,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	}
 	au.setActor(auth)
 	stored, settings := auth.stored, auth.settings
+	ev.Set("project_id", stored.ProjectID)
 
 	owners := r.tools.ToolOwners(name)
 	// An MCP that is connected but absent from settings.ExternalMcps gets no
@@ -627,7 +643,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		return !slices.ContainsFunc(settings.ExternalMcps, func(m config.ExternalMcp) bool { return m.ID == id })
 	})
 	if len(owners) == 0 {
-		err := fmt.Errorf("unknown tool: %s", name)
+		err := notFoundf("unknown tool: %s", name)
 		au.done(audit.AuditOutcomeError, err)
 		return nil, err
 	}
@@ -641,6 +657,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		return nil, err
 	}
 	au.setMcp(extID)
+	ev.Set("mcp_id", extID)
 
 	// The MCP's LIVE declaration, read now rather than taken from the stored
 	// grant: a grant is validated once, at edit time, against the schema an
@@ -749,7 +766,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		budget = enrolment.BudgetFor(settings, rc)
 		if err := r.budgets.Admit(rc, budget); err != nil {
 			au.done(audit.AuditOutcomeThrottled, err)
-			return nil, err
+			return nil, &eventError{kind: errEventThrottled, cause: err}
 		}
 	}
 
@@ -763,7 +780,8 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		return nil, err
 	}
 
-	result, err := r.tools.CallTool(ctx, extID, name, args, meta)
+	result, err = r.tools.CallTool(ctx, extID, name, args, meta)
+	evErr = upstreamErr(err)
 	if isRemote {
 		// Charged after the fact because a result's size is not knowable
 		// before the MCP answers, and even on error: bytes that came back
@@ -997,6 +1015,7 @@ func (r *appRouter) ValidateAdmin(token string) error {
 }
 
 func (r *appRouter) ReconcileExternalMcps(ctx context.Context) {
+	defer logging.BeginEvent(ctx, "mcp.reconcile").End(logging.OutcomeOK, "", nil)
 	settings := config.FreshSettings(r.store)
 	r.tools.Reconcile(ctx, settings.ExternalMcps)
 	r.regenProjectSkills(ctx, settings)
@@ -1027,9 +1046,9 @@ func (r *appRouter) regenProjectSkills(ctx context.Context, settings *config.Set
 	slog.Info("project skill regen pass", "generate_skill_projects", processed)
 }
 
-func (r *appRouter) ReloadService(id string) error {
+func (r *appRouter) ReloadService(ctx context.Context, id string) error {
 	if r.serviceOps != nil {
-		return r.serviceOps.Restart(id)
+		return r.serviceOps.Restart(ctx, id)
 	}
 	settings := config.FreshSettings(r.store)
 	svc, _ := config.FindServiceByID(settings, id)
@@ -1064,7 +1083,15 @@ func (r *appRouter) requireServiceIdentity(ctx context.Context, token string, op
 // optional (plan-broker-and-sessions.md §2 C2): present and mismatched
 // against what Begin recorded, it refuses the same as a wrong secret. The
 // result recognises the caller and carries no credential.
-func (r *appRouter) Hello(ctx context.Context, name, secret, kind string) (bridge.HelloResult, error) {
+func (r *appRouter) Hello(ctx context.Context, name, secret, kind string) (res bridge.HelloResult, err error) {
+	ev := logging.BeginEvent(ctx, "bridge.hello")
+	defer func() {
+		if res.Kind != "" {
+			kind = res.Kind
+		}
+		ev.Set("service_id", name).Set("kind", kind)
+		endEvent(ev, err)
+	}()
 	if r.launches == nil {
 		return bridge.HelloResult{}, fmt.Errorf("%w: no launch table", service.ErrHelloRefused)
 	}
@@ -1084,12 +1111,15 @@ func (r *appRouter) Hello(ctx context.Context, name, secret, kind string) (bridg
 // its root process or a kernel-verified member of it — which names a project
 // the same way a token does. A service's launch identity names no project
 // and is refused by resolveAuth's own op check, not by a second rule here.
-func (r *appRouter) DescribeProject(ctx context.Context, token string) (bridge.ProjectDescription, error) {
+func (r *appRouter) DescribeProject(ctx context.Context, token string) (_ bridge.ProjectDescription, err error) {
+	ev := logging.BeginEvent(ctx, "project.describe")
+	defer func() { endEvent(ev, err) }()
 	auth, err := r.resolveAuth(ctx, token, service.OpProjectDescribe)
 	if err != nil {
 		return bridge.ProjectDescription{}, err
 	}
 	stored, settings := auth.stored, auth.settings
+	ev.Set("project_id", stored.ProjectID)
 	if stored.ProjectID == "" {
 		return bridge.ProjectDescription{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("DescribeProject requires a project token or a session"))
 	}
@@ -1162,12 +1192,14 @@ func (r *appRouter) listableToolsByMcp(stored *config.StoredToken, settings *con
 	return out
 }
 
-func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) error {
+func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) (err error) {
+	ev := logging.BeginEvent(ctx, "mcp.reload").Set("mcp_id", id)
+	defer func() { endEvent(ev, err) }()
 	settings := config.FreshSettings(r.store)
 	mcpCfg, _ := config.FindExternalMcpByID(settings, id)
 	if mcpCfg == nil {
 		slog.Warn("reload: no external MCP found", "id", id)
-		return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("no external MCP registered with id %q", id))
+		return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, notFoundf("no external MCP registered with id %q", id))
 	}
 	if err := r.tools.Reload(ctx, id, mcpCfg); err != nil {
 		slog.Error("failed to reload external MCP", "id", id, "error", err)
@@ -1186,7 +1218,9 @@ func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) error {
 // A service registers only under its own launch name. The registry forgets a
 // manifest by the id of the launch that exited, so a manifest under any other
 // id would outlive the process that serves it.
-func (r *appRouter) RegisterManifest(ctx context.Context, req bridge.RegisterManifestRequest, token string) error {
+func (r *appRouter) RegisterManifest(ctx context.Context, req bridge.RegisterManifestRequest, token string) (err error) {
+	ev := logging.BeginEvent(ctx, "service.manifest.register").Set("service_id", req.ServiceID)
+	defer func() { endEvent(ev, err) }()
 	id, err := r.requireServiceIdentity(ctx, token, service.OpRegisterManifest)
 	if err != nil {
 		return err
@@ -1215,4 +1249,13 @@ func (r *appRouter) AdminOp(ctx context.Context, name string, args json.RawMessa
 		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("unknown admin operation: %q", name))
 	}
 	return op(ctx, r, args)
+}
+
+// callTransport names the door a tool operation arrived through: the remote
+// listener attests its caller, everything else came over the local bridge.
+func callTransport(ctx context.Context) string {
+	if _, ok := bridge.RemoteCallerFromContext(ctx); ok {
+		return "remote"
+	}
+	return "bridge"
 }

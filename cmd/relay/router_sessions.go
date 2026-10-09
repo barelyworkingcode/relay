@@ -9,6 +9,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
 )
@@ -20,7 +21,9 @@ import (
 // the built-in relay-sessions service (internal/config/models.go's
 // sanitizeIfBuiltin), so a second name check here would be redundant with
 // an already-enforced invariant, not a second layer of defense.
-func (r *appRouter) SessionExited(ctx context.Context, req bridge.SessionExitedRequest, token string) error {
+func (r *appRouter) SessionExited(ctx context.Context, req bridge.SessionExitedRequest, token string) (err error) {
+	ev := logging.BeginEvent(ctx, "session.exited").Set("session_id", req.SessionID)
+	defer func() { endEvent(ev, err) }()
 	if _, err := r.requireServiceIdentity(ctx, token, service.OpSessionExited); err != nil {
 		return err
 	}
