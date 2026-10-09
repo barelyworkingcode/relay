@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-push hook: the hermetic suite, once per push rather than once per commit.
+# Pre-push hook: build and vet, once per push rather than once per commit.
 #
 # This is deliberate: do not set core.hooksPath to .githooks. A global hooks
 # dispatcher runs this file, and pointing hooksPath here bypasses the
@@ -9,9 +9,11 @@
 #   git push --no-verify
 #
 # What runs:
-#   go test ./...   — only when the commits being pushed touch Go sources
+#   go build ./...  — only when the commits being pushed touch Go sources
+#   go vet ./...    — likewise
 #
-# The race detector is CI's job (.github/workflows/ci.yml, every PR and main).
+# gofmt, the tagged vet and the no-_test.go check are CI's job
+# (.github/workflows/ci.yml, every PR and main).
 
 set -e
 
@@ -30,13 +32,13 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
     else
         base=$remote_sha
     fi
-    # No usable base (unfetched remote sha, no origin/main): run the suite
+    # No usable base (unfetched remote sha, no origin/main): run the checks
     # rather than guess.
     if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then
         touches_go=true
         break
     fi
-    if git diff --name-only "$base" "$local_sha" | grep -qE '\.(go|mod|sum|m|h)$|^test/|^testdata/|^web/'; then
+    if git diff --name-only "$base" "$local_sha" | grep -qE '\.(go|mod|sum|m|h)$|^web/'; then
         touches_go=true
         break
     fi
@@ -48,10 +50,15 @@ fi
 
 start=$(date +%s)
 
-echo "→ go test ./..."
-if ! go test ./...; then
-    echo "✗ tests failed; push aborted"
-    echo "  (rerun with: go test -v ./...)"
+echo "→ go build ./..."
+if ! go build ./...; then
+    echo "✗ build failed; push aborted"
+    exit 1
+fi
+
+echo "→ go vet ./..."
+if ! go vet ./...; then
+    echo "✗ vet failed; push aborted"
     exit 1
 fi
 

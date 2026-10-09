@@ -80,7 +80,7 @@ ADR-007 (relay is the sole broker of project tokens).
 
 ```bash
 ./build.sh              # build + install /Applications/Relay.app and launch it
-./build.sh --test       # run the hermetic test suite first; abort install on failure
+./build.sh --test       # run go vet first; abort install on failure
 ./build.sh --release    # sign + notarize + emit /tmp/Relay.dmg (Developer ID required)
 ```
 

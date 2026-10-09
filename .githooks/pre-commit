@@ -12,10 +12,7 @@
 #   2. go build ./...
 #   3. go vet ./...
 #
-# What does NOT run here, and where it runs instead (docs/testing.md):
-#   - go test ./...        pre-push hook, and CI on every PR
-#   - go test -race ./...  CI on every PR and on main
-#   - -tags=live           by hand
+# Relay has no unit tests; what proves it is in docs/testing.md.
 
 set -e
 

@@ -4,15 +4,16 @@
 #
 # Usage:
 #   ./build.sh                  # build + install + launch
-#   ./build.sh --test           # run hermetic test suite first; abort install on failure
+#   ./build.sh --test           # run go vet first; abort install on failure
 #   ./build.sh --release        # sign, notarize, emit /tmp/Relay.dmg (implies --test)
 #   ./build.sh --test-approver  # build with the test approver (tag testapprover) into
 #                               # ~/Applications/RelayTestApprover.app; the running tray
 #                               # is not stopped and the app is not launched; not with --release
 #
-# Tests run BEFORE install so a broken binary never lands in /Applications.
-# Use --test on every developer-machine build: the suite otherwise runs only at
-# push time, and an install from local changes deserves the same safety net.
+# go vet runs BEFORE install so a broken binary never lands in /Applications.
+# Use --test on every developer-machine build: vet otherwise runs only at
+# commit and push time, and an install from local changes deserves the same
+# safety net.
 
 set -euo pipefail
 
@@ -52,12 +53,12 @@ if $TEST_APPROVER; then
 fi
 
 # Regenerate the settings UI bundle (web/src/* -> internal/webassets/settings.html) FIRST,
-# so BOTH the test suite and the build below embed the current source rather than
+# so BOTH the vet pass and the build below embed the current source rather than
 # a stale committed artifact. esbuild runs in-process via web/gen; no Node.
 echo "Bundling settings UI..."
 go run ./web/gen
 
-# Stop any running Relay before testing: the build below is about to replace
+# Stop any running Relay before vetting: the build below is about to replace
 # its binary. SIGTERM first, for the normal clean shutdown
 # (app.cleanup() in trayapp.go); SIGKILL only if it hasn't exited within 3s.
 stop_relay() {
@@ -75,20 +76,15 @@ if ! $TEST_APPROVER; then
     stop_relay
 fi
 
-# Run the hermetic test suite up front. Mirrors what .githooks/pre-push runs —
-# keeps the install path consistent with the push gate.
+# Run go vet up front. Mirrors what .githooks/pre-push runs — keeps the
+# install path consistent with the push gate.
 if $RUN_TESTS; then
-    echo "=== Pre-install: hermetic test suite ==="
+    echo "=== Pre-install: go vet ==="
     if ! go vet ./...; then
         echo "✗ go vet failed; install aborted" >&2
         exit 1
     fi
-    if ! go test ./...; then
-        echo "✗ tests failed; install aborted" >&2
-        echo "  rerun with: go test -v ./..." >&2
-        exit 1
-    fi
-    echo "✓ tests passed"
+    echo "✓ vet passed"
 fi
 
 STAGE="/tmp/relay-build-$$"
