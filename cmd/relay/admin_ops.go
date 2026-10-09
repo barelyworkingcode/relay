@@ -84,6 +84,16 @@ var adminOps = map[string]adminOpEntry{
 	"project.token.rotate": {handle: adminProjectTokenRotate, caller: adminCallerOperator, gates: []string{"project.rotate_token"}},
 	"project.token.reveal": {handle: adminProjectTokenReveal, caller: adminCallerOperator, gates: []string{"project.reveal_token"}},
 	"project.skill.regen":  {handle: adminProjectSkillRegen, caller: adminCallerOperator},
+
+	"mcp.authenticate":      {handle: adminMcpAuthenticate, caller: adminCallerOperator, gates: []string{"mcp.oauth.start"}},
+	"mcp.permissions.reset": {handle: adminMcpResetPermissions, caller: adminCallerOperator},
+	"mcp.scope_fields":      {handle: adminMcpScopeFields, caller: adminCallerOperator},
+	"service.start":         {handle: adminServiceStart, caller: adminCallerOperator},
+	"service.stop":          {handle: adminServiceStop, caller: adminCallerOperator},
+	"service.action":        {handle: adminServiceAction, caller: adminCallerOperator},
+	"service.config.get":    {handle: adminServiceConfigGet, caller: adminCallerOperator},
+	"service.config.save":   {handle: adminServiceConfigSave, caller: adminCallerOperator},
+	"model.list":            {handle: adminModelList, caller: adminCallerOperator},
 }
 
 // Deliberate: doors.list is added at init rather than in the literal, because

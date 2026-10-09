@@ -199,12 +199,12 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 |---|---|---|---|
 | `mcp.list` | Before the list is returned | `GET /api/mcps`, `relay mcp list` | `count` |
 | `mcp.tools.list` | Before the tool list is returned | `GET /api/mcps/{id}/tools` | `mcp_id`, `count` |
-| `mcp.scope_fields.get` | Before the fields are returned | `GET /api/mcps/{id}/scope_fields` | `mcp_id` |
+| `mcp.scope_fields.get` | Before the fields are returned | `GET /api/mcps/{id}/scope_fields`, `relay mcp scope-fields` | `mcp_id` |
 | `mcp.scope_field.enumerate` | Before the values are returned | `POST /api/mcps/{id}/enumerate` | `mcp_id`, `field` |
 | `mcp.register` | At the end of `McpOps.Add` | `POST /api/mcps`, `relay mcp register`, Settings | `mcp_id`, `transport` |
 | `mcp.unregister` | At the end of `McpOps.Remove` | `DELETE /api/mcps/{id}`, `relay mcp unregister`, Settings | `mcp_id` |
-| `mcp.oauth.start` | At the end of `McpOps.StartOAuth` | Settings | `mcp_id` |
-| `mcp.permissions.reset` | At the end of `McpOps.ResetPermissions` | Settings | `mcp_id` |
+| `mcp.oauth.start` | At the end of `McpOps.StartOAuth` | `relay mcp authenticate`, Settings | `mcp_id` |
+| `mcp.permissions.reset` | At the end of `McpOps.ResetPermissions` | `relay mcp reset-permissions`, Settings | `mcp_id` |
 | `mcp.reconcile` | When the external MCP set is reconciled | bridge `reconcile_external_mcps` | none |
 | `mcp.reload` | When one external MCP is reloaded | bridge `reload_external_mcp` | `mcp_id` |
 | `mcp.state` | When an MCP is published and on each health report (background) | none (background) | `mcp_id`, `state` (`state` is `up`, `down`, `restart_failed`, `restarted` or `abandoned`) |
@@ -296,13 +296,15 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `service.create` | At the end of `ServiceOps.Create` / `Update` | `POST` and `PUT /api/services`, Settings | `service_id` |
 | `service.update` | At the end of `ServiceOps.Create` / `Update` | `POST` and `PUT /api/services`, Settings | `service_id` |
 | `service.unregister` | At the end of `ServiceOps.Remove` | `DELETE /api/services/{id}`, `relay service unregister`, Settings | `service_id` |
-| `service.start` | At the end of `ServiceOps.Start` / `Stop` | `POST /api/services/{id}/start` and `/stop`, Settings, tray menu | `service_id` |
-| `service.stop` | At the end of `ServiceOps.Start` / `Stop` | `POST /api/services/{id}/start` and `/stop`, Settings, tray menu | `service_id` |
+| `service.start` | At the end of `ServiceOps.Start` / `Stop` | `POST /api/services/{id}/start` and `/stop`, `relay service start` and `stop`, Settings, tray menu | `service_id` |
+| `service.stop` | At the end of `ServiceOps.Start` / `Stop` | `POST /api/services/{id}/start` and `/stop`, `relay service start` and `stop`, Settings, tray menu | `service_id` |
 | `service.restart` | At the end of `ServiceOps.Restart` | `relay service restart`, bridge `reload_service` | `service_id` |
 | `service.autostart.set` | At the end of `SetAutostart` | `PUT /api/services/{id}/autostart`, Settings | `service_id`, `autostart` |
 | `service.move` | At the end of `ServiceOps.Move` | `PUT /api/services/{id}/position`, Settings | `service_id`, `index` |
 | `service.menu.set` | At the end of `SetMenuHidden` | `PUT /api/services/{id}/menu`, Settings | `service_id`, `hidden` |
-| `service.config.save` | At the end of `SaveConfigFile` | Settings | `service_id`, `restarted` |
+| `service.config.save` | At the end of `SaveConfigFile` | `relay service config --set`, Settings | `service_id`, `restarted` |
+| `service.config.get` | At the end of `readServiceConfig` | `relay service config`, Settings | `service_id` |
+| `service.action` | At the end of `runServiceAction` | `relay service action`, Settings | `service_id`, `action_id` |
 | `service.state` | On spawn and on every phase change (background) | none (background) | `service_id`, `phase`, `attempt` (`phase` is `running`, `restarting` or `failed`; `exit_code` is optional) |
 
 ### Hosts

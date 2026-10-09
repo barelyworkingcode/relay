@@ -83,6 +83,15 @@ func cliVerbTable() []cliVerb {
 		{Name: "project token", Run: projectToken, Calls: []string{adminDoor("project.token.reveal")}},
 		{Name: "project regen-skill", Run: projectRegenSkill, Calls: []string{adminDoor("project.skill.regen")}},
 
+		{Name: "mcp authenticate", Run: mcpAuthenticate, Calls: []string{adminDoor("mcp.authenticate")}},
+		{Name: "mcp reset-permissions", Run: mcpResetPermissions, Calls: []string{adminDoor("mcp.permissions.reset")}},
+		{Name: "mcp scope-fields", Run: mcpScopeFields, Calls: []string{adminDoor("mcp.scope_fields")}},
+		{Name: "service start", Run: serviceStart, Calls: []string{adminDoor("service.start")}},
+		{Name: "service stop", Run: serviceStop, Calls: []string{adminDoor("service.stop")}},
+		{Name: "service action", Run: serviceAction, Calls: []string{adminDoor("service.action")}},
+		{Name: "service config", Run: serviceConfig, Calls: []string{adminDoor("service.config.get"), adminDoor("service.config.save")}},
+		{Name: "model list", Run: modelList, Calls: []string{adminDoor("model.list")}},
+
 		{Name: "sandbox", Run: runSandboxCommand, Calls: []string{bridge.ReqSandboxAttach}},
 		{Name: "drop-in", Run: runDropInCommand, Calls: []string{bridge.ReqDropInAttach}},
 
