@@ -256,7 +256,7 @@ Every TCP listener takes its address from `settings.json` and accepts port `0`:
 | Control-plane API | `api.listen` | `RELAY_API_LISTEN`; neither set: no listener |
 | Model endpoint | `model_endpoint.listen` | no listener |
 | Remote mTLS | `remote.listen` | `127.0.0.1:9910` when remote is enabled |
-| Enrolment requests | `remote.enrolment_listen` | `127.0.0.1:9911` when enabled |
+| Enrolment requests | `remote.enrolment_listen` | `127.0.0.1:9911`, bound only when `remote.enrolment_requests` and `remote.enabled` are both `true` and the tool-call audit log is recording; `remote.enabled` alone binds none |
 
 `api.listen` beats `RELAY_API_LISTEN`; both are read at start and both must be
 loopback. A refusal names the key or variable that supplied the address. The
@@ -1309,7 +1309,7 @@ raise a real password prompt:
 
 ```
 $ relay login enrol
-login code: <16 hex characters>
+login code: <32 hex characters>
   expires:   <timestamp> (valid for 2m0s, single use)
   this code registers a passkey — it is NOT a password and is never accepted in place of one
   open http://localhost:<API listener port>/relay/login and enter it to register a passkey
@@ -1322,7 +1322,7 @@ door, useful when the tray's menu is unreachable (e.g. no one is at the
 keyboard to click it, but someone is running the CLI in the desktop
 session).
 
-No JSON form. A script reads the first line, `login code: <16 hex characters>`.
+No JSON form. A script reads the first line, `login code: <32 hex characters>`.
 Exit codes: `0` minted; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag.
 
 ### `login list`
