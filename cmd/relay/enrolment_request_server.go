@@ -22,6 +22,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 const (
@@ -195,10 +196,14 @@ func handleEnrolmentLodge(sink EnrolmentRequestSink, line []byte, remoteAddr str
 		// Strict decoding: an unrecognised field lands here loudly.
 		return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, "enrolment request: "+err.Error())
 	}
+	// This listener has no caller-supplied trace; each request mints its own.
+	ev := logging.BeginEvent(logging.ContextWithTrace(context.Background(), logging.NewTraceID()), "enrolment.request.lodge")
 	res, err := sink.Lodge([]byte(req.CSRPEM), req.Label, req.RequestedProfile, req.SASCommit, remoteAddr)
 	if err != nil {
+		endLodgeEvent(ev, err)
 		return enrolmentErrorResponse(err)
 	}
+	ev.Set("request_id", res.RequestID).End(logging.OutcomeOK, "", nil)
 	data, merr := json.Marshal(enrolmentRequestLodgeResult(res))
 	if merr != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "enrolment request: "+merr.Error())
@@ -211,8 +216,15 @@ func handleEnrolmentPoll(sink EnrolmentRequestSink, line []byte, _ string) bridg
 	if err != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, "enrolment poll: "+err.Error())
 	}
+	ev := logging.BeginEvent(logging.ContextWithTrace(context.Background(), logging.NewTraceID()), "enrolment.request.poll").
+		Quiet().Set("request_id", req.RequestID)
 	res, err := sink.Poll(req.RequestID, req.SASOpen)
 	if err != nil {
+		if errors.Is(err, errEnrolmentSASRefused) {
+			ev.End(logging.OutcomeError, "invalid", err)
+		} else {
+			ev.End(logging.OutcomeError, "internal", err)
+		}
 		// Every refusal on the commitment-open path is the caller's
 		// request being wrong, so it answers as invalid params; anything
 		// else is relay's own side failing. An unknown id remains a
@@ -222,6 +234,7 @@ func handleEnrolmentPoll(sink EnrolmentRequestSink, line []byte, _ string) bridg
 		}
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "enrolment poll: "+err.Error())
 	}
+	ev.End(logging.OutcomeOK, "", nil)
 	data, merr := json.Marshal(enrolmentRequestPollResult{
 		Status:           res.Status,
 		PollAfterSeconds: res.PollAfterSeconds,
@@ -280,6 +293,21 @@ func enrolmentErrorResponse(err error) bridge.BridgeResponse {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, err.Error())
 	}
 	return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, err.Error())
+}
+
+// endLodgeEvent classes a lodge failure: a throttle is a denial, a missing CA
+// is relay's own state, and anything else is the caller's request being wrong.
+func endLodgeEvent(ev *logging.Event, err error) {
+	var limited *enrolmentRateLimitedError
+	var source *enrolmentSourceThrottledError
+	switch {
+	case errors.As(err, &limited), errors.As(err, &source), errors.Is(err, errEnrolmentTableFull):
+		ev.End(logging.OutcomeDenied, "throttled", err)
+	case errors.Is(err, errEnrolmentNoCA):
+		ev.End(logging.OutcomeError, "unavailable", err)
+	default:
+		ev.End(logging.OutcomeError, "invalid", err)
+	}
 }
 
 func enrolmentThrottledResponse(err error, retryAfter time.Duration) bridge.BridgeResponse {

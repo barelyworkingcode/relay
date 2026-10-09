@@ -9,6 +9,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -117,7 +118,9 @@ func (o *EveEnrolmentOps) notifyConsole(title, body string) {
 // issuance — MintBootstrap's own shape, including withholding the result
 // when it cannot be recorded (the window is already persisted at that
 // point, exactly as an unshown bootstrap code still expires on its own).
-func (o *EveEnrolmentOps) Open(ctx context.Context, via string) (eveEnrolmentStatusView, error) {
+func (o *EveEnrolmentOps) Open(ctx context.Context, via string) (_ eveEnrolmentStatusView, err error) {
+	ev := logging.BeginEvent(ctx, "eve.enrolment.open")
+	defer func() { endEvent(ev, err) }()
 	if o == nil {
 		return eveEnrolmentStatusView{}, errEveEnrolmentOpsUnavailable
 	}
@@ -181,7 +184,9 @@ func (o *EveEnrolmentOps) Status() eveEnrolmentStatusView {
 // best-effort, like recordHostProbe's and recordPasskeyRevoked's own
 // post-mutation records — a failing log must not un-spend the slot the
 // winning browser just took.
-func (o *EveEnrolmentOps) Consume(ctx context.Context, claim eveEnrolmentClaim) (eveEnrolmentConsumedView, error) {
+func (o *EveEnrolmentOps) Consume(ctx context.Context, claim eveEnrolmentClaim) (_ eveEnrolmentConsumedView, err error) {
+	ev := logging.BeginEvent(ctx, "eve.enrolment.consume")
+	defer func() { endEvent(ev, err) }()
 	if o == nil {
 		return eveEnrolmentConsumedView{}, errEveEnrolmentOpsUnavailable
 	}

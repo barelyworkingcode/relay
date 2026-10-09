@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 // RegisterEveEnrolmentRoutes wires the two HTTP endpoints
@@ -16,6 +17,7 @@ import (
 // gated doors), so this pair carries no path onto Open at all.
 func RegisterEveEnrolmentRoutes(rr *control.RouteRegistrar, ops *EveEnrolmentOps) {
 	rr.Handle(control.ClassRead, "GET /api/eve/passkey-enrolment", func(w http.ResponseWriter, r *http.Request) {
+		logging.BeginEvent(r.Context(), "eve.enrolment.status").Quiet().End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, ops.Status())
 	})
 

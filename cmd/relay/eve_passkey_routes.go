@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 // RegisterEvePasskeyRoutes wires eve's two doors onto the mirror
@@ -20,7 +21,7 @@ func RegisterEvePasskeyRoutes(rr *control.RouteRegistrar, ops *EvePasskeyOps) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		if err := ops.Report(req.Passkeys); err != nil {
+		if err := ops.Report(r.Context(), req.Passkeys); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -28,6 +29,9 @@ func RegisterEvePasskeyRoutes(rr *control.RouteRegistrar, ops *EvePasskeyOps) {
 	})
 
 	rr.Handle(control.ClassRead, "GET /api/eve/passkeys/revocations", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, evePasskeyRevocationsView{Revocations: ops.Revocations()})
+		revocations := ops.Revocations()
+		logging.BeginEvent(r.Context(), "eve.passkey.revocations").Quiet().
+			Set("count", len(revocations)).End(logging.OutcomeOK, "", nil)
+		writeJSON(w, http.StatusOK, evePasskeyRevocationsView{Revocations: revocations})
 	})
 }

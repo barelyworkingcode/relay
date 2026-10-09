@@ -377,7 +377,7 @@ func ipcRefuseEnrolmentRequest(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.RequestID == "" {
 		return
 	}
-	if err := ctx.EnrolmentOps.Refuse(msg.RequestID); err != nil {
+	if err := ctx.EnrolmentOps.Refuse(ctx.Ctx, msg.RequestID); err != nil {
 		ctx.UI.EmitEvent("onEnrolmentError", err.Error())
 		return
 	}

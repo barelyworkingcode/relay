@@ -12,6 +12,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
@@ -122,7 +123,6 @@ func writeChiefOfStaffConfigError(w http.ResponseWriter, err error) {
 		writeChiefOfStaffError(w, http.StatusBadRequest, cosErr.Code, cosErr.Message)
 		return
 	}
-	slog.Error("chief of staff setting: save failed", "op", "chief_of_staff.config", "status", "error", "error", err.Error())
 	writeChiefOfStaffError(w, http.StatusInternalServerError, "save_failed", "failed to save settings")
 }
 
@@ -184,22 +184,27 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj config.
 // and doc symmetry with the IPC surface.
 func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) { //nolint:unparam // deliberate: kept for doc/call-site symmetry with the IPC surface, see comment above
 	rr.Handle(control.ClassRead, "GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "project.list")
 		s := config.DisplaySettings(store)
 		projects := s.Projects
 		if projects == nil {
 			projects = []config.Project{}
 		}
+		ev.Set("count", len(projects)).End(logging.OutcomeOK, "", nil)
 		// projectView strips the plaintext token from the frontend response.
 		writeJSON(w, http.StatusOK, projectsToView(s, projects))
 	})
 
 	rr.Handle(control.ClassRead, "GET /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "project.get").Set("project_id", r.PathValue("id"))
 		s := config.DisplaySettings(store)
 		proj, _ := config.FindProjectByID(s, r.PathValue("id"))
 		if proj == nil {
+			endEventHTTP(ev, http.StatusNotFound, "project not found")
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
 		}
+		ev.End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, projectToView(s, *proj))
 	})
 
@@ -262,7 +267,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 
 	rr.Handle(control.ClassConfigure, "DELETE /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		_, found, err := ops.Remove(id)
+		found, err := ops.Remove(r.Context(), id)
 		if err != nil {
 			slog.Error("delete project: save failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
@@ -302,6 +307,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 	// Authorize refuses read and configure inside the chief-of-staff scope, so
 	// the Chief of Staff cannot repoint itself.
 	rr.Handle(control.ClassRead, "GET /api/chief-of-staff/config", func(w http.ResponseWriter, r *http.Request) {
+		logging.BeginEvent(r.Context(), "chief_of_staff.config.get").End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, chiefOfStaffViewOf(config.FreshSettings(store)))
 	})
 
@@ -348,7 +354,9 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 	// MCP listing for the Eve project dialog's "Allowed MCPs" picker.
 	// Returns id + display_name only; OAuth state and credentials stay private.
 	rr.Handle(control.ClassRead, "GET /api/mcps", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "mcp.list")
 		mcps := config.DisplaySettings(store).ExternalMcps
+		ev.Set("count", len(mcps)).End(logging.OutcomeOK, "", nil)
 		out := make([]map[string]string, 0, len(mcps))
 		for _, m := range mcps {
 			out = append(out, map[string]string{
@@ -421,11 +429,14 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 	// them means an editor may safely offer no fields.
 	rr.Handle(control.ClassRead, "GET /api/mcps/{id}/scope_fields", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
+		ev := logging.BeginEvent(r.Context(), "mcp.scope_fields.get").Set("mcp_id", id)
 		surfaces := mcps.AllMcpSurfaces()
 		if _, ok := surfaces[id]; !ok {
+			endEventHTTP(ev, http.StatusNotFound, "MCP not registered or not connected")
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "MCP not registered or not connected"})
 			return
 		}
+		ev.End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, surfaces.Schema(id).ScopeFieldViews())
 	})
 
@@ -445,11 +456,14 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 	// (ADR-015 decision 1), even though the HTTP verb is POST.
 	rr.Handle(control.ClassRead, "POST /api/mcps/{id}/enumerate", func(w http.ResponseWriter, r *http.Request) {
 		var body enumerateRequest
+		ev := logging.BeginEvent(r.Context(), "mcp.scope_field.enumerate").Set("mcp_id", r.PathValue("id"))
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			endEventHTTP(ev, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
 		res := project.EnumerateScopeField(r.Context(), mcps.AllMcpSurfaces(), enum, r.PathValue("id"), body.Field, body.Values)
+		endEventHTTP(ev.Set("field", body.Field), enumHTTPStatus(res.Status), "enumeration "+res.Status)
 		writeJSON(w, enumHTTPStatus(res.Status), res)
 	})
 
@@ -457,16 +471,20 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 	// 503 when no provider is wired (test contexts) or 404 when MCP is unknown
 	// / not connected yet.
 	rr.Handle(control.ClassRead, "GET /api/mcps/{id}/tools", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "mcp.tools.list").Set("mcp_id", r.PathValue("id"))
 		if tools == nil {
+			endEventHTTP(ev, http.StatusServiceUnavailable, "tool list not available")
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "tool list not available"})
 			return
 		}
 		infos := tools.ToolInfos(r.PathValue("id"))
 		if infos == nil {
 			// Distinguish unknown from empty-but-connected for the UI hint.
+			endEventHTTP(ev, http.StatusNotFound, "MCP not registered or not connected")
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "MCP not registered or not connected"})
 			return
 		}
+		ev.Set("count", len(infos)).End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, infos)
 	})
 }

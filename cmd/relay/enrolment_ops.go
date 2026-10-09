@@ -13,6 +13,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -235,7 +236,12 @@ func (o *EnrolmentOps) Get(clientID string) (config.Enrolment, error) {
 // only ever disagree with the one that counts. The only validation that
 // belongs at this layer is the client-id-required check, which needs no
 // lock because there is nothing yet to race over.
-func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credID string) (EnrolmentCreated, error) {
+func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credID string) (created EnrolmentCreated, err error) {
+	ev := logging.BeginEvent(ctx, "enrolment.create")
+	defer func() {
+		ev.Set("client_id", strings.TrimSpace(f.ClientID))
+		endEvent(ev, enrolmentEventErr(err))
+	}()
 	clientID := strings.TrimSpace(f.ClientID)
 	if clientID == "" {
 		return EnrolmentCreated{}, enrolment.Invalid("client id is required")
@@ -251,7 +257,6 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 		return EnrolmentCreated{}, err
 	}
 
-	var created EnrolmentCreated
 	var bundleErr error
 	if err := o.runQueued(ctx, func() error {
 		bundle, err := enrolment.Create(o.Store, enrolment.Request{
@@ -288,7 +293,12 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 // normative (§1.4, §11.2): the CSR is parsed BEFORE the gate, so a malformed
 // CSR never makes an operator type a password for an act that was going to
 // refuse anyway.
-func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, credID string) (EnrolmentCreated, error) {
+func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, credID string) (created EnrolmentCreated, err error) {
+	ev := logging.BeginEvent(ctx, "enrolment.sign")
+	defer func() {
+		ev.Set("client_id", strings.TrimSpace(f.ClientID))
+		endEvent(ev, enrolmentEventErr(err))
+	}()
 	clientID := strings.TrimSpace(f.ClientID)
 	if clientID == "" {
 		return EnrolmentCreated{}, enrolment.Invalid("client id is required")
@@ -309,7 +319,6 @@ func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, cre
 		return EnrolmentCreated{}, err
 	}
 
-	var created EnrolmentCreated
 	err = o.runQueued(ctx, func() error {
 		var err error
 		created, err = o.completeSigning(enrolment.Request{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
@@ -432,7 +441,12 @@ var (
 // run, so a failed audit-log undo (errEnrolmentUnrecorded, never
 // enrolment.ErrBundle) can never leave a poll answering "approved" for an
 // enrolment that was just revoked (AC-24).
-func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID string) (EnrolmentCreated, error) {
+func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID string) (created EnrolmentCreated, err error) {
+	ev := logging.BeginEvent(ctx, "enrolment.request.approve")
+	defer func() {
+		ev.Set("request_id", strings.TrimSpace(f.RequestID)).Set("client_id", strings.TrimSpace(f.ClientID))
+		endEvent(ev, enrolmentEventErr(err))
+	}()
 	if o.Requests == nil {
 		return EnrolmentCreated{}, errEnrolmentRequestsNotWired
 	}
@@ -474,7 +488,6 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 		return EnrolmentCreated{}, err
 	}
 
-	var created EnrolmentCreated
 	var signingErr error
 	err = o.runQueued(ctx, func() error {
 		created, signingErr = o.completeSigning(enrolment.Request{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
@@ -595,7 +608,12 @@ func (o *EnrolmentOps) relayAddr() string {
 // is not the act ADR-017 decision 3 protects (issue #68's boundary), and
 // the table's own Refuse method already records it as a genuine,
 // human-driven control.ControlDecision, unlike lodging.
-func (o *EnrolmentOps) Refuse(requestID string) error {
+func (o *EnrolmentOps) Refuse(ctx context.Context, requestID string) (err error) {
+	ev := logging.BeginEvent(ctx, "enrolment.request.refuse")
+	defer func() {
+		ev.Set("request_id", strings.TrimSpace(requestID))
+		endEvent(ev, enrolmentEventErr(err))
+	}()
 	if o.Requests == nil {
 		return errEnrolmentRequestsNotWired
 	}
@@ -664,6 +682,11 @@ func enrolmentUpdateReason(req enrolment.UpdateRequest) string {
 // the "widens one" case §6.4's table calls out, even though ADR-017's own
 // table names only create and revoke.
 func (o *EnrolmentOps) Update(ctx context.Context, req enrolment.UpdateRequest, via, credID string) (before, after config.Enrolment, err error) {
+	ev := logging.BeginEvent(ctx, "enrolment.update")
+	defer func() {
+		ev.Set("client_id", strings.TrimSpace(req.ClientID))
+		endEvent(ev, enrolmentEventErr(err))
+	}()
 	req.ClientID = strings.TrimSpace(req.ClientID)
 	if req.ClientID == "" {
 		return config.Enrolment{}, config.Enrolment{}, enrolment.Invalid("client id is required")
@@ -717,7 +740,12 @@ func (o *EnrolmentOps) Update(ctx context.Context, req enrolment.UpdateRequest, 
 // Returns the revoked record: once it is gone the fingerprint is the only
 // thing tying this client's past calls to an identity, and re-reading it
 // beforehand would race a concurrent revoke of the same id.
-func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string) (config.Enrolment, error) {
+func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string) (revoked config.Enrolment, err error) {
+	ev := logging.BeginEvent(ctx, "enrolment.revoke")
+	defer func() {
+		ev.Set("client_id", strings.TrimSpace(clientID))
+		endEvent(ev, enrolmentEventErr(err))
+	}()
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
 		return config.Enrolment{}, enrolment.Invalid("client id is required")
@@ -739,7 +767,6 @@ func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string)
 	// the revoked certificate. A compromised agent sitting in a persistent
 	// scanner loop never reconnects on its own, so deleting only the
 	// settings record would leave it working indefinitely.
-	var revoked config.Enrolment
 	err = o.runQueued(ctx, func() error {
 		var err error
 		revoked, err = enrolment.Revoke(o.Store, clientID)
@@ -957,7 +984,12 @@ func decideRemoteGate(existing *config.RemoteConfig, f remoteConfigFields, liste
 // service can wipe relay's whole remote configuration with no prompt --
 // availability exposure, gated now on the user's own explicit call
 // (STATUS-relay-security.md).
-func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields, via, credID string) (remoteConfigView, error) {
+func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields, via, credID string) (view remoteConfigView, err error) {
+	ev := logging.BeginEvent(ctx, "remote.configure")
+	defer func() {
+		ev.Set("enabled", f.Enabled && !f.Remove)
+		endEvent(ev, enrolmentEventErr(err))
+	}()
 	listen := strings.TrimSpace(f.Listen)
 	enrolListen := strings.TrimSpace(f.EnrolmentListen)
 	if !f.Remove {
@@ -989,8 +1021,7 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 		presenceID = grant.ID()
 	}
 
-	var view remoteConfigView
-	err := o.runQueued(ctx, func() error {
+	err = o.runQueued(ctx, func() error {
 		var changed []string
 		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
 			live := decideRemoteGate(s.Remote, f, listen, enrolListen)
@@ -1073,4 +1104,15 @@ func validateRemoteListen(addr string) error {
 		return fmt.Errorf("listen address %q has an invalid port %q", addr, port)
 	}
 	return nil
+}
+
+// enrolmentEventErr classes an enrolment core's error for its event. A bundle
+// write that failed after the record committed is not a failure of the
+// operation.
+func enrolmentEventErr(err error) error {
+	if errors.Is(err, enrolment.ErrBundle) && !errors.Is(err, errEnrolmentUnrecorded) &&
+		!errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
+		return nil
+	}
+	return asInvalid(err, errEnrolmentUnrecorded)
 }

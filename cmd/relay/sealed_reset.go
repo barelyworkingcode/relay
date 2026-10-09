@@ -9,6 +9,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
@@ -66,7 +67,9 @@ func sealedResetReason(s *config.Settings) string {
 // destructive sequence then runs as ONE queued step, so no queued write can
 // interleave with the deletes or seal under the old key mid-reset. queue is nil
 // only where no queue exists (tests): the sequence then runs inline.
-func resetSealedStore(ctx context.Context, dir string, store *config.FileSettingsStore, keyring sealed.Keyring, gate *presence.Gate, queue *config.CommandQueue, auditor IssuanceAuditor) error {
+func resetSealedStore(ctx context.Context, dir string, store *config.FileSettingsStore, keyring sealed.Keyring, gate *presence.Gate, queue *config.CommandQueue, auditor IssuanceAuditor) (err error) {
+	ev := logging.BeginEvent(ctx, "sealed.reset")
+	defer func() { endEvent(ev, err) }()
 	s := config.FreshSettings(store)
 	digest := sealedResetDigest(s.SealedKeyID, keyring)
 	if _, err := requireGate(gate, ctx, "sealed.reset", digest, sealedResetReason(s),

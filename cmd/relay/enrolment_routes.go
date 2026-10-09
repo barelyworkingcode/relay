@@ -8,6 +8,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 // credIDOf names the control-plane credential a request resolved to, or "" if
@@ -82,7 +83,9 @@ func writeEnrolmentError(w http.ResponseWriter, err error) {
 // the CA, and the revocation hook.
 func RegisterEnrolmentRoutes(rr *control.RouteRegistrar, ops *EnrolmentOps) {
 	rr.Handle(control.ClassRead, "GET /api/enrolments", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "enrolment.list")
 		list := ops.List()
+		ev.Set("count", len(list)).End(logging.OutcomeOK, "", nil)
 		out := make([]enrolmentView, 0, len(list))
 		for _, e := range list {
 			out = append(out, enrolmentViewOf(e))
@@ -91,11 +94,14 @@ func RegisterEnrolmentRoutes(rr *control.RouteRegistrar, ops *EnrolmentOps) {
 	})
 
 	rr.Handle(control.ClassRead, "GET /api/enrolments/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "enrolment.get").Set("client_id", r.PathValue("id"))
 		e, err := ops.Get(r.PathValue("id"))
 		if err != nil {
+			endEvent(ev, err)
 			writeEnrolmentError(w, err)
 			return
 		}
+		ev.End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, enrolmentViewOf(e))
 	})
 
@@ -130,6 +136,7 @@ func RegisterEnrolmentRoutes(rr *control.RouteRegistrar, ops *EnrolmentOps) {
 	})
 
 	rr.Handle(control.ClassRead, "GET /api/remote", func(w http.ResponseWriter, r *http.Request) {
+		logging.BeginEvent(r.Context(), "remote.config.get").End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, ops.RemoteConfig())
 	})
 

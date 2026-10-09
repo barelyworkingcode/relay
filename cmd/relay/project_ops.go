@@ -10,6 +10,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
@@ -97,6 +98,16 @@ var errProjectHosted = errors.New("project lives on a host; skills are generated
 // errProjectHasNoPath refuses a skill regen for a console project with an
 // empty Path (nothing for EmitSkills to write under).
 var errProjectHasNoPath = errors.New("project has no path")
+
+// projectEventErr classes a ProjectOps error for its event: a record that
+// moved during approval is a conflict, a store or audit-write failure is
+// internal, and any other unclassified error is a validation refusal.
+func projectEventErr(err error) error {
+	if errors.Is(err, errProjectChangedDuringApproval) {
+		return fmt.Errorf("%w: %w", errEventConflict, err)
+	}
+	return asInvalid(err, errProjectSaveFailed, errProjectTokenUnrecorded)
+}
 
 // projectCreateDigest binds a project.grant grant to exactly the shape being
 // created (§6.4). project_id is absent on create — there is none yet.
@@ -218,7 +229,12 @@ func projectGrantUpdateReason(id string, widened []string) string {
 // widening act project.grant exists to prompt for (§6.4's note that the op
 // "fires on any project create or update whose request sets any of the
 // listed fields").
-func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surfaces project.McpSurfaces, via, credID string) (config.Project, error) {
+func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surfaces project.McpSurfaces, via, credID string) (created config.Project, err error) {
+	ev := logging.BeginEvent(ctx, "project.create")
+	defer func() {
+		ev.Set("project_id", created.ID).Set("kind", string(created.Kind))
+		endEvent(ev, projectEventErr(err))
+	}()
 	if strings.TrimSpace(f.Name) == "" {
 		return config.Project{}, fmt.Errorf("project name is required")
 	}
@@ -233,7 +249,6 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 		return config.Project{}, err
 	}
 
-	var created config.Project
 	var createErr error
 	if err := o.runCommitted(ctx, func() error {
 		if err := o.Store.With(func(s *config.Settings) {
@@ -279,7 +294,8 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 // stored derived field, then shows up as an unapproved context widening and
 // is refused (unless the approval already covered context), rather than the
 // recheck and the write each seeing a different schema.
-func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFields, surfaces func() project.McpSurfaces, via, credID string) (config.Project, bool, error) {
+func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFields, surfaces func() project.McpSurfaces, via, credID string) (updated config.Project, found bool, err error) {
+	ev := logging.BeginEvent(ctx, "project.update")
 	var stored config.Project
 	if existing, _ := config.FindProjectByID(config.FreshSettings(o.Store), id); existing != nil {
 		stored = *existing
@@ -290,6 +306,10 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 	}
 	widened := project.UpdateWidensGrant(stored, f, gateSurfaces)
 	touchesGrant := len(widened) > 0
+	defer func() {
+		ev.Set("project_id", id).Set("gated", touchesGrant)
+		endEvent(ev, foundOrErr(projectEventErr(err), found || err != nil))
+	}()
 	var presenceID string
 	if touchesGrant {
 		if err := requireIssuanceAuditor(o.Issuance); err != nil {
@@ -304,8 +324,6 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 		presenceID = grant.ID()
 	}
 
-	var updated config.Project
-	var found bool
 	var updateErr error
 	var before config.Project
 	if err := o.runCommitted(ctx, func() error {
@@ -374,6 +392,11 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 // .claude/skills, which project.grant already covers via allowed_tools/
 // allowed_mcp_ids at the time GenerateSkill was turned on.
 func (o *ProjectOps) RegenSkill(ctx context.Context, lister SkillLister, id string) (dir string, found bool, err error) {
+	ev := logging.BeginEvent(ctx, "project.regen_skill")
+	defer func() {
+		ev.Set("project_id", id)
+		endEvent(ev, foundOrErr(asInvalid(err, errProjectHosted, errProjectHasNoPath), found))
+	}()
 	proj, _ := config.FindProjectByID(config.FreshSettings(o.Store), id)
 	if proj == nil {
 		return "", false, nil
@@ -397,7 +420,13 @@ func (o *ProjectOps) RegenSkill(ctx context.Context, lister SkillLister, id stri
 // returns "" for one with an empty Path). The one core HTTP DELETE
 // /api/projects/{id} and IPC delete_project share, so removal and its
 // skill cleanup cannot drift between the two doors.
-func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err error) {
+func (o *ProjectOps) Remove(ctx context.Context, id string) (found bool, err error) {
+	var removed config.Project
+	ev := logging.BeginEvent(ctx, "project.remove")
+	defer func() {
+		ev.Set("project_id", id)
+		endEvent(ev, foundOrErr(err, found || err != nil))
+	}()
 	var clearedDefaults []config.ProjectMode
 	if err := o.runQueued(context.Background(), func() error {
 		return o.Store.With(func(s *config.Settings) {
@@ -411,10 +440,10 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 			s.RemoveProject(id)
 		})
 	}); err != nil {
-		return config.Project{}, false, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
+		return false, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
 	}
 	if !found {
-		return config.Project{}, false, nil
+		return false, nil
 	}
 	if len(clearedDefaults) > 0 {
 		slog.Info("project removed; default cleared", "project_id", id, "modes", clearedDefaults)
@@ -432,7 +461,7 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 	// is a no-op, guarded by sessionRouteDeps.ready() inside cleanupProject.
 	o.SessionCleanup.cleanupProject(id)
 	o.SessionCleanup.endReadOnlySessions(readOnlyRootsChanged)
-	return removed, true, nil
+	return true, nil
 }
 
 // SetDefaultProject makes projectID the default project for mode, or clears
@@ -441,7 +470,12 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 // declines the write so settings.json stays byte-identical, and comes back
 // as config.ErrInvalidDefaultProject, never errProjectSaveFailed, so a door
 // can tell it from a store failure.
-func (o *ProjectOps) SetDefaultProject(ctx context.Context, mode config.ProjectMode, projectID string) (config.DefaultProjects, error) {
+func (o *ProjectOps) SetDefaultProject(ctx context.Context, mode config.ProjectMode, projectID string) (_ config.DefaultProjects, err error) {
+	ev := logging.BeginEvent(ctx, "project.default.set")
+	defer func() {
+		ev.Set("mode", string(mode)).Set("project_id", projectID)
+		endEvent(ev, projectEventErr(err))
+	}()
 	var refusal error
 	var effective config.DefaultProjects
 	if err := o.runCommitted(ctx, func() error {
@@ -465,7 +499,12 @@ func (o *ProjectOps) SetDefaultProject(ctx context.Context, mode config.ProjectM
 // stored block. Not gated and not audited: like a default project it is a
 // label and widens no grant. A refusal declines the write and comes back as
 // *config.ChiefOfStaffError, never errProjectSaveFailed.
-func (o *ProjectOps) SetChiefOfStaff(ctx context.Context, c config.ChiefOfStaffConfig) (config.ChiefOfStaffConfig, error) {
+func (o *ProjectOps) SetChiefOfStaff(ctx context.Context, c config.ChiefOfStaffConfig) (_ config.ChiefOfStaffConfig, err error) {
+	ev := logging.BeginEvent(ctx, "chief_of_staff.config.set")
+	defer func() {
+		ev.Set("project_id", c.ProjectID)
+		endEvent(ev, projectEventErr(err))
+	}()
 	var refusal error
 	var stored config.ChiefOfStaffConfig
 	if err := o.runCommitted(ctx, func() error {
@@ -478,16 +517,10 @@ func (o *ProjectOps) SetChiefOfStaff(ctx context.Context, c config.ChiefOfStaffC
 		})
 	}); err != nil {
 		if refusal != nil {
-			var cosErr *config.ChiefOfStaffError
-			if errors.As(refusal, &cosErr) {
-				slog.Warn("chief of staff setting refused", "op", "chief_of_staff.config", "status", "refused", "code", cosErr.Code)
-			}
 			return config.ChiefOfStaffConfig{}, refusal
 		}
 		return config.ChiefOfStaffConfig{}, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
 	}
-	slog.Info("chief of staff setting saved", "op", "chief_of_staff.config", "status", "ok",
-		"project_id", stored.ProjectID, "model", stored.Model, "daily_model_calls", stored.DailyModelCalls)
 	return stored, nil
 }
 
@@ -497,15 +530,15 @@ var errChiefOfStaffNothingToClear = errors.New("no chief of staff setting to cle
 
 // ClearChiefOfStaff removes relay's Chief of Staff setting. Clearing an
 // absent block succeeds without a write.
-func (o *ProjectOps) ClearChiefOfStaff(ctx context.Context) error {
-	cleared := false
-	err := o.runCommitted(ctx, func() error {
+func (o *ProjectOps) ClearChiefOfStaff(ctx context.Context) (err error) {
+	ev := logging.BeginEvent(ctx, "chief_of_staff.config.clear")
+	defer func() { endEvent(ev, projectEventErr(err)) }()
+	err = o.runCommitted(ctx, func() error {
 		return config.WithDeclinable(o.Store, func(s *config.Settings) error {
 			if s.ChiefOfStaff == nil {
 				return errChiefOfStaffNothingToClear
 			}
 			s.ClearChiefOfStaff()
-			cleared = true
 			return nil
 		})
 	})
@@ -514,9 +547,6 @@ func (o *ProjectOps) ClearChiefOfStaff(ctx context.Context) error {
 	}
 	if err != nil {
 		return fmt.Errorf("%w: %w", errProjectSaveFailed, err)
-	}
-	if cleared {
-		slog.Info("chief of staff setting cleared", "op", "chief_of_staff.config", "status", "ok", "cleared", true)
 	}
 	return nil
 }
@@ -533,6 +563,11 @@ func effectiveDefaultProjects(s *config.Settings) config.DefaultProjects {
 // cannot widen a grant. The record is resolved and mutated inside one queued
 // step, and found is false when the project no longer exists.
 func (o *ProjectOps) SetDisabledTools(ctx context.Context, id, mcpID string, disabled []string) (updated config.Project, found bool, err error) {
+	ev := logging.BeginEvent(ctx, "project.disabled_tools.set")
+	defer func() {
+		ev.Set("project_id", id).Set("mcp_id", mcpID).Set("count", len(disabled))
+		endEvent(ev, foundOrErr(err, found || err != nil))
+	}()
 	if err := o.runCommitted(ctx, func() error {
 		return o.Store.With(func(s *config.Settings) {
 			if proj, _ := config.FindProjectByID(s, id); proj == nil {
@@ -554,7 +589,12 @@ func (o *ProjectOps) SetDisabledTools(ctx context.Context, id, mcpID string, dis
 // exactly as project_routes.go and ipc_projects.go already did (§7.6's
 // "rotate_token withhold" stays unchanged) — moved here only so the record
 // can carry the presence_id the gate minted.
-func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (string, bool, error) {
+func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (_ string, found bool, err error) {
+	ev := logging.BeginEvent(ctx, "project.rotate_token")
+	defer func() {
+		ev.Set("project_id", id)
+		endEvent(ev, foundOrErr(projectEventErr(err), found || err != nil))
+	}()
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
 		return "", false, err
 	}
@@ -653,14 +693,19 @@ func (o *ProjectOps) DescribeGrant(s *config.Settings, proj *config.Project) gra
 func (o *ProjectOps) NarrowForEnrolment(
 	ctx context.Context, projectID string, f project.NarrowFields,
 	caller bridge.RemoteCaller, surfaces func() project.McpSurfaces,
-) (config.Project, []string, error) {
+) (_ config.Project, changed []string, err error) {
+	ev := logging.BeginEvent(ctx, "grant.narrow")
+	defer func() {
+		ev.Set("project_id", projectID).Set("client_id", caller.ClientID).Set("changed", len(changed) > 0)
+		endEvent(ev, projectEventErr(err))
+	}()
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
 		return config.Project{}, nil, err
 	}
 
 	var updated config.Project
 	var found, noop bool
-	err := o.runCommitted(ctx, func() error {
+	err = o.runCommitted(ctx, func() error {
 		err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
 			// Resolved INSIDE the callback, not from a value the caller
 			// captured earlier: the store's lock is what makes "narrower than
@@ -712,7 +757,7 @@ func (o *ProjectOps) NarrowForEnrolment(
 		return updated, nil, nil
 	}
 
-	changed := project.NarrowFieldNames(f)
+	changed = project.NarrowFieldNames(f)
 	return updated, changed, nil
 }
 

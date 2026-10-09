@@ -17,6 +17,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/projectfs"
@@ -834,7 +835,8 @@ func startServerCore(opts serverOptions) (*App, error) {
 	if err := app.writeReadyFile(); err != nil {
 		return nil, err
 	}
-	slog.Info("relay server ready", "config_dir", configDir, "ready_file", readyFilePath(configDir), "pid", os.Getpid())
+	logging.BeginEvent(ctx, "server.ready").Set("config_dir", configDir).Set("ready_file", readyFilePath(configDir)).
+		Set("pid", os.Getpid()).End(logging.OutcomeOK, "", nil)
 
 	// Health poll: service status and memory; settings changes arrive as
 	// post-commit events, not through this loop.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/login"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -258,7 +259,9 @@ var errLoginOpsUnavailable = errors.New("passkey management is unavailable in th
 // auditViaCLI for `relay login enrol` since S6 brokers it over admin_op) —
 // a parameter rather than a hardcoded auditViaTray, now that the tray's own
 // menu item is no longer this method's only caller.
-func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (loginCodeView, error) {
+func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (_ loginCodeView, err error) {
+	ev := logging.BeginEvent(ctx, "login.bootstrap.mint")
+	defer func() { endEvent(ev, err) }()
 	if o == nil {
 		return loginCodeView{}, errLoginOpsUnavailable
 	}
@@ -351,7 +354,12 @@ func (o *LoginOps) Sessions() []loginSessionView {
 	return loginSessionViews(config.DisplaySettings(o.Store), time.Now())
 }
 
-func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (config.Passkey, error) {
+func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (_ config.Passkey, err error) {
+	ev := logging.BeginEvent(ctx, "login.passkey.revoke")
+	defer func() {
+		ev.Set("passkey_id", abbreviatePasskeyID(strings.TrimSpace(id)))
+		endEvent(ev, asInvalid(err))
+	}()
 	if o == nil {
 		return config.Passkey{}, errLoginOpsUnavailable
 	}
@@ -391,7 +399,12 @@ func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (config.Passkey
 // become a general "revoke any control-plane credential" button, which is
 // what `relay credential revoke` is for and what the operator's own
 // long-lived credentials would be destroyed by.
-func (o *LoginOps) SignOut(id string) (config.APICredential, error) {
+func (o *LoginOps) SignOut(ctx context.Context, id string) (_ config.APICredential, err error) {
+	ev := logging.BeginEvent(ctx, "login.session.sign_out")
+	defer func() {
+		ev.Set("credential_id", id)
+		endEvent(ev, asInvalid(err))
+	}()
 	if o == nil {
 		return config.APICredential{}, errLoginOpsUnavailable
 	}

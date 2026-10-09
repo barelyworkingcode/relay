@@ -332,7 +332,7 @@ type ToolRouter interface {
 	ValidateAdmin(token string) error
 	ReconcileExternalMcps(ctx context.Context)
 	ReloadExternalMcp(ctx context.Context, id string) error
-	ReloadService(id string) error
+	ReloadService(ctx context.Context, id string) error
 	// Hello binds a launch secret to the caller's peer audit token. kind is
 	// BridgeRequest.Kind verbatim — empty when the caller doesn't assert one.
 	Hello(ctx context.Context, name, secret, kind string) (HelloResult, error)

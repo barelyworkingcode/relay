@@ -191,8 +191,10 @@ var remoteConfigHandlers = buildRemoteConfigHandlers(map[string]remoteConfigEntr
 	bridge.ReqNarrowGrant:   {control.ClassConfigure, handleRemoteNarrowGrant},
 })
 
-func handleRemoteDescribeGrant(_ context.Context, _ *bridge.RemoteRequest, configurer RemoteConfigurer, _ func() project.McpSurfaces, settings *config.Settings, proj *config.Project, _ bridge.RemoteCaller) bridge.BridgeResponse {
+func handleRemoteDescribeGrant(ctx context.Context, _ *bridge.RemoteRequest, configurer RemoteConfigurer, _ func() project.McpSurfaces, settings *config.Settings, proj *config.Project, caller bridge.RemoteCaller) bridge.BridgeResponse {
+	ev := logging.BeginEvent(ctx, "grant.describe").Set("project_id", proj.ID).Set("client_id", caller.ClientID)
 	data, err := json.Marshal(configurer.DescribeGrant(settings, proj))
+	endEvent(ev, err)
 	if err != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "describe grant: "+err.Error())
 	}

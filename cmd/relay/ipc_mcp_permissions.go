@@ -13,7 +13,7 @@ func ipcResetMcpPermissions(ctx *IPCContext, raw json.RawMessage) {
 	}
 
 	ctx.GoFunc(func() {
-		result, err := ctx.McpOps.ResetPermissions(msg.ID)
+		result, err := ctx.McpOps.ResetPermissions(ctx.Ctx, msg.ID)
 		ctx.Platform.DispatchToMain(func() {
 			if err != nil {
 				ctx.UI.EmitEvent("onMcpPermissionsReset", msg.ID, map[string]interface{}{
