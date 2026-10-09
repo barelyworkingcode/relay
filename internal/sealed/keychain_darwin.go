@@ -207,7 +207,7 @@ type keychainKeyring struct {
 // NewKeychainKeyring returns a Keyring backed by the login keychain, whose
 // item only the code identity at trustedAppPath may read without a
 // consent prompt (§5.3.1). Construct this at exactly one call site in
-// production -- the tray's own path, from runTrayApp -- and never from a
+// production -- the server core's own path, from startServerCore -- and never from a
 // CLI entry point: the CLI carries relay's own code identity too, so a
 // second call site here would satisfy the ACL by being exactly the process
 // §5.3.3 defends against (AC-29).

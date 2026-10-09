@@ -936,3 +936,20 @@ type RemoteConfig struct {
 type ModelEndpointConfig struct {
 	Listen string `json:"listen,omitempty"`
 }
+
+// APIConfig configures the control-plane API's loopback TCP listener, beside
+// its Unix socket. Absent means RELAY_API_LISTEN decides; with neither set
+// there is no TCP listener at all. A port of 0 binds a free port.
+type APIConfig struct {
+	Listen string `json:"listen,omitempty"`
+}
+
+// SessionSandboxConfig tunes the sandbox profile of hosted sessions.
+type SessionSandboxConfig struct {
+	// DeniedLoopbackPorts lists the loopback TCP ports a sandboxed session may
+	// not connect to. Nil (absent) means the built-in default; an explicit
+	// list, even an empty one, replaces it. The instance's own API port is
+	// denied whatever this holds. No omitempty: an explicit empty list must
+	// survive a write.
+	DeniedLoopbackPorts []int `json:"denied_loopback_ports"`
+}

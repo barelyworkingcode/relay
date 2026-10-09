@@ -584,6 +584,9 @@ func suggestClientID(s *config.Settings, label string) string {
 // — a client that just collected a certificate has no other way to learn
 // where to point relayremote list/call next.
 func (o *EnrolmentOps) relayAddr() string {
+	if bound := currentListenAddrs().Remote; bound != "" {
+		return bound
+	}
 	return resolveRemoteConfig(config.FreshSettings(o.Store).Remote).Listen
 }
 

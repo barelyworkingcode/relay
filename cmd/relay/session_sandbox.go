@@ -30,13 +30,14 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sessions/sandbox"
 )
 
-// C7's two fixed loopback denials: eve's dev server and relayLLM's status
-// listener. Relay's own API port joins them at build time (SH §5.2) because
-// it is bound only when RELAY_API_LISTEN asks for it. The model endpoint's
-// port is not a constant here either — it is read from settings, so an
-// operator who moved it does not silently lose the one loopback port a
-// session is meant to reach.
-var sandboxDeniedLoopbackPorts = []int{3000, 8181}
+// defaultDeniedLoopbackPorts is the denial list when settings.json has no
+// session_sandbox.denied_loopback_ports: eve's dev server and relayLLM's
+// status listener. An explicit list replaces it. Relay's own API port joins
+// whichever list applies at build time (SH §5.2) because it is bound only when
+// api.listen or RELAY_API_LISTEN asks for it. The model endpoint's port is
+// read from the bound listener, so an operator who moved it does not silently
+// lose the one loopback port a session is meant to reach.
+var defaultDeniedLoopbackPorts = []int{3000, 8181}
 
 // eveServiceID is the id eve registers under (`relay service register --id
 // eve`, eve/docs/setup.md). Eve's auth material lives in its own data
@@ -200,6 +201,10 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	read = append(read, readOnlyRoots...)
 	ensureGrantDirs(readWrite)
 
+	deniedPorts, err := deniedLoopbackPorts(settings)
+	if err != nil {
+		return sandbox.Spec{}, err
+	}
 	spec := sandbox.Spec{
 		Read:           read,
 		ReadFiles:      readFiles,
@@ -216,10 +221,10 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 			bridge.ModelSocketPath(),
 			service.RelaySessionsHookSocketPath(relayDir),
 		},
-		TCPLoopbackDeny: deniedLoopbackPorts(),
+		TCPLoopbackDeny: deniedPorts,
 		DenySetIDExec:   true,
 	}
-	if port, ok := modelEndpointLoopbackPort(settings); ok {
+	if port, ok := modelEndpointLoopbackPort(); ok {
 		spec.TCPLoopbackAllow = []int{port}
 	}
 	return spec, nil
@@ -361,25 +366,28 @@ func eveDataDir(settings *config.Settings) string {
 	return filepath.Join(svc.WorkingDir, "data")
 }
 
-// deniedLoopbackPorts is SH §5.2's TCP row: the two fixed ports plus relay's
-// own API listener when an operator bound one.
-func deniedLoopbackPorts() []int {
-	ports := append([]int(nil), sandboxDeniedLoopbackPorts...)
-	if port, ok := apiListenLoopbackPort(); ok {
+// deniedLoopbackPorts is SH §5.2's TCP row: the configured list (or the
+// default) plus this instance's own API listener when one is bound. A listed
+// port outside 1-65535 refuses the launch rather than being dropped: a denial
+// that silently does nothing reads as enforcement.
+func deniedLoopbackPorts(settings *config.Settings) ([]int, error) {
+	ports := append([]int(nil), defaultDeniedLoopbackPorts...)
+	if settings != nil && settings.SessionSandbox != nil && settings.SessionSandbox.DeniedLoopbackPorts != nil {
+		ports = append([]int(nil), settings.SessionSandbox.DeniedLoopbackPorts...)
+	}
+	for _, p := range ports {
+		if p < 1 || p > 65535 {
+			return nil, fmt.Errorf("session_sandbox.denied_loopback_ports: %d is not a port in 1-65535", p)
+		}
+	}
+	if port, ok := listenPort(currentListenAddrs().API); ok {
 		ports = append(ports, port)
 	}
-	return ports
+	return ports, nil
 }
 
-// apiListenLoopbackPort is the port RELAY_API_LISTEN names, read from the
-// environment because that is the only place relay itself reads it
-// (trayapp's ListenLoopback call). Unset is the default and contributes
-// nothing — there is no listener to deny.
-func apiListenLoopbackPort() (int, bool) {
-	addr := os.Getenv(EnvAPIListen)
-	if addr == "" {
-		return 0, false
-	}
+// listenPort is the numeric port of a bound host:port address.
+func listenPort(addr string) (int, bool) {
 	_, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		return 0, false
@@ -414,21 +422,10 @@ func darwinUserTempDir() string {
 	return darwinTempDir
 }
 
-// modelEndpointLoopbackPort is C7's tcp_loopback_allow: the model endpoint's
-// TCP port when one is configured. An absent block means no TCP listener at
-// all (C8), so there is nothing to allow — model.sock still carries every
-// model call.
-func modelEndpointLoopbackPort(settings *config.Settings) (int, bool) {
-	if settings == nil || settings.ModelEndpoint == nil || settings.ModelEndpoint.Listen == "" {
-		return 0, false
-	}
-	_, portStr, err := net.SplitHostPort(settings.ModelEndpoint.Listen)
-	if err != nil {
-		return 0, false
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 {
-		return 0, false
-	}
-	return port, true
+// modelEndpointLoopbackPort is C7's tcp_loopback_allow: the port the model
+// endpoint's TCP listener actually bound. No bound listener means no TCP
+// listener at all (C8), so there is nothing to allow — model.sock still
+// carries every model call.
+func modelEndpointLoopbackPort() (int, bool) {
+	return listenPort(currentListenAddrs().Model)
 }

@@ -74,6 +74,14 @@ type Settings struct {
 	// unaffected either way. Same "absent means closed" default as Remote.
 	ModelEndpoint *ModelEndpointConfig `json:"model_endpoint,omitempty"`
 
+	// API configures the control-plane API's loopback TCP listener. Absent
+	// means RELAY_API_LISTEN decides, and with neither there is no listener.
+	API *APIConfig `json:"api,omitempty"`
+
+	// SessionSandbox tunes the sandbox profile of hosted sessions. Absent
+	// means the built-in defaults.
+	SessionSandbox *SessionSandboxConfig `json:"session_sandbox,omitempty"`
+
 	// APICredentials are the bearer credentials the control-plane API
 	// accepts, each naming its own capability classes (ADR-015 decision 3).
 	// omitempty, like Enrolments and Audit: an install that never mints one

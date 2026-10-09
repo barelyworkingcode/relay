@@ -62,6 +62,8 @@ func main() {
 	}
 
 	switch args[0] {
+	case "serve":
+		runServeCommand(args[1:])
 	case "service":
 		runServiceCommand(args[1:])
 	case "mcp":
@@ -89,7 +91,7 @@ func main() {
 	case "mcpList":
 		exitError("mcpList has been removed. Use: relay mcpExec --token <TOKEN> --list")
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [service|mcp|mcpExec|audit|enrol|credential|login|eve|grant|project|sandbox|drop-in]\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [serve|service|mcp|mcpExec|audit|enrol|credential|login|eve|grant|project|sandbox|drop-in]\n", args[0])
 		os.Exit(1)
 	}
 }
