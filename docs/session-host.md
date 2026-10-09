@@ -35,6 +35,8 @@ the one field a stored record contributes, and a fresh install defaults it to
 `true`. A restart (`service.restart`, the tray, the Settings UI) resynthesizes
 the record the same way startup does, through `ServiceOps.SessionHost`.
 
+`Args` may also carry `-claude-command`, `-pi-command` and `-codex-command`, each only when the matching template sets an absolute `command` (see [Finding the binary](#finding-the-binary)).
+
 `Args` carries `-relay-mcp-command <relayBin>` alongside the socket flags,
 the relay binary path relay derives `Command` from: relay-sessions
 learns the one binary that serves `relay mcp` this way, with no env fallback
@@ -773,7 +775,7 @@ A session whose model is `codex/<slug>` runs `codex app-server` and speaks its n
 
 ### Launch
 
-On this machine the child is `<codex> app-server` under the shim, with the sandbox profile and launch identity, like pi. Its working directory is the session directory. Its environment is the shared base plus `ensurePath`, `RELAY_SESSION_ID` and `RELAY_BRIDGE_SOCKET`; no relay credential and no `CODEX_*` variable is added. No model key is minted: Codex brings its own login and relay never reads, moves or supplies it. The binary is `CodexConfig.Binary`, else the first hit of `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, then `PATH`.
+On this machine the child is `<codex> app-server` under the shim, with the sandbox profile and launch identity, like pi. Its working directory is the session directory. Its environment is the shared base plus `ensurePath`, `RELAY_SESSION_ID` and `RELAY_BRIDGE_SOCKET`; no relay credential and no `CODEX_*` variable is added. No model key is minted: Codex brings its own login and relay never reads, moves or supplies it. The binary is `CodexConfig.Binary` (the `codex` template's absolute `command`, see [Finding the binary](#finding-the-binary)), else the first hit of `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, then `PATH`.
 
 On an SSH host the provider runs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir, [codex_path, "app-server"], {RELAY_SESSION_ID})]`. `codex_path` is `HostSpec.CodexPath`, which `buildHostSpec` copies from the `command` of the host's `codex` template. An empty path fails `Start` with `host "<id>" has no codex path: set its codex template's command`. A host session is not sandboxed and gets no identity ([ssh-hosts.md](ssh-hosts.md#codex-on-a-host)).
 
@@ -841,7 +843,9 @@ This section is the wire contract between `relay-sessions` and the `claude`, `pi
 
 ### Finding the binary
 
-`relay-sessions` is given no binary path, so every lookup falls through to the well-known list. `~` is the home directory of the `relay-sessions` process (`HOME`). The first existing file wins; with none, the name is looked up on `PATH`, and with no hit the bare name is run and the spawn fails.
+The operator can name the binary. When the `claude-code`, `pi` or `codex` template in `settings.json` has a `command` that is an absolute path or starts with `~/`, relay passes it to `relay-sessions` as `-claude-command`, `-pi-command` or `-codex-command` on the built-in service record, and that kind runs exactly that file (the model list for pi and codex runs it too). A bare name such as `claude`, or no `command`, leaves the lookup below untouched. Only settings the operator writes feed the flags: no session request, and no value a session can write, chooses the binary. The flags are read when relay starts the session host, so a changed template takes effect at its next start.
+
+With no such command, every lookup falls through to the well-known list. `~` is the home directory of the `relay-sessions` process (`HOME`). The first existing file wins; with none, the name is looked up on `PATH`, and with no hit the bare name is run and the spawn fails.
 
 | Kind | Order |
 |---|---|

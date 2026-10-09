@@ -213,6 +213,46 @@ func (i *Instance) linkAgents() {
 	}
 }
 
+// agentTemplates returns the instance's terminal templates: a shell, and a
+// claude-code, pi and codex template whose command is the fake's own path
+// under HOME/.local/bin, so the fake runs wherever a real CLI is installed.
+// A template the test supplied under the same id replaces the harness one.
+func (i *Instance) agentTemplates(supplied []json.RawMessage) []json.RawMessage {
+	have := map[string]bool{}
+	for _, raw := range supplied {
+		var t struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &t); err != nil {
+			i.t.Fatalf("Options.Settings[\"terminal_templates\"] holds a non-object entry: %v", err)
+		}
+		have[t.ID] = true
+	}
+	defaults := []map[string]string{{"id": "shell", "name": "Shell"}}
+	for _, p := range []struct{ id, name, bin string }{
+		{"claude-code", "Claude Code", "claude"},
+		{"pi", "Pi", "pi"},
+		{"codex", "Codex", "codex"},
+	} {
+		defaults = append(defaults, map[string]string{
+			"id": p.id, "name": p.name,
+			"command": filepath.Join(i.Home, ".local", "bin", p.bin),
+		})
+	}
+	out := append([]json.RawMessage{}, supplied...)
+	for _, d := range defaults {
+		if have[d["id"]] {
+			continue
+		}
+		raw, err := json.Marshal(d)
+		if err != nil {
+			i.t.Fatalf("encoding template %s: %v", d["id"], err)
+		}
+		out = append(out, raw)
+	}
+	return out
+}
+
 func (i *Instance) writeSettings() {
 	t := i.t
 	t.Helper()
@@ -224,7 +264,7 @@ func (i *Instance) writeSettings() {
 	appended := map[string][]json.RawMessage{}
 	for k, v := range i.opts.Settings {
 		switch k {
-		case "api_credentials", "external_mcps", "services":
+		case "api_credentials", "external_mcps", "services", "terminal_templates":
 			var arr []json.RawMessage
 			if err := json.Unmarshal(v, &arr); err != nil {
 				t.Fatalf("Options.Settings[%q] must be a JSON array: %v", k, err)
@@ -234,6 +274,7 @@ func (i *Instance) writeSettings() {
 			settings[k] = v
 		}
 	}
+	appended["terminal_templates"] = i.agentTemplates(appended["terminal_templates"])
 	for _, c := range i.opts.Credentials {
 		appended["api_credentials"] = append(appended["api_credentials"], i.newCredential(c))
 	}

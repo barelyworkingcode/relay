@@ -43,6 +43,7 @@ type Config struct {
 	// omission the same way api.HandleModels already documents.
 	Permissions *permission.PermissionManager
 	PiBinary    string
+	CodexBinary string
 	ModelSocket string
 }
 
@@ -348,7 +349,7 @@ func (s *Server) ListenInternal() error {
 	// before any of them do real work, and for /ws specifically it must run
 	// before hub.HandleUpgrade — Upgrade writes the HTTP 101 immediately,
 	// and that can't be un-sent.
-	modelsCfg := api.ModelsConfig{PiBinary: s.cfg.PiBinary, ModelSocket: s.cfg.ModelSocket}
+	modelsCfg := api.ModelsConfig{PiBinary: s.cfg.PiBinary, CodexBinary: s.cfg.CodexBinary, ModelSocket: s.cfg.ModelSocket}
 	mux.HandleFunc("GET /api/models", s.guarded(func(w http.ResponseWriter, r *http.Request) {
 		api.HandleModels(modelsCfg, w, r)
 	}))
