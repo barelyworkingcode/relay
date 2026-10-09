@@ -152,7 +152,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 		IdleTimeout:       5 * time.Minute,
 	}
 	slog.Warn("frontend API bound to loopback TCP in addition to its socket",
-		"addr", addr)
+		"addr", ln.Addr().String())
 	return nil
 }
 
