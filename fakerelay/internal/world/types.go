@@ -166,6 +166,7 @@ type Host struct {
 }
 
 type Probe struct {
+	At         string `json:"at,omitempty"`
 	OK         bool   `json:"ok"`
 	OS         string `json:"os,omitempty"`
 	Arch       string `json:"arch,omitempty"`

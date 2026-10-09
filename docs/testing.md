@@ -1,7 +1,7 @@
 # Testing
 
 Relay has no unit tests. `go test ./...` reports `no test files` for every
-package and exits 0. CI rejects any Go test file outside `e2e/`.
+package and exits 0. CI rejects any Go test file outside `e2e/` and `fakerelay/`.
 
 ## What proves relay
 
@@ -26,7 +26,7 @@ hand-run tool for Settings UI work.
 |---|---|---|
 | commit | `gofmt -l`, `go build ./...`, `go vet ./...` | `.githooks/pre-commit` |
 | push | `go build ./...` and `go vet ./...`, skipped when the pushed commits touch no Go sources or web assets | `.githooks/pre-push` |
-| PR, and every push to `main` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags testapprover ./cmd/relay`, and a step that fails on any `_test.go` outside `e2e/` | `.github/workflows/ci.yml` |
+| PR, and every push to `main` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags testapprover ./cmd/relay`, and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` | `.github/workflows/ci.yml` |
 | `./build.sh --test` | `go vet ./...` before install | `build.sh` |
 
 Do not set `core.hooksPath` in this repo. A global hooks dispatcher runs the

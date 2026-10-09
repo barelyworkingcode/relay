@@ -100,6 +100,11 @@ func Validate(w *World) error {
 		if !agentStates[h.Agent] {
 			return bad(p+".agent", "must be none, connecting, connected or unreachable")
 		}
+		if h.Probe != nil && h.Probe.At != "" {
+			if _, err := time.Parse(time.RFC3339, h.Probe.At); err != nil {
+				return bad(p+".probe.at", "must be an RFC 3339 time")
+			}
+		}
 	}
 	projects := map[string]bool{}
 	for i, pr := range w.Projects {

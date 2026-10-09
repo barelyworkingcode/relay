@@ -439,7 +439,7 @@ name answers 400 `{"error":"project name is required"}` before the gate. A
 needs an audit trail.
 
 Events: `project.list`, `project.get`, `project.create`, `project.update`,
-`project.delete`.
+`project.remove`.
 
 ### Chief of Staff
 
@@ -577,7 +577,7 @@ Persistent terminals:
 | Host unreachable | 502 | `{"error":"host unreachable"}` |
 | Kill succeeded | 204 | none |
 
-Events: `host.list`, `host.get`, `host.create`, `host.update`, `host.delete`,
+Events: `host.list`, `host.get`, `host.create`, `host.update`, `host.remove`,
 `host.probe`, `host.disconnect`, `host_template.list`, `session.persistent.list`.
 
 checked against relay at `59cdf9e`.
@@ -1150,7 +1150,7 @@ sorted by `id`. Row:
 `running` or `stopped`.
 
 `DELETE /api/terminals/{id}` answers 204, or 404 with an empty body for an
-unknown id. It closes the terminal. Events: `terminal.list`, `terminal.launch`,
+unknown id. It closes the terminal. Events: `terminal.list`, `session.launch`,
 `terminal.delete`.
 
 Terminal templates. Shape (omit empty keys):
@@ -1329,10 +1329,8 @@ profile, sorted by `name`:
     "path": "/home/acme/app",
     "mcps": [
       {"mcp": "fsmcp", "access": "read", "outbound": "blocked", "tools": "all tools",
-       "scope": {"allowed_dir": "\"/home/acme\""}, "warnings": []}
-    ],
-    "mounts": [],
-    "enrolments": []
+       "scope": {"allowed_dir": "\"/home/acme\""}}
+    ]
   }
 ]
 ```

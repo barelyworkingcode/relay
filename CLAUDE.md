@@ -28,6 +28,7 @@ same change when behaviour moves.
 | `relay sandbox`, the bridge takeover seam | [`docs/sandbox-command.md`](docs/sandbox-command.md) |
 | SSH host projects | [`docs/ssh-hosts.md`](docs/ssh-hosts.md) |
 | Model endpoint, model keys | [`docs/model-endpoint.md`](docs/model-endpoint.md) |
+| Fake relay for tests (`fakerelay/`: world spec, wire reference, surface) | [`docs/fakerelay.md`](docs/fakerelay.md) |
 | Tests | [`docs/testing.md`](docs/testing.md), [`docs/testing-roadmap.md`](docs/testing-roadmap.md) |
 | Devbox verify (layer 2, the running app) | [`cmd/devboxverify/README.md`](cmd/devboxverify/README.md) |
 | Judging a security finding: who relay defends against, and what's out of scope | [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) |
@@ -76,7 +77,7 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 |---|---|
 | commit | `gofmt`, `go build`, `go vet` — seconds |
 | push | `go build ./...`, `go vet ./...` |
-| PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags testapprover ./cmd/relay`, and a step that fails on any `_test.go` outside `e2e/` |
+| PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags testapprover ./cmd/relay`, and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` |
 
 ## House rules
 
@@ -123,7 +124,7 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
 
 ### Tests
 
-- Relay has no unit tests and CI rejects a `_test.go` outside `e2e/`. Until
+- Relay has no unit tests and CI rejects a `_test.go` outside `e2e/` and `fakerelay/`. Until
   `e2e/` exists, a bug's failing repro is a devbox journey (`cmd/devboxverify`).
 - Time-dependent code takes an injected clock; a test does not sleep to wait
   for one.
