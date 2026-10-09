@@ -376,7 +376,7 @@ func TestMissingFixtures(t *testing.T) {
 // contractNeeds is the Needs table the contract pins, by journey id.
 func contractNeeds() map[string][]string {
 	want := map[string][]string{"acme-sandbox-reach": {"project:acme", "project:globex", "file:acme/PROJECT.md", "file:globex/PROJECT.md"}}
-	for _, id := range []string{"blank-model-refused", "oversized-launch-audit-capped", "acme-tools-through-bridge", "tool-call-audited",
+	for _, id := range []string{"blank-model-refused", "oversized-launch-audit-capped", "acme-tools-through-bridge", "tool-call-audited", "file-plane-contained",
 		"session-chat-lifecycle", "terminal-lifecycle", "model-list-and-completion", "session-chat-resume", "session-agent-state", "session-codex", "session-drop-in", "session-drop-in-tool-refused", "chief-of-staff-send", "cos-start", "cos-start-outside-root", "cos-read-only-profile", "cos-settings"} {
 		want[id] = []string{"project:acme"}
 	}

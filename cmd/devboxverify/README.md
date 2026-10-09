@@ -290,6 +290,23 @@ mcp `relay_mcp.id` and outcome `ok` or `denied`.
 - Traps: a local call writes one row; only a remote call writes an intent
   and a completion. The baseline row must still be in the last 200.
 
+**file-plane-contained** (api). In Acme, through the file routes on the
+frontend socket with the execute-class launch credential: a write answers
+200 with an `intent` row (read once, when the route answers) and a
+`completion` row `ok` with the same id; a `..` path answers 403 `TRAVERSAL`,
+a write through a planted symlink 403 `SYMLINK`, and a write after
+`relay project update --files-read-only=true` 403 `READ_ONLY`, each with one
+`denied` row (no phase, error = code) and no file left behind.
+- Lives in: `cmd/relay/file_ops.go`, `cmd/relay/file_routes.go`,
+  `cmd/relay/audit_file.go`, `cmd/relay/project_cmd.go`.
+- Reached by: `POST /api/projects/{id}/files/write`, then `relay audit
+  --event file_op --project <id> --json`.
+- Traps: the completion and denied rows are written after the response with
+  no signal outside relay, so the journey polls the audit log, bounded at
+  10 s, until all of them are there. The flag is always cleared at teardown.
+  The loopback-host leg is not run: the world declares no SSH host that
+  reaches the test machine, so a PASS says so in its detail.
+
 **Owner-gate positives** (screen): `gate-credential-mint-pos`,
 `execute-credential-renewal`, `gate-mcp-register-pos`,
 `gate-project-grant-pos`, `gate-service-register-pos`,

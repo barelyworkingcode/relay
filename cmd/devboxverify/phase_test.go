@@ -49,7 +49,7 @@ func TestJourneyTableInvariants(t *testing.T) {
 
 var wantAPIJourneys = []string{
 	"blank-model-refused", "permission-mode-restart", "oversized-launch-audit-capped", "acme-sandbox-reach",
-	"v1-conversion-refusal", "acme-tools-through-bridge", "tool-call-audited",
+	"v1-conversion-refusal", "acme-tools-through-bridge", "tool-call-audited", "file-plane-contained",
 }
 
 // screenStage is the contract's screen-phase order: mint, negatives, NOTRUN
