@@ -211,13 +211,15 @@ table above.
    explicit import/repair command with clear stopped-tray semantics. Manual
    edits must not continue as an undocumented second writer.
 
-7. **Complete ordering and freshness tests — Complete.** Add deterministic coverage for
-   listener rebinds, service delete versus delayed start/update, reverse-order
-   external work, second-tray startup, reset versus write, failed persistence,
-   restart snapshot consistency, and direct-file edits. Run focused race tests
-   plus `go test -race ./...` after the remaining phases.
+7. **Ordering and freshness proof — Complete.** Relay has no unit tests. The
+   ordering contract is held by the single command queue and checked by the
+   reviewer, with end-to-end proof from the devbox journeys and later the e2e
+   feature tests.
 
 ### Shipping verification
+
+The test files named in this section and the next no longer exist; relay has
+no unit tests now. The block is kept as a dated log.
 
 Task 7 audit found every listed case already covered except listener rebind
 ordering; the one added test is
@@ -558,10 +560,9 @@ Write and enforce these invariants:
 - `settings.json` is not a supported live second writer.
 - Every committed configuration change produces one notification.
 
-Add a structural test that fails on new production uses of the old store API.
-Keep the existing tests, but stop treating a green `-race` run as proof of
-correct configuration ordering; race freedom and freshness are different
-properties.
+Nothing enforces automatically that production code avoids the old store
+API; the reviewer checks it. A green `-race` run is not proof of correct
+configuration ordering; race freedom and freshness are different properties.
 
 ### Phase 2 — snapshots for readers
 
@@ -634,9 +635,10 @@ Retain a slow health/recovery poll for crashed children, external keychain/file
 repair, and missed events. It should reconcile from current committed state; it
 should not be a second configuration reader.
 
-### Phase 7 — lock down and test the ordering contract
+### Phase 7 — lock down and prove the ordering contract
 
-Add deterministic tests for:
+Relay has no unit tests. Proof is the devbox journeys, and later the e2e
+feature tests, covering:
 
 - two concurrent commands: both changes survive and run in admission order;
 - work that leaves the queue (host probe, out-of-step approval, service-owned
@@ -654,9 +656,8 @@ Add deterministic tests for:
 - direct-file edits: either rejected as unsupported or imported through one
   explicit path, never silently merged.
 
-Run the focused race tests and `go test -race ./...` after each concurrency
-phase. Also test freshness with deterministic barriers; a race detector cannot
-prove that a logically stale snapshot was not used.
+Check freshness by ordering, not by the race detector; it cannot prove that a
+logically stale snapshot was not used.
 
 ## Post-commit event, convergence and the external-writer policy
 

@@ -32,12 +32,11 @@ before touching the store. A door — CLI, IPC, HTTP, the bridge's `admin_op`
 dispatch — cannot opt out of this, because it never had the option to call
 anything but the core method. A nil `Gate` refuses every gated method rather
 than allowing it (`errPresenceGateNotWired`), so a build that forgot to wire
-one fails closed instead of silently granting everything. A `go/ast`
-call-graph test walks every route, IPC handler and bridge handler in
-`package main` and fails, naming the file, if any of them reaches a gated
-mutator without going through its core — this is ADR-015's "make the route
-unreachable, don't register a check that can be missed" argument, turned into
-a build-time assertion instead of a runtime one.
+one fails closed instead of silently granting everything. Nothing enforces
+automatically that every route, IPC handler and bridge handler reaches a
+gated mutator only through its core; the reviewer checks it. This is
+ADR-015's "make the route unreachable, don't register a check that can be
+missed" argument, held by the structure of the code and by review.
 
 ## Which operations are gated, and why each one qualifies
 
@@ -447,7 +446,7 @@ rules, and the full list of refusal causes are in
 
 Nothing in relay raises a real password prompt except the tray: the
 LocalAuthentication provider is constructed in exactly one place, `runTrayApp`.
-There is no fake presence provider in the module.
+The only other provider is the build-tagged test approver (next section).
 
 There is no environment variable, settings field, or setter-shaped global
 anywhere in this feature that could disable or weaken the gate. Nothing
@@ -458,9 +457,9 @@ provider that answers `project.grant` alone and refuses every other gated op
 This is deliberate and total, in the spirit of the house rule that a
 weakening introduced to make a test convenient is the weakening most likely
 to survive into production: rather than build a seam and discipline everyone
-never to flip it, there is no seam to flip. Tests wire a fake provider the
-same way they wire a sandboxed config directory — by constructing the thing
-under test with it directly — which adds no production-visible API at all.
+never to flip it, there is no seam to flip. The
+test approver is the one exception, and it is a separate build, not a runtime
+switch.
 
 ## The test-approver build
 
