@@ -53,6 +53,8 @@ var gateSetupJourneys = slices.Concat(
 	noDoorJourneys(),
 	notRunPosJourneys(),
 	[]journey{
+		{oauthStartPosID, []string{"mcps", "presence", "sealed", "instance"}, nil, phaseScreen, oauthTimeout, runOAuthStartPos},
+		{sealedResetPosID, []string{"sealed", "presence", "instance"}, nil, phaseScreen, sealedTimeout, runSealedResetPos},
 		{mcpPosID, []string{"mcps", "presence", "audit"}, nil, phaseScreen, gateTimeout, runMcpPos},
 		{grantPosID, []string{"projects", "grants", "presence", "audit"}, nil, phaseScreen, gateTimeout, runGrantPos},
 		{servicePosID, []string{"services", "presence", "audit"}, nil, phaseScreen, gateTimeout, runServicePos},
