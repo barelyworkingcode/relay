@@ -696,6 +696,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 	_, headless := platform.(*headlessPlatform)
 	doors := newDoorCatalog(headless)
 	router.headless = headless
+	router.resetSealed = app.resetSealed
 	router.doors = doors
 	templateOps := &TemplateOps{Store: store, Queue: serviceQueue}
 	app.ipcCtx.TemplateOps = templateOps
