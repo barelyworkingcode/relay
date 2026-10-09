@@ -68,6 +68,7 @@ service id.
 ./build.sh --release    # sign + notarize + /tmp/Relay.dmg (implies --test)
 
 go build ./... && go vet ./...        # while working
+(cd e2e && go test -race ./features/)  # the feature tests; builds the test bundle itself
 golangci-lint run ./...               # a ratchet, not a gate: add no new findings
 ```
 
@@ -78,6 +79,7 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 | commit | `gofmt`, `go build`, `go vet` — seconds |
 | push | `go build ./...`, `go vet ./...` |
 | PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags relaytest ./...`, the test-build absent/present check, and a step that fails on any `_test.go` outside `e2e/` |
+| PR and `main` (GitHub Actions) | the `e2e` job: `gofmt` and `go vet` in `e2e/`, then `go test -race -count=1 ./features/` |
 
 ## House rules
 

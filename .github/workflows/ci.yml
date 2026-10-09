@@ -49,3 +49,27 @@ jobs:
           if [ -n "$stray" ]; then
             echo "_test.go files outside e2e/:"; echo "$stray"; exit 1
           fi
+
+  e2e:
+    name: e2e
+    # The harness builds the relaytest bundle itself, so this needs cgo + Cocoa.
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: gofmt (e2e)
+        working-directory: e2e
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet (e2e)
+        working-directory: e2e
+        run: go vet ./...
+      - name: e2e feature tests
+        working-directory: e2e
+        run: go test -race -count=1 -timeout 35m ./features/
