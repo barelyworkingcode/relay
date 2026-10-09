@@ -83,6 +83,15 @@ func cliVerbTable() []cliVerb {
 		{Name: "project token", Run: projectToken, Calls: []string{adminDoor("project.token.reveal")}},
 		{Name: "project regen-skill", Run: projectRegenSkill, Calls: []string{adminDoor("project.skill.regen")}},
 
+		{Name: "status", Run: runStatusCommand, Calls: []string{adminDoor("status.view")}, Usage: statusUsage},
+		{Name: "remote show", Run: remoteShow, Calls: []string{adminDoor("remote.view")}},
+		{Name: "remote set", Run: remoteSet, Calls: []string{adminDoor("remote.set")}},
+		{Name: "host probe", Run: hostProbe, Calls: []string{adminDoor("host.probe")}},
+		{Name: "host disconnect", Run: hostDisconnect, Calls: []string{adminDoor("host.disconnect")}},
+		{Name: "sealed reset", Run: sealedReset, Calls: []string{adminDoor("sealed.store.reset")}},
+		{Name: "login sessions", Run: loginSessions, Calls: []string{adminDoor("login.session.list")}},
+		{Name: "login sign-out", Run: loginSignOut, Calls: []string{adminDoor("login.session.sign_out")}},
+
 		{Name: "sandbox", Run: runSandboxCommand, Calls: []string{bridge.ReqSandboxAttach}},
 		{Name: "drop-in", Run: runDropInCommand, Calls: []string{bridge.ReqDropInAttach}},
 

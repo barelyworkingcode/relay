@@ -84,6 +84,15 @@ var adminOps = map[string]adminOpEntry{
 	"project.token.rotate": {handle: adminProjectTokenRotate, caller: adminCallerOperator, gates: []string{"project.rotate_token"}},
 	"project.token.reveal": {handle: adminProjectTokenReveal, caller: adminCallerOperator, gates: []string{"project.reveal_token"}},
 	"project.skill.regen":  {handle: adminProjectSkillRegen, caller: adminCallerOperator},
+
+	"status.view":            {handle: adminStatusView, caller: adminCallerOperator},
+	"remote.view":            {handle: adminRemoteView, caller: adminCallerOperator},
+	"remote.set":             {handle: adminRemoteSet, caller: adminCallerOperator, gates: []string{"remote.configure"}},
+	"host.probe":             {handle: adminHostProbe, caller: adminCallerOperator},
+	"host.disconnect":        {handle: adminHostDisconnect, caller: adminCallerOperator},
+	"sealed.store.reset":     {handle: adminSealedReset, caller: adminCallerOperator, gates: []string{"sealed.reset"}},
+	"login.session.list":     {handle: adminLoginSessions, caller: adminCallerOperator},
+	"login.session.sign_out": {handle: adminLoginSignOut, caller: adminCallerOperator},
 }
 
 // Deliberate: doors.list is added at init rather than in the literal, because

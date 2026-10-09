@@ -226,6 +226,12 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `credential.mint` | At the end of `CredentialOps.Mint` | `relay credential mint` | `credential_id`, `classes` |
 | `credential.revoke` | At the end of `CredentialOps.Revoke` | `relay credential revoke` | `credential_id` |
 
+### Status
+
+| Event | When written | Doors | Fields |
+|---|---|---|---|
+| `status.view` | Before the status document is returned | `relay status` | none |
+
 ### Doors
 
 | Event | When written | Doors | Fields |
@@ -252,8 +258,8 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
-| `remote.config.get` | Before the config is returned | `GET /api/remote` | none |
-| `remote.configure` | At the end of `SetRemoteConfig` | `PUT /api/remote`, Settings | `enabled` |
+| `remote.config.get` | Before the config is returned | `GET /api/remote`, `relay remote show` | none |
+| `remote.configure` | At the end of `SetRemoteConfig` | `PUT /api/remote`, `relay remote set`, Settings | `enabled` |
 
 ### Login
 
@@ -262,7 +268,8 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `login.list` | Before the list is printed | `relay login list` | `count` |
 | `login.bootstrap.mint` | At the end of `LoginOps.MintBootstrap` | `relay login enrol`, tray | none |
 | `login.passkey.revoke` | At the end of `RevokePasskey` | `relay login revoke`, Settings | `passkey_id` |
-| `login.session.sign_out` | At the end of `SignOut` | Settings | `credential_id` |
+| `login.session.list` | Before the list is printed | `relay login sessions` | `count` |
+| `login.session.sign_out` | At the end of `SignOut` | `relay login sign-out`, Settings | `credential_id` |
 | `login.page` | In `serveDocument` | `GET /relay/login` | none |
 | `login.challenge` | In `serveChallenge` | `POST /relay/login/challenge` | none |
 | `login.passkey.register` | In `serveVerify`, when the body registers a passkey | `POST /relay/login/verify` | `passkey_id` (exactly one of this and `login.sign_in` per request) |
@@ -284,7 +291,7 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
-| `sealed.reset` | At the end of `resetSealedStore` | tray | none |
+| `sealed.reset` | At the end of `resetSealedStore` | `relay sealed reset`, tray | none |
 
 ### Services
 
@@ -314,8 +321,8 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `host.create` | At the end of the matching `HostOps` method | `/api/hosts` routes, Settings | `host_id` |
 | `host.update` | At the end of the matching `HostOps` method | `/api/hosts` routes, Settings | `host_id` |
 | `host.remove` | At the end of the matching `HostOps` method | `/api/hosts` routes, Settings | `host_id` |
-| `host.probe` | At the end of the matching `HostOps` method | `/api/hosts` routes, Settings | `host_id` |
-| `host.disconnect` | At the end of the matching `HostOps` method | `/api/hosts` routes, Settings | `host_id` |
+| `host.probe` | At the end of the matching `HostOps` method | `/api/hosts` routes, `relay host probe`, Settings | `host_id` |
+| `host.disconnect` | At the end of the matching `HostOps` method | `/api/hosts` routes, `relay host disconnect`, Settings | `host_id` |
 | `host.pastetmp` | At the end of `FileOps.PasteTmp` | `POST /api/hosts/{id}/pastetmp` | `host_id` |
 
 ### Host templates
