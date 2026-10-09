@@ -93,7 +93,7 @@ func TestFileAudit_RowsCarryProjectPathAndArgsPerOp(t *testing.T) {
 		if s.op == "delete" {
 			cleanTrash(t, trashName, "trash-me")
 			if r.status == 403 && r.code(t) == projectfs.CodeEACCES {
-				t.Skipf("Trash is not writable here: %s", r.raw)
+				t.Fatalf("Trash is not writable here: %s", r.raw)
 			}
 		}
 	}

@@ -38,7 +38,7 @@ func eachBackend(t *testing.T, body func(t *testing.T, kind string, mk makeBacke
 	t.Run("host", func(t *testing.T) {
 		node, err := exec.LookPath("node")
 		if err != nil {
-			t.Skip("node is not installed")
+			t.Fatal("node is not installed")
 		}
 		body(t, "host", func(root string) projectfs.Backend {
 			pool := newLocalPool(projectfs.HostPoolOptions{})
@@ -511,7 +511,7 @@ func TestConformance_Delete(t *testing.T) {
 		trashed, err := b.Delete(ctx, uniq)
 		if err != nil {
 			if kind == "console" && projectfs.CodeOf(err) == projectfs.CodeEACCES {
-				t.Skipf("Trash is not writable here: %v", err)
+				t.Fatalf("Trash is not writable here: %v", err)
 			}
 			t.Fatal(err)
 		}
@@ -613,7 +613,7 @@ func paths(ms []projectfs.Match) []string {
 func requireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git is not installed")
+		t.Fatal("git is not installed")
 	}
 }
 

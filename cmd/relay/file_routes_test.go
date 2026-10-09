@@ -367,7 +367,7 @@ func TestFileRoutes_ServeEveryOpForAConsoleProject(t *testing.T) {
 	r = env.op(t, "delete", map[string]any{"path": trashName})
 	cleanTrash(t, trashName, "trash-me")
 	if r.status == http.StatusForbidden && r.code(t) == projectfs.CodeEACCES {
-		t.Skipf("Trash is not writable here: %s", r.raw)
+		t.Fatalf("Trash is not writable here: %s", r.raw)
 	}
 	if m := r.json(t); r.status != 200 || m["trashed"] != true || env.has(trashName) {
 		t.Errorf("delete = %d %s", r.status, r.raw)

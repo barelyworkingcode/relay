@@ -20,7 +20,7 @@ import (
 func TestHostRestartKeepsWatches(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("node not on PATH")
+		t.Fatal("node not on PATH")
 	}
 	pool := NewHostPool(HostPoolOptions{
 		Argv: func(_ config.Host, launcher string) ([]string, error) {
@@ -163,7 +163,7 @@ func nodeHost(t *testing.T) config.Host {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("node not on PATH")
+		t.Fatal("node not on PATH")
 	}
 	return config.Host{ID: "h1", Name: "testbox", Target: "testbox.invalid", Probe: &config.HostProbe{NodePath: node}}
 }

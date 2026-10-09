@@ -693,7 +693,7 @@ func TestNodeLauncher_NodePath(t *testing.T) {
 func TestNodeLauncher_RunsTheScriptUnderNode(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("node is not installed")
+		t.Fatal("node is not installed")
 	}
 	out, err := exec.Command("/bin/sh", "-c", NodeLauncher(node, "process.stdout.write('ok:' + (1 + 1) + \"\\u00e9\")")).Output()
 	if err != nil || string(out) != "ok:2\u00e9" {
