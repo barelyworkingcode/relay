@@ -375,6 +375,7 @@ func adminSessionMode(ctx context.Context, r *appRouter, args json.RawMessage) (
 	if err != nil {
 		return nil, err
 	}
+	r.recordOperatorDecision(http.MethodGet, "/ws")
 	ev := logging.BeginEvent(ctx, "session.mode").Set("session_id", req.ID)
 	defer func() { endEvent(ev, err) }()
 

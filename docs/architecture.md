@@ -48,6 +48,21 @@ grant_cmd.go             `relay grant` CLI — the operator's view of a record's
 admin_read_ops.go        The ungated admin_op reads (`*.list`, `grant.view`): the running tray is the only reader of
                          configuration for a CLI command; each answers with a purpose-built view, never Settings, so
                          no hash, sealed value, env value or key coordinate crosses the bridge
+doors.go                 The `relay doors` document: built from `cliVerbTable()`, `adminOps` and the HTTP, IPC and bridge tables
+cli_verbs.go             `cliVerbTable()`: the one list of CLI verbs; `runCLI` dispatches from it
+project_verbs.go         `relay project` verbs and their `project.*` ops
+mcp_verbs.go             `relay mcp` verbs and their `mcp.*` ops
+service_verbs.go         `relay service` verbs and their `service.*` ops
+service_inspector_ops.go Inspector cores: a service's declared actions and config file, shared by the Settings IPC handlers and the CLI
+model_verbs.go           `relay model list` and the `model.list` op
+session_verbs.go         `relay session` and `relay terminal` verbs; the ops proxy relay-sessions as the operator
+file_verbs.go            `relay files watch` and the `files.watch` op (the `/ws/files` frames as progress)
+status_verbs.go          `relay status` and the `status.view` op
+remote_verbs.go          `relay remote` verbs and their `remote.*` ops
+host_verbs.go            `relay host` verbs and their `host.*` ops
+sealed_verbs.go          `relay sealed reset` and the `sealed.reset` op
+login_verbs.go           `relay login sessions` / `sign-out` and their ops
+internal/bridge/operator_caller.go RequireOperatorCaller: the CLI's identity, a same-user peer outside any relay session or sandbox
 enrolment_ops.go         EnrolmentOps: the gated, audited core the CLI, HTTP and IPC doors share
 enrol_cmd.go             `relay enrol` CLI
 api_credential.go        APICredential CRUD, the frontend capability class set, legacy-frontend-token retirement, credentialAuthorizer
