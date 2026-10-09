@@ -172,7 +172,9 @@ one config dir, with no tray and no window. It takes no other argument (any
 other prints usage and exits `2`). It creates DIR if it is missing, takes the
 per-directory lock, and when every listener is up prints exactly one line on
 stdout, the path of `DIR/ready.json`, and nothing else. `SIGTERM` or `SIGINT`
-cleans up and exits `0`. A start failure exits `1` naming DIR; a second server
+cleans up and exits `0`. A DIR other than the default one keeps its sealing key
+in its own login-keychain item (`docs/sealed-config.md`), so a reset there never
+touches the tray's key. A start failure exits `1` naming DIR; a second server
 on the same DIR fails with `another relay server already owns this
 configuration directory (DIR)`.
 

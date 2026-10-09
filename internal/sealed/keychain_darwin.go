@@ -161,10 +161,15 @@ import (
 	"unsafe"
 )
 
-const (
-	keychainService = "com.barelyworkingcode.relay"
-	keychainAccount = "config-seal-key"
-)
+const keychainService = "com.barelyworkingcode.relay"
+
+// DefaultKeychainAccount is the account of the default config dir's item,
+// the one the tray owns.
+const DefaultKeychainAccount = "config-seal-key"
+
+// keychainAccount is the name the test build's file keyring reports in its
+// messages, which mirror the default item's.
+const keychainAccount = DefaultKeychainAccount
 
 // keychainPayload is the item's value: the id travels with the key so it
 // cannot drift from it (§5.2).
@@ -210,12 +215,13 @@ type keychainKeyring struct {
 // production -- the server core's own path, from startServerCore -- and never from a
 // CLI entry point: the CLI carries relay's own code identity too, so a
 // second call site here would satisfy the ACL by being exactly the process
-// §5.3.3 defends against (AC-29).
-func NewKeychainKeyring(trustedAppPath string) Keyring {
+// §5.3.3 defends against (AC-29). account names the item: one per config
+// dir, so a reset on one instance cannot destroy another's key.
+func NewKeychainKeyring(trustedAppPath, account string) Keyring {
 	return &keychainKeyring{
 		trustedAppPath: trustedAppPath,
 		service:        keychainService,
-		account:        keychainAccount,
+		account:        account,
 	}
 }
 
