@@ -146,12 +146,11 @@ func TestChiefOfStaffStart_Refusals(t *testing.T) {
 				s.Projects = append(s.Projects, config.Project{ID: "r1", Name: "Remote", Kind: config.ProjectKindRemote})
 			}), "seed remote project")
 		}, func(t *testing.T) string { return startBody(t, map[string]any{"projectId": "r1"}) }, 403, "project_not_available", true},
-		{"project on an SSH host", func(t *testing.T, x *cosStartFx) {
-			assertNoErr(t, x.store.With(func(s *config.Settings) {
-				s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "testbox", Target: "testbox.example"})
-				s.Projects = append(s.Projects, config.Project{ID: "h1p", Name: "Hosted", Path: "/srv/acme", HostID: "h1", AllowedModels: []string{"*"}})
-			}), "seed hosted project")
-		}, func(t *testing.T) string { return startBody(t, map[string]any{"projectId": "h1p"}) }, 403, "project_on_host", true},
+		{"terminal start in a project on an SSH host", func(t *testing.T, x *cosStartFx) {
+			seedHostedProject(t, x)
+		}, func(t *testing.T) string {
+			return startBody(t, map[string]any{"projectId": "h1p", "mode": "terminal"})
+		}, 400, "terminal_on_host", true},
 		{"missing folder", nil, func(t *testing.T) string { return startBody(t, map[string]any{"folder": "nope"}) }, 400, "folder_not_found", true},
 		{"folder is a file", func(t *testing.T, x *cosStartFx) {
 			assertNoErr(t, os.WriteFile(filepath.Join(x.proj.Path, "f.txt"), []byte("x"), 0o600), "seed file")
@@ -491,5 +490,79 @@ func TestChiefOfStaffStart_ResumeKeepsTheLedgerOrigin(t *testing.T) {
 	}
 	if got, _ := x.deps.sessions.Get(id); got.Origin != "chief-of-staff" {
 		t.Fatalf("ledger origin after resume = %q", got.Origin)
+	}
+}
+
+func seedHostedProject(t *testing.T, x *cosStartFx) {
+	t.Helper()
+	assertNoErr(t, x.store.With(func(s *config.Settings) {
+		s.Hosts = append(s.Hosts, config.Host{ID: "h1", Name: "testbox", Target: "testbox.example",
+			Probe:             &config.HostProbe{OK: true, ClaudePath: "/usr/bin/claude"},
+			TerminalTemplates: []config.TerminalTemplate{{ID: "claude-code", Name: "Claude Code", Command: "claude"}}})
+		s.Projects = append(s.Projects, config.Project{ID: "h1p", Name: "Hosted", Path: "/srv/acme", HostID: "h1", AllowedModels: []string{"*"}})
+	}), "seed hosted project")
+}
+
+func TestChiefOfStaffStart_HostedHeadlessStartsOnTheHost(t *testing.T) {
+	x := newCoSStartFx(t)
+	seedHostedProject(t, x)
+
+	w := x.post(t, startBody(t, map[string]any{"projectId": "h1p", "folder": "svc/api"}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var got map[string]string
+	assertNoErr(t, json.Unmarshal(w.Body.Bytes(), &got), "decode 201")
+	if got["directory"] != "/srv/acme/svc/api" || got["mode"] != "headless" || got["origin"] != "chief-of-staff" {
+		t.Fatalf("201 body = %v", got)
+	}
+
+	calls := x.calls("/launch")
+	if len(calls) != 1 {
+		t.Fatalf("host got %d /launch request(s), want 1", len(calls))
+	}
+	var spec struct {
+		Directory string `json:"directory"`
+		Host      *struct {
+			ID string `json:"id"`
+		} `json:"host"`
+	}
+	assertNoErr(t, json.Unmarshal(calls[0].Body, &spec), "decode launch spec")
+	if spec.Host == nil || spec.Host.ID != "h1" || spec.Directory != "/srv/acme/svc/api" {
+		t.Fatalf("launch spec = %s, want host h1 and directory /srv/acme/svc/api", calls[0].Body)
+	}
+
+	sends := x.calls("/send")
+	if len(sends) != 1 {
+		t.Fatalf("host got %d /send request(s), want 1", len(sends))
+	}
+	var wire map[string]any
+	assertNoErr(t, json.Unmarshal(sends[0].Body, &wire), "decode send")
+	if wire["session_id"] != got["sessionId"] || wire["origin"] != "chief-of-staff" {
+		t.Fatalf("send = %v, want origin chief-of-staff for the new session", wire)
+	}
+
+	rows := launchRows(t, x.rec)
+	if len(rows) != 1 || rows[0].Outcome != audit.AuditOutcomeOK {
+		t.Fatalf("want one ok session_launch row, got %+v", rows)
+	}
+	if a := rowArgs(t, rows[0]); a["origin"] != "chief-of-staff" || a["host_id"] != "h1" {
+		t.Fatalf("launch row args = %v, want origin chief-of-staff and host_id h1", a)
+	}
+}
+
+// A hosted folder is checked as text. A folder that climbs out of the project
+// path never reaches the host. The syntax check answers before the containment
+// check can, so the code is folder_invalid, not directory_outside_project.
+func TestChiefOfStaffStart_HostedFolderOutsideProjectIsRefused(t *testing.T) {
+	x := newCoSStartFx(t)
+	seedHostedProject(t, x)
+
+	w := x.post(t, startBody(t, map[string]any{"projectId": "h1p", "folder": "../etc"}))
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "folder_invalid" {
+		t.Fatalf("got %d %s, want 400 folder_invalid", w.Code, w.Body.String())
+	}
+	if n := len(x.host.Requests()); n != 0 {
+		t.Fatalf("a refused start reached the session host %d time(s)", n)
 	}
 }
