@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -390,7 +391,7 @@ func TestConformance_Mkdir(t *testing.T) {
 }
 
 func TestConformance_Rename(t *testing.T) {
-	eachBackend(t, func(t *testing.T, kind string, mk makeBackend) {
+	eachBackend(t, func(t *testing.T, _ string, mk makeBackend) {
 		f := newLinkFixture(t)
 		put(t, filepath.Join(f.root, "d", "a.txt"), "A")
 		put(t, filepath.Join(f.root, "d", "taken.txt"), "T")
@@ -405,20 +406,26 @@ func TestConformance_Rename(t *testing.T) {
 			t.Error("rename did not move the entry")
 		}
 
-		// Backend-specific: the console refuses a taken name, a host replaces it.
 		_, err = b.Rename(ctx, "d/b.txt", "taken.txt")
-		if kind == "console" {
-			wantCode(t, err, projectfs.CodeEEXIST)
-			if slurp(t, filepath.Join(f.root, "d", "taken.txt")) != "T" || !exists(filepath.Join(f.root, "d", "b.txt")) {
-				t.Error("refused rename changed the tree")
-			}
-		} else {
-			if err != nil {
-				t.Fatalf("host rename over existing: %v", err)
-			}
-			if slurp(t, filepath.Join(f.root, "d", "taken.txt")) != "A" || exists(filepath.Join(f.root, "d", "b.txt")) {
-				t.Error("host rename did not replace the destination")
-			}
+		wantCode(t, err, projectfs.CodeEEXIST)
+		if slurp(t, filepath.Join(f.root, "d", "taken.txt")) != "T" || !exists(filepath.Join(f.root, "d", "b.txt")) {
+			t.Error("refused rename changed the tree")
+		}
+
+		p, err = b.Rename(ctx, "d/b.txt", "B.txt")
+		if err != nil || p != "d/B.txt" {
+			t.Fatalf("case-only rename = %q, %v", p, err)
+		}
+		ents, err := os.ReadDir(filepath.Join(f.root, "d"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		if !slices.Contains(names, "B.txt") || slices.Contains(names, "b.txt") {
+			t.Errorf("case-only rename left %v", names)
 		}
 
 		_, err = b.Rename(ctx, "d/missing", "x")
@@ -443,7 +450,7 @@ func TestConformance_Rename(t *testing.T) {
 }
 
 func TestConformance_Move(t *testing.T) {
-	eachBackend(t, func(t *testing.T, kind string, mk makeBackend) {
+	eachBackend(t, func(t *testing.T, _ string, mk makeBackend) {
 		f := newLinkFixture(t)
 		put(t, filepath.Join(f.root, "src", "a.txt"), "A")
 		put(t, filepath.Join(f.root, "src", "t.txt"), "src-T")
@@ -460,18 +467,9 @@ func TestConformance_Move(t *testing.T) {
 		}
 
 		_, err = b.Move(ctx, "src/t.txt", "lib")
-		if kind == "console" {
-			wantCode(t, err, projectfs.CodeEEXIST)
-			if slurp(t, filepath.Join(f.root, "lib", "t.txt")) != "lib-T" || !exists(filepath.Join(f.root, "src", "t.txt")) {
-				t.Error("refused move changed the tree")
-			}
-		} else {
-			if err != nil {
-				t.Fatalf("host move over existing: %v", err)
-			}
-			if slurp(t, filepath.Join(f.root, "lib", "t.txt")) != "src-T" || exists(filepath.Join(f.root, "src", "t.txt")) {
-				t.Error("host move did not replace the destination")
-			}
+		wantCode(t, err, projectfs.CodeEEXIST)
+		if slurp(t, filepath.Join(f.root, "lib", "t.txt")) != "lib-T" || !exists(filepath.Join(f.root, "src", "t.txt")) {
+			t.Error("refused move changed the tree")
 		}
 
 		_, err = b.Move(ctx, "src/missing", "lib")

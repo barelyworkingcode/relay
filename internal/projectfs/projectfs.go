@@ -143,8 +143,7 @@ type Backend interface {
 	Open(ctx context.Context, rel string) (io.ReadCloser, Info, error)
 	Write(ctx context.Context, rel string, data []byte, o WriteOpts) error
 	Mkdir(ctx context.Context, parentRel, name string) (string, error)
-	// Rename and Move refuse a taken name with EEXIST on the console and
-	// replace it on a host.
+	// Rename and Move refuse a taken name with EEXIST.
 	Rename(ctx context.Context, rel, newName string) (string, error)
 	Move(ctx context.Context, rel, destDirRel string) (string, error)
 	Delete(ctx context.Context, rel string) (trashed bool, err error)
