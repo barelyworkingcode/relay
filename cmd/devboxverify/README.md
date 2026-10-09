@@ -597,7 +597,7 @@ origin. The session, project and host are deleted whatever the outcome. BLOCKED
 when the host or project cannot be created (setup P11), the audit is
 unreadable or a credential is refused; FAIL when the host's `claude` never
 answers.
-- Lives in: `cmd/relay/session_chief_of_staff.go`, `cmd/relay/session_launch.go`,
+- Lives in: `cmd/relay/session_chief_of_staff_start.go`, `cmd/relay/session_chief_of_staff.go`, `cmd/relay/session_launch.go`,
   `internal/sshhost`.
 - Reached by: the minted credential for the start, send and list; the run
   credential for host, project and delete; `/ws`; `relay audit --json`.

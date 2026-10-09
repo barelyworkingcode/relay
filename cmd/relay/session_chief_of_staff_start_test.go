@@ -566,3 +566,23 @@ func TestChiefOfStaffStart_HostedFolderOutsideProjectIsRefused(t *testing.T) {
 		t.Fatalf("a refused start reached the session host %d time(s)", n)
 	}
 }
+
+// A terminal start in a hosted project is refused before the model is looked
+// at, so a non-Claude model gets terminal_on_host too, and the route's own
+// denied row names the host.
+func TestChiefOfStaffStart_HostedTerminalRefusalNamesTheHost(t *testing.T) {
+	x := newCoSStartFx(t)
+	seedHostedProject(t, x)
+
+	w := x.post(t, startBody(t, map[string]any{"projectId": "h1p", "mode": "terminal", "model": "gpt-5"}))
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "terminal_on_host" {
+		t.Fatalf("got %d %s, want 400 terminal_on_host", w.Code, w.Body.String())
+	}
+	rows := launchRows(t, x.rec)
+	if len(rows) != 1 || rows[0].Outcome != audit.AuditOutcomeDenied {
+		t.Fatalf("want one denied session_launch row, got %+v", rows)
+	}
+	if a := rowArgs(t, rows[0]); a["origin"] != "chief-of-staff" || a["host_id"] != "h1" {
+		t.Fatalf("denied row args = %v, want origin chief-of-staff and host_id h1", a)
+	}
+}

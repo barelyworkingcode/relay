@@ -831,7 +831,8 @@ args gain three fields, all `omitempty`:
   never in a launch row.
 - `args.host_id`: the SSH host of a hosted project. Every hosted launch and
   resume carries it, not only a Chief of Staff start, and so does a refusal
-  of a hosted start.
+  of a hosted start by the route or by `AuthorizeLaunch`. A system-only-model
+  refusal is decided before the project is read, so its row has no `host_id`.
 
 A refusal after the audit-ready check (unknown or remote project, a terminal start in
 a project on a host, folder outside the project, a terminal start without a Claude model, a
