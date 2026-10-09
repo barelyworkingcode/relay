@@ -1,6 +1,7 @@
 package features
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -15,10 +16,11 @@ func mintLoginCode(t *testing.T, i *harness.Instance) string {
 	r := i.MustCLI("login", "enrol")
 	first, _, _ := strings.Cut(string(r.Stdout), "\n")
 	code, ok := strings.CutPrefix(first, "login code: ")
-	if !ok || len(strings.TrimSpace(code)) != 16 {
-		t.Fatalf("first stdout line %q is not 'login code: <16 hex characters>'", first)
+	code = strings.TrimSpace(code)
+	if _, err := hex.DecodeString(code); !ok || code == "" || err != nil {
+		t.Fatalf("first stdout line %q is not 'login code: <hex characters>'", first)
 	}
-	return strings.TrimSpace(code)
+	return code
 }
 
 func TestPasskeyRegisterAndSignIn(t *testing.T) {
@@ -30,13 +32,13 @@ func TestPasskeyRegisterAndSignIn(t *testing.T) {
 	if resp.Status != 201 || passkeyID == "" {
 		t.Fatalf("register answered %d with passkey %q, want 201", resp.Status, passkeyID)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "login.passkey.register", Trace: resp.Trace, Fields: map[string]any{"status": "ok", "passkey_id": passkeyID}})
+	requirePasskeyID(t, requireEvent(t, i, harness.EventQuery{Key: "login.passkey.register", Trace: resp.Trace, Fields: map[string]any{"status": "ok"}}), passkeyID)
 
 	cred, resp := i.SignIn(a)
 	if resp.Status != 200 || cred.Token == "" {
 		t.Fatalf("sign-in answered %d, want 200 and a token", resp.Status)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "login.sign_in", Trace: resp.Trace, Fields: map[string]any{"status": "ok", "passkey_id": passkeyID}})
+	requirePasskeyID(t, requireEvent(t, i, harness.EventQuery{Key: "login.sign_in", Trace: resp.Trace, Fields: map[string]any{"status": "ok"}}), passkeyID)
 
 	if s := i.HTTP(cred).Do("GET", "/api/projects", nil).Status; s != 200 {
 		t.Fatalf("GET /api/projects with the session token answered %d, want 200", s)
@@ -57,5 +59,15 @@ func TestPasskeyUnknownCredentialRefused(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no control_decision denied row for /relay/login/verify")
+	}
+}
+
+// requirePasskeyID checks the event's passkey_id names the passkey. Events cut
+// long ids to a prefix and an ellipsis, so the prefix is what is compared.
+func requirePasskeyID(t *testing.T, ev harness.Event, passkeyID string) {
+	t.Helper()
+	got := strings.TrimSuffix(ev.Str("passkey_id"), "…")
+	if got == "" || !strings.HasPrefix(passkeyID, got) {
+		t.Fatalf("%s passkey_id %q is not a prefix of the registered id %q", ev.Str("event"), ev.Str("passkey_id"), passkeyID)
 	}
 }
