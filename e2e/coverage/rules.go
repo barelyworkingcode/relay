@@ -73,7 +73,7 @@ func (x *checker) rules() []Finding {
 				add("R6", where, "event %q is not in docs/events.md section 7", p.Key)
 			}
 		}
-		if !isCI {
+		if !isCI && !screenOnly(r) {
 			observes := false
 			for _, p := range r.Proof {
 				observes = observes || p.Observes()
@@ -194,6 +194,7 @@ func (x *checker) testRules(fs *[]Finding, r Row, isCI bool) {
 		*fs = append(*fs, Finding{rule, r.ID, fmt.Sprintf(format, a...)})
 	}
 	ok := false
+	journeyOnly := false
 	for _, t := range r.Tests {
 		switch t.Kind {
 		case "e2e":
@@ -208,7 +209,7 @@ func (x *checker) testRules(fs *[]Finding, r Row, isCI bool) {
 			if r.Exception() {
 				ok = true
 			} else {
-				add("R3", "journey: alone proves only an exception: row")
+				journeyOnly = true
 			}
 		case "screen-only":
 			if r.Exception() {
@@ -230,6 +231,9 @@ func (x *checker) testRules(fs *[]Finding, r Row, isCI bool) {
 			}
 		}
 	}
+	if !ok && journeyOnly {
+		add("R3", "journey: alone proves only an exception: row")
+	}
 	if !ok {
 		add("R3", "row has no accepted test (e2e:, a live pending:#N, or what its kind allows)")
 	}
@@ -247,6 +251,17 @@ func hasRefusal(r Row) bool {
 func hasDeny(r Row, d DoorRef) bool {
 	for _, t := range r.Tests {
 		if t.Deny && t.At != nil && *t.At == d && t.Kind == "e2e" {
+			return true
+		}
+	}
+	return false
+}
+
+// screenOnly reports whether the row is proven by a screen only: it has no
+// observable to read, so R9 does not apply.
+func screenOnly(r Row) bool {
+	for _, t := range r.Tests {
+		if t.Kind == "screen-only" {
 			return true
 		}
 	}

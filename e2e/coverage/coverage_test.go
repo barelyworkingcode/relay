@@ -162,6 +162,36 @@ func TestRulesFireOnBrokenInput(t *testing.T) {
 	}
 }
 
+func TestJourneyBesideE2EOrPendingIsAccepted(t *testing.T) {
+	t.Parallel()
+	root := copyFixture(t)
+	replaceIn(t, root, "docs/FEATURES.md", "`e2e:TestProjectList`", "`e2e:TestProjectList` `journey:some-journey`")
+	replaceIn(t, root, "docs/FEATURES.md", "`pending:#289`", "`pending:#289` `journey:other-journey`")
+	got := run(t, root)
+	if hasRule(got, "R3", "journey") {
+		t.Errorf("a journey beside another accepted test must not be flagged: %v", got)
+	}
+}
+
+func TestJourneyAloneOnNonExceptionRowIsFlagged(t *testing.T) {
+	t.Parallel()
+	root := copyFixture(t)
+	replaceIn(t, root, "docs/FEATURES.md", "`e2e:TestProjectList`", "`journey:some-journey`")
+	if got := run(t, root); !hasRule(got, "R3", "journey: alone") {
+		t.Errorf("a sole journey on a non-exception row is not flagged: %v", got)
+	}
+}
+
+func TestScreenOnlyRowIsExemptFromR9(t *testing.T) {
+	t.Parallel()
+	root := copyFixture(t)
+	replaceIn(t, root, "docs/FEATURES.md", "`event:server.stopped=ok`", "none")
+	got := run(t, root)
+	if hasRule(got, "R9", "G1.04") {
+		t.Errorf("a screen-only row must not need an observable: %v", got)
+	}
+}
+
 func TestOrphanTestAndSelfTestExemption(t *testing.T) {
 	t.Parallel()
 	root := copyFixture(t)
