@@ -314,8 +314,8 @@ runs, so it inherits this bound for free — the reset menu item cannot be
 made to hang the same way, either.
 
 The bound is `callWithin` (`sealed/deadline.go`), shared by `copyItem` and
-`deleteItem` and by the test build's file provider, so a keychain call that
-never returns is bounded by one piece of code in both builds.
+`deleteItem`. The test build's file provider waits the same
+`keychainReadTimeout` and returns the same error text for its `slow` fault.
 
 ## The test build's keychain provider
 
@@ -353,7 +353,7 @@ keychain's own failure, so relay's existing handling is what runs:
 | `locked` | `ErrKeyUnreadable` wrapping `OSStatus -25308 (errSecInteractionNotAllowed)` | the same error, from its existence check | `sealed: deleting keychain item: OSStatus -25308` |
 | `missing` | `ErrKeyMissing` | writes a new item | nil |
 | `corrupt` | `decodeKeychainPayload`'s error on bytes that are not a payload | the same error | removes the file |
-| `slow` | never returns; `keychainReadTimeout` (3 s, through `callWithin`) answers `ErrKeyUnreadable` | its bounded existence check answers first | never returns; the existing delete bound answers |
+| `slow` | waits `keychainReadTimeout` (3 s), then answers `ErrKeyUnreadable` | its bounded existence check answers first | never returns; the existing delete bound answers |
 
 `slow` runs relay's own bound rather than sleeping for a fixed time, so what
 a test sees is the same bound a stray keychain dialog meets. A running relay

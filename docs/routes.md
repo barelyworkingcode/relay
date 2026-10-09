@@ -288,8 +288,10 @@ stopping are forwarded to the session host (section 3).
   - `413` body too large;
   - `502` the session host answered with a failure (`{"error":"launch failed"}`);
   - `503` the session ledger or the session host is unavailable.
-- **Event:** `session.launch` (fields `session_id`, `project_id`, `kind`; on a
-  refusal `reason` is the launch refusal code).
+- **Event:** `session.launch` (fields `session_id`, `project_id`, `kind`). On a
+  launch refusal the status is `denied` and `reason` is the launch refusal
+  code, including for a `400` such as a blank model. A malformed or oversized
+  body writes no `session.launch` event.
 - **Audit row:** `session_launch`, with `outcome` `ok`, `denied` or `error`.
 - **CLI equivalent:** `relay session start`.
 

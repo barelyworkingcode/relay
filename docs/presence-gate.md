@@ -505,7 +505,12 @@ without a restart.
   unknown answer, unparseable JSON, trailing data, or a failed file check. An
   invalid file refuses every gated op with `testapprover.ErrOutcomeFileInvalid`,
   which wraps `presence.ErrRefused`; its text names the file and the fault,
-  never its contents.
+  never its contents. The file's `console_session` is not trusted when the
+  file is invalid, so a caller with no console session (SSH, CI) is refused
+  first by the no-session rule as `presence_no_session`, and the approver
+  writes no `debug.presence.answer` event. The invalid-file error and its
+  event appear only for a caller that has a console session. Every gated op is
+  refused either way.
 - The file check: a regular file (not a symlink), owned by the current user,
   no group or other bits, at most 64 KiB.
 - `console_session` is optional. It supplies the console-session fact for a
