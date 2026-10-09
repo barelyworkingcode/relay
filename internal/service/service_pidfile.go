@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 )
@@ -67,15 +66,4 @@ func readPidFile(id string) (int, error) {
 		return 0, fmt.Errorf("parse pidfile %s: %w", path, err)
 	}
 	return pid, nil
-}
-
-// ReadPidFileForTest exposes readPidFile to a caller outside this package
-// that needs to confirm a spawned service's pidfile actually landed. It
-// panics outside a test binary: main has no legitimate reason to read a
-// pidfile it did not itself write through Registry.Start.
-func ReadPidFileForTest(id string) (int, error) {
-	if !testing.Testing() {
-		panic("service: ReadPidFileForTest is a test seam and must not be reached in a shipped binary")
-	}
-	return readPidFile(id)
 }

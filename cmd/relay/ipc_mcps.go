@@ -86,12 +86,11 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	// McpOps.Remove is no longer gated (ADR-018 step 3, §5.1): unregistering
-	// only narrows, so there is no requireGate call and no
+	// McpOps.Remove is not gated: unregistering only narrows, so it is not in
+	// presence.GatedOps, and there is no requireGate call and no
 	// LocalAuthentication completion handler here to deadlock the Cocoa run
-	// loop on — see ipc_thread_structural_test.go's gatedIPCMethods, which
-	// McpOps.Remove left alongside presence.GatedOps. Still dispatched off
-	// the main thread, matching this file's other IPC handlers.
+	// loop on. It is still dispatched off the main thread, like this file's
+	// other IPC handlers.
 	ctx.GoFunc(func() {
 		if err := ctx.McpOps.Remove(msg.ID, auditViaIPC, ""); err != nil {
 			dispatchEmit(ctx, "onExternalMcpError", err.Error())

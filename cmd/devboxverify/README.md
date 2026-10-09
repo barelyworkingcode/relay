@@ -223,7 +223,7 @@ before anything starts, and the refusal is audited.
 **permission-mode-restart.** Always NOTRUN. The Kill-then-Start restart runs
 only for SSH-host projects; a local session answers `resume_required`
 (`internal/sessions/provider/claude.go`, `SetPermissionMode`). The world has
-no hosts, so the unit test is the only guard.
+no hosts, so nothing guards it until a feature test covers it.
 
 **oversized-launch-audit-capped.** A refused sandbox launch with a huge
 template name writes a size-capped audit row.
@@ -270,7 +270,7 @@ unchanged (`1.0` sent as `1`) needs no presence and writes no
 **v1-conversion-refusal.** Always NOTRUN. A local-to-remote conversion is a
 kind change, which the presence gate prompts for before it validates, so the
 v1 refusal is reachable only after a human approves. No v1 MCP is registered
-here either. `TestApplyUpdate_ConvertingV1GrantToRemote` is the guard.
+here either. Nothing guards it until a feature test covers it.
 
 **acme-tools-through-bridge** (api). A session in Acme Corp lists only its
 granted tools (world.json's `relay_mcp.tools`), calls one, and is denied

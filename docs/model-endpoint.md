@@ -19,11 +19,9 @@ of `RegisterModelHost`).
 | `model.sock` | `bridge.ConfigDir()/model.sock`, mode 0600 | Always served, whether or not a model host has ever registered — "no host" is a 503 on each call, not an absent socket. |
 | TCP | `settings.json`'s `model_endpoint.listen` | Absent block → **off**. A non-loopback address is refused (logged loudly) and never bound. A failed bind is logged loudly and retried on the next committed change, recovery tick or reconcile call, the same convergence discipline `RemoteSupervisor` uses for the mTLS listener. |
 
-`cmd/relay.SetModelListenOverrideForTest` is a package-level Go seam this
-package's own tests use instead of the `model_endpoint` block — deliberately
-not an environment variable: an env var is reachable from a production
-process's own environment, which is exactly what "test-only" needs to rule
-out. `ModelEndpointServer.Reconcile()` runs once at startup, after every
+Only the `model_endpoint` block sets the TCP address — deliberately not an
+environment variable: an env var is reachable from a production process's
+own environment. `ModelEndpointServer.Reconcile()` runs once at startup, after every
 committed configuration change and on the tray's slow recovery tick
 (`trayapp.go`). A hand edit of `settings.json` under a running tray is imported through the
 config queue when valid, and reaches this reconcile as a commit event.
@@ -351,8 +349,7 @@ relay is willing to spend memory on to serve it.
   field (`ExtractJSONModel`/`ExtractJSONModelFromBytes`, `RewriteJSONModel`)
   amplifies a body's size several-fold in live allocations while doing it —
   a near-cap body at the old 64 MiB ceiling measured at roughly 11-13x
-  (`internal/modelbroker/memory_test.go`'s regression guard asserts a loose
-  ceiling on this at the current cap), i.e. hundreds of MiB of GC pressure
+  (nothing asserts a ceiling on this now), i.e. hundreds of MiB of GC pressure
   from a single caller's single request.
 - **`AudioMultipartCap` stays 25 MiB**, unchanged, matching relayLLM's own
   `maxTranscriptionBytes`: `RewriteMultipartModel` re-streams every other

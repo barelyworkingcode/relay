@@ -223,9 +223,8 @@ func NodeLauncher(nodePath, src string) string {
 }
 
 // runner execs name with args and returns combined-separated stdout/stderr.
-// A func var, not exec.Command called directly, so the hermetic test tier
-// can stub it out — Probe/Check/Disconnect never touch a real socket in
-// `go test ./...` (see the //go:build live test for the real path).
+// A func var, not exec.Command called directly, so the exec seam stays in
+// one place.
 var runner = func(ctx context.Context, name string, args []string) (stdout, stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var outBuf, errBuf bytes.Buffer
@@ -233,18 +232,6 @@ var runner = func(ctx context.Context, name string, args []string) (stdout, stde
 	cmd.Stderr = &errBuf
 	err = cmd.Run()
 	return outBuf.Bytes(), errBuf.Bytes(), err
-}
-
-// SetRunnerForTest overrides the exec seam every Probe/Check/Disconnect call
-// goes through, and returns a func that restores the previous one (call it
-// via t.Cleanup). Exported, not just package-internal, so a caller of this
-// package — cmd/relay's route/IPC tests included — can keep its own suite
-// hermetic (docs/ssh-hosts.md: "Do not shell out to ssh in hermetic
-// tests") without duplicating a second exec seam of its own.
-func SetRunnerForTest(fn func(ctx context.Context, name string, args []string) (stdout, stderr []byte, err error)) (restore func()) {
-	prev := runner
-	runner = fn
-	return func() { runner = prev }
 }
 
 // probeTimeout bounds Probe's whole round trip (docs/ssh-hosts.md decision

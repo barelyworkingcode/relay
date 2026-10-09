@@ -427,7 +427,7 @@ func (lr *loginRoutes) recordLoginOutcome(credID string, allowed bool, err error
 		// is not recorded. It is the one refusal an unauthenticated caller can
 		// provoke at line rate — the throttle is what makes every OTHER
 		// refusal here rate-bounded — so recording it would hand that caller
-		// the audit-log amplification audit_control_cap_test.go exists about.
+		// audit-log amplification.
 		// The failures that caused the throttle are each recorded.
 		if errors.Is(err, login.ErrWebAuthnRateLimited) {
 			return

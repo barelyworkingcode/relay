@@ -8,8 +8,8 @@ This is the durable *why*. Decisions are cited as ADR-NNN throughout the code
 and docs; those numbers are labels for the reasoning recorded here and in the
 topic documents beside this one — there is no separate ADR directory. The
 command line is documented in [`cli.md`](cli.md), testing in
-[`testing.md`](testing.md), and what lives in which package (and the structural
-tests that pin it) in [`package-layout.md`](package-layout.md).
+[`testing.md`](testing.md), and what lives in which package (and the structure
+the reviewer checks) in [`package-layout.md`](package-layout.md).
 
 ## Architecture
 
@@ -39,8 +39,8 @@ audit_call.go            Nil-safe per-call event builder used by the router inst
 audit_cmd.go             `relay audit` CLI
 audit_start.go           Wires the audit engine to what it does not own: relay's log directory and log rotation
 audit_issuance.go        The gate-facing half of issuance: IssuanceAuditor, requireIssuanceAuditor (ADR-017 §7.4,
-                         and MUST stay an unqualified identifier in this package — gate_ast_scan_test.go matches
-                         its call sites as a bare *ast.Ident), recordEnrolmentIssued/recordBootstrapIssued/etc.,
+                         and MUST stay an unqualified identifier in this package so a scan matching its call
+                         sites as a bare *ast.Ident still sees them), recordEnrolmentIssued/recordBootstrapIssued/etc.,
                          and the CLI's own append-only recorder
 sandbox_cmd.go           `relay sandbox` CLI (docs/sandbox-command.md): raw-mode terminal attach to a launched session
 sandbox_attach.go        Server half of `relay sandbox`: cwd -> project, the launch through sessionRouteDeps.launch, the /ws viewer pump
@@ -56,7 +56,6 @@ login_ops.go             Bootstrap-code mint/consume, passkey + login-session vi
 login_cmd.go             The `relay login` CLI (ADR-016 decision 2)
 login_routes.go          The three unauthenticated /relay/login patterns and the door that serves them
 login_document.go        The self-contained login page, served under a strict CSP
-webauthn_browser_live_test.go   Black-box HTTP+Chrome ceremony test via lrServer; never touches verifier internals, so it stayed in main rather than moving with login/
 remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
 remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
 mcp_ops.go               McpOps: the gated, audited core the CLI, HTTP and IPC MCP doors share
@@ -87,7 +86,7 @@ config/                  Settings (settings.go: Config, project CRUD, permission
                          the domain models — Project, StoredToken, ExternalMcp, ServiceConfig, Host,
                          APICredential, Enrolment, Passkey (models.go) — and config.HashToken plus the
                          CA file-naming constants (identity.go). Declares the gated mutators
-                         gate_structural_test.go discovers every other package against. Depends on
+                         every other package is judged against. Depends on
                          bridge/sealed; the gate, the audit sink and every door stay in main.
 control/                 CapabilityClass, Transport, RouteRegistrar — the one door every
                          control-plane route registers through (ADR-015)
@@ -141,10 +140,9 @@ service/                 Background service supervision: process lifecycle and t
 sshhost/                 SSH hosts (docs/ssh-hosts.md) — the one derivation of a Host into ssh
                          arguments: SSHArgv (the fixed-option argv prefix, ControlMaster shared
                          across relay/relayLLM/eve), RemoteCommand (decision 8's shell-agnostic
-                         base64+eval remote command line, pinned byte-for-byte against the doc's
-                         Fixtures by TestRemoteCommand_Fixtures), and Probe/Check/Disconnect, which
-                         run over a `runner` exec seam (SetRunnerForTest) so no hermetic test in this
-                         repo or a caller's ever shells out to a real ssh. ControlDir picks
+                         base64+eval remote command line, byte-for-byte as the doc's Fixtures
+                         give it), and Probe/Check/Disconnect, which run over a `runner` exec seam.
+                         ControlDir picks
                          `<relay data dir>/run/ssh` or a short `/tmp` fallback so ControlPath+%C never
                          overflows sun_path. Depends only on config/bridge.
 audit/                   The tool-call audit log engine: the event/actor/config model, the async
@@ -155,7 +153,7 @@ audit/                   The tool-call audit log engine: the event/actor/config 
                          (IssuanceAuditor, requireIssuanceAuditor, the recordEnrolment/Bootstrap/
                          ProjectToken/PasskeyIssued helpers) stays in main, because
                          requireIssuanceAuditor must stay an unqualified identifier for
-                         gate_ast_scan_test.go's AST match to keep seeing its call sites. Depends on
+                         an AST match on a bare identifier to keep seeing its call sites. Depends on
                          config; log rotation is main's (log_rotate.go, shared with relay's own log
                          and every service's log) and reaches this package only via the OpenWriter
                          callback NewAuditRecorder/StartAuditRecorder take, the same pattern
@@ -178,20 +176,12 @@ mcpbroker/               The external-MCP client: the stdio and HTTP transports 
                          ipc_mcps.go — as does router.go, which reaches this package only through the
                          ToolProvider/ToolManager interfaces, the ADR-012 audit translation
                          (audit_call.go) and mcp_permissions*.go, whose darwin half is cgo.
-                         testseam.go is the only exported way into Manager's unexported connection and
-                         schema tables (SetConnectionForTest / ConnectionForTest /
-                         SetContextSchemaForTest); each panics outside a test binary, and cmd/relay's
-                         router, audit and scoping tests are what need them.
 login/                   The WebAuthn ceremony, pure: registration/assertion verification (webauthn.go,
                          ES256 only, none attestation only), CBOR decode pinned to the CTAP2 canonical
                          subset (webauthn_cbor.go), and the in-memory challenge table (webauthn_challenge.go,
                          single use, 60s). Depends only on crypto/*, encoding/*, errors, fmt, math/big and
                          internal/ceremonylimit — deliberately blind to the bootstrap code, the passkey
                          store and the presence gate, all of which stay in main (login_ops.go, login_routes.go).
-                         loginfake/ is a separate, non-test package holding the software WebAuthn
-                         authenticator cmd/relay's login_routes tests drive over real HTTP — split out
-                         because a _test.go file's symbols cannot cross a package boundary, matching
-                         internal/presence/presencetest's shape (never imported outside a test binary).
 ceremonylimit/           A pure sync/time ceremony backoff (Limiter: Allow/RecordFailure/RecordSuccess),
                          with zero WebAuthn or enrolment knowledge. Shared by two unrelated ceremonies —
                          login/'s WebAuthnVerifier and cmd/relay's enrolment-request table
@@ -644,8 +634,7 @@ the cached view for rendering (menus, lists, Settings-window payloads) and may
 lag the last committed change by nothing in the tray, whose store never re-reads
 the file (see below). Nothing else in production calls `Get`, `Reload`
 or `ReloadIfChanged` on a store, and only `runTrayApp` constructs one;
-`TestProductionSettingsReadsAndConstructionStayBehindTheBoundary` holds that
-line. Its allowlist is the complete exception set: `runTrayApp` (boot snapshot
+no test holds that line now. The complete exception set is: `runTrayApp` (boot snapshot
 and audit recorder, taken before anything serves; the single store
 construction).
 
@@ -857,7 +846,7 @@ a raw U+2028/U+2029 inside a `json.RawMessage` as `\u2028`/`\u2029` even with
 `SetEscapeHTML(false)`, and there is no seam short of hand-assembling the frame.
 It decodes back to the same character, which is the line ADR-013 draws — relay
 may not change what a document means, and does not claim to preserve how it was
-spelled. Pinned by `TestCallTool_UnicodeLineSeparatorsAreReSpelledButNotChanged`.
+spelled. Nothing pins this now.
 
 That exception is **load-bearing for `_meta.args_sha256`**, so it is no longer
 merely cosmetic. A client computing that hash must canonicalise through the same
@@ -933,7 +922,7 @@ first paint (`renderSettingsDocument`); one already open gets an emit — Cocoa
 drops a script evaluated against a WebView that does not exist yet, and never
 reloads a window that does. Minting replaces rather than accumulates, so the
 panel says out loud that showing another code kills this one. The item is
-never the *only* source: the menu is unreachable from the hermetic tier,
+never the *only* source: the menu is unreachable without a person at the screen,
 which is why `relay login enrol` stays as a second door — though both now
 demand the same presence prompt and both refuse identically over SSH, so
 neither reaches a fully headless install (`docs/tokens.md`).

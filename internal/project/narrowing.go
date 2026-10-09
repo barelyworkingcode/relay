@@ -1,8 +1,8 @@
 package project
 
 // The configuration plane's own validation, kept in a file with no store
-// call and no gated mutator name in it (gate_structural_test.go's allowlist
-// is by filename, and this one is deliberately absent from it): the safety
+// call and no gated mutator name in it (no gated-mutator scan should ever
+// need to list it): the safety
 // of a remote's self-narrowing comes from making a widening unrepresentable
 // here, not from a presence prompt.
 

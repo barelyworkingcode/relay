@@ -13,7 +13,6 @@ import (
 	"reflect"
 	"sync"
 	"sync/atomic"
-	"testing"
 
 	"github.com/tidwall/jsonc"
 
@@ -171,23 +170,6 @@ func NewSettingsStoreAt(dir string) *FileSettingsStore {
 // degraded state — use NewSettingsStoreDegraded for that.
 func NewSettingsStoreSealed(dir string, sealer sealed.Sealer) *FileSettingsStore {
 	return &FileSettingsStore{dir: dir, sealer: sealer}
-}
-
-// NewSettingsStoreWithCache is the first-start shape held open for tests:
-// settings already in hand, nothing written out yet. fileSeen stays false,
-// so an absent settings.json under dir reads as "not created yet" rather
-// than as a deletion that must invalidate cache.
-//
-// It panics outside a test binary. A constructor that hands a caller a store
-// serving settings no write ever produced is a weakening, and a weakening
-// introduced for a test is the one most likely to survive into production
-// (ADR-016 decision 8); production builds one through NewSettingsStoreSealed
-// and a write.
-func NewSettingsStoreWithCache(dir string, sealer sealed.Sealer, cache *Settings) *FileSettingsStore {
-	if !testing.Testing() {
-		panic("config: NewSettingsStoreWithCache is a test seam and must not be reached in a shipped binary")
-	}
-	return &FileSettingsStore{dir: dir, sealer: sealer, cache: cache}
 }
 
 // NewSettingsStoreDegraded is the tray's constructor for §5.6: a keyring

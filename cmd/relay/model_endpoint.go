@@ -28,43 +28,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/service"
 )
 
-// modelListenOverrideForTest, when non-empty, replaces settings.json's
-// model_endpoint.listen in targetAddr (plan-broker-and-sessions.md decision
-// b: a test-only override). Unsynchronized: set it before any concurrent
-// Reconcile call, the same discipline bridge.SetConfigDirForTest documents.
-// Deliberately not an environment variable — an env var is reachable from a
-// production process's own environment, which is exactly what decision (b)
-// restricts this to test code only for; a package-level Go seam that only
-// this package's own tests can call is not.
-var modelListenOverrideForTest string
-
-// SetModelListenOverrideForTest sets the test-only override. Pass "" to
-// clear it.
-func SetModelListenOverrideForTest(addr string) {
-	modelListenOverrideForTest = addr
-}
-
-// bodyBudgetHeldHookForTest is declared here, next to this file's other
-// test-only package-level seams, and used by serveModelRoute; see its call
-// site for what it is for.
-var bodyBudgetHeldHookForTest func()
-
-// proxyPanicForTest, when non-nil, is panicked synchronously from inside
-// proxy()'s Director callback — a test-only seam (relay#116 re-review's S7
-// test) for synthesizing an ordinary bug's panic. http.ErrAbortHandler
-// itself is producible only by racing a real client disconnect against
-// net/http's own internals (see TestModelEndpoint_MidStreamAbortStillAudits);
-// every other panic value needs a seam like this one to test deterministically.
-var proxyPanicForTest any
-
-// postServeHookForTest, when non-nil, runs immediately after rp.ServeHTTP
-// returns inside proxy(), before the outcome is decided — a test-only seam
-// (relay#116 re-review's S8 test) for cancelling the request context at
-// exactly the moment a real disconnect racing a just-completed copy would:
-// after the response body has already been read to EOF, but before proxy's
-// own check of that runs.
-var postServeHookForTest func()
-
 const (
 	transportSocket = "socket"
 	transportTCP    = "tcp"
@@ -199,18 +162,11 @@ func NewModelEndpointServer(store config.SettingsStore, launches *service.Launch
 	m := &ModelEndpointServer{store: store, launches: launches, modelKeys: modelKeys, hosts: hosts}
 	// Built from the same launch table the identity lookup uses, so
 	// model.sock and relay.sock can never disagree about which sessions are
-	// live. A test overrides it with SetMembershipResolverForTest.
+	// live.
 	m.membership = newMembershipAuth(launches)
 	m.catalog = modelbroker.NewCache(m.fetchCatalog, modelCatalogTTL)
 	m.bodyBudget = modelbroker.NewBodyBudget(maxInFlightBodyBytes)
 	return m
-}
-
-// SetMembershipResolverForTest overrides how THIS endpoint answers C3, so a
-// test can present a controlled session table instead of a real process
-// ancestry. Production wires newMembershipAuth over the live launch table.
-func (m *ModelEndpointServer) SetMembershipResolverForTest(mr bridge.MembershipResolver) {
-	m.membership = mr
 }
 
 var errModelHostUnavailable = errors.New("model host unavailable")
@@ -1031,17 +987,6 @@ func (m *ModelEndpointServer) readModelRequest(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	// bodyBudgetHeldHookForTest, when non-nil, runs once per request right
-	// after admission, before any body is read. A test-only seam
-	// (relay#116 re-review's S6 concurrency test): the extract-and-rewrite
-	// work this budget bounds is normally CPU-bound and far too fast to
-	// force real overlap between goroutines deterministically, so a test
-	// wanting to observe BodyBudget's own admission limit rather than guess
-	// at timing holds a request here until it says otherwise.
-	if bodyBudgetHeldHookForTest != nil {
-		bodyBudgetHeldHookForTest()
-	}
-
 	var (
 		requested string
 		boundary  string
@@ -1275,9 +1220,6 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 	originalDirector := rp.Director
 	rp.Director = func(req *http.Request) {
 		originalDirector(req)
-		if proxyPanicForTest != nil {
-			panic(proxyPanicForTest)
-		}
 		if passthrough == "" {
 			req.Header.Del("Authorization")
 			req.Header.Del("x-api-key")
@@ -1389,10 +1331,6 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 		return
 	}
 
-	if postServeHookForTest != nil {
-		postServeHookForTest()
-	}
-
 	if upgraded {
 		// The connection was hijacked and has since closed; the request
 		// context is cancelled by then whichever side ended it, so it says
@@ -1494,9 +1432,6 @@ func (m *ModelEndpointServer) ServeSocket() error {
 }
 
 func (m *ModelEndpointServer) targetAddr() string {
-	if modelListenOverrideForTest != "" {
-		return modelListenOverrideForTest
-	}
 	s := config.FreshSettings(m.store)
 	if s.ModelEndpoint == nil {
 		return ""

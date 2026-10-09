@@ -36,11 +36,11 @@ import (
 // inconsistency between plan-broker-and-sessions.md's C5 wire sample
 // (`"kind": "pty | claude | pi | chat"`) and spec-session-host.md §3.1's
 // prose (`pty` | `claude` | `pi` | `chat_tools`) — neither hostapi nor any
-// landed unit fixes the string yet (internal/sessions/hostapi/launch_test.go
-// only ever uses "pty"), so this picks C5's own wire-contract sample as
-// ground truth over a parenthetical aside in the flow-diagram prose. The
-// wire string lives in this one named constant, not inlined at each call
-// site, so resolving that document conflict later stays a one-line edit.
+// landed unit fixes the string yet, so this picks C5's own wire-contract
+// sample as ground truth over a parenthetical aside in the flow-diagram
+// prose. The wire string lives in this one named constant, not inlined at
+// each call site, so resolving that document conflict later stays a one-line
+// edit.
 const (
 	KindPTY    = "pty"
 	KindClaude = "claude"

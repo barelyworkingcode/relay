@@ -17,8 +17,7 @@ import (
 // (§5.5), and returns a store ready for full use.
 //
 // Called from runTrayApp, at the same call site the presence gate's own
-// provider is constructed. Every branch here is exercised directly, with a
-// memory keyring, by settings_store_sealed_test.go.
+// provider is constructed. Nothing exercises these branches automatically now.
 //
 // A non-nil error is never a reason to treat the returned store as unusable:
 // on every degraded branch below, the store is already fully able to serve

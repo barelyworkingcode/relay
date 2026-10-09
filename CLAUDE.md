@@ -13,7 +13,7 @@ same change when behaviour moves.
 | Working on | Read first |
 |---|---|
 | Request flow, file map, grants, remote listener, credential model, Settings UI | [`docs/architecture.md`](docs/architecture.md) |
-| Moving code between packages; the structural gate tests | [`docs/package-layout.md`](docs/package-layout.md) |
+| Moving code between packages | [`docs/package-layout.md`](docs/package-layout.md) |
 | Any CLI subcommand | [`docs/cli.md`](docs/cli.md) |
 | Tokens, credentials, expiry, sealing | [`docs/tokens.md`](docs/tokens.md), [`docs/launch-identity.md`](docs/launch-identity.md), [`docs/sealed-config.md`](docs/sealed-config.md) |
 | Presence prompts, gated ops | [`docs/presence-gate.md`](docs/presence-gate.md) |
@@ -47,7 +47,7 @@ documents; there is no ADR directory to look in.
 cmd/relay/           the tray app and CLI: gated cores (*Ops), doors (HTTP routes,
                      ipc_*.go, *_cmd.go), router.go, cgo/Cocoa
 cmd/relaysessions/   the session host (relay-sessions), built into Contents/Helpers/
-cmd/test*/           real binaries the suite spawns — never exec.Command mocks
+cmd/testmcp, cmd/testservice: probe binaries the devbox journeys build
 internal/<domain>/   one capability per package: its types AND the operations on them
 web/src/             Settings UI; bundled in-process by web/gen (no Node)
 docs/                design, rationale, operator guides
@@ -62,13 +62,10 @@ service id.
 
 ```bash
 ./build.sh              # build + install /Applications/Relay.app and launch it
-./build.sh --test       # hermetic suite first; abort install on failure
+./build.sh --test       # go vet first; abort install on failure
 ./build.sh --release    # sign + notarize + /tmp/Relay.dmg (implies --test)
 
-go test ./internal/project/...        # while working: the package you touched
-go test ./...                         # hermetic suite; relay may be running
-go test -race ./...                   # CI runs this on every PR; locally on demand
-go test -tags=live ./...              # spawns ../relayLLM and headless Chrome
+go build ./... && go vet ./...        # while working
 golangci-lint run ./...               # a ratchet, not a gate: add no new findings
 ```
 
@@ -77,14 +74,8 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 | Stage | Runs |
 |---|---|
 | commit | `gofmt`, `go build`, `go vet` — seconds |
-| push | `go test ./...` |
-| PR and `main` (GitHub Actions) | `go test ./...` and `go test -race ./...`, in parallel |
-| PR (GitHub Actions) | `burn-in`: added or changed `TestXxx` functions, `go test -race -count=10` |
-
-Run `-race` locally on the package you touched when changing anything
-concurrent (supervisors, listeners, the audit writer, pollers); leave the full
-race pass to CI. Run the live tier after touching the relay↔relayLLM boundary,
-the WebAuthn verifier, the login routes or the login page.
+| push | `go build ./...`, `go vet ./...` |
+| PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags testapprover ./cmd/relay`, and a step that fails on any `_test.go` outside `e2e/` |
 
 ## House rules
 
@@ -126,21 +117,13 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
 - `internal/` never imports `cmd/relay`. Gated cores, doors and `router.go` stay
   in `cmd/relay`; a package that would hold types while `main` keeps the
   operations is the wrong cut.
-- The gate tests match **source text**. Renaming or moving a gated mutator
-  means updating `gatedMutatorNames` and its pinned `want` together;
-  `requireIssuanceAuditor` must stay an unqualified identifier in `main`. An
-  empty scan passes — after a move, check the guard still finds something.
 - HTTP and IPC doors share one core per domain (`*Ops`, the `Settings`
   mutators). Add behaviour to the core, never to one door.
 
 ### Tests
 
-- **No test touches the real config dir.** Anything reading settings, pidfiles,
-  logs or the bridge socket calls `mkSandboxRelayHome(t)` first.
-- Router → `newTestRouter`; manifest service → `NewFakeService`; real
-  subprocess → `buildTestServiceBinary` / `buildTestMcpBinary`.
-- Hermetic by default. `//go:build live` tests `t.Skip` when their binary is
-  absent — a skip, never a failure.
+- Relay has no unit tests and CI rejects a `_test.go` outside `e2e/`. Until
+  `e2e/` exists, a bug's failing repro is a devbox journey (`cmd/devboxverify`).
 - Time-dependent code takes an injected clock; a test does not sleep to wait
   for one.
 - Report a failure with its output. Do not skip, loosen or delete a test to
