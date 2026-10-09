@@ -15,16 +15,11 @@ import (
 )
 
 // FileHostStatus is one host agent's connection state, as /ws/files reports
-// it. The host pool that owns the agents fills it in.
-type FileHostStatus struct {
-	HostID string
-	Name   string
-	Status string // connecting | connected | unreachable
-	Error  string
-}
+// it.
+type FileHostStatus = projectfs.HostStatus
 
 // FileHostPool is what FileOps needs from the host agents; *projectfs.HostPool
-// satisfies it once FileHostStatus is an alias of projectfs.HostStatus.
+// satisfies it.
 type FileHostPool interface {
 	Backend(h config.Host, root string) projectfs.Backend
 	PasteTmp(ctx context.Context, h config.Host, name string, data []byte) (string, error)
@@ -36,10 +31,6 @@ type FileHostPool interface {
 // project-files.md). It resolves the project from fresh settings on every
 // call, so a change to files_read_only or a project's path applies to the
 // next request.
-//
-// Hosts is the seam the host pool plugs into. Left nil,
-// every host project answers HOST_UNREACHABLE and console projects are
-// unaffected.
 type FileOps struct {
 	Store config.SettingsStore
 	Audit *audit.AuditRecorder

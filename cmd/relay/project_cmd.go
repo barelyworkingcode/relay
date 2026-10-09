@@ -11,12 +11,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
-func init() {
-	// Registered here rather than in adminOps' literal so the verb owns its
-	// own wiring; the table is still the only way a CLI reaches the tray.
-	adminOps["project.update"] = adminProjectUpdate
-}
-
 // runProjectCommand is `relay project`'s dispatcher.
 func runProjectCommand(args []string) {
 	runSubcommands("project", []cliSubcommand{

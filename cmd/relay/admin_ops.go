@@ -51,6 +51,7 @@ var adminOps = map[string]adminOpHandler{
 	"eve.list":                  adminEveList,
 	"enrolment.list":            adminEnrolmentList,
 	"grant.view":                adminGrantView,
+	"project.update":            adminProjectUpdate,
 }
 
 // decodeAdminArgs unmarshals an admin_op payload into T, naming the
