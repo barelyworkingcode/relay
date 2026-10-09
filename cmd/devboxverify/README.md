@@ -579,6 +579,31 @@ is ended and deleted whatever the outcome.
   scope header, which narrows the run credential for that request only. Run on
   Claude Haiku `claude-haiku-5-5`; any other model reads BLOCKED.
 
+**cos-start-host** (screen). The Chief of Staff starts an agent in a project on
+an SSH host. A host `loopback-<nonce>-cos` targeting `localhost` and a project
+`Drop-in Host cos <nonce>` on a fresh folder are created (the project create
+raises a presence prompt, answered by the helper). A caller minted with classes
+proxy and execute sends `POST /api/chief-of-staff/sessions` with the scope
+header, `haiku` and "Reply with exactly: verify-<nonce>-host". PASS when the
+start answers 201 with origin `chief-of-staff` and mode `headless`; a
+`turn_done` frame holds the marker, then idle; the scoped `GET /api/sessions`
+row has origin `chief-of-staff`; the local process list holds an `ssh ... -T --`
+command whose base64 script, decoded, sets `RELAY_SESSION_ID` to the session
+id; a scoped `POST /api/chief-of-staff/messages` answers 202 and a second
+`turn_done` holds "verify-<nonce>-host2"; the audit has an ok `session_launch`
+row with origin `chief-of-staff` and `host_id` the host, and two intent and two
+completion `session_message` rows (the start prompt and the send), all with that
+origin. The session, project and host are deleted whatever the outcome. BLOCKED
+when the host or project cannot be created (setup P11), the audit is
+unreadable or a credential is refused; FAIL when the host's `claude` never
+answers.
+- Lives in: `cmd/relay/session_chief_of_staff.go`, `cmd/relay/session_launch.go`,
+  `internal/sshhost`.
+- Reached by: the minted credential for the start, send and list; the run
+  credential for host, project and delete; `/ws`; `relay audit --json`.
+- Traps: needs setup P11. Every wait is a response, the presence dialog result or
+  a `turn_done` frame; the process list is read once, after the first turn.
+
 **disabled-tool-refused** (screen). In a live session in Verify Grant,
 `testmcp_ping` answers; a `PUT /api/projects/{id}` with `disabled_tools`
 naming it returns 200 within 10 s without a prompt; the same session no
@@ -830,7 +855,7 @@ None of this drifts `verify.sh`.
   prompt); and, if Acme restricts models, allow `codex/gpt-6-luna`. Codex must
   be installed and signed in. Without it the journey FAILs on the launch
   refusal or the missing model row.
-- **P11. Loopback SSH.** The `session-drop-in-host` journey adds a host
+- **P11. Loopback SSH.** The `session-drop-in-host` and `cos-start-host` journeys add a host
   that targets `localhost`, so relay runs `claude` over SSH to the box itself.
   The box's own public key is in the login user's `authorized_keys`, the SSH
   client trusts the box's host key without a prompt, and `claude` is on the
