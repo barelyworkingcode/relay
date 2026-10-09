@@ -315,6 +315,34 @@ except a successful poll (`GET`/`HEAD` of `/health`, `/props`, `/models` or
 canonical model name. It never carries the query string, headers, body,
 requested model, key label or any credential.
 
+### What relay sends the host, and what it reads back
+
+Relay talks to the host over its router socket as plain HTTP/1.1, one connection per request (keep-alive off). The `Host` is a fixed placeholder; nothing may depend on it.
+
+**Catalog.** Relay sends `GET /v1/models` with no body, and reads a `200` JSON document:
+
+```json
+{"object":"list","data":[{"id":"fake-echo","object":"model","owned_by":"fake","context_length":8192}]}
+```
+
+| Field | Use |
+|---|---|
+| `id` | The router id. A caller's `model` is matched against it exactly, case-sensitive. Required. |
+| `owned_by` | A display label. `virtual` marks a virtual model and `anthropic-map` a model-map key; a label containing `llama` or `mlx` marks that managed group (those two groups also accept the `llama/<alias>` and `mlx/<alias>` spellings). Any other label is an ordinary row. |
+| `target` | Only on an `anthropic-map` row: the router id the key rewrites to. |
+| `system` | `true` hides the row from chat pickers and marks it system-only. |
+| `context_length` | The window size to assume; absent or 0 means unknown. |
+
+Other fields are ignored. Any status other than `200`, or a body that is not this document, makes the host unavailable (503 to the caller). The body is read up to a fixed cap. The catalog is fetched at most once per cache period and again on a miss ([Catalog cache](#catalog-cache)).
+
+**Forwarded calls.** A call on one of the broker's routes is forwarded with the same method and path the caller used, so the host sees the caller's path, for example `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `/v1/audio/transcriptions`, `/v1/audio/speech`, `/v1/messages`, `/v1/messages/count_tokens`, and `/health`. The bare forms (`/chat/completions`, `/models` and so on) are forwarded as spelled. Relay answers `/props` and the model listing for callers itself, from the catalog. The `/api/`, `/chatgpt/` and `/openai/` prefixes are forwarded as the caller's own request, with the caller's credential, and are not model-checked.
+
+For a brokered call the body is JSON with exactly one `model` key, set by relay to the canonical router id, and the other keys as the caller sent them. `Content-Type` and the other end-to-end headers are kept. `Authorization`, `x-api-key` and every `x-relay-*` header are removed. `X-Trace-Id` carries the trace id.
+
+**Response.** The host's status, headers and body go to the caller unchanged, except that every `x-relay-*` response header is removed first. `X-Relay-Model-Target` names the alias or endpoint that served the call and goes only to the audit record. A response with `Content-Type: text/event-stream` is streamed with no buffering, and relay scans its `data:` events for usage (`usage.prompt_tokens` and `usage.completion_tokens` in the OpenAI shape, `input_tokens` and `output_tokens` in the Anthropic shape). A non-streamed JSON body is scanned for the same `usage` object. Usage is optional. An upgraded connection (`101`) is passed through unmetered.
+
+**Errors.** A connection that fails, or a peer that is not the registering process, is `503`. Other upstream failures are `502`. A host that answers with an error status has that status passed on.
+
 ## Catalog cache
 
 `modelbroker.Cache` (`internal/modelbroker/catalog.go`) sits in front of
