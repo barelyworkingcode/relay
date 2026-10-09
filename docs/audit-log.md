@@ -394,6 +394,23 @@ No new CLI flags: the existing filters select the new kinds, so
 `relay audit --kind remote --event mount_op` and
 `relay audit --mcp mount:<id>` already find these rows.
 
+## The file plane
+
+Eve's file operations (`docs/project-files.md`) record under the `file_op`
+event. `tool` is `write`, `mkdir`, `rename`, `move`, `delete` or `pastetmp`;
+`actor.project_id` and `args.path` name the project and the root-relative
+path (`args.new_path` for rename and move, `args.host_id` always).
+`mcp_root` is the project root.
+
+| Row | When |
+|---|---|
+| `phase: intent`, `outcome: pending` | written durably before the operation; if it cannot be written the operation is refused with 503 and does not run |
+| `phase: completion`, `outcome: ok` or `error` | after the operation, same `id`; `error` is the code |
+| `outcome: denied`, no `phase` | a mutation refused for `TRAVERSAL`, `SYMLINK` or `READ_ONLY` |
+
+Reads are never recorded. With auditing off, operations run and nothing is
+written. `relay audit --event file_op --project <id>` lists them.
+
 ## Records relay writes about itself
 
 Two event kinds are not calls. `mcp_down` and `mcp_up` record that an external

@@ -581,6 +581,12 @@ type Project struct {
 	// kind: local project (project.ValidateMounts) — a local project already
 	// reaches its directory through shells and fsMCP.
 	Mounts []MountGrant `json:"mounts,omitempty"`
+
+	// FilesReadOnly refuses write, rename, move, delete and mkdir on this
+	// project's files through the file plane (docs/project-files.md). It only
+	// narrows: false, the zero value, is the behaviour every project had
+	// before the field existed.
+	FilesReadOnly bool `json:"files_read_only,omitempty"`
 }
 
 // EnrolmentBudget bounds what one enrolled client may draw per rolling

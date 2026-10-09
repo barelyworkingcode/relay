@@ -263,6 +263,11 @@ type appRouter struct {
 	// revoke from a terminal, the tab, and eve's own report can never
 	// disagree about what is pending.
 	evePasskeyOps *EvePasskeyOps
+
+	// projectOps backs `relay project update`: the SAME instance the
+	// Projects tab and PUT /api/projects/{id} use, so the three doors share
+	// one queue.
+	projectOps *ProjectOps
 }
 
 // identityAllowed returns the launch identity bound to this request's peer

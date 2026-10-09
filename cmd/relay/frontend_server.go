@@ -209,7 +209,11 @@ type frontendRouteDeps struct {
 	// server -- the Passkeys tab's eve section reaches the same instance
 	// through the tray's IPC door instead.
 	evePasskeyOps *EvePasskeyOps
-	enhanced      *EnhancedServiceRegistry
+	// fileOps backs the file plane routes and /ws/files. NewFrontendServer
+	// builds it; the host pool plugs into its seams through
+	// FrontendServer.FileOps.
+	fileOps  *FileOps
+	enhanced *EnhancedServiceRegistry
 	// sessionHost bundles what RegisterSessionRoutes (session_routes.go) needs
 	// to authorize a launch, reach relay-sessions and keep relay's ledger and
 	// model-key tables in sync (plan-broker-and-sessions.md §2 C5). Its zero
@@ -267,6 +271,7 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 	if deps.sessionHost.ready() {
 		RegisterSessionRoutes(rr, deps.sessionHost)
 	}
+	RegisterFileRoutes(rr, deps.fileOps)
 
 	// Catch-all dispatcher: any path not matched by a more specific handler
 	// (project routes above) is resolved against the manifest registry and
@@ -412,6 +417,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		},
 		eveEnrolmentOps: eveEnrolmentOps,
 		evePasskeyOps:   evePasskeyOps,
+		fileOps:         &FileOps{Store: store, Audit: auditOps.Recorder()},
 		enhanced:        enhanced,
 		sessionHost:     sessionHost,
 		issuance:        issuanceAuditorOrNil(auditOps.Recorder()),
@@ -458,6 +464,15 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		authz:      authz,
 		auditor:    auditor,
 	}, nil
+}
+
+// FileOps is the file plane core, for wiring its host seams after
+// construction.
+func (s *FrontendServer) FileOps() *FileOps {
+	if s == nil {
+		return nil
+	}
+	return s.routeDeps.fileOps
 }
 
 // Serve blocks accepting connections until Shutdown is called.

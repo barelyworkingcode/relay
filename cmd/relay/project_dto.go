@@ -43,6 +43,7 @@ type projectView struct {
 	GenerateSkill    bool                       `json:"generate_skill,omitempty"`
 	SessionFolders   []string                   `json:"session_folders,omitempty"`
 	Mounts           []config.MountGrant        `json:"mounts,omitempty"`
+	FilesReadOnly    bool                       `json:"files_read_only,omitempty"`
 }
 
 // projectToView reads s for the project's defaults, so s must be the snapshot
@@ -70,6 +71,7 @@ func projectToView(s *config.Settings, p config.Project) projectView {
 		GenerateSkill:    p.GenerateSkill,
 		SessionFolders:   p.SessionFolders,
 		Mounts:           p.Mounts,
+		FilesReadOnly:    p.FilesReadOnly,
 	}
 }
 

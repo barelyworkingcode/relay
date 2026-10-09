@@ -739,6 +739,7 @@ func runTrayApp() {
 		SessionCleanup: sessionDeps,
 	}
 	app.ipcCtx.ProjectOps = projectOps
+	router.projectOps = projectOps
 	// hostOps is the one core behind both the Hosts tab (via
 	// app.ipcCtx.HostOps) and RegisterHostRoutes on the frontend server
 	// (docs/ssh-hosts.md) — a host created from curl and one created from
