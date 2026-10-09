@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -44,6 +45,9 @@ type FrontendServer struct {
 	// actually bound, and the one every WebAuthn ceremony is checked
 	// against. Empty means no TCP listener and therefore no login routes.
 	loginOrigin string
+	// loginPatterns are the public routes the login mux serves; empty with no
+	// TCP listener.
+	loginPatterns []string
 
 	// routeDeps, authz and auditor let ListenLoopback build the TCP mux at
 	// call time, from the same ingredients NewFrontendServer used for the
@@ -52,6 +56,8 @@ type FrontendServer struct {
 	routeDeps frontendRouteDeps
 	authz     control.Authorizer
 	auditor   control.ControlAuditor
+	// recordRoute tells the doors catalogue every route either mux registers.
+	recordRoute func(control.RouteInfo)
 }
 
 // EnvAPIListen opts the API into a loopback TCP listener beside the 0600 Unix
@@ -127,7 +133,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 	}
 
 	tcpMux := http.NewServeMux()
-	registerFrontendRoutes(&control.RouteRegistrar{Mux: tcpMux, Transport: control.TransportTCP, Authz: s.authz, Auditor: s.auditor, Reserve: s.routeDeps.enhanced, CredentialID: APICredentialIDFromContext}, s.routeDeps)
+	registerFrontendRoutes(&control.RouteRegistrar{Mux: tcpMux, Transport: control.TransportTCP, Authz: s.authz, Auditor: s.auditor, Reserve: s.routeDeps.enhanced, CredentialID: APICredentialIDFromContext, Record: s.recordRoute}, s.routeDeps)
 
 	// The origin comes from the address the kernel actually gave this
 	// listener, never from a constant or a request header — an ephemeral
@@ -138,12 +144,13 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 	// the design.
 	port := ln.Addr().(*net.TCPAddr).Port
 	s.loginOrigin = fmt.Sprintf("http://%s:%d", webauthnRPID, port)
-	publicMux, err := s.newLoginMuxFor(s.loginOrigin)
+	publicMux, loginPatterns, err := s.newLoginMuxFor(s.loginOrigin)
 	if err != nil {
 		_ = ln.Close()
 		s.loginOrigin = ""
 		return err
 	}
+	s.loginPatterns = loginPatterns
 
 	s.tcpLn = ln
 	s.tcpServer = &http.Server{
@@ -163,17 +170,36 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 // an assertion against, so they are not registered anywhere rather than
 // registered against a placeholder (the same rule control.RouteRegistrar.Handle
 // follows for an unreachable class).
-func (s *FrontendServer) newLoginMuxFor(origin string) (*http.ServeMux, error) {
+func (s *FrontendServer) newLoginMuxFor(origin string) (*http.ServeMux, []string, error) {
 	verifier, err := login.NewWebAuthnVerifier(origin, webauthnRPID)
 	if err != nil {
-		return nil, fmt.Errorf("login routes: %w", err)
+		return nil, nil, fmt.Errorf("login routes: %w", err)
 	}
 	lr := newLoginRoutes(s.routeDeps.store, verifier, s.auditor)
 	lr.issuance = s.routeDeps.issuance
 	if s.routeDeps.loginOps != nil {
 		lr.ops = s.routeDeps.loginOps
 	}
-	return newLoginMux(lr), nil
+	return newLoginMux(lr), loginPatternsOf(lr), nil
+}
+
+// loginPatternsOf lists the patterns of lr.loginHandlers, sorted.
+func loginPatternsOf(lr *loginRoutes) []string {
+	handlers := lr.loginHandlers()
+	patterns := make([]string, 0, len(handlers))
+	for p := range handlers {
+		patterns = append(patterns, p)
+	}
+	sort.Strings(patterns)
+	return patterns
+}
+
+// LoginPatterns lists the public login routes of a bound TCP listener, or none.
+func (s *FrontendServer) LoginPatterns() []string {
+	if s == nil {
+		return nil
+	}
+	return s.loginPatterns
 }
 
 // LoginOrigin reports the origin the login ceremony is bound to, or ""
@@ -400,7 +426,10 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 // constructor already has (see projectOps/hostOps/eveEnrolmentOps/
 // evePasskeyOps's own nil-fallback comments above). A caller not otherwise
 // concerned with session routes passes sessionRouteDeps{} explicitly.
-func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, templateOps *TemplateOps, eveEnrolmentOps *EveEnrolmentOps, evePasskeyOps *EvePasskeyOps, authz control.Authorizer, auditor control.ControlAuditor, launches *service.Launches, sessionHost sessionRouteDeps) (*FrontendServer, error) {
+//
+// recordRoute is told every route either mux registers (the doors catalogue);
+// nil records nothing.
+func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, templateOps *TemplateOps, eveEnrolmentOps *EveEnrolmentOps, evePasskeyOps *EvePasskeyOps, authz control.Authorizer, auditor control.ControlAuditor, launches *service.Launches, sessionHost sessionRouteDeps, recordRoute func(control.RouteInfo)) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -451,7 +480,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 	}
 
 	socketMux := http.NewServeMux()
-	registerFrontendRoutes(&control.RouteRegistrar{Mux: socketMux, Transport: control.TransportSocket, Authz: authz, Auditor: auditor, Reserve: deps.enhanced, CredentialID: APICredentialIDFromContext}, deps)
+	registerFrontendRoutes(&control.RouteRegistrar{Mux: socketMux, Transport: control.TransportSocket, Authz: authz, Auditor: auditor, Reserve: deps.enhanced, CredentialID: APICredentialIDFromContext, Record: recordRoute}, deps)
 
 	// The socket door is composed through the same function the loopback one
 	// is, with an empty public set: a browser cannot reach a Unix socket and
@@ -490,6 +519,8 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		routeDeps:  deps,
 		authz:      authz,
 		auditor:    auditor,
+
+		recordRoute: recordRoute,
 	}, nil
 }
 

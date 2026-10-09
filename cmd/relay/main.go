@@ -48,6 +48,7 @@ func main() {
 		os.Exit(1)
 	}
 	bridge.SetConfigDir(configDir)
+	cliConfigDirSource = source
 	args, traceID, err := selectTraceFlag(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -90,41 +91,10 @@ func main() {
 		return
 	}
 
-	switch args[0] {
-	case "serve":
-		runServeCommand(args[1:])
-	case "service":
-		runServiceCommand(args[1:])
-	case "mcp":
-		runMcpOrServer(args[1:], source)
-	case "mcpExec":
-		runMcpExec("relay mcpExec", args[1:])
-	case "audit":
-		runAuditCommand(args[1:])
-	case "enrol":
-		runEnrolCommand(args[1:])
-	case "credential":
-		runCredentialCommand(args[1:])
-	case "login":
-		runLoginCommand(args[1:])
-	case "eve":
-		runEveCommand(args[1:])
-	case "grant":
-		runGrantCommand(args[1:])
-	case "project":
-		runProjectCommand(args[1:])
-	case "sandbox":
-		runSandboxCommand(args[1:])
-	case "drop-in":
-		runDropInCommand(args[1:])
-	case "logs":
-		runLogsCommand(args[1:], traceID)
-	case "mcpList":
+	if args[0] == "mcpList" {
 		exitError("mcpList has been removed. Use: relay mcpExec --token <TOKEN> --list")
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [--trace ID] [serve|service|mcp|mcpExec|audit|enrol|credential|login|eve|grant|project|sandbox|drop-in|logs]\n", args[0])
-		os.Exit(1)
 	}
+	runCLI(args)
 }
 
 const mcpBridgeProbeTimeout = 2 * time.Second
@@ -154,21 +124,11 @@ func probeBridgeSocket(path string, timeout time.Duration) error {
 	return conn.Close()
 }
 
-// runMcpOrServer's subcommands keep bridge.NewClient and ignore
-// RELAY_BRIDGE_SOCKET: only the stdio server is spawned by relay's own
-// children with that variable naming the relay that launched them.
-func runMcpOrServer(args []string, source configDirSource) {
-	if len(args) > 0 {
-		switch args[0] {
-		case "register", "unregister", "list":
-			runMcpCommand(args)
-			return
-		case "call":
-			runMcpExec("relay mcp call", args[1:])
-			return
-		}
-	}
-
+// runMcpServer runs the stdio MCP server. It keeps bridge.NewClient's
+// socket choice out of the picture: only the stdio server is spawned by
+// relay's own children with RELAY_BRIDGE_SOCKET naming the relay that launched
+// them; the other `relay mcp` subcommands ignore it.
+func runMcpServer(args []string, source configDirSource) {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	token := fs.String("token", "", "auth token")
 	fs.Parse(args)

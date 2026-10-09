@@ -13,21 +13,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/service"
 )
 
-// register, unregister and restart are brokered (ADR-017 decision 2): this
-// process holds no sealer (§5.4), so it dials the running tray over
-// admin_op and lets ServiceOps — the same core the Services tab and
-// RegisterServiceRoutes share — do the work. `list` is a tray read too: the
-// running tray is the only reader of the configuration, and it alone knows
-// the restart-supervision state.
-func runServiceCommand(args []string) {
-	runSubcommands("service", []cliSubcommand{
-		{"register", serviceRegister},
-		{"unregister", serviceUnregister},
-		{"restart", serviceRestart},
-		{"list", func(_ []string) { serviceList() }},
-	}, args)
-}
-
 func serviceRegister(args []string) {
 	fs := flag.NewFlagSet("service register", flag.ExitOnError)
 	var opts registerOpts

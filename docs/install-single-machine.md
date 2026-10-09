@@ -171,8 +171,9 @@ An MCP being registered does not mean anything may call it. A **project**
 binds a directory to a set of permissions and a scoped token; the token is the
 security boundary.
 
-**There is no CLI door for creating one.** Open Settings from the tray icon,
-then **Projects → + New → Local project**.
+Create one with `relay project create --name "Acme Website" --path /Users/you/projects/acme`
+from your own terminal; it is presence-gated, so approve the prompt. Or open
+Settings from the tray icon, then **Projects → + New → Local project**.
 
 ```
 Kind             Local project

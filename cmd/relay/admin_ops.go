@@ -20,39 +20,110 @@ import (
 // itself interpret.
 type adminOpHandler func(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error)
 
+// adminCaller names who may run an admin op.
+type adminCaller string
+
+const (
+	// adminCallerSocket is every op that predates the operator rule: any
+	// same-user peer on the 0600 socket, unchanged.
+	adminCallerSocket adminCaller = "socket"
+	// adminCallerOperator requires bridge.RequireOperatorCaller: a same-user
+	// peer that is neither a live session's member nor sandboxed.
+	adminCallerOperator adminCaller = "operator"
+)
+
+// adminOpEntry is one admin op. gates lists the presence operations its core
+// may require, each in presence.GatedOps; the doors document reads it.
+type adminOpEntry struct {
+	handle adminOpHandler
+	caller adminCaller
+	gates  []string
+}
+
 // adminOps is the inner dispatch table behind bridge.ReqAdminOp (ADR-017
 // implementation spec §7.1/§7.2). Every entry dispatches into the S5 core
 // that carries the presence gate — never into a free function or a store
 // mutator directly, which is exactly the shortcut this table exists to
 // remove (§7.2's operation table is normative for the op name -> core
 // mapping).
-var adminOps = map[string]adminOpHandler{
-	"credential.mint":           adminCredentialMint,
-	"credential.revoke":         adminCredentialRevoke,
-	"enrolment.create":          adminEnrolmentCreate,
-	"enrolment.sign":            adminEnrolmentSign,
-	"enrolment.update":          adminEnrolmentUpdate,
-	"enrolment.revoke":          adminEnrolmentRevoke,
-	"enrolment.request.list":    adminEnrolmentRequestList,
-	"enrolment.request.approve": adminEnrolmentRequestApprove,
-	"enrolment.request.refuse":  adminEnrolmentRequestRefuse,
-	"login.bootstrap.mint":      adminLoginBootstrapMint,
-	"login.passkey.revoke":      adminLoginPasskeyRevoke,
-	"eve.enrolment.open":        adminEveEnrolmentOpen,
-	"eve.passkey.revoke":        adminEvePasskeyRevoke,
-	"mcp.register":              adminMcpRegister,
-	"mcp.unregister":            adminMcpUnregister,
-	"service.register":          adminServiceRegister,
-	"service.unregister":        adminServiceUnregister,
-	"service.restart":           adminServiceRestart,
-	"service.list":              adminServiceList,
-	"credential.list":           adminCredentialList,
-	"mcp.list":                  adminMcpList,
-	"login.list":                adminLoginList,
-	"eve.list":                  adminEveList,
-	"enrolment.list":            adminEnrolmentList,
-	"grant.view":                adminGrantView,
-	"project.update":            adminProjectUpdate,
+//
+// Deliberate: an op that predates the operator rule keeps adminCallerSocket;
+// every op added since is adminCallerOperator, so a sandboxed session cannot
+// reach configure- or execute-class work through the CLI's door.
+var adminOps = map[string]adminOpEntry{
+	"credential.mint":           {handle: adminCredentialMint, caller: adminCallerSocket, gates: []string{"credential.mint"}},
+	"credential.revoke":         {handle: adminCredentialRevoke, caller: adminCallerSocket, gates: []string{"credential.revoke"}},
+	"enrolment.create":          {handle: adminEnrolmentCreate, caller: adminCallerSocket, gates: []string{"enrolment.create"}},
+	"enrolment.sign":            {handle: adminEnrolmentSign, caller: adminCallerSocket, gates: []string{"enrolment.sign"}},
+	"enrolment.update":          {handle: adminEnrolmentUpdate, caller: adminCallerSocket, gates: []string{"enrolment.update"}},
+	"enrolment.revoke":          {handle: adminEnrolmentRevoke, caller: adminCallerSocket, gates: []string{"enrolment.revoke"}},
+	"enrolment.request.list":    {handle: adminEnrolmentRequestList, caller: adminCallerSocket},
+	"enrolment.request.approve": {handle: adminEnrolmentRequestApprove, caller: adminCallerSocket, gates: []string{"enrolment.sign"}},
+	"enrolment.request.refuse":  {handle: adminEnrolmentRequestRefuse, caller: adminCallerSocket},
+	"login.bootstrap.mint":      {handle: adminLoginBootstrapMint, caller: adminCallerSocket, gates: []string{"login.bootstrap.mint"}},
+	"login.passkey.revoke":      {handle: adminLoginPasskeyRevoke, caller: adminCallerSocket, gates: []string{"login.passkey.revoke"}},
+	"eve.enrolment.open":        {handle: adminEveEnrolmentOpen, caller: adminCallerSocket, gates: []string{"eve.enrolment.open"}},
+	"eve.passkey.revoke":        {handle: adminEvePasskeyRevoke, caller: adminCallerSocket, gates: []string{"eve.passkey.revoke"}},
+	"mcp.register":              {handle: adminMcpRegister, caller: adminCallerSocket, gates: []string{"mcp.register"}},
+	"mcp.unregister":            {handle: adminMcpUnregister, caller: adminCallerSocket},
+	"service.register":          {handle: adminServiceRegister, caller: adminCallerSocket, gates: []string{"service.register"}},
+	"service.unregister":        {handle: adminServiceUnregister, caller: adminCallerSocket},
+	"service.restart":           {handle: adminServiceRestart, caller: adminCallerSocket},
+	"service.list":              {handle: adminServiceList, caller: adminCallerSocket},
+	"credential.list":           {handle: adminCredentialList, caller: adminCallerSocket},
+	"mcp.list":                  {handle: adminMcpList, caller: adminCallerSocket},
+	"login.list":                {handle: adminLoginList, caller: adminCallerSocket},
+	"eve.list":                  {handle: adminEveList, caller: adminCallerSocket},
+	"enrolment.list":            {handle: adminEnrolmentList, caller: adminCallerSocket},
+	"grant.view":                {handle: adminGrantView, caller: adminCallerSocket},
+	"project.update":            {handle: adminProjectUpdate, caller: adminCallerSocket},
+
+	"project.create":       {handle: adminProjectCreate, caller: adminCallerOperator, gates: []string{"project.grant"}},
+	"project.edit":         {handle: adminProjectEdit, caller: adminCallerOperator, gates: []string{"project.grant"}},
+	"project.remove":       {handle: adminProjectRemove, caller: adminCallerOperator},
+	"project.token.rotate": {handle: adminProjectTokenRotate, caller: adminCallerOperator, gates: []string{"project.rotate_token"}},
+	"project.token.reveal": {handle: adminProjectTokenReveal, caller: adminCallerOperator, gates: []string{"project.reveal_token"}},
+	"project.skill.regen":  {handle: adminProjectSkillRegen, caller: adminCallerOperator},
+
+	"mcp.authenticate":      {handle: adminMcpAuthenticate, caller: adminCallerOperator, gates: []string{"mcp.oauth.start"}},
+	"mcp.permissions.reset": {handle: adminMcpResetPermissions, caller: adminCallerOperator},
+	"mcp.scope_fields":      {handle: adminMcpScopeFields, caller: adminCallerOperator},
+	"service.start":         {handle: adminServiceStart, caller: adminCallerOperator},
+	"service.stop":          {handle: adminServiceStop, caller: adminCallerOperator},
+	"service.action":        {handle: adminServiceAction, caller: adminCallerOperator},
+	"service.config.get":    {handle: adminServiceConfigGet, caller: adminCallerOperator},
+	"service.config.save":   {handle: adminServiceConfigSave, caller: adminCallerOperator},
+	"model.list":            {handle: adminModelList, caller: adminCallerOperator},
+
+	"status.view":            {handle: adminStatusView, caller: adminCallerOperator},
+	"remote.view":            {handle: adminRemoteView, caller: adminCallerOperator},
+	"remote.set":             {handle: adminRemoteSet, caller: adminCallerOperator, gates: []string{"remote.configure"}},
+	"host.probe":             {handle: adminHostProbe, caller: adminCallerOperator},
+	"host.disconnect":        {handle: adminHostDisconnect, caller: adminCallerOperator},
+	"sealed.store.reset":     {handle: adminSealedReset, caller: adminCallerOperator, gates: []string{"sealed.reset"}},
+	"login.session.list":     {handle: adminLoginSessions, caller: adminCallerOperator},
+	"login.session.sign_out": {handle: adminLoginSignOut, caller: adminCallerOperator},
+
+	"session.start":            {handle: adminSessionStart, caller: adminCallerOperator},
+	"session.list":             {handle: adminSessionList, caller: adminCallerOperator},
+	"session.message":          {handle: adminSessionMessage, caller: adminCallerOperator},
+	"session.stop":             {handle: adminSessionStop, caller: adminCallerOperator},
+	"session.resume":           {handle: adminSessionResume, caller: adminCallerOperator},
+	"session.mode":             {handle: adminSessionMode, caller: adminCallerOperator},
+	"terminal.start":           {handle: adminTerminalStart, caller: adminCallerOperator},
+	"terminal.list":            {handle: adminTerminalList, caller: adminCallerOperator},
+	"terminal.log":             {handle: adminTerminalLog, caller: adminCallerOperator},
+	"terminal.stop":            {handle: adminTerminalStop, caller: adminCallerOperator},
+	"terminal.persistent.list": {handle: adminTerminalPersistentList, caller: adminCallerOperator},
+	"terminal.persistent.kill": {handle: adminTerminalPersistentKill, caller: adminCallerOperator},
+	"files.watch":              {handle: adminFilesWatch, caller: adminCallerOperator},
+}
+
+// Deliberate: doors.list is added at init rather than in the literal, because
+// the catalogue it serves reads adminOps, and a package-level initializer that
+// reaches itself does not compile.
+func init() {
+	adminOps["doors.list"] = adminOpEntry{handle: adminDoorsList, caller: adminCallerOperator}
 }
 
 // decodeAdminArgs unmarshals an admin_op payload into T, naming the

@@ -269,6 +269,21 @@ func recordProjectTokenRotated(a IssuanceAuditor, projectID, via, credID, presen
 	})
 }
 
+// recordProjectTokenRevealed records that a project's existing token was
+// handed to the operator. It is credential_disclosed and not credential_issued:
+// nothing new came into existence. The token and its hash have no path into the
+// record, as for every issuance.
+func recordProjectTokenRevealed(a IssuanceAuditor, projectID, via, credID, presenceID string) error {
+	return recordIssuance(a, audit.CredentialIssuance{
+		Disclosed:  true,
+		Credential: auditCredentialProject,
+		Subject:    projectID,
+		Via:        via,
+		CredID:     credID,
+		PresenceID: presenceID,
+	})
+}
+
 // recordPasskeyRevoked records a removed passkey. The stored public key has no
 // path into the record: passkeyView withholds X and Y from every operator
 // surface for the same reason, and audit.CredentialIssuance has no field for

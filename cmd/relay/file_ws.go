@@ -254,6 +254,8 @@ type fileFrame struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// filesConn is one subscriber to the watch hub. ws is nil for a subscriber
+// that is not a WebSocket (the CLI door), which drains out itself.
 type filesConn struct {
 	o     *FileOps
 	ws    *websocket.Conn
@@ -268,11 +270,36 @@ type filesConn struct {
 	released bool
 }
 
+// newFilesConn builds a hub subscriber. Its frames queue on out; the WebSocket
+// door drains them with writeLoop, the CLI door by reading out directly.
+func newFilesConn(o *FileOps, ws *websocket.Conn, actor audit.AuditActor) *filesConn {
+	return &filesConn{
+		o: o, ws: ws, actor: actor,
+		out: make(chan []byte, fileWSQueue), done: make(chan struct{}),
+		watches: map[string]*watchEntry{}, tail: map[string]chan struct{}{},
+	}
+}
+
 func (c *filesConn) close() {
 	c.once.Do(func() {
 		close(c.done)
-		_ = c.ws.Close()
+		if c.ws != nil {
+			_ = c.ws.Close()
+		}
 	})
+}
+
+// subscribeHostStatus queues the current host statuses and every later change
+// for c. The returned func stops the subscription.
+func (o *FileOps) subscribeHostStatus(c *filesConn) (cancel func()) {
+	if o.Hosts == nil {
+		return func() {}
+	}
+	cancel = o.Hosts.Subscribe(func(s FileHostStatus) { c.send(hostStatusFrame(s)) })
+	for _, s := range o.Hosts.Statuses() {
+		c.send(hostStatusFrame(s))
+	}
+	return cancel
 }
 
 // send queues a frame. A full queue closes the connection.
@@ -397,11 +424,7 @@ func (o *FileOps) serveFilesWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	c := &filesConn{
-		o: o, ws: ws, actor: fileActor(o, r),
-		out: make(chan []byte, fileWSQueue), done: make(chan struct{}),
-		watches: map[string]*watchEntry{}, tail: map[string]chan struct{}{},
-	}
+	c := newFilesConn(o, ws, fileActor(o, r))
 	ev := logging.BeginEvent(r.Context(), "file.ws.close")
 	defer func() {
 		c.close()
@@ -409,13 +432,7 @@ func (o *FileOps) serveFilesWS(w http.ResponseWriter, r *http.Request) {
 		ev.End(logging.OutcomeOK, "", nil)
 	}()
 
-	if o.Hosts != nil {
-		cancel := o.Hosts.Subscribe(func(s FileHostStatus) { c.send(hostStatusFrame(s)) })
-		defer cancel()
-		for _, s := range o.Hosts.Statuses() {
-			c.send(hostStatusFrame(s))
-		}
-	}
+	defer o.subscribeHostStatus(c)()
 
 	go c.writeLoop()
 

@@ -757,22 +757,9 @@ func (a *App) openEveEnrolment() {
 // invoked from the Cocoa main thread onMenuClick runs on (§6.5).
 func (a *App) confirmAndResetSealedStore() {
 	a.goFunc(func() {
-		ss, ok := a.store.(*config.FileSettingsStore)
-		if !ok {
-			slog.Error("sealed store reset: store is not file-backed")
-			return
-		}
-		if err := resetSealedStore(a.ctx, a.configDir, ss, a.sealedKeyring, a.presenceGate, a.serviceQueue, issuanceAuditorOrNil(a.audit)); err != nil {
+		if err := a.resetSealed(a.ctx, auditViaTray); err != nil {
 			slog.Error("sealed store reset failed", "error", err)
-			return
 		}
-		slog.Warn("sealed store reset: settings.json, the CA and the keychain key were deleted; relay re-initialised with a fresh key")
-		a.platform.DispatchToMain(func() {
-			a.updateMenu()
-			if a.settingsOpen.Load() {
-				a.pushFullSettings()
-			}
-		})
 	})
 }
 
