@@ -387,7 +387,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 		Queue:    serviceQueue,
 		Gate:     presenceGate,
 		SessionHost: func(autostart bool) config.ServiceConfig {
-			return service.BuiltinRelaySessionsService(resolveRelayBin(), configDir, autostart)
+			return service.BuiltinRelaySessionsService(resolveRelayBin(), configDir, autostart, config.LocalAgentCommandsFor(store.Get()))
 		},
 		OnChange: func() {
 			app.platform.DispatchToMain(func() {
@@ -769,7 +769,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 	// internal/config's sanitizeIfBuiltin already stripped any stored
 	// Command, this is what puts the real one in. settings is store.Get()'s
 	// own clone, so mutating it here never touches the file.
-	settings.Services = service.EnsureBuiltinRelaySessionsService(settings.Services, resolveRelayBin(), configDir)
+	settings.Services = service.EnsureBuiltinRelaySessionsService(settings.Services, resolveRelayBin(), configDir, config.LocalAgentCommandsFor(settings))
 
 	// Reclaim orphans from a previous tray session that was killed before
 	// the reaper could SIGTERM its children. Without this, autostart of any
