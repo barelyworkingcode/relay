@@ -7,6 +7,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 type serviceView struct {
@@ -72,20 +73,25 @@ func writeServiceError(w http.ResponseWriter, err error) {
 // started from curl and one started from the tray share validation and registry.
 func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 	rr.Handle(control.ClassRead, "GET /api/services", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "service.list")
 		list := ops.List()
 		out := make([]serviceView, 0, len(list))
 		for _, c := range list {
 			out = append(out, serviceViewOf(c, ops.Registry.IsRunning(c.ID)))
 		}
+		ev.Set("count", len(out)).End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, out)
 	})
 
 	rr.Handle(control.ClassRead, "GET /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "service.get").Set("service_id", r.PathValue("id"))
 		svc, err := ops.Get(r.PathValue("id"))
 		if err != nil {
+			endEvent(ev, err)
 			writeServiceError(w, err)
 			return
 		}
+		ev.End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, serviceViewOf(svc, ops.Registry.IsRunning(svc.ID)))
 	})
 
@@ -121,7 +127,7 @@ func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 	})
 
 	rr.Handle(control.ClassConfigure, "DELETE /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := ops.Remove(r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
+		if err := ops.Remove(r.Context(), r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
 			writeServiceError(w, err)
 			return
 		}
@@ -133,7 +139,7 @@ func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 	// (ADR-015 decision 1).
 	rr.Handle(control.ClassConfigure, "POST /api/services/{id}/start", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if err := ops.Start(id); err != nil {
+		if err := ops.Start(r.Context(), id); err != nil {
 			writeServiceError(w, err)
 			return
 		}
@@ -143,7 +149,7 @@ func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 
 	rr.Handle(control.ClassConfigure, "POST /api/services/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if err := ops.Stop(id); err != nil {
+		if err := ops.Stop(r.Context(), id); err != nil {
 			writeServiceError(w, err)
 			return
 		}
@@ -160,7 +166,7 @@ func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 			return
 		}
 		id := r.PathValue("id")
-		if err := ops.SetAutostart(id, body.Autostart); err != nil {
+		if err := ops.SetAutostart(r.Context(), id, body.Autostart); err != nil {
 			writeServiceError(w, err)
 			return
 		}
@@ -180,7 +186,7 @@ func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "index is required"})
 			return
 		}
-		if err := ops.Move(r.PathValue("id"), *body.Index); err != nil {
+		if err := ops.Move(r.Context(), r.PathValue("id"), *body.Index); err != nil {
 			writeServiceError(w, err)
 			return
 		}
@@ -201,7 +207,7 @@ func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 			return
 		}
 		id := r.PathValue("id")
-		if err := ops.SetMenuHidden(id, body.Hidden); err != nil {
+		if err := ops.SetMenuHidden(r.Context(), id, body.Hidden); err != nil {
 			writeServiceError(w, err)
 			return
 		}

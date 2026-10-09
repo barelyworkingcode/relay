@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/terminal"
 )
 
@@ -30,11 +31,14 @@ func HandleDeleteTerminal(mgr *terminal.Manager, id string, w http.ResponseWrite
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	ev := logging.BeginEvent(r.Context(), "terminal.delete").Set("terminal_id", id)
 	if _, ok := mgr.Get(id); !ok {
+		endStatusEvent(ev, http.StatusNotFound)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	mgr.Close(id)
+	ev.End(logging.OutcomeOK, "", nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -48,17 +52,21 @@ func HandleTerminalLog(mgr *terminal.Manager, id string, w http.ResponseWriter, 
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	ev := logging.BeginEvent(r.Context(), "terminal.log").Set("terminal_id", id)
 	dir := mgr.LogDir()
 	if dir == "" {
+		endStatusEvent(ev, http.StatusNotFound)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	head, tail, err := terminal.OpenTerminalLogReaders(dir, id)
 	if err != nil {
 		if errors.Is(err, terminal.ErrTerminalLogNotFound) {
+			endStatusEvent(ev, http.StatusNotFound)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		endStatusEvent(ev, http.StatusBadRequest)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -71,6 +79,7 @@ func HandleTerminalLog(mgr *terminal.Manager, id string, w http.ResponseWriter, 
 		}
 	}()
 
+	ev.End(logging.OutcomeOK, "", nil)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	if head != nil {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/attention"
@@ -21,7 +20,12 @@ import (
 // the caller supplied (or the one minted for it) and when it started.
 type pendingTurn struct {
 	trace string
-	start time.Time
+	ev    *logging.Event
+}
+
+// beginTurn starts the chat.turn event clock under the turn's trace.
+func beginTurn(trace string) *logging.Event {
+	return logging.BeginEvent(logging.ContextWithTrace(context.Background(), trace), "chat.turn")
 }
 
 // SessionHandlers registers the session-related WS message types onto a
@@ -122,13 +126,13 @@ func (sh *SessionHandlers) SendToSession(sessionID string, msg map[string]any) {
 // provider messages never reach a log line.
 func (sh *SessionHandlers) observeTurn(sessionID string, msg map[string]any) {
 	typ, _ := msg["type"].(string)
-	level, code := slog.LevelInfo, ""
+	code := ""
 	switch typ {
 	case events.HandlerMessageComplete:
 	case events.WSMsgError:
-		level, code = slog.LevelError, "provider_error"
+		code = "provider_error"
 	case events.WSMsgProcessExited:
-		level, code = slog.LevelError, "process_exited"
+		code = "process_exited"
 	case events.WSMsgClearMessages:
 		sh.mu.Lock()
 		delete(sh.turns, sessionID)
@@ -144,23 +148,36 @@ func (sh *SessionHandlers) observeTurn(sessionID string, msg map[string]any) {
 	if !ok {
 		return
 	}
-	logTurn(level, sessionID, turn.trace, time.Since(turn.start), code)
+	endTurn(turn.ev, sessionID, code)
 }
 
-// logTurn writes the one chat.turn line for a turn; code is empty on success.
-func logTurn(level slog.Level, sessionID, trace string, d time.Duration, code string) {
-	status := "ok"
-	if code != "" {
-		status = "error"
-	}
-	attrs := []any{"op", "chat.turn", "status", status, "duration_ms", d.Milliseconds()}
+// endTurn writes the one chat.turn event for a turn; code is empty on success
+// and is otherwise the error text.
+func endTurn(ev *logging.Event, sessionID, code string) {
 	if sessionID != "" {
-		attrs = append(attrs, "session_id", sessionID)
+		ev.Set("session_id", sessionID)
 	}
-	if code != "" {
-		attrs = append(attrs, "error", code)
+	if code == "" {
+		ev.End(logging.OutcomeOK, "", nil)
+		return
 	}
-	slog.Log(logging.ContextWithTrace(context.Background(), trace), level, "chat turn", attrs...)
+	ev.End(logging.OutcomeError, turnFailureReason(code), errors.New(code))
+}
+
+func turnFailureReason(code string) string {
+	switch code {
+	case "session_id_required":
+		return "invalid"
+	case "session_not_found":
+		return "not_found"
+	case "already_processing", "resume_required", "dropped_in":
+		return "conflict"
+	case "provider_error":
+		return "upstream"
+	case "send_failed":
+		return "unavailable"
+	}
+	return "internal"
 }
 
 func (sh *SessionHandlers) handleJoinSession(c *Conn, raw []byte) {
@@ -262,14 +279,14 @@ func (sh *SessionHandlers) handleSendMessage(c *Conn, raw []byte) {
 	_ = json.Unmarshal(raw, &req)
 	trace := logging.TraceIDOrNew(req.TraceID)
 	if req.SessionID == "" {
-		logTurn(slog.LevelWarn, "", trace, 0, "session_id_required")
+		endTurn(beginTurn(trace), "", "session_id_required")
 		sendWSError(c, "sessionId required")
 		return
 	}
 
 	// The turn is recorded before SendMessage: a fast provider can emit
 	// message_complete before SendMessage returns.
-	mine := pendingTurn{trace: trace, start: time.Now()}
+	mine := pendingTurn{trace: trace, ev: beginTurn(trace)}
 	sh.mu.Lock()
 	prev, hadPrev := sh.turns[req.SessionID]
 	sh.turns[req.SessionID] = mine
@@ -288,7 +305,7 @@ func (sh *SessionHandlers) handleSendMessage(c *Conn, raw []byte) {
 		}
 	}
 	sh.mu.Unlock()
-	logTurn(slog.LevelWarn, req.SessionID, trace, 0, sendFailureCode(err))
+	endTurn(mine.ev, req.SessionID, sendFailureCode(err))
 	if errors.Is(err, session.ErrResumeRequired) {
 		sendResumeRequired(c, req.SessionID, err)
 		return

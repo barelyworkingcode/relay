@@ -580,9 +580,12 @@ func adminServiceUnregister(ctx context.Context, r *appRouter, args json.RawMess
 	}
 	id, err := resolveServiceRef(r, req.ID, req.Name)
 	if err != nil {
+		// The core never runs for an unresolved target, so this is the
+		// operation's only event.
+		endEvent(logging.BeginEvent(ctx, "service.unregister"), err)
 		return nil, err
 	}
-	if err := ops.Remove(id, auditViaCLI, ""); err != nil {
+	if err := ops.Remove(ctx, id, auditViaCLI, ""); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {
@@ -599,7 +602,7 @@ type serviceRestartRequest struct {
 	Name string `json:"name,omitempty"`
 }
 
-func adminServiceRestart(_ context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+func adminServiceRestart(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
 	req, err := decodeAdminArgs[serviceRestartRequest]("service.restart", args)
 	if err != nil {
 		return nil, err
@@ -609,9 +612,10 @@ func adminServiceRestart(_ context.Context, r *appRouter, args json.RawMessage) 
 	}
 	id, err := resolveServiceRef(r, req.ID, req.Name)
 	if err != nil {
+		endEvent(logging.BeginEvent(ctx, "service.restart"), err)
 		return nil, err
 	}
-	if err := r.serviceOps.Restart(id); err != nil {
+	if err := r.serviceOps.Restart(ctx, id); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {

@@ -12,6 +12,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
+	"github.com/barelyworkingcode/relay/internal/projectfs"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
 
@@ -109,6 +110,8 @@ func eventOutcome(err error) (logging.Outcome, string) {
 		return logging.OutcomeOK, ""
 	}
 	var launch *LaunchRefusal
+	var fileErr *projectfs.Error
+	var sandbox *bridge.SandboxRefusal
 	var dropIn *DropInRefusal
 	switch {
 	case errors.Is(err, presence.ErrRefused):
@@ -120,16 +123,19 @@ func eventOutcome(err error) (logging.Outcome, string) {
 	case errors.Is(err, errIssuanceAuditingRequired):
 		return logging.OutcomeDenied, "audit_unavailable"
 	case errors.Is(err, errEventNotFound), errors.Is(err, errMcpNotFound),
-		errors.Is(err, enrolment.ErrNotFound), errors.Is(err, errEnrolmentRequestNotFound), errors.Is(err, errPasskeyNotFound), errors.Is(err, errEvePasskeyUnknown):
+		errors.Is(err, enrolment.ErrNotFound), errors.Is(err, errEnrolmentRequestNotFound), errors.Is(err, errPasskeyNotFound), errors.Is(err, errEvePasskeyUnknown),
+		errors.Is(err, errServiceNotFound), errors.Is(err, errHostNotFound),
+		errors.Is(err, errTemplateNotFound), errors.Is(err, errPersistProjectNotFound), errors.Is(err, errPersistSessionNotFound):
 		return logging.OutcomeError, "not_found"
-	case errors.Is(err, errEventInvalid), errors.Is(err, errMcpInvalid), errors.Is(err, enrolment.ErrInvalid):
+	case errors.Is(err, errEventInvalid), errors.Is(err, errMcpInvalid), errors.Is(err, enrolment.ErrInvalid), errors.Is(err, errServiceInvalid), errors.Is(err, errHostInvalid),
+		errors.Is(err, errTemplateInvalid), errors.Is(err, errPersistNameInvalid):
 		return logging.OutcomeError, "invalid"
 	case errors.Is(err, errEnrolmentRequestsNotWired), errors.Is(err, errLoginOpsUnavailable),
 		errors.Is(err, errEveEnrolmentOpsUnavailable), errors.Is(err, errEvePasskeyOpsUnavailable):
 		return logging.OutcomeError, "unavailable"
 	case errors.Is(err, errEventThrottled):
 		return logging.OutcomeDenied, "throttled"
-	case errors.Is(err, errEventUpstream):
+	case errors.Is(err, errEventUpstream), errors.Is(err, errPersistHostUnreachable):
 		return logging.OutcomeError, "upstream"
 	case errors.Is(err, service.ErrHelloRefused):
 		return logging.OutcomeDenied, "unauthorized"
@@ -137,7 +143,8 @@ func eventOutcome(err error) (logging.Outcome, string) {
 		return logging.OutcomeError, "upstream"
 	case errors.Is(err, errEventConflict), errors.Is(err, errEnrolmentRequestExpired), errors.Is(err, errEnrolmentRequestRefused),
 		errors.Is(err, errEnrolmentRequestSASIncomplete), errors.Is(err, errRemoteConfigChangedDuringApproval),
-		errors.Is(err, errEvePasskeyAlreadyPending), errors.Is(err, errEvePasskeyLast), errors.Is(err, errEveEnrolmentClosed):
+		errors.Is(err, errEvePasskeyAlreadyPending), errors.Is(err, errEvePasskeyLast), errors.Is(err, errEveEnrolmentClosed),
+		errors.Is(err, errServiceChangedDuringApproval), errors.Is(err, errTemplateExists), errors.Is(err, errPersistNoTmux):
 		return logging.OutcomeError, "conflict"
 	case errors.Is(err, presence.ErrGrantInvalid):
 		return logging.OutcomeDenied, "presence_invalid"
@@ -145,6 +152,10 @@ func eventOutcome(err error) (logging.Outcome, string) {
 		return logging.OutcomeDenied, "not_granted"
 	case errors.Is(err, control.ErrNoCredential):
 		return logging.OutcomeDenied, "unauthorized"
+	case errors.As(err, &sandbox):
+		return sandboxOutcome(sandbox.Reason)
+	case errors.As(err, &fileErr):
+		return fileOutcome(fileErr.Code)
 	case errors.As(err, &launch):
 		return refusalOutcome(launch.Status, launch.Code)
 	case errors.As(err, &dropIn):
@@ -205,3 +216,49 @@ func (e *eventResponseWriter) Write(b []byte) (int, error) {
 }
 
 func (e *eventResponseWriter) Unwrap() http.ResponseWriter { return e.ResponseWriter }
+
+// fileOutcome maps a project file operation's code to its event outcome. A
+// path escape, a symlink and a read-only project are refusals relay made;
+// everything else is a failure of the request or of the filesystem.
+func fileOutcome(code string) (logging.Outcome, string) {
+	switch code {
+	case projectfs.CodeTraversal:
+		return logging.OutcomeDenied, "not_granted"
+	case projectfs.CodeSymlink:
+		return logging.OutcomeDenied, "symlink"
+	case projectfs.CodeReadOnly:
+		return logging.OutcomeDenied, "read_only"
+	case projectfs.CodeAuditUnavailable:
+		return logging.OutcomeDenied, "audit_unavailable"
+	case projectfs.CodeProjectNotFound, projectfs.CodeHostNotFound, projectfs.CodeENOENT:
+		return logging.OutcomeError, "not_found"
+	case projectfs.CodeInvalid, projectfs.CodeEISDIR, projectfs.CodeENOTDIR, projectfs.CodeTooLarge, projectfs.CodeUnsupported:
+		return logging.OutcomeError, "invalid"
+	case projectfs.CodeEEXIST, projectfs.CodeProjectChanged:
+		return logging.OutcomeError, "conflict"
+	case projectfs.CodeNotAvailable, projectfs.CodeEACCES, projectfs.CodeHostUnreachable, projectfs.CodeGitMissing:
+		return logging.OutcomeError, "unavailable"
+	case projectfs.CodeTimeout:
+		return logging.OutcomeError, "timeout"
+	}
+	return logging.OutcomeError, "internal"
+}
+
+// sandboxOutcome maps a sandbox refusal's reason to its event outcome. The
+// refusals relay made on policy keep their own code; a request that names
+// nothing usable is invalid.
+func sandboxOutcome(reason string) (logging.Outcome, string) {
+	switch reason {
+	case bridge.SandboxReasonInsideSession, bridge.SandboxReasonPeerConfined,
+		bridge.SandboxReasonLaunchRefused, bridge.SandboxReasonTemplateDenied:
+		return logging.OutcomeDenied, reason
+	case bridge.SandboxReasonNoProject:
+		return logging.OutcomeError, "not_found"
+	case bridge.SandboxReasonInvalidRequest, bridge.SandboxReasonProjectAmbiguous,
+		bridge.SandboxReasonProjectMismatch, bridge.SandboxReasonUnknownTemplate:
+		return logging.OutcomeError, "invalid"
+	case bridge.SandboxReasonUnavailable:
+		return logging.OutcomeError, "unavailable"
+	}
+	return logging.OutcomeError, "internal"
+}

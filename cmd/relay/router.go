@@ -1048,7 +1048,7 @@ func (r *appRouter) regenProjectSkills(ctx context.Context, settings *config.Set
 
 func (r *appRouter) ReloadService(ctx context.Context, id string) error {
 	if r.serviceOps != nil {
-		return r.serviceOps.Restart(id)
+		return r.serviceOps.Restart(ctx, id)
 	}
 	settings := config.FreshSettings(r.store)
 	svc, _ := config.FindServiceByID(settings, id)

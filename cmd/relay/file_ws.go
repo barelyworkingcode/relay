@@ -12,6 +12,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/projectfs"
 	"github.com/barelyworkingcode/relay/internal/sessions/clock"
 )
@@ -401,9 +402,11 @@ func (o *FileOps) serveFilesWS(w http.ResponseWriter, r *http.Request) {
 		out: make(chan []byte, fileWSQueue), done: make(chan struct{}),
 		watches: map[string]*watchEntry{}, tail: map[string]chan struct{}{},
 	}
+	ev := logging.BeginEvent(r.Context(), "file.ws.close")
 	defer func() {
 		c.close()
 		c.releaseAll()
+		ev.End(logging.OutcomeOK, "", nil)
 	}()
 
 	if o.Hosts != nil {

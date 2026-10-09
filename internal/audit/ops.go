@@ -1,12 +1,15 @@
 package audit
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 var (
@@ -144,6 +147,25 @@ func (o *AuditOps) Query(f AuditQueryFields) ([]AuditEvent, error) {
 // read surface in the product, and an export path built from caller input
 // would be a traversal write primitive reachable over HTTP.
 func (o *AuditOps) Export(f AuditQueryFields) (string, error) {
+	return o.ExportContext(context.Background(), f)
+}
+
+// ExportContext is Export with the caller's context, which carries the trace
+// the export's event line is written under.
+func (o *AuditOps) ExportContext(ctx context.Context, f AuditQueryFields) (_ string, err error) {
+	ev := logging.BeginEvent(ctx, "audit.export")
+	count := 0
+	defer func() {
+		ev.Set("count", count)
+		switch {
+		case err == nil:
+			ev.End(logging.OutcomeOK, "", nil)
+		case errors.Is(err, ErrAuditInvalid):
+			ev.End(logging.OutcomeError, "invalid", err)
+		default:
+			ev.End(logging.OutcomeError, "internal", err)
+		}
+	}()
 	if err := f.validate(); err != nil {
 		return "", err
 	}
@@ -157,6 +179,7 @@ func (o *AuditOps) Export(f AuditQueryFields) (string, error) {
 
 	o.Audit.Flush()
 	events := o.Audit.Query(q)
+	count = len(events)
 
 	dir := filepath.Dir(o.Audit.Path())
 	name := fmt.Sprintf("toolcalls-export-%s.jsonl", time.Now().UTC().Format("20060102-150405"))

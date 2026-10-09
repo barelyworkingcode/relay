@@ -8,6 +8,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 // RegisterTemplateRoutes serves relay's own terminal-template config
@@ -22,17 +23,23 @@ func RegisterTemplateRoutes(rr *control.RouteRegistrar, store config.SettingsSto
 		// a list asked for with no project, or an unknown one, is empty. A
 		// host project gets its host's templates instead of the console's.
 		// The Settings window lists everything over IPC instead.
+		ev := logging.BeginEvent(r.Context(), "template.list")
 		settings := config.FreshSettings(store)
 		proj, _ := config.FindProjectByID(settings, r.URL.Query().Get("project"))
-		writeJSON(w, http.StatusOK, config.TemplatesForProject(settings, proj))
+		templates := config.TemplatesForProject(settings, proj)
+		ev.Set("count", len(templates)).End(logging.OutcomeOK, "", nil)
+		writeJSON(w, http.StatusOK, templates)
 	})
 
 	rr.Handle(classFor("GET", "/api/terminal/templates/{id}"), "GET /api/terminal/templates/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "template.get").Set("template_id", r.PathValue("id"))
 		tmpl, ok := config.GetTerminalTemplate(config.FreshSettings(store), r.PathValue("id"))
 		if !ok {
+			endEventHTTP(ev, http.StatusNotFound, "template not found")
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "template not found"})
 			return
 		}
+		ev.End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, tmpl)
 	})
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 // RegisterHostTemplateRoutes serves a host's own terminal templates
@@ -14,11 +15,14 @@ import (
 // go through HostTemplateOps, the same core the Hosts tab uses.
 func RegisterHostTemplateRoutes(rr *control.RouteRegistrar, ops *HostTemplateOps) {
 	rr.Handle(control.ClassRead, "GET /api/hosts/{id}/templates", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "host_template.list").Set("host_id", r.PathValue("id"))
 		ts, err := ops.List(r.PathValue("id"))
 		if err != nil {
+			endEvent(ev, err)
 			writeTemplateError(w, err)
 			return
 		}
+		ev.Set("count", len(ts)).End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, ts)
 	})
 

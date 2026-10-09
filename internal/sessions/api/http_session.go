@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
@@ -30,7 +31,9 @@ func HandleDeleteSession(mgr *session.Manager, id string, w http.ResponseWriter,
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	ev := logging.BeginEvent(r.Context(), "session.delete").Set("session_id", id)
 	mgr.DeleteSession(id)
+	ev.End(logging.OutcomeOK, "", nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -56,20 +59,46 @@ func HandleSessionMessageSync(mgr *session.Manager, id string, w http.ResponseWr
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	ev := logging.BeginEvent(r.Context(), "session.message").Set("session_id", id)
 	var req sendMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		ev.End(logging.OutcomeError, "invalid", err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	text, stats, err := mgr.SendMessageSync(id, req.Text, req.Files)
 	if err != nil {
+		ev.End(logging.OutcomeError, sessionErrorReason(err), err)
 		writeSessionError(w, err)
 		return
 	}
+	ev.End(logging.OutcomeOK, "", nil)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(sendMessageResponse{Text: text, Stats: stats})
+}
+
+// sessionErrorReason is the event reason for the failure writeSessionError
+// answers.
+func sessionErrorReason(err error) string {
+	switch {
+	case errors.Is(err, session.ErrSessionNotFound):
+		return "not_found"
+	case errors.Is(err, session.ErrResumeRequired), errors.Is(err, session.ErrDroppedIn), errors.Is(err, session.ErrAlreadyProcessing):
+		return "conflict"
+	}
+	return "internal"
+}
+
+// endStatusEvent ends an event with the outcome an HTTP status maps to.
+func endStatusEvent(ev *logging.Event, status int) {
+	outcome, reason := logging.OutcomeForHTTPStatus(status)
+	var err error
+	if outcome != logging.OutcomeOK {
+		err = errors.New(http.StatusText(status))
+	}
+	ev.End(outcome, reason, err)
 }
 
 func writeSessionError(w http.ResponseWriter, err error) {

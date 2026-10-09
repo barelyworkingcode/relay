@@ -12,6 +12,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
@@ -519,9 +520,16 @@ type serviceApproval struct {
 // which is the decision that counts. The caller must not resolve this choice
 // from its own read.
 func (o *ServiceOps) Register(ctx context.Context, f serviceFields, via, credID string) (cfg config.ServiceConfig, err error) {
+	ev := logging.BeginEvent(ctx, "service.register")
+	action := "create"
+	defer func() {
+		ev.Set("service_id", f.resolvedID()).Set("action", action)
+		endEvent(ev, serviceEventErr(err))
+	}()
 	id := f.resolvedID()
 	var approval serviceApproval
 	if snapshot, _ := config.FindServiceByID(config.FreshSettings(o.Store), id); snapshot != nil {
+		action = "update"
 		if err := o.preflightUpdate(id, f); err != nil {
 			return config.ServiceConfig{}, err
 		}
@@ -554,6 +562,11 @@ func (o *ServiceOps) Register(ctx context.Context, f serviceFields, via, credID 
 }
 
 func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID string) (cfg config.ServiceConfig, err error) {
+	ev := logging.BeginEvent(ctx, "service.create")
+	defer func() {
+		ev.Set("service_id", f.resolvedID())
+		endEvent(ev, serviceEventErr(err))
+	}()
 	id := f.resolvedID()
 	if err := o.preflightCreate(id, f); err != nil {
 		return config.ServiceConfig{}, err
@@ -672,6 +685,11 @@ func (o *ServiceOps) commitCreate(id string, f serviceFields, via, credID string
 // refuses with errServiceChangedDuringApproval when it now needs an approval
 // that was not obtained. A stale snapshot that over-prompted needs no handling.
 func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via, credID string) (cfg config.ServiceConfig, err error) {
+	ev := logging.BeginEvent(ctx, "service.update")
+	defer func() {
+		ev.Set("service_id", id)
+		endEvent(ev, serviceEventErr(err))
+	}()
 	if err := o.preflightUpdate(id, f); err != nil {
 		return config.ServiceConfig{}, err
 	}
@@ -772,7 +790,12 @@ func (o *ServiceOps) commitUpdate(id string, f serviceFields, via, credID string
 	return cfg, nil
 }
 
-func (o *ServiceOps) Remove(id, via, credID string) error {
+func (o *ServiceOps) Remove(ctx context.Context, id, via, credID string) (err error) {
+	ev := logging.BeginEvent(ctx, "service.unregister")
+	defer func() {
+		ev.Set("service_id", id)
+		endEvent(ev, err)
+	}()
 	return o.runQueued(context.Background(), func() error {
 		return o.remove(id, via, credID)
 	})
@@ -809,7 +832,12 @@ func (o *ServiceOps) remove(id, via, credID string) error {
 	return nil
 }
 
-func (o *ServiceOps) SetAutostart(id string, on bool) error {
+func (o *ServiceOps) SetAutostart(ctx context.Context, id string, on bool) (err error) {
+	ev := logging.BeginEvent(ctx, "service.autostart.set")
+	defer func() {
+		ev.Set("service_id", id).Set("autostart", on)
+		endEvent(ev, err)
+	}()
 	return o.runQueued(context.Background(), func() error {
 		return o.setAutostart(id, on)
 	})
@@ -834,7 +862,12 @@ func (o *ServiceOps) setAutostart(id string, on bool) error {
 
 // Move and SetMenuHidden change only how the tray lists a service, so like
 // SetAutostart they run without the presence gate or an audit record.
-func (o *ServiceOps) Move(id string, index int) error {
+func (o *ServiceOps) Move(ctx context.Context, id string, index int) (err error) {
+	ev := logging.BeginEvent(ctx, "service.move")
+	defer func() {
+		ev.Set("service_id", id).Set("index", index)
+		endEvent(ev, err)
+	}()
 	return o.runQueued(context.Background(), func() error {
 		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
 			return s.MoveService(id, index)
@@ -852,7 +885,12 @@ func (o *ServiceOps) Move(id string, index int) error {
 	})
 }
 
-func (o *ServiceOps) SetMenuHidden(id string, hidden bool) error {
+func (o *ServiceOps) SetMenuHidden(ctx context.Context, id string, hidden bool) (err error) {
+	ev := logging.BeginEvent(ctx, "service.menu.set")
+	defer func() {
+		ev.Set("service_id", id).Set("hidden", hidden)
+		endEvent(ev, err)
+	}()
 	return o.runQueued(context.Background(), func() error {
 		if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
 			if _, idx := config.FindServiceByID(s, id); idx < 0 {
@@ -871,7 +909,12 @@ func (o *ServiceOps) SetMenuHidden(id string, hidden bool) error {
 	})
 }
 
-func (o *ServiceOps) Start(id string) error {
+func (o *ServiceOps) Start(ctx context.Context, id string) (err error) {
+	ev := logging.BeginEvent(ctx, "service.start")
+	defer func() {
+		ev.Set("service_id", id)
+		endEvent(ev, err)
+	}()
 	return o.runQueued(context.Background(), func() error {
 		return o.start(id)
 	})
@@ -907,7 +950,12 @@ func (o *ServiceOps) start(id string) error {
 // Refusing an id absent from settings but PRESENT in the registry would leave
 // a live process no door can stop — a service unregistered by the CLI while
 // still running is exactly that state.
-func (o *ServiceOps) Stop(id string) error {
+func (o *ServiceOps) Stop(ctx context.Context, id string) (err error) {
+	ev := logging.BeginEvent(ctx, "service.stop")
+	defer func() {
+		ev.Set("service_id", id)
+		endEvent(ev, err)
+	}()
 	return o.runQueued(context.Background(), func() error {
 		return o.stop(id)
 	})
@@ -923,7 +971,12 @@ func (o *ServiceOps) stop(id string) error {
 	return nil
 }
 
-func (o *ServiceOps) Restart(id string) error {
+func (o *ServiceOps) Restart(ctx context.Context, id string) (err error) {
+	ev := logging.BeginEvent(ctx, "service.restart")
+	defer func() {
+		ev.Set("service_id", id)
+		endEvent(ev, err)
+	}()
 	return o.runQueued(context.Background(), func() error {
 		svc, _ := config.FindServiceByID(config.FreshSettings(o.Store), id)
 		if svc == nil {
@@ -957,6 +1010,11 @@ type ConfigSaveResult struct {
 // An error wrapping errServiceProcess means the file WAS written and only the
 // restart failed; every other error means nothing was written.
 func (o *ServiceOps) SaveConfigFile(ctx context.Context, id, text string) (res ConfigSaveResult, err error) {
+	ev := logging.BeginEvent(ctx, "service.config.save")
+	defer func() {
+		ev.Set("service_id", id).Set("restarted", res.Restarted)
+		endEvent(ev, err)
+	}()
 	err = o.runCommitted(ctx, func() error {
 		var innerErr error
 		res, innerErr = o.saveConfigFile(id, text)
@@ -1007,4 +1065,14 @@ func (o *ServiceOps) saveConfigFile(id, text string) (ConfigSaveResult, error) {
 	}
 	o.notify()
 	return ConfigSaveResult{Restarted: true}, nil
+}
+
+// serviceEventErr leaves out a process failure that follows a committed
+// change: the doors report it as a warning on a successful write, not as a
+// failed one.
+func serviceEventErr(err error) error {
+	if errors.Is(err, errServiceProcess) {
+		return nil
+	}
+	return err
 }

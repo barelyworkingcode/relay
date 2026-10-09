@@ -14,6 +14,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/project"
 	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
@@ -59,6 +60,8 @@ type chiefOfStaffStartResult struct {
 // before the response, so a denied start is never silent.
 func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http.Request) {
 	const origin = sessiontypes.OriginChiefOfStaff
+	ev := logging.BeginEvent(r.Context(), "chief_of_staff.start")
+	w = newEventResponseWriter(w, func(status int) { endEventHTTP(ev, status, "chief of staff start refused") })
 	if d.sessionRoutesUnavailable(w) {
 		return
 	}
@@ -109,6 +112,7 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 	if mode == chiefOfStaffModeHeadless {
 		kind = deriveSessionKind(body.Model)
 	}
+	ev.Set("project_id", body.ProjectID).Set("kind", kind)
 	fields := sessionLaunchAuditFields{
 		Actor: callerAuditActor(caller), ProjectID: body.ProjectID, Kind: kind,
 		Origin: origin, PromptBytes: len(prompt),
@@ -165,6 +169,7 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 	result, resp, refusal, err := d.launch(r.Context(), req)
 	switch {
 	case refusal != nil:
+		endEvent(ev, refusal)
 		writeChiefOfStaffError(w, refusal.Status, refusal.Code, refusal.Message)
 		return
 	case err != nil || result == nil || resp == nil:
@@ -185,6 +190,7 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 		}
 	}
 
+	ev.Set("session_id", result.SessionID)
 	writeJSON(w, http.StatusCreated, chiefOfStaffStartResult{
 		SessionID: result.SessionID, Name: req.Name, ProjectID: body.ProjectID,
 		Directory: result.Spec.Directory, Mode: mode, Kind: kind, Origin: origin,

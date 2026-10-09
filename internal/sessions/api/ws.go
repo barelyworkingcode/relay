@@ -14,7 +14,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/barelyworkingcode/relay/internal/logging"
 	clk "github.com/barelyworkingcode/relay/internal/sessions/clock"
+	"github.com/barelyworkingcode/relay/internal/sessions/events"
 )
 
 // CheckOrigin is blanket-true deliberately, not an oversight: this hub is
@@ -188,6 +190,10 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("websocket connected", "remote", r.RemoteAddr)
+	ev := logging.BeginEvent(r.Context(), "session.ws.close")
+	// readOnly stays true until the connection sends a message that is more
+	// than joining, leaving or listing.
+	readOnly := true
 
 	h.mu.RLock()
 	clock := h.clock
@@ -208,6 +214,7 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 		}
 		conn.Close()
 		slog.Info("websocket disconnected", "remote", r.RemoteAddr)
+		ev.Set("read_only", readOnly).End(logging.OutcomeOK, "", nil)
 	}()
 
 	for {
@@ -231,7 +238,22 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 		fn := h.handlers[msg.Type]
 		h.mu.RUnlock()
 		if fn != nil {
+			if !viewOnlyMessages[msg.Type] {
+				readOnly = false
+			}
 			fn(c, msgBytes)
 		}
 	}
+}
+
+// viewOnlyMessages are the message types that watch without changing anything:
+// a connection that sends only these is read-only.
+var viewOnlyMessages = map[string]bool{
+	events.WSMsgJoinSession:       true,
+	events.WSMsgLeaveSession:      true,
+	events.WSMsgJoinTerminal:      true,
+	events.WSMsgLeaveTerminal:     true,
+	events.WSMsgTerminalReconnect: true,
+	events.WSMsgTerminalList:      true,
+	events.WSMsgTerminalTemplates: true,
 }

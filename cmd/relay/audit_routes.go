@@ -10,6 +10,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 )
 
 type auditPathView struct {
@@ -69,16 +70,20 @@ func parseAuditQueryParams(q url.Values) (audit.AuditQueryFields, error) {
 // from (see the SECURITY note on audit.AuditOps.Query).
 func RegisterAuditRoutes(rr *control.RouteRegistrar, ops *audit.AuditOps) {
 	rr.Handle(control.ClassRead, "GET /api/audit", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "audit.query")
 		fields, err := parseAuditQueryParams(r.URL.Query())
 		if err != nil {
+			endEventHTTP(ev, http.StatusBadRequest, err.Error())
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		events, err := ops.Query(fields)
 		if err != nil {
+			endEventHTTP(ev, auditHTTPStatus(err), err.Error())
 			writeAuditError(w, err)
 			return
 		}
+		ev.Set("count", len(events)).End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, events)
 	})
 
@@ -88,7 +93,7 @@ func RegisterAuditRoutes(rr *control.RouteRegistrar, ops *audit.AuditOps) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		path, err := ops.Export(body)
+		path, err := ops.ExportContext(r.Context(), body)
 		if err != nil {
 			writeAuditError(w, err)
 			return
@@ -100,11 +105,14 @@ func RegisterAuditRoutes(rr *control.RouteRegistrar, ops *audit.AuditOps) {
 	// effect a remote caller cannot sensibly trigger. This exposes only the
 	// path; ipcRevealAuditLog keeps the Finder action on the IPC door.
 	rr.Handle(control.ClassRead, "GET /api/audit/log", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "audit.path.get")
 		path, err := ops.LogPath()
 		if err != nil {
+			endEventHTTP(ev, auditHTTPStatus(err), err.Error())
 			writeAuditError(w, err)
 			return
 		}
+		ev.End(logging.OutcomeOK, "", nil)
 		writeJSON(w, http.StatusOK, auditPathView{Path: path})
 	})
 }

@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
 	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
@@ -87,6 +87,7 @@ func (d sessionRouteDeps) deliverChiefOfStaffText(ctx context.Context, actor aud
 func (d sessionRouteDeps) sendChiefOfStaffText(ctx context.Context, actor audit.AuditActor, sessionID, text string) (status int, wireCode, message, at string) {
 	const origin = sessiontypes.OriginChiefOfStaff
 	start := time.Now()
+	ev := logging.BeginEvent(ctx, "chief_of_staff.send").Set("session_id", sessionID).Set("origin", origin)
 
 	id := audit.NewAuditID()
 	intent := audit.AuditEvent{
@@ -96,8 +97,7 @@ func (d sessionRouteDeps) sendChiefOfStaffText(ctx context.Context, actor audit.
 		Outcome: audit.AuditOutcomePending,
 	}
 	if err := d.auditor.RecordDurable(intent); err != nil {
-		slog.WarnContext(ctx, "chief of staff send refused: intent not recorded",
-			"op", "chief_of_staff.send", "status", "error", "session_id", sessionID, "error", err.Error())
+		ev.End(logging.OutcomeError, "unavailable", err)
 		return http.StatusServiceUnavailable, "audit_unavailable", "the audit log could not record the message", ""
 	}
 
@@ -140,17 +140,15 @@ func (d sessionRouteDeps) sendChiefOfStaffText(ctx context.Context, actor audit.
 	completion.Error = errCode
 	d.auditor.Record(completion)
 
-	attrs := []any{"op", "chief_of_staff.send", "session_id", sessionID, "origin", origin,
-		"duration_ms", time.Since(start).Milliseconds()}
 	if status == http.StatusAccepted {
-		slog.InfoContext(ctx, "chief of staff send", append(attrs, "status", "ok")...)
+		ev.End(logging.OutcomeOK, "", nil)
 		return status, "", "", resp.At
 	}
 	logErr := wireCode
 	if errCode != "" {
 		logErr = errCode
 	}
-	slog.WarnContext(ctx, "chief of staff send", append(attrs, "status", "error", "error", logErr)...)
+	ev.End(logging.OutcomeError, sendFailureReason(status), errors.New(logErr))
 	return status, wireCode, message, ""
 }
 
@@ -172,4 +170,20 @@ func (d sessionRouteDeps) sessionMessageArgs(sessionID, body, origin string, wit
 	}
 	raw, _ := json.Marshal(args)
 	return raw
+}
+
+// sendFailureReason names why a send to the Chief of Staff session failed from
+// the status the caller is answered with.
+func sendFailureReason(status int) string {
+	switch status {
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusBadGateway:
+		return "upstream"
+	case http.StatusServiceUnavailable:
+		return "unavailable"
+	}
+	return "internal"
 }

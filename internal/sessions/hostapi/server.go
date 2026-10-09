@@ -316,6 +316,7 @@ func (s *Server) guarded(h http.HandlerFunc) http.HandlerFunc {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
+		r = r.WithContext(logging.ContextWithTrace(r.Context(), logging.TraceIDOrNew(r.Header.Get(logging.TraceHeader))))
 		h(w, r)
 	}
 }

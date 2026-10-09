@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
@@ -87,7 +88,12 @@ func (o *PersistentSessionOps) List(ctx context.Context, projectID string) ([]Pe
 // prefix when no session matches exactly: killing a gone relay-…-1 would
 // otherwise end relay-…-10. tmux's exact-match `=name` form would close that
 // in one step, but psmux ignores it.
-func (o *PersistentSessionOps) Kill(ctx context.Context, projectID, name string) error {
+func (o *PersistentSessionOps) Kill(ctx context.Context, projectID, name string) (err error) {
+	ev := logging.BeginEvent(ctx, "session.persistent.kill")
+	defer func() {
+		ev.Set("project_id", projectID)
+		endEvent(ev, err)
+	}()
 	if _, _, _, ok := config.ParsePersistSessionName(name); !ok {
 		return &persistSessionError{errPersistNameInvalid, fmt.Sprintf("%q is not a relay persistent session name", name)}
 	}

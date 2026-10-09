@@ -1,10 +1,11 @@
 package attention
 
 import (
-	"log/slog"
+	"context"
 	"sync"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/clock"
 )
 
@@ -209,8 +210,9 @@ func (b *Board) apply(e *entry, sig Signal, since time.Time) {
 			since = now
 		}
 		e.state, e.since = next, since
-		slog.Info("session state", "op", "session.state", "status", "ok", "duration_ms", 0,
-			"session_id", e.id, "from", string(prev), "to", string(next))
+		logging.BeginEvent(context.Background(), "session.state").
+			Set("session_id", e.id).Set("from", string(prev)).Set("to", string(next)).
+			End(logging.OutcomeOK, "", nil)
 		if b.sink != nil {
 			b.sink.StateChanged(Change{SessionID: e.id, State: next, Since: since})
 		}
