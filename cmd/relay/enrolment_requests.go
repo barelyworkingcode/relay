@@ -381,11 +381,13 @@ func newEnrolmentRequestTable() *enrolmentRequestTable {
 	}
 }
 
-// setClock is a test seam, matching enrolment.Budgets.SetClock's shape.
+// setClock makes the lodge and collect lifetimes and the ceremony limiter
+// read fn, matching enrolment.Budgets.SetClock's shape.
 func (t *enrolmentRequestTable) setClock(fn func() time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.now = fn
+	t.limiter.SetClock(fn)
 }
 
 // setCACert hands the table the CA certificate a commitment-bearing lodge

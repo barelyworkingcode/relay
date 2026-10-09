@@ -36,14 +36,14 @@ var errBootstrapCodeInvalid = errors.New("invalid or expired login code")
 // its SHA-256 plus a two-minute expiry, replacing any existing record: the
 // anchor is one at a time, matching the one ceremony it authorises. Does not
 // save; use within store.With, matching Mint.
-func mintBootstrapCode(s *config.Settings) (string, error) {
+func mintBootstrapCode(s *config.Settings, now time.Time) (string, error) {
 	plaintext, err := service.GenerateRandomHex(16)
 	if err != nil {
 		return "", err
 	}
 	s.LoginBootstrap = &config.LoginBootstrap{
 		Hash:    config.HashToken(plaintext),
-		Expires: time.Now().UTC().Add(bootstrapCodeTTL).Format(time.RFC3339),
+		Expires: now.UTC().Add(bootstrapCodeTTL).Format(time.RFC3339),
 	}
 	return plaintext, nil
 }
@@ -54,7 +54,7 @@ func mintBootstrapCode(s *config.Settings) (string, error) {
 // the same TOCTOU reasoning docs/tokens.md gives throughout: reading the
 // record in one call and deleting it in another would race a second
 // process minting or consuming between the two.
-func consumeBootstrapCode(s *config.Settings, plaintext string) error {
+func consumeBootstrapCode(s *config.Settings, plaintext string, now time.Time) error {
 	b := s.LoginBootstrap
 	if b == nil {
 		return errBootstrapCodeInvalid
@@ -64,7 +64,7 @@ func consumeBootstrapCode(s *config.Settings, plaintext string) error {
 	// evaluate is never treated as still open.
 	expired := true
 	if at, err := time.Parse(time.RFC3339, b.Expires); err == nil {
-		expired = !time.Now().Before(at)
+		expired = !now.Before(at)
 	}
 	match := subtle.ConstantTimeCompare([]byte(b.Hash), []byte(config.HashToken(plaintext))) == 1
 	if expired || !match {
@@ -76,11 +76,11 @@ func consumeBootstrapCode(s *config.Settings, plaintext string) error {
 
 // mintLoginBootstrap wraps mintBootstrapCode in the store.With every mint
 // here goes through, matching mintAPICredential.
-func mintLoginBootstrap(store config.SettingsStore) (string, string, error) {
+func mintLoginBootstrap(store config.SettingsStore, now time.Time) (string, string, error) {
 	var plaintext, expires string
 	var mintErr error
 	if err := store.With(func(s *config.Settings) {
-		plaintext, mintErr = mintBootstrapCode(s)
+		plaintext, mintErr = mintBootstrapCode(s, now)
 		if mintErr == nil {
 			expires = s.LoginBootstrap.Expires
 		}
@@ -227,6 +227,9 @@ type LoginOps struct {
 	// before they touch the store (ADR-017 decisions 3 and 4). A nil Gate
 	// refuses both rather than allowing either — see requireGate.
 	Gate *presence.Gate
+	// Clock times the bootstrap code, the login-session expiry and the
+	// session listing. Nil reads as wall time.
+	Clock serverClock
 }
 
 func (o *LoginOps) runQueued(ctx context.Context, fn func() error) error {
@@ -277,7 +280,7 @@ func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (_ loginCodeVi
 	var plaintext, expires string
 	if err := o.runCommitted(ctx, func() error {
 		var err error
-		plaintext, expires, err = mintLoginBootstrap(o.Store)
+		plaintext, expires, err = mintLoginBootstrap(o.Store, clockNow(o.Clock))
 		if err != nil {
 			return err
 		}
@@ -351,7 +354,7 @@ func (o *LoginOps) Sessions() []loginSessionView {
 	if o == nil {
 		return []loginSessionView{}
 	}
-	return loginSessionViews(config.DisplaySettings(o.Store), time.Now())
+	return loginSessionViews(config.DisplaySettings(o.Store), clockNow(o.Clock))
 }
 
 func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (_ config.Passkey, err error) {
@@ -462,7 +465,7 @@ func (o *LoginOps) RegisterPasskey(ctx context.Context, passkey config.Passkey, 
 				refusal = fmt.Errorf("%w: %d registered", login.ErrWebAuthnPasskeyLimit, len(s.Passkeys))
 			} else if slices.ContainsFunc(s.Passkeys, func(p config.Passkey) bool { return p.ID == passkey.ID }) {
 				refusal = login.ErrWebAuthnDuplicateCred
-			} else if err := consumeBootstrapCode(s, code); err != nil {
+			} else if err := consumeBootstrapCode(s, code, clockNow(o.Clock)); err != nil {
 				refusal = err
 			}
 			if refusal != nil {
@@ -510,8 +513,9 @@ func (o *LoginOps) MintLoginSession(ctx context.Context, passkeyID string, updat
 					}
 				}
 			}
-			reapExpiredAPICredentials(s)
-			cred, plaintext, err := mintAPICredentialFor(s, loginCredentialName(passkeyID), loginCredentialClasses, loginCredentialTTL)
+			now := clockNow(o.Clock)
+			reapExpiredAPICredentials(s, now)
+			cred, plaintext, err := mintAPICredentialFor(s, loginCredentialName(passkeyID, now), loginCredentialClasses, loginCredentialTTL, now)
 			if err != nil {
 				return err
 			}

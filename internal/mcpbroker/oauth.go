@@ -465,7 +465,11 @@ func (r *OAuthResult) ToOAuthState() *config.OAuthState {
 	}
 }
 
-func StartOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthResult, error) {
+// now stamps the token expiry; nil reads as wall time.
+func StartOAuthFlow(mcpURL string, openBrowser func(string), now func() time.Time) (*OAuthResult, error) {
+	if now == nil {
+		now = time.Now
+	}
 	discovery, err := discoverOAuth(mcpURL)
 	if err != nil {
 		return nil, fmt.Errorf("OAuth discovery: %w", err)
@@ -529,7 +533,7 @@ func StartOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthResult, erro
 		RefreshToken: tokenResp.RefreshToken,
 	}
 	if tokenResp.ExpiresIn > 0 {
-		oauthState.TokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+		oauthState.TokenExpiry = now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
 	}
 
 	return oauthState, nil

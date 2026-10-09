@@ -301,7 +301,7 @@ type remoteConn struct {
 	fingerprint string
 }
 
-func NewRemoteServer(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *audit.AuditRecorder, configurer RemoteConfigurer, surfaces func() project.McpSurfaces) (*RemoteServer, error) {
+func NewRemoteServer(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *audit.AuditRecorder, configurer RemoteConfigurer, surfaces func() project.McpSurfaces, clock serverClock) (*RemoteServer, error) {
 	// freshSettings, not Get(): the operator who just edited settings.json is
 	// the same operator watching the listener come up.
 	settings := config.FreshSettings(store)
@@ -360,6 +360,10 @@ func NewRemoteServer(ctx context.Context, store config.SettingsStore, router Rem
 		notEnrolledLog:   logging.NewRepeat(0, nil),
 		noAuditLog:       logging.NewRepeat(0, nil),
 		tooManyConnsLog:  logging.NewRepeat(0, nil),
+	}
+
+	if clock != nil {
+		s.mountBudgets.SetClock(clock.Now)
 	}
 
 	// Installed with an owner because a rebind (RemoteSupervisor) binds the
