@@ -128,6 +128,7 @@ func TestRulesFireOnBrokenInput(t *testing.T) {
 		{"R3 ci off the CI list", "docs/FEATURES.md", "**Rows proven by CI:** `G14.01`.", "No rows.", "R3", "G14.01"},
 		{"R4 e2e item names a missing function", "docs/FEATURES.md", "`e2e:TestProjectList`", "`e2e:TestProjectListed`", "R4", "TestProjectListed"},
 		{"R5 gated row without refusal proof", "docs/FEATURES.md", " `event:project.create=denied/presence_refused` `code:http:POST /api/projects#403`", " `event:project.create=ok#project_id`", "R5", "no refusal proof"},
+		{"R5 gate none on an owner-gated door", "docs/FEATURES.md", "| `project.grant` | `event:project.create=ok`", "| none | `event:project.create=ok`", "R5", "Gate is none"},
 		{"R5 missing deny test", "docs/FEATURES.md", " `deny e2e:TestProjectCreateDeniedCLI@cli:relay project create`", "", "R5", "cli:relay project create"},
 		{"R6 unknown event", "docs/FEATURES.md", "`event:project.list=ok#count`", "`event:project.listed=ok#count`", "R6", "project.listed"},
 		{"R6 event outside section 7", "docs/FEATURES.md", "`event:project.list=ok#count`", "`event:not.in.seven`", "R6", "not.in.seven"},

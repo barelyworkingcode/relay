@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 type checker struct {
@@ -79,6 +80,13 @@ func (x *checker) rules() []Finding {
 			}
 			if !observes {
 				add("R9", where, "Proof has no event:, audit: or out: item")
+			}
+		}
+		if len(r.Gate) == 0 {
+			for _, d := range r.Doors {
+				if door, ok := x.byRef[d.String()]; ok && door.OwnerGated {
+					add("R5", where, "Gate is none but door %s is owner-gated (%s)", d, strings.Join(door.Gates, ", "))
+				}
 			}
 		}
 		if len(r.Gate) > 0 {
