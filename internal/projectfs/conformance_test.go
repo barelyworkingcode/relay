@@ -578,6 +578,12 @@ func TestConformance_Search(t *testing.T) {
 			t.Errorf("max_matches=1: %d matches, truncated %v, %v", len(ms), trunc, err)
 		}
 
+		put(t, filepath.Join(f.root, "multi.txt"), "ab ab ab\n")
+		ms, _, err = b.Search(ctx, projectfs.SearchOpts{Query: "ab", Globs: []string{"multi.txt"}})
+		if err != nil || len(ms) != 3 || ms[0].Col != 1 || ms[1].Col != 4 || ms[2].Col != 7 {
+			t.Errorf("every match on a line must be returned: %v, %v", ms, err)
+		}
+
 		for name, o := range map[string]projectfs.SearchOpts{
 			"empty query": {Query: ""},
 			"long query":  {Query: strings.Repeat("a", projectfs.MaxQueryLen+1)},

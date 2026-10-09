@@ -13,6 +13,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/projectfs"
+	"github.com/barelyworkingcode/relay/internal/sessions/clock"
 )
 
 // filesWSUpgrader is permissive for the reason the dispatcher's is: the
@@ -198,9 +199,12 @@ func (h *watchHub) ensurePolling(o *FileOps) {
 		if every <= 0 {
 			every = defaultWatchRecheck
 		}
-		t := time.NewTicker(every)
-		defer t.Stop()
-		for range t.C {
+		clk := o.Clock
+		if clk == nil {
+			clk = clock.DefaultClock
+		}
+		for {
+			<-clk.After(every)
 			if !h.recheck(o) {
 				return
 			}

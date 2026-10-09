@@ -102,6 +102,24 @@ func TestFileAudit_RowsCarryProjectPathAndArgsPerOp(t *testing.T) {
 	if len(rows) != 2*len(steps) {
 		t.Fatalf("file_op rows = %d, want %d (intent + completion each)", len(rows), 2*len(steps))
 	}
+	// Intents are written inline and completions through the async queue, so
+	// the two kinds can interleave; pair them by ID, not position.
+	var intents []audit.AuditEvent
+	completions := map[string]audit.AuditEvent{}
+	for _, row := range rows {
+		if row.Phase == audit.AuditPhaseIntent {
+			intents = append(intents, row)
+		} else {
+			completions[row.ID] = row
+		}
+	}
+	if len(intents) != len(steps) || len(completions) != len(steps) {
+		t.Fatalf("intents = %d, completions = %d, want %d each", len(intents), len(completions), len(steps))
+	}
+	rows = rows[:0]
+	for _, in := range intents {
+		rows = append(rows, in, completions[in.ID])
+	}
 	for i, s := range steps {
 		intent, done := rows[2*i], rows[2*i+1]
 		for _, row := range []audit.AuditEvent{intent, done} {

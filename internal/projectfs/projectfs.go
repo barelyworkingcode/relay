@@ -205,6 +205,7 @@ var gitRefusedPrefixes = []string{
 	"--output", "--ext-diff", "--textconv", "--exec", "--upload-pack",
 	"--receive-pack", "-c", "--config", "--git-dir", "--work-tree",
 	"--namespace", "-C", "-O", "--open-files-in-pager",
+	"--no-index", "--filters",
 }
 
 // ValidateGitArgs holds eve's git argv (from the subcommand on) to the

@@ -327,11 +327,14 @@ async function opSearch(msg) {
 
 // Opens rel with O_NOFOLLOW and skips anything that is not a plain text
 // file: symlinks, specials, oversize and binary (a NUL in the first 8000
-// bytes). A path through a symlinked directory fails the open and is skipped.
+// bytes). O_NOFOLLOW checks only the last component, so the lstat walk of the
+// parent directories is what rejects a path through a symlinked directory.
 async function searchFile(root, rel, re, perFile) {
   const none = { matches: [], scanned: 0 };
   let handle;
   try {
+    const slash = rel.lastIndexOf('/');
+    if (slash > 0) await walk(root, rel.slice(0, slash), false);
     handle = await openNoFollow(path.join(root, ...rel.split('/')), fs.constants.O_RDONLY);
   } catch {
     return none;
@@ -343,9 +346,15 @@ async function searchFile(root, rel, re, perFile) {
     if (buf.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return { matches: [], scanned: st.size };
     const lines = buf.toString('utf8').split(/\r?\n/);
     const matches = [];
+    // Every non-empty match on a line counts, as in the console backend.
+    const every = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
     for (let i = 0; i < lines.length && matches.length < perFile; i++) {
-      const m = re.exec(lines[i]);
-      if (m) matches.push({ path: rel, line: i + 1, col: m.index + 1, len: m[0].length, text: lines[i] });
+      every.lastIndex = 0;
+      let m;
+      while (matches.length < perFile && (m = every.exec(lines[i])) !== null) {
+        if (m[0].length === 0) { every.lastIndex++; continue; }
+        matches.push({ path: rel, line: i + 1, col: m.index + 1, len: m[0].length, text: lines[i] });
+      }
     }
     return { matches, scanned: st.size };
   } catch {

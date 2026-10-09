@@ -73,6 +73,16 @@ Git runs with a fixed `-c` prefix, an argument allowlist (`ValidateGitArgs`),
 no inherited `GIT_*` variables, and a 10 second limit. A non-zero exit is a
 result, not an error.
 
+Console git also runs under `sandbox-exec` with a profile that denies every
+file write except `/dev/null`, all network, and every program except git and
+its own helper directory. A repository's config can name commands (filter
+drivers, `diff.external`, `textconv`), and a sandboxed session can write its
+own project's `.git/config`, so without the profile a status call would run
+that command with relay's rights. If `sandbox-exec` is missing or cannot apply
+the profile, the op fails with `ERROR`; git never runs unsandboxed. Host
+projects run git on the host, outside this guarantee. `--no-index` and
+`--filters` are refused as well.
+
 ## Watch
 
 `/ws/files` carries `watch`/`unwatch` from eve and `watch_ok`, `watch_error`,

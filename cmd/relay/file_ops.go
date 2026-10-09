@@ -12,6 +12,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/projectfs"
+	"github.com/barelyworkingcode/relay/internal/sessions/clock"
 )
 
 // FileHostStatus is one host agent's connection state, as /ws/files reports
@@ -43,6 +44,8 @@ type FileOps struct {
 	// WatchRecheck is how often /ws/files compares watched projects with
 	// settings; zero means two seconds.
 	WatchRecheck time.Duration
+	// Clock times the recheck; nil means the wall clock.
+	Clock clock.Clock
 
 	hubOnce sync.Once
 	hub     *watchHub
@@ -271,6 +274,9 @@ func (fs *fileSession) Mkdir(ctx context.Context, parent, name string) (string, 
 
 func (fs *fileSession) Rename(ctx context.Context, p, newName string) (string, error) {
 	args := map[string]any{"path": p}
+	if projectfs.ValidateName(newName) == nil {
+		args["new_path"] = path.Join(path.Dir(p), newName)
+	}
 	rel, err := projectfs.CleanRel(p)
 	if err != nil {
 		return "", fs.refuse("rename", args, err)
@@ -293,6 +299,9 @@ func (fs *fileSession) Rename(ctx context.Context, p, newName string) (string, e
 
 func (fs *fileSession) Move(ctx context.Context, p, destDir string) (string, error) {
 	args := map[string]any{"path": p}
+	if p != "" {
+		args["new_path"] = path.Join(destDir, path.Base(p))
+	}
 	rel, err := projectfs.CleanRel(p)
 	if err != nil {
 		return "", fs.refuse("move", args, err)

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -106,11 +107,11 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Path       string `json:"path"`
 			ShowHidden bool   `json:"show_hidden"`
 		}
-		if !decodeFileBody(w, r, fileBodyLimit, &body) {
-			return
-		}
 		fs := session(w, r)
 		if fs == nil {
+			return
+		}
+		if !decodeFileBody(w, r, fileBodyLimit, &body) {
 			return
 		}
 		entries, err := fs.List(r.Context(), body.Path, body.ShowHidden)
@@ -125,11 +126,11 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 		var body struct {
 			Path string `json:"path"`
 		}
-		if !decodeFileBody(w, r, fileBodyLimit, &body) {
-			return
-		}
 		fs := session(w, r)
 		if fs == nil {
+			return
+		}
+		if !decodeFileBody(w, r, fileBodyLimit, &body) {
 			return
 		}
 		info, err := fs.Stat(r.Context(), body.Path)
@@ -145,11 +146,11 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Path     string `json:"path"`
 			MaxBytes int64  `json:"max_bytes"`
 		}
-		if !decodeFileBody(w, r, fileBodyLimit, &body) {
-			return
-		}
 		fs := session(w, r)
 		if fs == nil {
+			return
+		}
+		if !decodeFileBody(w, r, fileBodyLimit, &body) {
 			return
 		}
 		content, size, err := fs.Read(r.Context(), body.Path, body.MaxBytes)
@@ -179,11 +180,17 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			http.ServeContent(w, r, "", time.Time{}, f)
 			return
 		}
+		buf := make([]byte, fileStreamChunkSz)
+		// Read the first chunk before the header goes out, so an agent error
+		// still reaches the client as an error.
+		n, rerr := rc.Read(buf)
+		if n == 0 && rerr != nil && rerr != io.EOF {
+			writeFileError(w, r, rerr)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		fl, _ := w.(http.Flusher)
-		buf := make([]byte, fileStreamChunkSz)
 		for {
-			n, rerr := rc.Read(buf)
 			if n > 0 {
 				if _, werr := w.Write(buf[:n]); werr != nil {
 					return
@@ -195,6 +202,7 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			if rerr != nil {
 				return
 			}
+			n, rerr = rc.Read(buf)
 		}
 	})
 
@@ -204,6 +212,10 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Content    string `json:"content"`
 			Encoding   string `json:"encoding"`
 			CreateOnly bool   `json:"create_only"`
+		}
+		fs := session(w, r)
+		if fs == nil {
+			return
 		}
 		if !decodeFileBody(w, r, fileWriteBodyMax, &body) {
 			return
@@ -222,10 +234,6 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			writeFileError(w, r, projectfs.Errf(projectfs.CodeInvalid, "encoding must be utf8 or base64"))
 			return
 		}
-		fs := session(w, r)
-		if fs == nil {
-			return
-		}
 		rel, err := fs.Write(r.Context(), body.Path, data, body.Encoding, body.CreateOnly)
 		if err != nil {
 			writeFileError(w, r, err)
@@ -239,11 +247,11 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Parent string `json:"parent"`
 			Name   string `json:"name"`
 		}
-		if !decodeFileBody(w, r, fileBodyLimit, &body) {
-			return
-		}
 		fs := session(w, r)
 		if fs == nil {
+			return
+		}
+		if !decodeFileBody(w, r, fileBodyLimit, &body) {
 			return
 		}
 		rel, err := fs.Mkdir(r.Context(), body.Parent, body.Name)
@@ -259,11 +267,11 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Path    string `json:"path"`
 			NewName string `json:"new_name"`
 		}
-		if !decodeFileBody(w, r, fileBodyLimit, &body) {
-			return
-		}
 		fs := session(w, r)
 		if fs == nil {
+			return
+		}
+		if !decodeFileBody(w, r, fileBodyLimit, &body) {
 			return
 		}
 		rel, err := fs.Rename(r.Context(), body.Path, body.NewName)
@@ -279,11 +287,11 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Path    string `json:"path"`
 			DestDir string `json:"dest_dir"`
 		}
-		if !decodeFileBody(w, r, fileBodyLimit, &body) {
-			return
-		}
 		fs := session(w, r)
 		if fs == nil {
+			return
+		}
+		if !decodeFileBody(w, r, fileBodyLimit, &body) {
 			return
 		}
 		rel, err := fs.Move(r.Context(), body.Path, body.DestDir)
@@ -298,11 +306,11 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 		var body struct {
 			Path string `json:"path"`
 		}
-		if !decodeFileBody(w, r, fileBodyLimit, &body) {
-			return
-		}
 		fs := session(w, r)
 		if fs == nil {
+			return
+		}
+		if !decodeFileBody(w, r, fileBodyLimit, &body) {
 			return
 		}
 		trashed, err := fs.Delete(r.Context(), body.Path)
@@ -322,11 +330,11 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Globs         []string `json:"globs"`
 			MaxMatches    int      `json:"max_matches"`
 		}
-		if !decodeFileBody(w, r, fileBodyLimit, &body) {
-			return
-		}
 		fs := session(w, r)
 		if fs == nil {
+			return
+		}
+		if !decodeFileBody(w, r, fileBodyLimit, &body) {
 			return
 		}
 		matches, truncated, err := fs.Search(r.Context(), projectfs.SearchOpts{
@@ -346,11 +354,11 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 			Args     []string `json:"args"`
 			MaxBytes int64    `json:"max_bytes"`
 		}
-		if !decodeFileBody(w, r, fileBodyLimit, &body) {
-			return
-		}
 		fs := session(w, r)
 		if fs == nil {
+			return
+		}
+		if !decodeFileBody(w, r, fileBodyLimit, &body) {
 			return
 		}
 		res, err := fs.Git(r.Context(), body.Cwd, body.Args, body.MaxBytes)
