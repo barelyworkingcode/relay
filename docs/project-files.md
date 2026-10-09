@@ -45,8 +45,9 @@ a create-only write. A case-only rename of the same entry is allowed. The
 console uses `RENAME_EXCL`, so the check and the rename are one step; Node has
 no no-replace rename, so the host agent checks with `lstat` first, and a name
 created between the check and the rename is replaced. Only the host's own
-processes can win that race, and they run unconfined anyway. Delete moves a console entry to the Trash through `NSFileManager` and
-deletes on a host permanently. Rename, move and delete refuse a link source.
+processes can win that race, and they run unconfined anyway. Delete moves a
+console entry to the Trash through `NSFileManager` and deletes on a host
+permanently. Rename, move and delete refuse a link source.
 
 ## Read-only
 
