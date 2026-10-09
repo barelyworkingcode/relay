@@ -632,7 +632,7 @@ credential.mint  ci-deploy  via=cli  presence was refused
 ### Presence approvals (the test build)
 
 A person's approval writes no presence row; the gated act's own rows show it
-went through. The `testapprover` build is different: a non-person answered,
+went through. The test build is different: a non-person answered,
 so it writes one `control_decision` row with `outcome: "ok"` and a
 `presence_approver` field. A release build never writes this row.
 
@@ -640,7 +640,7 @@ so it writes one `control_decision` row with `outcome: "ok"` and a
 {"event":"control_decision","outcome":"ok","method":"project.grant","subject":"verify-1a2b","via":"http","presence_id":"p_9a2…","presence_approver":"testapprover"}
 ```
 
-`presence_approver` is the approver's name. It is absent where a person
+`presence_approver` is the approver's name, `testapprover`, whichever answer the outcome file gave. It is absent where a person
 answered, and on refusals made before the provider was asked (no session, gate
 not wired). When the test approver refuses an op it carries the field too:
 

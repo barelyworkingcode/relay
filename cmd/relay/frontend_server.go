@@ -154,7 +154,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 
 	s.tcpLn = ln
 	s.tcpServer = &http.Server{
-		Handler:           frontendTrace(frontendPublicDoor(publicMux, frontendCredentialAuth(s.routeDeps.store, nil, frontendRecover(warnOnUnmatchedTCPRoute(tcpMux))))),
+		Handler:           frontendTrace(frontendPublicDoor(publicMux, frontendCredentialAuth(s.routeDeps.store, nil, s.routeDeps.clock, frontendRecover(warnOnUnmatchedTCPRoute(tcpMux))))),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       5 * time.Minute,
 	}
@@ -175,7 +175,9 @@ func (s *FrontendServer) newLoginMuxFor(origin string) (*http.ServeMux, []string
 	if err != nil {
 		return nil, nil, fmt.Errorf("login routes: %w", err)
 	}
+	verifier.SetClock(func() time.Time { return clockNow(s.routeDeps.clock) })
 	lr := newLoginRoutes(s.routeDeps.store, verifier, s.auditor)
+	lr.clock = s.routeDeps.clock
 	lr.issuance = s.routeDeps.issuance
 	if s.routeDeps.loginOps != nil {
 		lr.ops = s.routeDeps.loginOps
@@ -250,6 +252,9 @@ type frontendRouteDeps struct {
 	// loginOps carries the queue the login routes write through; nil leaves
 	// them writing inline.
 	loginOps *LoginOps
+	// clock is the time the bearer check, the login routes and their
+	// WebAuthn state judge against. Nil reads as wall time.
+	clock serverClock
 	// eveEnrolmentOps backs eve's own status/consume door
 	// (docs/eve-passkey-enrolment.md). Unlike every other field here it has
 	// no IPC-tab counterpart: Open is reachable only from the tray menu and
@@ -429,7 +434,7 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 //
 // recordRoute is told every route either mux registers (the doors catalogue);
 // nil records nothing.
-func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, templateOps *TemplateOps, eveEnrolmentOps *EveEnrolmentOps, evePasskeyOps *EvePasskeyOps, authz control.Authorizer, auditor control.ControlAuditor, launches *service.Launches, sessionHost sessionRouteDeps, recordRoute func(control.RouteInfo)) (*FrontendServer, error) {
+func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, templateOps *TemplateOps, eveEnrolmentOps *EveEnrolmentOps, evePasskeyOps *EvePasskeyOps, authz control.Authorizer, auditor control.ControlAuditor, launches *service.Launches, sessionHost sessionRouteDeps, recordRoute func(control.RouteInfo), clock serverClock) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -477,6 +482,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		enhanced:        enhanced,
 		sessionHost:     sessionHost,
 		issuance:        issuanceAuditorOrNil(auditOps.Recorder()),
+		clock:           clock,
 	}
 
 	socketMux := http.NewServeMux()
@@ -487,7 +493,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 	// a socket has no origin, so there is no ceremony to serve here and the
 	// public mux is nil rather than populated. Composing it anyway is what
 	// keeps the two doors' shape identical.
-	handler := frontendTrace(frontendPublicDoor(nil, frontendCredentialAuth(store, launches, frontendRecover(withRelayRouteReadDeadline(socketMux)))))
+	handler := frontendTrace(frontendPublicDoor(nil, frontendCredentialAuth(store, launches, clock, frontendRecover(withRelayRouteReadDeadline(socketMux)))))
 
 	srv := &http.Server{
 		Handler:     handler,
@@ -611,7 +617,7 @@ func frontendPeerFromContext(ctx context.Context) peertoken.Token {
 // Absent, malformed and unknown bearers, and a headerless caller with no
 // frontend identity, all get the same 401 with the same body, deliberately —
 // a message that told them apart would be an oracle.
-func frontendCredentialAuth(store config.SettingsStore, launches *service.Launches, next http.Handler) http.Handler {
+func frontendCredentialAuth(store config.SettingsStore, launches *service.Launches, clock serverClock, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, hasHeader := r.Header["Authorization"]; !hasHeader {
 			id, ok := launches.Lookup(frontendPeerFromContext(r.Context()))
@@ -636,7 +642,7 @@ func frontendCredentialAuth(store config.SettingsStore, launches *service.Launch
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if authenticateAPICredential(s, token) == nil {
+		if authenticateAPICredential(s, token, clockNow(clock)) == nil {
 			slog.WarnContext(r.Context(), "frontend: bad bearer token",
 				"method", r.Method, "path", r.URL.Path)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

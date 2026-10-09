@@ -64,7 +64,7 @@ listener mints its own.
 - **Domain.** The core's noun: `server`, `project`, `grant`, `chief_of_staff`,
   `mcp`, `tool`, `bridge`, `credential`, `doors`, `enrolment`, `remote`, `login`, `eve`,
   `sealed`, `service`, `host`, `host_template`, `template`, `file`, `audit`,
-  `session`, `terminal`, `sandbox`, `model`, `chat`.
+  `session`, `terminal`, `sandbox`, `model`, `chat`, `status`, `files`.
 - **Reused names.** Where a name in `presence.GatedOps`, an `adminOps` entry or
   an existing boundary `op` already names the operation, the key is that exact
   string (`credential.mint`, `project.rotate_token`, `remote.configure`,
@@ -93,7 +93,7 @@ listener mints its own.
 | `presence_no_session` | No session can show a presence prompt. |
 | `presence_unavailable` | Presence checking is unavailable or not wired for the operation. |
 | `presence_invalid` | The presence grant is invalid. |
-| `presence_timeout` | Reserved. Not written yet. |
+| `presence_timeout` | The presence prompt went unanswered until the requester left. |
 | `unauthorized` | No or wrong credential. |
 | `not_granted` | The credential's class or scope does not allow it. |
 | `read_only` | The target is read-only. |
@@ -404,13 +404,27 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 |---|---|---|---|
 | `model.request` | At the end of a model request; poll paths stay silent on success | model endpoint (unix, TCP) | none (existing keys) |
 | `model.host.register` | At the end of `appRouter.RegisterModelHost` | bridge `register_model_host` | `service_id` |
-| `model.list` | In relay-sessions `HandleModels` | forwarded `GET /api/models` | `count` |
+| `model.list` | In relay-sessions `HandleModels` | forwarded `GET /api/models`, `relay model list` | `count` |
 
 ### Chat
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
 | `chat.turn` | At the end of a chat turn (relay-sessions) | `/ws` turn | none (existing keys) |
+
+### Test build only
+
+Written only by a `relaytest` build, on a config dir the test seams act on
+([`docs/testing.md`](testing.md#the-test-build)). A release build writes none
+of them. A wait for one uses `relay logs --follow --event <key>`.
+
+| Event | When written | Doors | Fields |
+|---|---|---|---|
+| `debug.presence.answer` | In the test approver's `EvaluateOp`, before it returns or, for `timeout`, before it blocks; `error` / `invalid` for an invalid outcome file, only for a caller that has a console session (any other caller is refused first as `presence_no_session`, with no event) | any presence-gated operation (background, trace of the caller) | `gated_op`, `answer` (`approve`, `deny` or `timeout`), `source` (`file` or `default`) |
+| `debug.keychain.fault` | In the file keyring, on each operation a fault changes, before the operation acts | any sealed-store operation (background, trace `""`) | `keychain_op` (`load`, `create` or `destroy`), `fault` |
+| `debug.clock.get` | In the `debug.clock` admin op for `get` (quiet on success) | `relay debug clock`, and every CLI view that reads the clock | `now`, `offset_ms` |
+| `debug.clock.set` | In the `debug.clock` admin op for `set`; `error` / `invalid` or `unavailable` | `relay debug clock set` | `now`, `offset_ms` |
+| `debug.clock.advance` | In the `debug.clock` admin op for `advance`; `error` / `invalid` or `unavailable` | `relay debug clock advance` | `now`, `offset_ms` |
 
 ## 8. Background events and how to wait on them
 

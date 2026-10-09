@@ -23,9 +23,12 @@ func modelList(args []string) {
 	raw := adminCall("relay model list", "model.list", nil)
 	var view ModelCatalogView
 	decodeCLIResult(raw, &view)
+	if view.Error != "" {
+		exitError("%s", view.Error)
+	}
 	if *asJSON {
 		printJSONLine(raw)
-	} else if view.Error == "" {
+	} else {
 		w := newTabWriter()
 		fmt.Fprintln(w, "ID\tLABEL\tGROUP\tKIND\tTARGET")
 		for _, m := range view.Models {
@@ -35,8 +38,5 @@ func modelList(args []string) {
 		for _, warn := range view.Warnings {
 			fmt.Fprintf(os.Stderr, "warning: %s\n", warn)
 		}
-	}
-	if view.Error != "" {
-		exitError("%s", view.Error)
 	}
 }

@@ -45,8 +45,8 @@ func eveEnrolmentOpen(w *config.EveEnrolmentWindow, now time.Time) bool {
 // mintEveEnrolment writes a fresh window, replacing any existing one — at
 // most one at a time, matching login_ops.go's mintBootstrapCode. Does not
 // save; use within store.With.
-func mintEveEnrolment(s *config.Settings) string {
-	expires := time.Now().UTC().Add(eveEnrolmentTTL).Format(time.RFC3339)
+func mintEveEnrolment(s *config.Settings, now time.Time) string {
+	expires := now.UTC().Add(eveEnrolmentTTL).Format(time.RFC3339)
 	s.EveEnrolment = &config.EveEnrolmentWindow{Expires: expires}
 	return expires
 }
@@ -90,6 +90,8 @@ type EveEnrolmentOps struct {
 	// (docs/eve-passkey-enrolment.md: "Relay notifies the console..."). Nil
 	// is safe and raises nothing.
 	Notify func(title, body string)
+	// Clock times the enrolment window. Nil reads as wall time.
+	Clock serverClock
 }
 
 func (o *EveEnrolmentOps) runQueued(ctx context.Context, fn func() error) error {
@@ -143,7 +145,7 @@ func (o *EveEnrolmentOps) Open(ctx context.Context, via string) (_ eveEnrolmentS
 	var expires string
 	if err := o.runQueued(ctx, func() error {
 		if err := o.Store.With(func(s *config.Settings) {
-			expires = mintEveEnrolment(s)
+			expires = mintEveEnrolment(s, clockNow(o.Clock))
 		}); err != nil {
 			return fmt.Errorf("save settings: %w", err)
 		}
@@ -166,7 +168,7 @@ func (o *EveEnrolmentOps) Status() eveEnrolmentStatusView {
 		return eveEnrolmentStatusView{}
 	}
 	w := config.DisplaySettings(o.Store).EveEnrolment
-	if !eveEnrolmentOpen(w, time.Now()) {
+	if !eveEnrolmentOpen(w, clockNow(o.Clock)) {
 		return eveEnrolmentStatusView{}
 	}
 	return eveEnrolmentStatusView{Open: true, Expires: w.Expires}
@@ -194,7 +196,7 @@ func (o *EveEnrolmentOps) Consume(ctx context.Context, claim eveEnrolmentClaim) 
 	var open bool
 	if err := o.runQueued(ctx, func() error {
 		if err := o.Store.With(func(s *config.Settings) {
-			open = eveEnrolmentOpen(s.EveEnrolment, time.Now())
+			open = eveEnrolmentOpen(s.EveEnrolment, clockNow(o.Clock))
 			if open {
 				expires = s.EveEnrolment.Expires
 				s.EveEnrolment = nil

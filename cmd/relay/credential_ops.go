@@ -31,6 +31,8 @@ type CredentialOps struct {
 	// is also the hard dependency §7.4 checks before Gate: without a sink,
 	// there is nowhere the ADR's detection argument's record could land.
 	Issuance IssuanceAuditor
+	// Clock stamps the mint and reaps against its time. Nil reads as wall time.
+	Clock serverClock
 }
 
 // runCommitted runs fn through the config command queue. An admitted step is
@@ -103,7 +105,7 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 
 	err = o.runCommitted(ctx, func() error {
 		var mintErr error
-		cred, plaintext, mintErr = mintAPICredential(o.Store, credentialMintRequest{Name: name, Classes: req.Classes, TTL: req.TTL})
+		cred, plaintext, mintErr = mintAPICredential(o.Store, credentialMintRequest{Name: name, Classes: req.Classes, TTL: req.TTL}, clockNow(o.Clock))
 		if mintErr != nil {
 			return mintErr
 		}

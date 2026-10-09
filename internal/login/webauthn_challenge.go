@@ -75,6 +75,12 @@ func newWebAuthnChallengeStore() *WebAuthnChallengeStore {
 	}
 }
 
+func (s *WebAuthnChallengeStore) setClock(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
+}
+
 // Issue refuses rather than evicting a live entry when the table is full:
 // evicting the oldest would let an unauthenticated flood displace the owner's
 // in-flight challenge silently, where a refusal is at least answered to the

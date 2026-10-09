@@ -33,6 +33,15 @@ func mustMarshalJSON(label string, v interface{}) string {
 	return string(data)
 }
 
+// settingsNow is the time the first paint judges sessions against: the running
+// app's clock, wall time when there is none.
+func settingsNow() time.Time {
+	if app := appInstance; app != nil {
+		return clockNow(app.clock)
+	}
+	return time.Now()
+}
+
 // renderSettingsHTML produces the initial WebView document. toolCache is the
 // per-MCP tool list (mcpID → []ToolInfo) used by the Projects tab's tri-state
 // picker; it's preseeded so the first paint of a project edit form doesn't
@@ -124,7 +133,7 @@ func renderSettingsDocument(settings *config.Settings, runningIDs []string, tool
 		// does not end a session it already signed in, and the tab has to be
 		// able to say so with both lists on screen.
 		"__PASSKEYS_JSON__", mustMarshalJSON("passkeys", passkeyViews(settings)),
-		"__LOGIN_SESSIONS_JSON__", mustMarshalJSON("login_sessions", loginSessionViews(settings, time.Now())),
+		"__LOGIN_SESSIONS_JSON__", mustMarshalJSON("login_sessions", loginSessionViews(settings, settingsNow())),
 		// Eve's mirror is seeded the same way, for the same reason: a
 		// credential you cannot see is one you will not revoke
 		// (docs/eve-passkey-enrolment.md decision 7).
