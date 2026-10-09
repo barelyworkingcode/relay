@@ -193,8 +193,13 @@ the model, with relay-built settings `{"headless":true,"agent":true}` so it
 shows in the session list and on the board) or `terminal` (a `pty` session on
 the `claude-code` template with `--model <model> -- <prompt>`, Claude models
 only). `folder` is relative to the project and is resolved through symlinks;
-a path that leaves the project root is refused, and a project on an SSH host
-is refused. Headless delivers the prompt through the same core as the messages
+a path that leaves the project root is refused. A project on an SSH host is
+accepted for a headless start only: its path is on the host, so the folder is
+joined and checked as text (no symlink resolution, no existence check, and a
+folder that is missing on the host fails when the session starts), and the
+launch carries the project's host as for any hosted session. A terminal start
+there is refused with 400 `terminal_on_host`. A remote (mTLS) project stays
+refused. Headless delivers the prompt through the same core as the messages
 route; if delivery fails the session is terminated with reason
 `chief_of_staff_start_failed` and the route answers 502 `prompt_not_delivered`.
 A terminal start appears in `GET /api/terminals` with its origin and does not

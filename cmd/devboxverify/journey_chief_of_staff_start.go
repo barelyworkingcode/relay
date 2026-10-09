@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 const (
 	cosStartID   = "cos-start"
 	cosOutsideID = "cos-start-outside-root"
+	cosHostID    = "cos-start-host"
 	cosStartPath = "/api/chief-of-staff/sessions"
 	cosListWait  = 10 * time.Second
 )
@@ -376,4 +379,263 @@ func classifyCosOutside(r cosOutsideRun, projectID string) result {
 		}
 	}
 	return fail("no denied session_launch row with origin %s for the symlink refusal", cosOrigin)
+}
+
+// cosHostRun is what the hosted-start journey observed, in order.
+type cosHostRun struct {
+	HostID, Host, Project string
+	Marker, Marker2       string
+	Setup                 string // host or project could not be made (setup P11)
+
+	DialStatus int
+	DialErr    string
+
+	Create      frontendResponse
+	SessionID   string
+	JoinSeen    bool
+	TurnWaitErr bool
+	List        frontendResponse
+	PS          string
+	PSErr       string
+
+	Send     frontendResponse
+	Turn2Err bool
+	RowsErr  string
+	Launch   []audit.AuditEvent // session_launch rows naming the session
+	Msgs     []audit.AuditEvent // session_message rows naming the session
+
+	Delete   frontendResponse
+	Teardown string
+}
+
+func runCosStartHost(ctx context.Context, e env) (out result) {
+	_, run, res, ok := screenCreds(e, cosHostID)
+	if !ok {
+		return res
+	}
+	cosTok, revoke, res, ok := mintCosStartCred(ctx, e)
+	if !ok {
+		res.ID = cosHostID
+		return res
+	}
+	// Registered first so it runs last: the deletes below use the credential.
+	defer func() {
+		if d := revoke(); d != "" && out.State == statePass {
+			out = result{cosHostID, stateFail, d}
+		}
+	}()
+	r := cosHostRun{Host: dropInHostPrefix + e.Nonce + "-cos", Project: dropInProjectName + "cos " + e.Nonce,
+		Marker: "verify-" + e.Nonce + "-host", Marker2: "verify-" + e.Nonce + "-host2"}
+	dir := filepath.Join(gateStateDir(), dropInStateDirName+e.Nonce+"-cos")
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	// Host create answers when the probe is done; project create answers when
+	// the presence dialog is answered. Both are the response itself.
+	hostResp := frontendDoTimeout(ctx, e, run, http.MethodPost, "/api/hosts", jsonBody(map[string]string{
+		"name": r.Host, "target": dropInHostTarget, "tmux_path": "/usr/bin/tmux",
+	}), hostCreateTimeout)
+	var errText string
+	if r.HostID, errText = createdID("POST /api/hosts", hostResp); r.HostID == "" {
+		return classifyCosStartHost(cosHostRun{Setup: errText})
+	}
+	var projectID string
+	defer func() {
+		// Runs after the session delete below, so the project is empty by then.
+		r.Teardown = teardownSlowRoute(context.WithoutCancel(ctx), e, run, projectID, r.HostID)
+		out = classifyCosStartHost(r)
+	}()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		r.Setup = "cannot create the project folder: " + err.Error()
+		return
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	projResp, d := gatedFrontend(ctx, e, run, http.MethodPost, "/api/projects", jsonBody(map[string]any{
+		"name": r.Project, "path": dir, "host_id": r.HostID, "allowed_templates": []string{"claude-code"},
+	}), fmt.Sprintf("%q", r.Project))
+	if projectID, errText = createdID("POST /api/projects", projResp); projectID == "" {
+		r.Setup = fmt.Sprintf("%s (prompt: %s %s)", errText, d.Outcome, d.Detail)
+		return
+	}
+
+	obs, status, err := dialCos(ctx, e, run, false)
+	r.DialStatus = status
+	if err != nil {
+		r.DialErr = err.Error()
+		return
+	}
+	defer func() { _ = obs.conn.Close() }()
+	defer func() {
+		if r.SessionID != "" {
+			r.Delete = frontendDo(context.WithoutCancel(ctx), e, run, http.MethodDelete, "/api/sessions/"+r.SessionID, nil)
+		}
+	}()
+
+	r.Create = cosRequest(ctx, e, cosTok, true, http.MethodPost, cosStartPath,
+		cosStartBody(projectID, "", cosSendText(r.Marker), ""), 60*time.Second)
+	if r.SessionID = parseCosStart(r.Create).SessionID; r.Create.Status != http.StatusCreated || r.SessionID == "" {
+		return
+	}
+	id := r.SessionID
+	_ = obs.send(map[string]string{"type": "join_session", "sessionId": id})
+	if r.JoinSeen = obs.waitFor(ctx, cosWait, cosJoined(id, 1)); !r.JoinSeen {
+		return
+	}
+	// The wait on model output: the turn_done frame carrying the marker.
+	if r.TurnWaitErr = !obs.waitFor(ctx, cosTurnWait, cosTurnFinished(id, r.Marker)); r.TurnWaitErr {
+		return
+	}
+	r.List = cosRequest(ctx, e, cosTok, true, http.MethodGet, "/api/sessions", nil, frontendRequestTimeout)
+	// The session child is alive between turns, so the process list is read once now.
+	psOut, err := exec.CommandContext(ctx, "ps", "-axwwo", "command").Output()
+	r.PS = string(psOut)
+	if err != nil {
+		r.PSErr = err.Error()
+	}
+
+	r.Send = cosRequest(ctx, e, cosTok, true, http.MethodPost, "/api/chief-of-staff/messages",
+		jsonBody(map[string]string{"sessionId": id, "text": cosSendText(r.Marker2)}), frontendRequestTimeout)
+	if r.Send.Status != http.StatusAccepted {
+		return
+	}
+	if r.Turn2Err = !obs.waitFor(ctx, cosTurnWait, cosTurnFinished(id, r.Marker2)); r.Turn2Err {
+		return
+	}
+	// Both rows are written before the 202, so one read follows the second turn.
+	var rowsErr error
+	if r.Msgs, rowsErr = auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionMessage), "--grep", id, "--json", "--tail", "50"); rowsErr == nil {
+		r.Launch, rowsErr = auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionLaunch), "--grep", id, "--json", "--tail", "20")
+	}
+	if rowsErr != nil {
+		r.RowsErr = rowsErr.Error()
+	}
+	return
+}
+
+// scriptB64 finds the base64 script inside the remote command ssh was given:
+// sh -c 'eval "$(printf %s <BASE64> | base64 -d)"'.
+var scriptB64 = regexp.MustCompile(`printf %s ([A-Za-z0-9+/]+=*) \| base64 -d`)
+
+// sshChildSetsSession is true when one process-list line is an ssh child run
+// with -T and the end-of-options marker whose decoded script sets
+// RELAY_SESSION_ID to the session id.
+func sshChildSetsSession(psOut, sessionID string) bool {
+	for _, line := range strings.Split(psOut, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || filepath.Base(fields[0]) != "ssh" || !strings.Contains(line, " -T -- ") {
+			continue
+		}
+		for _, m := range scriptB64.FindAllStringSubmatch(line, -1) {
+			script, err := base64.StdEncoding.DecodeString(m[1])
+			if err != nil {
+				continue
+			}
+			for _, q := range []string{"", "'"} {
+				if strings.Contains(string(script), q+"RELAY_SESSION_ID"+q+"="+q+sessionID+q) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func classifyCosStartHost(r cosHostRun) result {
+	const id = cosHostID
+	fail := func(f string, a ...any) result { return result{id, stateFail, fmt.Sprintf(f, a...)} }
+	switch {
+	case r.Setup != "":
+		return blocked(id, "loopback host or its project not set up (setup P11): "+r.Setup+r.Teardown)
+	case r.DialStatus == http.StatusUnauthorized:
+		return blocked(id, "run credential refused (401) on /ws")
+	case r.DialErr != "" && r.DialStatus == 0:
+		return blocked(id, "frontend socket unreachable: "+r.DialErr)
+	case r.DialErr != "":
+		return fail("GET /ws status %d: %s", r.DialStatus, r.DialErr)
+	case r.Create.Status == http.StatusUnauthorized:
+		return blocked(id, "run credential refused (401) on the start route")
+	case r.Create.Status != http.StatusCreated || r.SessionID == "":
+		return fail("headless start in the host project status %d, want 201: %s", r.Create.Status, r.Create.Error)
+	}
+	if s := parseCosStart(r.Create); s.Origin != cosOrigin || s.Mode != "headless" {
+		return fail("hosted start answered origin %q mode %q, want %q headless", s.Origin, s.Mode, cosOrigin)
+	}
+	sid := r.SessionID
+	switch {
+	case !r.JoinSeen:
+		return fail("no session_joined frame after join_session")
+	case r.TurnWaitErr:
+		return fail("no turn_done carrying the marker, then idle, after the hosted start (host claude cannot sign in over ssh? setup P11)")
+	case r.List.Status != http.StatusOK:
+		return fail("scoped GET /api/sessions status %d, want 200", r.List.Status)
+	case r.PSErr != "":
+		return fail("process list unreadable: %s", r.PSErr)
+	}
+	if o, found := listedOrigin(r.List.Body, "sessions", sid); !found || o != cosOrigin {
+		return fail("GET /api/sessions row found=%v origin %q, want %q", found, o, cosOrigin)
+	}
+	if !sshChildSetsSession(r.PS, sid) {
+		return fail("no ssh ... -T -- process whose script sets RELAY_SESSION_ID to %s", sid)
+	}
+	switch {
+	case r.Send.Status == http.StatusUnauthorized:
+		return blocked(id, "run credential refused (401) on the send route")
+	case r.Send.Status != http.StatusAccepted:
+		return fail("scoped POST /api/chief-of-staff/messages status %d, want 202: %s", r.Send.Status, r.Send.Error)
+	case r.Turn2Err:
+		return fail("no turn_done carrying the second marker, then idle, after the scoped message")
+	case r.RowsErr != "":
+		return blocked(id, r.RowsErr)
+	}
+	if d := cosHostAudit(r); d != "" {
+		return fail("%s", d)
+	}
+	switch {
+	case r.Delete.Status/100 != 2:
+		return fail("DELETE of the hosted session status %d: it may still be running", r.Delete.Status)
+	case r.Teardown != "":
+		return fail("hosted fixtures not removed%s", r.Teardown)
+	}
+	return result{id, statePass, fmt.Sprintf("Chief of Staff started a headless Haiku agent in a project on SSH host %s and sent it a second message: row marked %s, launch row ok with host_id, session child is ssh -T -- setting RELAY_SESSION_ID, both turns carried their markers, intent and completion rows carry the origin",
+		r.Host, cosOrigin)}
+}
+
+// cosHostAudit checks the launch row names the host and the message rows of
+// both turns (the start prompt and the send) carry the origin.
+func cosHostAudit(r cosHostRun) string {
+	if r.HostID == "" {
+		return "host id unknown"
+	}
+	launched := false
+	for _, row := range r.Launch {
+		var a struct {
+			SessionID string `json:"session_id"`
+			Origin    string `json:"origin"`
+			HostID    string `json:"host_id"`
+		}
+		_ = json.Unmarshal(row.Args, &a)
+		if row.Event != string(audit.AuditEventSessionLaunch) || a.SessionID != r.SessionID {
+			continue
+		}
+		launched = true
+		if row.Outcome != audit.AuditOutcomeOK || a.Origin != cosOrigin || a.HostID != r.HostID {
+			return fmt.Sprintf("session_launch row outcome %q origin %q host_id %q, want ok, %q and %q", row.Outcome, a.Origin, a.HostID, cosOrigin, r.HostID)
+		}
+	}
+	if !launched {
+		return "no session_launch row for the hosted session"
+	}
+	for _, phase := range []string{audit.AuditPhaseIntent, audit.AuditPhaseCompletion} {
+		rows := messageRowsFor(r.Msgs, r.SessionID, phase)
+		if len(rows) != 2 {
+			return fmt.Sprintf("%d %s session_message rows for the hosted session, want 2 (start prompt and send)", len(rows), phase)
+		}
+		for _, row := range rows {
+			if o := rowArgs(row).Origin; o != cosOrigin {
+				return fmt.Sprintf("session_message %s origin %q, want %q", phase, o, cosOrigin)
+			}
+		}
+	}
+	return ""
 }

@@ -124,10 +124,7 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 		return
 	}
 	fields.ProjectName = proj.Name
-	if proj.IsHosted() {
-		deny(http.StatusForbidden, "project_on_host", "the Chief of Staff cannot start a session in a project on an SSH host")
-		return
-	}
+	fields.HostID = proj.HostID
 
 	directory, status, code, message := confineChiefOfStaffFolder(proj, body.Folder)
 	fields.Directory = directory
@@ -144,6 +141,12 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 	if mode == chiefOfStaffModeHeadless {
 		req.ClientSettings = json.RawMessage(`{"headless":true,"agent":true}`)
 	} else {
+		// A terminal session cannot run on a host (checkTerminalExtraArgs
+		// refuses extra args there), so refuse before anything else.
+		if proj.IsHosted() {
+			deny(http.StatusBadRequest, "terminal_on_host", "a terminal start is not available in a project on an SSH host; start a headless agent")
+			return
+		}
 		// The terminal runs Claude Code, the only program that takes --model
 		// and a prompt argument.
 		if deriveSessionKind(body.Model) != KindClaude {
@@ -190,7 +193,7 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 }
 
 // folderSyntaxOK refuses a folder that is absolute, holds a NUL or has a ..
-// segment. It is a cheap first cut; the symlink-resolving check in
+// segment. It is a cheap first cut; the containment check in
 // confineChiefOfStaffFolder is the one that decides.
 func folderSyntaxOK(folder string) bool {
 	if strings.ContainsRune(folder, 0) || filepath.IsAbs(folder) || strings.HasPrefix(folder, "/") {
@@ -208,7 +211,20 @@ func folderSyntaxOK(folder string) bool {
 // resolved directory. A non-empty code is a refusal. Symlinks are resolved
 // before the containment test, so a link inside the project that points out
 // of it is refused.
+//
+// A hosted project's path is on the host, not on this Mac, so there is
+// nothing to resolve: the join is text only, as for any hosted launch
+// (AuthorizeLaunch checks it lexically too). A symlink on the host is not
+// seen here; the session runs as the host account either way.
 func confineChiefOfStaffFolder(proj *config.Project, folder string) (directory string, status int, code, message string) {
+	if proj.IsHosted() {
+		root := filepath.Clean(proj.Path)
+		dir := filepath.Clean(filepath.Join(proj.Path, folder))
+		if !lexicalDirWithin(dir, root) {
+			return dir, http.StatusForbidden, "directory_outside_project", "requested directory is outside the project"
+		}
+		return dir, 0, "", ""
+	}
 	resolved, err := filepath.EvalSymlinks(filepath.Join(proj.Path, folder))
 	if err != nil {
 		return "", http.StatusBadRequest, "folder_not_found", "folder does not exist in the project"
