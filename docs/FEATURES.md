@@ -189,7 +189,7 @@ Areas: tray, settings-ui.
 Intent: give a script a scoped credential for relay's control plane.
 It worked: the credential's class allows what it should and nothing more; a revoked one gets 401.
 Why should: every journey and several clients depend on it, but a break is loud.
-Areas: credentials.
+Areas: credentials, logging.
 
 | Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
 |---|---|---|---|---|---|---|---|
@@ -197,6 +197,8 @@ Areas: credentials.
 | List credentials | CLI | `relay credential list` | CLI | — | gate-credential-mint-pos | none | `relay credential list` |
 | Revoke a credential | CLI | `relay credential revoke --id` | CLI | owner gate | gate-credential-revoke-pos, gate-credential-revoke-neg | none | `relay credential revoke` |
 | Class enforcement on `/api/*` | API | any route with a bearer | HTTP | — | every journey (implicitly) | n/a | n/a |
+| Filter and follow relay's events | CLI | `relay logs --event K --trace T --since S [--follow --timeout D] --json` | CLI | — | none (real-app check) | none | `relay logs` |
+| Name the trace of a call | CLI, API | `relay --trace T <verb>`; header `X-Trace-Id` | CLI, HTTP | — | none (real-app check) | none | `--trace`, `X-Trace-Id` |
 
 ### G10 · Give a remote machine access — later
 Intent: let another machine reach chosen projects over mTLS.
@@ -362,6 +364,9 @@ areas:
   sealed:
     code: [cmd/relay/sealed_reset.go, internal/sealed/**, internal/config/**]
     journeys: [gate-sealed-reset-neg, gate-sealed-reset-pos]
+  logging:
+    code: [cmd/relay/logs_cmd.go, cmd/relay/trace_flag.go, cmd/relay/events.go, internal/logging/**]
+    journeys: []
   instance:
     code: [cmd/relay/server_core.go, cmd/relay/serve_cmd.go, cmd/relay/platform_headless.go, cmd/relay/config_dir.go, cmd/relay/main.go]
     journeys: []
