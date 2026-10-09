@@ -48,7 +48,7 @@ func adminLoginSignOut(ctx context.Context, r *appRouter, args json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
-	removed, err := ops.SignOut(ctx, req.ID)
+	removed, err := ops.SignOut(ctx, req.ID, auditViaCLI)
 	if err != nil {
 		return nil, err
 	}

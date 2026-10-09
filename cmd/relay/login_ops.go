@@ -399,7 +399,7 @@ func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (_ config.Passk
 // become a general "revoke any control-plane credential" button, which is
 // what `relay credential revoke` is for and what the operator's own
 // long-lived credentials would be destroyed by.
-func (o *LoginOps) SignOut(ctx context.Context, id string) (_ config.APICredential, err error) {
+func (o *LoginOps) SignOut(ctx context.Context, id, via string) (_ config.APICredential, err error) {
 	ev := logging.BeginEvent(ctx, "login.session.sign_out")
 	defer func() {
 		ev.Set("credential_id", id)
@@ -407,6 +407,10 @@ func (o *LoginOps) SignOut(ctx context.Context, id string) (_ config.APICredenti
 	}()
 	if o == nil {
 		return config.APICredential{}, errLoginOpsUnavailable
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return config.APICredential{}, markInvalid(errors.New("a credential id is required"))
 	}
 	var removed config.APICredential
 	if err := o.runQueued(context.Background(), func() error {
@@ -426,7 +430,7 @@ func (o *LoginOps) SignOut(ctx context.Context, id string) (_ config.APICredenti
 			Subject:    removed.ID,
 			Name:       removed.Name,
 			Grants:     audit.ClassStrings(removed.Classes),
-			Via:        auditViaIPC,
+			Via:        via,
 		}); err != nil {
 			slog.Error("login session signed out but not recorded in the audit log", "id", removed.ID, "error", err)
 		}
