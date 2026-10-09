@@ -105,6 +105,7 @@ func brokeredCLICommands(t *testing.T) []brokeredCLICommand {
 		{"relay service register", []string{"service", "register", "--name", "x", "--command", "/bin/true"}},
 		{"relay service unregister", []string{"service", "unregister", "--id", "x"}},
 		{"relay service restart", []string{"service", "restart", "--id", "x"}},
+		{"relay project update", []string{"project", "update", "--id", "x", "--files-read-only=true"}},
 	}
 }
 

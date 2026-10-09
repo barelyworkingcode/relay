@@ -24,6 +24,9 @@ outside it is not a relay bug, however real.
    issued, or act without the audit trail recording it.
    Examples: #53 (a planted symlink widens a later session's read grants),
    #104 (renaming a socket-deny directory to connect).
+   The file plane (`docs/project-files.md`) holds the same line for eve's
+   file operations: it never follows a symbolic link a session planted in its
+   project folder, and every mutation it permits or refuses is in the audit.
 2. **An enrolled remote client** (a machine holding a relay certificate). It
    reaches exactly its profile and nothing else, within its budget.
    Revocation ends it, live connections included.

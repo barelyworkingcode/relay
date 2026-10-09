@@ -17,6 +17,7 @@ same change when behaviour moves.
 | Any CLI subcommand | [`docs/cli.md`](docs/cli.md) |
 | Tokens, credentials, expiry, sealing | [`docs/tokens.md`](docs/tokens.md), [`docs/launch-identity.md`](docs/launch-identity.md), [`docs/sealed-config.md`](docs/sealed-config.md) |
 | Presence prompts, gated ops | [`docs/presence-gate.md`](docs/presence-gate.md) |
+| Project files for eve (file routes, `/ws/files`, containment, read-only) | [`docs/project-files.md`](docs/project-files.md) |
 | Remote projects, enrolment | [`docs/access-profiles.md`](docs/access-profiles.md), [`docs/install-remote-machine.md`](docs/install-remote-machine.md) |
 | MCP scoping (`contextSchema`, `_meta`) | [`docs/context-schema.md`](docs/context-schema.md) |
 | Audit log | [`docs/audit-log.md`](docs/audit-log.md) |

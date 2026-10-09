@@ -48,6 +48,7 @@ func TestAdminOps_TableHasExactlyTheS6Operations(t *testing.T) {
 		"grant.view",
 		"eve.enrolment.open",
 		"eve.passkey.revoke",
+		"project.update",
 	}
 	sort.Strings(want)
 

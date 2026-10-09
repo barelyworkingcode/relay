@@ -69,6 +69,12 @@ const (
 	AuditEventMountOp     = "mount_op"
 	AuditEventMountDetach = "mount_detach"
 
+	// FileOp is the file plane's mutation record: an intent row written
+	// durably before a write, mkdir, rename, move, delete or paste runs, its
+	// completion row, and one denied row for a refused mutation
+	// (docs/project-files.md).
+	AuditEventFileOp = "file_op"
+
 	// HostProbe records one ssh probe of a Host (docs/ssh-hosts.md): outcome
 	// ok/error, the target reached, and (on success) the paths and versions
 	// discovered — Args carries that detail rather than a new field per

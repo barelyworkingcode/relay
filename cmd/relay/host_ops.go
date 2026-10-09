@@ -76,6 +76,21 @@ type HostOps struct {
 	// still run, just unrecorded), matching AuditRecorder's nil-receiver
 	// methods elsewhere.
 	Auditor *audit.AuditRecorder
+	// Agents ends a host's file agent when the host is deleted or its master
+	// is disconnected, and replaces it when its ssh fields change; nil is safe.
+	Agents HostAgents
+}
+
+// HostAgents is the part of projectfs.HostPool that HostOps needs.
+type HostAgents interface {
+	Drop(hostID string)
+	Restart(h config.Host)
+}
+
+func (o *HostOps) dropAgent(hostID string) {
+	if o.Agents != nil {
+		o.Agents.Drop(hostID)
+	}
 }
 
 func (o *HostOps) runQueued(ctx context.Context, fn func() error) error {
@@ -173,6 +188,9 @@ func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (con
 		return config.Host{}, false, nil
 	}
 	if connectionChanged {
+		if o.Agents != nil {
+			o.Agents.Restart(updated)
+		}
 		probe, _ := sshhost.Probe(ctx, updated)
 		recordHostProbe(o.Auditor, updated, probe)
 		committed, current, err := o.commitProbe(updated.ID, updated.ProbeGeneration, probe)
@@ -197,6 +215,9 @@ func (o *HostOps) Remove(ctx context.Context, id string) (found bool, refs []str
 	})
 	if err != nil {
 		return false, nil, err
+	}
+	if found && len(refs) == 0 {
+		o.dropAgent(id)
 	}
 	return found, refs, nil
 }
@@ -260,6 +281,7 @@ func (o *HostOps) Disconnect(id string) (config.Host, bool, error) { //nolint:un
 		return config.Host{}, false, nil //nolint:nilerr // Get's only error is not-found; found=false is the signal here, not the error return
 	}
 	_ = sshhost.Disconnect(h)
+	o.dropAgent(h.ID)
 	invalidateHostStatusCache(h.ID)
 	return h, true, nil
 }

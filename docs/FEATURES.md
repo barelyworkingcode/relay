@@ -225,6 +225,18 @@ Areas: hosts.
 | Probe, disconnect | Settings > Hosts | row > Probe / Disconnect | HTTP `/api/hosts/{id}/probe`, `/disconnect` | — | none | Settings > Hosts > row > Probe / Disconnect | none |
 | Host templates | Settings > Hosts | row > Templates | HTTP `/api/hosts/{id}/templates` | — | none | Settings > Hosts > row > Edit > Terminal templates | `settings.json` `hosts[].terminal_templates` |
 
+### G13 · Open, edit and search a project's files in eve — should
+Intent: browse and change a project's files, console or SSH host, from eve.
+It worked: the change lands, a link or `..` is refused, a read-only project stays unchanged, and the audit lists each change.
+Why should: weekly; a break is loud in eve's file errors.
+Areas: files.
+
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| File operations with containment and audit | eve's Files and Changes tabs | open, edit, save, delete a file | HTTP `/api/projects/{id}/files/*` [execute] | — | file-plane-contained | eve > Files | `relay audit --event file_op` |
+| Watch events and host status | eve's file tree | tree updates on change | HTTP `/ws/files` [execute] | — | file-plane-contained | eve > Files | none |
+| Read-only project files | none | none | HTTP `PUT /api/projects/{id}` [configure], CLI | — | file-plane-contained | none | `settings.json` `projects[].files_read_only`; `relay project update --files-read-only` |
+
 ### G12 · Recover from a broken sealed store — later
 Intent: start over when the keychain key is lost.
 It worked: relay names what it destroys, and starts clean.
@@ -342,6 +354,10 @@ areas:
     code: [cmd/relay/host_*.go, cmd/relay/ipc_host*.go, internal/sshhost/**]
     tests: [cmd/relay/host_*_test.go, cmd/relay/settings_hosts_ui_test.go, internal/sshhost/*_test.go]
     journeys: [permission-mode-restart, slow-route-keepalive, verify-fixtures-removed]
+  files:
+    code: [cmd/relay/file_*.go, cmd/relay/audit_file.go, cmd/relay/project_cmd.go, internal/projectfs/**]
+    tests: [cmd/relay/file_*_test.go, cmd/relay/audit_file_test.go, cmd/relay/project_cmd_test.go, internal/projectfs/**/*_test.go]
+    journeys: [file-plane-contained]
   presence:
     code: [cmd/relay/presence_gate.go, cmd/relay/presence_provider*.go, cmd/relay/admin_ops.go, cmd/relay/admin_read_ops.go, internal/presence/**]
     tests: [cmd/relay/presence_*_test.go, cmd/relay/gate_*_test.go, cmd/relay/config_queue_*_test.go, internal/presence/*_test.go]

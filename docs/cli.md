@@ -88,6 +88,7 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay eve enrol` | yes | **yes** | no |
 | `relay eve list` | yes | no | yes |
 | `relay eve revoke` | yes | **yes** | no |
+| `relay project update` | yes | no | yes |
 | `relay mcp list` | yes | no | yes |
 | `relay mcp register` | yes | **yes** | no |
 | `relay mcp unregister` | yes | no | yes |
@@ -956,6 +957,25 @@ Needs service: yes. Prompts: yes. Works over SSH: no. Relay records the
 revocation as pending and never touches eve directly -- eve applies it on
 its own next 30-second poll, or immediately if that browser tries to sign in
 first, and signs out every session that passkey minted.
+
+## `relay project`
+
+```
+relay project update --id ID --files-read-only=true|false
+```
+
+### `project update`
+
+Needs service: yes (`project.update`). Prompts: no. Works over SSH: yes.
+Sets `files_read_only` on a project: `true` makes relay refuse write, rename,
+move, delete and mkdir on its files (`docs/project-files.md`), `false`
+clears it. It goes through the same core as `PUT /api/projects/{id}`. It only
+narrows what eve may do, so it raises no presence prompt.
+
+```
+$ relay project update --id p_acme --files-read-only=true
+project Acme (p_acme): file changes are refused (files_read_only)
+```
 
 ## `relay mcp`
 

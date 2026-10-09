@@ -21,6 +21,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
+	"github.com/barelyworkingcode/relay/internal/projectfs"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
@@ -739,14 +740,17 @@ func runTrayApp() {
 		SessionCleanup: sessionDeps,
 	}
 	app.ipcCtx.ProjectOps = projectOps
+	router.projectOps = projectOps
 	// hostOps is the one core behind both the Hosts tab (via
 	// app.ipcCtx.HostOps) and RegisterHostRoutes on the frontend server
 	// (docs/ssh-hosts.md) — a host created from curl and one created from
 	// the tray share the same probe and the same audit record.
+	hostPool := projectfs.NewHostPool(projectfs.HostPoolOptions{})
 	hostOps := &HostOps{
 		Store:   store,
 		Queue:   serviceQueue,
 		Auditor: rec,
+		Agents:  hostPool,
 	}
 	app.ipcCtx.HostOps = hostOps
 	templateOps := &TemplateOps{Store: store, Queue: serviceQueue}
@@ -758,6 +762,7 @@ func runTrayApp() {
 		os.Exit(1)
 	}
 	frontend.routeDeps.loginOps = loginOps
+	frontend.FileOps().Hosts = hostPool
 	app.frontendServer = frontend
 	app.goFunc(func() {
 		if err := frontend.Serve(); err != nil {

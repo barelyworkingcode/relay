@@ -68,14 +68,17 @@ bridge socket, project tokens) live on the console. A host session gets
 Claude Code's built-in tools only, which covers the coding workflow. A
 reverse-tunnelled bridge is a later step, not a v1 blocker.
 
-**7. Eve's file plane is a small Node agent on the host.** Claude Code
-requires Node, so a host that can run the agent can run a Node script. Eve
-ships `remote-fs-agent.js`, launches it once per host over `ssh -T`, and
-speaks newline-delimited JSON to it: list, read, write, rename, move, delete,
-mkdir, stream, search, watch. The agent applies the same two-stage
-containment check as the local FileService (lexical, then realpath). Node's
-recursive `fs.watch` on the host feeds the same debounced `file_changed` /
-`dir_changed` frames the browser already understands.
+**7. The file plane is a small Node agent on the host, owned by relay.**
+Claude Code requires Node, so a host that can run it can run a Node script.
+Relay embeds the agent (`internal/projectfs/fsagent.js`), launches it
+once per host over `ssh -T` with the probe's `node_path`, and speaks
+newline-delimited JSON to it. Eve reaches it only through relay's file routes
+and `/ws/files` (`docs/project-files.md`); relay checks the project, read-only
+and audit before any request reaches the agent. On the host the agent walks
+every path component with `lstat`, refuses a symbolic link (`SYMLINK`) and a
+`..` segment (`TRAVERSAL`), and opens the final component with `O_NOFOLLOW`.
+That is not a race-free promise: host sessions run unconfined, so a link
+planted between the check and the open is outside what relay defends.
 
 **8. The remote command line is shell-agnostic by construction.** The string
 after the destination is executed by the host user's *login shell*, which may
@@ -86,8 +89,13 @@ command is therefore the fixed form
 
 where `<BASE64>` is a POSIX-sh script built with single-quote escaping. The
 only characters the login shell ever parses are `[A-Za-z0-9+/=]` inside a
-single-quoted string, which every shell treats identically. eve's Node agent
-launches the same way, as `node -e "eval(Buffer.from('<BASE64>','base64').toString())"`.
+single-quoted string, which every shell treats identically. the file
+agent launches the same way, as
+`<node_path> -e "eval(require('zlib').gunzipSync(Buffer.from('<BASE64>','base64')).toString())"`
+(`sshhost.NodeLauncher`). The source is gzipped first: a Windows host's `cmd.exe`
+refuses a command line over 8,191 characters. A `node_path` that is not a plain
+word is single-quoted; a host with no `node_path` is `HOST_UNREACHABLE` until a
+probe finds node.
 
 **9. The probe finds absolute tool paths once.** Non-interactive `ssh` often
 has a poorer PATH than the user's terminal (nvm, Homebrew on Linux, `~/.local/bin`).
@@ -566,49 +574,72 @@ status}`; the browser never sees `ssh_argv`. A `hosts` cache beside
 **`GET /api/hosts` and the mutations** are proxied through eve's routes like
 projects (`routes/index.js`), refreshing both caches on write.
 
-**FileService factory.** `FileHandlers` takes `fileServiceFor(project)`:
-`LocalFileService` (today's class, renamed in name only) for console
-projects, `RemoteFileService` for host projects. Both implement the same
-method set; `validatePath` on the remote side is a lexical pre-check, the
-host agent does the realpath half. `routes/index.js`'s `/api/files/:projectId/*`
-streams a host file through the agent's `stream` op instead of `res.sendFile`.
-`search_project` on a host project runs the agent's `search` op.
 `module-service.js` returns no modules for a host project (modules are
 served from the console's disk; v2).
 
-**Host agent pool** (`ssh-host-pool.js`): one `HostAgent` per host id,
-spawned as `ssh_argv + ["-T", "--", <node launcher>]`, JSON lines both ways,
-30 s per-request timeout, exponential reconnect 1 s → 30 s, in-flight
-requests rejected on exit with `host "devbox" unreachable`. State changes
-emit `host_status` to every browser connection:
-`{type:'host_status', hostId, name, status:'connecting'|'connected'|'unreachable', error?}`.
+**File plane.** Eve no longer spawns an agent. Relay's `projectfs.HostPool`
+holds one agent per host id, created on a host's first file request, and serves
+the host's projects through the same routes as console projects. The pool:
 
-**Agent protocol** (`remote-fs-agent.js`, runs on the host):
+- spawns `ssh_argv + ["-T", "--", NodeLauncher(node_path, agent source)]`;
+- is ready when the agent's `hello` reply (protocol version 2) arrives;
+- times every request out at 30 s (`504 TIMEOUT`), and answers `503
+  HOST_UNREACHABLE` while the agent is down;
+- reconnects on exit with backoff 1 s doubling to 30 s, driven by an injected
+  clock, and re-arms the host's watches before it reports `connected`;
+- reports `connecting`, `connected` and `unreachable` through `Subscribe` and
+  `Statuses`, which `/ws/files` forwards as `host_status`;
+- keeps a host's watch registrations in the pool, not in the agent, so a
+  replaced agent's successor adopts them and re-arms them before it reports
+  `connected`; a stop func from `Watch` works across the hand-over;
+- replaces a host's agent at once (`Restart`) when its target, port or
+  identity change;
+- drops a host's agent (`Drop`) when the host is deleted or its master is
+  disconnected, and sends one `unreachable` status with error `disconnected`.
+  Its watches stay held until a later request starts an agent for the host or
+  their stop funcs run. A new probe that changes `node_path` replaces the
+  agent on its next use.
+
+A host project differs from a console project in three ways: rename and move
+replace an existing destination, delete is permanent, and a stream is a plain
+200 that ignores `Range`.
+
+**Agent protocol** (version 2; `internal/projectfs/fsagent.js`, runs on the
+host). Every request carries `root` (the project's absolute path on the host) and
+a root-relative `path`; field names are snake_case.
 
 ```
-→ {id, op:"hello", version:1}                 ← {id, ok, home, os, node}
-→ {id, op:"list",   root, path, showHidden}   ← {id, ok, entries:[{name,type:"file"|"directory"|"symlink",size,mtime}]}
-→ {id, op:"read",   root, path, maxBytes}     ← {id, ok, content, size}      (utf8; >maxBytes → error "too large")
-→ {id, op:"write",  root, path, content}      ← {id, ok}
-→ {id, op:"writeb64", root, path, data}       ← {id, ok}                     (upload)
-→ {id, op:"rename", root, path, newName}      ← {id, ok, path}
-→ {id, op:"move",   root, path, destDir}      ← {id, ok, path}
-→ {id, op:"delete", root, path}               ← {id, ok}                     (fs.rm recursive; no trash on a host)
-→ {id, op:"mkdir",  root, parent, name}       ← {id, ok, path}
-→ {id, op:"stat",   root, path}               ← {id, ok, type, size, mtime}
-→ {id, op:"stream", root, path}               ← {id, chunk:<b64>}* then {id, ok, size}
-→ {id, op:"search", root, query, {regex,caseSensitive,globs,maxMatches}} ← {id, ok, matches:[{path,line,col,text}], truncated}
-→ {id, op:"watch",  root}                     ← {id, ok}   then events {event:"change", root, path}
-→ {id, op:"unwatch", root}                    ← {id, ok}
-   errors: {id, ok:false, error, code}   codes: ENOENT, EACCES, EISDIR, TOO_LARGE, TRAVERSAL, UNSUPPORTED
+-> {id, op:"hello", version:2}                          <- {id, ok, version, home, os, node}
+-> {id, op:"list",   root, path, show_hidden}           <- {id, ok, entries:[{name,type:"file"|"directory"|"symlink",size,mtime_ms}]}
+-> {id, op:"stat",   root, path}                        <- {id, ok, type, size, mtime_ms}
+-> {id, op:"read",   root, path, max_bytes}             <- {id, ok, content, size}      (utf8; over the cap: TOO_LARGE with size)
+-> {id, op:"stream", root, path, offset, length}        <- {id, ok, data:<b64>, eof, size}   (one pulled chunk)
+-> {id, op:"write",  root, path, content, encoding:"utf8"|"base64", create_only}  <- {id, ok}
+-> {id, op:"mkdir",  root, parent, name}                <- {id, ok, path}
+-> {id, op:"rename", root, path, new_name}              <- {id, ok, path}
+-> {id, op:"move",   root, path, dest_dir}              <- {id, ok, path}
+-> {id, op:"delete", root, path}                        <- {id, ok}                     (recursive; no trash)
+-> {id, op:"search", root, query, regex, word, case_sensitive, globs, max_matches}
+                                                        <- {id, ok, matches:[{path,line,col,len,text}], truncated}
+-> {id, op:"cancel", target}                            <- {id, ok}                     (stops a running search)
+-> {id, op:"git",    root, cwd, args, max_bytes}        <- {id, ok, exit_code, stdout:<b64>, stderr}
+-> {id, op:"pastetmp", name, data:<b64>}                <- {id, ok, path}               (into /tmp, O_EXCL, mode 0600)
+-> {id, op:"watch",  root}                              <- {id, ok}   then {event:"fs", root, path, kind:"change"|"rename"}
+-> {id, op:"unwatch", root}                             <- {id, ok}
+   errors: {id, ok:false, error, code[, size]}
+   codes: INVALID, TRAVERSAL, SYMLINK, EACCES, ENOENT, EISDIR, ENOTDIR, EEXIST, TOO_LARGE,
+          GIT_MISSING, TIMEOUT, UNSUPPORTED, ERROR
 ```
 
-Every path is relative to `root`; the agent refuses anything that resolves
-outside `root` (code `TRAVERSAL`) using the same two-stage rule as the local
-FileService. The search walks with `fs.opendir`, skips `.git` and
-`node_modules`, and caps at 500 matches / 10 MB scanned / 5 s. The watcher
-is one recursive `fs.watch` per root, ref-counted per browser connection on
-eve's side, debounced on eve's side by the existing FileWatcher.
+- `case_sensitive: null` is smart case: sensitive only when the query has an upper-case letter.
+- Search lists files with `git ls-files -co --exclude-standard -z` when the root is in a work
+  tree, and otherwise walks, skipping hidden entries and `node_modules`. It skips symlinks,
+  files over 5 MiB and binary files, and stops at 500 matches (50 per file), 10 MiB scanned
+  or 5 s. `col` is 1-based; `col` and `len` count UTF-16 code units.
+- `git` runs the argv relay sends verbatim (relay prepends its fixed `-c` prefix and has
+  validated the arguments), with `GIT_*` dropped and `GIT_OPTIONAL_LOCKS=0`,
+  `GIT_TERMINAL_PROMPT=0`, `LC_ALL=C`, a 10 s timeout and an output cap of `max_bytes`.
+- The watcher is one recursive `fs.watch` per root; `kind` is Node's event type.
 
 **UI.** The browser learns a project is on a host from `project.host`. Where
 it shows:

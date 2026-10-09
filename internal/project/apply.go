@@ -71,6 +71,9 @@ type UpdateFields struct {
 	Context       *map[string]json.RawMessage `json:"context,omitempty"`
 	AllowExternal *map[string]bool            `json:"allow_external,omitempty"`
 	Mounts        *[]config.MountGrant        `json:"mounts,omitempty"`
+	// FilesReadOnly narrows only, so it is not part of the grant-widening
+	// check and needs no presence prompt.
+	FilesReadOnly *bool `json:"files_read_only,omitempty"`
 }
 
 // ApplyCreate creates a project and applies its optional policy, skill
@@ -376,6 +379,11 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	}
 	if f.Mounts != nil {
 		s.UpdateProjectMounts(id, *f.Mounts)
+	}
+	if f.FilesReadOnly != nil {
+		if stored, _ := config.FindProjectByID(s, id); stored != nil {
+			stored.FilesReadOnly = *f.FilesReadOnly
+		}
 	}
 	if f.Context != nil {
 		updateProjectContext(s, id, *f.Context, sc)
