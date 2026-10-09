@@ -2509,7 +2509,7 @@ The text form is `started terminal TERMINAL-ID`.
 | `terminals[].name` | string | The terminal name. |
 | `terminals[].directory` | string | The working directory. |
 | `terminals[].state` | string | The terminal's state. |
-| `terminals[].exitCode` | number, optional | The exit code of an ended terminal. |
+| `terminals[].exitCode` | number, optional | The exit code of an ended terminal, when it is not 0. Absent while the terminal runs and absent after it exits 0, so a `state` of `stopped` with no `exitCode` means exit 0. A signalled exit is 128 plus the signal. |
 | `terminals[].host` | object, optional | `{"id","name"}` of the SSH host. |
 | `terminals[].origin` | string, optional | Who started it, when not a person at a screen. |
 

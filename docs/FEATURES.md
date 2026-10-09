@@ -404,13 +404,12 @@ Areas: instance, sandbox, remote, models.
 | `G14.02` | Pick the instance for any verb | A verb with `--config-dir X` (or `RELAY_CONFIG_DIR`) reaches only that instance; a dir with no server fails exit 1 naming the dir and is not created. | none | `--config-dir`, `RELAY_CONFIG_DIR` | `cli:relay doors` | none | `out:cli:relay doors#.doors[]` `code:cli:relay doors#1` | `pending:#287` |
 | `G14.03` | Listener addresses from settings, port 0 allowed | `api.listen`, `model_endpoint.listen`, `remote.listen` and `remote.enrolment_listen` (with `remote.enabled` and `remote.enrolment_requests` both true, and auditing on) bind the requested address, and the `listeners` object of the file at `ready_file` holds the bound ones; `remote show` reports the configured address. | n/a | `settings.json` `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen` | none | none | `event:server.ready=ok#ready_file` `out:cli:relay remote show#.listen` | `pending:#287` |
 | `G14.04` | Loopback ports a sandboxed session may not reach | A sandboxed session cannot connect to a denied loopback port: the list replaces the default `[3000, 8181]`, the instance's own API port is always denied, and a bad entry refuses the launch. | n/a | `settings.json` `session_sandbox.denied_loopback_ports` | `bridge:SandboxAttach` | none | `event:sandbox.attach=ok#template` `event:session.launch=denied` | `pending:#287` |
-| `G14.05` | Test approver answers only its listed ops | On the default config dir the test-approver build approves `project.grant` and refuses every other gated op without a dialog, and reads no outcome file. | n/a | `./build.sh --test-approver` | none | none | `audit:control_decision=ok#presence_approver` `audit:control_decision=denied` | `e2e:TestPresenceRefusesOpsNotListed` |
 | `G14.06` | Release build carries no test seam | A release binary answers `unknown command: debug` with exit 1, and holds no test-approver code. | n/a | `scripts/check-test-build.sh` | `cli:relay debug clock` `bridge:admin_op:debug.clock` | none | `code:cli:relay debug clock#1` | `ci:scripts/check-test-build.sh` |
 | `G14.07` | File keychain and its faults | A test build serving a non-default config dir keeps its sealing key in `X/test-keychain.json`, and `X/test-keychain-fault.json` (`locked`, `missing`, `corrupt`, `slow`) makes the next sealed-store operation that goes back to the keychain fail the way the login keychain fails. | n/a | `X/test-keychain.json`; `X/test-keychain-fault.json` | none | none | `event:debug.keychain.fault=ok#fault` `event:debug.keychain.fault=ok#keychain_op` `out:cli:relay status#.seal_status` | `e2e:TestKeychainProviderFaults` |
 | `G14.08` | Bad keychain file refuses startup | `relay serve` on a config dir whose keychain store or fault file is not a private regular file, or whose fault file is invalid, exits 1 with `test keychain in DIR cannot be used`; once the file is fixed, the server starts. | n/a | `relay serve` | `cli:relay serve` | none | `code:cli:relay serve#1` `event:server.ready=ok#ready_file` | `e2e:TestKeychainOpenRefusal` |
 | `G14.09` | Test clock moves time-dependent features | `relay debug clock set` and `advance` move the time the server judges by, so a credential expires without waiting, and `relay debug clock` reads it back as `{now, offset_ms}`; the default config dir refuses. | n/a | `relay debug clock [set <RFC3339> \| advance <duration>] [--json]` | `cli:relay debug clock` `bridge:admin_op:debug.clock` | none | `event:debug.clock.set=ok#now` `event:debug.clock.advance=ok#offset_ms` `out:cli:relay debug clock#.now` `out:cli:relay debug clock#.offset_ms` | `e2e:TestClockMovesCredentialExpiry` |
 | `G14.10` | Presence outcome file | On a non-default config dir of a test build, `X/test-presence.json` answers each gated op `approve`, `deny` or `timeout` without a dialog, read afresh on every request. | n/a | `X/test-presence.json` | none | none | `event:debug.presence.answer=ok#answer` `event:debug.presence.answer=ok#gated_op` | `e2e:TestPresenceOutcomeFile` |
-| `G14.11` | Outcome file refuses what it does not list | An op the file does not list, any op when the file is absent, and every op when the file is invalid is refused without a dialog. | n/a | `X/test-presence.json` | none | none | `event:debug.presence.answer=ok#source` `event:debug.presence.answer=error/invalid` `audit:control_decision=denied` | `e2e:TestPresenceRefusesUnlistedOp` |
+| `G14.11` | Outcome file refuses what it does not list | An op the file does not list, any op when the file is absent, and every op when the file is invalid is refused without a dialog. On the default config dir the test approver approves only `project.grant`, as before, and reads no outcome file. | n/a | `X/test-presence.json` | none | none | `event:debug.presence.answer=ok#source` `event:debug.presence.answer=error/invalid` `audit:control_decision=denied` | `e2e:TestPresenceRefusesUnlistedOp` |
 
 ## Owner gates
 
@@ -498,7 +497,7 @@ a promise there updates this table in the same PR.
 | `TM5.2` | 5 Other code running as the user | A | It cannot act through the bridge as another project | `G3.05` |
 | `TM5.3` | 5 Other code running as the user | B | It cannot complete a presence-gated action without the operator | `G2.01` `G9.01` |
 | `TMT.1` | T The test-approver build | A, B | The test seams are absent from release | `G14.06` |
-| `TMT.2` | T The test-approver build | B | The test approver answers only its listed ops | `G14.05` `G14.11` |
+| `TMT.2` | T The test-approver build | B | The test approver answers only its listed ops | `G14.11` |
 | `TMT.3` | T The test-approver build | C | Each approval is recorded before the act | `G4.07` |
 
 `TM5.3` is proven by every gated row's `deny` test; the two rows listed are the
@@ -511,7 +510,9 @@ is allowed on this row alone.
 
 ## Retired IDs
 
-None yet. A removed row's ID goes here as a code span, and no row reuses it.
+`G14.05`
+
+A removed row's ID goes here as a code span, and no row reuses it.
 
 ## Areas
 
