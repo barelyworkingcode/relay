@@ -40,9 +40,12 @@ contain links. On a host the agent walks each component with `lstat` and opens
 the last with `O_NOFOLLOW`; a race there is not a relay promise, because host
 sessions run unconfined (`ssh-hosts.md`).
 
-Rename and move refuse a taken name on the console (`EEXIST`, using
-`RENAME_EXCL` so the check and the rename are one step) and replace it on a
-host. Delete moves a console entry to the Trash through `NSFileManager` and
+Rename and move refuse a taken name (`EEXIST`) on both backends, and so does
+a create-only write. A case-only rename of the same entry is allowed. The
+console uses `RENAME_EXCL`, so the check and the rename are one step; Node has
+no no-replace rename, so the host agent checks with `lstat` first, and a name
+created between the check and the rename is replaced. Only the host's own
+processes can win that race, and they run unconfined anyway. Delete moves a console entry to the Trash through `NSFileManager` and
 deletes on a host permanently. Rename, move and delete refuse a link source.
 
 ## Read-only

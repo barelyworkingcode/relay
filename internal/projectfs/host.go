@@ -407,7 +407,6 @@ func (b *hostBackend) Mkdir(ctx context.Context, parentRel, name string) (string
 	return r.Path, nil
 }
 
-// Rename replaces an existing destination, as a host project always has.
 func (b *hostBackend) Rename(ctx context.Context, rel, newName string) (string, error) {
 	if err := ValidateName(newName); err != nil {
 		return "", err
@@ -421,7 +420,6 @@ func (b *hostBackend) Rename(ctx context.Context, rel, newName string) (string, 
 	return r.Path, nil
 }
 
-// Move replaces an existing destination, like Rename.
 func (b *hostBackend) Move(ctx context.Context, rel, destDirRel string) (string, error) {
 	var r struct {
 		Path string `json:"path"`

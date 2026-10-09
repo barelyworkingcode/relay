@@ -149,6 +149,31 @@ function relJoin(parts) {
   return parts.join('/');
 }
 
+// Refuses an existing destination, as the console backend does. The one
+// exception is a case-only rename of the same inode, which on a
+// case-insensitive volume looks like a collision with itself.
+//
+// This is deliberate: Node has no no-replace rename, so the check and the
+// rename are two calls. A destination created between them is replaced;
+// only the host's own processes can win that race.
+async function renameNoReplace(from, to) {
+  let dst = null;
+  try {
+    dst = await fsp.lstat(to);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  if (dst) {
+    const src = await fsp.lstat(from);
+    const caseOnly = path.dirname(from) === path.dirname(to) &&
+      path.basename(from) !== path.basename(to) &&
+      path.basename(from).toLowerCase() === path.basename(to).toLowerCase() &&
+      dst.dev === src.dev && dst.ino === src.ino;
+    if (!caseOnly) throw fail('EEXIST');
+  }
+  await fsp.rename(from, to);
+}
+
 async function openNoFollow(full, flags, mode) {
   return fsp.open(full, flags | NOFOLLOW, mode);
 }
@@ -467,7 +492,7 @@ const ops = {
     const newName = checkName(msg.new_name);
     const w = await walk(root, msg.path, false);
     if (w.parts.length === 0) throw fail('INVALID', 'Cannot rename project root');
-    await fsp.rename(w.full, path.join(path.dirname(w.full), newName));
+    await renameNoReplace(w.full, path.join(path.dirname(w.full), newName));
     return { path: relJoin([...w.parts.slice(0, -1), newName]) };
   },
 
@@ -478,7 +503,7 @@ const ops = {
     const dest = await walk(root, msg.dest_dir, false);
     if (!dest.st.isDirectory()) throw fail('ENOTDIR');
     const base = src.parts[src.parts.length - 1];
-    await fsp.rename(src.full, path.join(dest.full, base));
+    await renameNoReplace(src.full, path.join(dest.full, base));
     return { path: relJoin([...dest.parts, base]) };
   },
 

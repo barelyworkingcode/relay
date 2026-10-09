@@ -600,9 +600,9 @@ the host's projects through the same routes as console projects. The pool:
   their stop funcs run. A new probe that changes `node_path` replaces the
   agent on its next use.
 
-A host project differs from a console project in three ways: rename and move
-replace an existing destination, delete is permanent, and a stream is a plain
-200 that ignores `Range`.
+A host project differs from a console project in two ways: delete is
+permanent, and a stream is a plain 200 that ignores `Range`. Rename and move
+refuse an existing destination with `EEXIST`, as on the console.
 
 **Agent protocol** (version 2; `internal/projectfs/fsagent.js`, runs on the
 host). Every request carries `root` (the project's absolute path on the host) and
