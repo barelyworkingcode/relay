@@ -108,6 +108,10 @@ what runs.** Concretely:
   has the detail.
 - **Rotating a project token** (`project.rotate_token`) — issues the security
   boundary itself.
+- **Revealing a project token** (`project.reveal_token`) — discloses the
+  security boundary to a holder. Only `relay project token` reaches it, from an
+  operator caller; it is recorded as `credential_disclosed` before the token
+  returns.
 - **Widening a project's grant shape** (`project.grant`) — see below.
 - **Changing relay's remote-listener configuration** (`remote.configure`,
   `PUT /api/remote` / IPC `update_remote_config`, both onto
