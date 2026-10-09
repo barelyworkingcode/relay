@@ -19,7 +19,7 @@ func filePlanePass() filePlaneRun {
 	const w, l, ro = "n.txt", "n-link", "n-ro.txt"
 	intent := fileRow("i1", audit.AuditPhaseIntent, audit.AuditOutcomePending, "", w)
 	return filePlaneRun{
-		ProjectID: "p1", WritePath: w, LinkPath: l, ReadOnlyPath: ro, TraversalPath: "../n-escape.txt",
+		Leg: "console", ProjectID: "p1", WritePath: w, LinkPath: l, ReadOnlyPath: ro, TraversalPath: "../n-escape.txt",
 		Write:          fileStep{Status: http.StatusOK},
 		Traversal:      fileStep{Status: http.StatusForbidden, Code: "TRAVERSAL"},
 		Symlink:        fileStep{Status: http.StatusForbidden, Code: "SYMLINK"},
@@ -124,5 +124,56 @@ func TestParseAuditRows(t *testing.T) {
 	}
 	if _, err = parseAuditRows([]byte("not json\n")); err == nil {
 		t.Error("unreadable output was accepted")
+	}
+}
+
+func TestMergeFilePlaneLegs(t *testing.T) {
+	pass := classifyFilePlane(filePlanePass())
+	hostPass := filePlanePass()
+	hostPass.Leg = "host"
+	hostFail := filePlanePass()
+	hostFail.Leg = "host"
+	hostFail.ReadOnly = fileStep{Status: http.StatusOK}
+	hostBlocked := filePlanePass()
+	hostBlocked.Leg = "host"
+	hostBlocked.Setup = "loopback host not set up: boom"
+	consoleFail := filePlanePass()
+	consoleFail.Symlink = fileStep{Status: http.StatusOK}
+
+	cases := []struct {
+		name          string
+		console, host filePlaneRun
+		want          state
+	}{
+		{"both legs pass", filePlanePass(), hostPass, statePass},
+		{"host leg fails", filePlanePass(), hostFail, stateFail},
+		{"console leg fails", consoleFail, hostPass, stateFail},
+		{"host leg cannot be set up", filePlanePass(), hostBlocked, stateBlocked},
+		{"a fail outranks a blocked", consoleFail, hostBlocked, stateFail},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := mergeFilePlaneLegs(classifyFilePlane(c.console), classifyFilePlane(c.host))
+			checkState(t, got, c.want)
+			if got.ID != filePlaneID {
+				t.Errorf("id %q", got.ID)
+			}
+			for _, leg := range []string{"console leg:", "host leg:"} {
+				if !strings.Contains(got.Detail, leg) {
+					t.Errorf("detail %q omits %q", got.Detail, leg)
+				}
+			}
+		})
+	}
+	if pass.State != statePass {
+		t.Fatalf("base run is %s", pass.State)
+	}
+}
+
+func TestClassifyFilePlaneKeepsTeardownNote(t *testing.T) {
+	r := filePlanePass()
+	r.Teardown = "; teardown: relay project update --files-read-only=false failed"
+	if got := classifyFilePlane(r); got.State != statePass || !strings.HasSuffix(got.Detail, r.Teardown) {
+		t.Errorf("got %s %q", got.State, got.Detail)
 	}
 }

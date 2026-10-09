@@ -459,13 +459,24 @@ func runDropInHost(ctx context.Context, e env) result {
 // driveHostLeg adds the loopback host and a project on it, drives the leg and
 // removes everything it made, whatever the outcome.
 func driveHostLeg(ctx context.Context, e env, launch, run string) (setup string, leg dropInLeg, teardown string) {
+	setup, teardown = withLoopbackHostProject(ctx, e, run, func(projectID, hostName, _ string) {
+		leg = driveDropInLeg(ctx, e, launch, run, projectID, "verify-"+e.Nonce+"-dropin-host", "verify-"+e.Nonce+"-host", hostName, attachHost(e, launch, run))
+	})
+	return setup, leg, teardown
+}
+
+// withLoopbackHostProject adds the loopback host and a project on it, calls
+// fn with the project id, the host's name and the project folder (which is on
+// this machine), then removes the project, the host and the folder whatever
+// fn did. setup is non-empty when fn never ran.
+func withLoopbackHostProject(ctx context.Context, e env, run string, fn func(projectID, hostName, dir string)) (setup, teardown string) {
 	hostName := dropInHostPrefix + e.Nonce
 	hostResp := frontendDoTimeout(ctx, e, run, http.MethodPost, "/api/hosts", jsonBody(map[string]string{
 		"name": hostName, "target": dropInHostTarget, "tmux_path": "/usr/bin/tmux",
 	}), hostCreateTimeout)
 	hostID, errText := createdID("POST /api/hosts", hostResp)
 	if hostID == "" {
-		return errText, leg, ""
+		return errText, ""
 	}
 	var projectID string
 	dir := filepath.Join(gateStateDir(), dropInStateDirName+e.Nonce)
@@ -476,7 +487,7 @@ func driveHostLeg(ctx context.Context, e env, launch, run string) (setup string,
 		}
 	}()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "cannot create the project folder: " + err.Error(), leg, ""
+		return "cannot create the project folder: " + err.Error(), ""
 	}
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
@@ -486,10 +497,10 @@ func driveHostLeg(ctx context.Context, e env, launch, run string) (setup string,
 		"name": projName, "path": dir, "host_id": hostID, "allowed_templates": []string{"claude-code"},
 	}), fmt.Sprintf("%q", projName))
 	if projectID, errText = createdID("POST /api/projects", projResp); projectID == "" {
-		return fmt.Sprintf("%s (prompt: %s %s)", errText, d.Outcome, d.Detail), leg, ""
+		return fmt.Sprintf("%s (prompt: %s %s)", errText, d.Outcome, d.Detail), ""
 	}
-	leg = driveDropInLeg(ctx, e, launch, run, projectID, "verify-"+e.Nonce+"-dropin-host", "verify-"+e.Nonce+"-host", hostName, attachHost(e, launch, run))
-	return "", leg, ""
+	fn(projectID, hostName, dir)
+	return "", ""
 }
 
 type attachFunc func(ctx context.Context, l *dropInLeg, log *dropLog, conn *websocket.Conn)

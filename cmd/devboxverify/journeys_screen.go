@@ -48,6 +48,7 @@ var screenJourneys = []journey{
 	{dropInID, []string{"sessions"}, []string{"project:acme"}, phaseScreen, 300 * time.Second, runDropIn},
 	{dropInHostID, []string{"sessions"}, nil, phaseScreen, 240 * time.Second, runDropInHost},
 	{dropInRefusedID, []string{"sessions"}, []string{"project:acme"}, phaseScreen, 180 * time.Second, runDropInToolRefused},
+	{filePlaneID, []string{"files"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runFilePlane},
 	{cosID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runChiefOfStaffSend},
 	{cosStartID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runCosStart},
 	{cosOutsideID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, gateTimeout, runCosStartOutsideRoot},

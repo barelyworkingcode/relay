@@ -22,10 +22,9 @@ const (
 	fileRowWindow     = 200
 	fileRowPollBound  = 10 * time.Second
 	fileRowPollPeriod = 200 * time.Millisecond
-
-	// hostLegNotRun is the reason the loopback-host leg cannot run: the
-	// world declares no SSH host that points back at the test machine.
-	hostLegNotRun = "loopback-host leg not run: the world declares no SSH host project that reaches this machine over loopback (needs a world host entry, a host project in Acme's folder on that host, and key login to it)"
+	// A host request may wait on the embedded agent starting over ssh; relay
+	// itself answers 504 after 30 s.
+	fileCallTimeout = 35 * time.Second
 )
 
 // fileStep is one file-route answer: the HTTP status and the error code in
@@ -39,6 +38,7 @@ type fileStep struct {
 // filePlaneRun is everything the console leg observed. Paths are
 // root-relative, as they travel on the wire.
 type filePlaneRun struct {
+	Leg       string // "console" or "host", prefixed to every detail
 	Setup     string // the leg could not be arranged; says nothing about relay
 	ProjectID string
 
@@ -57,7 +57,7 @@ type filePlaneRun struct {
 // fileCall posts a JSON body to a file route with the execute-class launch
 // credential and reads the error code out of the body.
 func fileCall(ctx context.Context, e env, token, route string, body any) fileStep {
-	resp := frontendDo(ctx, e, token, http.MethodPost, route, jsonBody(body))
+	resp := frontendDoTimeout(ctx, e, token, http.MethodPost, route, jsonBody(body), fileCallTimeout)
 	step := fileStep{Status: resp.Status, TimedOut: resp.TimedOut}
 	var b struct {
 		Code string `json:"code"`
@@ -106,13 +106,44 @@ func rowsAfter(rows []audit.AuditEvent, baselineID string) ([]audit.AuditEvent, 
 }
 
 func runFilePlane(ctx context.Context, e env) result {
-	r := driveFilePlane(ctx, e)
-	res := classifyFilePlane(r)
-	res.Detail += r.Teardown
-	if res.State == statePass {
-		res.Detail += "; " + hostLegNotRun
+	launch, run, res, ok := screenCreds(e, filePlaneID)
+	if !ok {
+		return res
 	}
-	return res
+	console := runConsoleFileLeg(ctx, e, launch)
+	var host filePlaneRun
+	host.Leg = "host"
+	setup, teardown := withLoopbackHostProject(ctx, e, run, func(projectID, _, dir string) {
+		host = driveFilePlaneLeg(ctx, e, launch, "host", projectID, dir)
+	})
+	if setup != "" {
+		host.Setup = "loopback host not set up: " + setup
+	}
+	host.Teardown += teardown
+	return mergeFilePlaneLegs(classifyFilePlane(console), classifyFilePlane(host))
+}
+
+func runConsoleFileLeg(ctx context.Context, e env, launch string) filePlaneRun {
+	acme, acmeID, err := grantedAcme(ctx, e)
+	if err != nil {
+		return filePlaneRun{Leg: "console", Setup: err.Error()}
+	}
+	return driveFilePlaneLeg(ctx, e, launch, "console", acmeID, acme.Folder)
+}
+
+// mergeFilePlaneLegs passes only when both legs pass; a FAIL outranks a
+// BLOCKED, and each leg's detail is kept.
+func mergeFilePlaneLegs(console, host result) result {
+	out := result{ID: filePlaneID, Detail: console.Detail + "; " + host.Detail}
+	switch {
+	case console.State == statePass && host.State == statePass:
+		out.State = statePass
+	case console.State == stateFail || host.State == stateFail:
+		out.State = stateFail
+	default:
+		out.State = stateBlocked
+	}
+	return out
 }
 
 func setFilesReadOnly(ctx context.Context, e env, projectID string, on bool) error {
@@ -124,18 +155,10 @@ func setFilesReadOnly(ctx context.Context, e env, projectID string, on bool) err
 	return nil
 }
 
-func driveFilePlane(ctx context.Context, e env) (r filePlaneRun) {
-	launch, err := readCredential(e.CredentialFile)
-	if err != nil {
-		r.Setup = "P4 execute credential: " + err.Error()
-		return r
-	}
-	acme, acmeID, err := grantedAcme(ctx, e)
-	if err != nil {
-		r.Setup = err.Error()
-		return r
-	}
-	r.ProjectID = acmeID
+// driveFilePlaneLeg runs the write, refusal and audit checks on one project
+// whose folder is on this machine, console or loopback host alike.
+func driveFilePlaneLeg(ctx context.Context, e env, launch, leg, acmeID, folder string) (r filePlaneRun) {
+	r.Leg, r.ProjectID = leg, acmeID
 	rows, err := fileOpRows(ctx, e, acmeID)
 	if err != nil {
 		r.Setup = err.Error()
@@ -146,10 +169,10 @@ func driveFilePlane(ctx context.Context, e env) (r filePlaneRun) {
 		baselineID = rows[len(rows)-1].ID
 	}
 
-	stem := "devboxverify-fileplane-" + e.Nonce
+	stem := "devboxverify-fileplane-" + e.Nonce + "-" + leg
 	r.WritePath, r.LinkPath, r.ReadOnlyPath = stem+".txt", stem+"-link", stem+"-ro.txt"
 	r.TraversalPath = "../" + stem + "-escape.txt"
-	abs := func(rel string) string { return filepath.Join(acme.Folder, rel) }
+	abs := func(rel string) string { return filepath.Join(folder, rel) }
 	defer func() {
 		var out strings.Builder
 		for _, p := range []string{abs(r.WritePath), abs(r.LinkPath), abs(r.ReadOnlyPath), abs(r.TraversalPath)} {
@@ -296,6 +319,12 @@ func describeStep(s fileStep) string {
 }
 
 func classifyFilePlane(r filePlaneRun) result {
+	res := judgeFilePlane(r)
+	res.Detail = r.Leg + " leg: " + res.Detail + r.Teardown
+	return res
+}
+
+func judgeFilePlane(r filePlaneRun) result {
 	const id = filePlaneID
 	fail := func(d string) result { return result{id, stateFail, d} }
 	if r.Setup != "" {
@@ -361,5 +390,5 @@ func classifyFilePlane(r filePlaneRun) result {
 			return fail(fmt.Sprintf("%s denied row path %q does not name the refused file", d.code, rowArgPath(rows[0])))
 		}
 	}
-	return result{id, statePass, "console leg: write 200 with intent and completion rows; .. refused 403 TRAVERSAL, a symlink 403 SYMLINK, a files_read_only project 403 READ_ONLY, each with one denied row and no file left behind"}
+	return result{id, statePass, "write 200 with intent and completion rows; .. refused 403 TRAVERSAL, a symlink 403 SYMLINK, a files_read_only project 403 READ_ONLY, each with one denied row and no file left behind"}
 }

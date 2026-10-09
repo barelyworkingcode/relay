@@ -33,7 +33,6 @@ var apiJourneys = []journey{
 	}},
 	{toolsID, []string{"mcps", "grants", "sandbox"}, []string{"project:acme"}, phaseAPI, 60 * time.Second, runToolsThroughBridge},
 	{auditedID, []string{"audit", "mcps"}, []string{"project:acme"}, phaseAPI, 60 * time.Second, runToolCallAudited},
-	{filePlaneID, []string{"files"}, []string{"project:acme"}, phaseAPI, 60 * time.Second, runFilePlane},
 }
 
 var reachNeeds = []string{"project:acme", "project:globex", "file:acme/PROJECT.md", "file:globex/PROJECT.md"}

@@ -49,7 +49,7 @@ func TestJourneyTableInvariants(t *testing.T) {
 
 var wantAPIJourneys = []string{
 	"blank-model-refused", "permission-mode-restart", "oversized-launch-audit-capped", "acme-sandbox-reach",
-	"v1-conversion-refusal", "acme-tools-through-bridge", "tool-call-audited", "file-plane-contained",
+	"v1-conversion-refusal", "acme-tools-through-bridge", "tool-call-audited",
 }
 
 // screenStage is the contract's screen-phase order: mint, negatives, NOTRUN
@@ -72,7 +72,7 @@ var screenStage = map[string]int{
 
 	"session-chat-lifecycle": 50, "terminal-lifecycle": 50, "terminal-extra-args": 50, "model-list-and-completion": 50, "disabled-tool-refused": 50,
 	"grant-narrowing-live": 50, "service-start-stop": 50, "service-restart-on-crash": 50, "stale-derived-access-edit": 50,
-	"context-number-resave": 50, "slow-route-keepalive": 50, "session-chat-resume": 50, "chat-tool-search-tokens": 50, "session-agent-state": 50, "session-codex": 50, "session-drop-in": 50, "session-drop-in-host": 50, "session-drop-in-tool-refused": 50, "chief-of-staff-send": 50, "cos-start": 50, "cos-start-outside-root": 50, "session-host-restart": 50, "settings-window-services": 50, "cos-settings": 50,
+	"context-number-resave": 50, "slow-route-keepalive": 50, "file-plane-contained": 50, "session-chat-resume": 50, "chat-tool-search-tokens": 50, "session-agent-state": 50, "session-codex": 50, "session-drop-in": 50, "session-drop-in-host": 50, "session-drop-in-tool-refused": 50, "chief-of-staff-send": 50, "cos-start": 50, "cos-start-outside-root": 50, "session-host-restart": 50, "settings-window-services": 50, "cos-settings": 50,
 
 	"gate-project-rotate-token-pos": 60, "gate-eve-enrolment-open-pos": 61, "gate-eve-passkey-revoke-pos": 61,
 	"verify-fixtures-removed": 62, "gate-credential-revoke-pos": 70,
