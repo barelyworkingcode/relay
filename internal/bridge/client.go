@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -157,6 +158,60 @@ func (c *Client) AdminOp(op string, args json.RawMessage) (json.RawMessage, erro
 		return nil, err
 	}
 	return resp.Result, nil
+}
+
+// AdminOpStream is AdminOp for an operation that answers in frames. It sets no
+// inactivity deadline: the call ends when ctx is done or the server answers,
+// and cancelling ctx closes the connection, which tells the server the peer
+// left. onFrame gets each Progress frame's Data.
+func (c *Client) AdminOpStream(ctx context.Context, op string, args json.RawMessage, onFrame func(json.RawMessage)) (json.RawMessage, error) {
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "unix", c.sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot connect to Relay bridge at %s: %w (is the Relay tray app running?)", c.sockPath, err)
+	}
+	defer func() { _ = conn.Close() }()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+
+	req := BridgeRequest{Type: ReqAdminOp, Name: op, Arguments: args, TraceID: ClientTraceID()}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.Write(append(data, '\n')); err != nil {
+		return nil, streamErr(ctx, op, fmt.Errorf("write failed: %w", err))
+	}
+	scanner := NewScanner(conn)
+	for scanner.Scan() {
+		var resp BridgeResponse
+		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			return nil, fmt.Errorf("parse response failed: %w", err)
+		}
+		if resp.Type == RespProgress {
+			if onFrame != nil && resp.Progress != nil && len(resp.Progress.Data) > 0 {
+				onFrame(resp.Progress.Data)
+			}
+			continue
+		}
+		if err := checkError(&resp); err != nil {
+			return nil, err
+		}
+		return resp.Result, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, streamErr(ctx, op, fmt.Errorf("read failed: %w", err))
+	}
+	return nil, streamErr(ctx, op, fmt.Errorf("bridge closed connection"))
+}
+
+// streamErr names the context's reason when the caller ended the call, which
+// otherwise surfaces as a closed-connection read error.
+func streamErr(ctx context.Context, op string, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("admin op %q: %w", op, ctx.Err())
+	}
+	return fmt.Errorf("admin op %q failed: %w", op, err)
 }
 
 func sendAdmin(reqType, name, token string) error {

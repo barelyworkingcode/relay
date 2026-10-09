@@ -30,7 +30,7 @@ enhanced service. When an LLM in that service calls a tool: service's MCP client
 main.go                  Entry + command dispatch (relay / mcp / mcpExec / service)
 trayapp.go               App lifecycle, menu, settings IPC, ToolRouter wiring
 project_routes.go        HTTP project routes; shares Settings mutators with ipc_projects.go
-project_dto.go           projectView DTO — strips the token from every response except rotate
+project_dto.go           projectView DTO — strips the token from every response except rotate and reveal
 host_routes.go           HTTP host routes (docs/ssh-hosts.md) — GET/POST/PUT/DELETE /api/hosts[/{id}], probe, disconnect
 host_ops.go              HostOps: the ungated core host_routes.go and ipc_hosts.go share; runs sshhost.Probe and writes the host.probe audit event
 router.go                Bridge auth (project tokens, launch identity by capability, directory auth), Hello, tool filtering, access mode, scope presence, _meta injection (project_id, args_sha256, trace_id)
@@ -48,6 +48,21 @@ grant_cmd.go             `relay grant` CLI — the operator's view of a record's
 admin_read_ops.go        The ungated admin_op reads (`*.list`, `grant.view`): the running tray is the only reader of
                          configuration for a CLI command; each answers with a purpose-built view, never Settings, so
                          no hash, sealed value, env value or key coordinate crosses the bridge
+doors.go                 The `relay doors` document: built from `cliVerbTable()`, `adminOps` and the HTTP, IPC and bridge tables
+cli_verbs.go             `cliVerbTable()`: the one list of CLI verbs; `runCLI` dispatches from it
+project_verbs.go         `relay project` verbs and their `project.*` ops
+mcp_verbs.go             `relay mcp` verbs and their `mcp.*` ops
+service_verbs.go         `relay service` verbs and their `service.*` ops
+service_inspector_ops.go Inspector cores: a service's declared actions and config file, shared by the Settings IPC handlers and the CLI
+model_verbs.go           `relay model list` and the `model.list` op
+session_verbs.go         `relay session` and `relay terminal` verbs; the ops proxy relay-sessions as the operator
+file_verbs.go            `relay files watch` and the `files.watch` op (the `/ws/files` frames as progress)
+status_verbs.go          `relay status` and the `status.view` op
+remote_verbs.go          `relay remote` verbs and their `remote.*` ops
+host_verbs.go            `relay host` verbs and their `host.*` ops
+sealed_verbs.go          `relay sealed reset` and the `sealed.reset` op
+login_verbs.go           `relay login sessions` / `sign-out` and their ops
+internal/bridge/operator_caller.go RequireOperatorCaller: the CLI's identity, a same-user peer outside any relay session or sandbox
 enrolment_ops.go         EnrolmentOps: the gated, audited core the CLI, HTTP and IPC doors share
 enrol_cmd.go             `relay enrol` CLI
 api_credential.go        APICredential CRUD, the frontend capability class set, legacy-frontend-token retirement, credentialAuthorizer
@@ -62,6 +77,11 @@ mcp_ops.go               McpOps: the gated, audited core the CLI, HTTP and IPC M
 mcp_permissions.go       TCC permission probing; the darwin half reaches cocoa_darwin.go's cgo, so it
                          stays with the tray process rather than moving to mcpbroker/
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
+cli_verbs.go             cliVerbTable(): the one list of CLI verbs; runCLI dispatches from it and `relay doors` reads it
+status_verbs.go, remote_verbs.go, host_verbs.go, sealed_verbs.go, login_verbs.go
+                         operator-only admin ops and verbs for the Overview tab, the remote listener,
+                         host probe/disconnect, the sealed-store reset and browser sessions; each calls
+                         the core its screen calls (statusView, EnrolmentOps, HostOps, App.resetSealed, LoginOps)
 frontend_server.go       Front-door HTTP server; project routes local, rest falls through;
                          composes the public login mux in front of frontendCredentialAuth,
                          which admits a bearer or a socket peer's launch identity holding `frontend`
@@ -686,6 +706,26 @@ bound one (`App.ListenAddrs`): the sandbox API deny, the sandbox model allow,
 enrolment. The flag and the variable choose a socket, not a right:
 authorization stays with the token or the peer identity.
 
+## The CLI doors and the operator caller
+
+A CLI verb reaches the server through a bridge `admin_op`, and the op calls the
+same core the screen calls: the gate, the audit record and the event live in the
+core, never in the door. `cliVerbTable()` (`cli_verbs.go`) is the one list of
+verbs, `adminOps` (`admin_ops.go`) the one list of ops, and `relay doors` builds
+its document from both plus the HTTP, IPC and bridge tables the server uses.
+
+Each op names who may call it. An op that predates the rule is `socket`: any
+same-user peer on the 0600 bridge socket. Every op added for the Settings
+window and the tray is `operator`: the peer must also not be a member of a live
+relay session and not run under a Seatbelt sandbox, the two checks
+`SandboxAttach` makes, in the same order
+(`bridge.RequireOperatorCaller`). The rule keeps a sandboxed session, which
+reaches the bridge, away from configure- and execute-class work it cannot reach
+by HTTP; a refusal writes a denied `control_decision` row. There is no CLI
+credential class: the operator caller is the CLI's identity, and the gates
+(`presence.GatedOps`) stay in the cores. `admin_op` is absent from
+`remoteHandlers`, so no remote client reaches any of it.
+
 ## Service manifest (enhanced services)
 
 Every spawned service gets `RELAY_BRIDGE_SOCKET` + `RELAY_SERVICE_ID` +
@@ -763,7 +803,7 @@ The credential model (full inventory: [`docs/tokens.md`](tokens.md);
 the flow end to end, with worked examples:
 [`docs/auth-flow.html`](auth-flow.html); brokering rationale: ADR-007):
 
-- **Project token** (`RELAY_PROJECT_TOKEN`) — the security boundary, scoped to a project's allowed MCPs/tools. Sealed at rest (ADR-017; `docs/sealed-config.md`) alongside a clear SHA-256 hash inline in the project. **Relay is the sole broker:** Eve references projects by id only (the DTO strips the token from every response except rotate); relayLLM resolves the token just-in-time from the bridge by `projectId`, injects it into spawned children, and never stores it or accepts it from Eve.
+- **Project token** (`RELAY_PROJECT_TOKEN`) — the security boundary, scoped to a project's allowed MCPs/tools. Sealed at rest (ADR-017; `docs/sealed-config.md`) alongside a clear SHA-256 hash inline in the project. **Relay is the sole broker:** Eve references projects by id only (the DTO strips the token from every response except rotate and reveal); relayLLM resolves the token just-in-time from the bridge by `projectId`, injects it into spawned children, and never stores it or accepts it from Eve.
 - **Launch identity** (not a bearer; [`docs/launch-identity.md`](launch-identity.md)) — **no relay credential is in any service's environment**, because any same-user process can read another's startup environment. Relay passes a single-use 64-hex secret on fd 3; the service's bridge `Hello` binds that launch to its peer audit token (pid + pidversion, `LOCAL_PEERTOKEN`); later tokenless requests from that exact process authenticate by it, until the registry sees the launch end. The record carries a `kind`: `service`, whose authority is its own fixed `capabilities` set, and `project_session` ([`docs/session-host.md`](session-host.md)) — the session host's own root process, whose authority is its one named project's live grant instead of a capability list. What a `service` identity may do is decided by one function (`service.Allowed`): `frontend` is the frontend socket as `read`+`configure`+`proxy`+`execute` (never `grant`) with no `Authorization` header (and the only way to be told `RELAY_FRONTEND_SOCKET`), `manifest` is `RegisterManifest` under its own id, `models`/`model_host` are model-endpoint calls and `RegisterModelHost`, `sessions` (built-in `relaysessions` record only) is `SessionExited` and the unfiltered model list; the empty set reaches only `Hello`. The retired `projects` capability (`ResolvePtyEnv`/`ResolveProjectTemplate`/`ListProjects`/`GetProject`, tokenless cross-MCP `ListTools`/`CallTool`) no longer exists — a stored record naming it has the name silently dropped on load, never refused. An unknown capability name fails validation and relay will not start the record; a record written before the field existed is migrated once on load (`frontend_consumer` unset/true → `[frontend]`, false → `[manifest]`). Relay scrubs `RELAY_SERVICE_TOKEN`, `RELAY_MCP_TOKEN` and `RELAY_FRONTEND_TOKEN` from every service environment, and deletes any `legacy-frontend-token` credential on start. If a project token can't be resolved, a spawned child gets no token (fail closed).
 - **Control-plane credential** (`settings.json` → `api_credentials`) — the API's authenticator (ADR-015). Names an explicit set of `read` / `configure` / `grant` / `execute` / `proxy`; absent means **nothing**, never everything. `frontendCredentialAuth` resolves any bearer to one of these before a handler runs (no credentials at all fails closed), and `RouteRegistrar` then checks the route's class — the first asks "is this anyone?", the second "may they do this?". `execute` and `proxy` routes are absent from the TCP mux entirely, not refused on it. Mint with `relay credential mint --name N --class read [--class …]`; the plaintext is printed **once**. A consumer that needs `grant` — including `POST /api/projects/{id}/rotate_token` — or `execute` over HTTP must mint its own.
 - **Model key** (`rmk_…`, per session) — minted at launch for `pi`/`chat` and any `pty` template with `model_key: true`, presented to the model endpoint in `X-Relay-Key` (or as a bearer), scoped to the project's `allowed_models`. A template delivers it into the client's env only through `${MODEL_KEY}` in its own `env`. Dies on `SessionExited`, when its launch ends (a session whose launch says Hello), or on a relay restart. The same endpoint forwards a provider's own request (Anthropic, ChatGPT, OpenAI) with the client's own credential untouched and never a relay one: [`docs/model-endpoint.md`](model-endpoint.md#client-model-routing).

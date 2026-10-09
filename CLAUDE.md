@@ -106,7 +106,7 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
   be. Revocation is never refused for a broken log. Remote calls are
   intent-then-completion, fail-closed; no remote traffic with auditing off.
 - **No relay credential in any child's environment.** Secrets go over fd 3;
-  tokens never appear in a DTO except `rotate`.
+  tokens never appear in a DTO except `rotate` and `reveal` (`relay project token`).
 - **`disclose` governs what the client sees, never what the operator sees.**
 - **Control-plane routes register through `RouteRegistrar`.** `execute` and
   `proxy` routes are absent from the TCP mux, not refused on it.

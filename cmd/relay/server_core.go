@@ -686,15 +686,31 @@ func startServerCore(opts serverOptions) (*App, error) {
 		Agents:  hostPool,
 	}
 	app.ipcCtx.HostOps = hostOps
+	router.hostOps = hostOps
+	router.modelCatalog = app.ipcCtx.ModelCatalog
+	router.mcpSurfaces = extMgr.AllMcpSurfaces
+	router.openURL = platform.OpenURL
+	router.overview = func() overviewSeed { return app.buildOverviewSeed(config.DisplaySettings(store)) }
+	// The doors catalogue collects the routes both muxes register, so it is
+	// built before the frontend server and handed its recorder.
+	_, headless := platform.(*headlessPlatform)
+	doors := newDoorCatalog(headless)
+	router.headless = headless
+	router.resetSealed = app.resetSealed
+	router.doors = doors
 	templateOps := &TemplateOps{Store: store, Queue: serviceQueue}
 	app.ipcCtx.TemplateOps = templateOps
 	app.ipcCtx.HostTemplateOps = &HostTemplateOps{Store: store, Queue: serviceQueue}
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, templateOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec), launches, sessionDeps)
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, templateOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec), launches, sessionDeps, doors.recordRoute)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start frontend server: %w", err)
 	}
 	frontend.routeDeps.loginOps = loginOps
 	frontend.FileOps().Hosts = hostPool
+	// The router reaches the instances the frontend server holds, so a CLI
+	// door and an HTTP door share one watch hub and one tmux lister.
+	router.fileOps = frontend.FileOps()
+	router.persistentSessions = frontend.routeDeps.persistentSessionOps
 	app.addrMu.Lock()
 	app.frontendServer = frontend
 	app.addrMu.Unlock()
@@ -717,6 +733,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 			// the wrong thing.
 			return nil, fmt.Errorf("failed to bind API listener (%s): %w", apiSource, err)
 		}
+		doors.recordLoginRoutes(frontend.LoginPatterns())
 		app.goFunc(func() {
 			if err := frontend.ServeLoopback(); err != nil {
 				slog.Error("API listener exited with error", "error", err)

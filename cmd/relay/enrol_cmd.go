@@ -15,26 +15,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
-// There is no self-service enrolment subcommand and no bootstrap token by
-// design. Create, update and revoke are brokered (ADR-017 decision 2): this
-// process holds no sealer and cannot sign a certificate off relay's CA
-// itself (§5.4), so it dials the running tray over admin_op and lets
-// EnrolmentOps — the same core the gate lives in — do the work. `list` is a
-// tray read too: the running tray is the only reader of the configuration.
-func runEnrolCommand(args []string) {
-	runSubcommands("enrol", []cliSubcommand{
-		{"create", enrolCreate},
-		{"sign", enrolSign},
-		{"list", func(_ []string) { enrolList() }},
-		{"update", enrolUpdate},
-		{"revoke", enrolRevoke},
-		{"requests", func(a []string) { enrolRequests(a) }},
-		{"approve", func(a []string) { enrolApprove(a) }},
-		{"refuse", func(a []string) { enrolRefuse(a) }},
-		{"ca-fingerprint", func(_ []string) { enrolCAFingerprint() }},
-	}, args)
-}
-
 // enrolGrantBudgetFlags is the --grant/--window-seconds/--max-calls/
 // --max-result-bytes/--mount-max-ops/--mount-max-read-bytes/--mount-max-write-bytes
 // flag set `enrol create` and `enrol sign` share:
