@@ -136,12 +136,11 @@ unbounded subprocess wait must not hold the lane.
 - The IPC project disabled-tools toggle now runs through
   `ProjectOps.SetDisabledTools` on the queue; the generic IPC
   `withSettings`/`withSettingsNotify` helpers, which wrote unqueued, are gone.
-- A structural test (`cmd/relay/config_queue_structural_test.go`) parses the
-  production `cmd/relay` sources and fails on any function that calls
-  `config.WithDeclinable` or `store.With` without submitting to the queue
-  (`runQueued`, `runCommitted` or `Queue.Do`), unless it is on a small explicit
-  allowlist (startup, and helpers that run inside their caller's queued step).
-  It also asserts it still finds known queued writes, so it cannot pass empty.
+- Every function in `cmd/relay` that calls `config.WithDeclinable` or
+  `store.With` submits to the queue (`runQueued`, `runCommitted` or
+  `Queue.Do`), except a small explicit allowlist (startup, and helpers that
+  run inside their caller's queued step). Nothing enforces this automatically;
+  the reviewer checks it.
 - The service config editor's save runs through `ServiceOps.SaveConfigFile` as
   one queued step: it re-resolves the live service record, the allowed root and
   the path, validates, writes the file, and restarts only a service that is
@@ -162,13 +161,13 @@ from passing race tests alone.
 | --- | --- | --- |
 | Queued mutations | Mostly complete | The major settings mutation domains now use the tray queue, including ordered service effects and the documented generation checks. |
 | Normal CLI reads | Complete for the scoped commands | The listed commands use tray admin reads and refuse when the tray is stopped. |
-| Direct production reads | Complete with named exceptions (tasks 2–3) | `config.FreshSettings` and `config.DisplaySettings` are the normal read paths. `cmd/relay/settings_read_boundary_test.go` rejects direct `Get`/`Reload`/store construction outside startup seams; `TestDecisionReadsSeeACommittedChangeWithoutWaitingForThePoll` covers freshness. The scan is a guardrail, not proof against indirect aliases or helper paths. |
-| Single tray ownership | Complete (task 1) | `config.AcquireTrayOwnership` takes a non-blocking `flock` on `tray.lock` before store and bridge setup; a second tray fails with `ErrOwnedByAnotherTray`; cleanup releases it. Tests cover release, simultaneous startup, and setup ordering. |
-| Post-commit events | Complete with documented error rule (task 4) | `CommandQueue.SetCommitObserver` publishes once when the store commit counter advances, before the caller is released. Failure before persistence publishes nothing; persistence followed by a later error still publishes because committed state changed. The focused tests cover both cases. Legacy callbacks remain only for runtime-only or bridge-driven changes. |
+| Direct production reads | Complete with named exceptions (tasks 2–3) | `config.FreshSettings` and `config.DisplaySettings` are the normal read paths. Direct `Get`/`Reload`/store construction outside startup seams is not allowed; nothing guards it automatically, and nothing covers freshness of decision reads. |
+| Single tray ownership | Complete (task 1) | `config.AcquireTrayOwnership` takes a non-blocking `flock` on `tray.lock` before store and bridge setup; a second tray fails with `ErrOwnedByAnotherTray`; cleanup releases it. Nothing guards release, simultaneous startup or setup ordering automatically. |
+| Post-commit events | Complete with documented error rule (task 4) | `CommandQueue.SetCommitObserver` publishes once when the store commit counter advances, before the caller is released. Failure before persistence publishes nothing; persistence followed by a later error still publishes because committed state changed. Nothing guards either case automatically. Legacy callbacks remain only for runtime-only or bridge-driven changes. |
 | Event-driven convergence | Complete for the normal path (task 5) | `statusPoller` no longer reads `settings.json`; commit events drive UI, listener, and model-endpoint reconciliation, with a 30-second recovery reconciliation. The recovery poll is not a normal settings-change trigger. |
 | External writers | Complete with documented recovery limitation (task 6) | Policy is import through `config.WatchSettingsFile` and `FileSettingsStore.ImportFile`; invalid or unsealable edits are rejected without replacing current state, queue admission defines ordering, and stopped-tray command semantics are documented in `docs/cli.md`. A missed kqueue event is not recovered until a later file event or restart; this is an explicit limitation, not a second normal reader. |
-| Ordering and freshness tests | Complete (task 7) | Deterministic coverage exists for each listed case: queue commits and event order (`internal/config/commit_event_test.go`), direct-file import and restart snapshot, ownership startup, listener rebind (`TestRemoteSupervisor_ChangingTheListenAddressMovesTheListener`, `..._FailedRebindKeepsTheOldListener...`, `..._ReconcileAfterTwoCommitsBindsOnlyTheLastAddress`), service delete versus delayed start/restart/update/autostart (`config_ordering_test.go`, `service_ops_race_test.go`, `config_queue_service_config_test.go`), reverse-order external work, reset versus write (`sealed_reset_lane_test.go`), and concurrent HTTP/IPC/tray mutations (`config_ordering_test.go`). MCP/enrolment cross-door coverage was not added: the existing harness only wires templates, hosts, services and projects across doors, and extending it would need new test scaffolding. |
-| Completion | Complete | Tasks 1–7 are complete with the documented limitations above. `go test -timeout 5m ./...` and `go test -race -timeout 10m ./...` both passed (see Shipping verification). |
+| Ordering and freshness tests | Not guarded | No automated test covers queue commits and event order, direct-file import and restart snapshot, ownership startup, listener rebind, service delete versus delayed start/restart/update/autostart, reverse-order external work, reset versus write, or concurrent HTTP/IPC/tray mutations. The devbox journeys are the only proof. |
+| Completion | Complete | Tasks 1–7 are complete with the documented limitations above. The shipping verification below is a dated log of runs made when the work landed. |
 
 ### Outstanding task breakdown / resume next
 
@@ -251,9 +250,8 @@ fixture; those failures were fixed, then the full `cmd/relay` package passed.
 ### Current checkpoint
 
 Tasks 1–7 are complete. The queue, ownership lock, read boundary, commit
-observer, listener convergence and file-import work are covered by the tests
-listed in the status table, and the repository-wide plain and race suites pass
-(Shipping verification). The missed-file-event limitation remains explicit
+observer, listener convergence and file-import work are implemented as the
+status table describes; the shipping verification below is a dated log. The missed-file-event limitation remains explicit
 rather than treated as normal coordination. No follow-up is required to ship;
 optional follow-up is MCP/enrolment cross-door coverage.
 
@@ -623,9 +621,8 @@ that there is no offline recovery read (`relay config export --offline` is not
 built): a stopped tray is an explicit unavailable state. Two commands still
 read a file of their own and need no tray: `relay audit` (the audit log) and
 `relay enrol ca-fingerprint` (the public `ca.crt`); neither reads
-`settings.json`. A source-text guard
-(`TestReadCommands_NeverConstructASettingsStore`) keeps the scoped commands
-from constructing a settings store.
+`settings.json`. The scoped commands do not
+construct a settings store; nothing guards that automatically.
 
 ### Phase 6 — replace polling with event-driven convergence
 
@@ -729,12 +726,7 @@ mutation:
 
 Reasons: one ingress through the one queue keeps a second writer's changes
 ordered and validated; a merge policy would revive last-writer-wins; polling
-the file would make it a second normal reader. Tests:
-`TestValidHandEditIsPickedUpThroughTheQueueWithOneEvent`,
-`TestInvalidHandEditIsRejectedAndTheCurrentStateKept`,
-`TestTheTraysOwnWriteIsNotImported`,
-`TestHandEditIsOrderedWithQueuedMutationsByAdmission`,
-`TestSettingsWatcherSeesInPlaceEditsAndRepeatedAtomicReplaces`.
+the file would make it a second normal reader. Nothing guards this policy automatically.
 
 ## Success criteria
 

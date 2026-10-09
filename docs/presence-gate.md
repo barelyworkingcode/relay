@@ -266,9 +266,7 @@ before validation, so a v1 blob that validation refuses may still prompt
 first; the refusal then follows the approval and nothing is written. With
 no live schema for the MCP (or no surfaces at all) nothing is stripped and
 the entry compares strictly. The digest itself is unchanged by this: it
-still binds all ten fields' presence exactly as before (see `TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields`'s
-own comment for why shrinking the digest to the gating subset would be
-wrong), so a grant answered for one shape still cannot be redeemed for a
+still binds all ten fields' presence exactly as before (shrinking the digest to the gating subset would be wrong), so a grant answered for one shape still cannot be redeemed for a
 different one.
 
 Entering the [chief-of-staff scope](tokens.md#the-chief-of-staff-scope) and
@@ -445,27 +443,18 @@ sees is identical whether or not the row was written. Row shape, the actor
 rules, and the full list of refusal causes are in
 [`docs/audit-log.md`](audit-log.md#presence-refusals).
 
-## The hermetic seam, and why it cannot exist in a shipped build
+## No seam disables the gate, and none exists in a shipped build
 
-The test suite must never raise a real password prompt — a developer running
-`go test ./...` who gets a login-password dialog has found a bug, not a
-feature. The fake provider (`presence/presencetest`) lives in a package of
-its own, and `package main`'s non-test code never imports it — checkable, and
-checked: a source-level test parses every non-test `.go` file in the module
-and fails on any import, transitive or direct, of `presencetest`. Because Go
-links only what is actually imported, that passing test is a proof the
-compiled `relay` binary does not contain the fake at all, not merely evidence
-that nothing currently calls it. `presencetest` additionally panics in its
-own `init()` unless the process is running under `go test` — a second,
-independent line of defense if the import guard is ever weakened.
+Nothing in relay raises a real password prompt except the tray: the
+LocalAuthentication provider is constructed in exactly one place, `runTrayApp`.
+There is no fake presence provider in the module.
 
-There is no environment variable, settings field, or
-`SetPresenceForTest`-shaped global anywhere in this feature that could
-disable or weaken the gate; a grep-based test enforces that absence directly.
-A release build has no way to skip a gate. The one build tag,
-`testapprover`, links a provider that answers `project.grant` alone and
-refuses every other gated op (next section). It is checked absent from every
-release binary, by `build.sh` and by a Go test.
+There is no environment variable, settings field, or setter-shaped global
+anywhere in this feature that could disable or weaken the gate. Nothing
+enforces that absence automatically now; the reviewer checks it. A release
+build has no way to skip a gate. The one build tag, `testapprover`, links a
+provider that answers `project.grant` alone and refuses every other gated op
+(next section). `build.sh` checks it absent from every release binary.
 This is deliberate and total, in the spirit of the house rule that a
 weakening introduced to make a test convenient is the weakening most likely
 to survive into production: rather than build a seam and discipline everyone
@@ -500,9 +489,8 @@ variable, setter or configuration to extend it.
 
 **Where it can and cannot exist.** The package
 `internal/presence/testapprover` is imported by one file in `cmd/relay`,
-behind `//go:build testapprover`; a Go test fails if any other non-test file
-imports it. Its `init` panics unless it runs under `go test` or the build
-info names the tag. `build.sh` runs `scripts/check-test-approver.sh absent`
+behind `//go:build testapprover`; nothing but that file may import it, and
+the reviewer checks it. Its `init` panics unless the build info names the tag. `build.sh` runs `scripts/check-test-approver.sh absent`
 on every normal and `--release` binary before it installs anything, and
 `present` on a `--test-approver` binary. Every approval is recorded before the
 act runs; see [`docs/audit-log.md`](audit-log.md#presence-approvals-the-test-build).

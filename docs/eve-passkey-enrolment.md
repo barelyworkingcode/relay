@@ -113,7 +113,7 @@ nil-safe. Three methods.
 Presence prompt reason for `eve.enrolment.open`:
 `open a five-minute window for one new browser to register an Eve passkey`.
 Add it to the gated-operation list in `docs/presence-gate.md` and the prompt
-table in `docs/cli.md`; `doc_reason_strings_test.go` pins the two together.
+table in `docs/cli.md`; nothing checks that the two agree.
 
 ### Doors
 
