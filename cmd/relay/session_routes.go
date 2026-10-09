@@ -315,8 +315,14 @@ func (d sessionRouteDeps) handleCreateTerminal(w http.ResponseWriter, r *http.Re
 	if !decodeSessionBody(w, r, &body) {
 		return
 	}
-	req := LaunchRequest{
-		Caller:     resolveLaunchCaller(r, d.store),
+	d.launchAndRespond(r.Context(), w, terminalLaunchRequest(body, resolveLaunchCaller(r, d.store)))
+}
+
+// terminalLaunchRequest maps a POST /api/terminals body to the launch the core
+// authorizes. The HTTP route and the CLI door both build their request here.
+func terminalLaunchRequest(body createTerminalWireBody, caller LaunchCaller) LaunchRequest {
+	return LaunchRequest{
+		Caller:     caller,
 		ProjectID:  body.ProjectID,
 		Kind:       KindPTY,
 		Directory:  body.Directory,
@@ -328,7 +334,6 @@ func (d sessionRouteDeps) handleCreateTerminal(w http.ResponseWriter, r *http.Re
 		PersistSession: body.PersistSession,
 		ExtraArgs:      body.ExtraArgs,
 	}
-	d.launchAndRespond(r.Context(), w, req)
 }
 
 func (d sessionRouteDeps) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -339,8 +344,14 @@ func (d sessionRouteDeps) handleCreateSession(w http.ResponseWriter, r *http.Req
 	if !decodeSessionBody(w, r, &body) {
 		return
 	}
-	req := LaunchRequest{
-		Caller:         resolveLaunchCaller(r, d.store),
+	d.launchAndRespond(r.Context(), w, sessionLaunchRequest(body, resolveLaunchCaller(r, d.store)))
+}
+
+// sessionLaunchRequest maps a POST /api/sessions body to the launch the core
+// authorizes. The HTTP route and the CLI door both build their request here.
+func sessionLaunchRequest(body eveSessionRequestBody, caller LaunchCaller) LaunchRequest {
+	return LaunchRequest{
+		Caller:         caller,
 		ProjectID:      body.ProjectID,
 		Kind:           deriveSessionKind(body.Model),
 		Directory:      body.Directory,
@@ -350,7 +361,6 @@ func (d sessionRouteDeps) handleCreateSession(w http.ResponseWriter, r *http.Req
 		SystemPrompt:   body.SystemPrompt,
 		AppendClaudeMd: body.AppendClaudeMd,
 	}
-	d.launchAndRespond(r.Context(), w, req)
 }
 
 // deriveSessionKind ports relayLLM's own deriveProviderType
@@ -414,20 +424,33 @@ func resolveLaunchCaller(r *http.Request, store config.SettingsStore) LaunchCall
 	return LaunchCaller{}
 }
 
-// launchAndRespond runs launch and answers eve -- the shared tail of both
-// create handlers.
-func (d sessionRouteDeps) launchAndRespond(ctx context.Context, w http.ResponseWriter, req LaunchRequest) {
+// launchWithEvent runs launch inside the session.launch event. Every door
+// that creates a session or terminal goes through it, so the event and the
+// refusal mapping do not depend on which door asked.
+func (d sessionRouteDeps) launchWithEvent(ctx context.Context, req LaunchRequest) (*LaunchResult, *hostapi.LaunchResponse, *LaunchRefusal, error) {
 	ev := logging.BeginEvent(ctx, "session.launch").Set("project_id", req.ProjectID).Set("kind", req.Kind)
 	result, resp, refusal, err := d.launch(ctx, req)
 	switch {
 	case refusal != nil:
 		endEvent(ev, refusal)
-		writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
 	case err != nil:
 		endEvent(ev, upstreamErr(err))
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "launch failed"})
 	default:
 		ev.Set("session_id", result.SessionID).End(logging.OutcomeOK, "", nil)
+	}
+	return result, resp, refusal, err
+}
+
+// launchAndRespond runs launchWithEvent and answers eve -- the shared tail of
+// both create handlers.
+func (d sessionRouteDeps) launchAndRespond(ctx context.Context, w http.ResponseWriter, req LaunchRequest) {
+	_, resp, refusal, err := d.launchWithEvent(ctx, req)
+	switch {
+	case refusal != nil:
+		writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
+	case err != nil:
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "launch failed"})
+	default:
 		writeCreatedBody(w, resp.Body)
 	}
 }
@@ -476,21 +499,42 @@ type resumeResponseBody struct {
 	Resumed   bool   `json:"resumed"`
 }
 
-// handleResumeSession implements POST /api/sessions/{id}/resume (C5,
-// C11). AuthorizeLaunch's own Resume=true path cannot by itself distinguish
-// "already live" (a success, not a refusal) from "unknown" from "wrong
-// project", since it has no notion of a three-way HTTP outcome -- so this
-// handler reads the ledger once itself, before ever calling AuthorizeLaunch,
-// to produce C5's three-way HTTP outcome without duplicating AuthorizeLaunch's
-// own dormant/live/project-match logic.
+// resumeOutcome is what the resume route writes: a status and a JSON body.
+type resumeOutcome struct {
+	Status int
+	Body   any
+}
+
+func resumeError(status int, msg string) resumeOutcome {
+	return resumeOutcome{Status: status, Body: map[string]string{"error": msg}}
+}
+
+// handleResumeSession implements POST /api/sessions/{id}/resume (C5, C11).
 func (d sessionRouteDeps) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 	if d.sessionRoutesUnavailable(w) {
 		return
 	}
-	id := r.PathValue("id")
-	ev := logging.BeginEvent(r.Context(), "session.resume").Set("session_id", id)
-	w = newEventResponseWriter(w, func(status int) { endEventHTTP(ev, status, "session resume failed") })
-	caller := resolveLaunchCaller(r, d.store)
+	out := d.resumeSession(r.Context(), resolveLaunchCaller(r, d.store), r.PathValue("id"))
+	writeJSON(w, out.Status, out.Body)
+}
+
+// resumeSession is the one resume path both doors call. AuthorizeLaunch's own
+// Resume=true path cannot by itself distinguish "already live" (a success, not
+// a refusal) from "unknown" from "wrong project", since it has no notion of a
+// three-way HTTP outcome -- so this reads the ledger once itself, before ever
+// calling AuthorizeLaunch, to produce C5's three-way outcome without
+// duplicating AuthorizeLaunch's own dormant/live/project-match logic.
+// Deliberate: a refusal ends the session.resume event with the launch
+// refusal's own code first; End is idempotent, so the status-mapped end below
+// only covers the paths that did not.
+func (d sessionRouteDeps) resumeSession(ctx context.Context, caller LaunchCaller, id string) resumeOutcome {
+	ev := logging.BeginEvent(ctx, "session.resume").Set("session_id", id)
+	out := d.resumeSessionInner(ctx, ev, caller, id)
+	endEventHTTP(ev, out.Status, "session resume failed")
+	return out
+}
+
+func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Event, caller LaunchCaller, id string) resumeOutcome {
 	actor := callerAuditActor(caller)
 
 	rec, ok := d.sessions.Get(id)
@@ -500,32 +544,28 @@ func (d sessionRouteDeps) handleResumeSession(w http.ResponseWriter, r *http.Req
 	// full stop -- so "not found" is simply "not found".
 	if !ok {
 		d.auditResume(actor, id, "", "", audit.AuditOutcomeNotFound, "unknown session")
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
+		return resumeError(http.StatusNotFound, "session not found")
 	}
 	ev.Set("project_id", rec.ProjectID)
 	if rec.State == ledger.StateLive {
 		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeOK, "")
-		writeJSON(w, http.StatusOK, resumeResponseBody{SessionID: id, Resumed: false})
-		return
+		return resumeOutcome{Status: http.StatusOK, Body: resumeResponseBody{SessionID: id, Resumed: false}}
 	}
 
-	// Claimed for the rest of this handler, past every remaining return
-	// path: a second resume for the same id must fail fast here rather than
-	// reach launchOnHost's Begin call, which would otherwise silently end
-	// this attempt's launch identity out from under it (or vice versa).
+	// Claimed for the rest of this call, past every remaining return path: a
+	// second resume for the same id must fail fast here rather than reach
+	// launchOnHost's Begin call, which would otherwise silently end this
+	// attempt's launch identity out from under it (or vice versa).
 	if !d.resumeGuard.tryAcquire(id) {
 		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeError, "resume already in progress")
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "a resume for this session is already in progress"})
-		return
+		return resumeError(http.StatusConflict, "a resume for this session is already in progress")
 	}
 	defer d.resumeGuard.release(id)
 
 	sessionReq, err := decodeStoredSessionRequest(rec)
 	if err != nil {
 		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeError, err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "corrupt session record"})
-		return
+		return resumeError(http.StatusInternalServerError, "corrupt session record")
 	}
 
 	req := LaunchRequest{
@@ -538,26 +578,23 @@ func (d sessionRouteDeps) handleResumeSession(w http.ResponseWriter, r *http.Req
 	if refusal != nil {
 		d.auditor.Record(resumeAuditEvent(refusal.Audit))
 		endEvent(ev, refusal)
-		writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
-		return
+		return resumeError(refusal.Status, refusal.Message)
 	}
 
-	resp, err := d.launchOnHost(r.Context(), result)
+	resp, err := d.launchOnHost(ctx, result)
 	if err != nil {
 		slog.Warn("session resume: relay-sessions round trip failed", "session", id, "error", err)
 		d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error())))
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "launch failed"})
-		return
+		return resumeError(http.StatusBadGateway, "launch failed")
 	}
 	_ = resp // C5's resume success body is the small envelope below, not the host's create body.
 
-	if !d.commitLaunch(r.Context(), result) {
+	if !d.commitLaunch(ctx, result) {
 		d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "project no longer exists")))
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "launch failed"})
-		return
+		return resumeError(http.StatusBadGateway, "launch failed")
 	}
 	d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, "")))
-	writeJSON(w, http.StatusOK, resumeResponseBody{SessionID: result.SessionID, Resumed: true})
+	return resumeOutcome{Status: http.StatusOK, Body: resumeResponseBody{SessionID: result.SessionID, Resumed: true}}
 }
 
 // decodeStoredSessionRequest recovers the claude/pi/chat fields a resume
@@ -721,13 +758,19 @@ func (d sessionRouteDeps) abortLaunch(ctx context.Context, sessionID string) {
 	}
 }
 
+// createdBody is the 201 body of a create: the host's own body, or an empty
+// object when the host sent none.
+func createdBody(body json.RawMessage) json.RawMessage {
+	if len(body) == 0 {
+		return json.RawMessage("{}")
+	}
+	return body
+}
+
 func writeCreatedBody(w http.ResponseWriter, body json.RawMessage) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	if len(body) == 0 {
-		body = json.RawMessage("{}")
-	}
-	_, _ = w.Write(body)
+	_, _ = w.Write(createdBody(body))
 }
 
 // cleanupProject ends every live session relay knows about for projectID

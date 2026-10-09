@@ -362,6 +362,7 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `file.git` | At the end of the matching `fileSession` method; when `FileOps.open` refuses, the route's `session` helper writes the same key | `POST /api/projects/{id}/files/*` | `project_id` |
 | `file.stream` | Once the body is fully written or fails | `GET /api/projects/{id}/files/stream` | `project_id` |
 | `file.ws.close` | At connection end in `serveFilesWS` | `GET /ws/files` | none |
+| `files.watch` | At the end of `adminFilesWatch`, when the peer leaves | `relay files watch` | `project_id` |
 
 ### Audit
 
@@ -375,18 +376,19 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
-| `session.list` | In `handleProxyList` | `GET /api/sessions` | `count` |
-| `terminal.list` | In `handleProxyList` | `GET /api/terminals` | `count` |
-| `session.launch` | In `launchAndRespond` | `POST /api/sessions`, `POST /api/terminals` | `session_id`, `project_id`, `kind` (on a refusal `reason` is the launch refusal code) |
-| `session.resume` | In `handleResumeSession` | `POST /api/sessions/{id}/resume` | `session_id`, `project_id` |
+| `session.list` | In `handleProxyList`, `listViaHost` | `GET /api/sessions`, `relay session list` | `count` |
+| `terminal.list` | In `handleProxyList`, `listViaHost` | `GET /api/terminals`, `relay terminal list` | `count` |
+| `session.launch` | In `launchWithEvent` | `POST /api/sessions`, `POST /api/terminals`, `relay session start`, `relay terminal start` | `session_id`, `project_id`, `kind` (on a refusal `reason` is the launch refusal code) |
+| `session.resume` | In `resumeSession` | `POST /api/sessions/{id}/resume`, `relay session resume` | `session_id`, `project_id` |
 | `session.drop_in` | In `dropIn` | `POST /api/sessions/{id}/drop-in`, bridge `drop_in_attach` (`relay drop-in`) | `session_id` (`host`, `terminal_id` (existing)) |
-| `session.persistent.list` | Before the list is returned | `GET /api/projects/{id}/persistent-sessions` | `project_id` |
-| `session.persistent.kill` | At the end of `PersistentSessionOps.Kill` | `DELETE /api/projects/{id}/persistent-sessions/{name}` | `project_id` |
+| `session.mode` | At the end of `adminSessionMode` | `relay session mode` | `session_id` |
+| `session.persistent.list` | Before the list is returned | `GET /api/projects/{id}/persistent-sessions`, `relay terminal persistent-list` | `project_id` |
+| `session.persistent.kill` | At the end of `PersistentSessionOps.Kill` | `DELETE /api/projects/{id}/persistent-sessions/{name}`, `relay terminal persistent-kill` | `project_id` |
 | `session.exited` | At the end of `appRouter.SessionExited` | bridge `session_exited` | `session_id` |
-| `session.delete` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message` | `session_id` |
-| `session.message` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message` | `session_id` |
-| `terminal.delete` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes | `terminal_id` |
-| `terminal.log` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes | `terminal_id` |
+| `session.delete` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message`, `relay session stop`, `relay session message` | `session_id` |
+| `session.message` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message`, `relay session stop`, `relay session message` | `session_id` |
+| `terminal.delete` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes, `relay terminal stop`, `relay terminal log` | `terminal_id` |
+| `terminal.log` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes, `relay terminal stop`, `relay terminal log` | `terminal_id` |
 | `session.ws.close` | At connection end in the relay-sessions hub | `/ws` | none |
 | `session.state` | On an agent state change (background, relay-sessions) | none (background) | none (existing keys) |
 

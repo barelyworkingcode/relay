@@ -101,6 +101,20 @@ func cliVerbTable() []cliVerb {
 		{Name: "login sessions", Run: loginSessions, Calls: []string{adminDoor("login.session.list")}},
 		{Name: "login sign-out", Run: loginSignOut, Calls: []string{adminDoor("login.session.sign_out")}},
 
+		{Name: "session start", Run: sessionStart, Calls: []string{adminDoor("session.start")}},
+		{Name: "session list", Run: sessionList, Calls: []string{adminDoor("session.list")}},
+		{Name: "session message", Run: sessionMessage, Calls: []string{adminDoor("session.message")}},
+		{Name: "session stop", Run: sessionStop, Calls: []string{adminDoor("session.stop")}},
+		{Name: "session resume", Run: sessionResume, Calls: []string{adminDoor("session.resume")}},
+		{Name: "session mode", Run: sessionMode, Calls: []string{adminDoor("session.mode")}},
+		{Name: "terminal start", Run: terminalStart, Calls: []string{adminDoor("terminal.start")}},
+		{Name: "terminal list", Run: terminalList, Calls: []string{adminDoor("terminal.list")}},
+		{Name: "terminal log", Run: terminalLog, Calls: []string{adminDoor("terminal.log")}},
+		{Name: "terminal stop", Run: terminalStop, Calls: []string{adminDoor("terminal.stop")}},
+		{Name: "terminal persistent-list", Run: terminalPersistentList, Calls: []string{adminDoor("terminal.persistent.list")}},
+		{Name: "terminal persistent-kill", Run: terminalPersistentKill, Calls: []string{adminDoor("terminal.persistent.kill")}},
+		{Name: "files watch", Run: filesWatch, Calls: []string{adminDoor("files.watch")}},
+
 		{Name: "sandbox", Run: runSandboxCommand, Calls: []string{bridge.ReqSandboxAttach}},
 		{Name: "drop-in", Run: runDropInCommand, Calls: []string{bridge.ReqDropInAttach}},
 
