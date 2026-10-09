@@ -554,5 +554,6 @@ one is scanned as usual.
 
 **Listener.** Claude Code and Codex need a URL, so the TCP listener must be on
 (`"model_endpoint": {"listen": "127.0.0.1:9911"}` in `settings.json`; loopback
-only). Over TCP there is no peer identity, so `X-Relay-Key` (or the legacy
+only; port `0` binds a free port, which `${MODEL_ENDPOINT_URL}` and
+`ready.json` report). Over TCP there is no peer identity, so `X-Relay-Key` (or the legacy
 bearer) is the only relay authentication.

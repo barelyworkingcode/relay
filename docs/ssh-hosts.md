@@ -240,8 +240,9 @@ ssh
 Callers append `-T` or `-tt` and then `--` and the remote command. `%C` is
 OpenSSH's hash of the connection tuple, so the path stays short and unique.
 `controlDir` is `<relay data dir>/run/ssh` if that path is under 90 bytes
-and contains no whitespace or quotes, else `/tmp/relay-ssh-<uid>`; either is
-created `0700`. The 90-byte rule exists because `sun_path` is 104 bytes on
+and contains no whitespace or quotes, else `/tmp/relay-ssh-<uid>` for the default config dir or
+`/tmp/relay-ssh-<uid>-<8 hex of sha256(config dir)>` for any other, so two
+instances never share a control socket; either is created `0700`. The 90-byte rule exists because `sun_path` is 104 bytes on
 macOS and the hash adds 40. The whitespace rule exists because ssh's `-o`
 parser splits the value at a space and refuses the option, and the macOS
 data dir sits under `Application Support`, so on a Mac the `/tmp` form is

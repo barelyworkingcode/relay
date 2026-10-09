@@ -607,7 +607,8 @@ unavailable` at Warn, with a `reason` of `relay_mcp_command_unset`,
 The tool child, chat or Claude alike, reaches the relay that launched this
 host through `RELAY_BRIDGE_SOCKET`, which it inherits from relay-sessions'
 environment. relay-sessions passes no `--config-dir`: it has no config dir,
-only the socket path. `relay mcp` honours the variable and dials that socket
+only the socket path, and it inherits `RELAY_CONFIG_DIR` from relay when the
+config dir is not the default. `relay mcp` honours the variable and dials that socket
 once before serving, so a relay under a non-default config dir gets its own
 sessions' tool calls, and an unreachable socket ends the child at startup,
 which surfaces as `relay_server_failed` or `mcp_start_failed`. The precedence
@@ -1007,9 +1008,12 @@ rule.
 The unix-socket rule denies connecting to any socket beneath relay's config
 dir, relayLLM's data dir and eve's data dir (when set), then reopens only
 relay's own `relay.sock`, `model.sock` and `relaysessions-hook.sock`. Under
-`relay --config-dir`, the default config dir
+a non-default config dir, the default config dir
 (`~/Library/Application Support/relay`) is denied too, because another relay
-instance keeps its sockets there.
+instance keeps its sockets there. The TCP loopback denial list is
+`session_sandbox.denied_loopback_ports` (default `[3000, 8181]`, an explicit
+list replaces it) plus the instance's own bound API port; the model endpoint's
+bound port is the one loopback port allowed.
 
 A session's folders come from four places, and only the third is configured:
 

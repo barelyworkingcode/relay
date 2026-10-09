@@ -247,6 +247,20 @@ Areas: sealed.
 |---|---|---|---|---|---|---|---|
 | Reset Sealed Store… | tray | tray > Reset Sealed Store… | screen | owner gate | gate-sealed-reset-pos (NOTRUN), gate-sealed-reset-neg | tray > Reset Sealed Store... | none |
 
+### G14 · Run several relays side by side, each named by its config dir — later
+Intent: start a relay that is picked by its config dir alone, so a test harness or a second profile runs next to the tray without touching it.
+It worked: `relay serve --config-dir X` prints `X/ready.json` once every listener is up; a verb with the same dir (or `RELAY_CONFIG_DIR`) reaches that instance only; a dir with no server fails naming the dir and is not created.
+Why later: a harness and power-user path; the tray's everyday behaviour is unchanged.
+Areas: instance, sandbox, remote, models.
+
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Headless server | CLI | `relay serve --config-dir X`; one stdout line, `X/ready.json`; SIGTERM or SIGINT exits 0 and removes it | CLI | — | none (real-app check) | none | `relay serve` |
+| Pick the instance for any verb | CLI | `--config-dir X` anywhere in argv before `--`, else `RELAY_CONFIG_DIR` | CLI | — | none (real-app check) | none | `--config-dir`, `RELAY_CONFIG_DIR` |
+| No server at the dir | CLI | any verb that needs the service, dir `C` with no server → exit 1 naming `C`; `C` is not created | CLI | — | none (real-app check) | none | none |
+| Listener addresses from settings, port 0 allowed | server | `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen`; bound addresses in `ready.json` | n/a (read from `ready.json`) | — | none (real-app check) | n/a | `settings.json` `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen` |
+| Loopback ports a sandboxed session may not reach | sandbox | any sandboxed session; the list replaces the default `[3000, 8181]`, the instance's own API port is always denied | bridge | — | none (real-app check) | n/a | `settings.json` `session_sandbox.denied_loopback_ports` |
+
 ## Owner gates
 
 An owner gate is a step that needs the owner's credential or presence. An
@@ -348,6 +362,9 @@ areas:
   sealed:
     code: [cmd/relay/sealed_reset.go, internal/sealed/**, internal/config/**]
     journeys: [gate-sealed-reset-neg, gate-sealed-reset-pos]
+  instance:
+    code: [cmd/relay/server_core.go, cmd/relay/serve_cmd.go, cmd/relay/platform_headless.go, cmd/relay/config_dir.go, cmd/relay/main.go]
+    journeys: []
   tray:
     code: [cmd/relay/trayapp.go, cmd/relay/tray_notify.go, cmd/relay/cocoa_darwin.go, cmd/relay/native_view.go, cmd/relay/icon.go, cmd/relay/platform.go]
     journeys: [settings-window-services]

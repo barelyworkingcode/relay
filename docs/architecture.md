@@ -593,7 +593,9 @@ infers — and `enrolment_requests: true` with `enabled: false` is refused at
 resolve time, naming why, since the request channel is a companion to the
 tool-plane listener rather than a substitute for turning it on.
 `enrolment_listen` defaults to `127.0.0.1:9910`'s neighbour, `127.0.0.1:9911`
-— loopback, same reasoning as `listen`. That listener carries its own,
+— loopback, same reasoning as `listen`. Both accept port `0`; the bound
+address, not the setting, is what `ready.json` and `EnrolmentOps.relayAddr`
+report. That listener carries its own,
 tighter bounds: at most 8 pending requests, a 15-minute TTL to be approved
 and another 15 minutes to be collected after approval, 16 concurrent
 connections, a 64-frames-then-redial cap per connection, and a 64 KiB frame
@@ -633,8 +635,8 @@ mutation's precondition, a lifecycle action. `config.DisplaySettings(store)` is
 the cached view for rendering (menus, lists, Settings-window payloads) and may
 lag the last committed change by nothing in the tray, whose store never re-reads
 the file (see below). Nothing else in production calls `Get`, `Reload`
-or `ReloadIfChanged` on a store, and only `runTrayApp` constructs one;
-no test holds that line now. The complete exception set is: `runTrayApp` (boot snapshot
+or `ReloadIfChanged` on a store, and only `startServerCore` constructs one;
+no test holds that line now. The complete exception set is: `startServerCore` (boot snapshot
 and audit recorder, taken before anything serves; the single store
 construction).
 
@@ -650,17 +652,45 @@ that remain: [`config-ownership-and-races.md`](config-ownership-and-races.md).
 **One tray per configuration directory.** `config.AcquireTrayOwnership` takes a
 non-blocking `flock` on `tray.lock` in the directory before the sealed store
 opens or the bridge socket is created, and the tray drops it last in `cleanup`.
-A second tray exits with `ErrOwnedByAnotherTray` without touching the first. It
+A second tray or `relay serve` exits with `ErrOwnedByAnotherTray` ("another
+relay server already owns this configuration directory (DIR)") without touching
+the first. It
 is an flock on an open descriptor so a crash frees it with the process; the
 file is never unlinked, because a second tray could then lock a fresh inode
 while the first still holds the old one.
 
 See ADR-010 (the remote listener's mTLS transport and certificate-based client identity model).
 
+## The server core and `relay serve`
+
+`startServerCore` (`server_core.go`) is the whole server: the tray's startup
+with the tray removed. `runTrayApp` is `NewPlatform`, `Init`, `startServerCore`,
+`SetupTray`, `updateMenu`, `Run`; `relay serve` is the headless `Platform`
+(`platform_headless.go`: UI calls do nothing, `Notify` logs, `DispatchToMain`
+queues on an unbounded FIFO that `Run` drains) in place of the Cocoa one.
+Startup order: take the lock; remove a stale `ready.json`; check every socket
+path fits in 103 bytes; export `RELAY_CONFIG_DIR` for children (clear it for
+the default dir); open the sealed store and wire the cores; bind the API
+listener from `api.listen` or `RELAY_API_LISTEN` (a bind failure or a
+non-loopback address is fatal); reconcile the model and remote listeners
+(non-fatal); write `ready.json`; log `relay server ready`. SIGTERM and SIGINT
+run `cleanup`, which removes `ready.json` first, and exit `0`.
+
+The config dir names the instance. Everything an instance owns sits under it:
+sockets, lock, ledger, logs, the SSH control sockets (the default dir keeps
+the shared `/tmp/relay-ssh-<uid>` fallback; any other dir gets
+`/tmp/relay-ssh-<uid>-<8 hex of sha256(dir)>`), and relayLLM's first-run
+session import runs only for the default dir. Consumers of an address read the
+bound one (`App.ListenAddrs`): the sandbox API deny, the sandbox model allow,
+`${MODEL_ENDPOINT_URL}`, the login page URL and `relay_addr` in an approved
+enrolment. The flag and the variable choose a socket, not a right:
+authorization stays with the token or the peer identity.
+
 ## Service manifest (enhanced services)
 
 Every spawned service gets `RELAY_BRIDGE_SOCKET` + `RELAY_SERVICE_ID` +
-`RELAY_LAUNCH_FD=3`, and no credential. A service reads its single-use launch
+`RELAY_LAUNCH_FD=3`, and no credential; under a non-default config dir it
+also inherits `RELAY_CONFIG_DIR`. A service reads its single-use launch
 secret from fd 3 and sends `Hello`, which binds the launch to its kernel audit
 token; after that it authenticates by that token alone
 ([`docs/launch-identity.md`](launch-identity.md)). Services

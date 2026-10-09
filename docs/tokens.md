@@ -305,7 +305,7 @@ the view against it and taking the distinct (method, path, class) tuples it
 actually reached from the audit log — never widened by one.
 
 **The routes that mint it are the only unauthenticated surface relay serves**,
-and they exist only when `RELAY_API_LISTEN` is bound. A WebAuthn ceremony is
+and they exist only when the API listener (`api.listen` or `RELAY_API_LISTEN`) is bound. A WebAuthn ceremony is
 verified against the origin of the listener relay actually bound
 (`http://localhost:PORT`, derived at bind time, never from a header or a
 setting), so with no TCP listener there is no origin, and the routes are
