@@ -100,7 +100,7 @@ Areas: mcps, grants, audit.
 | Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
 |---|---|---|---|---|---|---|---|
 | Register an MCP (stdio or HTTP) | Settings > MCP Servers, CLI | `relay mcp register`, or Add | CLI, HTTP `POST /api/mcps` | owner gate | gate-mcp-register-pos, gate-mcp-register-neg | Settings > MCP Servers > + New MCP Server | `relay mcp register` |
-| Authenticate an HTTP MCP (OAuth) | Settings > MCP Servers | row > Authenticate | CLI, screen | owner gate | gate-mcp-oauth-start-pos (NOTRUN), gate-mcp-oauth-start-neg | Settings > MCP Servers > card > Authenticate | `relay mcp authenticate` |
+| Authenticate an HTTP MCP (OAuth) | Settings > MCP Servers | row > Authenticate | CLI, screen | owner gate | gate-mcp-oauth-start-pos, gate-mcp-oauth-start-neg | Settings > MCP Servers > card > Authenticate | `relay mcp authenticate` |
 | List MCPs and their tools | Settings, CLI | `relay mcp list`; `GET /api/mcps/{id}/tools` | CLI, HTTP | — | gate-mcp-register-pos | Settings > MCP Servers > card > tools | `relay mcp list` |
 | Tool listing and calls through the bridge | bridge | a session's `relay mcp --token`; `relay mcp call --token` | bridge, CLI | — | acme-tools-through-bridge | none | `relay mcp --token`, `relay mcp call --token` |
 | Disable tools per project | Settings > Projects | project form > tool picker | HTTP `PUT /api/projects/{id}` `disabled_tools` [configure] | — | disabled-tool-refused | Settings > Projects > Edit > tool picker > untick | `settings.json` `projects[].disabled_tools` |
@@ -254,7 +254,7 @@ Areas: sealed.
 
 | Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
 |---|---|---|---|---|---|---|---|
-| Reset Sealed Store… | tray | tray > Reset Sealed Store… | CLI, screen | owner gate | gate-sealed-reset-pos (NOTRUN), gate-sealed-reset-neg | tray > Reset Sealed Store... | `relay sealed reset` |
+| Reset Sealed Store… | tray | tray > Reset Sealed Store… | CLI, screen | owner gate | gate-sealed-reset-pos, gate-sealed-reset-neg | tray > Reset Sealed Store... | `relay sealed reset` |
 
 ### G14 · Run several relays side by side, each named by its config dir — later
 Intent: start a relay that is picked by its config dir alone, so a test harness or a second profile runs next to the tray without touching it.
@@ -264,7 +264,7 @@ Areas: instance, sandbox, remote, models.
 
 | Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
 |---|---|---|---|---|---|---|---|
-| Headless server | CLI | `relay serve --config-dir X`; one stdout line, `X/ready.json`; SIGTERM or SIGINT exits 0 and removes it | CLI | — | none (real-app check) | none | `relay serve` |
+| Headless server | CLI | `relay serve --config-dir X`; one stdout line, `X/ready.json`; SIGTERM or SIGINT exits 0 and removes it | CLI | — | gate-sealed-reset-pos (the instance keeps its own sealing key) | none | `relay serve` |
 | Pick the instance for any verb | CLI | `--config-dir X` anywhere in argv before `--`, else `RELAY_CONFIG_DIR` | CLI | — | none (real-app check) | none | `--config-dir`, `RELAY_CONFIG_DIR` |
 | No server at the dir | CLI | any verb that needs the service, dir `C` with no server → exit 1 naming `C`; `C` is not created | CLI | — | none (real-app check) | none | n/a |
 | Listener addresses from settings, port 0 allowed | server | `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen`; bound addresses in `ready.json` | n/a (read from `ready.json`) | — | none (real-app check) | n/a | `settings.json` `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen` |
@@ -313,7 +313,7 @@ here.
 | `credential.mint` | issuing a control-plane credential | gate-credential-mint-pos (mints the run credential); execute-credential-renewal (renews P4 when due) | gate-credential-mint-neg |
 | `credential.revoke` | revoking a credential | gate-credential-revoke-pos (revokes the run credential) | gate-credential-revoke-neg |
 | `mcp.register` | a command relay will run as an MCP | gate-mcp-register-pos | gate-mcp-register-neg |
-| `mcp.oauth.start` | authenticating an HTTP MCP | gate-mcp-oauth-start-pos: NOTRUN, the door is IPC-only and needs a real OAuth provider | gate-mcp-oauth-start-neg (no door from a session) |
+| `mcp.oauth.start` | authenticating an HTTP MCP | gate-mcp-oauth-start-pos (runs the installed binary as `relay serve` on its own dir against a loopback OAuth provider; the token is sealed and reused after a restart) | gate-mcp-oauth-start-neg (no door from a session) |
 | `service.register` | a command relay will run as a service | gate-service-register-pos | gate-service-register-neg |
 | `project.grant` | creating a project or widening a grant | gate-project-grant-pos | gate-project-grant-neg (no door from a session) |
 | `project.rotate_token` | a project's bearer token | gate-project-rotate-token-pos | gate-project-rotate-token-neg (no door from a session) |
@@ -327,7 +327,7 @@ here.
 | `login.passkey.revoke` | revoking a relay passkey | gate-login-passkey-revoke-pos: NOTRUN, there is no disposable relay passkey | gate-login-passkey-revoke-neg |
 | `eve.enrolment.open` | eve's five-minute passkey enrolment window | gate-eve-enrolment-open-pos (closes the window after) | gate-eve-enrolment-open-neg |
 | `eve.passkey.revoke` | revoking an eve passkey | gate-eve-passkey-revoke-pos: NOTRUN, relay keeps one eve passkey mirror that each eve's report replaces, so no verify passkey can be revoked through it | gate-eve-passkey-revoke-neg: NOTRUN while the mirror holds no revocable passkey, since relay refuses an unknown or last id before the gate |
-| `sealed.reset` | the sealed store | gate-sealed-reset-pos: NOTRUN, break-glass destroys the store | gate-sealed-reset-neg (no door from a session) |
+| `sealed.reset` | the sealed store | gate-sealed-reset-pos (resets the store of a `relay serve` instance with its own keychain item; the installed store is never reset) | gate-sealed-reset-neg (no door from a session) |
 
 ## Areas
 
@@ -383,7 +383,7 @@ areas:
     journeys: [gate-credential-mint-pos, execute-credential-renewal, gate-credential-mint-neg, gate-credential-revoke-neg, gate-mcp-register-neg, gate-service-register-neg, gate-eve-enrolment-open-neg, gate-eve-passkey-revoke-neg, gate-enrolment-create-neg, gate-enrolment-sign-neg, gate-enrolment-update-neg, gate-enrolment-revoke-neg, gate-login-bootstrap-mint-neg, gate-login-passkey-revoke-neg, gate-project-grant-neg, gate-project-rotate-token-neg, gate-remote-configure-neg, gate-mcp-oauth-start-neg, gate-sealed-reset-neg, gate-enrolment-create-pos, gate-enrolment-sign-pos, gate-enrolment-update-pos, gate-enrolment-revoke-pos, gate-login-bootstrap-mint-pos, gate-login-passkey-revoke-pos, gate-mcp-oauth-start-pos, gate-remote-configure-pos, gate-sealed-reset-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-eve-passkey-revoke-pos, gate-credential-revoke-pos]
   sealed:
     code: [cmd/relay/sealed_reset.go, cmd/relay/sealed_verbs.go, cmd/relay/keystore*.go, internal/sealed/**, internal/config/**]
-    journeys: [gate-sealed-reset-neg, gate-sealed-reset-pos]
+    journeys: [gate-sealed-reset-neg, gate-sealed-reset-pos, gate-mcp-oauth-start-pos]
   doors:
     code: [cmd/relay/doors.go, cmd/relay/cli_verbs.go, internal/bridge/operator_caller.go]
     journeys: []
@@ -392,7 +392,7 @@ areas:
     journeys: []
   instance:
     code: [cmd/relay/server_core.go, cmd/relay/clock*.go, cmd/relay/serve_cmd.go, cmd/relay/platform_headless.go, cmd/relay/config_dir.go, cmd/relay/main.go]
-    journeys: []
+    journeys: [gate-mcp-oauth-start-pos, gate-sealed-reset-pos]
   tray:
     code: [cmd/relay/trayapp.go, cmd/relay/tray_notify.go, cmd/relay/cocoa_darwin.go, cmd/relay/native_view.go, cmd/relay/icon.go, cmd/relay/platform.go]
     journeys: [settings-window-services]
