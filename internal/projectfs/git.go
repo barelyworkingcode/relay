@@ -33,48 +33,53 @@ func gitEnv() []string {
 type gitTool struct {
 	bin      string
 	execPath string
-	err      error
 }
 
 var (
-	gitToolOnce sync.Once
-	gitToolVal  gitTool
+	gitToolMu  sync.Mutex
+	gitToolVal *gitTool
 )
 
-// resolveGit finds the real git once. The /usr/bin/git shim hands off to the
+// resolveGit finds the real git, caching only a success so a git installed
+// or upgraded later is picked up. The /usr/bin/git shim hands off to the
 // developer-tools git, so the sandbox must name the binary that finally runs.
-func resolveGit() gitTool {
-	gitToolOnce.Do(func() {
-		bin, err := exec.LookPath("git")
+//
+// This is deliberate: the developer directory comes from xcode-select, not
+// xcrun. xcrun trusts a lookup cache in the per-user temp dir, which a
+// sandboxed session can write.
+func resolveGit() (gitTool, error) {
+	gitToolMu.Lock()
+	defer gitToolMu.Unlock()
+	if gitToolVal != nil {
+		return *gitToolVal, nil
+	}
+	bin, err := exec.LookPath("git")
+	if err != nil {
+		return gitTool{}, Errf(CodeGitMissing, "git is not installed")
+	}
+	if bin == "/usr/bin/git" {
+		out, err := exec.Command("/usr/bin/xcode-select", "-p").Output()
 		if err != nil {
-			gitToolVal.err = Errf(CodeGitMissing, "git is not installed")
-			return
+			return gitTool{}, Errf(CodeGitMissing, "git is not installed: no developer directory")
 		}
-		if bin == "/usr/bin/git" {
-			if out, err := exec.Command("/usr/bin/xcrun", "--find", "git").Output(); err == nil {
-				if p := strings.TrimSpace(string(out)); p != "" {
-					bin = p
-				}
-			}
-		}
-		if real, err := filepath.EvalSymlinks(bin); err == nil {
-			bin = real
-		}
-		cmd := exec.Command(bin, "--exec-path")
-		cmd.Dir = os.TempDir()
-		cmd.Env = gitEnv()
-		out, err := cmd.Output()
-		if err != nil {
-			gitToolVal.err = Errf(CodeError, "cannot locate git helpers: "+err.Error())
-			return
-		}
-		ep := strings.TrimSpace(string(out))
-		if real, err := filepath.EvalSymlinks(ep); err == nil {
-			ep = real
-		}
-		gitToolVal = gitTool{bin: bin, execPath: ep}
-	})
-	return gitToolVal
+		bin = filepath.Join(strings.TrimSpace(string(out)), "usr", "bin", "git")
+	}
+	if real, err := filepath.EvalSymlinks(bin); err == nil {
+		bin = real
+	}
+	cmd := exec.Command(bin, "--exec-path")
+	cmd.Dir = os.TempDir()
+	cmd.Env = gitEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return gitTool{}, Errf(CodeError, "cannot locate git helpers: "+err.Error())
+	}
+	ep := strings.TrimSpace(string(out))
+	if real, err := filepath.EvalSymlinks(ep); err == nil {
+		ep = real
+	}
+	gitToolVal = &gitTool{bin: bin, execPath: ep}
+	return *gitToolVal, nil
 }
 
 // sbplString quotes s as a Seatbelt profile string literal.
@@ -125,9 +130,9 @@ func runGit(ctx context.Context, dir string, args []string, maxBytes int64) (Git
 	defer cancel()
 	out := &capBuffer{limit: maxBytes, cancel: cancel}
 	var stderr bytes.Buffer
-	tool := resolveGit()
-	if tool.err != nil {
-		return GitResult{}, tool.err
+	tool, err := resolveGit()
+	if err != nil {
+		return GitResult{}, err
 	}
 	argv := append([]string{"-p", gitSandboxProfile(tool), tool.bin}, GitPrefix...)
 	cmd := exec.CommandContext(ctx, sandboxExec, append(argv, args...)...)
@@ -135,7 +140,7 @@ func runGit(ctx context.Context, dir string, args []string, maxBytes int64) (Git
 	cmd.Env = gitEnv()
 	cmd.Stdout = out
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	switch {
 	case out.overflow:
 		return GitResult{}, &Error{Code: CodeTooLarge, Msg: "git output too large", Size: maxBytes}
