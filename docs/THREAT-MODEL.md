@@ -113,6 +113,11 @@ or moves its clock (attacker 5's promise holds). The promises that cover it:
   approves `project.grant` alone, refuses every other gated op, uses the login
   keychain and refuses to move the clock, so a test build swapped in for the
   real app never takes an answer from a file.
+- **What the approver can approve.** In the test build the approver may
+  approve any op in `presence.GatedOps`, not only `project.grant`. The outcome
+  file chooses the answer per op. It is read only on a config dir other than
+  the default one, and it is absent from release builds, so it widens nothing
+  a release or the real app does.
 - **Recorded (asset C).** Each approval is a `control_decision` row with
   `presence_approver`, written before the act; an unrecordable approval
   refuses the act. Each answer, keychain fault and clock change writes a

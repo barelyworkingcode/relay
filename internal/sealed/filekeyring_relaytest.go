@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/logging"
 )
@@ -146,6 +147,14 @@ func (k *fileKeyring) beginOp(op string) (keychainFault, error) {
 	return f, nil
 }
 
+// waitOutBound blocks for relay's own keychain bound, as an unanswered
+// dialog would, and parks nothing past it.
+func waitOutBound() {
+	t := time.NewTimer(keychainReadTimeout)
+	defer t.Stop()
+	<-t.C
+}
+
 func (k *fileKeyring) storePath() string { return filepath.Join(k.dir, FileKeyringName) }
 
 func (k *fileKeyring) Load() (string, []byte, error) {
@@ -167,10 +176,8 @@ func (k *fileKeyring) load(f keychainFault) (string, []byte, error) {
 		return decodeKeychainPayload(corruptPayload)
 	case faultSlow:
 		// relay's own bound answers, exactly as for an unanswered keychain dialog.
-		callWithin(keychainReadTimeout, func() struct{} { select {} })
-		return "", nil, fmt.Errorf("%w: the login keychain did not answer within %s for %s/%s -- "+
-			"consistent with a confirmation dialog waiting on a human relay will not wait for",
-			ErrKeyUnreadable, keychainReadTimeout, keychainService, keychainAccount)
+		waitOutBound()
+		return "", nil, errCopyTimeout(keychainService, keychainAccount)
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -251,10 +258,8 @@ func (k *fileKeyring) Destroy() error {
 	case faultMissing:
 		return nil
 	case faultSlow:
-		callWithin(keychainReadTimeout, func() struct{} { select {} })
-		return fmt.Errorf("sealed: deleting keychain item %s/%s did not complete within %s -- "+
-			"consistent with a confirmation dialog waiting on a human relay will not wait for",
-			keychainService, keychainAccount, keychainReadTimeout)
+		waitOutBound()
+		return errDeleteTimeout(keychainService, keychainAccount)
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
