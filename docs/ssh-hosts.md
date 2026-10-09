@@ -70,7 +70,7 @@ reverse-tunnelled bridge is a later step, not a v1 blocker.
 
 **7. The file plane is a small Node agent on the host, owned by relay.**
 Claude Code requires Node, so a host that can run it can run a Node script.
-Relay embeds the agent (`internal/projectfs/agent/fsagent.js`), launches it
+Relay embeds the agent (`internal/projectfs/fsagent.js`), launches it
 once per host over `ssh -T` with the probe's `node_path`, and speaks
 newline-delimited JSON to it. Eve reaches it only through relay's file routes
 and `/ws/files` (`docs/project-files.md`); relay checks the project, read-only
@@ -604,7 +604,7 @@ A host project differs from a console project in three ways: rename and move
 replace an existing destination, delete is permanent, and a stream is a plain
 200 that ignores `Range`.
 
-**Agent protocol** (version 2; `internal/projectfs/agent/fsagent.js`, runs on the
+**Agent protocol** (version 2; `internal/projectfs/fsagent.js`, runs on the
 host). Every request carries `root` (the project's absolute path on the host) and
 a root-relative `path`; field names are snake_case.
 

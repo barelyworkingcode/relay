@@ -19,7 +19,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
-//go:embed agent/fsagent.js
+//go:embed fsagent.js
 var fsAgentSource string
 
 const (
