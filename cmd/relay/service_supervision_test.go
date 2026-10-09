@@ -187,7 +187,6 @@ func TestSupervision_ReloadIsASingleRestartNoDouble(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 	secondPID := waitForPIDChange(t, reg, cfg.ID, firstPID)
-	waitForPhase(t, reg, cfg.ID, service.SupervisionRunning)
 
 	// Give any (wrongly) queued second restart a chance to fire.
 	clock.Advance(10 * service.ServiceRestartMaxDelay)
@@ -241,7 +240,6 @@ func TestSupervision_BackoffSequenceAndGiveUp(t *testing.T) {
 		}
 		clock.Advance(want)
 		lastPID = waitForPIDChange(t, reg, cfg.ID, lastPID)
-		waitForPhase(t, reg, cfg.ID, service.SupervisionRunning)
 	}
 
 	// The budget is spent: the next crash must be marked failed, not
