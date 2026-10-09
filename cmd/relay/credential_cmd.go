@@ -12,20 +12,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
-// Control-plane credentials are minted on the host, by the user who owns the
-// config dir. Mint and revoke are brokered (ADR-017 decision 2): this
-// process holds no sealer and cannot write settings.json itself (§5.4), so
-// it dials the running tray over admin_op and lets CredentialOps — the same
-// core the gate lives in — do the work. `list` is a tray read too: the
-// running tray is the only reader of the configuration.
-func runCredentialCommand(args []string) {
-	runSubcommands("credential", []cliSubcommand{
-		{"mint", credentialMint},
-		{"list", credentialList},
-		{"revoke", credentialRevoke},
-	}, args)
-}
-
 // capabilityClasses is the whole vocabulary. A class string outside it is
 // refused rather than stored: Grants compares against these constants, so a
 // typo'd class would leave the credential inert with nothing on any operator

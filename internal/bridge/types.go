@@ -272,6 +272,9 @@ type ProgressUpdate struct {
 	// survive the bridge hop.
 	Progress float64 `json:"progress"`
 	Total    float64 `json:"total,omitempty"`
+	// Data carries one frame of a streaming admin_op. Tool progress leaves it
+	// empty.
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 type ProgressFunc func(ProgressUpdate)

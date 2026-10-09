@@ -9,18 +9,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 )
 
-// runEveCommand is `relay eve`'s dispatcher, mirroring runLoginCommand:
-// every subcommand is brokered over admin_op: `enrol` and `revoke` because
-// this process holds no gate, `list` because the running tray is the only
-// reader of the configuration.
-func runEveCommand(args []string) {
-	runSubcommands("eve", []cliSubcommand{
-		{"enrol", func(_ []string) { eveEnrol() }},
-		{"list", func(_ []string) { eveList() }},
-		{"revoke", eveRevoke},
-	}, args)
-}
-
 // eveEnrol brokers eve.enrolment.open over admin_op, exactly as loginEnrol
 // brokers login.bootstrap.mint: this process holds no gate, so it dials the
 // running tray and lets EveEnrolmentOps -- the same core the tray's own

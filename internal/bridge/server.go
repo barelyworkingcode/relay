@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -223,39 +224,59 @@ func (s *BridgeServer) handleConn(conn net.Conn, acceptedAt time.Time) {
 	NewFrameConn(conn, "bridge", 0).Serve(ctx, s.handleRequest)
 }
 
+// bridgeHandler is one request type. credential names what authorizes the
+// type, for the doors document: socket (the 0600 socket alone), operator,
+// admin_token, project, launch_identity or launch_secret.
 type bridgeHandler struct {
 	requireAdmin bool
+	credential   string
 	handle       func(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse
 }
 
 var bridgeHandlers = map[string]bridgeHandler{
-	ReqListTools:             {handle: handleListTools},
-	ReqCallTool:              {handle: handleCallTool},
-	ReqReconcileExternalMcps: {requireAdmin: true, handle: handleReconcile},
-	ReqReloadExternalMcp:     {requireAdmin: true, handle: handleReloadMcp},
-	ReqReloadService:         {requireAdmin: true, handle: handleReloadService},
-	ReqDescribeProject:       {handle: handleDescribeProject},
-	ReqRegisterManifest:      {handle: handleRegisterManifest},
-	ReqRegisterModelHost:     {handle: handleRegisterModelHost},
-	ReqHello:                 {handle: handleHello},
-	ReqSessionExited:         {handle: handleSessionExited},
+	ReqListTools:             {credential: "project", handle: handleListTools},
+	ReqCallTool:              {credential: "project", handle: handleCallTool},
+	ReqReconcileExternalMcps: {requireAdmin: true, credential: "admin_token", handle: handleReconcile},
+	ReqReloadExternalMcp:     {requireAdmin: true, credential: "admin_token", handle: handleReloadMcp},
+	ReqReloadService:         {requireAdmin: true, credential: "admin_token", handle: handleReloadService},
+	ReqDescribeProject:       {credential: "project", handle: handleDescribeProject},
+	ReqRegisterManifest:      {credential: "launch_identity", handle: handleRegisterManifest},
+	ReqRegisterModelHost:     {credential: "launch_identity", handle: handleRegisterModelHost},
+	ReqHello:                 {credential: "launch_secret", handle: handleHello},
+	ReqSessionExited:         {credential: "launch_identity", handle: handleSessionExited},
 
 	// This is deliberate: ungated and carrying no bearer, like admin_op. The
 	// guard is handleSandboxAttach's kernel-attested membership refusal and
 	// the launch core's own authorization, not this transport.
-	ReqSandboxAttach: {handle: handleSandboxAttach},
+	ReqSandboxAttach: {credential: "operator", handle: handleSandboxAttach},
 
 	// This is deliberate: ungated like ReqSandboxAttach, with the same two
 	// caller checks. The launch core authorizes before anything is stopped.
-	ReqDropInAttach: {handle: handleDropInAttach},
+	ReqDropInAttach: {credential: "operator", handle: handleDropInAttach},
 
 	// This is deliberate: unlike every requireAdmin entry above, admin_op
 	// carries no bearer. ADR-015 and ADR-016 both refuse to spend the 0600
 	// socket's ambient trust twice, and admin_secret is a sealed value the
 	// caller can no longer read to present here anyway. The gate that
 	// matters lives inside the operation core this dispatches to, not on
-	// this transport.
-	ReqAdminOp: {handle: handleAdminOp},
+	// this transport. Each operation's own caller rule is in cmd/relay's
+	// adminOps table.
+	ReqAdminOp: {credential: "socket", handle: handleAdminOp},
+}
+
+// HandlerInfo is one request type and the credential that authorizes it.
+type HandlerInfo struct{ Type, Credential string }
+
+// Handlers lists every request type the server dispatches, sorted by type, for
+// the doors document. It reads the dispatch table itself, so a type added there
+// cannot be missing from the document.
+func Handlers() []HandlerInfo {
+	out := make([]HandlerInfo, 0, len(bridgeHandlers))
+	for t, h := range bridgeHandlers {
+		out = append(out, HandlerInfo{Type: t, Credential: h.credential})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Type < out[j].Type })
+	return out
 }
 
 func (s *BridgeServer) handleRequest(ctx context.Context, line string) (resp BridgeResponse) {

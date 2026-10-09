@@ -208,7 +208,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 		writeJSON(w, http.StatusOK, projectToView(s, *proj))
 	})
 
-	rr.Handle(control.ClassConfigure, "POST /api/projects", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassConfigure, []string{"project.grant"}, "POST /api/projects", func(w http.ResponseWriter, r *http.Request) {
 		var body project.CreateFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -230,7 +230,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 		writeJSON(w, http.StatusCreated, projectToView(config.DisplaySettings(store), created))
 	})
 
-	rr.Handle(control.ClassConfigure, "PUT /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassConfigure, []string{"project.grant"}, "PUT /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		// Pointer fields distinguish "not in body" from "zero value" so callers
 		// can patch a single field without clearing the others.
@@ -373,7 +373,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 	//
 	// grant: this issues a credential another party holds (ADR-015 decision
 	// 1), the same reasoning as enrolment create.
-	rr.Handle(control.ClassGrant, "POST /api/projects/{id}/rotate_token", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassGrant, []string{"project.rotate_token"}, "POST /api/projects/{id}/rotate_token", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		// ProjectOps.RotateToken records the rotation itself (so it can
 		// attach the presence_id the gate minted) and withholds the new

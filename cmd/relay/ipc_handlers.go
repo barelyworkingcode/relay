@@ -409,86 +409,93 @@ const (
 // IPC dispatch
 // ---------------------------------------------------------------------------
 
-// ipcHandlers maps message types to handler functions.
-var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
+// ipcEntry is one Settings-window message. gates lists the presence operations
+// its core may require, each in presence.GatedOps; the doors document reads it.
+type ipcEntry struct {
+	handle func(*IPCContext, json.RawMessage)
+	gates  []string
+}
+
+// ipcHandlers maps message types to their handlers.
+var ipcHandlers = map[string]ipcEntry{
 	// External MCPs (ipc_mcps.go, ipc_mcp_permissions.go)
-	MsgAddExternalMcp:      ipcAddExternalMcp,
-	MsgAuthenticateMcp:     ipcAuthenticateMcp,
-	MsgRemoveExternalMcp:   ipcRemoveExternalMcp,
-	MsgResetMcpPermissions: ipcResetMcpPermissions,
+	MsgAddExternalMcp:      {handle: ipcAddExternalMcp, gates: []string{"mcp.register"}},
+	MsgAuthenticateMcp:     {handle: ipcAuthenticateMcp, gates: []string{"mcp.oauth.start"}},
+	MsgRemoveExternalMcp:   {handle: ipcRemoveExternalMcp},
+	MsgResetMcpPermissions: {handle: ipcResetMcpPermissions},
 
 	// Services (ipc_services.go)
-	MsgAddService:              ipcAddService,
-	MsgRemoveService:           ipcRemoveService,
-	MsgUpdateService:           ipcUpdateService,
-	MsgUpdateServiceAutostart:  ipcUpdateServiceAutostart,
-	MsgMoveService:             ipcMoveService,
-	MsgUpdateServiceMenuHidden: ipcUpdateServiceMenuHidden,
-	MsgStartService:            ipcStartService,
-	MsgStopService:             ipcStopService,
+	MsgAddService:              {handle: ipcAddService, gates: []string{"service.register"}},
+	MsgRemoveService:           {handle: ipcRemoveService},
+	MsgUpdateService:           {handle: ipcUpdateService, gates: []string{"service.register"}},
+	MsgUpdateServiceAutostart:  {handle: ipcUpdateServiceAutostart},
+	MsgMoveService:             {handle: ipcMoveService},
+	MsgUpdateServiceMenuHidden: {handle: ipcUpdateServiceMenuHidden},
+	MsgStartService:            {handle: ipcStartService},
+	MsgStopService:             {handle: ipcStopService},
 
 	// Service Inspector (ipc_service_action.go, ipc_service_config.go)
-	MsgServiceAction: ipcServiceAction,
-	MsgServiceConfig: ipcServiceConfig,
+	MsgServiceAction: {handle: ipcServiceAction},
+	MsgServiceConfig: {handle: ipcServiceConfig},
 
 	// Projects (ipc_projects.go)
-	MsgCreateProject:              ipcCreateProject,
-	MsgUpdateProject:              ipcUpdateProject,
-	MsgRemoveProject:              ipcRemoveProject,
-	MsgRotateProjectToken:         ipcRotateProjectToken,
-	MsgRegenProjectSkill:          ipcRegenProjectSkill,
-	MsgUpdateProjectDisabledTools: ipcUpdateProjectDisabledTools,
-	MsgListMcpTools:               ipcListMcpTools,
-	MsgEnumerateScopeField:        ipcEnumerateScopeField,
-	MsgSetDefaultProject:          ipcSetDefaultProject,
-	MsgSetChiefOfStaff:            ipcSetChiefOfStaff,
+	MsgCreateProject:              {handle: ipcCreateProject, gates: []string{"project.grant"}},
+	MsgUpdateProject:              {handle: ipcUpdateProject, gates: []string{"project.grant"}},
+	MsgRemoveProject:              {handle: ipcRemoveProject},
+	MsgRotateProjectToken:         {handle: ipcRotateProjectToken, gates: []string{"project.rotate_token"}},
+	MsgRegenProjectSkill:          {handle: ipcRegenProjectSkill},
+	MsgUpdateProjectDisabledTools: {handle: ipcUpdateProjectDisabledTools},
+	MsgListMcpTools:               {handle: ipcListMcpTools},
+	MsgEnumerateScopeField:        {handle: ipcEnumerateScopeField},
+	MsgSetDefaultProject:          {handle: ipcSetDefaultProject},
+	MsgSetChiefOfStaff:            {handle: ipcSetChiefOfStaff},
 
 	// Tool Calls (ipc_audit.go)
-	MsgQueryAudit:     ipcQueryAudit,
-	MsgExportAudit:    ipcExportAudit,
-	MsgRevealAuditLog: ipcRevealAuditLog,
+	MsgQueryAudit:     {handle: ipcQueryAudit},
+	MsgExportAudit:    {handle: ipcExportAudit},
+	MsgRevealAuditLog: {handle: ipcRevealAuditLog},
 
 	// Remote Clients (ipc_enrolments.go)
-	MsgCreateEnrolment:         ipcCreateEnrolment,
-	MsgRevokeEnrolment:         ipcRevokeEnrolment,
-	MsgUpdateRemoteConfig:      ipcUpdateRemoteConfig,
-	MsgListEnrolmentRequests:   ipcListEnrolmentRequests,
-	MsgApproveEnrolmentRequest: ipcApproveEnrolmentRequest,
-	MsgRefuseEnrolmentRequest:  ipcRefuseEnrolmentRequest,
+	MsgCreateEnrolment:         {handle: ipcCreateEnrolment, gates: []string{"enrolment.create"}},
+	MsgRevokeEnrolment:         {handle: ipcRevokeEnrolment, gates: []string{"enrolment.revoke"}},
+	MsgUpdateRemoteConfig:      {handle: ipcUpdateRemoteConfig, gates: []string{"remote.configure"}},
+	MsgListEnrolmentRequests:   {handle: ipcListEnrolmentRequests},
+	MsgApproveEnrolmentRequest: {handle: ipcApproveEnrolmentRequest, gates: []string{"enrolment.sign"}},
+	MsgRefuseEnrolmentRequest:  {handle: ipcRefuseEnrolmentRequest},
 
 	// Passkeys (ipc_login.go)
-	MsgListPasskeys:     ipcListPasskeys,
-	MsgRevokePasskey:    ipcRevokePasskey,
-	MsgSignOutLogin:     ipcSignOutLogin,
-	MsgRevokeEvePasskey: ipcRevokeEvePasskey,
+	MsgListPasskeys:     {handle: ipcListPasskeys},
+	MsgRevokePasskey:    {handle: ipcRevokePasskey, gates: []string{"login.passkey.revoke"}},
+	MsgSignOutLogin:     {handle: ipcSignOutLogin},
+	MsgRevokeEvePasskey: {handle: ipcRevokeEvePasskey, gates: []string{"eve.passkey.revoke"}},
 
 	// Hosts (ipc_hosts.go)
-	MsgListHosts:      ipcListHosts,
-	MsgCreateHost:     ipcCreateHost,
-	MsgUpdateHost:     ipcUpdateHost,
-	MsgRemoveHost:     ipcRemoveHost,
-	MsgProbeHost:      ipcProbeHost,
-	MsgDisconnectHost: ipcDisconnectHost,
+	MsgListHosts:      {handle: ipcListHosts},
+	MsgCreateHost:     {handle: ipcCreateHost},
+	MsgUpdateHost:     {handle: ipcUpdateHost},
+	MsgRemoveHost:     {handle: ipcRemoveHost},
+	MsgProbeHost:      {handle: ipcProbeHost},
+	MsgDisconnectHost: {handle: ipcDisconnectHost},
 
 	// Overview (ipc_overview.go)
-	MsgRevealConfigDir:  ipcRevealConfigDir,
-	MsgRevealLogsDir:    ipcRevealLogsDir,
-	MsgRevealServiceLog: ipcRevealServiceLog,
+	MsgRevealConfigDir:  {handle: ipcRevealConfigDir},
+	MsgRevealLogsDir:    {handle: ipcRevealLogsDir},
+	MsgRevealServiceLog: {handle: ipcRevealServiceLog},
 
 	// Templates (ipc_templates.go)
-	MsgListTemplates:  ipcListTemplates,
-	MsgCreateTemplate: ipcCreateTemplate,
-	MsgUpdateTemplate: ipcUpdateTemplate,
-	MsgRemoveTemplate: ipcRemoveTemplate,
+	MsgListTemplates:  {handle: ipcListTemplates},
+	MsgCreateTemplate: {handle: ipcCreateTemplate},
+	MsgUpdateTemplate: {handle: ipcUpdateTemplate},
+	MsgRemoveTemplate: {handle: ipcRemoveTemplate},
 
 	// Host templates (ipc_host_templates.go)
-	MsgListHostTemplates:  ipcListHostTemplates,
-	MsgCreateHostTemplate: ipcCreateHostTemplate,
-	MsgUpdateHostTemplate: ipcUpdateHostTemplate,
-	MsgRemoveHostTemplate: ipcRemoveHostTemplate,
+	MsgListHostTemplates:  {handle: ipcListHostTemplates},
+	MsgCreateHostTemplate: {handle: ipcCreateHostTemplate},
+	MsgUpdateHostTemplate: {handle: ipcUpdateHostTemplate},
+	MsgRemoveHostTemplate: {handle: ipcRemoveHostTemplate},
 
 	// Models (ipc_models.go)
-	MsgListModels: ipcListModels,
+	MsgListModels: {handle: ipcListModels},
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.
@@ -501,7 +508,7 @@ func (a *App) onSettingsIpc(body string) {
 		return
 	}
 
-	handler, ok := ipcHandlers[msg.Type]
+	entry, ok := ipcHandlers[msg.Type]
 	if !ok {
 		slog.Warn("unknown IPC message type", "type", msg.Type)
 		return
@@ -514,5 +521,5 @@ func (a *App) onSettingsIpc(body string) {
 		base = context.Background()
 	}
 	ctx.Ctx = logging.ContextWithTrace(base, logging.NewTraceID())
-	handler(&ctx, raw)
+	entry.handle(&ctx, raw)
 }

@@ -62,7 +62,7 @@ listener mints its own.
 - **Pattern.** `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`: `<domain>.<action>` or
   `<domain>.<object>.<action>`.
 - **Domain.** The core's noun: `server`, `project`, `grant`, `chief_of_staff`,
-  `mcp`, `tool`, `bridge`, `credential`, `enrolment`, `remote`, `login`, `eve`,
+  `mcp`, `tool`, `bridge`, `credential`, `doors`, `enrolment`, `remote`, `login`, `eve`,
   `sealed`, `service`, `host`, `host_template`, `template`, `file`, `audit`,
   `session`, `terminal`, `sandbox`, `model`, `chat`.
 - **Reused names.** Where a name in `presence.GatedOps`, an `adminOps` entry or
@@ -224,6 +224,12 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `credential.list` | Before the list is printed | `relay credential list` | `count` |
 | `credential.mint` | At the end of `CredentialOps.Mint` | `relay credential mint` | `credential_id`, `classes` |
 | `credential.revoke` | At the end of `CredentialOps.Revoke` | `relay credential revoke` | `credential_id` |
+
+### Doors
+
+| Event | When written | Doors | Fields |
+|---|---|---|---|
+| `doors.list` | Before the doors document is returned | `relay doors` | `count` |
 
 ### Enrolment
 

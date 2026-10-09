@@ -73,34 +73,6 @@ func exitError(format string, args ...interface{}) {
 	os.Exit(1)
 }
 
-type cliSubcommand struct {
-	Name string
-	Run  func(args []string)
-}
-
-func runSubcommands(verb string, commands []cliSubcommand, args []string) {
-	if len(args) == 0 {
-		printSubcommandUsage(verb, commands)
-		os.Exit(1)
-	}
-	for _, cmd := range commands {
-		if args[0] == cmd.Name {
-			cmd.Run(args[1:])
-			return
-		}
-	}
-	fmt.Fprintf(os.Stderr, "unknown %s command: %s\n", verb, args[0])
-	printSubcommandUsage(verb, commands)
-	os.Exit(1)
-}
-
-func printSubcommandUsage(verb string, commands []cliSubcommand) {
-	fmt.Fprintf(os.Stderr, "Usage: relay %s <command>\n\nCommands:\n", verb)
-	for _, cmd := range commands {
-		fmt.Fprintf(os.Stderr, "  %s\n", cmd.Name)
-	}
-}
-
 func newTabWriter() *tabwriter.Writer {
 	return tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 }
