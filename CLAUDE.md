@@ -126,8 +126,10 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
 
 ### Tests
 
-- Relay has no unit tests and CI rejects a `_test.go` outside `e2e/`. Until
-  `e2e/` exists, a bug's failing repro is a devbox journey (`cmd/devboxverify`).
+- Relay has no unit tests and CI rejects a `_test.go` outside `e2e/`. A bug's
+  failing repro is an `e2e/` feature test that drives relay through its CLI or
+  HTTP; what only the real Mac can show (the screen, Touch ID, the login
+  keychain) is a devbox journey (`cmd/devboxverify`).
 - Time-dependent code takes an injected clock; a test does not sleep to wait
   for one.
 - Report a failure with its output. Do not skip, loosen or delete a test to
