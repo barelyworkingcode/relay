@@ -76,6 +76,12 @@ func cliVerbTable() []cliVerb {
 
 		{Name: "grant", Run: runGrantCommand, Calls: []string{adminDoor("grant.view")}},
 		{Name: "project update", Run: projectUpdate, Calls: []string{adminDoor("project.update")}},
+		{Name: "project create", Run: projectCreate, Calls: []string{adminDoor("project.create")}},
+		{Name: "project edit", Run: projectEdit, Calls: []string{adminDoor("project.edit")}},
+		{Name: "project remove", Run: projectRemove, Calls: []string{adminDoor("project.remove")}},
+		{Name: "project rotate-token", Run: projectRotateToken, Calls: []string{adminDoor("project.token.rotate")}},
+		{Name: "project token", Run: projectToken, Calls: []string{adminDoor("project.token.reveal")}},
+		{Name: "project regen-skill", Run: projectRegenSkill, Calls: []string{adminDoor("project.skill.regen")}},
 
 		{Name: "sandbox", Run: runSandboxCommand, Calls: []string{bridge.ReqSandboxAttach}},
 		{Name: "drop-in", Run: runDropInCommand, Calls: []string{bridge.ReqDropInAttach}},

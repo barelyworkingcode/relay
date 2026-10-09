@@ -165,12 +165,13 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 |---|---|---|---|
 | `project.list` | Before the list is returned | `GET /api/projects` | `count` |
 | `project.get` | Before the project is returned | `GET /api/projects/{id}` | `project_id` |
-| `project.create` | At the end of `ProjectOps.Create` | `POST /api/projects`, Settings | `project_id`, `kind` |
-| `project.update` | At the end of `ProjectOps.Update` | `PUT /api/projects/{id}`, `relay project update`, Settings | `project_id`, `gated` |
-| `project.remove` | At the end of `ProjectOps.Remove` | `DELETE /api/projects/{id}`, Settings | `project_id` |
+| `project.create` | At the end of `ProjectOps.Create` | `POST /api/projects`, `relay project create`, Settings | `project_id`, `kind` |
+| `project.update` | At the end of `ProjectOps.Update` | `PUT /api/projects/{id}`, `relay project update`, `relay project edit`, Settings | `project_id`, `gated` |
+| `project.remove` | At the end of `ProjectOps.Remove` | `DELETE /api/projects/{id}`, `relay project remove`, Settings | `project_id` |
 | `project.default.set` | At the end of `SetDefaultProject` | `PUT /api/default_project/{mode}`, Settings | `mode`, `project_id` |
-| `project.rotate_token` | At the end of `RotateToken` | `POST /api/projects/{id}/rotate_token`, Settings | `project_id` |
-| `project.regen_skill` | At the end of `RegenSkill` | `POST /api/projects/{id}/regen_skill`, Settings | `project_id` |
+| `project.rotate_token` | At the end of `RotateToken` | `POST /api/projects/{id}/rotate_token`, `relay project rotate-token`, Settings | `project_id` |
+| `project.reveal_token` | At the end of `RevealToken` | `relay project token` | `project_id` |
+| `project.regen_skill` | At the end of `RegenSkill` | `POST /api/projects/{id}/regen_skill`, `relay project regen-skill`, Settings | `project_id` |
 | `project.disabled_tools.set` | At the end of `SetDisabledTools` | Settings | `project_id`, `mcp_id`, `count` |
 | `project.describe` | At the end of `appRouter.DescribeProject` | bridge `describe_project` | `project_id` |
 

@@ -68,6 +68,7 @@ var GatedOps = []string{
 	"mcp.oauth.start",
 	"service.register",
 	"project.rotate_token",
+	"project.reveal_token",
 	"project.grant",
 	"remote.configure",
 	"sealed.reset",

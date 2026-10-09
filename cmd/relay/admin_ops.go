@@ -77,6 +77,13 @@ var adminOps = map[string]adminOpEntry{
 	"enrolment.list":            {handle: adminEnrolmentList, caller: adminCallerSocket},
 	"grant.view":                {handle: adminGrantView, caller: adminCallerSocket},
 	"project.update":            {handle: adminProjectUpdate, caller: adminCallerSocket},
+
+	"project.create":       {handle: adminProjectCreate, caller: adminCallerOperator, gates: []string{"project.grant"}},
+	"project.edit":         {handle: adminProjectEdit, caller: adminCallerOperator, gates: []string{"project.grant"}},
+	"project.remove":       {handle: adminProjectRemove, caller: adminCallerOperator},
+	"project.token.rotate": {handle: adminProjectTokenRotate, caller: adminCallerOperator, gates: []string{"project.rotate_token"}},
+	"project.token.reveal": {handle: adminProjectTokenReveal, caller: adminCallerOperator, gates: []string{"project.reveal_token"}},
+	"project.skill.regen":  {handle: adminProjectSkillRegen, caller: adminCallerOperator},
 }
 
 // Deliberate: doors.list is added at init rather than in the literal, because
