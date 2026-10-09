@@ -243,6 +243,7 @@ type sessionLaunchAuditFields struct {
 	Sandbox     bool
 	Origin      string
 	PromptBytes int
+	HostID      string
 
 	ReadOnlyProjects bool
 	ReadRoots        int
@@ -259,6 +260,7 @@ type sessionLaunchAuditArgs struct {
 	Sandbox            bool   `json:"sandbox"`
 	Origin             string `json:"origin,omitempty"`
 	PromptBytes        int    `json:"prompt_bytes,omitempty"`
+	HostID             string `json:"host_id,omitempty"`
 	ReadOnlyProjects   bool   `json:"read_only_projects,omitempty"`
 	ReadRoots          int    `json:"read_roots,omitempty"`
 }
@@ -280,7 +282,7 @@ func newSessionLaunchAuditEvent(f sessionLaunchAuditFields, outcome, errMsg stri
 	args, _ := json.Marshal(sessionLaunchAuditArgs{
 		SessionID: f.SessionID, SessionKind: capAuditText(f.Kind, maxRefusalNameRunes), TemplateID: f.TemplateID,
 		Directory: directory, DirectoryTruncated: directory != f.Directory, Sandbox: f.Sandbox,
-		Origin: f.Origin, PromptBytes: f.PromptBytes,
+		Origin: f.Origin, PromptBytes: f.PromptBytes, HostID: f.HostID,
 		ReadOnlyProjects: f.ReadOnlyProjects, ReadRoots: f.ReadRoots,
 	})
 	return audit.AuditEvent{
@@ -400,6 +402,9 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		}
 		proj = p
 		baseFields.ProjectName = proj.Name
+		if proj.IsHosted() {
+			baseFields.HostID = proj.HostID
+		}
 	}
 
 	directory, refusal := resolveDirectory(proj, req.Directory, baseFields)
