@@ -128,7 +128,7 @@ func TestVerbReachesOnlyItsInstance(t *testing.T) {
 func TestListenerAddressesFromSettings(t *testing.T) {
 	t.Parallel()
 	i := harness.Start(t, harness.Options{Settings: map[string]json.RawMessage{
-		"remote": json.RawMessage(`{"enabled":true,"listen":"127.0.0.1:0","enrolment_listen":"127.0.0.1:0"}`),
+		"remote": json.RawMessage(`{"enabled":true,"listen":"127.0.0.1:0","enrolment_requests":true,"enrolment_listen":"127.0.0.1:0"}`),
 	}})
 	var out struct {
 		Listeners map[string]string `json:"listeners"`
@@ -154,6 +154,16 @@ func TestListenerAddressesFromSettings(t *testing.T) {
 			t.Fatalf("listeners.%s and listeners.%s share %s", k, other, addr)
 		}
 		seen[addr] = k
+	}
+	var show struct {
+		Enabled            bool   `json:"enabled"`
+		Listen             string `json:"listen"`
+		EnrolmentRequests  bool   `json:"enrolment_requests"`
+		EnrolmentEffective string `json:"enrolment_effective"`
+	}
+	i.MustCLI("remote", "show", "--json").JSON(t, &show)
+	if !show.Enabled || show.Listen != "127.0.0.1:0" || !show.EnrolmentRequests {
+		t.Fatalf("remote show reports %+v, want the configured remote block", show)
 	}
 }
 
@@ -280,13 +290,21 @@ func TestPresenceOutcomeFile(t *testing.T) {
 
 func TestPresenceRefusesUnlistedOp(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{Presence: map[string]harness.Outcome{"acme.unknown": harness.OutcomeApprove}})
+	i := harness.Start(t, harness.Options{Presence: map[string]harness.Outcome{"acme.unknown": harness.OutcomeApprove}, Credentials: readOnly})
 	tr := harness.NewTrace(t)
 	r := i.CLIWith(harness.CLIOpts{Trace: tr}, "project", "create", "--name", "Acme", "--path", i.Home, "--json")
 	if r.Code == 0 {
 		t.Fatalf("create exited 0 under an invalid outcome file")
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "debug.presence.answer", Trace: tr, Fields: map[string]any{"status": "error", "reason": "invalid"}})
+	// A caller with no console session is refused before the approver is
+	// asked, so the invalid file shows as presence_no_session and no answer event.
+	requireEvent(t, i, harness.EventQuery{Key: "project.create", Trace: tr, Fields: map[string]any{"status": "denied", "reason": "presence_no_session"}})
+	if got := i.Events(harness.EventQuery{Key: "debug.presence.answer", Trace: tr}); len(got) != 0 {
+		t.Fatalf("a caller with no console session produced %d debug.presence.answer events, want none", len(got))
+	}
+	if n := len(listProjects(t, i)); n != 0 {
+		t.Fatalf("the refused create left %d projects", n)
+	}
 }
 
 func TestPresenceRefusesOpsNotListed(t *testing.T) {
@@ -495,4 +513,113 @@ func splitHostPort(addr string) (string, int, error) {
 	}
 	port, err := strconv.Atoi(p)
 	return host, port, err
+}
+
+// loopbackListener accepts connections on a free loopback port until the test
+// ends, so a connect to it succeeds unless something blocks it.
+func loopbackListener(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening on loopback: %v", err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// probeSandbox runs a sandboxed terminal whose command tries one loopback
+// connect and returns the terminal's exit code.
+func probeSandbox(t *testing.T, i *harness.Instance, projectID string, port int) int {
+	t.Helper()
+	r := i.MustCLI("terminal", "start", "--project", projectID, "--template", "probe",
+		"--extra-arg", "-z", "--extra-arg", "-w", "--extra-arg", "5", "--extra-arg", "127.0.0.1", "--extra-arg", strconv.Itoa(port), "--json")
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	r.JSON(t, &term)
+	i.WaitEvent(harness.EventQuery{Key: "session.exited", Fields: map[string]any{"session_id": term.TerminalID}}, 60*time.Second)
+	var list struct {
+		Terminals []struct {
+			ID       string `json:"id"`
+			ExitCode *int   `json:"exitCode"`
+		} `json:"terminals"`
+	}
+	i.MustCLI("terminal", "list", "--json").JSON(t, &list)
+	for _, x := range list.Terminals {
+		if x.ID == term.TerminalID {
+			if x.ExitCode == nil {
+				// session.exited was seen, and docs/cli.md makes exitCode optional:
+				// an ended terminal that reports none exited 0.
+				return 0
+			}
+			return *x.ExitCode
+		}
+	}
+	t.Fatalf("terminal %s is not in terminal list", term.TerminalID)
+	return -1
+}
+
+func sandboxInstance(t *testing.T, denied string) (*harness.Instance, string) {
+	t.Helper()
+	i := harness.Start(t, harness.Options{
+		Presence: approveGrant,
+		Settings: map[string]json.RawMessage{
+			"session_sandbox":    json.RawMessage(`{"denied_loopback_ports":` + denied + `}`),
+			"terminal_templates": json.RawMessage(`[{"id":"probe","name":"Probe","command":"/usr/bin/nc","sandbox":true}]`),
+		},
+	})
+	i.WaitSessionHost(60 * time.Second)
+	dir := filepath.Join(i.Home, "work", "acme")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("creating %s: %v", dir, err)
+	}
+	body, _ := json.Marshal(map[string]any{"name": "Acme probe", "path": dir, "allowed_templates": []string{"probe"}})
+	var p project
+	i.CLIWith(harness.CLIOpts{Stdin: body}, "project", "create", "--file", "-", "--json").JSON(t, &p)
+	return i, p.ID
+}
+
+func TestSandboxDeniedLoopbackPorts(t *testing.T) {
+	t.Parallel()
+	denied, allowed := loopbackListener(t), loopbackListener(t)
+
+	t.Run("list_replaces_default", func(t *testing.T) {
+		t.Parallel()
+		i, pid := sandboxInstance(t, "["+strconv.Itoa(denied)+"]")
+		if code := probeSandbox(t, i, pid, allowed); code != 0 {
+			t.Fatalf("connect to a port not on the list exited %d, want 0", code)
+		}
+		if code := probeSandbox(t, i, pid, denied); code == 0 {
+			t.Fatalf("connect to a listed port exited 0, want a refusal")
+		}
+	})
+
+	t.Run("own_api_port_always_denied", func(t *testing.T) {
+		t.Parallel()
+		i, pid := sandboxInstance(t, "[]")
+		_, port, _ := splitHostPort(i.Ready.Listeners["api"])
+		if code := probeSandbox(t, i, pid, port); code == 0 {
+			t.Fatalf("connect to the instance's own API port exited 0, want a refusal")
+		}
+	})
+
+	t.Run("bad_entry_refuses_launch", func(t *testing.T) {
+		t.Parallel()
+		i, pid := sandboxInstance(t, "[70000]")
+		tr := harness.NewTrace(t)
+		r := i.CLIWith(harness.CLIOpts{Trace: tr}, "terminal", "start", "--project", pid, "--template", "probe", "--json")
+		if r.Code == 0 {
+			t.Fatalf("terminal start exited 0 with an out-of-range denied port")
+		}
+		requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: tr, Fields: map[string]any{"status": "denied"}})
+	})
 }
