@@ -625,6 +625,19 @@ minting again.
 `legacy-frontend-token` is reserved: relay deletes every credential under that
 name on start, so both `mint` and `revoke` refuse that name.
 
+#### The record it writes
+
+`credential mint` appends one object to `api_credentials` in `settings.json`. The token is never stored; a seeded record holds only the SHA-256 of a token the seeder keeps.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | A UUID. |
+| `name` | string | The `--name` value. |
+| `hash` | string | Lower-case hex SHA-256 of the token's text (the 64 hex characters printed at mint, as a string, not decoded to bytes). The token is presented as `Authorization: Bearer <token>`. |
+| `classes` | array of strings | One or more of `read`, `configure`, `grant`, `execute`, `proxy`. Empty grants nothing. |
+| `created` | string | RFC 3339 time. |
+| `expires` | string | RFC 3339 time. Absent means never; an unparseable value counts as expired. |
+
 ### `credential list`
 
 Example:
@@ -1165,6 +1178,22 @@ the record — you then finish authentication from the Settings window's
 **Authenticate** button; there is no CLI door for that step, because OAuth
 here means opening a real browser and running a local callback listener.
 
+#### The record it writes
+
+`mcp register` appends one object to `external_mcps` in `settings.json`. A file seeded with the same object, before relay starts, is equivalent.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | Required. Referenced by `allowed_mcp_ids` in projects and profiles. |
+| `display_name` | string | Required. |
+| `transport` | string | `"stdio"` or `"http"`. Absent means stdio. |
+| `command` | string | Required for stdio; the program to run. |
+| `args` | array of strings | Arguments to the command. Write `[]` when none. |
+| `env` | object, string to string | Environment for the command. Write `{}` when none. A plain string is accepted and sealed on the next write. |
+| `url` | string | Required for http; the MCP endpoint. |
+| `oauth_state` | object | Written by authentication; omit on a seeded record. |
+| `tcc_services` | array of strings | Optional. Services the MCP needs from macOS. |
+
 ### `--id` — read this before you register anything a second time
 
 `--id` is optional and defaults to a slug of `--name`: lowercase, every
@@ -1312,6 +1341,24 @@ start and say `Hello` and can do nothing else through relay — and the command
 says so in its output rather than leaving it silent. A relayScheduler-style
 service that both runs work through the front door and serves routes is
 `--capability frontend --capability manifest`.
+
+#### The record it writes
+
+`service register` appends one object to `services` in `settings.json`; a seeded file is equivalent.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | Required. The service's launch name. |
+| `display_name` | string | Required. |
+| `command` | string | Required. |
+| `args` | array of strings | Write `[]` when none. |
+| `env` | object, string to string | Write `{}` when none. A plain string is accepted and sealed on the next write. |
+| `working_dir` | string | Optional. |
+| `autostart` | boolean | Start with relay. Always written, `false` when off. |
+| `url` | string | Optional. |
+| `capabilities` | array of strings | Always write the array, `[]` for none. Values: `frontend`, `manifest`, `models`, `model_host`. A record with no `capabilities` key is read as an older record and migrated. |
+| `allowed_models` | array of strings | With `models`: the model ids the service may call, `["*"]` for all. Absent means none. |
+| `hide_from_menu` | boolean | Optional. Hides the service from the tray menu. |
 
 ### `service unregister`
 

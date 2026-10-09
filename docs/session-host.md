@@ -835,6 +835,96 @@ A Codex session on this machine needs a `codex` template with these folders, and
 
 `~/.codex` holds Codex's login and transcripts. Codex's own `config.toml` is not touched.
 
+## What relay expects of an agent CLI
+
+This section is the wire contract between `relay-sessions` and the `claude`, `pi` and `codex` binaries it spawns for a console session on this machine. Anything that speaks it can stand in for the real CLI. Codex's wire is under [Codex sessions](#codex-sessions) above; its binary lookup and model list are repeated here so the three sit together.
+
+### Finding the binary
+
+`relay-sessions` is given no binary path, so every lookup falls through to the well-known list. `~` is the home directory of the `relay-sessions` process (`HOME`). The first existing file wins; with none, the name is looked up on `PATH`, and with no hit the bare name is run and the spawn fails.
+
+| Kind | Order |
+|---|---|
+| claude | `~/.local/bin/claude`, `~/.claude/local/claude`, `/usr/local/bin/claude`, `/opt/homebrew/bin/claude`, then `PATH` |
+| pi | `~/.bun/bin/pi`, `~/.local/bin/pi`, `~/.npm-global/bin/pi`, `/opt/homebrew/bin/pi`, `/usr/local/bin/pi`, then `PATH` |
+| codex | `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`, `~/.local/bin/codex`, then `PATH` |
+
+A machine that has a real CLI under `/usr/local/bin` or `/opt/homebrew/bin` therefore shadows a stand-in placed on `PATH`. The child's `PATH` is the inherited one with `~/.local/bin` appended when missing.
+
+### What every spawn has in common
+
+- The child starts in the session directory, with stdin and stdout as pipes. Stderr is a third pipe, read line by line into the service log ([Provider stderr](#provider-stderr)).
+- The environment is the `relay-sessions` environment minus every relay credential variable, plus `RELAY_SESSION_ID`, and `RELAY_BRIDGE_SOCKET` and `RELAY_MODEL_SOCKET` when those sockets exist. No token is ever added.
+- A sandboxed launch runs the binary under the shim ([The shim](#the-shim-relay-sessions-exec)); the binary sees the same argv, stdin and stdout.
+- Both protocols are one JSON object per line, newline-terminated, in each direction. Blank lines are skipped. A line longer than 10 MiB ends reading. A stdout line that is not JSON is passed on as `raw_output` and does not stop the session.
+- Relay writes nothing to stdin until a user sends a message. It does not wait for any output at start-up: the spawn counts as started when the process exists.
+- Relay ends a child by closing its stdin, sending `SIGINT`, and after 3 s killing it. The CLI is expected to exit on stdin EOF or `SIGINT`.
+- Exit is read from the process status. Exit 0 is a quiet end. A non-zero code logs a warning with the stderr tail. In both cases relay emits `process_exited` with `{"exitCode": N}`, unless it killed the child itself, or a newer spawn of the same session has replaced it.
+- A session idle for 15 minutes with no stdin or stdout line is killed.
+
+### claude
+
+Argv, in this order. Flags in brackets appear only when the condition holds.
+
+```
+--print --output-format stream-json --input-format stream-json --verbose --model <model>
+[--resume <id> | --session-id <uuid>]
+[--append-system-prompt-file <path>]
+[--permission-mode <mode>] [--dangerously-skip-permissions]
+[--allowedTools <a,b>] [--disallowedTools <a,b>]
+[--mcp-config <path>]
+[--tools <list> --strict-mcp-config]
+```
+
+`--resume` carries the `session_id` the CLI reported in its last `system`/`init` line. A first spawn passes `--session-id` with a fresh UUID. The system prompt and the MCP config are 0600 files named by path; the CLI may read them.
+
+**stdin.** One line per user message:
+
+```json
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+```
+
+Image attachments precede the text block as `{"type":"image","source":{"type":"base64","media_type":"…","data":"…"}}`.
+
+**stdout, for one turn.** Relay needs these lines, in order:
+
+1. `{"type":"system","subtype":"init","session_id":"<id>","model":"<model>","cwd":"<dir>","tools":[…],"mcp_servers":[…]}`. It sets the session's resume id. The CLI emits it after the first user line, not at start-up.
+2. `{"type":"assistant","message":{"id":"<msg id>","content":[{"type":"text","text":"…"}]}}`. A snapshot with a new `id` opens a message; every content block in it becomes a start, delta and stop. A text, `thinking` or `tool_use` block is understood.
+3. `{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":N,"output_tokens":N},"total_cost_usd":0}`. It ends the turn (`message_complete`). `is_error:true`, or a `subtype` starting with `error`, ends it as a failed turn. `usage` is optional.
+
+Streaming forms are also read: `{"type":"assistant","index":N,"content_block":{…}}`, `{"type":"assistant","index":N,"delta":{"type":"text_delta","text":"…"}}` and `{"type":"assistant","index":N,"content_block_stop":true}`. A `user` line carrying `tool_result` blocks becomes a tool result. Any other `type` is passed on unchanged. A `control_request` line is answered on stdin; only SSH-host sessions produce one.
+
+### pi
+
+Argv: `--mode rpc [--provider relay-router --model <id>] [--thinking <level>] [--session <id>] --session-dir <dir> [--append-system-prompt <path>] [--skill <dir>] [<extra args>]`. The environment adds `PI_OFFLINE=1` and `PI_SKIP_VERSION_CHECK=1`, and `PI_CODING_AGENT_DIR` when the session is brokered.
+
+**stdin.** Relay sends commands, one JSON object per line:
+
+- `{"id":"<uuid>","type":"prompt","message":"hello"}`. A user message. Images, if any, ride in `images`.
+- `{"id":"<uuid>","type":"get_state"}`. Sent once, just after start.
+- `{"type":"abort"}`. Stops the turn.
+
+**stdout.** A reply to a command with an `id` is `{"type":"response","id":"<same id>","success":true,"data":{…}}`. The reply to `get_state` carries `data.sessionId`, which relay keeps for `--session`. A reply that does not arrive within 10 s fails that command and is only logged. The `prompt` reply is not awaited.
+
+For one turn relay needs:
+
+1. `{"type":"agent_start"}`. It opens the turn.
+2. `{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}`, then `text_delta` with `"delta":"…"`, then `text_end`. `thinking_*` and `toolcall_*` are the same shape.
+3. `{"type":"agent_end"}`. It ends the turn (`message_complete`). Usage is read from it when present.
+
+`message_start`, `message_end`, `turn_start`, `turn_end` and `agent_settled` are accepted and ignored. Any other `type` is passed on as `raw_output`, with one warning per type per spawn.
+
+**Model list.** `pi --list-models` (8 s cap, 5 minute cache; stdout and stderr both read) prints a fixed-width table. The header line must contain the words `provider`, `model` and `context`, in that order, and they set the column offsets. Each following row gives a lower-case `provider` (letters, digits, `-`) and a model id. A model is listed as `pi/<provider>/<id>`, group `Pi · <provider>`. Example:
+
+```
+provider   model       context
+fake       fake-echo   128K
+```
+
+### codex
+
+`<codex> app-server` over its own JSON-RPC wire (above). The model list is `<codex> debug models` (8 s cap, 5 minute cache; stdout only), a JSON document `{"models":[{"slug":"…","display_name":"…","visibility":"list"}]}`. Only `visibility:"list"` rows are shown, as `codex/<slug>`.
+
 ## Drop-in
 
 A terminal can take over a headless Claude session. relay hosts the terminal; this host stops the headless process, holds the session and hands it back when the terminal exits. relay's side (the HTTP route, the bridge door and `relay drop-in`) is in [`docs/cli.md`](cli.md).
