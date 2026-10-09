@@ -309,15 +309,13 @@ type copyReadResult struct {
 
 func (k *keychainKeyring) copyItem() ([]byte, error) {
 	// This is subtle: cService/cAccount are allocated and freed INSIDE the
-	// goroutine, not in copyItem itself. If keychainReadTimeout fires,
+	// closure, not in copyItem itself. If keychainReadTimeout fires,
 	// copyItem returns while relaySealCopy is still blocked in the kernel
 	// on a dialog nobody may ever answer — freeing C strings the blocked
 	// call is still holding a pointer to would be a use-after-free the
 	// moment (if ever) it finally returns. The goroutine outlives copyItem
-	// on that path; done is buffered so its eventual send never blocks on
-	// a receiver that stopped listening.
-	done := make(chan copyReadResult, 1)
-	go func() {
+	// on that path.
+	r, ok := callWithin(keychainReadTimeout, func() copyReadResult {
 		cService := C.CString(k.service)
 		defer C.free(unsafe.Pointer(cService))
 		cAccount := C.CString(k.account)
@@ -330,9 +328,9 @@ func (k *keychainKeyring) copyItem() ([]byte, error) {
 			defer C.CFRelease(C.CFTypeRef(out))
 			n := C.CFDataGetLength(out)
 			ptr := C.CFDataGetBytePtr(out)
-			done <- copyReadResult{data: C.GoBytes(unsafe.Pointer(ptr), C.int(n))}
+			return copyReadResult{data: C.GoBytes(unsafe.Pointer(ptr), C.int(n))}
 		case C.errSecItemNotFound:
-			done <- copyReadResult{err: ErrKeyMissing}
+			return copyReadResult{err: ErrKeyMissing}
 		case C.errSecInteractionNotAllowed:
 			// kSecUseAuthenticationUISkip (relaySealCopy) turns "an item
 			// exists here but its ACL does not name relay" into this
@@ -341,26 +339,23 @@ func (k *keychainKeyring) copyItem() ([]byte, error) {
 			// ErrKeyMissing: the item is present, and the operator's next
 			// move is to find out what put it there, not to treat the key
 			// as simply gone.
-			done <- copyReadResult{err: fmt.Errorf("%w: OSStatus %d (errSecInteractionNotAllowed) for %s/%s",
+			return copyReadResult{err: fmt.Errorf("%w: OSStatus %d (errSecInteractionNotAllowed) for %s/%s",
 				ErrKeyUnreadable, int(status), k.service, k.account)}
 		default:
-			done <- copyReadResult{err: fmt.Errorf("sealed: reading keychain item: OSStatus %d", int(status))}
+			return copyReadResult{err: fmt.Errorf("sealed: reading keychain item: OSStatus %d", int(status))}
 		}
-	}()
-
-	select {
-	case r := <-done:
+	})
+	if ok {
 		return r.data, r.err
-	case <-time.After(keychainReadTimeout):
-		// Same named refusal as errSecInteractionNotAllowed, on purpose:
-		// from the operator's chair both mean "an item is there and relay
-		// could not use it," and resolveSealer's message for ErrKeyUnreadable
-		// already tells them to go look rather than reporting the key as
-		// absent.
-		return nil, fmt.Errorf("%w: the login keychain did not answer within %s for %s/%s -- "+
-			"consistent with a confirmation dialog waiting on a human relay will not wait for",
-			ErrKeyUnreadable, keychainReadTimeout, k.service, k.account)
 	}
+	// Same named refusal as errSecInteractionNotAllowed, on purpose:
+	// from the operator's chair both mean "an item is there and relay
+	// could not use it," and resolveSealer's message for ErrKeyUnreadable
+	// already tells them to go look rather than reporting the key as
+	// absent.
+	return nil, fmt.Errorf("%w: the login keychain did not answer within %s for %s/%s -- "+
+		"consistent with a confirmation dialog waiting on a human relay will not wait for",
+		ErrKeyUnreadable, keychainReadTimeout, k.service, k.account)
 }
 
 // deleteItem carries the same keychainReadTimeout bound as copyItem, for
@@ -374,8 +369,7 @@ func (k *keychainKeyring) copyItem() ([]byte, error) {
 // for a blocked recovery -- the one path this whole design exists to keep
 // open.
 func (k *keychainKeyring) deleteItem() error {
-	done := make(chan error, 1)
-	go func() {
+	err, ok := callWithin(keychainReadTimeout, func() error {
 		cService := C.CString(k.service)
 		defer C.free(unsafe.Pointer(cService))
 		cAccount := C.CString(k.account)
@@ -383,18 +377,14 @@ func (k *keychainKeyring) deleteItem() error {
 
 		status := C.relaySealDelete(cService, cAccount)
 		if status != C.errSecSuccess && status != C.errSecItemNotFound {
-			done <- fmt.Errorf("sealed: deleting keychain item: OSStatus %d", int(status))
-			return
+			return fmt.Errorf("sealed: deleting keychain item: OSStatus %d", int(status))
 		}
-		done <- nil
-	}()
-
-	select {
-	case err := <-done:
+		return nil
+	})
+	if ok {
 		return err
-	case <-time.After(keychainReadTimeout):
-		return fmt.Errorf("sealed: deleting keychain item %s/%s did not complete within %s -- "+
-			"consistent with a confirmation dialog waiting on a human relay will not wait for",
-			k.service, k.account, keychainReadTimeout)
 	}
+	return fmt.Errorf("sealed: deleting keychain item %s/%s did not complete within %s -- "+
+		"consistent with a confirmation dialog waiting on a human relay will not wait for",
+		k.service, k.account, keychainReadTimeout)
 }
