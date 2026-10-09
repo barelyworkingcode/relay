@@ -81,6 +81,7 @@ they had. `relay doors` lists every door, its credential class and its gates.
 
 | Command | Needs service | Prompts | Works over SSH |
 |---|---|---|---|
+| `relay serve` | no (it is the service) | no | yes |
 | `relay grant` | yes | no | yes |
 | `relay audit` | no | no | yes |
 | `relay logs` | no | no | yes |
@@ -147,18 +148,59 @@ presence-gated ones add the console-session check.
 
 ### Machine-readable output
 
-`relay audit`, `relay grant`, `relay enrol requests`, `relay logs` and every
-verb added for the Settings window and the tray accept `--json` and emit the
-same data as structured JSON instead of a text line or table
-(`relay logs --json` prints each log line exactly as stored). A `--json` run
-prints one line on stdout. On failure stdout is empty, stderr carries
-`error: ...` and the exit code is 1. A verb that takes a request body takes
-`--file F`, the matching HTTP route's JSON body, or `-` for stdin.
-`relay mcpExec --list` (and its `relay mcp call --list` spelling) spells its
-machine-readable form `--schema` instead: plain `--list` prints a table,
-and `--schema` switches it to JSON that also includes each tool's input
-schema — what a SKILL.md generator consumes. The older
-`list` subcommands print tables only.
+Exactly these verbs accept `--json`:
+
+| Verb | `--json` prints |
+|---|---|
+| `relay audit` | JSONL, one audit record per line, oldest first |
+| `relay logs` | each log line as stored, one per line |
+| `relay grant` | an indented array of grant records |
+| `relay enrol requests` | an indented array of pending requests |
+| `relay doors`, `relay status` | one document on one line |
+| `relay remote show`, `relay remote set` | the remote-listener settings |
+| `relay host probe`, `relay host disconnect` | the host record |
+| `relay sealed reset` | `{"reset":true}` |
+| `relay model list` | the model catalogue |
+| `relay service start`, `stop`, `action`, `config` | the result of the act |
+| `relay session start`, `list`, `message`, `stop`, `resume`, `mode` | the session host's answer |
+| `relay terminal start`, `list`, `log`, `stop`, `persistent-list`, `persistent-kill` | the session host's answer |
+| `relay files watch` | one frame per line |
+| `relay login sessions`, `relay login sign-out` | the browser sessions |
+| `relay mcp authenticate`, `reset-permissions`, `scope-fields` | the result of the act |
+| `relay project create`, `edit`, `remove`, `rotate-token`, `token`, `regen-skill` | the project or the result |
+
+`relay mcpExec --list` (and `relay mcp call --list`) has no `--json`; its
+machine-readable form is `--schema`. Every other verb prints text only, and its
+section says "No JSON form" and quotes the lines a script reads. Each section
+below has a table of the JSON fields: name, JSON type and meaning. A field
+marked "optional" is absent, not `null`, when it has no value.
+
+Most `--json` verbs print one line on stdout. `relay grant` and
+`relay enrol requests` print indented, multi-line JSON; `relay audit --json`
+and `relay logs --json` print one object per line; `relay files watch --json`
+prints one object per frame. On failure stdout is empty, stderr carries
+`error: ...` and the exit code is 1. The one exception is `relay model list
+--json` when the session host is down: it prints the catalogue document with
+`"status":"unavailable"` and an empty `models` array on stdout, then
+`error: session host unavailable` on stderr, and exits 1.
+
+A verb that takes a request body takes `--file F`, the matching HTTP route's
+JSON body, or `-` for stdin. The body is limited to 8 MiB.
+
+### Exit codes
+
+| Exit | Meaning |
+|---|---|
+| `0` | The verb did what it says. `-h` also exits `0` for every verb except `serve`, `logs` and `sandbox`, which exit `2`. |
+| `1` | Anything else the verb refuses or fails on: relay is not running (`error: relay is not running at DIR; ...`); a presence-gated verb run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`); a required flag missing (`error: --id is required`); the server's answer (`error: bridge error (code -32603): project not found`); a group word with no verb or an unknown verb (the commands of the group are listed on stderr). |
+| `2` | The Go flag parser rejected the command line: an unknown flag, a value of the wrong type (`audit --tail x`), or, for `serve`, `logs` and `sandbox`, any usage error. Usage is printed on stderr. |
+
+A verb with a different rule says so in its own section (`logs` uses `1` for
+"nothing matched"; `mcpExec` exits `1` when the tool reports an error).
+The `error: ` prefix marks a failure the verb reports itself; the flag parser's
+own messages (`flag provided but not defined: -bogus`) and `unknown command`
+carry no prefix. With the server running and no console session, a gated verb
+exits `1` and changes nothing.
 
 ## `relay serve`
 
@@ -174,6 +216,13 @@ stdout, the path of `DIR/ready.json`, and nothing else. `SIGTERM` or `SIGINT`
 cleans up and exits `0`. A start failure exits `1` naming DIR; a second server
 on the same DIR fails with `another relay server already owns this
 configuration directory (DIR)`.
+
+No JSON form. The only stdout is the one line described above, for example
+`/tmp/acme/ready.json`. Exit codes: `0` after `SIGTERM` or `SIGINT`; `1` when
+the server cannot start; `2` for an extra argument or `-h`
+(`relay serve: unexpected argument "-h"`, then `Usage: relay [--config-dir DIR]
+serve`). Needs service: no (it is the service). Prompts: no. Works over SSH:
+yes.
 
 DIR must be short enough for its sockets to bind: the longest socket path may
 be 103 bytes, else the start fails with `config dir DIR is too long: socket
@@ -448,7 +497,13 @@ relay grant [--project ID-OR-NAME] [--json]
 | `--project` | Show one record by id or name. Default: every project and access profile. |
 | `--json` | Emit the same data as JSON instead of a table. |
 
-Needs service: no. Prompts: no. Works over SSH: yes.
+Needs service: yes. Prompts: no. Works over SSH: yes.
+
+Exit codes: `0` on success, including when nothing is registered (it prints
+`no projects or access profiles`, in text even with `--json`, so a script
+checks the first character). `1` when `--project` matches nothing
+(`error: no project or access profile matching "NAME"`) or relay is not
+running. `2` for an unknown flag.
 
 Example — one access profile on this machine:
 
@@ -499,7 +554,30 @@ ACCESS PROFILE  Hermes Mail  (id: 477d9a17-da03-45eb-a433-764f93fe96fc)
 ```
 
 `--json` carries the same enrolments as a structured `enrolments` array on
-each record.
+each record. It prints one indented JSON array, one element per record,
+sorted by name:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `id` | string | The project's or profile's id. |
+| `name` | string | Display name. |
+| `kind` | string | `project` or `access profile`. |
+| `path` | string, optional | The project folder; absent for an access profile. |
+| `mcps` | array | One element per granted MCP, sorted by id. Never `null`. |
+| `mcps[].mcp` | string | The MCP id. |
+| `mcps[].access` | string | The access mode for that MCP, such as `read`. |
+| `mcps[].outbound` | string | `allowed` or `blocked`: whether the MCP may reach the external network. |
+| `mcps[].tools` | string | The tool patterns joined by `, `, or `all tools`, `all tools except N`, or `no tools`. |
+| `mcps[].scope` | object of string, optional | Scope field name to its value as stored JSON text, for example `"[\"Alice\"]"`. |
+| `mcps[].warnings` | array of string, optional | The `** LOUD CAPS **` texts for a scope that reaches a filesystem root or home folder. |
+| `mounts` | array, optional | File-share mounts the record grants. |
+| `mounts[].id` | string | Mount id. |
+| `mounts[].access` | string | Mount access mode. |
+| `mounts[].path` | string | Mount path. |
+| `mounts[].warnings` | array of string, optional | Breadth warnings for the mount path. |
+| `enrolments` | array, optional | Enrolments that reach this record, sorted by `client_id`. |
+| `enrolments[].client_id` | string | The enrolment's client id. |
+| `enrolments[].cli_admin` | boolean | Whether that certificate may narrow this profile's own grant. |
 
 ## `relay audit`
 
@@ -519,8 +597,8 @@ relay audit [--tail N] [--project ID] [--mcp ID] [--outcome OUTCOME]
 | `--project` | Filter by project / access profile id. A remote actor's `project_id` names an access profile — same field, same ids. |
 | `--mcp` | Filter by MCP id. |
 | `--outcome` | `ok`, `error`, `tool_error`, `denied`, `unauthorized`, `throttled`, `pending`. `scope_violation` is also accepted here even though it is a *field*, not an outcome — it selects `tool_error` rows the MCP itself marked as a resource-scope refusal. |
-| `--kind` | Actor kind: `project`, `service`, `remote`, `relay`, `control`, `operator`, `unknown`. |
-| `--event` | `call_tool`, `list_tools`, `list_skills`, `mcp_down`, `mcp_up`, `control_decision`, `credential_issued`, `credential_revoked`. |
+| `--kind` | Actor kind: `project`, `service`, `remote`, `relay`, `control`, `operator`, `project_session`, `unknown`. |
+| `--event` | `call_tool`, `list_tools`, `list_skills`, `mcp_down`, `mcp_up`, `control_decision`, `credential_issued`, `credential_revoked`, `model_call`, `model_list`, `session_message`. |
 | `--grep` | Substring match over tool, MCP, error, project/profile, caller, args, and an issuance record's kind/identifier/name/grants. |
 | `--json` | Emit raw JSONL (oldest first) instead of a table. |
 | `--path` | Print the log file's path and exit. |
@@ -552,6 +630,36 @@ $ relay audit --tail 2 --json
 {"id":"dc0846d4-...","ts":"2026-08-28T21:36:58.793088Z","dur_ms":0,"event":"control_decision","actor":{"kind":"control","auth":"token","cred_id":"81d25ca0-..."},"outcome":"ok","scope":null,"method":"GET","path":"/api/projects","class":"read","transport":"tcp"}
 {"id":"f32f7d1a-...","ts":"2026-08-28T21:36:58.800708Z","dur_ms":0,"event":"control_decision","actor":{"kind":"control","auth":"token","cred_id":"81d25ca0-..."},"outcome":"denied","error":"class not granted","scope":null,"method":"POST","path":"/api/projects","class":"configure","transport":"tcp"}
 ```
+
+Each `--json` line is one audit record. The fields every record has, and the
+ones a script usually reads (the full set is in
+[`audit-log.md`](audit-log.md)):
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `id` | string | Record id (a UUID). |
+| `ts` | string | RFC 3339 time with fractional seconds, UTC. |
+| `dur_ms` | number | Duration in milliseconds. `0` for a record with no duration. |
+| `event` | string | The event kind, one of the `--event` values. |
+| `actor` | object | Who acted. `actor.kind` is one of the `--kind` values and `actor.auth` names how it authenticated. Optional members: `project_id`, `project_name`, `client_id`, `cred_id`, `session_id`, `service_id`, `pid`, `proc`, `parent`, `cwd`, `fingerprint`, `remote_addr`. |
+| `outcome` | string | One of the `--outcome` values. |
+| `scope` | object or `null` | Scope values injected into the call, by field name. `null` when none. |
+| `mcp_id`, `tool` | string, optional | The MCP and tool of a tool call. |
+| `args` | any JSON, optional | The call's arguments, when argument logging is on. |
+| `error` | string, optional | Why a call failed or was refused. |
+| `scope_violation` | boolean, optional | `true` on a `tool_error` the MCP marked as a resource-scope refusal. |
+| `method`, `path`, `class`, `transport` | string, optional | The request of a `control_decision` row. |
+| `phase` | string, optional | `intent` or `completion`, on the two rows of a remote call. Absent on a local call. |
+
+Text mode prints the header `TIME  OUTCOME  PROJECT  MCP  TOOL  MS  CALLER
+DETAIL`, one row per record, a dash in an empty column. With no matching record
+it prints `no matching tool calls`.
+
+Exit codes: `0` when it printed (a filter that matches nothing is still `0`,
+and an unknown `--kind`, `--outcome` or `--event` value is not an error, it
+matches nothing). `1` when the log file does not exist
+(`error: audit: no log at PATH (auditing may be disabled, or relay has not run
+yet)`). `2` for an unknown flag or a bad `--tail`.
 
 Three outcomes worth internalising, because they mean different things and
 are enforced in different places:
@@ -607,6 +715,30 @@ the operation that wrote it.
 | `0` | At least one line was printed (with `--follow --event`: the first match). |
 | `1` | Nothing matched, or the timeout or a signal came before any match. |
 | `2` | Usage error, an unreadable log, or no relay log at DIR (the message names DIR). |
+
+Each `--json` line is one log object. Every line has the nine keys of
+[`logging-standard.md`](logging-standard.md#line-format); an event line adds
+`event`, `reason` and the event's own keys ([`events.md`](events.md)):
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `ts` | string | UTC RFC 3339 time with milliseconds, ending in `Z`. |
+| `level` | string | `error`, `warn`, `info` or `debug`. |
+| `msg` | string | Short human text. |
+| `service` | string | Who wrote the line: `relay`, or `relaysessions` for the session host. |
+| `op` | string | The operation, dotted and lower case; `log` for a plain message. |
+| `status` | string | `ok`, `error` or `denied`. |
+| `duration_ms` | number | How long the operation took; `0` for a point in time. |
+| `error` | string | The failure; empty when `status` is `ok`. |
+| `trace_id` | string | The trace id, or an empty string. |
+| `event` | string, optional | The event key, on an event line only. |
+| `reason` | string, optional | A stable snake_case code for a status other than `ok`. |
+
+Any further keys are the event's own (`service_id`, `phase`, `path`, ...).
+
+Text mode prints one line per record: the `ts`, the level, the service, the
+`op`, the `status`, then `msg="..."` and the remaining keys as `key=value`:
+`2026-10-09T21:12:19.103Z info  relay log ok msg="settings loaded"`.
 
 An invalid `--trace` exits `1` from the global parser before `logs` runs; its
 message tells it apart from "no match".
@@ -666,6 +798,10 @@ minting again.
 `legacy-frontend-token` is reserved: relay deletes every credential under that
 name on start, so both `mint` and `revoke` refuse that name.
 
+No JSON form. A script reads the line that starts `  token:` (two spaces, then
+64 hex characters) and the line that starts `  id:`. Exit codes: `0` minted;
+`1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing `--name`, an empty or unknown `--class` and a negative `--ttl` are `1` with `error: ...`.
+
 ### `credential list`
 
 Example:
@@ -681,6 +817,11 @@ awaiting the next mint's lazy reap. `EXPIRES` prints `never` for a credential
 minted with no `--ttl`, and `<timestamp> (expired)` for one whose time has
 passed. Needs service: yes (`credential.list`; the answer carries no hash).
 Prompts: no. Works over SSH: yes.
+
+No JSON form. Columns: `ID  NAME  CLASSES  CREATED  EXPIRES`, separated by runs
+of spaces. With none registered it prints `no credentials`; with only expired
+ones and no `--include-expired` it prints `no live credentials (--include-expired
+shows the expired ones)`. Exit codes: `0`; `1` when relay is not running.
 
 ### `credential revoke`
 
@@ -701,6 +842,9 @@ revoked credential "5d6dad87-4a31-40f6-88f8-9193adcba554"
   classes: read,configure
   its token stops authenticating on the next request; nothing else was touched
 ```
+
+No JSON form. Exit codes: `0` revoked; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. An unknown id is `1`:
+`error: bridge error (code -32603): no credential found with id "ID"`.
 
 ## `relay enrol`
 
@@ -726,17 +870,21 @@ gate and digest as `sign`) or refuses it from here — never self-service.
 ```
 relay enrol create --client-id ID --grant PROFILE-ID [--grant PROFILE-ID...]
                     [--window-seconds N] [--max-calls N] [--max-result-bytes N]
+                    [--mount-max-ops N] [--mount-max-read-bytes N] [--mount-max-write-bytes N]
 relay enrol sign --client-id ID --csr PATH|- [--grant PROFILE-ID...]
                   [--window-seconds N] [--max-calls N] [--max-result-bytes N]
+                  [--mount-max-ops N] [--mount-max-read-bytes N] [--mount-max-write-bytes N]
                   [--out DIR]
 relay enrol list
 relay enrol update --client-id ID [--window-seconds N] [--max-calls N]
-                    [--max-result-bytes N] [--grant PROFILE-ID...] | [--clear-grants]
+                    [--max-result-bytes N] [--mount-max-ops N] [--mount-max-read-bytes N]
+                    [--mount-max-write-bytes N] [--grant PROFILE-ID...] | [--clear-grants]
                     [--cli-admin[=true|false]]
 relay enrol revoke --client-id ID
 relay enrol requests [--json]
 relay enrol approve --id REQUEST_ID --client-id ID (--grant PROFILE-ID [--grant PROFILE-ID...] | --no-grant)
                      [--window-seconds N] [--max-calls N] [--max-result-bytes N]
+                     [--mount-max-ops N] [--mount-max-read-bytes N] [--mount-max-write-bytes N]
 relay enrol refuse --id REQUEST_ID
 relay enrol ca-fingerprint
 ```
@@ -750,6 +898,9 @@ relay enrol ca-fingerprint
 | `--window-seconds` | Budget window, seconds (default 3600). |
 | `--max-calls` | Max tool calls per window (default 120). |
 | `--max-result-bytes` | Max cumulative result bytes per window (default 67108864, 64 MiB). |
+| `--mount-max-ops` | Max mount-plane 9P operations per window (default 500000). |
+| `--mount-max-read-bytes` | Max mount-plane bytes read per window (default 536870912, 512 MiB). |
+| `--mount-max-write-bytes` | Max mount-plane bytes written per window (default 536870912, 512 MiB). |
 
 Needs service: yes. Prompts: yes. Works over SSH: no.
 
@@ -764,6 +915,12 @@ Usage of enrol create:
     	max tool calls per window (default 120)
   -max-result-bytes int
     	max cumulative result bytes per window (default 67108864)
+  -mount-max-ops int
+    	max mount-plane 9P operations per window (default 500000)
+  -mount-max-read-bytes int
+    	max mount-plane bytes read per window (default 536870912)
+  -mount-max-write-bytes int
+    	max mount-plane bytes written per window (default 536870912)
   -window-seconds int
     	budget window in seconds (default 3600)
 ```
@@ -789,6 +946,15 @@ created enrolment "hermes"
   this bundle's private key was generated on this host — prefer `relay enrol sign`, where the key never leaves the client machine.
 ```
 
+`--mount-max-ops`, `--mount-max-read-bytes` and `--mount-max-write-bytes` set the
+mount-plane budget of the same window: operations (default 500000), bytes read
+(default 536870912, 512 MiB) and bytes written (default 536870912).
+
+No JSON form. A script reads `  fingerprint: sha256:<64 hex>`, `  profiles:` (the
+granted profile ids joined by commas, or `-`) and `  bundle:` (the directory to
+copy to the client). Exit codes: `0` created; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing
+`--client-id` is `1`: `error: --client-id is required`.
+
 ### `enrol sign`
 
 The CSR flow (ADR-018 decision 6 step 1): the client generates its own
@@ -803,6 +969,9 @@ never writes to disk — a private key it did not generate itself.
 | `--window-seconds` | Budget window, seconds (default 3600). |
 | `--max-calls` | Max tool calls per window (default 120). |
 | `--max-result-bytes` | Max cumulative result bytes per window (default 67108864, 64 MiB). |
+| `--mount-max-ops` | Max mount-plane 9P operations per window (default 500000). |
+| `--mount-max-read-bytes` | Max mount-plane bytes read per window (default 536870912, 512 MiB). |
+| `--mount-max-write-bytes` | Max mount-plane bytes written per window (default 536870912, 512 MiB). |
 | `--out` | Also write `client.crt` and `ca.crt` into this directory, for copying to the client machine. |
 
 Needs service: yes. Prompts: yes. Works over SSH: no — and a CSR's natural
@@ -835,25 +1004,35 @@ secret: `client.crt` and `ca.crt` only. `--out` copies are public
 certificates too, so they are written `0644` rather than the config-dir
 copy's `0600`.
 
+`--mount-max-ops`, `--mount-max-read-bytes` and `--mount-max-write-bytes` set the
+mount-plane budget of the same window: operations (default 500000), bytes read
+(default 536870912, 512 MiB) and bytes written (default 536870912).
+
+No JSON form. A script reads the `  fingerprint:` and `  certificate:` lines.
+Exit codes: `0` signed; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing `--client-id` or `--csr` is `1`.
+
 ### `enrol list`
 
-Real capture — this machine's five enrolments, one per project + read/write
-mode combination:
+Example, two enrolments:
 
 ```
 $ relay enrol list
-CLIENT ID        PROFILES                              CLI-ADMIN  CALLS/WINDOW  BYTES/WINDOW  CREATED               FINGERPRINT
-hermes           477d9a17-da03-45eb-a433-764f93fe96fc  -          120/3600s     67108864      2026-08-26T00:02:54Z  sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
-hermes-files     59c19c5b-b248-493c-a094-4397a56c8693  -          120/3600s     67108864      2026-08-26T14:32:16Z  sha256:9820e514f38b35d2b1af8687260125853b9e7577b3e37036224ad438f1379bb1
-hermes-files-ro  aaaabf48-95c9-4d72-97b8-7060138930f1  -          120/3600s     67108864      2026-08-26T14:32:16Z  sha256:d1846a1b393e738dfe7043a5299cd1f67a9c203bdb01d27cb070c19228f4c6ca
-hermes-v3        b0000000-0000-4000-8000-000000000001  -          120/3600s     67108864      2026-08-26T18:55:54Z  sha256:79129197d148052d196e1d4ad2fbc4b4a64d770024601043a7943f5b9b5fcaa0
-hermes-v3-ro     b0000000-0000-4000-8000-000000000002  -          120/3600s     67108864      2026-08-26T19:08:37Z  sha256:46c0903492ef4d091cfc704d92fa079cd882d4c53ed750a513a1001853adbff3
+CLIENT ID  PROFILES                              CLI-ADMIN  CALLS/WINDOW  BYTES/WINDOW  MOUNT-OPS/WINDOW  MOUNT-READ/WINDOW  MOUNT-WRITE/WINDOW  CREATED               FINGERPRINT
+hermes     477d9a17-da03-45eb-a433-764f93fe96fc  -          120/3600s     67108864      500000            536870912          536870912           2026-08-26T00:02:54Z  sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
+hermes-ro  aaaabf48-95c9-4d72-97b8-7060138930f1  on         120/3600s     67108864      500000            536870912          536870912           2026-08-26T14:32:16Z  sha256:d1846a1b393e738dfe7043a5299cd1f67a9c203bdb01d27cb070c19228f4c6ca
 ```
 
 The fingerprint is printed in full (all 64 hex characters), deliberately: an
 enrolment's audit history stays legible after it's revoked, and a shortened
 listing is the obvious place someone starts copying a truncated form from.
 Needs service: yes (`enrolment.list`). Prompts: no. Works over SSH: yes.
+
+No JSON form. Columns: `CLIENT ID  PROFILES  CLI-ADMIN  CALLS/WINDOW  BYTES/WINDOW
+MOUNT-OPS/WINDOW  MOUNT-READ/WINDOW  MOUNT-WRITE/WINDOW  CREATED  FINGERPRINT`.
+`PROFILES` is the granted ids joined by commas, or `-`. `CALLS/WINDOW` reads
+`CALLS/SECONDSs`, for example `120/3600s`; the byte and mount columns are plain
+numbers. With none it prints `no enrolments`. Exit codes: `0`; `1` when relay is
+not running.
 
 ### `enrol update`
 
@@ -883,6 +1062,12 @@ Usage of enrol update:
     	new max tool calls per window (0 resets to the default; omit to leave unchanged)
   -max-result-bytes int
     	new max cumulative result bytes per window (0 resets to the default; omit to leave unchanged)
+  -mount-max-ops int
+    	new max mount-plane operations per window (0 resets to the default; omit to leave unchanged)
+  -mount-max-read-bytes int
+    	new max mount-plane bytes read per window (0 resets to the default; omit to leave unchanged)
+  -mount-max-write-bytes int
+    	new max mount-plane bytes written per window (0 resets to the default; omit to leave unchanged)
   -window-seconds int
     	new budget window in seconds (0 resets to the default; omit to leave unchanged)
 ```
@@ -903,6 +1088,28 @@ profile and marks a `cli_admin` one loudly, and `relay audit --grep
 cli_admin` finds both the toggle and every narrowing an enrolment made of
 its own grant.
 
+`--mount-max-ops`, `--mount-max-read-bytes` and `--mount-max-write-bytes` change
+the mount-plane budget the same way as the other budget flags: `0` resets to the
+default (500000 operations, 536870912 bytes read, 536870912 bytes written), and
+omitting the flag leaves the value unchanged.
+
+No JSON form. Output, with only the lines that apply:
+
+```
+updated enrolment "hermes"
+  budget:      120 calls / 67108864 bytes per 3600s -> 60 calls / 67108864 bytes per 3600s
+  mount budget: 500000 ops / 536870912 read / 536870912 write per window -> ...
+  profiles:    PROFILE-ID -> PROFILE-ID,PROFILE-ID
+  cli-admin:   off -> ON
+  fingerprint (unchanged): sha256:<64 hex>
+```
+
+When the requested values equal the stored ones it prints `  no effective
+change (requested values match what was already stored)` before the
+fingerprint line. Exit codes: `0` updated; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. Passing both `--grant`
+and `--clear-grants`, or none of the update flags, is `1`
+(`error: nothing to update: pass at least one of ...`).
+
 ### `enrol revoke`
 
 ```
@@ -915,6 +1122,16 @@ Usage of enrol revoke:
 Needs service: yes. Prompts: yes. Works over SSH: no. Revoking removes the
 grant record; the signed certificate itself is unaffected (it just stops
 being able to reach anything, since nothing recognizes it any more).
+
+No JSON form. Output:
+
+```
+revoked enrolment "hermes"
+  fingerprint: sha256:<64 hex>
+  the certificate itself is unchanged and no access profile was touched; the record is what granted it access
+```
+
+Exit codes: `0` revoked; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing `--client-id` is `1`.
 
 ### `enrol requests`
 
@@ -941,6 +1158,29 @@ legacy carried-pin `relayremote request` row that has no comparison at all.
 
 Needs service: yes. Prompts: no. Works over SSH: yes.
 
+`--json` prints one indented JSON array, `[]` when there is nothing pending:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `request_id` | string | The id to give `enrol approve --id` or `enrol refuse --id`. |
+| `spki_sha256` | string | SHA-256 of the requesting key, 64 hex characters. |
+| `label` | string, optional | The label the client sent. |
+| `remote_addr` | string | The address the request came from. |
+| `arrived_at` | string | RFC 3339 arrival time. |
+| `expires_at` | string | RFC 3339 expiry time. |
+| `approved` | boolean | `true` once an approval signed it. |
+| `approved_client_id` | string, optional | The enrolment id the approval gave it. |
+| `sas` | string, optional | The six-character comparison code, once both sides completed it. |
+| `sas_ready` | boolean | `true` when `sas` is shown. |
+| `sas_failed` | boolean | `true` when the client opened its commitment wrongly. Such a request cannot be approved. |
+| `is_legacy_request` | boolean | `true` for a request lodged by `relayremote request`, which has no comparison code. |
+| `requested_profile` | string, optional | The access profile the client asked for. |
+
+Text mode prints the header `REQUEST ID  SAS  KEY  LABEL  FROM  ARRIVED  EXPIRES
+STATUS` and one row per request (`KEY` is `sha256:` plus 64 hex characters,
+`LABEL` is `-` when empty, `STATUS` is `pending` or `approved: CLIENT-ID`), or
+`no pending enrolment requests`. Exit codes: `0`; `1` when relay is not running.
+
 ### `enrol approve`
 
 Signs a pending request exactly as `enrol sign` does — same op, same gate,
@@ -961,6 +1201,9 @@ request whose comparison was never completed or failed.
 | `--window-seconds` | Budget window, seconds (default 3600). |
 | `--max-calls` | Max tool calls per window (default 120). |
 | `--max-result-bytes` | Max cumulative result bytes per window (default 67108864, 64 MiB). |
+| `--mount-max-ops` | Max mount-plane 9P operations per window (default 500000). |
+| `--mount-max-read-bytes` | Max mount-plane bytes read per window (default 536870912, 512 MiB). |
+| `--mount-max-write-bytes` | Max mount-plane bytes written per window (default 536870912, 512 MiB). |
 
 ```
 $ relay enrol approve -h
@@ -975,6 +1218,12 @@ Usage of enrol approve:
     	max tool calls per window (default 120)
   -max-result-bytes int
     	max cumulative result bytes per window (default 67108864)
+  -mount-max-ops int
+    	max mount-plane 9P operations per window (default 500000)
+  -mount-max-read-bytes int
+    	max mount-plane bytes read per window (default 536870912)
+  -mount-max-write-bytes int
+    	max mount-plane bytes written per window (default 536870912)
   -no-grant
     	enrol this machine with no access at all (nothing will work until `relay enrol update --grant` adds one); mutually exclusive with --grant
   -window-seconds int
@@ -986,6 +1235,16 @@ this doc, refusing over SSH names the working door instead of the generic
 advice, because a request genuinely sits in a queue: approve it from the
 Mac's own screen (Settings → Remote Clients → Pending requests) instead.
 Works over SSH: no.
+
+`--mount-max-ops`, `--mount-max-read-bytes` and `--mount-max-write-bytes` set the
+mount-plane budget as they do for `enrol create`.
+
+No JSON form. The first output line is `approved enrolment request "REQUEST-ID"
+as "CLIENT-ID"`, followed by `  fingerprint: sha256:<64 hex>` and `  profiles:`
+lines, and `  the certificate is delivered to the client on its next poll;
+nothing further to do on this host`. Exit codes: `0` approved; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. Naming
+neither `--grant` nor `--no-grant`, or both, is `1`; so is an unknown request
+id (`error: bridge error (code -32603): enrolment request not found: ID`).
 
 ### `enrol refuse`
 
@@ -1006,6 +1265,11 @@ Usage of enrol refuse:
 
 Needs service: yes. Prompts: no. Works over SSH: yes.
 
+No JSON form. Output: `refused enrolment request "REQUEST-ID"`. Exit codes: `0`
+refused; `1` for an unknown id
+(`error: bridge error (code -32603): enrolment request not found: ID`), a missing
+`--id`, or relay not running; `2` for an unknown flag.
+
 ### `enrol ca-fingerprint`
 
 Prints relay's CA certificate hash — the value a client pins with
@@ -1015,6 +1279,10 @@ one `enrol` subcommand that works with the tray stopped; the certificate is publ
 key it corresponds to is not needed to fingerprint it.
 
 Needs service: no. Prompts: no. Works over SSH: yes.
+
+No JSON form. The one line on stdout is the fingerprint, `sha256:` followed by 64
+hex characters. Exit codes: `0`; `1` when `ca.crt` does not exist yet
+(`error: no CA certificate exists yet at DIR/ca.crt: run ...`).
 
 ## `relay login`
 
@@ -1053,6 +1321,9 @@ door, useful when the tray's menu is unreachable (e.g. no one is at the
 keyboard to click it, but someone is running the CLI in the desktop
 session).
 
+No JSON form. A script reads the first line, `login code: <16 hex characters>`.
+Exit codes: `0` minted; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag.
+
 ### `login list`
 
 Real capture:
@@ -1065,6 +1336,10 @@ browser passkey 2026-08-28T21:35:51Z  xNtuo_H_0XSA…  2026-08-28T21:35:51Z  2
 
 Never prints the public key — there's no legitimate reason for a listing to
 show it. Needs service: yes (`login.list`). Prompts: no. Works over SSH: yes.
+
+No JSON form. Columns: `NAME  CREDENTIAL ID  CREATED  SIGN COUNT`. The credential
+id is shortened to 12 characters plus `…`. With none it prints `no passkeys
+registered`. Exit codes: `0`; `1` when relay is not running.
 
 ### `login revoke`
 
@@ -1084,6 +1359,9 @@ hours, until its own control-plane credential expires or is revoked with
 `relay credential revoke` (or Settings → Passkeys → Signed-in Browsers →
 Sign out).
 
+No JSON form. Output starts `revoked passkey "NAME"` and `  id: SHORT-ID`, then
+the notes about sessions. Exit codes: `0` revoked; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing `--id` is `1`.
+
 ### `login sessions`
 
 Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Lists the
@@ -1098,6 +1376,19 @@ NAME                 ID        CREATED               EXPIRES
 browser (Acme Mac)   cr_a1b2   2026-10-09T08:00:00Z  2026-10-09T20:00:00Z
 ```
 
+`--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `sessions` | array | One element per signed-in browser. `[]` when none. |
+| `sessions[].id` | string | The id to give `login sign-out --id`. |
+| `sessions[].name` | string | The credential's name. |
+| `sessions[].created` | string | RFC 3339 time. |
+| `sessions[].expires` | string | RFC 3339 time. |
+
+Text mode prints `NAME  ID  CREATED  EXPIRES`, or `no browser sessions`. Exit
+codes: `0`; `1` when relay is not running.
+
 ### `login sign-out`
 
 Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Ends one
@@ -1105,6 +1396,17 @@ browser session by its id from `relay login sessions`, the same act as
 **Sign out** in the Passkeys tab. It refuses an id that is not a browser login
 session; use `relay credential revoke` for that. `--json` prints
 `{"id","name"}`.
+
+`--id` is the session id from `relay login sessions` (required). `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `id` | string | The session id that ended. |
+| `name` | string | The credential's name. |
+
+Text mode prints `signed out NAME (ID)`. Exit codes: `0` signed out; `1` when
+`--id` is missing, names no browser session, or relay is not running; `2` for an
+unknown flag.
 
 ## `relay eve`
 
@@ -1140,6 +1442,9 @@ is at the keyboard to click the tray. Relay notifies the console when the
 window opens and again when it is consumed, naming the source address that
 took it.
 
+No JSON form. A script reads the first line, `eve passkey enrolment open until
+HH:MM:SS (5m0s, single use)`. Exit codes: `0` opened; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag.
+
 ### `eve list`
 
 Shows relay's mirror of eve's own credential list, as the running tray holds
@@ -1154,6 +1459,10 @@ Mozilla/5.0 (iPhone...)  xNtuo_H_0XSA…  2026-09-07T10:12:31Z  2026-09-07T18:02
 
 Needs service: yes (`eve.list`). Prompts: no. Works over SSH: yes.
 
+No JSON form. Columns: `LABEL  CREDENTIAL ID  CREATED  LAST USED  STATUS`. With
+none it prints `no eve passkeys reported`. Exit codes: `0`; `1` when relay is not
+running.
+
 ### `eve revoke`
 
 ```
@@ -1167,6 +1476,9 @@ Needs service: yes. Prompts: yes. Works over SSH: no. Relay records the
 revocation as pending and never touches eve directly -- eve applies it on
 its own next 30-second poll, or immediately if that browser tries to sign in
 first, and signs out every session that passkey minted.
+
+No JSON form. Output starts `eve passkey SHORT-ID: revocation pending`. Exit
+codes: `0` recorded; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing `--id` is `1`.
 
 ## `relay project`
 
@@ -1196,6 +1508,13 @@ $ relay project update --id p_acme --files-read-only=true
 project Acme (p_acme): file changes are refused (files_read_only)
 ```
 
+No JSON form. Output is one line, `project NAME (ID): file changes are refused
+(files_read_only)` or `project NAME (ID): file changes are allowed`. Exit codes:
+`0`; `1` for a missing `--id`, a value other than `true` or `false`, no
+`--files-read-only` at all (`error: nothing to update: pass
+--files-read-only=true|false`), an unknown project, or relay not running; `2`
+for an unknown flag.
+
 ### `project create`
 
 Needs service: yes. Prompts: yes (`project.grant`). Works over SSH: no.
@@ -1203,6 +1522,36 @@ Needs service: yes. Prompts: yes (`project.grant`). Works over SSH: no.
 `POST /api/projects` body for everything else (`-` reads stdin). A relative
 `--path` resolves against the current directory. `--json` prints the project as
 `POST /api/projects` returns it.
+
+`--json` prints the created project:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `id` | string | The project id. |
+| `name` | string | Display name. |
+| `path` | string | The project folder. |
+| `kind` | string, optional | `remote` for an access profile; absent for a local project. |
+| `host_id` | string, optional | The SSH host id of a project on an SSH host. |
+| `mode` | string | The project's mode. |
+| `default_for` | array of string, optional | The modes this project is the default for. |
+| `allowed_mcp_ids` | array of string | MCP ids the project reaches; `["*"]` means every MCP. |
+| `allowed_models` | array of string | Model ids the project may use. |
+| `allowed_templates` | array of string | Terminal template ids the project may start. |
+| `chat_templates` | array, optional | Chat templates the project offers. |
+| `created_at` | string | RFC 3339 time. |
+| `disabled_tools` | object, optional | MCP id to the tool names switched off. |
+| `allowed_tools` | object, optional | MCP id to the tool patterns allowed. |
+| `access` | object, optional | MCP id to its access mode. |
+| `allow_external` | object, optional | MCP id to whether outbound network use is allowed. |
+| `context` | object, optional | MCP id to its scope values. |
+| `permission_policy` | object, optional | The session permission rules. |
+| `generate_skill` | boolean, optional | Whether relay writes the project's SKILL.md. |
+| `session_folders` | array of string, optional | Session grouping labels. |
+| `mounts` | array, optional | File-share mounts. |
+| `files_read_only` | boolean, optional | `true` when file changes are refused. |
+
+Text mode prints `created project NAME (ID)`. Exit codes: `0` created; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. Neither
+`--name` and `--path` nor `--file`, or both, is `1`.
 
 ### `project edit`
 
@@ -1212,10 +1561,26 @@ narrows. Works over SSH: only when it narrows. `--file F` takes the
 conversion and the scope values (`contextSchema`) of each MCP. `relay mcp
 scope-fields` lists the fields a scope accepts. `--json` prints the project.
 
+`--json` prints the updated project, with the fields listed under `project
+create`. Text mode prints `updated project NAME (ID)`. Exit codes: `0` updated;
+`1` when the change widens a grant and no prompt can be shown (the
+`error: refused: ...` text), when the server refuses the project or the body
+(`error: bridge error (code -32603): ...`), when `--id` or `--file` is missing, or
+when relay is not running; `2` for an unknown flag.
+
 ### `project remove`
 
 Needs service: yes. Prompts: no. Works over SSH: yes. Removes the project.
 `--json` prints `{"id","name"}`.
+
+Flags: `--id` (the project id, required) and `--json`. `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `id` | string | The removed project's id. |
+| `name` | string | Its name. |
+
+Text mode prints `removed project NAME (ID)`. Exit codes: `0`; `1` when relay is not running or the server refuses the act (`error: bridge error (code -32603): ...`) or a required flag is missing; `2` for an unknown flag.
 
 ### `project rotate-token`
 
@@ -1223,6 +1588,14 @@ Needs service: yes. Prompts: yes (`project.rotate_token`). Works over SSH: no.
 Rotates the project's bearer token and prints the new token once, alone on one
 line so `$(...)` captures it; `--json` prints `{"token"}`. The old token stops
 working. The issuance row in the audit log carries the presence id.
+
+Flags: `--id` (the project id, required) and `--json`. `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `token` | string | The new bearer token. |
+
+Exit codes: `0` rotated; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag.
 
 ### `project token`
 
@@ -1235,15 +1608,43 @@ cancelled prompt prints nothing and records a denied `control_decision` row. A
 degraded sealed store refuses with `the project token cannot be unsealed`.
 There is no HTTP route for it.
 
+Flags: `--id` (the project id, required) and `--json`. `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `token` | string | The project's current bearer token. |
+
+Exit codes: `0` printed; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A degraded sealed store is `1`.
+
 ### `project regen-skill`
 
 Needs service: yes. Prompts: no. Works over SSH: yes. Rewrites the project's
 SKILL.md from its current grant. `--json` prints `{"path"}`.
 
+Flags: `--id` (the project id, required) and `--json`. `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `path` | string | The folder holding the rewritten SKILL.md. |
+
+Text mode prints `regenerated the skill in PATH`. Exit codes: `0`; `1` when relay is not running or the server refuses the act (`error: bridge error (code -32603): ...`) or a required flag is missing; `2` for an unknown flag.
+
 ## `relay mcp`
 
 External MCP registration: what relay connects to or spawns, over stdio or
 HTTP.
+
+With no subcommand, `relay mcp [--token TOKEN]` is the stdio MCP server that
+relay's own sessions spawn as their tool child. It speaks MCP on stdin and
+stdout, serving the tools of the grant that `--token` (or
+`RELAY_PROJECT_TOKEN`) names; an empty token falls back to membership auth as
+`relay mcpExec` does. `--token` is its only flag. Needs service: yes (it dials
+the bridge socket; see
+[Which socket the `relay mcp` stdio server dials](#which-socket-the-relay-mcp-stdio-server-dials)).
+Prompts: no. Works over SSH: yes. No JSON form: stdout carries the MCP protocol
+and nothing else. Exit codes: `0` when stdin closes; `1` when the bridge socket
+cannot be reached or the server fails (`error: relay mcp: ...`, nothing on
+stdout); `2` for an unknown flag.
 
 ```
 relay mcp register --name NAME [--id ID] --command CMD [--args ARG...] [--env K=V...]
@@ -1285,6 +1686,12 @@ Registering an HTTP MCP that answers 401 during discovery still persists
 the record — you then finish authentication with `relay mcp authenticate`
 (below) or the Settings window's **Authenticate** button.
 
+No JSON form. A script reads the first line, `registered mcp "NAME" (ID)`; for an
+HTTP MCP that answers 401 a second line says to finish authentication. Exit
+codes: `0` registered; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing `--name`, a `--transport` other
+than `stdio` or `http`, or a missing `--command` (stdio) or `--url` (http) is `1`
+with `error: ...`.
+
 ### `mcp authenticate`
 
 Needs service: yes. Prompts: yes (`mcp.oauth.start`). Works over SSH: no.
@@ -1297,6 +1704,16 @@ serve`: `{"id","authorization_url"}` on arrival, then
 `{"id","authenticated":true,"authorization_url"}`. It never prints the OAuth
 state or a token.
 
+`--json` fields, per line:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `id` | string | The MCP id. |
+| `authorization_url` | string, optional | The URL to open. Present on the first line under `relay serve`, and again on the last line. |
+| `authenticated` | boolean | `true` on the final line. |
+
+Exit codes: `0` authenticated; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing `--id` is `1`.
+
 ### `mcp reset-permissions`
 
 Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Resets the
@@ -1304,12 +1721,42 @@ macOS privacy (TCC) grants for an MCP registered with `--tcc-services`, the
 act of **Reset Permissions** in the MCP Servers tab. It refuses an MCP with no
 such services. `--json` prints the result the tab shows.
 
+Flags: `--id` (the MCP id, required) and `--json`. `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `bundle_id` | string | The MCP's macOS bundle id. |
+| `reset_services` | array of string | The privacy services that were reset. |
+| `skipped_reasons` | array of string, optional | Why a service was skipped. |
+| `spawn_output` | string | What the MCP's permission check printed. |
+
+Text mode prints `reset SERVICE, SERVICE for BUNDLE-ID`, then one `skipped: ...`
+line per skipped reason. Exit codes: `0`; `1` when relay is not running or the server refuses the act (`error: bridge error (code -32603): ...`) or a required flag is missing; `2` for an unknown flag.
+
 ### `mcp scope-fields`
 
 Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Lists the
 scope fields an MCP's `contextSchema` declares, with their allowed values, as
 `GET /api/mcps/{id}/scope_fields` returns them. A project's scope values are
 written with `relay project edit`.
+
+`--json` prints an array, `[]` when the MCP scopes no fields:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `name` | string | The scope field name. |
+| `type` | string, optional | The field's value type. |
+| `item_type` | string, optional | The element type, for an array field. |
+| `description` | string, optional | What the field limits. |
+| `source` | string | `operator` (the operator types the value) or `project_path` (relay fills it from the project folder). |
+| `applies_to` | array of string, optional | The tools the field applies to. |
+| `enumerable` | boolean, optional | `true` when the MCP can list the field's possible values. |
+| `depends_on` | array of string, optional | Fields this one depends on. |
+
+Text mode prints `NAME  TYPE  SOURCE  DESCRIPTION`, or `this MCP scopes no
+fields`. Exit codes: `0`; `1` for an unknown MCP (`error: bridge error (code
+-32603): MCP not registered or not connected`), a missing `--id`, or relay not
+running; `2` for an unknown flag.
 
 ### `--id` — read this before you register anything a second time
 
@@ -1364,6 +1811,11 @@ is not presence-gated (ADR-018 step 3); it still writes a `config_change`
 audit record and still refuses if issuance auditing is off, just with no
 `presence_id` on the record.
 
+No JSON form. Output: `unregistered mcp "ID"`. Exit codes: `0`; `1` for an
+unknown MCP (`error: bridge error (code -32603): no mcp found with id "ID"`), when
+neither `--id` nor `--name` is given, or when relay is not running; `2` for an
+unknown flag.
+
 ### `mcp list`
 
 Real capture, this machine's four registered MCPs:
@@ -1379,6 +1831,11 @@ fsmcp3ro  fsMCP v3 (testfolder, read-only)  stdio      /Users/you/.local/bin/fsm
 
 Needs service: yes (`mcp.list`; environment values are never sent). Prompts:
 no. Works over SSH: yes.
+
+No JSON form. Columns: `ID  NAME  TRANSPORT  ENDPOINT`. `ENDPOINT` is the command
+with its arguments for a stdio MCP and the URL for an HTTP one. With none it
+prints `no mcp servers registered`. Exit codes: `0`; `1` when relay is not
+running.
 
 ## `relay service`
 
@@ -1471,6 +1928,11 @@ says so in its output rather than leaving it silent. A relayScheduler-style
 service that both runs work through the front door and serves routes is
 `--capability frontend --capability manifest`.
 
+No JSON form. A script reads the first line, `registered service "NAME" (ID)`,
+then `  capabilities: LIST` (`none` when empty), then optional `  allowed models:`
+and `  note:` lines. Exit codes: `0` registered or updated; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A
+missing `--name` or `--command` is `1`.
+
 ### `service unregister`
 
 ```
@@ -1489,6 +1951,9 @@ running process is already ungated `configure`
 (`POST /api/services/{id}/stop`). Still writes a `config_change` audit
 record, still refuses if issuance auditing is off, just with no
 `presence_id`.
+
+No JSON form. Output: `unregistered service "ID"`. Exit codes: `0`; `1` when relay is not running or the server refuses the act (`error: bridge error (code -32603): ...`) or a required flag is missing; `2` for an unknown flag.
+Neither `--id` nor `--name` is `1`.
 
 ### `service restart`
 
@@ -1509,16 +1974,133 @@ it changes no settings and restarts exactly what was already configured, so
 it carries no presence check. Internally it is the same stop-then-start the
 tray always did in place.
 
+No JSON form. Output: `restarting service "ID"`. Exit codes: `0`; `1` for an
+unknown service (`error: bridge error (code -32603): no service found with id
+"ID"`), neither `--id` nor `--name`, or relay not running; `2` for an unknown
+flag.
+
+### `service start`
+
+```
+$ relay service start -h
+Usage of service start:
+  -id string
+    	service ID
+  -json
+    	print {"id"} as JSON
+  -name string
+    	service display name
+```
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. The Start
+button and the tray's service rows. `--id` or `--name` is required. `--json`
+prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `id` | string | The id of the service that was started. |
+
+The text form is `started service "ID"`. Exit codes: `0`; `1` when neither flag
+is given (`error: --id or --name is required`), the service is unknown
+(`error: bridge error (code -32603): no service found with id "ID"`) or relay is
+not running; `2` for an unknown flag.
+
+### `service stop`
+
+```
+$ relay service stop -h
+Usage of service stop:
+  -id string
+    	service ID
+  -json
+    	print {"id"} as JSON
+  -name string
+    	service display name
+```
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. The Stop
+button. `--json` prints the same `id` field as `service start`. The text form is
+`stopped service "ID"`. Exit codes as `service start`.
+
+### `service action`
+
+```
+$ relay service action -h
+Usage of service action:
+  -action string
+    	action ID the service's manifest declares (required)
+  -id string
+    	service ID (required)
+  -json
+    	print the result as JSON
+  -row string
+    	row values as a JSON object, for an action that acts on a row
+```
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Runs one
+action the service's manifest declares, as the Service Inspector does. `--row` is
+a JSON object of the row's values, for an action that acts on a row of a table;
+a value that is not a JSON object exits `1` (`error: --row must be a JSON
+object: ...`). `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `service_id` | string | The service id. |
+| `action_id` | string | The action that ran. |
+| `ok` | boolean | Always `true`; a failed action is an error exit instead. |
+
+The text form is `ran action "ACTION" on service "ID"`. Exit codes: `0`; `1` when
+`--id` or `--action` is missing, the service or action is unknown, the action
+fails, or relay is not running; `2` for an unknown flag.
+
+### `service config`
+
+```
+$ relay service config -h
+Usage of service config:
+  -id string
+    	service ID (required)
+  -json
+    	print the result as JSON
+  -set string
+    	replace the config file with this file's text, or - for stdin
+```
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Without
+`--set` it reads the service's config file; with `--set FILE` (`-` for stdin) it
+replaces the file with that text and restarts the service when it is running.
+`--json` prints, for a read:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `service_id` | string | The service id. |
+| `text` | string | The config file's text. |
+
+and, for a save:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `service_id` | string | The service id. |
+| `restarted` | boolean | `true` when the service was running and was restarted. |
+
+The text form of a read is the file's text alone. A save prints `saved the config
+of service "ID" and restarted it` or `saved the config of service "ID"`. Exit
+codes: `0`; `1` when `--id` is missing, the service is not registered
+(`error: bridge error (code -32603): service "ID" not registered`), the text is
+refused, the file was saved but the service did not restart (`config saved, but
+the service did not restart: ...`), or relay is not running; `2` for an unknown
+flag.
+
 ### `service list`
 
 ```
 $ relay service list
-no services registered
+ID             NAME          COMMAND  URL  AUTOSTART  CAPABILITIES       STATE
+relaysessions  Session Host           -    yes        manifest,sessions  running
 ```
 
-(This machine's stack — macMCP, fsMCP — is registered as MCPs, not
-services; nothing is currently registered as a background service.) When a
-service is registered, the table carries a `CAPABILITIES` column listing the
+With none registered it prints `no services registered`. The built-in session
+host is always listed. The table carries a `CAPABILITIES` column listing the
 record's capabilities, or `none`. Needs service: yes (`service.list`). Prompts: no. Works over SSH: yes.
 
 The table also carries a `STATE` column reporting relay's restart-supervision
@@ -1529,6 +2111,10 @@ stopped it). Supervision state exists only in the tray's memory, never in
 `settings.json`; `service.list` (ungated) carries it beside the records, and
 neither `env` nor `working_dir` is sent.
 
+No JSON form. Columns: `ID  NAME  COMMAND  URL  AUTOSTART  CAPABILITIES  STATE`.
+`URL` is `-` when empty and `AUTOSTART` is `yes` or `no`. With none it prints
+`no services registered`. Exit codes: `0`; `1` when relay is not running.
+
 ## `relay status`
 
 ```
@@ -1538,16 +2124,37 @@ relay [--config-dir DIR] status [--json]
 Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Prints what
 the Overview tab shows: the version, the sealed-store warning, the config and
 logs folders, each MCP's health and each service's runtime and restart
-supervision. The text form is one line. `--json` prints:
+supervision. `--json` prints one line:
 
-```
-{"version","seal_status","paths":{"config","logs"},
- "mcp_health":{ID:{...}},"service_runtime":{ID:{"pid","started_at"}},
- "service_supervision":{ID:{"phase","attempt",...}}}
-```
+| Field | JSON type | Meaning |
+|---|---|---|
+| `version` | string | The relay version. |
+| `seal_status` | string | Empty when the sealed store is healthy; the reason when it is degraded. |
+| `paths.config` | string | The config folder. |
+| `paths.logs` | string | The log folder. A service's log is `paths.logs` plus `<id>.log`. |
+| `mcp_health` | object | MCP id to its health. `{}` when none are registered. |
+| `mcp_health[ID].id` | string | The MCP id. |
+| `mcp_health[ID].display_name` | string | Its name. |
+| `mcp_health[ID].connected` | boolean | `true` while relay is connected to it. |
+| `mcp_health[ID].state` | string, optional | `down`, `restart_failed`, `restarted` or `abandoned`; absent until the MCP reports one. |
+| `mcp_health[ID].attempt` | number, optional | The restart attempt. |
+| `mcp_health[ID].downtime_ms` | number, optional | How long it was down. |
+| `mcp_health[ID].error` | string, optional | The last error. |
+| `service_runtime` | object | Service id to a running service. A service not running is absent. |
+| `service_runtime[ID].pid` | number | The process id. |
+| `service_runtime[ID].started_at` | string | RFC 3339 time with milliseconds. |
+| `service_supervision` | object | Service id to relay's restart supervision. A service relay is not supervising is absent. |
+| `service_supervision[ID].phase` | string | `running`, `restarting` or `failed`. |
+| `service_supervision[ID].attempt` | number | The restart attempt. |
+| `service_supervision[ID].next_attempt` | string, optional | RFC 3339 time of the next restart. |
+| `service_supervision[ID].last_exit_code` | number, optional | The last exit code. |
+| `service_supervision[ID].has_exit_code` | boolean, optional | `true` when `last_exit_code` is meaningful (it can be `0`). |
 
-`seal_status` is empty when the sealed store is healthy and the reason when it
-is degraded. A service's log is `paths.logs` plus `<id>.log`.
+The text form is one line:
+`relay dev: 0 MCP(s), 0 service(s) running, sealed store ok`; a degraded store
+ends `sealed store degraded: REASON`. Exit codes: `0`; `1` when relay is not
+running or an argument is given (`error: unexpected argument "x"`); `2` for an
+unknown flag.
 
 ## `relay remote`
 
@@ -1556,14 +2163,44 @@ relay remote show [--json]
 relay remote set --file F [--json]
 ```
 
-`show` needs the service, never prompts and prints the remote-listener
-settings the Remote Clients tab shows (`GET /api/remote`): `enabled`, `listen`,
-the `effective` address, `audit_enabled`, the enrolment-request listener and the
-CA fingerprint. `set` replaces the whole record with a `PUT /api/remote` body
-(`enabled`, `listen`, `enrolment_requests`, `enrolment_listen`, `remove`), so a
-field the body leaves out is cleared. It prompts (`remote.configure`) when the
-change widens what a remote client reaches, and then refuses over SSH. Both are
-operator-only.
+### `remote show`
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Prints the
+remote-listener settings the Remote Clients tab shows (`GET /api/remote`).
+`--json` prints one line:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `configured` | boolean | `true` once a remote block has been saved. |
+| `enabled` | boolean | Whether the remote mTLS listener runs. |
+| `listen` | string | The address the operator set; empty for the default. |
+| `effective` | string | The address the listener binds or would bind. |
+| `audit_enabled` | boolean | Whether the tool-call audit log is on. Remote access needs it. |
+| `ca_fingerprint` | string, optional | The CA certificate hash (`sha256:` and 64 hex characters); absent until a CA exists. |
+| `enrolment_requests` | boolean | Whether the enrolment-request listener runs. |
+| `enrolment_listen` | string, optional | The address the operator set for it. |
+| `enrolment_effective` | string | The address it binds or would bind. |
+
+Text form: `remote listener off at 127.0.0.1:9910; enrolment requests off at
+127.0.0.1:9911` (`on` in place of `off` when enabled). Exit codes: `0`; `1` when
+relay is not running; `2` for an unknown flag.
+
+### `remote set`
+
+| Flag | Meaning |
+|---|---|
+| `--file` | The `PUT /api/remote` body as a JSON file, or `-` for stdin. Required. |
+| `--json` | Print the new settings as JSON. |
+
+The body replaces the whole record (`enabled`, `listen`, `enrolment_requests`,
+`enrolment_listen`, `remove`, all booleans except the two addresses), so a field
+the body leaves out is cleared. Needs service: yes. It prompts
+(`remote.configure`) when the change widens what a remote client reaches, and
+then refuses over SSH; a change that only turns things off does not prompt.
+Operator-only. `--json` and the text form print the same document and line as
+`remote show`. Exit codes: `0` saved; `1` when `--file` is missing or unreadable
+(`error: open PATH: no such file or directory`), the body is refused, a needed
+prompt cannot be shown, or relay is not running; `2` for an unknown flag.
 
 ## `relay host`
 
@@ -1572,12 +2209,44 @@ relay host probe --id ID [--json]
 relay host disconnect --id ID [--json]
 ```
 
-Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. `probe`
-re-runs the SSH discovery of the Hosts tab's Probe button and stores the
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Both verbs
+take `--id` (the host id, required) and `--json`.
+
+### `host probe`
+
+Flags: `--id` (the host id, required) and `--json`. Re-runs the SSH discovery of the Hosts tab's Probe button and stores the
 result; an unreachable host is not an error, it reads `unreachable`.
-`disconnect` closes the host's live SSH connection. Both print the host as
-`POST /api/hosts/{id}/probe` returns it with `--json`, and the text form is one
-line with the host's status. An unknown id exits 1 with `host not found`.
+
+### `host disconnect`
+
+Flags: `--id` (the host id, required) and `--json`. Closes the host's live SSH connection.
+
+Both verbs print the host as `POST /api/hosts/{id}/probe` returns it with
+`--json`:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `id` | string | The host id. |
+| `name` | string | Display name. |
+| `target` | string | The ssh destination (`user@host`, a host name or an ssh_config alias). |
+| `port` | number, optional | The ssh port. |
+| `identity_file` | string, optional | The ssh identity file. |
+| `tmux_path` | string, optional | The tmux path configured for the host. |
+| `created_at` | string | RFC 3339 time. |
+| `probe` | object, optional | The last probe; absent until the host was probed. |
+| `probe.at` | string | RFC 3339 time of the probe. |
+| `probe.ok` | boolean | Whether the probe reached the host. |
+| `probe.os`, `probe.arch`, `probe.home`, `probe.shell` | string, optional | What the probe found. |
+| `probe.node_path`, `probe.node_version`, `probe.claude_path`, `probe.claude_version`, `probe.tmux_path` | string, optional | The tools the probe found on the host. |
+| `probe.error` | string, optional | Why the probe failed. |
+| `status` | string | `connected`, `idle`, `unreachable` or `unknown`. |
+| `ssh_argv` | array of string | The ssh command prefix relay runs for this host. |
+| `terminal_templates` | array | The host's terminal templates. `[]` when none. |
+
+The text form is one line, `probed host NAME (ID): STATUS` or `disconnected host
+NAME (ID): STATUS`. Exit codes: `0`; `1` for a missing `--id`, an unknown id
+(`error: bridge error (code -32603): host not found`) or relay not running; `2`
+for an unknown flag.
 
 ## `relay sealed`
 
@@ -1585,15 +2254,27 @@ line with the host's status. An unknown id exits 1 with `host not found`.
 relay sealed reset [--json]
 ```
 
+### `sealed reset`
+
 Needs service: yes. Prompts: yes (`sealed.reset`). Works over SSH: no.
 Operator-only. The same act as the tray's **Reset Sealed Store…**:
 it permanently deletes `settings.json`, the CA files and the keychain item,
 and starts over with a fresh key. The prompt names what it destroys and is the
 only confirmation; there is no `--yes` and no `--force`. A cancelled prompt
-deletes nothing. `--json` prints `{"reset":true}`. The keychain item is shared
+deletes nothing. The keychain item is shared
 by every instance that runs as the same user, so approving it from a test
 instance destroys the installed store too. See
 [`docs/sealed-config.md`](sealed-config.md#break-glass-and-why-there-is-no-offline-recovery-code).
+
+`--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `reset` | boolean | Always `true`. |
+
+The text form is one line. Exit codes: `0` reset; `1` when it is refused, which
+is what a run without a console session gets: `error: refused: this needs your
+confirmation on the Mac's screen ...`, nothing deleted; `2` for an unknown flag.
 
 ## `relay model`
 
@@ -1601,15 +2282,38 @@ instance destroys the installed store too. See
 relay model list [--json]
 ```
 
+### `model list`
+
 Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Lists the
 models the model picker offers, as the Settings window shows them (system-only
-models omitted). `--json` prints the catalogue view.
+models omitted). `--json` prints one line:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `status` | string | `ok`, or `unavailable` when the session host is down. |
+| `error` | string, optional | `session host unavailable` when `status` is `unavailable`. |
+| `warnings` | array of string, optional | For example `model broker unavailable`. |
+| `models` | array | One element per model; `[]` when none. |
+| `models[].id` | string | The model id to give `session start --model`. |
+| `models[].label` | string | The name the picker shows. |
+| `models[].group` | string | The picker group. |
+| `models[].provider` | string | The provider type, such as `chat`. |
+| `models[].kind` | string | `chat` or `other`. |
+| `models[].target` | string, optional | For an alias, the model it points to. |
+
+The text form is the table `ID  LABEL  GROUP  KIND  TARGET`; each warning goes to
+stderr as `warning: TEXT`. Exit codes: `0`; `1` when the session host is down
+(`error: session host unavailable`; with `--json` the document above is still
+printed on stdout) or relay is not running; `2` for an unknown flag.
 
 ## `relay session`
 
 Sessions of the session host (`docs/session-host.md`). All operator-only, none
 gated: a session launches as the operator caller, the one `relay sandbox` uses,
-and the launch is audited.
+and the launch is audited. Needs service: yes. Prompts: no. Works over SSH: yes.
+When the session host is down every verb exits `1` with `error: bridge error
+(code -32603): the session host is not available`. A bare `relay session` prints
+the verbs and exits `1`.
 
 ```
 relay session start --project ID --model M [--name N] [--directory D]
@@ -1622,15 +2326,124 @@ relay session resume --id ID
 relay session mode --id ID --mode M
 ```
 
-`start --json` prints the `POST /api/sessions` body. `list --json` prints
-`GET /api/sessions`. `message` waits for the reply and prints `{"text","stats"}`
-with `--json`; `--file` takes `{"text","files"}`. `stop` prints `{"id"}`.
-`resume` prints `{"session_id","resumed"}`: `resumed` is false when the session
-is already live. `mode` changes a session's permission mode through the session
-host and prints `{"session_id","mode"}`; for a local claude session the host
-answers `resume_required`.
+Every verb takes `--json`. Exit codes for all six: `0` done; `1` for a missing
+or conflicting flag (each is named in its section), a refusal from the session
+host (`error: session host: CODE: MESSAGE`) or the project's authorization, or a
+host that is down; `2` for an unknown flag.
+
+### `session start`
+
+| Flag | Meaning |
+|---|---|
+| `--project` | Project id. Required unless `--file`. |
+| `--model` | Model id, from `relay model list`. Required unless `--file`. |
+| `--name` | Session name. Default: the host chooses. |
+| `--directory` | Working directory inside the project. Default: the project folder. |
+| `--settings` | Client settings, a JSON object. Must be valid JSON. |
+| `--system-prompt` | System prompt. |
+| `--append-claude-md` | Append the project's CLAUDE.md to the system prompt. Default off. |
+| `--file` | The `POST /api/sessions` body as a JSON file, or `-` for stdin, instead of the flags. Cannot be combined with them. |
+| `--json` | Print the new session as JSON. |
+
+With neither `--project` and `--model` nor `--file` it exits `1`:
+`error: pass --project and --model, or --file`. `--json` prints the session as
+the `POST /api/sessions` 201 body; the fields a script reads:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `sessionId` | string | The new session's id. |
+| `projectId` | string | The project id. |
+| `name` | string | The session name. |
+| `directory` | string | The working directory. |
+| `model` | string | The model id. |
+| `providerType` | string | The kind of session, such as `claude`, `pi` or `chat`. |
+| `createdAt` | string | RFC 3339 time. |
+| `messages` | array | The conversation so far; `[]` for a new session. |
+| `stats` | object | Token counts and cost, see `session message`. |
+
+Other session fields (`settings`, `systemPrompt`, `permissionMode`, ...) appear
+when set. The text form is `started session SESSION-ID`.
+
+### `session list`
+
+`--json` prints the `GET /api/sessions` body:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `sessions` | array | One element per session, live or stored. `[]` when none. |
+| `sessions[].id` | string | The session id. |
+| `sessions[].projectId` | string | The project id. |
+| `sessions[].name` | string | The session name. |
+| `sessions[].directory` | string | The working directory. |
+| `sessions[].model` | string | The model id. |
+| `sessions[].live` | boolean | `true` while a process holds the session. |
+| `sessions[].createdAt` | string | RFC 3339 time. |
+| `sessions[].messageCount` | number | Messages so far. |
+| `sessions[].lastMessageAt` | string, optional | RFC 3339 time. |
+| `sessions[].folder` | string, optional | A grouping label. |
+| `sessions[].headless` | boolean, optional | `true` for a session with no terminal attached. |
+| `sessions[].origin` | string, optional | Who started it, when not a person at a screen. |
+| `sessions[].host` | object, optional | `{"id","name"}` of the SSH host of a host project. |
+| `sessions[].attention` | object, optional | Why the session needs someone. |
+
+Text form: the line `N sessions`, then one `ID<TAB>NAME` line per session.
+
+### `session message`
+
+| Flag | Meaning |
+|---|---|
+| `--id` | Session id. Required. |
+| `--text` | The message. |
+| `--file` | A JSON file, or `-` for stdin, `{"text","files"}`, instead of `--text`. Cannot be combined with `--text`. |
+| `--json` | Print the reply as JSON. |
+
+With neither `--text` nor `--file` it exits `1` (`error: pass --text or
+--file`). The verb waits for the reply. `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `text` | string | The reply. |
+| `stats.inputTokens`, `stats.outputTokens`, `stats.cacheReadTokens`, `stats.cacheCreationTokens` | number | Token counts. |
+| `stats.costUsd` | number | Cost in US dollars. |
+
+Further `stats` keys (`timeToFirstToken`, `tokensPerSecond`, ...) appear when the
+provider reports them. The text form is the reply text alone.
+
+### `session stop`
+
+`--id` is required. `--json` prints `id` (string): the stopped session. Text form:
+`stopped session ID`.
+
+### `session resume`
+
+`--id` is required. `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `session_id` | string | The session id. |
+| `resumed` | boolean | `false` when the session was already live. |
+
+Text form: `resumed session ID` or `session ID is already live`.
+
+### `session mode`
+
+`--id` and `--mode` (a permission mode) are required. It changes a session's
+permission mode through the session host; for a local claude session the host
+answers `resume_required`, which is exit `1`. `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `session_id` | string | The session id. |
+| `mode` | string | The mode now in effect. |
+
+Text form: `session ID is in MODE mode`.
 
 ## `relay terminal`
+
+Terminals of the session host. All operator-only, none gated. Needs service: yes.
+Prompts: no. Works over SSH: yes. With the session host down every verb exits `1`
+as `relay session` does, and a bare `relay terminal` prints the verbs and exits
+`1`.
 
 ```
 relay terminal start --project ID --template T [--name N] [--directory D]
@@ -1644,11 +2457,96 @@ relay terminal persistent-list --project ID
 relay terminal persistent-kill --project ID --name NAME
 ```
 
-All operator-only, none gated. `start --json` prints the `POST /api/terminals`
-body and `list --json` the `GET /api/terminals` body. `log` prints the raw
-terminal log; `--json` prints `{"id","log"}`. `stop` prints `{"id"}`.
-`persistent-list` prints `GET /api/projects/{id}/persistent-sessions` for a
-project on an SSH host, and `persistent-kill` prints `{"project_id","name"}`.
+Every verb takes `--json`. Exit codes for all six: `0` done; `1` for a missing or
+conflicting flag, a refusal, or a host that is down; `2` for an unknown flag.
+
+### `terminal start`
+
+| Flag | Meaning |
+|---|---|
+| `--project` | Project id. Required unless `--file`. |
+| `--template` | Terminal template id. Required unless `--file`. |
+| `--name` | Terminal name. |
+| `--directory` | Working directory inside the project. |
+| `--cols`, `--rows` | Terminal size. Default `0`: the host chooses. |
+| `--persist-session` | Persistent session name, for a project on an SSH host. |
+| `--extra-arg` | An argument appended to a local terminal's command. Repeatable. |
+| `--file` | The `POST /api/terminals` body as a JSON file, or `-` for stdin, instead of the flags. Cannot be combined with them. |
+| `--json` | Print the new terminal as JSON. |
+
+With neither `--project` and `--template` nor `--file` it exits `1`. `--json`
+prints the `POST /api/terminals` 201 body:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `terminalId` | string | The new terminal's id. |
+| `templateId` | string | The template id. |
+| `name` | string | The terminal name. |
+| `directory` | string | The working directory. |
+| `host` | object or `null` | `{"id","name"}` of the SSH host; `null` for a local terminal. |
+
+The text form is `started terminal TERMINAL-ID`.
+
+### `terminal list`
+
+`--json` prints the `GET /api/terminals` body:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `terminals` | array | One element per terminal. `[]` when none. |
+| `terminals[].id` | string | The terminal id. |
+| `terminals[].templateId` | string | The template id. |
+| `terminals[].name` | string | The terminal name. |
+| `terminals[].directory` | string | The working directory. |
+| `terminals[].state` | string | The terminal's state. |
+| `terminals[].exitCode` | number, optional | The exit code of an ended terminal. |
+| `terminals[].host` | object, optional | `{"id","name"}` of the SSH host. |
+| `terminals[].origin` | string, optional | Who started it, when not a person at a screen. |
+
+Text form: the line `N terminals`, then one `ID<TAB>NAME` line per terminal.
+
+### `terminal log`
+
+`--id` is required. The text form prints the raw terminal log, with no added
+newline. `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `id` | string | The terminal id. |
+| `log` | string | The raw log. |
+
+### `terminal stop`
+
+`--id` is required. `--json` prints `id` (string). Text form: `stopped terminal
+ID`.
+
+### `terminal persistent-list`
+
+`--project` is required. It lists the persistent tmux sessions of a project on an
+SSH host. `--json` prints the `GET /api/projects/{id}/persistent-sessions` body,
+an array:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `name` | string | The persistent session name. |
+| `template_id` | string | The template that made it. |
+| `n` | number | Its ordinal. |
+| `created` | number | Unix time of creation, seconds. |
+| `attached` | number | How many clients are attached. |
+| `attached_here` | boolean | `true` when relay's own terminal is attached. |
+
+Text form: the line `N persistent sessions`, then one name per line.
+
+### `terminal persistent-kill`
+
+`--project` and `--name` are required. `--json` prints:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `project_id` | string | The project id. |
+| `name` | string | The session name that was killed. |
+
+Text form: `killed persistent session NAME`.
 
 ## `relay files`
 
@@ -1656,11 +2554,42 @@ project on an SSH host, and `persistent-kill` prints `{"project_id","name"}`.
 relay files watch --project ID [--until TYPE] [--timeout DURATION] [--json]
 ```
 
+### `files watch`
+
 Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Streams the
-frames eve's file tree receives on `/ws/files` for one project (`host_status`,
-`watch_ok`, `watch_error`, `fs_event`), one JSON line per frame, from the same
-watch hub. It runs until you interrupt it, `--timeout` passes, or a frame of
-`--until TYPE` arrives. `watch_ok` is the signal that the watch is live.
+frames eve's file tree receives on `/ws/files` for one project, one per line,
+from the same watch hub. It runs until you interrupt it, `--timeout` passes, or a
+frame of `--until TYPE` arrives. `watch_ok` is the signal that the watch is live.
+
+| Flag | Meaning |
+|---|---|
+| `--project` | Project id. Required. |
+| `--until` | Stop, exit `0`, after the first frame of this type: `host_status`, `watch_ok`, `watch_error` or `fs_event`. |
+| `--timeout` | A duration such as `30s`. Default `0`: wait until interrupted. |
+| `--json` | Print each frame as one line of JSON. |
+
+`--json` prints one object per frame. Every frame has `type`; the other fields
+depend on it:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `type` | string | `host_status`, `watch_ok`, `watch_error` or `fs_event`. |
+| `project_id` | string, optional | The project, on `watch_ok`, `watch_error` and `fs_event`. |
+| `host_id` | string, optional | The SSH host, on `host_status`. |
+| `name` | string, optional | The host name, on `host_status`. |
+| `status` | string, optional | The host's status, on `host_status`. |
+| `path` | string, optional | The changed path, relative to the project, on `fs_event`. |
+| `kind` | string, optional | `change` or `rename`, on `fs_event`. |
+| `code` | string, optional | An error code such as `PROJECT_NOT_FOUND`, on `watch_error`. |
+| `error` | string, optional | The error text, on `watch_error` and `host_status`. |
+
+The text form prints `host NAME STATUS`, `watching PROJECT-ID`, `watch error
+CODE: TEXT` or `KIND PATH` per frame. Exit codes: `0` when stopped by `--until`,
+`--timeout` without `--until`, SIGINT or SIGTERM; `1` when a `watch_error` frame
+arrives (`error: watch PROJECT: TEXT`, after the frame is printed), when
+`--timeout` passes before `--until` is met (`error: timed out after 30s waiting
+for TYPE`), when `--project` is missing, or when relay is not running; `2` for an
+unknown flag.
 
 ## `relay doors`
 
@@ -1674,6 +2603,28 @@ from the tables the server dispatches from. Each door names its credential
 class and the presence gates its core may require. It lists no id, path,
 address or config value. The model endpoint, remote mTLS and enrolment-request
 listeners are not listed.
+
+`--json` prints one line: a document with `schema` (number, `1`), `version`
+(string), `headless` (boolean, `true` under `relay serve`) and `doors`, an array
+of door objects, grouped by kind (`http`, `ipc`, `bridge`, `cli`) and sorted by name within a kind. A test writer lists the CLI verbs with
+`doors[]` entries whose `kind` is `cli`.
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `kind` | string | `http`, `ipc`, `bridge` or `cli`. |
+| `name` | string | The door: `METHOD /path` for `http`, the op for `ipc` and `bridge`, `relay VERB` for `cli`. |
+| `method` | string, optional | The HTTP method, on `http`. |
+| `path` | string, optional | The route pattern, on `http`. |
+| `listeners` | array of string, optional | `socket` and/or `tcp`, on `http`. |
+| `credential` | string | The credential class the door takes, such as `read`, `configure`, `operator`, `socket` or `local`. |
+| `owner_gated` | boolean | `true` when the act raises a presence prompt. |
+| `gates` | array of string, optional | The presence gates the door's core may require, such as `credential.mint`. |
+| `calls` | array of string, optional | On `cli`, the doors the verb reaches, such as `admin_op:status.view`. Absent for a verb that reaches none. |
+
+The text form is one line, `286 doors: 85 http, 55 ipc, 75 bridge, 71 cli`
+(the counts of the running build). Exit codes: `0`; `1` when relay is not running
+or an argument is given (`error: unexpected argument "x"`); `2` for an unknown
+flag.
 
 ## `relay sandbox`
 
@@ -1696,6 +2647,11 @@ does from Eve; one with `sandbox: false` runs unconfined but wired to relay's
 proxies. A template that omits `sandbox` is sandboxed; only `sandbox: false`
 opts out. Closing the terminal, SIGHUP or killing the command ends the session;
 sleeping the Mac does not.
+
+No JSON form: the terminal belongs to the tool. Exit codes: the tool's own exit
+status after a session; `1` for any refusal below (`error: relay sandbox needs
+an interactive terminal on stdin and stdout` when stdin or stdout is not a
+terminal); `2` for an unknown flag or `-h`.
 
 It refuses, with a message and a non-zero exit, when: it is run inside a relay
 session; stdin or stdout is not a terminal; relay is not running; the directory
@@ -1725,6 +2681,11 @@ prompt, as for `relay sandbox`. The same drop-in is `POST
 /api/sessions/{id}/drop-in` (class `execute`), which answers with the new
 terminal for a client to join.
 
+No JSON form: the terminal belongs to Claude. Exit codes: Claude's own exit
+status after a hand-over; `1` for any refusal below (`error: relay drop-in needs
+an interactive terminal on stdin and stdout` when stdin or stdout is not a
+terminal).
+
 It refuses, with a message and a non-zero exit, when: it is run inside a relay
 session; stdin or stdout is not a terminal; relay is not running; no id is
 given; the session does not exist, is not a Claude session, is not headless or
@@ -1733,7 +2694,7 @@ does not end within 60 s; a terminal already has the session; or the
 project's authorization refuses a `claude-code` terminal. A refusal stops
 nothing: the session keeps running.
 
-## `relay mcpExec` (also `relay mcp call`)
+## `relay mcpExec`
 
 One-shot tool listing and invocation over the bridge, using a **project**
 token — this is the door an agent or a script actually calls tools through,
@@ -1745,8 +2706,8 @@ relay mcpExec --token TOKEN --list [--schema]
 relay mcpExec --token TOKEN --tool NAME [--args JSON] [--args-file FILE|-]
 ```
 
-`relay mcp call ...` is the identical command under `main.go`'s other
-spelling.
+`relay mcp call ...` is the identical command under another spelling; see
+[`mcp call`](#mcp-call) below.
 
 | Flag | Meaning |
 |---|---|
@@ -1781,6 +2742,35 @@ fs_grep   Search file contents within the granted directory
 
 7 tools available
 ```
+
+`--list` prints the table above: a `TOOL  DESCRIPTION` header, one row per tool
+(a description longer than 80 characters is cut to 77 plus `...`), a blank line,
+and `N tools available`; with no tools it prints `no tools available for this
+token`. `--tool NAME` prints the text of each content item of the tool's result,
+one per line. There is no `--json`.
+
+`--list --schema` prints one indented JSON array, one element per tool:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `name` | string | The tool name to give `--tool`. |
+| `description` | string, optional | What the tool does. |
+| `inputSchema` | object | The JSON Schema of the tool's arguments. |
+| `annotations` | object, optional | The MCP's tool annotations. |
+| `category` | string, optional | The tool's category. |
+
+Exit codes: `0` for a list, and for a call whose result is not an error; `1` when
+neither `--list` nor `--tool` is given (`error: must specify --list or --tool`),
+when relay is not running, when the bridge refuses the call (with no token:
+`error: bridge error (code -32001): no token provided`, then advice on stderr),
+and when the tool's result is marked as an error (its text is still printed on
+stdout); `2` for an unknown flag.
+
+### `mcp call`
+
+`relay mcp call` takes the same flags (`--token`, `--list`, `--schema`, `--tool`,
+`--args`, `--args-file`), prints the same output and exits with the
+same codes as `relay mcpExec`. Its usage text names `mcpExec`.
 
 ---
 
