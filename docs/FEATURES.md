@@ -167,7 +167,7 @@ Areas: sessions, sandbox, templates, audit.
 | `G1.24` | Agent state and turn excerpts | A live claude, pi or codex session reports `session_state` and `turn_done` frames on `/ws`; codex reports six of the seven states, never `asking`. | eve > Agents board | n/a | `ws:/ws session_state` `ws:/ws turn_done` | none | `event:session.state=ok` `event:chat.turn=ok` | `pending:#290` `journey:session-agent-state` |
 | `G1.25` | Chief of Staff scope: read every session, send marked | A request in the chief-of-staff scope reaches the session list, a read-only `/ws` and one send route; any other door answers 403. | n/a | `X-Relay-Scope: chief-of-staff` header | `http:POST /api/chief-of-staff/messages` | none | `event:chief_of_staff.send=ok#session_id` `audit:control_decision=denied` `code:http:POST /api/sessions#403` | `pending:#290` `journey:chief-of-staff-send` |
 | `G1.26` | Chief of Staff start | A start launches an agent in a registered project root or a folder inside it and shows it in the session list with `origin: chief-of-staff`; a start outside the root, in a remote project or a terminal start on a host is refused. | n/a | `X-Relay-Scope: chief-of-staff` header | `http:POST /api/chief-of-staff/sessions` | none | `event:chief_of_staff.start=ok#session_id` `event:chief_of_staff.start=denied` `audit:session_launch=ok` | `pending:#290` `journey:cos-start` `journey:cos-start-outside-root` `journey:cos-start-host` |
-| `G1.27` | Read-only project access for a claude session | A session launched with `readOnlyProjects: true` reads every local project and writes none; a write to a project folder fails, and a project add, move or remove ends the session. | n/a | n/a | `http:POST /api/sessions` | none | `event:session.launch=ok#kind` `audit:session_launch=ok` `event:session.exited=ok#session_id` | `pending:#290` `journey:cos-read-only-profile` |
+| `G1.27` | Read-only project access for a claude session | A session launched with `readOnlyProjects: true` reads every local project and writes none; a write to a project folder fails, a launch with the option on a non-claude session is refused, and a project add, move or remove ends the session. | n/a | n/a | `http:POST /api/sessions` | none | `event:session.launch=ok#kind` `event:session.launch=denied` `audit:session_launch=ok` `event:session.exited=ok#session_id` | `pending:#290` `journey:cos-read-only-profile` |
 | `G1.28` | Session exit recorded | When the session host reports a session gone, relay writes a `session_end` row and the session leaves the list. | n/a | n/a | `bridge:SessionExited` | none | `event:session.exited=ok#session_id` `audit:session_end=ok` | `pending:#290` `journey:session-chat-lifecycle` |
 
 ### G2 · Give an agent access to one project and nothing else — must-have
@@ -294,16 +294,16 @@ It worked: Settings opens, Overview's tiles and attention list match reality, an
 Why should: used daily, but a break is visible at once.
 Areas: tray, settings-ui.
 
-| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
-|---|---|---|---|---|---|---|---|
-| Open Settings | tray | tray > Settings… (⌘,) | screen | — | settings-window-services | tray > Settings... (⌘,) | none |
-| Overview tiles and attention list | Settings > Overview | Overview | CLI, screen | — | none | Settings > Overview | `relay status` |
-| Recent tool calls (call_tool rows only) | Settings > Overview | Overview > Recent tool calls | screen | — | none | Settings > Overview > Recent tool calls | `relay audit --tail` |
-| Reveal config and logs folders | Settings > Overview | Reveal config / Reveal logs | CLI, screen | — | none | Settings > Overview > Reveal / Reveal logs | `relay status` (`paths`) |
-| Service rows with state | tray | menu bar icon | screen | — | none | tray > service row | `relay service list` |
-| Pending enrolment line and notification | tray | tray line or banner → Remote Clients | screen | — | none | tray > Pending enrolment requests line, or the banner | `relay enrol requests` |
-| Sealed-store warning | tray | menu bar icon | CLI, screen | — | none | tray > Sealed store line; Overview > Needs attention | `relay status` (`seal_status`) |
-| Quit Relay | tray | tray > Quit Relay | screen | — | none | tray > Quit Relay | none |
+| ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
+|---|---|---|---|---|---|---|---|---|
+| `G8.01` | Open Settings | The tray opens the Settings window on the screen the operator last used. | tray > Settings... (⌘,) | exception: tray menu, no CLI | none | none | `event:server.ready=ok#pid` | `screen-only` `journey:settings-window-services` |
+| `G8.02` | Overview tiles and attention list | The Overview tiles and the attention list match `relay status`: version, seal status, paths, MCP health and service state. | Settings > Overview | `relay status` | `cli:relay status` `bridge:admin_op:status.view` | none | `event:status.view=ok` `out:cli:relay status#.seal_status` `out:cli:relay status#.service_runtime` | `pending:#292` |
+| `G8.03` | Recent tool calls | Overview lists the latest `call_tool` rows and nothing else. | Settings > Overview > Recent tool calls | `relay audit --tail` | `cli:relay audit` | none | `out:cli:relay audit#.event` | `pending:#292` |
+| `G8.04` | Reveal config and logs folders | The reveal buttons open the folders `relay status` names in `paths`. | Settings > Overview > Reveal / Reveal logs | `relay status` (`paths`) | `ipc:reveal_config_dir` `ipc:reveal_logs_dir` | none | `out:cli:relay status#.paths.config` `out:cli:relay status#.paths.logs` | `pending:#292` |
+| `G8.05` | Service rows with state | The tray shows each service with the state `relay service list` reports. | tray > service row | `relay service list` | `cli:relay service list` | none | `event:service.state=ok#phase` | `pending:#292` `journey:settings-window-services` |
+| `G8.06` | Pending enrolment line and notification | The tray line counts the requests `relay enrol requests` lists and opens Remote Clients. | tray > Pending enrolment requests line, or the banner | `relay enrol requests` | `cli:relay enrol requests` | none | `out:cli:relay enrol requests#.` | `pending:#292` |
+| `G8.07` | Sealed-store warning | The tray and Overview warn when `seal_status` is not healthy. | tray > Sealed store line; Overview > Needs attention | `relay status` (`seal_status`) | `cli:relay status` | none | `out:cli:relay status#.seal_status` | `pending:#292` |
+| `G8.08` | Quit Relay | The tray quits relay and its services stop. | tray > Quit Relay | exception: tray menu, no CLI | none | none | `out:cli:relay status#.version` | `screen-only` |
 
 ### G9 · Let a script or another tool drive relay — should
 Intent: give a script a scoped credential for relay's control plane.
@@ -311,15 +311,16 @@ It worked: the credential's class allows what it should and nothing more; a revo
 Why should: every journey and several clients depend on it, but a break is loud.
 Areas: credentials, logging, doors.
 
-| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
-|---|---|---|---|---|---|---|---|
-| Mint a credential | CLI | `relay credential mint --class …` | CLI | owner gate | gate-credential-mint-pos, execute-credential-renewal, gate-credential-mint-neg | none | `relay credential mint` |
-| List credentials | CLI | `relay credential list` | CLI | — | gate-credential-mint-pos | none | `relay credential list` |
-| Revoke a credential | CLI | `relay credential revoke --id` | CLI | owner gate | gate-credential-revoke-pos, gate-credential-revoke-neg | none | `relay credential revoke` |
-| Class enforcement on `/api/*` | API | any route with a bearer | HTTP | — | every journey (implicitly) | n/a | n/a |
-| Filter and follow relay's events | CLI | `relay logs --event K --trace T --since S [--follow --timeout D] --json` | CLI | — | none (real-app check) | none | `relay logs` |
-| List every door | CLI | `relay doors [--json]`: every HTTP route, IPC op, bridge request and CLI verb of the live server, with its credential class and gates | CLI | — | none (real-app check) | none | `relay doors` |
-| Name the trace of a call | CLI, API | `relay --trace T <verb>`; header `X-Trace-Id` | CLI, HTTP | — | none (real-app check) | none | `--trace`, `X-Trace-Id` |
+| ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
+|---|---|---|---|---|---|---|---|---|
+| `G9.01` | Mint a credential | An approved mint prints a token once with the requested classes; a mint the owner does not approve prints none. | none | `relay credential mint` | `cli:relay credential mint` `bridge:admin_op:credential.mint` | `credential.mint` | `event:credential.mint=ok#credential_id` `event:credential.mint=denied` `audit:credential_issued=ok` `audit:control_decision=denied` `code:cli:relay credential mint#1` | `pending:#291` `journey:gate-credential-mint-pos` `journey:execute-credential-renewal` `journey:gate-credential-mint-neg` |
+| `G9.02` | List credentials | The list names each credential with its classes and expiry, never its token. | none | `relay credential list` | `cli:relay credential list` `bridge:admin_op:credential.list` | none | `event:credential.list=ok#count` | `pending:#291` `journey:gate-credential-mint-pos` |
+| `G9.03` | Revoke a credential | An approved revoke makes the token answer 401 at once; a revoke the owner does not approve leaves it working. | none | `relay credential revoke` | `cli:relay credential revoke` `bridge:admin_op:credential.revoke` | `credential.revoke` | `event:credential.revoke=ok#credential_id` `event:credential.revoke=denied` `audit:credential_revoked=ok` `audit:control_decision=denied` `code:cli:relay credential revoke#1` | `pending:#291` `journey:gate-credential-revoke-pos` `journey:gate-credential-revoke-neg` |
+| `G9.04` | Class enforcement on `/api/*` | A route answers 401 with no credential and 403 with a credential whose classes do not include the route's class, and records the decision. | n/a | `Authorization: Bearer` header | `http:GET /api/projects` | none | `audit:control_decision=denied` `event:project.list=denied/unauthorized` `code:http:GET /api/projects#401` `code:http:POST /api/projects#403` | `pending:#291` |
+| `G9.05` | Filter and follow relay's events | `relay logs` prints the structured events filtered by key, trace and time, and follows new ones until its timeout. | none | `relay logs` | `cli:relay logs` | none | `out:cli:relay logs#.msg` `out:cli:relay logs#.trace_id` | `pending:#291` |
+| `G9.06` | List every door | `relay doors --json` lists every HTTP route, IPC op, bridge request and CLI verb of the live server with its credential class and gates. | none | `relay doors` | `cli:relay doors` `bridge:admin_op:doors.list` | none | `event:doors.list=ok#count` `out:cli:relay doors#.doors[]` | `pending:#291` |
+| `G9.07` | Name the trace of a call | A verb run with `--trace T` writes its events with `trace_id` T. | none | `--trace`, `X-Trace-Id` | `cli:relay logs` | none | `out:cli:relay logs#.trace_id` | `pending:#291` |
+| `G9.08` | Operator-only verbs refused inside a session or sandbox | A verb that needs the operator is refused when run from a relay session or a sandbox, and the refusal is audited; nothing it would have changed changes. | none | any `relay` operator verb from a session | `cli:relay status` `bridge:admin_op:status.view` | none | `audit:control_decision=denied` `code:cli:relay status#1` | `pending:#291` |
 
 ### G10 · Give a remote machine access — later
 Intent: let another machine reach chosen projects over mTLS.
@@ -327,13 +328,23 @@ It worked: an approved client reaches its projects and only those; a revoked one
 Why later: set up rarely; almost every step is an owner gate.
 Areas: remote.
 
-| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
-|---|---|---|---|---|---|---|---|
-| Configure the remote listener | Settings > Remote Clients | listener form | CLI, screen | owner gate | gate-remote-configure-pos (NOTRUN), gate-remote-configure-neg | Settings > Remote Clients > Remote Listener > Save | `relay remote show`, `relay remote set` |
-| Lodge, list, refuse an enrolment request | CLI, Settings | `relay enrol requests`, `relay enrol refuse` | CLI, HTTP `/api/enrolments` | — | none | Settings > Remote Clients > Pending requests > Refuse | `relay enrol requests`, `relay enrol refuse` |
-| Approve, sign, create, update, revoke | CLI, Settings | `relay enrol approve …` | CLI | owner gate | gate-enrolment-create-pos, gate-enrolment-sign-pos, gate-enrolment-update-pos, gate-enrolment-revoke-pos (all NOTRUN); gate-enrolment-create-neg, gate-enrolment-sign-neg, gate-enrolment-update-neg, gate-enrolment-revoke-neg | Settings > Remote Clients > Approve… / + New Enrolment / Revoke | `relay enrol approve`, `sign`, `create`, `update`, `revoke` |
-| CA fingerprint | CLI | `relay enrol ca-fingerprint` | CLI | — | none | Settings > Remote Clients > CA fingerprint > Copy | `relay enrol ca-fingerprint` |
-| Remote calls (fail-closed, audited) | mTLS listener | an enrolled client calls a tool | mTLS | — | none | n/a | n/a |
+| ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
+|---|---|---|---|---|---|---|---|---|
+| `G10.01` | View the remote listener | The view shows whether remote is enabled and the address it listens on. | Settings > Remote Clients > Remote Listener | `relay remote show` | `http:GET /api/remote` `cli:relay remote show` `bridge:admin_op:remote.view` | none | `event:remote.config.get=ok` `out:cli:relay remote show#.effective` | `pending:#292` |
+| `G10.02` | Configure the remote listener | An approved change saves the listener settings; a change the owner does not approve leaves them as they were. | Settings > Remote Clients > Remote Listener > Save | `relay remote set` | `http:PUT /api/remote` `ipc:update_remote_config` `cli:relay remote set` `bridge:admin_op:remote.set` | `remote.configure` | `event:remote.configure=ok#enabled` `event:remote.configure=denied` `audit:control_decision=denied` `code:http:PUT /api/remote#403` `code:cli:relay remote set#1` | `pending:#292` `journey:gate-remote-configure-neg` `journey:gate-remote-configure-pos` (NOTRUN: it changes the live listener the VM stack uses) |
+| `G10.03` | Lodge an enrolment request | A remote machine lodges a request with a CSR and polls for the answer; a request flood is throttled, and the listener has no approve door. | n/a | n/a | `enrol:lodge` `enrol:poll` | none | `event:enrolment.request.lodge=ok#request_id` `event:enrolment.request.lodge=denied/throttled` | `pending:#292` |
+| `G10.04` | List enrolment requests | The list shows each pending request with its label and fingerprint. | Settings > Remote Clients > Pending requests | `relay enrol requests` | `ipc:list_enrolment_requests` `cli:relay enrol requests` `bridge:admin_op:enrolment.request.list` | none | `event:enrolment.request.list=ok#count` `out:cli:relay enrol requests#.` | `pending:#292` |
+| `G10.05` | Refuse an enrolment request | A refusal removes the request and the poll answers `refused`. | Settings > Remote Clients > Pending requests > Refuse | `relay enrol refuse` | `ipc:refuse_enrolment_request` `cli:relay enrol refuse` `bridge:admin_op:enrolment.request.refuse` | none | `event:enrolment.request.refuse=ok#request_id` | `pending:#292` |
+| `G10.06` | Approve an enrolment request | An approved sign issues the client its certificate; an approval the owner does not give issues none. | Settings > Remote Clients > Approve… | `relay enrol approve` | `ipc:approve_enrolment_request` `cli:relay enrol approve` `bridge:admin_op:enrolment.request.approve` | `enrolment.sign` | `event:enrolment.request.approve=ok#client_id` `event:enrolment.request.approve=denied` `audit:control_decision=denied` `code:cli:relay enrol approve#1` | `pending:#292` `journey:gate-enrolment-sign-neg` `journey:gate-enrolment-sign-pos` (NOTRUN: remote identities are out of scope) |
+| `G10.07` | Create an enrolment | An approved create issues a client identity with its profile; a create the owner does not approve issues none. | Settings > Remote Clients > + New Enrolment | `relay enrol create` | `http:POST /api/enrolments` `ipc:create_enrolment` `cli:relay enrol create` `bridge:admin_op:enrolment.create` | `enrolment.create` | `event:enrolment.create=ok#client_id` `event:enrolment.create=denied` `audit:credential_issued=ok` `audit:control_decision=denied` `code:http:POST /api/enrolments#403` `code:cli:relay enrol create#1` | `pending:#292` `journey:gate-enrolment-create-neg` `journey:gate-enrolment-create-pos` (NOTRUN: remote identities are out of scope) |
+| `G10.08` | Sign an enrolment | An approved sign issues a certificate for a CSR; a sign the owner does not approve issues none. | none | `relay enrol sign` | `cli:relay enrol sign` `bridge:admin_op:enrolment.sign` | `enrolment.sign` | `event:enrolment.sign=ok#client_id` `event:enrolment.sign=denied` `audit:control_decision=denied` `code:cli:relay enrol sign#1` | `pending:#292` `journey:gate-enrolment-sign-neg` `journey:gate-enrolment-sign-pos` (NOTRUN: as above) |
+| `G10.09` | Update an enrolment | An approved update changes a client's profile and grants; an update the owner does not approve changes none. | none | `relay enrol update` | `cli:relay enrol update` `bridge:admin_op:enrolment.update` | `enrolment.update` | `event:enrolment.update=ok#client_id` `event:enrolment.update=denied` `audit:control_decision=denied` `code:cli:relay enrol update#1` | `pending:#292` `journey:gate-enrolment-update-neg` `journey:gate-enrolment-update-pos` (NOTRUN: as above) |
+| `G10.10` | Revoke an enrolment | An approved revoke ends the client's access, live connections included; a revoke the owner does not approve leaves it working. | Settings > Remote Clients > Revoke | `relay enrol revoke` | `http:DELETE /api/enrolments/{id}` `ipc:revoke_enrolment` `cli:relay enrol revoke` `bridge:admin_op:enrolment.revoke` | `enrolment.revoke` | `event:enrolment.revoke=ok#client_id` `event:enrolment.revoke=denied` `audit:control_decision=denied` `code:http:DELETE /api/enrolments/{id}#403` `code:cli:relay enrol revoke#1` | `pending:#292` `journey:gate-enrolment-revoke-neg` `journey:gate-enrolment-revoke-pos` (NOTRUN: as above) |
+| `G10.11` | List and read enrolments | The list shows each enrolled client with its profile; an unknown client id answers 404. | Settings > Remote Clients | `relay enrol list` | `http:GET /api/enrolments` `http:GET /api/enrolments/{id}` `cli:relay enrol list` `bridge:admin_op:enrolment.list` | none | `event:enrolment.list=ok#count` `event:enrolment.get=ok#client_id` `event:enrolment.get=error/not_found` | `pending:#292` |
+| `G10.12` | CA fingerprint | The command prints the fingerprint of relay's enrolment CA; before a CA exists it fails naming the missing file. | Settings > Remote Clients > CA fingerprint > Copy | `relay enrol ca-fingerprint` | `cli:relay enrol ca-fingerprint` | none | `out:cli:relay enrol ca-fingerprint#.` `code:cli:relay enrol ca-fingerprint#1` | `pending:#292` |
+| `G10.13` | Remote calls (fail-closed, audited) | An enrolled client lists and calls exactly the tools its profile allows; any other tool, or a call while auditing is off, is refused. | n/a | n/a | `remote:ListTools` `remote:CallTool` | none | `event:tool.list=ok#count` `event:tool.call=ok#tool` `event:tool.call=denied` `audit:call_tool=denied` | `pending:#292` |
+| `G10.14` | Remote grant view and narrowing | A remote client reads its own grant and can only narrow it. | n/a | n/a | `remote:DescribeGrant` `remote:NarrowGrant` | none | `event:grant.describe=ok#client_id` `event:grant.narrow=ok#changed` `event:grant.narrow=denied` | `pending:#292` |
+| `G10.15` | Remote client budget | A client over its rate or volume budget is refused with a retry hint and the refusal is audited. | n/a | n/a | `remote:CallTool` | none | `audit:call_tool=throttled` `event:tool.call=denied/throttled` | `pending:#292` |
 
 ### G11 · Work on a remote directory over SSH — later
 Intent: treat a folder on another machine as a project.
@@ -342,11 +353,19 @@ Why later: the devbox world has no hosts; only slow-route-keepalive adds one,
 an unreachable host it removes again.
 Areas: hosts.
 
-| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
-|---|---|---|---|---|---|---|---|
-| Add, edit, remove a host | Settings > Hosts | Add host | HTTP `/api/hosts` [configure] | — | slow-route-keepalive (add, remove), verify-fixtures-removed (remove) | Settings > Hosts > + Add host; row > Edit / Remove | `settings.json` `hosts[]` |
-| Probe, disconnect | Settings > Hosts | row > Probe / Disconnect | HTTP `/api/hosts/{id}/probe`, `/disconnect` | — | none | Settings > Hosts > row > Probe / Disconnect | `relay host probe`, `relay host disconnect` |
-| Host templates | Settings > Hosts | row > Templates | HTTP `/api/hosts/{id}/templates` | — | none | Settings > Hosts > row > Edit > Terminal templates | `settings.json` `hosts[].terminal_templates` |
+| ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
+|---|---|---|---|---|---|---|---|---|
+| `G11.01` | List and read hosts | The list names each SSH host; an unknown id answers 404. | Settings > Hosts | `settings.json` `hosts[]` | `http:GET /api/hosts` `http:GET /api/hosts/{id}` `ipc:list_hosts` | none | `event:host.list=ok#count` `event:host.get=ok#host_id` `event:host.get=error/not_found` | `pending:#292` |
+| `G11.02` | Add a host | An add saves the host; a host with a malformed address is refused. | Settings > Hosts > + Add host | `settings.json` `hosts[]` | `http:POST /api/hosts` `ipc:create_host` | none | `event:host.create=ok#host_id` `event:host.create=error/invalid` | `pending:#292` `journey:slow-route-keepalive` |
+| `G11.03` | Edit a host | An edit saves the change; an unknown id answers 404. | Settings > Hosts > row > Edit | `settings.json` `hosts[]` | `http:PUT /api/hosts/{id}` `ipc:update_host` | none | `event:host.update=ok#host_id` `event:host.update=error/not_found` | `pending:#292` |
+| `G11.04` | Remove a host | A removal deletes the host and disconnects it. | Settings > Hosts > row > Remove | `settings.json` `hosts[]` | `http:DELETE /api/hosts/{id}` `ipc:remove_host` | none | `event:host.remove=ok#host_id` | `pending:#292` `journey:slow-route-keepalive` `journey:verify-fixtures-removed` |
+| `G11.05` | Probe a host | A probe reports whether relay reaches the host over SSH; an unreachable host reports the failure. | Settings > Hosts > row > Probe | `relay host probe` | `http:POST /api/hosts/{id}/probe` `ipc:probe_host` `cli:relay host probe` `bridge:admin_op:host.probe` | none | `event:host.probe=ok#host_id` `event:host.probe=error/upstream` | `pending:#292` |
+| `G11.06` | Disconnect a host | A disconnect closes the host's shared SSH connection; the next use reconnects. | Settings > Hosts > row > Disconnect | `relay host disconnect` | `http:POST /api/hosts/{id}/disconnect` `ipc:disconnect_host` `cli:relay host disconnect` `bridge:admin_op:host.disconnect` | none | `event:host.disconnect=ok#host_id` | `pending:#292` |
+| `G11.07` | Paste a file to a host | A paste writes the bytes to a temporary file on the host and answers its path. | eve > session > paste an image | n/a | `http:POST /api/hosts/{id}/pastetmp` | none | `event:host.pastetmp=ok#host_id` | `pending:#292` |
+| `G11.08` | List host templates | The list shows the terminal templates one host adds. | Settings > Hosts > row > Edit > Terminal templates | `settings.json` `hosts[].terminal_templates` | `http:GET /api/hosts/{id}/templates` `ipc:list_host_templates` | none | `event:host_template.list=ok#count` | `pending:#292` |
+| `G11.09` | Add a host template | An add saves the template on the host; a malformed template is refused. | Settings > Hosts > row > Edit > Terminal templates > Add | `settings.json` `hosts[].terminal_templates` | `http:POST /api/hosts/{id}/templates` `ipc:create_host_template` | none | `event:host_template.create=ok#template_id` `event:host_template.create=error/invalid` | `pending:#292` |
+| `G11.10` | Edit a host template | An edit saves the change; an unknown template id answers 404. | Settings > Hosts > row > Edit > Terminal templates > Edit | `settings.json` `hosts[].terminal_templates` | `http:PUT /api/hosts/{id}/templates/{tid}` `ipc:update_host_template` | none | `event:host_template.update=ok#template_id` `event:host_template.update=error/not_found` | `pending:#292` |
+| `G11.11` | Remove a host template | A removal deletes the template from the host. | Settings > Hosts > row > Edit > Terminal templates > Remove | `settings.json` `hosts[].terminal_templates` | `http:DELETE /api/hosts/{id}/templates/{tid}` `ipc:remove_host_template` | none | `event:host_template.remove=ok#template_id` | `pending:#292` |
 
 ### G12 · Recover from a broken sealed store — later
 Intent: start over when the keychain key is lost.
@@ -354,9 +373,9 @@ It worked: relay names what it destroys, and starts clean.
 Why later: break-glass only; it is an owner gate by design.
 Areas: sealed.
 
-| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
-|---|---|---|---|---|---|---|---|
-| Reset Sealed Store… | tray | tray > Reset Sealed Store… | CLI, screen | owner gate | gate-sealed-reset-pos (NOTRUN), gate-sealed-reset-neg | tray > Reset Sealed Store... | `relay sealed reset` |
+| ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
+|---|---|---|---|---|---|---|---|---|
+| `G12.01` | Reset Sealed Store… | An approved reset names what it destroys and starts a clean store; a reset the owner does not approve changes nothing. | tray > Reset Sealed Store... | `relay sealed reset` | `cli:relay sealed reset` `bridge:admin_op:sealed.store.reset` | `sealed.reset` | `event:sealed.reset=ok` `event:sealed.reset=denied` `audit:control_decision=denied` `code:cli:relay sealed reset#1` | `pending:#291` `journey:gate-sealed-reset-neg` `journey:gate-sealed-reset-pos` (NOTRUN: break-glass destroys the store) |
 
 ### G13 · Open, edit and search a project's files in eve — should
 Intent: browse and change a project's files, console or SSH host, from eve.
@@ -364,11 +383,14 @@ It worked: the change lands, a link or `..` is refused, a read-only project stay
 Why should: weekly; a break is loud in eve's file errors.
 Areas: files.
 
-| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
-|---|---|---|---|---|---|---|---|
-| File operations with containment and audit | eve's Files and Changes tabs | open, edit, save, delete a file | HTTP `/api/projects/{id}/files/*` [execute] | — | file-plane-contained | eve > Files | `relay audit --event file_op` |
-| Watch events and host status | eve's file tree | tree updates on change | HTTP `/ws/files` [execute] | — | file-plane-contained | eve > Files | `relay files watch` |
-| Read-only project files | none | none | HTTP `PUT /api/projects/{id}` [configure], CLI | — | file-plane-contained | none | `settings.json` `projects[].files_read_only`; `relay project update --files-read-only` |
+| ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
+|---|---|---|---|---|---|---|---|---|
+| `G13.01` | Read operations on a project's files | A caller with execute lists, stats, reads, searches and runs git status in a granted project folder. | eve > Files | `relay audit --event file_op` | `http:POST /api/projects/{id}/files/list` `http:POST /api/projects/{id}/files/stat` `http:POST /api/projects/{id}/files/read` `http:POST /api/projects/{id}/files/search` `http:POST /api/projects/{id}/files/git` | none | `event:file.list=ok#project_id` `event:file.stat=ok#project_id` `event:file.read=ok#project_id` `event:file.search=ok#project_id` `event:file.git=ok#project_id` | `pending:#291` `journey:file-plane-contained` |
+| `G13.02` | Change operations on a project's files | A caller with execute writes, makes folders, renames, moves and deletes files in a granted project, and each change is audited. | eve > Files > open, edit, save, delete | `relay audit --event file_op` | `http:POST /api/projects/{id}/files/write` `http:POST /api/projects/{id}/files/mkdir` `http:POST /api/projects/{id}/files/rename` `http:POST /api/projects/{id}/files/move` `http:POST /api/projects/{id}/files/delete` | none | `event:file.write=ok#project_id` `event:file.mkdir=ok#project_id` `event:file.rename=ok#project_id` `event:file.move=ok#project_id` `event:file.delete=ok#project_id` `audit:file_op=ok` | `pending:#291` `journey:file-plane-contained` |
+| `G13.03` | File operations with containment and audit | A path through `..` or a planted symlink is refused, and the refusal is audited. | eve > Files | `relay audit --event file_op` | `http:POST /api/projects/{id}/files/read` `http:POST /api/projects/{id}/files/write` | none | `event:file.write=denied/symlink` `event:file.read=denied/symlink` `audit:file_op=denied` | `pending:#291` `journey:file-plane-contained` |
+| `G13.04` | Read-only project files | A project marked files-read-only refuses every change through the file routes and records the refusal. | none | `settings.json` `projects[].files_read_only`; `relay project update --files-read-only` | `http:POST /api/projects/{id}/files/write` `cli:relay project update` | none | `event:file.write=denied/read_only` `audit:file_op=denied` | `pending:#291` `journey:file-plane-contained` |
+| `G13.05` | Stream a file | A stream returns the file's bytes once and records its end or failure. | eve > Files > open a large or binary file | n/a | `http:GET /api/projects/{id}/files/stream` | none | `event:file.stream=ok#project_id` | `pending:#291` |
+| `G13.06` | Watch events and host status | A watch on `/ws/files` delivers `host_status`, `watch_ok` and `fs_event` frames as files change, and `relay files watch` prints the same stream. | eve > Files (tree updates on change) | `relay files watch` | `http:GET /ws/files` `ws:/ws/files fs_event` `ws:/ws/files host_status` `cli:relay files watch` `bridge:admin_op:files.watch` | none | `event:files.watch=ok#project_id` `event:file.ws.close=ok` | `pending:#291` `journey:file-plane-contained` |
 
 ### G14 · Run several relays side by side, each named by its config dir — later
 Intent: start a relay that is picked by its config dir alone, so a test harness or a second profile runs next to the tray without touching it.
@@ -376,13 +398,14 @@ It worked: `relay serve --config-dir X` prints `X/ready.json` once every listene
 Why later: a harness and power-user path; the tray's everyday behaviour is unchanged.
 Areas: instance, sandbox, remote, models.
 
-| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
-|---|---|---|---|---|---|---|---|
-| Headless server | CLI | `relay serve --config-dir X`; one stdout line, `X/ready.json`; SIGTERM or SIGINT exits 0 and removes it | CLI | — | none (real-app check) | none | `relay serve` |
-| Pick the instance for any verb | CLI | `--config-dir X` anywhere in argv before `--`, else `RELAY_CONFIG_DIR` | CLI | — | none (real-app check) | none | `--config-dir`, `RELAY_CONFIG_DIR` |
-| No server at the dir | CLI | any verb that needs the service, dir `C` with no server → exit 1 naming `C`; `C` is not created | CLI | — | none (real-app check) | none | none |
-| Listener addresses from settings, port 0 allowed | server | `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen`; bound addresses in `ready.json` | n/a (read from `ready.json`) | — | none (real-app check) | n/a | `settings.json` `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen` |
-| Loopback ports a sandboxed session may not reach | sandbox | any sandboxed session; the list replaces the default `[3000, 8181]`, the instance's own API port is always denied | bridge | — | none (real-app check) | n/a | `settings.json` `session_sandbox.denied_loopback_ports` |
+| ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
+|---|---|---|---|---|---|---|---|---|
+| `G14.01` | Headless server | `relay serve --config-dir X` prints one stdout line, writes `X/ready.json` once every listener is up, and exits 0 and removes it on SIGTERM or SIGINT. | none | `relay serve` | `cli:relay serve` | none | `event:server.ready=ok#ready_file` `out:cli:relay serve#.pid` | `pending:#287` |
+| `G14.02` | Pick the instance for any verb | A verb with `--config-dir X` (or `RELAY_CONFIG_DIR`) reaches only that instance; a dir with no server fails exit 1 naming the dir and is not created. | none | `--config-dir`, `RELAY_CONFIG_DIR` | `cli:relay doors` | none | `out:cli:relay doors#.doors[]` `code:cli:relay doors#1` | `pending:#287` |
+| `G14.03` | Listener addresses from settings, port 0 allowed | `api.listen`, `model_endpoint.listen`, `remote.listen` and `remote.enrolment_listen` bind the requested address, and `ready.json` holds the bound ones. | n/a | `settings.json` `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen` | none | none | `out:cli:relay serve#.listeners` | `pending:#287` |
+| `G14.04` | Loopback ports a sandboxed session may not reach | A sandboxed session cannot connect to a denied loopback port: the list replaces the default `[3000, 8181]`, the instance's own API port is always denied, and a bad entry refuses the launch. | n/a | `settings.json` `session_sandbox.denied_loopback_ports` | `bridge:SandboxAttach` | none | `event:sandbox.attach=ok#template` `event:session.launch=denied` | `pending:#287` |
+| `G14.05` | Test approver answers only its listed ops | The test-approver build approves `project.grant` and refuses every other gated op without a dialog. | n/a | `./build.sh --test-approver` | none | none | `audit:control_decision=ok#presence_approver` `audit:control_decision=denied` | `pending:#287` |
+| `G14.06` | Release build carries no test seam | A release binary answers `unknown command: debug` with exit 1, and holds no test-approver code. | n/a | `scripts/check-test-build.sh` | `cli:relay debug clock` | none | `code:cli:relay debug clock#1` | `ci:scripts/check-test-build.sh` |
 
 ## Owner gates
 
@@ -430,6 +453,60 @@ here.
 | `eve.enrolment.open` | eve's five-minute passkey enrolment window | gate-eve-enrolment-open-pos (closes the window after) | gate-eve-enrolment-open-neg |
 | `eve.passkey.revoke` | revoking an eve passkey | gate-eve-passkey-revoke-pos: NOTRUN, relay keeps one eve passkey mirror that each eve's report replaces, so no verify passkey can be revoked through it | gate-eve-passkey-revoke-neg: NOTRUN while the mirror holds no revocable passkey, since relay refuses an unknown or last id before the gate |
 | `sealed.reset` | the sealed store | gate-sealed-reset-pos: NOTRUN, break-glass destroys the store | gate-sealed-reset-neg (no door from a session) |
+
+## Threat-model promises
+
+Each promise in [`THREAT-MODEL.md`](THREAT-MODEL.md) has an ID and the rows that
+prove it. Every mapped promise has a row with a refusal proof. Attackers are
+numbered as in the threat model (`T` is the test-approver build); assets are
+A grants, B credentials, C the audit trail, D data outside a grant. A change to
+a promise there updates this table in the same PR.
+
+| Promise | Attacker | Asset | Promise (short quote) | Rows |
+|---|---|---|---|---|
+| `TM1.1` | 1 A sandboxed session | A, D | It cannot read or write outside its grants | `G1.17` |
+| `TM1.2` | 1 A sandboxed session | A | It reaches no relay-managed service it was not granted | `G14.04` |
+| `TM1.3` | 1 A sandboxed session | B | It reaches no listener that trusts loopback in place of a credential | `G14.04` `G6.04` |
+| `TM1.4` | 1 A sandboxed session | B | It obtains or keeps no credential it was not issued | `G9.08` |
+| `TM1.5` | 1 A sandboxed session | C | It cannot act without an audit row | `G1.18` `G4.03` |
+| `TM1.6` | 1 A sandboxed session | A, D | The file plane never follows a planted symlink | `G13.03` |
+| `TM1.7` | 1 A sandboxed session | C | Every file mutation, permitted or refused, is audited | `G13.02` `G13.03` |
+| `TM2.1` | 2 An enrolled remote client | A | It reaches exactly its profile | `G10.13` |
+| `TM2.2` | 2 An enrolled remote client | A | It stays within its budget | `G10.15` |
+| `TM2.3` | 2 An enrolled remote client | B | Revocation ends it, live connections included | `G10.10` |
+| `TM3.1` | 3 A prompt-injected agent | A | Grants default narrow | `G2.01` `G3.06` |
+| `TM3.2` | 3 A prompt-injected agent | D | Anything reaching outside this Mac is refused unless granted | `G1.17` |
+| `TM3.3` | 3 A prompt-injected agent | A | Budgets cap volume | `G10.15` |
+| `TM3.4` | 3 A prompt-injected agent | C | Every call is in the audit log with its outcome | `G4.03` `G4.06` |
+| `TM3a.1` | 3a Agent output steering the Chief of Staff | A | The scope reaches only its four doors | `G1.25` |
+| `TM3a.2` | 3a Agent output steering the Chief of Staff | A | The scope cannot change where the Chief of Staff runs | `G2.09` |
+| `TM3a.3` | 3a Agent output steering the Chief of Staff | A | A start goes only to a registered project root or a folder inside it; a remote project and a terminal start on a host are refused | `G1.26` |
+| `TM3a.4` | 3a Agent output steering the Chief of Staff | C | A start or send that cannot be recorded is refused | `G4.08` `G4.09` |
+| `TM3a.5` | 3a Agent output steering the Chief of Staff | A, C | One send per turn, marked with its origin | `G4.08` |
+| `TM3b.1` | 3b A read-only-projects session | A | It writes no project | `G1.27` |
+| `TM3b.2` | 3b A read-only-projects session | D | It reads nothing outside the project folders, the template's grants and the CLI's paths | `G1.27` |
+| `TM3b.3` | 3b A read-only-projects session | A | A project change ends the sessions that hold one | `G1.27` |
+| `TM4.1` | 4 A peer on the network or in the browser | A, B | It gets no tool call or config change without a credential | `G9.04` |
+| `TM4.2` | 4 A peer on the network or in the browser | B | It gets no enrolment without the operator's approval | `G10.03` |
+| `TM4.3` | 4 A peer on the network or in the browser | B | It can trigger no prompt on the operator's screen | `G9.04` `G7.03` |
+| `TM5.1` | 5 Other code running as the user | B | It cannot borrow a service's launch identity | `G5.12` |
+| `TM5.2` | 5 Other code running as the user | A | It cannot act through the bridge as another project | `G3.05` |
+| `TM5.3` | 5 Other code running as the user | B | It cannot complete a presence-gated action without the operator | `G2.01` `G9.01` |
+| `TMT.1` | T The test-approver build | A, B | The test seams are absent from release | `G14.06` |
+| `TMT.2` | T The test-approver build | B | The test approver answers only its listed ops | `G14.05` |
+| `TMT.3` | T The test-approver build | C | Each approval is recorded before the act | `G4.07` |
+
+`TM5.3` is proven by every gated row's `deny` test; the two rows listed are the
+create row in G2 and the mint row in G9.
+
+## Rows proven by CI
+
+`G14.06` is proven by a CI check script, not an end-to-end test. Its `ci:` item
+is allowed on this row alone.
+
+## Retired IDs
+
+None yet. A removed row's ID goes here as a code span, and no row reuses it.
 
 ## Areas
 
