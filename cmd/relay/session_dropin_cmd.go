@@ -30,7 +30,7 @@ func dropInMain(args []string) int {
 		return sandboxFail("relay drop-in needs an interactive terminal on stdin and stdout")
 	}
 	if !serviceReachable() {
-		return sandboxFail("relay is not running; `relay drop-in` needs the Relay app. Start Relay and retry.")
+		return sandboxFail("relay is not running at %s; `relay drop-in` needs the Relay app. Start Relay and retry.", bridge.ConfigDir())
 	}
 	if len(args) == 0 || args[0] == "" {
 		return sandboxFail("a session id is required\n%s", dropInUsage)
@@ -43,7 +43,7 @@ func dropInMain(args []string) int {
 	cols, rows := terminalSize(int(os.Stdout.Fd()))
 	conn, err := net.Dial("unix", bridge.SocketPath())
 	if err != nil {
-		return sandboxFail("relay is not running; `relay drop-in` needs the Relay app. Start Relay and retry.")
+		return sandboxFail("relay is not running at %s; `relay drop-in` needs the Relay app. Start Relay and retry.", bridge.ConfigDir())
 	}
 	defer func() { _ = conn.Close() }()
 

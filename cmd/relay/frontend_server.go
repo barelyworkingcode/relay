@@ -69,7 +69,7 @@ var ErrNonLoopbackAPIListen = errors.New("api listen address must be loopback")
 func loopbackOnly(addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("parse %s: %w", EnvAPIListen, err)
+		return fmt.Errorf("parse listen address: %w", err)
 	}
 	// An empty host means "all interfaces", which is the failure this guards.
 	ip := net.ParseIP(host)
@@ -77,6 +77,33 @@ func loopbackOnly(addr string) error {
 		return fmt.Errorf("%w: %q", ErrNonLoopbackAPIListen, addr)
 	}
 	return nil
+}
+
+// resolveAPIListen picks the API's loopback TCP address: api.listen in
+// settings beats RELAY_API_LISTEN, and neither means no listener. source names
+// where a returned address came from so a refusal can say which one to fix.
+func resolveAPIListen(s *config.Settings, getenv func(string) string) (addr, source string, err error) {
+	switch {
+	case s != nil && s.API != nil && s.API.Listen != "":
+		addr, source = s.API.Listen, "api.listen"
+	case getenv(EnvAPIListen) != "":
+		addr, source = getenv(EnvAPIListen), EnvAPIListen
+	default:
+		return "", "", nil
+	}
+	if err := loopbackOnly(addr); err != nil {
+		return "", source, fmt.Errorf("%s: %w", source, err)
+	}
+	return addr, source, nil
+}
+
+// LoopbackAddr is the address the API's TCP listener actually bound, so a
+// port-0 request reports its real port; "" when no listener is bound.
+func (s *FrontendServer) LoopbackAddr() string {
+	if s == nil || s.tcpLn == nil {
+		return ""
+	}
+	return s.tcpLn.Addr().String()
 }
 
 // ListenLoopback adds a second listener carrying its OWN route set, built
@@ -125,7 +152,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 		IdleTimeout:       5 * time.Minute,
 	}
 	slog.Warn("frontend API bound to loopback TCP in addition to its socket",
-		"addr", addr)
+		"addr", ln.Addr().String())
 	return nil
 }
 

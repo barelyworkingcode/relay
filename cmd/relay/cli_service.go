@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"net"
 	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
@@ -20,7 +19,7 @@ import (
 // when there is nothing to write it through.
 func requireService(command string) *bridge.Client {
 	if !serviceReachable() {
-		exitError(serviceRequiredMessage(command))
+		exitError("%s", serviceRequiredMessage(command))
 	}
 	return bridge.NewClient("")
 }
@@ -50,16 +49,11 @@ func adminRead[T any](command, op string, args any) T {
 }
 
 func serviceReachable() bool {
-	conn, err := net.Dial("unix", bridge.SocketPath())
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
+	return probeBridgeSocket(bridge.SocketPath(), mcpBridgeProbeTimeout) == nil
 }
 
 func serviceRequiredMessage(command string) string {
-	return "relay is not running; `" + command + "` requires the service.\n" +
+	return "relay is not running at " + bridge.ConfigDir() + "; `" + command + "` requires the service.\n" +
 		"  relay is the sole broker of its own credentials: the secrets are sealed and\n" +
 		"  only the tray holds the key (ADR-017 decision 2), and it is the only reader of\n" +
 		"  the configuration for `list`, `grant` and every other command that shows it.\n" +

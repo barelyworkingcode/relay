@@ -539,7 +539,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 			// placeholders (same rule as internal/sessions/provider/pi.go).
 			spec.Argv = append(resolveArgv(*tmpl, projectPathOrEmpty(proj), req.ProjectID), req.ExtraArgs...)
 		}
-		env, err := resolveTemplateEnv(*tmpl, settings)
+		env, err := resolveTemplateEnv(*tmpl)
 		if err != nil {
 			return nil, invalidRequest("model_endpoint_unavailable", err.Error(), baseFields)
 		}
@@ -877,14 +877,15 @@ var terminalEnvDefaults = map[string]string{
 // endpoint's URL; with the listener off it refuses, because dropping only the
 // URL would leave a ${MODEL_KEY} header pointed at the client's real provider,
 // which would then receive the relay key.
-func resolveTemplateEnv(t config.TerminalTemplate, settings *config.Settings) (map[string]string, error) {
+func resolveTemplateEnv(t config.TerminalTemplate) (map[string]string, error) {
 	env := make(map[string]string, len(t.Env)+len(t.EnvPassthrough)+len(terminalEnvDefaults))
 	for k, v := range t.Env {
 		if strings.Contains(v, config.ModelEndpointURLMarker) {
-			if settings == nil || settings.ModelEndpoint == nil || settings.ModelEndpoint.Listen == "" {
-				return nil, fmt.Errorf("template %q uses %s in env %q but model_endpoint.listen is not set in settings.json", t.ID, config.ModelEndpointURLMarker, k)
+			bound := currentListenAddrs().Model
+			if bound == "" {
+				return nil, fmt.Errorf("template %q uses %s in env %q but the model endpoint has no TCP listener (model_endpoint.listen in settings.json)", t.ID, config.ModelEndpointURLMarker, k)
 			}
-			v = strings.ReplaceAll(v, config.ModelEndpointURLMarker, "http://"+settings.ModelEndpoint.Listen)
+			v = strings.ReplaceAll(v, config.ModelEndpointURLMarker, "http://"+bound)
 		}
 		env[k] = v
 	}

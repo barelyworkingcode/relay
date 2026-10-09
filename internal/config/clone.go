@@ -25,6 +25,8 @@ func (s *Settings) Clone() *Settings {
 	cp.Audit = cloneAuditConfig(s.Audit)
 	cp.Remote = cloneRemoteConfig(s.Remote)
 	cp.ModelEndpoint = cloneModelEndpointConfig(s.ModelEndpoint)
+	cp.API = cloneAPIConfig(s.API)
+	cp.SessionSandbox = cloneSessionSandboxConfig(s.SessionSandbox)
 	cp.APICredentials = cloneAPICredentials(s.APICredentials)
 	cp.LoginBootstrap = cloneLoginBootstrap(s.LoginBootstrap)
 	cp.Passkeys = clonePasskeys(s.Passkeys)
@@ -286,6 +288,23 @@ func cloneModelEndpointConfig(c *ModelEndpointConfig) *ModelEndpointConfig {
 		return nil
 	}
 	cp := *c
+	return &cp
+}
+
+func cloneAPIConfig(c *APIConfig) *APIConfig {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	return &cp
+}
+
+func cloneSessionSandboxConfig(c *SessionSandboxConfig) *SessionSandboxConfig {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	cp.DeniedLoopbackPorts = cloneSlice(c.DeniedLoopbackPorts)
 	return &cp
 }
 

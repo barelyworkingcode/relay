@@ -8,8 +8,9 @@ import (
 	"syscall"
 )
 
-// ErrOwnedByAnotherTray means another Relay tray already holds dir.
-var ErrOwnedByAnotherTray = errors.New("another Relay tray already owns this configuration directory")
+// ErrOwnedByAnotherTray means another relay server, tray or headless, already
+// holds dir.
+var ErrOwnedByAnotherTray = errors.New("another relay server already owns this configuration directory")
 
 const ownerLockName = "tray.lock"
 

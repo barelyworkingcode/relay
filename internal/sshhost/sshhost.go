@@ -8,7 +8,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -49,7 +51,14 @@ func ControlDir() (string, error) {
 func controlDirFor(configDir string, uid int) string {
 	dir := filepath.Join(configDir, "run", "ssh")
 	if len(dir) >= controlPathBudget || strings.ContainsAny(dir, " \t\n\"'") {
-		return fmt.Sprintf("/tmp/relay-ssh-%d", uid)
+		// Deliberate: only the default directory shares the per-user
+		// fallback; any other directory names its own instance, and two
+		// instances must not share a control socket.
+		if filepath.Clean(configDir) == filepath.Clean(bridge.DefaultConfigDir()) {
+			return fmt.Sprintf("/tmp/relay-ssh-%d", uid)
+		}
+		sum := sha256.Sum256([]byte(filepath.Clean(configDir)))
+		return fmt.Sprintf("/tmp/relay-ssh-%d-%s", uid, hex.EncodeToString(sum[:4]))
 	}
 	return dir
 }

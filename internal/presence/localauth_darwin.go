@@ -78,7 +78,7 @@ var localAuthProviderConstructions atomic.Int64
 
 // LocalAuthProviderConstructions reports how many times the real darwin
 // provider's constructor has been called in this process. Production wiring
-// calls it exactly once, in runTrayApp; the hermetic suite must never reach
+// calls it exactly once, in startServerCore; the hermetic suite must never reach
 // it at all (AC-20) — the developer-visible symptom of a regression here is
 // a password dialog appearing during `go test`.
 func LocalAuthProviderConstructions() int64 {
@@ -94,7 +94,7 @@ func LocalAuthProviderConstructions() int64 {
 type LocalAuthProvider struct{}
 
 // NewLocalAuthProvider constructs the real provider. It must be called from
-// exactly one place in production (runTrayApp) and never from the hermetic
+// exactly one place in production (startServerCore) and never from the hermetic
 // suite, which is why its calls are counted.
 func NewLocalAuthProvider() *LocalAuthProvider {
 	localAuthProviderConstructions.Add(1)

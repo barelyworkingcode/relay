@@ -1483,6 +1483,20 @@ func (m *ModelEndpointServer) Reconcile() {
 	}()
 }
 
+// TCPAddr is the address the TCP listener actually bound, so a port-0 target
+// reports its real port; "" when no TCP listener is bound.
+func (m *ModelEndpointServer) TCPAddr() string {
+	if m == nil {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tcpLn == nil {
+		return ""
+	}
+	return m.tcpLn.Addr().String()
+}
+
 // Close shuts down both listeners. Safe to call more than once.
 func (m *ModelEndpointServer) Close() {
 	if m.sockSrv != nil {

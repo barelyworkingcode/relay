@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -148,7 +147,7 @@ func abbreviatePasskeyID(id string) string {
 // as bound. An RP ID must be a registrable domain, so a passkey registered at
 // http://127.0.0.1:PORT cannot exist (ADR-016 decision 1).
 func loginPageURL() string {
-	_, port, err := net.SplitHostPort(os.Getenv(EnvAPIListen))
+	_, port, err := net.SplitHostPort(currentListenAddrs().API)
 	if err != nil || port == "" {
 		return ""
 	}

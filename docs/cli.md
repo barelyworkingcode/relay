@@ -1,10 +1,12 @@
 # The `relay` command line
 
-`relay` is one binary with two personalities. Run with no arguments, it is the
+`relay` is one binary with three personalities. Run with no arguments, it is the
 tray app — the thing that owns `settings.json`, holds the sealing key, and
-answers presence prompts. Run with a subcommand, it is a CLI that asks the
-running tray — to show its configuration or to change it — or reads the audit
-log.
+answers presence prompts. Run as `relay serve`, it is the same server with no
+tray and no window. Run with any other subcommand, it is a CLI that asks the
+running server — to show its configuration or to change it — or reads the
+audit log. Wherever this document says "the tray", a `relay serve` instance
+behaves the same.
 
 That split is the one fact this whole document keeps coming back to, so it
 comes first.
@@ -115,17 +117,94 @@ and `--schema` switches it to JSON that also includes each tool's input
 schema — what a SKILL.md generator consumes. No other subcommand has a
 machine-readable form yet.
 
-## The global `--config-dir` flag
-
-Every subcommand accepts `--config-dir DIR` (or `--config-dir=DIR`) *before*
-the subcommand name — it has to be stripped out ahead of every subcommand's
-own flag parsing, since each owns its own `flag.FlagSet`:
+## `relay serve`
 
 ```
-relay --config-dir /path/to/alt-config grant
+relay [--config-dir DIR] serve
 ```
 
-This is the only flag that is not owned by a subcommand.
+Runs relay's full server — every listener, service and loop the tray runs — for
+one config dir, with no tray and no window. It takes no other argument (any
+other prints usage and exits `2`). It creates DIR if it is missing, takes the
+per-directory lock, and when every listener is up prints exactly one line on
+stdout, the path of `DIR/ready.json`, and nothing else. `SIGTERM` or `SIGINT`
+cleans up and exits `0`. A start failure exits `1` naming DIR; a second server
+on the same DIR fails with `another relay server already owns this
+configuration directory (DIR)`.
+
+DIR must be short enough for its sockets to bind: the longest socket path may
+be 103 bytes, else the start fails with `config dir DIR is too long: socket
+PATH is N bytes and macOS allows 103; choose a shorter directory`. Use a short
+path such as one under `/tmp`.
+
+### `ready.json`
+
+Written (mode `0600`, atomically) after every listener is bound and serving,
+rewritten when a listener reconcile moves one, and removed first thing on a
+clean shutdown. The tray writes it too. It holds no credential.
+
+```json
+{"schema":1,"pid":41234,"version":"dev","config_dir":"/tmp/rr.Ab12/a",
+ "sockets":{"bridge":"/tmp/rr.Ab12/a/relay.sock","frontend":"/tmp/rr.Ab12/a/relay-frontend-41234.sock","model":"/tmp/rr.Ab12/a/model.sock"},
+ "listeners":{"api":"127.0.0.1:53001","model":"127.0.0.1:53002","remote":"127.0.0.1:53003","enrolment":"127.0.0.1:53004"}}
+```
+
+`listeners` is always present; a listener that is not bound has no key, and
+the addresses are the ones actually bound, so a port-0 request shows its real
+port. Do not use `ready.json` to decide whether a server is live — a crash
+leaves it behind until the next start removes it. Dial `DIR/relay.sock`.
+
+### Listener addresses
+
+Every TCP listener takes its address from `settings.json` and accepts port `0`:
+
+| Listener | Key | Absent means |
+|---|---|---|
+| Control-plane API | `api.listen` | `RELAY_API_LISTEN`; neither set: no listener |
+| Model endpoint | `model_endpoint.listen` | no listener |
+| Remote mTLS | `remote.listen` | `127.0.0.1:9910` when remote is enabled |
+| Enrolment requests | `remote.enrolment_listen` | `127.0.0.1:9911` when enabled |
+
+`api.listen` beats `RELAY_API_LISTEN`; both are read at start and both must be
+loopback. A refusal names the key or variable that supplied the address. The
+sandbox's loopback port denial list is `session_sandbox.denied_loopback_ports`
+in `settings.json` (default `[3000, 8181]`); an explicit list replaces the
+default, an entry outside 1-65535 refuses the launch naming the key and value,
+and the instance's own bound API port is always denied.
+
+## The global `--config-dir` flag and `RELAY_CONFIG_DIR`
+
+Every subcommand takes the config dir from the first rule that applies:
+
+1. `--config-dir DIR` or `--config-dir=DIR` anywhere in the arguments before a
+   bare `--`. A relative DIR becomes absolute. Given twice: `--config-dir given
+   more than once`. A missing, empty or dash-led value: `--config-dir needs a
+   directory path`. To pass a literal `--config-dir` through to a registered
+   command's argv, write it `--args=--config-dir`.
+2. `RELAY_CONFIG_DIR`, when non-empty. It must be an absolute path, else
+   `RELAY_CONFIG_DIR must be an absolute path, got "x"`.
+3. The default config dir.
+
+The flag is stripped out ahead of every subcommand's own flag parsing, since
+each owns its own `flag.FlagSet`. Both errors exit `1`. A server started under a
+non-default dir exports `RELAY_CONFIG_DIR` to the services it spawns, so a
+`relay` run inside one reaches the same instance.
+
+```
+relay grant --config-dir /path/to/alt-config
+```
+
+**A client never creates DIR.** A verb that needs the service dials
+`DIR/relay.sock` (2 s limit) before doing anything else. With no server there
+it exits `1` and names DIR:
+
+```
+error: relay is not running at /tmp/acme; `relay service list` requires the service.
+```
+
+`relay sandbox`, `relay drop-in`, `relay mcpExec` and `relay mcp call` do the
+same and never fall back to the default dir. Only the tray and `relay serve`
+create DIR.
 
 ### Which socket the `relay mcp` stdio server dials
 
@@ -133,10 +212,11 @@ This is the only flag that is not owned by a subcommand.
 `list` or `call` subcommands) picks its bridge socket by the first rule that
 applies:
 
-1. An explicit, non-empty `--config-dir DIR`: `DIR/relay.sock`.
+1. `--config-dir DIR`: `DIR/relay.sock`.
 2. `RELAY_BRIDGE_SOCKET`, when set and non-empty. It must be an absolute path;
    a relative value is refused, never resolved against the working directory.
-3. The default, `<config dir>/relay.sock`.
+3. `RELAY_CONFIG_DIR`: `$RELAY_CONFIG_DIR/relay.sock`.
+4. The default, `<config dir>/relay.sock`.
 
 The environment variable is what makes a session's tool child reach the relay
 that launched it. relay-sessions is a separate binary with no config dir of its
@@ -157,7 +237,7 @@ error: relay mcp: bridge socket /tmp/acme/relay.sock (from RELAY_BRIDGE_SOCKET) 
 error: relay mcp: RELAY_BRIDGE_SOCKET must be an absolute path, got "relay.sock"
 ```
 
-The source is `--config-dir`, `RELAY_BRIDGE_SOCKET` or `default`. A set
+The source is `--config-dir`, `RELAY_BRIDGE_SOCKET`, `RELAY_CONFIG_DIR` or `default`. A set
 variable never falls back to the default socket: a tool child that silently
 reached a different relay would act under that relay's grants. The same holds
 on the default path, so `relay mcp` started while relay is down exits at
@@ -166,7 +246,7 @@ startup instead of failing each call. A session reports the early exit as
 
 The admin subcommands (`relay mcp register`, `relay mcp call`, `relay
 mcpExec` and the rest) do not read `RELAY_BRIDGE_SOCKET`; they dial the socket
-`--config-dir` or the default names. The stdio server honours the variable
+the config dir rules above name. The stdio server honours the variable
 because it is the one command relay's own children spawn with it set to the
 socket of the relay that launched them. Whether each admin command should
 honour it is a separate decision.
@@ -428,8 +508,8 @@ empty list from a granted tool means something else broke.
 ## `relay credential`
 
 Control-plane API credentials — the bearer that authenticates a caller to
-relay's control-plane HTTP API (the frontend socket, and `RELAY_API_LISTEN`
-if bound). See [`docs/tokens.md`](tokens.md#control-plane-credentials-adr-015)
+relay's control-plane HTTP API (the frontend socket, and the `api.listen` or `RELAY_API_LISTEN`
+listener if bound). See [`docs/tokens.md`](tokens.md#control-plane-credentials-adr-015)
 for the five classes and what each reaches.
 
 ```
@@ -855,7 +935,7 @@ $ relay login enrol
 login code: <16 hex characters>
   expires:   <timestamp> (valid for 2m0s, single use)
   this code registers a passkey — it is NOT a password and is never accepted in place of one
-  open http://localhost:<RELAY_API_LISTEN port>/relay/login and enter it to register a passkey
+  open http://localhost:<API listener port>/relay/login and enter it to register a passkey
   this code is shown ONCE and is not recoverable
 ```
 

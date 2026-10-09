@@ -25,7 +25,7 @@ func resolveMcpToken(flagToken string) string {
 	return os.Getenv(bridge.EnvProjectToken)
 }
 
-func runMcpExec(args []string) {
+func runMcpExec(command string, args []string) {
 	fs := flag.NewFlagSet("mcpExec", flag.ExitOnError)
 	token := fs.String("token", "", "auth token (prefer RELAY_PROJECT_TOKEN env)")
 	list := fs.Bool("list", false, "list available tools")
@@ -46,6 +46,9 @@ func runMcpExec(args []string) {
 		os.Exit(1)
 	}
 
+	if !serviceReachable() {
+		exitError("%s", serviceRequiredMessage(command))
+	}
 	client := bridge.NewClient(*token)
 	tokenless := *token == ""
 

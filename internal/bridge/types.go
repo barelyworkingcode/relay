@@ -110,6 +110,10 @@ const (
 	EnvServiceID      = "RELAY_SERVICE_ID"
 	EnvMcpCommand     = "RELAY_MCP_COMMAND"
 
+	// EnvConfigDir names the configuration directory a relay process serves
+	// or a client talks to. It chooses an instance, never grants a right.
+	EnvConfigDir = "RELAY_CONFIG_DIR"
+
 	// EnvLaunchFD names the inherited descriptor holding the launch secret.
 	// Its value is always LaunchFD; the secret itself is never in the
 	// environment.
