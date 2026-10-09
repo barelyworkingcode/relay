@@ -54,6 +54,9 @@ type HostPool struct {
 
 	mu     sync.Mutex
 	agents map[string]*hostAgent
+	// sets holds each host's watch registrations, including those of a host
+	// whose agent was dropped.
+	sets map[string]*watchSet
 
 	subMu   sync.Mutex
 	subs    map[int64]func(HostStatus)
@@ -66,6 +69,7 @@ func NewHostPool(o HostPoolOptions) *HostPool {
 	p := &HostPool{
 		clk: o.Clock, argv: o.Argv,
 		agents: map[string]*hostAgent{},
+		sets:   map[string]*watchSet{},
 		subs:   map[int64]func(HostStatus){},
 	}
 	if p.clk == nil {
@@ -106,26 +110,80 @@ func (p *HostPool) agentFor(h config.Host) *hostAgent {
 		a.setName(h.Name)
 		return a
 	}
-	if a != nil {
-		a.shutdown()
-	}
-	a = newHostAgent(p, h, fp)
-	p.agents[h.ID] = a
+	a = p.replaceLocked(h, fp)
 	p.mu.Unlock()
 	a.start()
 	return a
 }
 
-// Drop ends a host's agent: the host was deleted, its ssh fields changed or
-// it was disconnected. Watches on it end silently; the next request for the
-// host starts a fresh agent.
+// replaceLocked shuts down h's agent and installs a new one that adopts the
+// host's watches. The caller holds p.mu and starts the returned agent after
+// unlocking.
+func (p *HostPool) replaceLocked(h config.Host, fp string) *hostAgent {
+	if old := p.agents[h.ID]; old != nil {
+		old.shutdown()
+	}
+	ws := p.sets[h.ID]
+	if ws == nil {
+		ws = &watchSet{roots: map[string]*rootWatch{}}
+		p.sets[h.ID] = ws
+	}
+	a := newHostAgent(p, h, fp, ws)
+	p.agents[h.ID] = a
+	return a
+}
+
+// Restart replaces h's agent now, for new connection fields. The new agent
+// adopts the host's watches and re-arms them before it reports connected.
+func (p *HostPool) Restart(h config.Host) {
+	p.mu.Lock()
+	a := p.replaceLocked(h, fingerprint(h))
+	p.mu.Unlock()
+	a.start()
+}
+
+// Drop ends a host's agent and tells subscribers the host is unreachable.
+// The host's watch registrations stay held, deliberately: the next request
+// that starts an agent for the host re-arms them, and their stop funcs keep
+// working meanwhile.
 func (p *HostPool) Drop(hostID string) {
 	p.mu.Lock()
 	a := p.agents[hostID]
 	delete(p.agents, hostID)
 	p.mu.Unlock()
-	if a != nil {
-		a.shutdown()
+	if a == nil {
+		return
+	}
+	a.shutdown()
+	s := a.snapshot()
+	s.Status, s.Error = StatusUnreachable, "disconnected"
+	p.emit(s)
+}
+
+// releaseSink removes one sink from a host's watch set and, for the last sink
+// on a root, ends the watcher on the agent that holds the set now. A set with
+// no registrations and no agent is forgotten.
+func (p *HostPool) releaseSink(hostID string, ws *watchSet, root string, rw *rootWatch, sinkID int64) {
+	ws.mu.Lock()
+	delete(rw.sinks, sinkID)
+	last := len(rw.sinks) == 0 && ws.roots[root] == rw
+	if last {
+		delete(ws.roots, root)
+	}
+	empty := len(ws.roots) == 0
+	ws.mu.Unlock()
+
+	p.mu.Lock()
+	a := p.agents[hostID]
+	if a != nil && a.watches != ws {
+		a = nil
+	}
+	if a == nil && empty && p.sets[hostID] == ws {
+		delete(p.sets, hostID)
+	}
+	p.mu.Unlock()
+	if last && a != nil {
+		a.unwatchRoot(root)
 	}
 }
 

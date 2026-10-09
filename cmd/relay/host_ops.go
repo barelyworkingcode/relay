@@ -76,13 +76,16 @@ type HostOps struct {
 	// still run, just unrecorded), matching AuditRecorder's nil-receiver
 	// methods elsewhere.
 	Auditor *audit.AuditRecorder
-	// Agents ends a host's file agent when the host is deleted, its ssh
-	// fields change or its master is disconnected; nil is safe.
-	Agents HostAgentDropper
+	// Agents ends a host's file agent when the host is deleted or its master
+	// is disconnected, and replaces it when its ssh fields change; nil is safe.
+	Agents HostAgents
 }
 
-// HostAgentDropper is the one method of projectfs.HostPool that HostOps needs.
-type HostAgentDropper interface{ Drop(hostID string) }
+// HostAgents is the part of projectfs.HostPool that HostOps needs.
+type HostAgents interface {
+	Drop(hostID string)
+	Restart(h config.Host)
+}
 
 func (o *HostOps) dropAgent(hostID string) {
 	if o.Agents != nil {
@@ -185,7 +188,9 @@ func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (con
 		return config.Host{}, false, nil
 	}
 	if connectionChanged {
-		o.dropAgent(id)
+		if o.Agents != nil {
+			o.Agents.Restart(updated)
+		}
 		probe, _ := sshhost.Probe(ctx, updated)
 		recordHostProbe(o.Auditor, updated, probe)
 		committed, current, err := o.commitProbe(updated.ID, updated.ProbeGeneration, probe)

@@ -589,9 +589,16 @@ the host's projects through the same routes as console projects. The pool:
   clock, and re-arms the host's watches before it reports `connected`;
 - reports `connecting`, `connected` and `unreachable` through `Subscribe` and
   `Statuses`, which `/ws/files` forwards as `host_status`;
-- drops a host's agent (`Drop`) when the host is deleted, its target, port or
-  identity change, or its master is disconnected. A new probe that changes
-  `node_path` replaces the agent on its next use.
+- keeps a host's watch registrations in the pool, not in the agent, so a
+  replaced agent's successor adopts them and re-arms them before it reports
+  `connected`; a stop func from `Watch` works across the hand-over;
+- replaces a host's agent at once (`Restart`) when its target, port or
+  identity change;
+- drops a host's agent (`Drop`) when the host is deleted or its master is
+  disconnected, and sends one `unreachable` status with error `disconnected`.
+  Its watches stay held until a later request starts an agent for the host or
+  their stop funcs run. A new probe that changes `node_path` replaces the
+  agent on its next use.
 
 A host project differs from a console project in three ways: rename and move
 replace an existing destination, delete is permanent, and a stream is a plain

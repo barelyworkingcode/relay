@@ -86,6 +86,15 @@ type rootWatch struct {
 	err   error
 }
 
+// watchSet is a host's watch registrations. It belongs to the pool, not to an
+// agent, so the registrations outlive the agent process and its replacement
+// adopts them. This is deliberate: a stop func handed out by Watch must keep
+// working after the agent that served it is gone.
+type watchSet struct {
+	mu    sync.Mutex
+	roots map[string]*rootWatch
+}
+
 // hostAgent owns one host's agent process: spawn, hello, request multiplexing,
 // watch re-arming and reconnect with backoff.
 type hostAgent struct {
@@ -100,18 +109,18 @@ type hostAgent struct {
 	errMsg  string
 	changed chan struct{}
 	conn    *agentConn
-	watches map[string]*rootWatch
+	watches *watchSet
 
 	nextID     atomic.Int64
 	nextSinkID atomic.Int64
 }
 
-func newHostAgent(pool *HostPool, h config.Host, fp string) *hostAgent {
+func newHostAgent(pool *HostPool, h config.Host, fp string, ws *watchSet) *hostAgent {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &hostAgent{
 		pool: pool, fp: fp, ctx: ctx, stop: cancel, host: h,
 		status: StatusConnecting, changed: make(chan struct{}),
-		watches: map[string]*rootWatch{},
+		watches: ws,
 	}
 	if h.Probe == nil || h.Probe.NodePath == "" {
 		a.status = StatusUnreachable
@@ -322,9 +331,9 @@ func (a *hostAgent) runOnce() (reason string, connected bool) {
 // rearm re-sends watch for every root that still has a sink, before the agent
 // is announced as connected, so a connected status means watches are live.
 func (a *hostAgent) rearm(conn *agentConn) {
-	a.mu.Lock()
+	a.watches.mu.Lock()
 	var roots []string
-	for root, rw := range a.watches {
+	for root, rw := range a.watches.roots {
 		select {
 		case <-rw.ready:
 			if rw.err == nil && len(rw.sinks) > 0 {
@@ -333,7 +342,7 @@ func (a *hostAgent) rearm(conn *agentConn) {
 		default:
 		}
 	}
-	a.mu.Unlock()
+	a.watches.mu.Unlock()
 	for _, root := range roots {
 		timeout := a.pool.clk.After(HostRequestTimeout)
 		if _, err := a.exchange(a.ctx, conn, timeout, "watch", map[string]any{"root": root}); err != nil {
@@ -389,15 +398,15 @@ func normalizeKind(k string) string {
 }
 
 func (a *hostAgent) dispatch(root string, ev Event) {
-	a.mu.Lock()
-	rw := a.watches[root]
+	a.watches.mu.Lock()
+	rw := a.watches.roots[root]
 	var sinks []func(Event)
 	if rw != nil {
 		for _, s := range rw.sinks {
 			sinks = append(sinks, s)
 		}
 	}
-	a.mu.Unlock()
+	a.watches.mu.Unlock()
 	for _, s := range sinks {
 		s(ev)
 	}
@@ -511,27 +520,29 @@ func (a *hostAgent) call(ctx context.Context, op string, params map[string]any) 
 
 // addWatch registers sink for root and returns once the agent has acked a
 // live watcher. The stop func releases the sink and, for the last one, the
-// agent-side watcher.
+// agent-side watcher, from whichever agent holds the host's watches by then.
 func (a *hostAgent) addWatch(ctx context.Context, root string, sink func(Event)) (func(), error) {
+	ws := a.watches
 	sinkID := a.nextSinkID.Add(1)
-	a.mu.Lock()
-	rw := a.watches[root]
+	ws.mu.Lock()
+	rw := ws.roots[root]
 	first := rw == nil
 	if first {
 		rw = &rootWatch{sinks: map[int64]func(Event){}, ready: make(chan struct{})}
-		a.watches[root] = rw
+		ws.roots[root] = rw
 	}
 	rw.sinks[sinkID] = sink
-	a.mu.Unlock()
+	ws.mu.Unlock()
 
+	release := func() { a.pool.releaseSink(a.hostID(), ws, root, rw, sinkID) }
 	if first {
 		_, err := a.call(ctx, "watch", map[string]any{"root": root})
-		a.mu.Lock()
+		ws.mu.Lock()
 		rw.err = err
-		if err != nil && a.watches[root] == rw {
-			delete(a.watches, root)
+		if err != nil && ws.roots[root] == rw {
+			delete(ws.roots, root)
 		}
-		a.mu.Unlock()
+		ws.mu.Unlock()
 		close(rw.ready)
 		if err != nil {
 			return nil, err
@@ -540,7 +551,7 @@ func (a *hostAgent) addWatch(ctx context.Context, root string, sink func(Event))
 		select {
 		case <-rw.ready:
 		case <-ctx.Done():
-			a.dropSink(root, rw, sinkID)
+			release()
 			return nil, ctx.Err()
 		}
 		if rw.err != nil {
@@ -549,23 +560,20 @@ func (a *hostAgent) addWatch(ctx context.Context, root string, sink func(Event))
 	}
 
 	var once sync.Once
-	return func() { once.Do(func() { a.dropSink(root, rw, sinkID) }) }, nil
+	return func() { once.Do(release) }, nil
 }
 
-func (a *hostAgent) dropSink(root string, rw *rootWatch, sinkID int64) {
+// unwatchRoot tells the live process, if any, to end its watcher for root.
+func (a *hostAgent) unwatchRoot(root string) {
 	a.mu.Lock()
-	delete(rw.sinks, sinkID)
-	last := len(rw.sinks) == 0 && a.watches[root] == rw
-	if last {
-		delete(a.watches, root)
-	}
 	conn := a.conn
 	a.mu.Unlock()
-	if last && conn != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), HostRequestTimeout)
-		defer cancel()
-		_, _ = a.exchange(ctx, conn, a.pool.clk.After(HostRequestTimeout), "unwatch", map[string]any{"root": root})
+	if conn == nil {
+		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), HostRequestTimeout)
+	defer cancel()
+	_, _ = a.exchange(ctx, conn, a.pool.clk.After(HostRequestTimeout), "unwatch", map[string]any{"root": root})
 }
 
 func (a *hostAgent) shutdown() {
