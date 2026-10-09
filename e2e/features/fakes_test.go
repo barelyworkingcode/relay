@@ -259,3 +259,14 @@ func TestFakePiAnswers(t *testing.T) {
 	}
 	askAndCheck(t, i, "pi", startAgentSession(t, i, "pi", piModel))
 }
+
+func TestFakeCodexAnswers(t *testing.T) {
+	t.Parallel()
+	i := harness.Start(t, harness.Options{Presence: approveGrant})
+	i.WaitSessionHost(60 * time.Second)
+	_, ids := modelIDs(t, i)
+	if !hasAll(ids, "codex/fake-echo") {
+		t.Fatalf("model list %v holds no codex/fake-echo", ids)
+	}
+	askAndCheck(t, i, "codex", startAgentSession(t, i, "codex", "codex/fake-echo"))
+}
