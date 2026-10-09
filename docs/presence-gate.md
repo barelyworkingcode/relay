@@ -514,8 +514,11 @@ without a restart.
   is refused when the file says `false` or does not say.
 
 **The default config dir.** The seams act only on a config dir other than
-`bridge.DefaultConfigDir()`, compared with symlinks resolved; a path that does
-not resolve counts as the default. On the default dir the test build behaves
+`bridge.DefaultConfigDir()`, compared with symlinks resolved. A config dir that
+exists and resolves is not the default, even on a machine where the default dir
+does not exist (a CI runner); a config dir that does not resolve, or a default
+dir that fails to resolve for any reason other than not existing, counts as the
+default. On the default dir the test build behaves
 as the earlier approver build did: the file is never read, `project.grant` is
 approved, and every other gated op is refused. A test build swapped in for the
 real app (see [`docs/testing.md`](testing.md#the-default-config-dir)) therefore
@@ -530,7 +533,7 @@ reason.
 **Events.** Each answer writes `debug.presence.answer` with `gated_op`,
 `answer` and `source` (`file` or `default`), before it returns or, for
 `timeout`, before it blocks. That event is the signal a script waits on to know
-the prompt is up. See [`docs/events.md`](events.md#test-build-only-events).
+the prompt is up. See [`docs/events.md`](events.md#test-build-only).
 
 **Where it can and cannot exist.** The package
 `internal/presence/testapprover` is imported by one file in `cmd/relay`,

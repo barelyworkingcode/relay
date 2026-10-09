@@ -363,7 +363,7 @@ write with the key already in memory does not.
 
 Each operation a fault changes writes `debug.keychain.fault` with
 `keychain_op` and `fault`, before the operation acts
-([`docs/events.md`](events.md#test-build-only-events)).
+([`docs/events.md`](events.md#test-build-only)).
 
 No CLI path opens the provider: it is built in `startServerCore` and handed to
 the sealed store there, as the login-keychain keyring is.

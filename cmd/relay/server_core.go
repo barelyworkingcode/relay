@@ -455,6 +455,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 	app.ipcCtx.SkillLister = router
 	app.ipcCtx.Audit = rec
 	router.serviceOps = serviceOps
+	router.budgets.SetClock(clock.Now)
 
 	// credentialOps is admin_op's only door onto CredentialOps (ADR-017
 	// implementation spec S6): `relay credential mint|revoke` is host-only
