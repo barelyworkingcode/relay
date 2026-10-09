@@ -108,11 +108,9 @@ type issuanceAuditorReadiness interface{ Ready() bool }
 // misconfigured field.
 //
 // This is deliberate: requireIssuanceAuditor stays an unqualified identifier
-// in package main. cmd/relay/gate_ast_scan_test.go's
-// TestGate_EveryIssuanceAuditorCallSiteHasACase matches call sites with
-// call.Fun.(*ast.Ident), which a qualified audit.RequireIssuanceAuditor call
-// would not satisfy — the scan would silently stop verifying that every
-// gated core audits its issuance.
+// in package main, so a scan matching call sites by bare identifier
+// (call.Fun.(*ast.Ident)) still finds every gated core that audits its
+// issuance; a qualified call would hide from it. No test enforces this now.
 func requireIssuanceAuditor(a IssuanceAuditor) error {
 	if a == nil {
 		return errIssuanceAuditingRequired

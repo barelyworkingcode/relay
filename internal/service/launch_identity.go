@@ -102,13 +102,11 @@ type Launches struct {
 	byName map[string]*Launch
 	bound  map[peertoken.Process]*Launch
 
-	// clock, rootSource and watchRoot are test seams; their zero-argument
-	// production values are wired in NewLaunches. rootSource and watchRoot
-	// back a project_session Bind's ancestry pinning (C2): internal/membership
-	// already exists in this tree (R-M0 landed before this unit started), so
-	// this wires the real thing rather than stubbing it — see the SetXxxForTest
-	// setters' doc comments for exactly what is real and what a test may
-	// override.
+	// clock, rootSource and watchRoot are injection points; their production
+	// values are wired in NewLaunches. rootSource and watchRoot back a
+	// project_session Bind's ancestry pinning (C2): rootSource is
+	// membership.NewSource() (a real proc_pidinfo(PROC_PIDTBSDINFO) call) and
+	// watchRoot is membership.WatchExit (a real kqueue EVFILT_PROC watch).
 	clock      func() time.Time
 	rootSource membership.Source
 	watchRoot  func(pid int, want membership.ProcInfo, onExit func()) (cancel func(), err error)
@@ -161,34 +159,13 @@ func (t *Launches) SetClockForTest(now func() time.Time) {
 	t.clock = now
 }
 
-// SetRootSourceForTest overrides the ancestry Source a project_session Bind
-// reads the root's start time from. Production wires membership.NewSource()
-// (a real proc_pidinfo(PROC_PIDTBSDINFO) call); a test that cannot fabricate
-// a real process instead controls what Bind believes the kernel reported.
-func (t *Launches) SetRootSourceForTest(src membership.Source) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.rootSource = src
-}
-
-// SetRootWatcherForTest overrides the ancestry-exit watch a project_session
-// Bind registers. Production wires membership.WatchExit (a real kqueue
-// EVFILT_PROC watch); a test controls when — or whether — the root is
-// reported to have exited, and can capture onExit to fire it deterministically.
-func (t *Launches) SetRootWatcherForTest(watch func(pid int, want membership.ProcInfo, onExit func()) (cancel func(), err error)) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.watchRoot = watch
-}
-
 // SetHelperVerifier installs the code-identity check BindKind applies to a
 // "service" launch named config.RelaySessionsServiceID once it binds (SP3,
 // R-S9's runtime half): the presenting process already proved it holds
 // relay's launch secret; this additionally proves its code identity really
 // is the signed relay-sessions helper, not merely a process that obtained
 // the secret some other way. nil (NewLaunches' default) skips the check.
-// Unlike the SetXxxForTest seams above, production calls this too — there
-// is no sensible always-on default, since the real check needs a
+// There is no sensible always-on default, since the real check needs a
 // build-time cdhash that only exists on a signed build.
 func (t *Launches) SetHelperVerifier(v HelperVerifier) {
 	t.mu.Lock()

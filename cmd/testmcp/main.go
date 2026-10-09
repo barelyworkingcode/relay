@@ -1,11 +1,11 @@
-// Command testmcp is a minimal stdio JSON-RPC peer the hermetic test suite
-// spawns to exercise relay's real external-MCP stdio transport
+// Command testmcp is a minimal stdio JSON-RPC peer the devbox journeys
+// spawn to exercise relay's real external-MCP stdio transport
 // (externalMcpConn.SendRequest / readLoop) without mocking the connection.
 // Behavior is selected by the request method and by RELAY_TESTMCP_CONTEXT;
 // see contextMode below for the context/enumerate modes. RELAY_TESTMCP_CATALOG=wide
 // swaps the one-tool catalogue for a 48-tool one (wide.go).
 //
-// Built on demand by buildTestMcpBinary in external_mcp_stdio_test.go.
+// Built on demand by cmd/devboxverify.
 package main
 
 import (

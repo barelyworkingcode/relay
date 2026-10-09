@@ -48,23 +48,8 @@ type BridgeServer struct {
 	// peerConfined answers relay-sandbox-attach's second, independent guard:
 	// is the peer itself, right now, confined by a sandbox. nil falls back to
 	// PeerConfined in handleConn, the same style resolveSession there already
-	// uses for callerSession; a test overrides it because there is no way to
-	// put a real Seatbelt profile on a test binary from inside the test.
+	// uses for callerSession.
 	peerConfined PeerConfinedFunc
-}
-
-// SetCallerSessionResolverForTest overrides how THIS server resolves a
-// connection's presence.CallerSession. It exists because a real peer's
-// kernel audit session is whatever the process running the test happens to
-// have — there is no way to force AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS off
-// from inside the test binary itself — and a test proving §6.6's refusal
-// end to end needs that fact pinned, not ambient. This does not touch
-// package presence or weaken Gate.Request in any way: it only supplies the
-// one input Gate.Request already reads off the context before deciding
-// whether to prompt at all. Production never calls this; NewBridgeServer's
-// default (PeerCallerSession) is the only resolver a shipped relay uses.
-func (s *BridgeServer) SetCallerSessionResolverForTest(fn func(net.Conn) presence.CallerSession) {
-	s.callerSession = fn
 }
 
 func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, error) {
@@ -109,23 +94,6 @@ func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, err
 		s.membership = mr
 	}
 	return s, nil
-}
-
-// SetMembershipResolverForTest overrides how THIS server answers C3, for a
-// test that needs a controlled session table without building a real
-// appRouter. Production never calls this: NewBridgeServer's own lookup is
-// the only resolver a shipped relay uses.
-func (s *BridgeServer) SetMembershipResolverForTest(mr MembershipResolver) {
-	s.membership = mr
-}
-
-// SetPeerConfinedForTest overrides how THIS server answers relay-sandbox-
-// attach's confinement check, the same seam SetCallerSessionResolverForTest
-// and SetMembershipResolverForTest provide for their own per-connection
-// checks. Production never calls this; NewBridgeServer's default (the real
-// PeerConfined) is the only implementation a shipped relay uses.
-func (s *BridgeServer) SetPeerConfinedForTest(fn PeerConfinedFunc) {
-	s.peerConfined = fn
 }
 
 func (s *BridgeServer) Serve() error {

@@ -23,10 +23,9 @@ func fieldAAD(path string) []byte {
 
 // forEachSecret is the single place the sealed set (§4.1, §4.3) is
 // enumerated. SealAllSecrets and openAllSecrets are both one pass over it,
-// and TestSecrets_ForEachVisitsEverySecretField (settings_seal_test.go)
-// walks *Settings by reflection and fails if a Secret field exists that a
-// path here does not reach — so a Secret added later and not enumerated
-// fails the suite instead of reaching disk in the clear (AC-4).
+// and a Secret field that a path here does not reach would reach disk in
+// the clear (AC-4): nothing enumerates *Settings by reflection to catch it,
+// so a new Secret field needs its path added here.
 //
 // fn may mutate the Secret it is given: env-map entries are copied out and
 // back in because a map value is not addressable, but every other field is

@@ -1,9 +1,9 @@
 // Command testservice is a real spawnable binary (not a mock) that the
-// hermetic test suite uses to exercise relay's real service spawn path —
+// devbox journeys build to exercise relay's real service spawn path —
 // env-var injection, the launch fd and Hello, pidfile, log file, reaper —
 // without mocking exec.Command.
 //
-// Built on demand by TestMain in service_registry_test.go.
+// Built on demand by cmd/devboxverify.
 package main
 
 import (
@@ -31,7 +31,7 @@ func main() {
 	dumpEnv := flag.String("dump-env", "", "write os.Environ() (one VAR=value per line) to this file, then continue")
 	flag.Parse()
 
-	// Written before any work so a test can poll for the file regardless of
+	// Written before any work so a caller can poll for the file regardless of
 	// --register/--status-after, and renamed into place so a poll that sees
 	// the file never reads it empty.
 	if *dumpEnv != "" {

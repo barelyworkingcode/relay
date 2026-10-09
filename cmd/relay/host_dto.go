@@ -25,9 +25,8 @@ var (
 )
 
 // cachedHostCheck memoizes sshhost.Check per host id for hostStatusCacheTTL.
-// sshhost.Check still goes through its own runner exec seam
-// (sshhost.SetRunnerForTest), so a hermetic test gets a fake process either
-// way — this only changes how often that seam is called.
+// sshhost.Check still goes through its own runner exec seam; this only
+// changes how often it is called.
 func cachedHostCheck(h config.Host) bool {
 	hostStatusCacheMu.Lock()
 	if cached, ok := hostStatusCache[h.ID]; ok && time.Since(cached.at) < hostStatusCacheTTL {
@@ -131,13 +130,11 @@ const hostListCheckWorkers = 8
 // list of N hosts serialized N cache-miss round trips.
 //
 // This is deliberate: a done channel counted off, not a sync.WaitGroup —
-// both work, but this package's call-graph guard
-// (tray_notify_call_site_test.go) matches call sites by bare method name
-// with no receiver-type information, and a WaitGroup's Add collides by name
-// with McpOps.Add, a genuinely gated method. hostsToView is legitimately
-// reachable from the Settings window's render path, so that collision was a
-// false positive the guard has no way to see through — avoiding the name
-// entirely is simpler than teaching the guard about it.
+// both work, but a call-graph scan by bare method name
+// (no receiver-type information) would collide a WaitGroup's Add with
+// McpOps.Add, a genuinely gated method, and hostsToView is legitimately
+// reachable from the Settings window's render path. Avoiding the name is
+// simpler than teaching a scan about it.
 func hostsToView(hs []config.Host) []hostView {
 	out := make([]hostView, len(hs))
 	if len(hs) == 0 {

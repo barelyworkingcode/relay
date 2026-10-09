@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"sync"
-	"testing"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
@@ -257,33 +256,4 @@ func (w *budgetWindow) prune(cutoff time.Time) {
 	if m > 0 {
 		w.mountWriteVolume = slices.Delete(w.mountWriteVolume, 0, m)
 	}
-}
-
-// TrackedWindows and DrawnBytes are the read seam the router's budget tests
-// need: those tests live in package main, beside the appRouter.CallTool path
-// that actually enforces a budget, and the ledger's own fields are
-// unexported. Both panic outside a test binary — production has no business
-// reading a running total, only Admit and Charge do.
-func (b *Budgets) TrackedWindows() int {
-	if !testing.Testing() {
-		panic("enrolment: TrackedWindows is a test seam and must not be reached in a shipped binary")
-	}
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return len(b.windows)
-}
-
-func (b *Budgets) DrawnBytes(fingerprint string) int64 {
-	if !testing.Testing() {
-		panic("enrolment: DrawnBytes is a test seam and must not be reached in a shipped binary")
-	}
-	b.mu.RLock()
-	w := b.windows[fingerprint]
-	b.mu.RUnlock()
-	if w == nil {
-		return 0
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.bytes
 }

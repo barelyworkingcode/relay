@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"testing"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -1125,22 +1124,6 @@ func (r *AuditRecorder) Close() {
 	})
 }
 
-// CloseWriterForTest closes the underlying log file out from under the
-// writer goroutine, so a test can make a write fail for real (an unwritable
-// disk, say) rather than through a test-only switch in production code. It
-// deliberately does not go through Close, which also tears down the writer
-// goroutine itself.
-//
-// This is a test seam, not a production capability — see
-// config.NewSettingsStoreWithCache for the same pattern. It panics outside a
-// test binary.
-func (r *AuditRecorder) CloseWriterForTest() error {
-	if !testing.Testing() {
-		panic("audit: CloseWriterForTest is a test seam and must not be reached in a shipped binary")
-	}
-	return r.w.Close()
-}
-
 func (r *AuditRecorder) Wrote() uint64 {
 	if r == nil {
 		return 0
@@ -1148,7 +1131,7 @@ func (r *AuditRecorder) Wrote() uint64 {
 	return r.wrote.Load()
 }
 
-// Mainly a test seam, but also used before an export so the file on disk
+// Flush is used before an export so the file on disk
 // includes everything the UI has already shown. Returns immediately if the
 // recorder is closed rather than blocking forever on a dead writer.
 func (r *AuditRecorder) Flush() {

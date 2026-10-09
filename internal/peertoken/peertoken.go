@@ -50,15 +50,6 @@ type Process struct {
 // Process returns the token's (pid, pidversion) pair.
 func (t Token) Process() Process { return Process{PID: t.PID(), PIDVersion: t.PIDVersion()} }
 
-// ForProcessForTest builds a token carrying only a pid and pidversion, for
-// tests that exercise identity lookups without a real peer.
-func ForProcessForTest(pid, pidversion int32) Token {
-	var raw [Size]byte
-	binary.LittleEndian.PutUint32(raw[20:24], uint32(pid))
-	binary.LittleEndian.PutUint32(raw[28:32], uint32(pidversion))
-	return Token{raw: raw}
-}
-
 // FromConn reads the peer audit token of conn. Any failure, including a conn
 // that is not a *net.UnixConn, returns an error and the zero Token.
 func FromConn(conn net.Conn) (Token, error) {

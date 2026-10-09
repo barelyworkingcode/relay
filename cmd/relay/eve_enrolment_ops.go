@@ -127,10 +127,9 @@ func (o *EveEnrolmentOps) Open(ctx context.Context, via string) (eveEnrolmentSta
 	// The reason string is inlined rather than named, matching
 	// login_ops.go's own "mint a login bootstrap code": it is quoted
 	// verbatim in docs/eve-passkey-enrolment.md and docs/presence-gate.md,
-	// and doc_reason_strings_test.go's AST scan resolves a requireGate
-	// reason argument to a constant string literal or a local
-	// assignment -- not to a package-level const identifier -- so a named
-	// constant here would silently drop out of that guard's coverage.
+	// and a scan resolving a requireGate reason argument finds a constant
+	// string literal or a local assignment, not a package-level const
+	// identifier.
 	grant, err := requireGate(o.Gate, ctx, "eve.enrolment.open",
 		presence.NewDigestBuilder("eve.enrolment.open").Build(),
 		"open a five-minute window for one new browser to register an Eve passkey",

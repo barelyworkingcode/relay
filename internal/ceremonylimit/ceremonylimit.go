@@ -9,7 +9,6 @@ package ceremonylimit
 
 import (
 	"sync"
-	"testing"
 	"time"
 )
 
@@ -84,28 +83,4 @@ func (l *Limiter) SetClock(fn func() time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.now = fn
-}
-
-// Failures and NextAllowed are the read seam the two callers' own tests
-// need: those tests live beside the Limiter each embeds (cmd/relay's
-// enrolment-request table, internal/login's WebAuthnVerifier), and both
-// embedders reach a Limiter across a package boundary where its fields are
-// unexported. Both panic outside a test binary — production has no business
-// reading a running total, only Allow/RecordFailure/RecordSuccess do.
-func (l *Limiter) Failures() int {
-	if !testing.Testing() {
-		panic("ceremonylimit: Failures is a test seam and must not be reached in a shipped binary")
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.failures
-}
-
-func (l *Limiter) NextAllowed() time.Time {
-	if !testing.Testing() {
-		panic("ceremonylimit: NextAllowed is a test seam and must not be reached in a shipped binary")
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.nextAllowed
 }

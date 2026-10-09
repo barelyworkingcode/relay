@@ -361,10 +361,7 @@ func NewScanner(r io.Reader) *bufio.Scanner {
 // ConfigDir() calls.
 var configDirOverride string
 
-func SetConfigDirForTest(dir string) { configDirOverride = dir }
-
-// SetConfigDir is identical to SetConfigDirForTest but named for production
-// callsites so grep'ing for the test seam stays clean.
+// SetConfigDir points ConfigDir at dir for the life of the process.
 func SetConfigDir(dir string) { configDirOverride = dir }
 
 func ConfigDir() string {
