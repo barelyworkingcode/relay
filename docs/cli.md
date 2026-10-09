@@ -112,6 +112,7 @@ they had. `relay doors` lists every door, its credential class and its gates.
 | `relay service restart` | yes | no | yes |
 | `relay status` | yes | no | yes |
 | `relay doors` | yes | no | yes |
+| `relay debug clock` (test build only) | yes | no | yes |
 | `relay remote show` | yes | no | yes |
 | `relay remote set` | yes | **yes** | no |
 | `relay host probe` | yes | no | yes |
@@ -1661,6 +1662,37 @@ frames eve's file tree receives on `/ws/files` for one project (`host_status`,
 `watch_ok`, `watch_error`, `fs_event`), one JSON line per frame, from the same
 watch hub. It runs until you interrupt it, `--timeout` passes, or a frame of
 `--until TYPE` arrives. `watch_ok` is the signal that the watch is live.
+
+## `relay debug` (test build only)
+
+A build made with `-tags relaytest` (`./build.sh --test-build`) has one more
+command. In a release build `relay debug` is `unknown command: debug`, exit
+1, and `relay doors` lists no door for it. See
+[`docs/testing.md`](testing.md#the-test-build).
+
+### `debug clock`
+
+```
+relay [--config-dir X] debug clock [--json]
+relay [--config-dir X] debug clock set <RFC3339> [--json]
+relay [--config-dir X] debug clock advance <duration> [--json]
+```
+
+Reads or moves the clock the running server judges time by: credential
+expiry, login and enrolment windows, restart backoff, token expiry and the
+other decisions [`docs/testing.md`](testing.md#the-test-build) lists. It
+reaches the server through the `debug.clock` admin op, which only an operator
+terminal may call. A relay session or a sandbox is refused.
+
+Text output is two lines, `now:` (UTC, RFC 3339 with fraction) and `offset:`
+(a Go duration from wall time). `--json` prints
+`{"now":"2026-10-01T01:30:00.000Z","offset_ms":-741600000}`. `advance` takes a
+Go duration greater than 0; go back with `set`. The clock lives in memory, so
+a server restart returns it to wall time. On the default config dir it
+refuses: the clock is fixed there.
+
+Exit 0 on success. Exit 1 when there is no server, the caller is refused, or
+the server errors. Exit 2 on a usage error.
 
 ## `relay doors`
 

@@ -455,9 +455,11 @@ The only other provider is the build-tagged test approver (next section).
 There is no environment variable, settings field, or setter-shaped global
 anywhere in this feature that could disable or weaken the gate. Nothing
 enforces that absence automatically now; the reviewer checks it. A release
-build has no way to skip a gate. The one build tag, `testapprover`, links a
-provider that answers `project.grant` alone and refuses every other gated op
-(next section). `build.sh` checks it absent from every release binary.
+build has no way to skip a gate. The one build tag, `relaytest`, links a
+provider that reads its answers from a file in the config dir (next section);
+the same tag links the test build's keychain provider and clock
+([`docs/testing.md`](testing.md#the-test-build)). `build.sh` and CI check the
+tag absent from every release binary.
 This is deliberate and total, in the spirit of the house rule that a
 weakening introduced to make a test convenient is the weakening most likely
 to survive into production: rather than build a seam and discipline everyone
@@ -465,15 +467,11 @@ never to flip it, there is no seam to flip. The
 test approver is the one exception, and it is a separate build, not a runtime
 switch.
 
-## The test-approver build
+## The test build: presence
 
-**Why it exists.** The devbox verify journeys run with no person at the
-screen, and a LocalAuthentication dialog cannot be answered from a script. One
-journey needs it: eve's project-mode-new creates a project, which is
-`project.grant` through `POST /api/projects` on the frontend socket. The
-`testapprover` build answers that one op. `credential.*`, the enrolment ops,
-`service.register` and every other gated op stay with a person: the approver
-refuses them, and a journey that needs one stays a screen journey.
+**Why it exists.** The devbox verify journeys and the e2e tier run with no
+person at the screen, and a LocalAuthentication dialog cannot be answered from
+a script. The `relaytest` build replaces the dialog with a file.
 
 **The seam.** `presence.UnattendedProvider` is an optional interface on a
 provider: `EvaluateOp(ctx, op, reason)` and `Approver()`. `Gate.Request`
@@ -483,21 +481,67 @@ an SSH bridge caller is still refused with `ErrNoSession` before the approver
 is asked. `LocalAuthProvider` does not implement the interface; the release
 path is unchanged.
 
-**Unlisted ops are refused, never passed on.** The approver has no person to
-fall back to. Handing an unlisted op to the dialog would hang a journey on a
-prompt nobody can see, or let a stale dialog approve it. `EvaluateOp` returns
-`testapprover.ErrNotAllowed`, which wraps `presence.ErrRefused`, and the
-refusal is recorded like any other. The allowlist is a fixed `switch` with no
-variable, setter or configuration to extend it.
+**The outcome file.** `X/test-presence.json`, where `X` is the config dir:
+
+```json
+{"outcomes": {"project.grant": "approve", "credential.mint": "deny", "service.register": "timeout"}, "console_session": true}
+```
+
+The approver reads it on every `EvaluateOp`, so a test changes an outcome
+without a restart.
+
+- `approve` returns nil. The approval is recorded before the act runs, and an
+  unrecordable approval refuses the act.
+- `deny` returns `testapprover.ErrNotAllowed`, which wraps
+  `presence.ErrRefused`.
+- `timeout` writes its event, then blocks until the requester leaves (the CLI
+  is killed, the HTTP connection closes) and returns the context's error. That
+  is a prompt nobody answers. The approver never ends the wait itself.
+- An op the file does not list is denied, and so is every op when there is no
+  file. The approver has no person to fall back to, and handing an op to the
+  dialog would hang a script on a prompt nobody can see.
+- Every op named must be in `presence.GatedOps`, and every answer must be one
+  of the three. The file is invalid on an unknown key, an unknown op, an
+  unknown answer, unparseable JSON, trailing data, or a failed file check. An
+  invalid file refuses every gated op with `testapprover.ErrOutcomeFileInvalid`,
+  which wraps `presence.ErrRefused`; its text names the file and the fault,
+  never its contents.
+- The file check: a regular file (not a symlink), owned by the current user,
+  no group or other bits, at most 64 KiB.
+- `console_session` is optional. It supplies the console-session fact for a
+  caller that cannot prove one (over SSH, in CI). It is a fact only: the gate's
+  own rule still decides what it permits, so a caller with no console session
+  is refused when the file says `false` or does not say.
+
+**The default config dir.** The seams act only on a config dir other than
+`bridge.DefaultConfigDir()`, compared with symlinks resolved; a path that does
+not resolve counts as the default. On the default dir the test build behaves
+as the earlier approver build did: the file is never read, `project.grant` is
+approved, and every other gated op is refused. A test build swapped in for the
+real app (see [`docs/testing.md`](testing.md#the-default-config-dir)) therefore
+never takes its answers from a file.
+
+**`presence_timeout`.** `requireGate` wraps a context error from `Require` in
+`presenceUnanswered`, whose text and `errors.Is` behaviour are the context
+error's own. The operation's event ends `denied` with reason
+`presence_timeout`. A release tray's prompt that nobody answers gets the same
+reason.
+
+**Events.** Each answer writes `debug.presence.answer` with `gated_op`,
+`answer` and `source` (`file` or `default`), before it returns or, for
+`timeout`, before it blocks. That event is the signal a script waits on to know
+the prompt is up. See [`docs/events.md`](events.md#test-build-only-events).
 
 **Where it can and cannot exist.** The package
 `internal/presence/testapprover` is imported by one file in `cmd/relay`,
-behind `//go:build testapprover`; nothing but that file may import it, and
-the reviewer checks it. Its `init` panics unless the build info names the tag. `build.sh` runs `scripts/check-test-approver.sh absent`
-on every normal and `--release` binary before it installs anything, and
-`present` on a `--test-approver` binary. Every approval is recorded before the
-act runs; see [`docs/audit-log.md`](audit-log.md#presence-approvals-the-test-build).
-How to run the build: [`docs/testing.md`](testing.md#the-test-approver-build).
+behind `//go:build relaytest`; nothing but that file may import it, and
+the reviewer checks it. Its `init` panics unless the build info names the tag.
+`build.sh` runs `scripts/check-test-build.sh absent` on every normal and
+`--release` binary before it installs anything, and `present` on a
+`--test-build` binary; CI runs the same two checks on every pull request.
+Every approval is recorded before the act runs; see
+[`docs/audit-log.md`](audit-log.md#presence-approvals-the-test-build).
+How to run the build: [`docs/testing.md`](testing.md#the-test-build).
 
 ## Residual risks, named rather than solved
 

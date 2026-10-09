@@ -121,7 +121,7 @@ Areas: audit.
 | Issuance and config-change rows carrying the presence id | background | any owner gate passed | CLI, HTTP | owner gate | gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos | n/a | n/a |
 | Session launch rows | background | any launch | HTTP, bridge | — | session-chat-lifecycle, terminal-lifecycle | n/a | n/a |
 | Refusal rows | background | any refused launch | HTTP, bridge | — | blank-model-refused, oversized-launch-audit-capped | n/a | n/a |
-| Test-approver answer rows (`presence_approver`; written only by the `testapprover` build, approvals refused unless recorded) | background | any presence answer in the test build | HTTP, CLI | owner gate | none | n/a | n/a |
+| Test-build answer rows (`presence_approver`; written only by the `relaytest` build, approvals refused unless recorded) | background | any presence answer in the test build | HTTP, CLI | owner gate | none | n/a | n/a |
 | Chief of Staff send rows (intent then completion; refused unless recorded) | background | any send in the chief-of-staff scope | HTTP | — | chief-of-staff-send | n/a | n/a |
 | Chief of Staff start rows (`session_launch` with `origin`, `prompt_bytes` and `host_id` for a hosted project; refused unless recorded) | background | any start in the chief-of-staff scope | HTTP | — | cos-start, cos-start-outside-root, cos-start-host | n/a | n/a |
 | Export the log | Settings > Tool Calls | Export | HTTP `POST /api/audit/export` [configure] | — | none | Settings > Tool Calls > Export | `relay audit --json` |
@@ -270,6 +270,18 @@ Areas: instance, sandbox, remote, models.
 | Listener addresses from settings, port 0 allowed | server | `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen`; bound addresses in `ready.json` | n/a (read from `ready.json`) | — | none (real-app check) | n/a | `settings.json` `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen` |
 | Loopback ports a sandboxed session may not reach | sandbox | any sandboxed session; the list replaces the default `[3000, 8181]`, the instance's own API port is always denied | bridge | — | none (real-app check) | n/a | `settings.json` `session_sandbox.denied_loopback_ports` |
 
+### Test build only
+Intent: take the outside world away from a test, so a harness drives a relay with no person, no login keychain and a clock it moves.
+It worked: a `relaytest` build serving a config dir `X` answers each presence prompt from `X/test-presence.json`, keeps its sealing key in `X/test-keychain.json` and obeys `relay debug clock`; a release build has none of the three.
+Why later: a harness path; no screen, tray item or default changes, and a release build behaves as before. None of these rows exists in a release build.
+Areas: presence, sealed, instance.
+
+| Feature | Surface | Reach | Door | Gate | Journey | Simple door | Power door |
+|---|---|---|---|---|---|---|---|
+| Presence outcomes | server | `X/test-presence.json`: per gated op `approve`, `deny` or `timeout`, optional `console_session`; re-read on every prompt | n/a | — | none (real-app check) | none | `X/test-presence.json` |
+| Keychain provider and faults | server | `X/test-keychain.json` holds the sealing key; `X/test-keychain-fault.json` selects `none`, `locked`, `missing`, `corrupt` or `slow` | n/a | — | none (real-app check) | none | `X/test-keychain*.json` |
+| Clock | CLI | `relay debug clock [set <RFC3339> \| advance <duration>] [--json]` | CLI | — | none (real-app check) | none | `relay debug clock` |
+
 ## Owner gates
 
 An owner gate is a step that needs the owner's credential or presence. An
@@ -277,11 +289,11 @@ agent inside the product (a relay session, or eve's chat agent) must never
 complete one. The devbox harness may, with the operator's test credentials:
 `devboxpresence` answers relay's presence prompt with the devbox admin
 password. A release build has no API or flag that skips a gate. The
-`testapprover` build (`./build.sh --test-approver`, run in place of the
-release tray) answers `project.grant` alone and refuses every other owner
-gate. It is checked absent from every release binary, and its approvals are
-audited with `presence_approver`. See
-[`docs/testing.md`](testing.md#the-test-approver-build).
+`relaytest` build (`./build.sh --test-build`) answers each gate from
+`X/test-presence.json`; on the default config dir it answers `project.grant`
+alone and refuses every other owner gate. It is checked absent from every
+release binary, and its approvals are audited with `presence_approver`. See
+[`docs/testing.md`](testing.md#the-test-build).
 
 Each gate has two journeys. The **positive** passes the gate as the owner
 would and checks the effect and its audit row with the presence id. The
@@ -305,7 +317,7 @@ here.
 | `service.register` | a command relay will run as a service | gate-service-register-pos | gate-service-register-neg |
 | `project.grant` | creating a project or widening a grant | gate-project-grant-pos | gate-project-grant-neg (no door from a session) |
 | `project.rotate_token` | a project's bearer token | gate-project-rotate-token-pos | gate-project-rotate-token-neg (no door from a session) |
-| `project.reveal_token` | disclosing a project's bearer token to the operator (`relay project token`) | none (a real-app check; the test approver refuses it) | none (every new verb refuses a session caller) |
+| `project.reveal_token` | disclosing a project's bearer token to the operator (`relay project token`) | none (a real-app check; the test build refuses it on the default config dir) | none (every new verb refuses a session caller) |
 | `remote.configure` | the mTLS listener | gate-remote-configure-pos: NOTRUN, it changes the live listener the VM stack uses | gate-remote-configure-neg (no door from a session) |
 | `enrolment.create` | issuing a remote identity | gate-enrolment-create-pos: NOTRUN, remote identities are out of scope until G10 | gate-enrolment-create-neg |
 | `enrolment.sign` | signing a remote client's certificate | gate-enrolment-sign-pos: NOTRUN, as above | gate-enrolment-sign-neg |
@@ -367,10 +379,10 @@ areas:
     code: [cmd/relay/file_*.go, cmd/relay/audit_file.go, cmd/relay/project_cmd.go, internal/projectfs/**]
     journeys: [file-plane-contained]
   presence:
-    code: [cmd/relay/presence_gate.go, cmd/relay/presence_provider*.go, cmd/relay/admin_ops.go, cmd/relay/admin_read_ops.go, internal/presence/**]
+    code: [cmd/relay/presence_gate.go, cmd/relay/presence_provider*.go, cmd/relay/testbuild_relaytest.go, cmd/relay/admin_ops.go, cmd/relay/admin_read_ops.go, internal/presence/**]
     journeys: [gate-credential-mint-pos, execute-credential-renewal, gate-credential-mint-neg, gate-credential-revoke-neg, gate-mcp-register-neg, gate-service-register-neg, gate-eve-enrolment-open-neg, gate-eve-passkey-revoke-neg, gate-enrolment-create-neg, gate-enrolment-sign-neg, gate-enrolment-update-neg, gate-enrolment-revoke-neg, gate-login-bootstrap-mint-neg, gate-login-passkey-revoke-neg, gate-project-grant-neg, gate-project-rotate-token-neg, gate-remote-configure-neg, gate-mcp-oauth-start-neg, gate-sealed-reset-neg, gate-enrolment-create-pos, gate-enrolment-sign-pos, gate-enrolment-update-pos, gate-enrolment-revoke-pos, gate-login-bootstrap-mint-pos, gate-login-passkey-revoke-pos, gate-mcp-oauth-start-pos, gate-remote-configure-pos, gate-sealed-reset-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-eve-passkey-revoke-pos, gate-credential-revoke-pos]
   sealed:
-    code: [cmd/relay/sealed_reset.go, cmd/relay/sealed_verbs.go, internal/sealed/**, internal/config/**]
+    code: [cmd/relay/sealed_reset.go, cmd/relay/sealed_verbs.go, cmd/relay/keystore*.go, internal/sealed/**, internal/config/**]
     journeys: [gate-sealed-reset-neg, gate-sealed-reset-pos]
   doors:
     code: [cmd/relay/doors.go, cmd/relay/cli_verbs.go, internal/bridge/operator_caller.go]
@@ -379,7 +391,7 @@ areas:
     code: [cmd/relay/logs_cmd.go, cmd/relay/trace_flag.go, cmd/relay/events.go, internal/logging/**]
     journeys: []
   instance:
-    code: [cmd/relay/server_core.go, cmd/relay/serve_cmd.go, cmd/relay/platform_headless.go, cmd/relay/config_dir.go, cmd/relay/main.go]
+    code: [cmd/relay/server_core.go, cmd/relay/clock*.go, cmd/relay/serve_cmd.go, cmd/relay/platform_headless.go, cmd/relay/config_dir.go, cmd/relay/main.go]
     journeys: []
   tray:
     code: [cmd/relay/trayapp.go, cmd/relay/tray_notify.go, cmd/relay/cocoa_darwin.go, cmd/relay/native_view.go, cmd/relay/icon.go, cmd/relay/platform.go]
