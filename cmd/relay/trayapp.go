@@ -132,6 +132,11 @@ type App struct {
 	// that deletes files in this directory by name.
 	configDir string
 
+	// addrMu orders the writes of frontendServer, its TCP listener and remote
+	// against ListenAddrs, which request handlers may call while startup is
+	// still binding.
+	addrMu sync.RWMutex
+
 	// frontendSocketPath is the frontend socket ready.json reports.
 	frontendSocketPath string
 

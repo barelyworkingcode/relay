@@ -52,6 +52,8 @@ func (a *App) ListenAddrs() ListenAddrs {
 	if a == nil {
 		return ListenAddrs{}
 	}
+	a.addrMu.RLock()
+	defer a.addrMu.RUnlock()
 	return ListenAddrs{
 		API:       a.frontendServer.LoopbackAddr(),
 		Model:     a.modelEndpoint.TCPAddr(),
@@ -109,12 +111,17 @@ func checkSocketPathLengths(configDir string) error {
 // exportConfigDirToChildren makes every spawned service address this
 // instance. The default dir clears the variable instead, so a child of the
 // default instance never inherits a stale name from the launching shell.
-func exportConfigDirToChildren(configDir string) {
+func exportConfigDirToChildren(configDir string) error {
 	if filepath.Clean(configDir) == filepath.Clean(bridge.DefaultConfigDir()) {
-		os.Unsetenv(bridge.EnvConfigDir)
-		return
+		if err := os.Unsetenv(bridge.EnvConfigDir); err != nil {
+			return fmt.Errorf("clear %s for children: %w", bridge.EnvConfigDir, err)
+		}
+		return nil
 	}
-	os.Setenv(bridge.EnvConfigDir, configDir)
+	if err := os.Setenv(bridge.EnvConfigDir, configDir); err != nil {
+		return fmt.Errorf("set %s=%s for children: %w", bridge.EnvConfigDir, configDir, err)
+	}
+	return nil
 }
 
 // buildReadyFile snapshots the bound addresses.
@@ -217,7 +224,10 @@ func startServerCore(opts serverOptions) (*App, error) {
 		releaseOwnership()
 		return nil, err
 	}
-	exportConfigDirToChildren(configDir)
+	if err := exportConfigDirToChildren(configDir); err != nil {
+		releaseOwnership()
+		return nil, err
+	}
 	keyring := sealed.NewKeychainKeyring(resolveRelayBin())
 	store, err := config.ResolveSealedStore(configDir, keyring)
 	if err != nil {
@@ -684,7 +694,9 @@ func startServerCore(opts serverOptions) (*App, error) {
 	}
 	frontend.routeDeps.loginOps = loginOps
 	frontend.FileOps().Hosts = hostPool
+	app.addrMu.Lock()
 	app.frontendServer = frontend
+	app.addrMu.Unlock()
 	app.goFunc(func() {
 		if err := frontend.Serve(); err != nil {
 			slog.Error("frontend server exited with error", "error", err)
@@ -695,7 +707,10 @@ func startServerCore(opts serverOptions) (*App, error) {
 		return nil, fmt.Errorf("refused API listener: %w", err)
 	}
 	if apiAddr != "" {
-		if err := frontend.ListenLoopback(apiAddr); err != nil {
+		app.addrMu.Lock()
+		err := frontend.ListenLoopback(apiAddr)
+		app.addrMu.Unlock()
+		if err != nil {
 			// Refused rather than downgraded to the socket alone: someone who
 			// asked for a TCP door and silently did not get one would debug
 			// the wrong thing.
@@ -771,7 +786,10 @@ func startServerCore(opts serverOptions) (*App, error) {
 	// made `remote.listen` the one setting in relay that needed a quit, and
 	// made `audit.enabled: false` a refusal that only held until the next
 	// launch. onConfigCommitted drives the convergence from here on.
-	app.remote = NewRemoteSupervisor(ctx, store, router, rec, projectOps, extMgr.AllMcpSurfaces, app.goFunc)
+	remote := NewRemoteSupervisor(ctx, store, router, rec, projectOps, extMgr.AllMcpSurfaces, app.goFunc)
+	app.addrMu.Lock()
+	app.remote = remote
+	app.addrMu.Unlock()
 	app.remote.Reconcile() //nolint:errcheck // logs its own failure; a listener is never fatal to the tray
 	serviceQueue.SetCommitObserver(store.Commits, app.onConfigCommitted)
 	if stop, err := config.WatchSettingsFile(configDir, app.importSettingsEdit); err != nil {

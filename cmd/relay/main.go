@@ -52,6 +52,10 @@ func main() {
 	// Only the tray and the server create the config dir. A client names an
 	// instance, never makes one, so its log goes to the dir only when the dir
 	// already exists.
+	if len(args) > 0 && args[0] == "serve" && len(args) > 1 {
+		fmt.Fprintf(os.Stderr, "relay serve: unexpected argument %q\n%s\n", args[1], serveUsage)
+		os.Exit(2)
+	}
 	if len(args) == 0 || args[0] == "serve" {
 		if err := os.MkdirAll(configDir, 0o700); err != nil {
 			fmt.Fprintf(os.Stderr, "error: cannot create config dir %s: %v\n", configDir, err)

@@ -44,7 +44,7 @@ func loginEnrol() {
 	if view.URL != "" {
 		fmt.Printf("  open %s and enter it to register a passkey\n", view.URL)
 	} else {
-		fmt.Println("  open the relay login page (http://localhost:<RELAY_API_LISTEN port>/relay/login) and enter it to register a passkey")
+		fmt.Println("  open the relay login page (http://localhost:<API listener port>/relay/login) and enter it to register a passkey")
 	}
 	fmt.Println("  this code is shown ONCE and is not recoverable")
 }

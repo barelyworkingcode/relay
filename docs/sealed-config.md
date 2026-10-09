@@ -324,7 +324,9 @@ the caller this whole design exists to keep out.
 The fix is not a check inside the CLI that refuses to ask. It is that the CLI
 **cannot reach the keychain at all**: the keychain keyring is constructed at
 exactly one call site in the whole program, on the server core's startup path in
-`startServerCore`, and every CLI entry point holds only a store built with a nil
+`startServerCore`, which both the tray and `relay serve` run (the only two
+server paths; `relay serve` builds the keyring there too), and every other CLI
+entry point holds only a store built with a nil
 sealer — one that reveals nothing and refuses every write
 (`errSealerRequired`). A `go/ast` call-graph test walks every CLI entry point
 and fails, naming the entry point and the call chain, if any of them can

@@ -107,7 +107,11 @@ func runService(args []string) int {
 		shimBinary = self
 	}
 
-	if err := migrate.Run(cfg.relayLLMDataDir(), cfg.dataDir); err != nil {
+	// Deliberate: relayLLM's sessions belong to the default install. relay
+	// clears RELAY_CONFIG_DIR for the default dir and sets it for any other.
+	if os.Getenv(bridge.EnvConfigDir) != "" {
+		slog.Info("relay-sessions: relayLLM data migration skipped for a non-default config dir")
+	} else if err := migrate.Run(cfg.relayLLMDataDir(), cfg.dataDir); err != nil {
 		// Best-effort, not fatal: a migration failure leaves relayLLM's old
 		// data where it was (copyTree never deletes a source), so the worst
 		// outcome is a fresh host that can't see pre-existing sessions this

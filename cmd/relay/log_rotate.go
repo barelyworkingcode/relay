@@ -13,9 +13,6 @@ import (
 // single log occupies at most ~2x this on disk.
 const maxLogBytes = 8 << 20 // 8 MiB
 
-// serviceLogDir returns the directory where rotated logs are stored: relay's
-// own log, the audit log, and every managed service's merged stdout+stderr
-// all share it.
 // existingServiceLogDir is serviceLogDir for a client: it resolves the same
 // path but creates nothing, so a client naming a dir with no server never makes
 // the dir or its logs. ok is false when the log dir does not exist.
@@ -25,6 +22,9 @@ func existingServiceLogDir() (dir string, ok bool) {
 	return dir, err == nil && info.IsDir()
 }
 
+// serviceLogDir returns the directory where rotated logs are stored: relay's
+// own log, the audit log, and every managed service's merged stdout+stderr
+// all share it.
 func serviceLogDir() (string, error) {
 	dir := filepath.Join(bridge.ConfigDir(), "logs")
 	if err := os.MkdirAll(dir, 0700); err != nil {
