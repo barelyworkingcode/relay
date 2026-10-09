@@ -63,7 +63,7 @@ func (i *Instance) startFakeMCP(spec FakeMCPSpec) json.RawMessage {
 	f := &fakeMCP{spec: spec, logPath: i.fakePath(spec.ID + ".calls.jsonl")}
 	i.fakeMCPs = append(i.fakeMCPs, f)
 	args := []string{"--catalogue", catPath, "--call-log", f.logPath}
-	rec := map[string]any{"id": spec.ID, "name": "Fake MCP " + spec.ID}
+	rec := map[string]any{"id": spec.ID, "display_name": "Fake MCP " + spec.ID, "env": map[string]string{}}
 	switch spec.Transport {
 	case "stdio":
 		rec["transport"] = "stdio"
@@ -77,6 +77,7 @@ func (i *Instance) startFakeMCP(spec FakeMCPSpec) json.RawMessage {
 		f.proc = startProc(t, procSpec{bin: bundle.FakeMCP, args: args, env: i.env, dir: i.Dir})
 		f.url = strings.TrimSpace(string(f.proc.FirstLine(30 * time.Second)))
 		rec["transport"] = "http"
+		rec["args"] = []string{}
 		rec["url"] = f.url
 	default:
 		t.Fatalf("fake MCP %s: Transport must be \"stdio\" or \"http\", got %q", spec.ID, spec.Transport)
@@ -102,9 +103,12 @@ func (i *Instance) modelHostRecord(h *FakeModelHostSpec) json.RawMessage {
 	}
 	i.hostLogPath = i.fakePath(h.ID + ".calls.jsonl")
 	rec := map[string]any{
-		"id": h.ID, "name": "Fake model host " + h.ID,
-		"command":      bundle.FakeModelHost,
-		"args":         []string{"--models", modelsPath, "--call-log", i.hostLogPath},
+		"id": h.ID, "display_name": "Fake model host " + h.ID,
+		"command": bundle.FakeModelHost,
+		"args":    []string{"--models", modelsPath, "--call-log", i.hostLogPath},
+		// The fake binds $TMPDIR/fmh-<pid>.sock, so each instance hands it its
+		// own short TMPDIR; a socket path over 103 bytes cannot bind.
+		"env":          map[string]string{"TMPDIR": strings.TrimRight(i.Tmp, "/") + "/"},
 		"autostart":    true,
 		"capabilities": []string{"model_host"},
 	}

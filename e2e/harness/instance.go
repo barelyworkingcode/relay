@@ -216,10 +216,10 @@ func (i *Instance) linkAgents() {
 func (i *Instance) writeSettings() {
 	t := i.t
 	t.Helper()
+	// No remote block: an absent block opens no remote or enrolment listener.
 	settings := map[string]json.RawMessage{
 		"api":            json.RawMessage(`{"listen":"127.0.0.1:0"}`),
 		"model_endpoint": json.RawMessage(`{"listen":"127.0.0.1:0"}`),
-		"remote":         json.RawMessage(`{"enabled":false,"listen":"127.0.0.1:0","enrolment_listen":"127.0.0.1:0"}`),
 	}
 	appended := map[string][]json.RawMessage{}
 	for k, v := range i.opts.Settings {
