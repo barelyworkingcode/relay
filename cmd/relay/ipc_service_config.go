@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-
-	"github.com/barelyworkingcode/relay/internal/config"
-	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // The manifest is the authority: relay refuses get/save for any service that
@@ -42,36 +39,13 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 
 	switch msg.Op {
 	case configOpGet:
-		if ipc.Enhanced == nil {
-			emitConfigResult(ipc, msg, false, "", "no enhanced registry")
-			return
-		}
-		rec := ipc.Enhanced.Get(msg.ServiceID)
-		if rec == nil {
-			emitConfigResult(ipc, msg, false, "", fmt.Sprintf("service %q not registered", msg.ServiceID))
-			return
-		}
-		decl := rec.Manifest.Config
-		if decl == nil {
-			emitConfigResult(ipc, msg, false, "", fmt.Sprintf("service %q declares no config file", msg.ServiceID))
-			return
-		}
-		allowedRoot := ""
-		if svc, _ := config.FindServiceByID(config.FreshSettings(ipc.Store), msg.ServiceID); svc != nil {
-			allowedRoot = svc.WorkingDir
-		}
 		ipc.GoFunc(func() {
-			realPath, info, err := service.ResolveConfigPath(decl, allowedRoot)
+			text, err := readServiceConfig(ipc.Ctx, ipc.Store, ipc.Enhanced, msg.ServiceID)
 			if err != nil {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
 			}
-			data, err := service.ReadConfigFile(realPath, info)
-			if err != nil {
-				emitConfigResult(ipc, msg, false, "", err.Error())
-				return
-			}
-			emitConfigResult(ipc, msg, true, string(data), "")
+			emitConfigResult(ipc, msg, true, text, "")
 		})
 
 	case configOpSave:

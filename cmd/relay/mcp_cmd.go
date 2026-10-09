@@ -7,20 +7,6 @@ import (
 	"strings"
 )
 
-// register and unregister are brokered (ADR-017 decision 2): this process
-// holds no sealer (§5.4), so it dials the running tray over admin_op and
-// lets McpOps — the same core the MCP Servers tab and RegisterMcpRoutes
-// share — do the discovery, the SSRF guard and the reconcile notify. `list`
-// is a tray read too: the running tray is the only reader of the
-// configuration.
-func runMcpCommand(args []string) {
-	runSubcommands("mcp", []cliSubcommand{
-		{"register", mcpRegister},
-		{"unregister", mcpUnregister},
-		{"list", func(_ []string) { mcpList() }},
-	}, args)
-}
-
 // mcpRegister covers both transports, matching McpOps.Add itself: an HTTP
 // MCP that answers 401 during discovery still gets its record persisted
 // (mcpView.AuthRequired says so), and completing OAuth for it is a desktop

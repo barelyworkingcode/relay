@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -48,11 +49,12 @@ func sealedResetReason(s *config.Settings) string {
 
 // resetSealedStore is the whole of ADR-017's break-glass (§5.6 clause 5):
 // the one recovery from a degraded sealed store, and — by construction —
-// the only door into wiping one that exists at all. It is reachable from
-// nowhere but the tray's own "Reset Sealed Store…" menu item: there is no
-// CLI subcommand, no --force-reset flag and no RELAY_* env var (AC-25d),
-// because any of those would be a second door into the sealed store this
-// whole design spends its effort closing (§5.6 clause 6).
+// the only door into wiping one that exists at all. It is reachable from the
+// tray's "Reset Sealed Store…" menu item and from the operator-only
+// `relay sealed reset` admin op, and both reach it through App.resetSealed
+// and the same presence prompt: there is no --force-reset flag, no --yes and
+// no RELAY_* env var (AC-25d), because any of those would be a second door
+// into the sealed store that skips the prompt (§5.6 clause 6).
 //
 // gate.Require runs BEFORE anything is touched, so a refused or cancelled
 // presence check leaves every file exactly as it was. Once it succeeds,
@@ -67,13 +69,13 @@ func sealedResetReason(s *config.Settings) string {
 // destructive sequence then runs as ONE queued step, so no queued write can
 // interleave with the deletes or seal under the old key mid-reset. queue is nil
 // only where no queue exists (tests): the sequence then runs inline.
-func resetSealedStore(ctx context.Context, dir string, store *config.FileSettingsStore, keyring sealed.Keyring, gate *presence.Gate, queue *config.CommandQueue, auditor IssuanceAuditor) (err error) {
+func resetSealedStore(ctx context.Context, dir string, store *config.FileSettingsStore, keyring sealed.Keyring, gate *presence.Gate, queue *config.CommandQueue, auditor IssuanceAuditor, via string) (err error) {
 	ev := logging.BeginEvent(ctx, "sealed.reset")
 	defer func() { endEvent(ev, err) }()
 	s := config.FreshSettings(store)
 	digest := sealedResetDigest(s.SealedKeyID, keyring)
 	if _, err := requireGate(gate, ctx, "sealed.reset", digest, sealedResetReason(s),
-		presenceAttempt{auditor: auditor, via: auditViaTray}); err != nil {
+		presenceAttempt{auditor: auditor, via: via}); err != nil {
 		return err
 	}
 	step := func() error { return commitSealedReset(dir, store, keyring, digest) }
@@ -81,6 +83,27 @@ func resetSealedStore(ctx context.Context, dir string, store *config.FileSetting
 		return step()
 	}
 	return queue.DoCommitted(ctx, func(context.Context) error { return step() })
+}
+
+// resetSealed is the whole reset the tray item and the sealed.store.reset admin
+// op share: the gated wipe, then a menu and Settings refresh on the main
+// thread. A refused or cancelled prompt returns its error and refreshes nothing.
+func (a *App) resetSealed(ctx context.Context, via string) error {
+	ss, ok := a.store.(*config.FileSettingsStore)
+	if !ok {
+		return errors.New("sealed store reset: store is not file-backed")
+	}
+	if err := resetSealedStore(ctx, a.configDir, ss, a.sealedKeyring, a.presenceGate, a.serviceQueue, issuanceAuditorOrNil(a.audit), via); err != nil {
+		return err
+	}
+	slog.Warn("sealed store reset: settings.json, the CA and the keychain key were deleted; relay re-initialised with a fresh key")
+	a.platform.DispatchToMain(func() {
+		a.updateMenu()
+		if a.settingsOpen.Load() {
+			a.pushFullSettings()
+		}
+	})
+	return nil
 }
 
 // commitSealedReset is the destructive sequence, run on the lane. It commits

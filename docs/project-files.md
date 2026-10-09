@@ -97,6 +97,15 @@ projects with settings every two seconds and sends `PROJECT_CHANGED` when one
 is deleted or its path or host changes. A connection that cannot keep up is
 closed; eve reconnects and watches again.
 
+`relay files watch --project ID [--until TYPE] [--timeout DURATION]` joins the same
+hub. The `files.watch` admin op builds a subscriber with `newFilesConn` and no
+WebSocket, queues the same `host_status`, `watch_ok`, `watch_error` and `fs_event`
+frames, and relays each as one line of JSON. The actor is the operator CLI
+process. The op is operator-only, so a session or sandbox cannot use it. It ends
+when the CLI leaves, on `--until` or `--timeout`; it releases its watch then. A
+`watch_error` for the project ends the command with exit 1. `/ws/files` keeps its
+wire and behaviour.
+
 ## Host seam
 
 `FileOps.Hosts` takes the host pool (`Backend`, `PasteTmp`, `Subscribe`,

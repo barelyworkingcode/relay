@@ -392,7 +392,9 @@ every enrolment and the CA that signed them, every passkey — confirming it
 deletes `settings.json`, `ca.key.sealed`, `ca.crt`, and the keychain item
 together, then re-initializes relay from nothing.
 
-There is no CLI reset subcommand, no `--force-reset` flag, no environment
+`relay sealed reset` is the one CLI door, and it is presence-gated: it runs
+only from your own terminal, behind the same prompt as the tray item, and an
+agent's session cannot approve it. There is no `--force-reset` flag, no environment
 variable, and no offline recovery code of any kind. Every one of those would
 be a second door into the sealed store, and a second door is exactly what
 this whole design spends its effort closing on the first one. An operator

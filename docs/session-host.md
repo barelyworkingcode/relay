@@ -980,6 +980,16 @@ are applied after this base, so a template that wants one of the dropped names,
 eve) still inherit relay's environment apart from relay's own tokens; that is not
 covered here.
 
+## CLI doors
+
+`relay session start|list|message|stop|resume|mode` and `relay terminal start|list|log|stop|persistent-list|persistent-kill` reach the same cores the HTTP routes reach. Each is an operator-only `admin_op`, so a session or a sandboxed process is refused (`docs/cli.md`).
+
+- **Launch.** `session start` and `terminal start` build their request with `sessionLaunchRequest` and `terminalLaunchRequest`, the helpers the routes use, and run `launchWithEvent`. The caller is `LaunchCaller{Operator}`: it grants execute and the audit actor is the CLI process. No project token, launch identity or API credential is made for it. The answer is the route's 201 body.
+- **Resume.** `session resume` calls `resumeSession`, which the route calls too. It answers `{"session_id","resumed"}`: `false` for a session that is already live.
+- **Proxied calls.** `session list|message|stop` and `terminal list|log|stop` go through the reverse proxy eve's requests use, so the host sees relay's internal bearer and the trace id. Each writes an allowed `control_decision` row with the proxied method and path, class `operator` and transport `bridge`. An answer larger than 8 MiB is refused by name.
+- **Mode.** `session mode` joins relay-sessions' `/ws`, sends `join_session`, then `set_permission_mode`, and answers on the first `mode_changed` for the session or the first `error` frame (`resume_required` included). It gives up after two minutes and closes the socket.
+- **Persistent terminals.** `terminal persistent-list|persistent-kill` call `PersistentSessionOps`, as the project routes do.
+
 ## What a sandboxed session can reach
 
 File access is denied by default, in both directions. `sandboxSpecForLaunch`
