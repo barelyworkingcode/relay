@@ -266,7 +266,7 @@ Areas: instance, sandbox, remote, models.
 |---|---|---|---|---|---|---|---|
 | Headless server | CLI | `relay serve --config-dir X`; one stdout line, `X/ready.json`; SIGTERM or SIGINT exits 0 and removes it | CLI | — | none (real-app check) | none | `relay serve` |
 | Pick the instance for any verb | CLI | `--config-dir X` anywhere in argv before `--`, else `RELAY_CONFIG_DIR` | CLI | — | none (real-app check) | none | `--config-dir`, `RELAY_CONFIG_DIR` |
-| No server at the dir | CLI | any verb that needs the service, dir `C` with no server → exit 1 naming `C`; `C` is not created | CLI | — | none (real-app check) | none | none |
+| No server at the dir | CLI | any verb that needs the service, dir `C` with no server → exit 1 naming `C`; `C` is not created | CLI | — | none (real-app check) | none | n/a |
 | Listener addresses from settings, port 0 allowed | server | `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen`; bound addresses in `ready.json` | n/a (read from `ready.json`) | — | none (real-app check) | n/a | `settings.json` `api.listen`, `model_endpoint.listen`, `remote.listen`, `remote.enrolment_listen` |
 | Loopback ports a sandboxed session may not reach | sandbox | any sandboxed session; the list replaces the default `[3000, 8181]`, the instance's own API port is always denied | bridge | — | none (real-app check) | n/a | `settings.json` `session_sandbox.denied_loopback_ports` |
 

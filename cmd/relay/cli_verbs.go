@@ -32,7 +32,6 @@ func adminDoor(op string) string { return adminOpDoorName(op) }
 
 // cliVerbTable is the one list of commands. runCLI dispatches from it and the
 // doors document reads it, so a command cannot exist in one and not the other.
-// A later task appends its verbs here.
 func cliVerbTable() []cliVerb {
 	return []cliVerb{
 		{Name: "serve", Run: runServeCommand, Usage: serveUsage},
