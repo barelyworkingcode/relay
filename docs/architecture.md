@@ -8,8 +8,8 @@ This is the durable *why*. Decisions are cited as ADR-NNN throughout the code
 and docs; those numbers are labels for the reasoning recorded here and in the
 topic documents beside this one — there is no separate ADR directory. The
 command line is documented in [`cli.md`](cli.md), testing in
-[`testing.md`](testing.md), and what lives in which package (and the structural
-tests that pin it) in [`package-layout.md`](package-layout.md).
+[`testing.md`](testing.md), and what lives in which package (and the structure
+the reviewer checks) in [`package-layout.md`](package-layout.md).
 
 ## Architecture
 

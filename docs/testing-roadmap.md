@@ -75,8 +75,9 @@ cleanup).
 
 ### Cross-repo contract via committed JSON fixture
 What relayLLM registers is a cross-repo contract. No committed fixture
-carries it now; relayLLM's own side should assert its generated manifest
-against whatever copy relay keeps, or drift can creep in.
+carries it now; relay keeps no copy, so relayLLM's own side has nothing in this
+repo to assert its generated manifest against, and drift is caught only by
+the journeys that register it.
 
 ## Named gaps in the passkey login evidence
 

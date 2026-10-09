@@ -232,10 +232,9 @@ again.
 
 ## Tests
 
-Relay: `EveEnrolmentOps` open/status/consume (expiry, unparseable expiry,
-single use under concurrent consume, nil-safety), route class/transport
-reachability, admin op, and the doc/gate structural suites that already
-police every gated op.
+Relay has no unit tests. Proof for the enrolment window (open, status,
+consume, expiry, single use) is the devbox journeys, and later the e2e
+feature tests.
 
 Eve: `auth.js` multi-credential (append, `excludeCredentials`, stable
 `userId`, legacy-file back-fill, recorded `rpId` reused), `routes/auth.js`
@@ -412,11 +411,8 @@ verify as today and mint the session with its `credentialId`.
 
 ## Tests
 
-Relay: `EvePasskeyOps` (report replaces and stamps; report drops absent and
-last-standing revocations; revoke refuses unknown / pending / last; revoke
-under a concurrent burst leaves exactly the expected pending set; unrevoke),
-route classes and shapes, admin op, CLI list/revoke output, the IPC door, and
-the structural/doc guards.
+Relay has no unit tests. Proof for passkey report, revoke and unrevoke is the
+devbox journeys, and later the e2e feature tests.
 
 Eve: `SessionStore` parent tracking and `revokeByCredential`;
 `AuthService.removeCredential` including the last-credential refusal;

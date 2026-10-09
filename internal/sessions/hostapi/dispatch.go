@@ -16,9 +16,9 @@ import (
 
 // kindPTY mirrors cmd/relay/session_launch.go's KindPTY: C5's own wire
 // sample ("kind": "pty | claude | pi | chat") is ground truth over
-// spec-session-host.md's "chat_tools" prose aside. Duplicated, not imported, for the same reason every other
-// wire-shape mirror in this package is (types.go's doc comments on
-// permissionRequestBody/sessionRequestBody).
+// spec-session-host.md's "chat_tools" prose aside. Duplicated, not imported,
+// for the same reason every other wire-shape mirror in this package is
+// (types.go's doc comments on permissionRequestBody/sessionRequestBody).
 const kindPTY = "pty"
 
 func isProviderKind(kind string) bool {
