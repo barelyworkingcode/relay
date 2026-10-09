@@ -424,6 +424,11 @@ func TestFileRoutes_ErrorBodiesAndCodes(t *testing.T) {
 }
 
 func TestFileRoutes_WriteOverTheLimitIsTooLarge(t *testing.T) {
+	// Deliberate: this proves the size cap, not the read deadline, so a loaded
+	// machine must not trip the deadline while the over-cap body uploads.
+	origDeadline := frontendRouteReadDeadline
+	frontendRouteReadDeadline = 2 * time.Minute
+	t.Cleanup(func() { frontendRouteReadDeadline = origDeadline })
 	env := newFileEnv(t, fileEnvOpts{})
 	r := env.op(t, "write", map[string]any{"path": "big.txt", "content": strings.Repeat("a", int(projectfs.MaxWriteBytes)+1)})
 	if r.status != 413 || r.code(t) != projectfs.CodeTooLarge || r.json(t)["size"] == nil {
