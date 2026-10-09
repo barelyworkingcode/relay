@@ -1,12 +1,15 @@
 package sshhost
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -624,5 +627,76 @@ func TestProbe_TmuxPath(t *testing.T) {
 				t.Fatalf("TmuxPath = %q, want %q", probe.TmuxPath, c.want)
 			}
 		})
+	}
+}
+
+// nodeLauncherShape is the fixed wrapper around the payload: the node binary,
+// then -e with one double-quoted eval of the gunzipped base64 script.
+var nodeLauncherShape = regexp.MustCompile(
+	`^(.+) -e "eval\(require\('zlib'\)\.gunzipSync\(Buffer\.from\('([A-Za-z0-9+/=]+)','base64'\)\)\.toString\(\)\)"$`)
+
+func decodeNodeLauncher(t *testing.T, cmd string) (node, src string) {
+	t.Helper()
+	m := nodeLauncherShape.FindStringSubmatch(cmd)
+	if m == nil {
+		t.Fatalf("launcher %q does not match the fixed shape", cmd)
+	}
+	raw, err := base64.StdEncoding.DecodeString(m[2])
+	if err != nil {
+		t.Fatalf("payload is not base64: %v", err)
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("payload is not gzip: %v", err)
+	}
+	var out bytes.Buffer
+	if _, err := out.ReadFrom(zr); err != nil {
+		t.Fatalf("payload gunzip: %v", err)
+	}
+	return m[1], out.String()
+}
+
+// Go's gzip bytes differ from node's, so the decoded script is what is pinned,
+// not the base64.
+func TestNodeLauncher_PayloadDecodesToTheSource(t *testing.T) {
+	srcs := []string{
+		"",
+		"process.stdout.write('hi')",
+		"const s = `a ${1}`;\nconsole.log(\"q\", 'p', '\\\\', \"$HOME\", `x`); // héllo \u2603 😀\n",
+		strings.Repeat("0123456789abcdef", 4096),
+	}
+	for _, src := range srcs {
+		_, got := decodeNodeLauncher(t, NodeLauncher("", src))
+		if got != src {
+			t.Errorf("decoded %d bytes, want the %d-byte source back exactly", len(got), len(src))
+		}
+	}
+}
+
+func TestNodeLauncher_NodePath(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{"", "node"},
+		{"node", "node"},
+		{"/usr/local/bin/node", "/usr/local/bin/node"},
+		{"/opt/acme tools/bin/node", "'/opt/acme tools/bin/node'"},
+		{"/opt/it's/node", `'/opt/it'\''s/node'`},
+		{"/opt/$x/node", "'/opt/$x/node'"},
+	} {
+		node, _ := decodeNodeLauncher(t, NodeLauncher(tc.path, "1"))
+		if node != tc.want {
+			t.Errorf("node path %q rendered as %q, want %q", tc.path, node, tc.want)
+		}
+	}
+}
+
+// The command is what a login shell receives over ssh, so run it in one.
+func TestNodeLauncher_RunsTheScriptUnderNode(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+	out, err := exec.Command("/bin/sh", "-c", NodeLauncher(node, "process.stdout.write('ok:' + (1 + 1) + \"\\u00e9\")")).Output()
+	if err != nil || string(out) != "ok:2\u00e9" {
+		t.Errorf("launcher printed %q, %v", out, err)
 	}
 }

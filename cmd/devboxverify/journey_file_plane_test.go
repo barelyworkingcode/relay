@@ -51,6 +51,7 @@ func TestClassifyFilePlane(t *testing.T) {
 	checkMuts(t, filePlanePass, classifyFilePlane, []mutCase[filePlaneRun]{
 		{"all clauses hold", func(*filePlaneRun) {}, statePass},
 		{"setup failed", func(r *filePlaneRun) { r.Setup = "relay grant failed" }, stateBlocked},
+		{"read-only flag left set", func(r *filePlaneRun) { r.ReadOnlyLeft = true }, stateFail},
 		{"no answer to the write", func(r *filePlaneRun) { r.Write = fileStep{TimedOut: true} }, stateBlocked},
 		{"write refused", func(r *filePlaneRun) { r.Write = fileStep{Status: http.StatusForbidden, Code: "READ_ONLY"} }, stateFail},
 		{"write 200 but file differs", func(r *filePlaneRun) { r.WriteContentOK = false }, stateFail},

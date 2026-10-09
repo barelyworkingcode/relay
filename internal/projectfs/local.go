@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -391,14 +393,28 @@ func (l *local) Delete(_ context.Context, rel string) (bool, error) {
 
 // fdPath is the canonical path of an open descriptor. Built from a
 // descriptor that was opened with O_NOFOLLOW_ANY, it has no link left in it.
+// pathBufs hands out F_GETPATH buffers.
+//
+// This is deliberate: FcntlInt takes the buffer's address as a plain int,
+// which the runtime does not adjust when it copies a goroutine stack. A
+// buffer on the stack can move mid-call and the kernel then writes into the
+// old copy. A pooled buffer lives on the heap, which never moves.
+var pathBufs = sync.Pool{New: func() any { return new([unix.PathMax]byte) }}
+
 func fdPath(fd int) (string, error) {
-	buf := make([]byte, unix.PathMax)
-	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buf[0])))); err != nil {
+	buf := pathBufs.Get().(*[unix.PathMax]byte)
+	defer pathBufs.Put(buf)
+	_, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buf[0]))))
+	runtime.KeepAlive(buf)
+	if err != nil {
 		return "", mapErr(err)
 	}
 	n := 0
 	for n < len(buf) && buf[n] != 0 {
 		n++
+	}
+	if n == 0 {
+		return "", Errf(CodeError, "F_GETPATH returned an empty path")
 	}
 	return string(buf[:n]), nil
 }

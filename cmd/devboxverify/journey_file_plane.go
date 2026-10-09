@@ -47,6 +47,7 @@ type filePlaneRun struct {
 	Write, Traversal, Symlink, ReadOnly fileStep
 	WriteContentOK                      bool // the written file holds the bytes sent
 	TraversalEscaped, ReadOnlyCreated   bool // a refused write left a file behind
+	ReadOnlyLeft                        bool // teardown could not clear files_read_only
 
 	// IntentRows is read once, right after the write answered. Rows is read
 	// after the bounded poll. Both hold only rows newer than the baseline.
@@ -221,6 +222,7 @@ func driveFilePlaneLeg(ctx context.Context, e env, launch, leg, acmeID, folder s
 	// read-only would break every later file write on this machine.
 	defer func() {
 		if err := setFilesReadOnly(context.WithoutCancel(ctx), e, acmeID, false); err != nil {
+			r.ReadOnlyLeft = true
 			r.Teardown += "; teardown: " + err.Error()
 		}
 	}()
@@ -327,6 +329,9 @@ func classifyFilePlane(r filePlaneRun) result {
 func judgeFilePlane(r filePlaneRun) result {
 	const id = filePlaneID
 	fail := func(d string) result { return result{id, stateFail, d} }
+	if r.ReadOnlyLeft {
+		return fail("files_read_only is still set on the project after teardown")
+	}
 	if r.Setup != "" {
 		return blocked(id, r.Setup)
 	}
