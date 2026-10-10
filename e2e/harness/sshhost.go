@@ -103,6 +103,11 @@ func startSSHD(t *testing.T, cfg string) (stop func(), ok bool, why string) {
 	// stderr of an sshd that died early is complete when it is read.
 	log := &listenWatch{listening: make(chan struct{})}
 	cmd.Stderr = log
+	// sshd forks one process per connection and they inherit stderr. Own process
+	// group lets stop end them with the listener, and WaitDelay keeps Wait from
+	// blocking on a pipe a straggler still holds.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting %s: %v", sshdPath, err)
 	}
@@ -113,13 +118,15 @@ func startSSHD(t *testing.T, cfg string) (stop func(), ok bool, why string) {
 		close(exited)
 	}()
 	stop = func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
+		pgid := cmd.Process.Pid
+		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		select {
 		case <-exited:
 		case <-time.After(sshdStopTimeout):
-			_ = cmd.Process.Kill()
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 			<-exited
 		}
+
 	}
 	select {
 	case <-listening:

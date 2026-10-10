@@ -54,7 +54,7 @@ func (i *Instance) WebSocket(path string, c Credential, o ...ReqOpts) *WSConn {
 		i.t.Fatalf("reading random bytes for the WebSocket key: %v", err)
 	}
 	key := base64.StdEncoding.EncodeToString(nonce)
-	req, err := http.NewRequest("GET", "http://relay"+path, nil)
+	req, err := http.NewRequest(http.MethodGet, "http://relay"+path, nil)
 	if err != nil {
 		_ = conn.Close()
 		i.t.Fatalf("building the WebSocket request for %s: %v", path, err)
