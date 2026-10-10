@@ -25,7 +25,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
-	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
 	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
 	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
@@ -544,19 +543,6 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		env, err := resolveTemplateEnv(*tmpl)
 		if err != nil {
 			return nil, invalidRequest("model_endpoint_unavailable", err.Error(), baseFields)
-		}
-		if sandbox && tmpl.ID == kindTemplateIDs[KindClaude] {
-			home, herr := os.UserHomeDir()
-			if herr != nil {
-				return nil, invalidRequest("sandbox_unavailable", fmt.Sprintf("sandboxed claude: home dir: %v", herr), baseFields)
-			}
-			// The template's own value wins: the operator may point the
-			// store elsewhere or re-enable the updater.
-			for k, v := range childenv.SandboxedClaude(home) {
-				if _, set := env[k]; !set {
-					env[k] = v
-				}
-			}
 		}
 		spec.Env = env
 		spec.TemplateID = tmpl.ID

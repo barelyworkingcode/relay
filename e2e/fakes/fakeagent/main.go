@@ -27,17 +27,14 @@ import (
 
 // agentLine is one call-log line.
 type agentLine struct {
-	TS      string   `json:"ts"`
-	Persona string   `json:"persona"`
-	Event   string   `json:"event"`
-	Argv    []string `json:"argv,omitempty"`
-	Cwd     string   `json:"cwd,omitempty"`
-	// Env holds only the login-store variables relay sets, never the whole
-	// environment.
-	Env        map[string]string `json:"env,omitempty"`
-	Text       string            `json:"text,omitempty"`
-	LineSHA256 string            `json:"line_sha256,omitempty"`
-	ExitCode   *int              `json:"exit_code,omitempty"`
+	TS         string   `json:"ts"`
+	Persona    string   `json:"persona"`
+	Event      string   `json:"event"`
+	Argv       []string `json:"argv,omitempty"`
+	Cwd        string   `json:"cwd,omitempty"`
+	Text       string   `json:"text,omitempty"`
+	LineSHA256 string   `json:"line_sha256,omitempty"`
+	ExitCode   *int     `json:"exit_code,omitempty"`
 }
 
 // agent is the state every persona shares.
@@ -73,25 +70,11 @@ func run() int {
 	}
 	a.log = l
 	cwd, _ := os.Getwd()
-	a.record(agentLine{Event: "start", Argv: args, Cwd: cwd, Env: loggedEnv()})
+	a.record(agentLine{Event: "start", Argv: args, Cwd: cwd})
 
 	code := a.dispatch()
 	a.record(agentLine{Event: "exit", ExitCode: &code})
 	return code
-}
-
-// loggedEnv returns the logged environment variables that are set.
-func loggedEnv() map[string]string {
-	var out map[string]string
-	for _, k := range []string{"CLAUDE_SECURESTORAGE_CONFIG_DIR", "DISABLE_AUTOUPDATER"} {
-		if v, ok := os.LookupEnv(k); ok {
-			if out == nil {
-				out = map[string]string{}
-			}
-			out[k] = v
-		}
-	}
-	return out
 }
 
 func (a *agent) dispatch() int {

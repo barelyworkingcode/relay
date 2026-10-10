@@ -84,11 +84,6 @@ starts per instance; none touches the network beyond loopback.
     error: the assistant line, on stdout and in the transcript, carries a
     top-level `"error":"<code>"` and `"isApiErrorMessage":true`, and the
     `result` has `is_error` true.
-  - Its `start` call-log line carries `env` with only
-    `CLAUDE_SECURESTORAGE_CONFIG_DIR` and `DISABLE_AUTOUPDATER`, when set.
-  - Run on a tty (a terminal launch), it logs its `start` line and exits at
-    once, so a test waits on the terminal's `session.exited` event. A test
-    that needs a live claude terminal cannot use this persona.
 
 The catalogue is the harness spec's `Catalogue` field, written to
 `<id>.catalogue.json` in the instance's fake directory. Every request a fake

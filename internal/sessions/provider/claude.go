@@ -17,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
 	"github.com/google/uuid"
 
 	"github.com/barelyworkingcode/relay/internal/membership"
@@ -491,15 +490,7 @@ func (p *ClaudeProvider) Start() error {
 			cmd = exec.Command(claudePath, args...) // unchanged direct spawn
 		}
 		cmd.Dir = p.directory
-		env := p.buildClaudeEnv(ensurePath(childBaseEnv()))
-		if p.cfg.SandboxProfile != "" {
-			home, herr := os.UserHomeDir()
-			if herr != nil {
-				return fmt.Errorf("sandboxed claude: home dir: %w", herr)
-			}
-			env = mergeEnv(env, childenv.SandboxedClaude(home))
-		}
-		cmd.Env = env
+		cmd.Env = p.buildClaudeEnv(ensurePath(childBaseEnv()))
 	}
 	fds := &spawnFDs{statusR: statusR, extraFiles: extraFiles}
 	defer fds.closeUnlessStarted()
