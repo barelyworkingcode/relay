@@ -67,7 +67,7 @@
     "file": "internal/ceremonylimit/ceremonylimit.go",
     "find": "if now.Before(l.nextAllowed) {",
     "replace": "if now.After(l.nextAllowed) {",
-    "why": "the ceremony back-off never holds a caller off"
+    "why": "the ceremony back-off refuses every caller"
   },
   {
     "area": "credentials",

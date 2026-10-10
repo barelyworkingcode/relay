@@ -17,7 +17,7 @@ no listing below.
 | hosts | `cmd/relay/host_routes.go` | an unknown host answers 400 instead of 404 | ed78c986dd6c | TestHostListAndGet | 2026-10-10 |
 | instance | `cmd/relay/clock_relaytest.go` | advancing the instance clock moves it backwards | ed78c986dd6c | TestClockMovesCredentialExpiry | 2026-10-10 |
 | logging | `internal/logging/logread.go` | the logs trace filter keeps the other traces' lines | ed78c986dd6c | TestBug296SandboxedSessionAdminOpsRefused, TestCredentialListHidesToken, TestCredentialMint, TestCredentialMintDenied, TestCredentialRevoke (+5 more) | 2026-10-10 |
-| login | `internal/ceremonylimit/ceremonylimit.go` | the ceremony back-off never holds a caller off | ed78c986dd6c | TestBrowserSessionsListAndSignOut, TestPasskeyList, TestPasskeyRegisterAndSignIn, TestPasskeyRegisterBadCodeRefused, TestPasskeyRevoke (+2 more) | 2026-10-10 |
+| login | `internal/ceremonylimit/ceremonylimit.go` | the ceremony back-off refuses every caller | ed78c986dd6c | TestBrowserSessionsListAndSignOut, TestPasskeyList, TestPasskeyRegisterAndSignIn, TestPasskeyRegisterBadCodeRefused, TestPasskeyRevoke (+2 more) | 2026-10-10 |
 | mcps | `internal/mcpbroker/external_mcp.go` | an MCP's tool list comes back empty, so no tool is published | 58b4af598053 | TestBridgeToolsScopedToProject | 2026-10-10 |
 | models | `internal/modelbroker/normalise.go` | the model grant check is inverted: an ungranted model is allowed | ed78c986dd6c | TestModelEndpointRoutes, TestModelKeyRequired | 2026-10-10 |
 | presence | `internal/presence/presence.go` | a live grant is read as expired, so every gated act is refused | ed78c986dd6c | TestAgentStateFrames, TestBridgeToolsScopedToProject, TestBrowserSessionsListAndSignOut, TestBug296SandboxedSessionAdminOpsRefused, TestBug319DeleteRunningTerminalIDLeavesTerminalAlone (+99 more) | 2026-10-10 |
@@ -33,3 +33,8 @@ no listing below.
 ## Journey-only areas
 
 - `tray`: Cocoa tray and window code; the headless status poll and listener reconcile produce nothing the CLI or HTTP can see; covered by the `settings-window-services` journey at epic close.
+
+## What the proof cannot show
+
+- `instance`: the break lives in the relaytest clock seam (`cmd/relay/clock_relaytest.go`). The rest of that area is mostly startup code, which a break may not touch, so the proof shows the area's tests reach the seam, not its startup path.
+- The Base column names the commit whose product code was broken. Product code is unchanged from that base to this PR's head.

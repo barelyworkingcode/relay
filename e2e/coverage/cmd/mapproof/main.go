@@ -13,16 +13,19 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"relaye2e/coverage"
 )
@@ -37,6 +40,9 @@ type result struct {
 }
 
 func run() int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	repo := flag.String("repo", "", "repository root (required)")
 	areasFlag := flag.String("areas", "", "comma-separated areas to prove")
 	all := flag.Bool("all", false, "prove every non-reserved, non-journey-only area")
@@ -51,15 +57,24 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "mapproof:", err)
 		return 2
 	}
-	if err := proveAll(root, *areasFlag, *all, *record); err != nil {
+	if err := proveAll(ctx, root, *areasFlag, *all, *record); err != nil {
 		fmt.Fprintln(os.Stderr, "mapproof:", err)
 		return 1
 	}
 	return 0
 }
 
-func proveAll(root, areasFlag string, all bool, record string) error {
-	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(coverage.BreaksPath)))
+func proveAll(ctx context.Context, root, areasFlag string, all bool, record string) error {
+	if err := requireClean(root, record); err != nil {
+		return err
+	}
+	head, err := git(root, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	base := strings.TrimSpace(head)
+	// Both inputs come from the base commit the proof runs at, not the working tree.
+	raw, err := gitShow(root, base, coverage.BreaksPath)
 	if err != nil {
 		return err
 	}
@@ -67,7 +82,7 @@ func proveAll(root, areasFlag string, all bool, record string) error {
 	if err := json.Unmarshal(raw, &breaks); err != nil {
 		return fmt.Errorf("%s: %w", coverage.BreaksPath, err)
 	}
-	features, err := os.ReadFile(filepath.Join(root, "docs", "FEATURES.md"))
+	features, err := gitShow(root, base, "docs/FEATURES.md")
 	if err != nil {
 		return err
 	}
@@ -87,22 +102,20 @@ func proveAll(root, areasFlag string, all bool, record string) error {
 	for _, b := range breaks {
 		byArea[b.Area] = b
 	}
-	base, err := git(root, "rev-parse", "HEAD")
-	if err != nil {
-		return err
-	}
-	base = strings.TrimSpace(base)
 
 	var results []result
 	failed := 0
 	for _, area := range wanted {
+		if ctx.Err() != nil {
+			return fmt.Errorf("interrupted: %w", ctx.Err())
+		}
 		b, ok := byArea[area]
 		if !ok {
 			results = append(results, result{brk: coverage.Break{Area: area}, base: base, err: fmt.Errorf("no break entry")})
 			failed++
 			continue
 		}
-		red, err := proveArea(root, base, b)
+		red, err := proveArea(ctx, root, base, b)
 		results = append(results, result{brk: b, red: red, base: base, err: err})
 		switch {
 		case err != nil:
@@ -112,14 +125,20 @@ func proveAll(root, areasFlag string, all bool, record string) error {
 			fmt.Printf("RED   %s: %s\n", area, strings.Join(red, ","))
 		}
 	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("interrupted: %w", ctx.Err())
+	}
 	if record != "" {
 		var ok []result
+		dropped := map[string]bool{}
 		for _, r := range results {
 			if r.err == nil {
 				ok = append(ok, r)
+			} else {
+				dropped[r.brk.Area] = true
 			}
 		}
-		if err := writeRecord(record, ok, am); err != nil {
+		if err := writeRecord(record, ok, dropped, am); err != nil {
 			return err
 		}
 	}
@@ -129,8 +148,49 @@ func proveAll(root, areasFlag string, all bool, record string) error {
 	return nil
 }
 
+// requireClean refuses a dirty tree: the proof runs at HEAD, so uncommitted
+// changes would be neither proved nor recorded truthfully. The record file
+// itself may differ, because the run rewrites it.
+func requireClean(root, record string) error {
+	out, err := git(root, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return err
+	}
+	var recordAbs string
+	if record != "" {
+		recordAbs, _ = filepath.Abs(record)
+	}
+	top, err := git(root, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return err
+	}
+	top = strings.TrimSpace(top)
+	var dirty []string
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		path := line[3:]
+		if recordAbs != "" && filepath.Join(top, filepath.FromSlash(path)) == recordAbs {
+			continue
+		}
+		dirty = append(dirty, line)
+	}
+	if len(dirty) > 0 {
+		return fmt.Errorf("working tree is not clean; commit or remove these first (the proof runs at HEAD):\n%s", strings.Join(dirty, "\n"))
+	}
+	return nil
+}
+
+func gitShow(root, rev, path string) ([]byte, error) {
+	out, err := git(root, "show", rev+":"+path)
+	return []byte(out), err
+}
+
 // proveArea runs one break in a throwaway worktree and returns the red tests.
-func proveArea(root, base string, b coverage.Break) (red []string, err error) {
+// The deferred cleanup runs on interrupt too: ctx only stops the test runs,
+// so the function returns normally and removes the worktree.
+func proveArea(ctx context.Context, root, base string, b coverage.Break) (red []string, err error) {
 	tmp, err := os.MkdirTemp("", "mapproof-")
 	if err != nil {
 		return nil, err
@@ -177,23 +237,38 @@ func proveArea(root, base string, b coverage.Break) (red []string, err error) {
 	if !contains(sel.Areas, b.Area) {
 		return nil, fmt.Errorf("%s is not in an area of the selection (%v)", b.File, sel.Areas)
 	}
-	if sel.Full || len(sel.Tests) == 0 {
-		return nil, fmt.Errorf("selection is not an area selection (full=%v, tests=%d)", sel.Full, len(sel.Tests))
-	}
 	// The map self-test is left out: it checks the map, not the area.
-	pattern := coverage.RunPattern(coverage.Selection{Tests: sel.Tests})
-	pattern = dropSelfTest(pattern)
+	var tests []string
+	for _, t := range sel.Tests {
+		if t != coverage.SelfTest {
+			tests = append(tests, t)
+		}
+	}
+	if sel.Full || len(tests) == 0 {
+		return nil, fmt.Errorf("selection is not an area selection (full=%v, tests=%d)", sel.Full, len(tests))
+	}
+	quoted := make([]string, len(tests))
+	for i, t := range tests {
+		quoted[i] = regexp.QuoteMeta(t)
+	}
+	pattern := "^(" + strings.Join(quoted, "|") + ")$"
 
 	if _, err := git(wt, "checkout", "-q", "--detach", base); err != nil {
 		return nil, err
 	}
-	if out, fails, err := goTest(wt, pattern); err != nil || len(fails) > 0 {
+	if out, fails, err := goTest(ctx, wt, pattern); err != nil || len(fails) > 0 {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("area tests not green at base (fails %v, err %v)\n%s", fails, err, tail(out))
 	}
 	if _, err := git(wt, "checkout", "-q", "--detach", breakSHA); err != nil {
 		return nil, err
 	}
-	out, fails, runErr := goTest(wt, pattern)
+	out, fails, runErr := goTest(ctx, wt, pattern)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if _, err := git(wt, "checkout", "-q", "--detach", base); err != nil {
 		return nil, err
 	}
@@ -210,15 +285,10 @@ func proveArea(root, base string, b coverage.Break) (red []string, err error) {
 	return fails, nil
 }
 
-func dropSelfTest(pattern string) string {
-	pattern = strings.Replace(pattern, "|"+regexp.QuoteMeta(coverage.SelfTest), "", 1)
-	return strings.Replace(pattern, regexp.QuoteMeta(coverage.SelfTest)+"|", "", 1)
-}
-
 var failLine = regexp.MustCompile(`(?m)^--- FAIL: (\S+)`)
 
-func goTest(wt, pattern string) (string, []string, error) {
-	cmd := exec.Command("go", "test", "-race", "-count=1", "-timeout", "35m", "./features", "-run", pattern)
+func goTest(ctx context.Context, wt, pattern string) (string, []string, error) {
+	cmd := exec.CommandContext(ctx, "go", "test", "-race", "-count=1", "-timeout", "35m", "./features", "-run", pattern)
 	cmd.Dir = filepath.Join(wt, "e2e")
 	cmd.Env = cleanEnv()
 	out, err := cmd.CombinedOutput()
@@ -243,8 +313,9 @@ func capRed(names []string) string {
 }
 
 // writeRecord rewrites the proof table: rows of areas proved in this run
-// replace their old rows, rows of other areas stay as they were.
-func writeRecord(path string, results []result, am coverage.AreaMap) error {
+// replace their old rows, rows of other areas stay as they were, and rows of
+// areas that failed in this run are dropped so rule M5 names them.
+func writeRecord(path string, results []result, dropped map[string]bool, am coverage.AreaMap) error {
 	date, err := exec.Command("date", "+%Y-%m-%d").Output()
 	if err != nil {
 		return err
@@ -270,6 +341,9 @@ func writeRecord(path string, results []result, am coverage.AreaMap) error {
 				}
 			}
 		}
+	}
+	for a := range dropped {
+		delete(rows, a)
 	}
 	for _, r := range results {
 		rows[r.brk.Area] = fmt.Sprintf("| %s | `%s` | %s | %s | %s | %s |", r.brk.Area, r.brk.File,
@@ -310,6 +384,9 @@ func writeRecord(path string, results []result, am coverage.AreaMap) error {
 		}
 		fmt.Fprintf(&b, "- %s: no headless e2e test can turn this area red; only the epic-close full verify covers it.\n", n)
 	}
+	b.WriteString("\n## What the proof cannot show\n\n")
+	b.WriteString("- `instance`: the break lives in the relaytest clock seam (`cmd/relay/clock_relaytest.go`). The rest of that area is mostly startup code, which a break may not touch, so the proof shows the area's tests reach the seam, not its startup path.\n")
+	b.WriteString("- The Base column names the commit whose product code was broken. Product code is unchanged from that base to this PR's head.\n")
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
