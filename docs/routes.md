@@ -1541,7 +1541,7 @@ Wire type `EnrolmentRequest`. Lodges a request.
   |---|---|---|
   | `type` | string | `"EnrolmentRequest"` |
   | `csr_pem` | string | A certificate signing request (required) |
-  | `label` | string | Untrusted display label |
+  | `label` | string | Untrusted display label. Optional; when present 1 to 64 bytes of `A-Za-z0-9._-`, else `-32602` |
   | `requested_profile` | string | A hint, 1 to 64 of `A-Za-z0-9._-` |
   | `sas_commit` | string | 64 lowercase hex: commitment to a comparison nonce |
 
@@ -1589,7 +1589,11 @@ permission), `-32602` invalid params, `-32603` internal.
 
 - **Request:** `{"type": "ListTools", "project_id": string}`.
 - **Answer:** `{"type": "Tools", "tools": [{...tool}]}` limited to what the
-  grant allows.
+  grant allows. A tool is listed only when the grant admits it by its
+  annotations: a read grant (the default for a profile) lists only tools with
+  `readOnlyHint: true`, and a grant that refuses outside-this-Mac tools lists
+  only tools with `openWorldHint: false`. A tool with no annotations is not
+  listed. See [`access-profiles.md`](access-profiles.md).
 - **Event:** `tool.list` (`project_id`, `transport`, `count`).
 
 ### remote:CallTool

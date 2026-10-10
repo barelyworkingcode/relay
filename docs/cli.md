@@ -1294,9 +1294,15 @@ key it corresponds to is not needed to fingerprint it.
 
 Needs service: no. Prompts: no. Works over SSH: yes.
 
+`ca.crt` does not exist on a fresh install. Relay writes it the first time it
+needs a CA: the first start of the remote listener (`listeners.remote` enabled
+with auditing on), or the first `relay enrol create` or `relay enrol sign`.
+`relay enrol ca-fingerprint` itself never creates it.
+
 No JSON form. The one line on stdout is the fingerprint, `sha256:` followed by 64
-hex characters. Exit codes: `0`; `1` when `ca.crt` does not exist yet
-(`error: no CA certificate exists yet at DIR/ca.crt: run ...`).
+hex characters, and nothing else. Exit codes: `0`; `1` when `ca.crt` does not
+exist yet (`error: no CA certificate exists yet at DIR/ca.crt: run `relay enrol
+create` or `relay enrol sign` once to generate one`).
 
 ## `relay login`
 

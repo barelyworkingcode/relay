@@ -146,7 +146,11 @@ its own files.
 **Operations** — Read or Write. Unset defaults to `read` for a profile.
 Only tools the MCP annotates `readOnlyHint: true` are admitted to a read grant;
 a tool that is unannotated, malformed, or added later is refused. That is what
-keeps a new mutating tool out of an old grant.
+keeps a new mutating tool out of an old grant. The refusal covers listing too:
+a remote client's tool list holds only tools the grant would let it call, so an
+unannotated tool is absent from the list, not listed and then denied. A grant
+that refuses outside-this-Mac tools likewise lists only tools annotated
+`openWorldHint: false`; an absent hint counts as open-world.
 
 **Outside this Mac** — Refuse or Allow. **Unset defaults to Refuse for a
 profile** and to Allow for a local project — the same asymmetry Operations has,
