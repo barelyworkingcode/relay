@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -694,4 +695,90 @@ func requireAnyEvent(t *testing.T, i *harness.Instance, trace, key string, reaso
 	}
 	t.Fatalf("no %s event on trace %s with reason in %v", key, trace, reasons)
 	return nil
+}
+
+func TestSSHStubFile(t *testing.T) {
+	t.Parallel()
+
+	invalid := map[string]struct {
+		write func(t *testing.T, path string)
+	}{
+		"unknown_key": {
+			write: func(t *testing.T, path string) {
+				writeSeamFile(t, path, `{"command":"/bin/sh","unknown":true}`, 0o600)
+			},
+		},
+		"relative_command": {
+			write: func(t *testing.T, path string) {
+				writeSeamFile(t, path, `{"command":"ssh"}`, 0o600)
+			},
+		},
+		"not_executable": {
+			write: func(t *testing.T, path string) {
+				plain := filepath.Join(filepath.Dir(path), "plain-file")
+				writeSeamFile(t, plain, "x", 0o600)
+				writeSeamFile(t, path, `{"command":"`+plain+`"}`, 0o600)
+			},
+		},
+		"group_readable": {
+			write: func(t *testing.T, path string) {
+				writeSeamFile(t, path, `{"command":"/bin/sh"}`, 0o644)
+			},
+		},
+		"symlink": {
+			write: func(t *testing.T, path string) {
+				real := path + ".real"
+				writeSeamFile(t, real, `{"command":"/bin/sh"}`, 0o600)
+				if err := os.Symlink(real, path); err != nil {
+					t.Fatalf("symlinking %s: %v", path, err)
+				}
+			},
+		},
+	}
+	for name, c := range invalid {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := ""
+			res := harness.StartFails(t, harness.Options{PrepareConfigDir: func(d string) {
+				dir = d
+				c.write(t, filepath.Join(d, "test-ssh.json"))
+			}})
+			if res.Code != 1 {
+				t.Fatalf("serve exited %d, want 1\nstderr: %s", res.Code, res.Stderr)
+			}
+			if !strings.Contains(string(res.Stderr), filepath.Join(dir, "test-ssh.json")) {
+				t.Fatalf("stderr does not name test-ssh.json:\n%s", res.Stderr)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "ready.json")); !os.IsNotExist(err) {
+				t.Fatalf("ready.json exists after a refused start (stat error: %v)", err)
+			}
+		})
+	}
+
+	t.Run("valid_file_installs_stub", func(t *testing.T) {
+		t.Parallel()
+		stub := harness.BundlePaths().FakeSSH
+		i := harness.Start(t, harness.Options{PrepareConfigDir: func(d string) {
+			writeSeamFile(t, filepath.Join(d, "test-ssh.json"), `{"command":"`+stub+`"}`, 0o600)
+		}})
+		i.WaitEvent(harness.EventQuery{Key: "debug.ssh.stub", Fields: map[string]any{"command": stub}}, 60*time.Second)
+	})
+
+	t.Run("absent_file_is_real_ssh", func(t *testing.T) {
+		t.Parallel()
+		i := harness.Start(t, harness.Options{})
+		if got := i.Events(harness.EventQuery{Key: "debug.ssh.stub"}); len(got) != 0 {
+			t.Fatalf("debug.ssh.stub written with no test-ssh.json: %v", got)
+		}
+	})
+}
+
+func writeSeamFile(t *testing.T, path, content string, mode os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod %s: %v", path, err)
+	}
 }

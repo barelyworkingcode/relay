@@ -112,8 +112,8 @@ or moves its clock (attacker 5's promise holds). The promises that cover it:
 - **No seam on the real config dir (assets A, B).** The seams act only on a
   config dir other than the default one. On the default dir the test build
   approves `project.grant` alone, refuses every other gated op, uses the login
-  keychain and refuses to move the clock, so a test build swapped in for the
-  real app never takes an answer from a file.
+  keychain and refuses to move the clock, and runs real ssh, so a test build swapped
+  in for the real app never takes an answer from a file.
 - **What the approver can approve.** In the test build the approver may
   approve any op in `presence.GatedOps`, not only `project.grant`. The outcome
   file chooses the answer per op. It is read only on a config dir other than

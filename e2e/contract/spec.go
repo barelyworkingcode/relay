@@ -164,7 +164,7 @@ func unameField(flag string) (string, error) {
 
 // probeRecord is the one probe both targets are seeded with. The dynamic
 // fields are normalised, so the values only need to be plausible.
-func probeRecord(fake bool) (map[string]any, error) {
+func probeRecord() (map[string]any, error) {
 	node, nodeVersion, err := findTool("node", "--version")
 	if err != nil {
 		return nil, err
@@ -186,8 +186,6 @@ func probeRecord(fake bool) (map[string]any, error) {
 		"home": tokRemote, "shell": "/bin/sh",
 		"node_path": node, "tmux_path": tmux,
 	}
-	// world.json refuses node_version as an unknown key, so only relay's
-	// record carries it. The difference shows in the first Probed scenario.
 	rec["node_version"] = nodeVersion
 	return rec, nil
 }
@@ -198,7 +196,7 @@ func (sp Spec) hostRecords(fake bool) ([]any, error) {
 	for _, h := range sp.Hosts {
 		rec := map[string]any{"id": h.ID, "name": h.Name, "target": h.Target}
 		if h.Probed {
-			p, err := probeRecord(fake)
+			p, err := probeRecord()
 			if err != nil {
 				return nil, err
 			}
