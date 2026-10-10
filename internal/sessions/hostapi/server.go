@@ -686,8 +686,10 @@ func (s *Server) launchTerminal(w http.ResponseWriter, req LaunchRequest) {
 	// can match it by a zero start time.
 	rootInfo, ok := membership.NewSource().Info(rootPID)
 	if !ok {
-		<-sess.Done()
+		// Put before waiting: onTerminalExit runs right after Done closes and
+		// must find the entry to report root_pid.
 		s.table.put(&sessionEntry{id: req.SessionID, state: stateEnded, shimPID: rootPID})
+		<-sess.Done()
 		body, _ := json.Marshal(sess.CreatedBody())
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
