@@ -234,7 +234,7 @@ Error codes C5 names explicitly, each mapped from a manager error:
 | 400 | `invalid_spec` | malformed or self-contradictory request, including a new `claude`, `pi`, `codex` or `chat` launch with a blank model (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`codex`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
 | 409 | `session_exists` | this session id is already live |
 | 502 | `identity_refused` | the shim's Hello did not bind |
-| 500 | `spawn_failed` | the target process could not be started |
+| 500 | `spawn_failed` | the target process could not be started (a target that starts and exits at once is not this: the launch is `201` and the exit is reported like any other) |
 
 ### Read-only projects (`settings.readOnlyProjects`)
 
