@@ -1379,6 +1379,10 @@ window.__RELAY_INIT__ = {
     auditFollow: true,
     // append live events as they arrive
     auditLoaded: false,
+    // The Overview's newest call_tool rows, read from the log file so they survive a restart; the empty state waits for the first answer.
+    recentToolCalls: [],
+    recentToolCallsRequested: false,
+    recentToolCallsLoaded: false,
     auditError: null,
     auditExportPath: null,
     // Overview tab. mcpHealth and serviceRuntime are live snapshots kept
@@ -1406,6 +1410,7 @@ window.__RELAY_INIT__ = {
     projModelsOtherOpen: false
   };
   var AUDIT_MAX_ROWS = 500;
+  var RECENT_TOOL_CALLS_MAX = 6;
   function showPage(page) {
     state.page = page;
     const pages = ["overview", "services", "mcps", "projects", "hosts", "templates", "remote", "passkeys", "inspector", "audit"];
@@ -1415,6 +1420,10 @@ window.__RELAY_INIT__ = {
       el.setAttribute("aria-selected", selected ? "true" : "false");
     });
     if ((page === "audit" || page === "overview") && !state.auditLoaded) queryAudit();
+    if (page === "overview" && !state.recentToolCallsRequested) {
+      state.recentToolCallsRequested = true;
+      ipc(JSON.stringify({ type: "recent_tool_calls" }));
+    }
     if (page === "remote" || page === "overview") listEnrolmentRequests();
     if (page === "templates") listTemplates();
     render();
@@ -1651,10 +1660,13 @@ window.__RELAY_INIT__ = {
     return html;
   }
   function renderOverviewRecentToolCalls() {
-    const rows = (state.auditEvents || []).filter((ev) => ev.event === "call_tool").slice(0, 6);
+    const loaded = state.recentToolCallsLoaded;
+    const rows = state.recentToolCalls || [];
     let html = '<div class="ov-section"><div class="page-header" style="margin-bottom:8px"><h3 style="margin:0">Recent tool calls</h3>';
     html += '<button type="button" class="btn btn-sm" ' + bind(showPage, "audit") + ">See all</button></div>";
-    if (!rows.length) {
+    if (!loaded) {
+      html += '<div class="empty-state">Loading\u2026</div>';
+    } else if (!rows.length) {
       html += '<div class="empty-state">No tool calls recorded yet.</div>';
     } else {
       for (const ev of rows) {
@@ -6601,8 +6613,20 @@ That browser's credential stops authenticating on its next request and it has to
     state.auditLoaded = true;
     if (state.page === "audit" || state.page === "overview") render();
   };
+  window.onRecentToolCalls = function(events) {
+    const loaded = events || [];
+    const seen = new Set(loaded.map((e) => e.id));
+    const live = state.recentToolCalls.filter((e) => !seen.has(e.id));
+    state.recentToolCalls = live.concat(loaded).slice(0, RECENT_TOOL_CALLS_MAX);
+    state.recentToolCallsLoaded = true;
+    if (state.page === "overview") render();
+  };
   window.onAuditEvent = function(ev) {
     if (!ev) return;
+    if (ev.event === "call_tool") {
+      state.recentToolCalls = [ev].concat(state.recentToolCalls).slice(0, RECENT_TOOL_CALLS_MAX);
+      if (!state.auditFollow && state.page === "overview") render("push");
+    }
     if (state.auditStatus) {
       state.auditStatus.recorded = (state.auditStatus.recorded || 0) + 1;
     }
