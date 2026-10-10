@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +37,7 @@ type svc struct {
 // Register installs the doors and the /ws hub, and seeds the world's sessions.
 func Register(r server.Registrar, d server.Deps) error {
 	calls := fakes.NewCallLog(d.Dir)
-	s := &svc{Deps: d, factory: fakes.NewAgentFactory(calls), started: d.Clock.Now().UTC(),
+	s := &svc{Deps: d, factory: fakes.NewAgentFactory(calls, filepath.Join(d.Dir, "home")), started: d.Clock.Now().UTC(),
 		hosts: fakes.WorldModelHost{List: d.World.Models, Log: calls},
 		conns: map[*conn]struct{}{}, sessions: map[string]*session{}, terms: map[string]*terminal{}, perms: map[string]string{}, logs: map[string]*termLog{}}
 	s.seed()

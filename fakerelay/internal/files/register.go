@@ -33,6 +33,8 @@ func Register(r server.Registrar, d server.Deps) (server.HostStatusSource, error
 
 	r.Control("PUT /v1/hosts/{id}/status", s.hub.controlHostStatus)
 	r.Control("POST /v1/projects/{id}/fs-events", s.hub.controlFSEvent)
+	r.Control("POST /v1/projects/{id}/fs-write", s.controlFSWrite)
+	r.Control("POST /v1/projects/{id}/watch-error", s.hub.controlWatchError)
 	return s.hub, nil
 }
 

@@ -250,7 +250,7 @@ type Model struct {
 	Reply    Reply  `json:"reply"`
 }
 
-// Reply scripts the echo agent: kind echo, text, permission or fail.
+// Reply scripts the echo agent: kind echo, text, permission, plan or fail.
 type Reply struct {
 	Kind string `json:"kind"`
 	Text string `json:"text,omitempty"`

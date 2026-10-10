@@ -36,7 +36,7 @@ var (
 	idRe          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	serviceCaps   = map[string]bool{"frontend": true, "manifest": true, "models": true, "model_host": true}
 	agentStates   = map[string]bool{"none": true, "connecting": true, "connected": true, "unreachable": true}
-	replyKinds    = map[string]bool{"echo": true, "text": true, "permission": true, "fail": true}
+	replyKinds    = map[string]bool{"echo": true, "text": true, "permission": true, "plan": true, "fail": true}
 	faultModes    = map[string]bool{"down": true, "slow": true, "error": true}
 	sessionStates = map[string]bool{"idle": true, "dormant": true}
 )
@@ -160,7 +160,7 @@ func Validate(w *World) error {
 		}
 		models[m.Value] = true
 		if !replyKinds[m.Reply.Kind] {
-			return bad(p+".reply.kind", "must be echo, text, permission or fail")
+			return bad(p+".reply.kind", "must be echo, text, permission, plan or fail")
 		}
 	}
 	sessions := map[string]bool{}
