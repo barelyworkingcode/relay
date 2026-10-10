@@ -545,7 +545,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		if err != nil {
 			return nil, invalidRequest("model_endpoint_unavailable", err.Error(), baseFields)
 		}
-		if wantsSandbox(req.Kind, tmpl) && !(proj != nil && proj.IsHosted()) && tmpl.ID == kindTemplateIDs[KindClaude] {
+		if sandbox && tmpl.ID == kindTemplateIDs[KindClaude] {
 			home, herr := os.UserHomeDir()
 			if herr != nil {
 				return nil, invalidRequest("sandbox_unavailable", fmt.Sprintf("sandboxed claude: home dir: %v", herr), baseFields)

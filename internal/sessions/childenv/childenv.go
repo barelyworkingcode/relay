@@ -2,9 +2,12 @@
 // builders (terminal, provider, mcp) share about what a spawned child must not
 // inherit from relay-sessions' own environment beyond relay's credentials.
 //
+// It also holds SandboxedClaude, the two variables a Claude Code needs inside
+// a sandbox profile, which cmd/relay applies to a launch's environment.
+//
 // It is a leaf on purpose: those packages keep their own copies of the relay
 // credential list rather than depend on each other, and this rule needs the
-// same property, with no imports at all.
+// same property, with only the standard library imported.
 package childenv
 
 import "strings"
