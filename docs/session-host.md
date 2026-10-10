@@ -921,6 +921,7 @@ Streaming forms are also read: `{"type":"assistant","index":N,"content_block":{�
 | `content` | always | raw JSON, by role (below) |
 | `toolUseId` | `role` `"tool"` only | the `tool_use_id` of the `tool_result` block, to pair it with a `tool_use` block |
 | `origin` | a `user` entry only, when the stored message it matches names a writer other than the person (for example `"chief-of-staff"`) | who wrote the message; absent means the person |
+| `error` | an `assistant` entry whose group has a line with a top-level `error` (the last non-empty value in the group wins); claude only | the API error code that ended the turn, for example `rate_limit`. A value that is not 1 to 32 characters of `a-z`, `0-9` and `_` starting with a letter is reported as `unknown`. Absent on a normal turn; pi, codex and chat never set it |
 | `toolName`, `files` | never from a transcript | stored messages may carry them |
 
 **How transcript lines map.** Lines are read in file order.
@@ -928,7 +929,7 @@ Streaming forms are also read: `{"type":"assistant","index":N,"content_block":{�
 - **`type:"user"`, `message.content` a JSON string.** One `user` entry; `content` is that string.
 - **`type:"user"`, `message.content` an array.** Each `tool_result` block becomes a `tool` entry, in order: `content` is the block's `content` as written (string or array; `""` if absent) and `toolUseId` is its `tool_use_id`. The `text` blocks are then joined with `\n` into one `user` entry whose `content` is that JSON string, placed after the `tool` entries; no `text` blocks, no `user` entry. Other block types are dropped. All entries from the line take the line's `timestamp`.
 - **`type:"user"`, no `message.content`.** Nothing.
-- **`type:"assistant"`.** Lines are grouped by `message.id`; a line with no id is dropped. The group's `content` blocks are concatenated in line order into one `assistant` entry, whose `content` is the JSON array of those blocks (each block unchanged) and whose `timestamp` is the first line's. A group is emitted when the next `user` line is read, or at the end of the file; so two lines with the same id, even apart, make one entry, positioned where the group closes (after any earlier assistant groups, before the user entry that closed it).
+- **`type:"assistant"`.** Lines are grouped by `message.id`; a line with no id is dropped. The group's `content` blocks are concatenated in line order into one `assistant` entry, whose `content` is the JSON array of those blocks (each block unchanged) and whose `timestamp` is the first line's. A group with an `error` code is emitted even when it has no blocks (its `content` is `[]`). A group is emitted when the next `user` line is read, or at the end of the file; so two lines with the same id, even apart, make one entry, positioned where the group closes (after any earlier assistant groups, before the user entry that closed it).
 - **Sub-agent transcripts.** For a local read only, each `tool_use` block named `Agent` or `Task` is followed in `content` by an `{"type":"agent_transcript","agentId":…,"persona":…,"messages":[{"role","content"}…]}` block, taken in modification-time order from `<dir name>/<conversation id>/subagents/agent-*.jsonl` (sidechain lines only). Files beyond the number of such blocks are unused.
 - **Any other `type`** (`system`, `summary`, `result`, …) is ignored.
 

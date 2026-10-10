@@ -1256,8 +1256,10 @@ Client to server. Binds the connection to a session and replays it.
   `{"type": "error", "message": "session not found: <id>"}`.
 - **`session_joined.history[]`:** entries `{"timestamp": "<string>",
   "role": "user"|"assistant"|"tool", "content": <raw JSON>, "toolUseId"?: "<id>",
-  "origin"?: "<writer>", "toolName"?, "files"?}`. `toolUseId` is set on `tool`
-  entries; `origin` on a `user` entry that someone other than the person wrote.
+  "origin"?: "<writer>", "toolName"?, "files"?, "error"?: "<code>"}`. `toolUseId`
+  is set on `tool` entries; `origin` on a `user` entry that someone other than
+  the person wrote; `error` on a claude `assistant` entry whose turn ended with
+  an API error (for example `rate_limit`, or `unknown`), absent on a normal turn.
   Source, fallback and the mapping from Claude's transcript:
   [History on join](session-host.md#history-on-join).
 

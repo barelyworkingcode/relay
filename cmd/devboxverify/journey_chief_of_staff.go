@@ -34,6 +34,7 @@ type cosHist struct {
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
 	Origin  string          `json:"origin"`
+	Error   string          `json:"error"`
 }
 
 // cosFrame is one /ws frame the journey cares about.
@@ -70,6 +71,9 @@ func parseCosFrame(raw []byte) cosFrame {
 		out.InitModel = f.Event.Model
 	}
 	out.Limit = parseLimitFrame(raw)
+	if f.Type == "session_joined" {
+		out.Limit = historyLimit(f.History)
+	}
 	return out
 }
 
