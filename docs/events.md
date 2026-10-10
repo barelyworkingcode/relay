@@ -369,7 +369,7 @@ keys are listed in the rows below.
 | Event | When written | Doors | Fields |
 |---|---|---|---|
 | `audit.query` | Before the records are returned | `GET /api/audit` | `count` |
-| `audit.recent_tool_calls` | Before the records are returned | `GET /api/audit/recent-tool-calls`, Settings Overview | `count` |
+| `audit.recent_tool_calls` | Before the records are returned | `GET /api/audit/recent-tool-calls` | `count` |
 | `audit.path.get` | Before the path is returned | `GET /api/audit/log` | none |
 | `audit.export` | At the end of `audit.AuditOps.Export` | `POST /api/audit/export`, Settings | `count` |
 

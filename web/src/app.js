@@ -296,8 +296,7 @@ function showPage(page) {
     });
     // The Tool Calls tab is the only one not seeded by the initial payload:
     // the log can be large, so it's fetched the first time it's shown. The
-    // Overview tab's "Recent tool calls" needs the same ring, so it shares
-    // the fetch-once-then-live-tail behaviour.
+    // Overview tab also loads it: the audit status tile reads the same ring.
     if ((page === 'audit' || page === 'overview') && !state.auditLoaded) queryAudit();
     if (page === 'overview' && !state.recentToolCallsRequested) {
         state.recentToolCallsRequested = true;

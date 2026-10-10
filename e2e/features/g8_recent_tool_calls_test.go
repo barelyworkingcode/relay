@@ -136,6 +136,9 @@ func TestRecentToolCallsCappedAtSix(t *testing.T) {
 	}
 	g8CallTool(t, i, token, "acme_echo")
 	rows := g8GetRows(t, i, g8RecentPath)
+	if len(rows) == 0 {
+		t.Fatalf("%s lists no rows, want 6 rows led by acme_echo", g8RecentPath)
+	}
 	if len(rows) != 6 || rows[0].Tool != "acme_echo" {
 		t.Fatalf("%s lists %d rows, first %q, want 6 rows led by acme_echo", g8RecentPath, len(rows), rows[0].Tool)
 	}
