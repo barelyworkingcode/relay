@@ -65,13 +65,13 @@ status `rejected`, as RFC 3339 UTC. Without one, it is the text after the last
 runes. With neither, the detail is `provider rate limit`.
 
 cos-start and cos-start-host send their first message inside the start request,
-and the journey joins the session only after the response. When the provider
-answers before the join, the limit frame is never seen, and nothing relay keeps
-afterwards (history, session list, event lines, audit) carries the code. Those
-turns then read the usual FAIL, as `main` does. Before chasing such a FAIL,
-check whether the other Claude journeys in the same run read
-`BLOCKED provider rate limit`. cos-start-host's second turn is watched live and
-reads BLOCKED.
+and the journey joins the session only after the response, so the provider may
+answer before the join and the live limit frame is never seen. The join's
+`session_joined` history carries the code: when its last assistant entry has
+`"error":"rate_limit"`, that is a limit hit and the journey reads BLOCKED. The
+`error` field decides, never the entry's text. That entry's text feeds the reset
+fallback above. A history without the code reads the usual FAIL. cos-start-host's
+second turn is also watched live.
 
 ## The world
 

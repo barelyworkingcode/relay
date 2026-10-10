@@ -49,6 +49,45 @@ func parseLimitFrame(raw []byte) limitFrame {
 	return limitFrame{}
 }
 
+// historyLimit reads a session_joined history for a turn the provider ended
+// with error "rate_limit": the last assistant entry decides, by its error
+// field alone. Its text feeds the reset-time fallback.
+func historyLimit(h []cosHist) limitFrame {
+	for i := len(h) - 1; i >= 0; i-- {
+		if h[i].Role != "assistant" {
+			continue
+		}
+		if h[i].Error != "rate_limit" {
+			return limitFrame{}
+		}
+		return limitFrame{Hit: true, Text: historyText(h[i].Content)}
+	}
+	return limitFrame{}
+}
+
+// historyText is the text of a history entry whose content is a string or an
+// array of content blocks.
+func historyText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 // providerLimit says whether a session's turn ended on the provider's usage
 // limit, and when the provider says it lifts.
 type providerLimit struct {
