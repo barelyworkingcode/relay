@@ -334,15 +334,24 @@ func (s *liveSettingsSteps) findWindow(ctx context.Context, within time.Duration
 }
 
 func (s *liveSettingsSteps) openFromTray(ctx context.Context) error {
-	extras, release, err := axExtras(s.e.RelayPID)
+	var item *axNode
+	var release func()
+	err := retryInvalidElement(ctx, func() error {
+		extras, rel, err := axExtras(s.e.RelayPID)
+		if err != nil {
+			return err
+		}
+		item = nil
+		for _, n := range flatten(extras) {
+			if n.Role == "AXMenuBarItem" && n.Help == "Relay" {
+				item = n
+			}
+		}
+		release = rel
+		return nil
+	})
 	if err != nil {
 		return err
-	}
-	var item *axNode
-	for _, n := range flatten(extras) {
-		if n.Role == "AXMenuBarItem" && n.Help == "Relay" {
-			item = n
-		}
 	}
 	if item == nil {
 		release()
@@ -447,6 +456,23 @@ func pollNode(ctx context.Context, within time.Duration, find func() (*axNode, f
 	}
 }
 
+// invalidElementWindow bounds the retry of an element the page re-rendered
+// away. Any other error, or the bound expiring, keeps the caller's result.
+const invalidElementWindow = 5 * time.Second
+
+// retryInvalidElement runs op again, from a fresh snapshot, while it fails
+// with a destroyed element, for at most invalidElementWindow.
+func retryInvalidElement(ctx context.Context, op func() error) error {
+	deadline := time.Now().Add(invalidElementWindow)
+	for {
+		err := op()
+		if !errors.Is(err, errAXInvalidElement) || time.Now().After(deadline) || ctx.Err() != nil {
+			return err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // card reads the fixture's card from a fresh snapshot, so the controls it
 // returns are live.
 func (s *liveSettingsSteps) card() (cardView, *axNode, func(), error) {
@@ -488,15 +514,17 @@ func (s *liveSettingsSteps) Card(ctx context.Context, within time.Duration, done
 }
 
 func (s *liveSettingsSteps) Press(ctx context.Context, label string) error {
-	view, btn, release, err := s.card()
-	defer release()
-	if err != nil {
-		return err
-	}
-	if view.Button != label {
-		return fmt.Errorf("the card's button reads %q, want %q", view.Button, label)
-	}
-	return btn.press()
+	return retryInvalidElement(ctx, func() error {
+		view, btn, release, err := s.card()
+		defer release()
+		if err != nil {
+			return err
+		}
+		if view.Button != label {
+			return fmt.Errorf("the card's button reads %q, want %q", view.Button, label)
+		}
+		return btn.press()
+	})
 }
 
 func (s *liveSettingsSteps) Service(ctx context.Context, within time.Duration, done func(svcView) bool) (svcView, bool) {
@@ -511,8 +539,15 @@ func (s *liveSettingsSteps) Restore(ctx context.Context) error {
 		}
 	}
 	if s.opened {
-		win, release, err := s.settingsWindow()
-		defer release()
+		var win *axNode
+		release := func() {}
+		err := retryInvalidElement(ctx, func() error {
+			var err error
+			release()
+			win, release, err = s.settingsWindow()
+			return err
+		})
+		defer func() { release() }()
 		switch {
 		case err != nil:
 			errs = append(errs, err)
