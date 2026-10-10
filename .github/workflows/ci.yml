@@ -2,6 +2,9 @@ name: ci
 
 on:
   pull_request:
+    # labeled and unlabeled rerun every job, so a map-narrowing-approved label
+    # takes effect and no job reads "skipping".
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -57,6 +60,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Selection diffs base...head and reads the map at both commits.
+          fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
@@ -72,9 +78,25 @@ jobs:
         run: go vet ./...
       - name: tmux (persistent-session rows)
         run: command -v tmux || brew install tmux
+      - name: select tests
+        working-directory: e2e
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            go run ./coverage/cmd/selecttests --repo .. --base "$BASE" --head "$HEAD_SHA" --labels-json "$PR_LABELS" --env "$GITHUB_ENV" --summary "$GITHUB_STEP_SUMMARY"
+          else
+            go run ./coverage/cmd/selecttests --repo .. --full --env "$GITHUB_ENV" --summary "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: coverage package
+        working-directory: e2e
+        run: go test -race -count=1 ./coverage/...
       - name: e2e feature tests
         working-directory: e2e
-        run: go test -race -count=1 -timeout 35m $(go list ./... | /usr/bin/grep -v '/contract$')
+        run: go test -race -count=1 -timeout 35m ./features -run "$SELECT_RUN"
 
   contract:
     name: contract

@@ -1,8 +1,11 @@
 package files
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -173,7 +176,7 @@ func (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {
 		}
 		switch in.Type {
 		case "watch":
-			h.watch(c, in.ProjectID)
+			h.watch(r.Context(), c, in.ProjectID)
 		case "unwatch":
 			h.mu.Lock()
 			delete(c.watches, in.ProjectID)
@@ -182,7 +185,7 @@ func (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *hub) watch(c *conn, id string) {
+func (h *hub) watch(ctx context.Context, c *conn, id string) {
 	h.mu.Lock()
 	delete(c.watches, id)
 	h.mu.Unlock()
@@ -199,12 +202,14 @@ func (h *hub) watch(c *conn, id string) {
 		}
 	}
 	if e != nil {
+		h.s.d.Events.Begin(ctx, "fakerelay.watch").Set("project_id", id).End("error", watchCode(e), e)
 		fail(e)
 		return
 	}
 	h.mu.Lock()
 	c.watches[id] = true
 	h.mu.Unlock()
+	h.s.d.Events.Begin(ctx, "fakerelay.watch").Set("project_id", id).End("ok", "", nil)
 	c.send(map[string]string{"type": "watch_ok", "project_id": id}, false)
 }
 
@@ -286,6 +291,38 @@ func (h *hub) controlFSEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	n := h.emit(id, []fsEvent{{strings.TrimLeft(body.Path, "/"), body.Kind}}, true)
 	server.WriteJSON(w, http.StatusOK, map[string]int{"delivered": n})
+}
+
+var watchErrorCodes = []string{"ENOENT", "UNSUPPORTED", "HOST_UNREACHABLE", "PROJECT_NOT_FOUND", "NOT_AVAILABLE", "PROJECT_CHANGED", "ERROR"}
+
+// controlWatchError ends every watch on a project with a watch_error of the
+// caller's choosing. Relay itself ends an open watch only with PROJECT_CHANGED.
+func (h *hub) controlWatchError(w http.ResponseWriter, r *http.Request) {
+	body := struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}{Code: "ERROR", Error: "watch failed"}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		server.WriteError(w, http.StatusBadRequest, "send {code, error}")
+		return
+	}
+	if !slices.Contains(watchErrorCodes, body.Code) {
+		server.WriteError(w, http.StatusBadRequest, "code must be one of "+strings.Join(watchErrorCodes, ", "))
+		return
+	}
+	id := r.PathValue("id")
+	if _, e := h.s.target(id); e != nil {
+		server.WriteError(w, e.Status, e.Msg)
+		return
+	}
+	frame := map[string]string{"type": "watch_error", "project_id": id, "code": body.Code, "error": body.Error}
+	delivered := 0
+	for _, c := range h.watchers(id, true) {
+		if c.send(frame, true) {
+			delivered++
+		}
+	}
+	server.WriteJSON(w, http.StatusOK, map[string]int{"delivered": delivered})
 }
 
 func (h *hub) controlHostStatus(w http.ResponseWriter, r *http.Request) {

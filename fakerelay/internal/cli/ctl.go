@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -14,7 +17,7 @@ import (
 // ctl drives the control socket: the fake-only commands tests use.
 func (e *env) ctl(args []string) int {
 	if len(args) == 0 {
-		return e.fail(2, "usage: fakerelay ctl state|presence|fault|host|fs-event|clock ...")
+		return e.fail(2, "usage: fakerelay ctl state|presence|fault|host|fs-event|fs-write|watch-error|clock ...")
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
@@ -64,10 +67,70 @@ func (e *env) ctl(args []string) int {
 			body["kind"] = *kind
 		}
 		return e.show("POST", "/v1/projects/"+url.PathEscape(*pr)+"/fs-events", body, false)
+	case "fs-write":
+		return e.fsWrite(rest)
+	case "watch-error":
+		fs := flag.NewFlagSet("ctl watch-error", flag.ContinueOnError)
+		pr, code, msg := fs.String("project", "", ""), fs.String("code", "", ""), fs.String("error", "", "")
+		if c, ok := e.parse(fs, rest); !ok {
+			return c
+		}
+		if *pr == "" {
+			return e.fail(2, "--project is required")
+		}
+		body := map[string]string{}
+		if *code != "" {
+			body["code"] = *code
+		}
+		if *msg != "" {
+			body["error"] = *msg
+		}
+		return e.show("POST", "/v1/projects/"+url.PathEscape(*pr)+"/watch-error", body, false)
 	case "clock":
 		return e.clock(rest)
 	}
 	return e.fail(2, "unknown ctl command %q; see docs/fakerelay.md", verb)
+}
+
+// maxWriteFile is the largest --file the CLI sends; the route enforces the
+// same cap on the decoded bytes.
+const maxWriteFile = 10 << 20
+
+func (e *env) fsWrite(args []string) int {
+	fs := flag.NewFlagSet("ctl fs-write", flag.ContinueOnError)
+	pr, path, content, file := fs.String("project", "", ""), fs.String("path", "", ""), fs.String("content", "", ""), fs.String("file", "", "")
+	if code, ok := e.parse(fs, args); !ok {
+		return code
+	}
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	if given["content"] == given["file"] {
+		return e.fail(2, "pass exactly one of --content and --file")
+	}
+	if *pr == "" || *path == "" {
+		return e.fail(2, "--project and --path are required")
+	}
+	body := map[string]string{"path": *path, "content": *content}
+	if given["file"] {
+		var r io.Reader = os.Stdin
+		if *file != "-" {
+			f, err := os.Open(*file)
+			if err != nil {
+				return e.fail(1, "%v", err)
+			}
+			defer f.Close()
+			r = f
+		}
+		b, err := io.ReadAll(io.LimitReader(r, maxWriteFile+1))
+		if err != nil {
+			return e.fail(1, "read %s: %v", *file, err)
+		}
+		if len(b) > maxWriteFile {
+			return e.fail(1, "%s is larger than %d bytes", *file, maxWriteFile)
+		}
+		body["content"], body["encoding"] = base64.StdEncoding.EncodeToString(b), "base64"
+	}
+	return e.show("POST", "/v1/projects/"+url.PathEscape(*pr)+"/fs-write", body, false)
 }
 
 func (e *env) fault(args []string) int {
