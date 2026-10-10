@@ -56,8 +56,8 @@ func (a *scripted) Turn(ctx context.Context, text string, emit func(Frame)) erro
 	a.log.Record(a.name(), "turn", map[string]any{"session_id": a.info.ID, "text": text})
 	var planPath string
 	if a.kind == "plan" {
-		planPath = filepath.Join(a.home, ".claude", "plans", a.info.ID+".md")
-		if err := writePlan(planPath, a.reply.Text); err != nil {
+		var err error
+		if planPath, err = writePlan(filepath.Join(a.home, ".claude", "plans", a.info.ID+".md"), a.reply.Text); err != nil {
 			return &TurnError{Status: 500}
 		}
 	}
@@ -94,11 +94,19 @@ func (a *scripted) Turn(ctx context.Context, text string, emit func(Frame)) erro
 	return ctx.Err()
 }
 
-func writePlan(path, text string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+// writePlan writes the plan and returns its resolved path. The path is
+// resolved because a client compares it with the real path of the file.
+func writePlan(path, text string) (string, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
 	}
-	return os.WriteFile(path, []byte(text), 0o600)
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	path = filepath.Join(real, filepath.Base(path))
+	return path, os.WriteFile(path, []byte(text), 0o600)
 }
 
 // planTurn replays what a plan-mode turn shows a client: the plan file
