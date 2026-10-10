@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Criteria: a world spec is validated at serve; the lock; no default config dir;
@@ -131,4 +132,19 @@ func serveUntilReadyOrExit(t *testing.T, dir string) (string, string, int) {
 		return out, se.String(), 0
 	}
 	return "", "", -1
+}
+
+// Criteria: a credential's expires is judged on the instance clock; one in the
+// future is accepted and one the clock has passed is a 401.
+func TestCredentialExpiry(t *testing.T) {
+	t.Parallel()
+	const tok = "tok-expiring-0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+	in := startInstance(t, func(dir string) any {
+		exp := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+		return J{"schema": 1, "credentials": []J{
+			{"id": "c_exp", "name": "acme-exp", "classes": []string{"read"}, "token": tok, "expires": exp}}}
+	})
+	in.apiAs(t, tok, "GET", "/api/projects", nil).is(t, 200)
+	in.ctl(t, "POST", "/v1/clock", J{"advance_ms": int64(3 * time.Hour / time.Millisecond)}).is(t, 200)
+	in.apiAs(t, tok, "GET", "/api/projects", nil).is(t, 401)
 }

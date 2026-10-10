@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/barelyworkingcode/relay/fakerelay/internal/files"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/state"
 )
 
@@ -39,6 +38,6 @@ func (s *svc) serveState(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	sort.Slice(terms, func(i, j int) bool { return terms[i]["id"].(string) < terms[j]["id"].(string) })
 	model["sessions"], model["terminals"], model["ws_connections"] = sessions, terms, conns
-	model["host_status"] = files.HostStatuses()
+	model["host_status"] = s.Hosts.HostStatuses()
 	ok(w, model)
 }

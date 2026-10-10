@@ -2,7 +2,9 @@ package prooftest
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -42,9 +44,14 @@ func TestFaults(t *testing.T) {
 			c.Close()
 			t.Fatal("upgrade succeeded under a down fault")
 		}
-		_ = open.SetReadDeadline(time.Now().Add(waitBound))
-		if _, _, err := open.ReadMessage(); err == nil {
+		_ = open.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_, _, err := open.ReadMessage()
+		if err == nil {
 			t.Fatal("open connection survived the down fault")
+		}
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			t.Fatalf("open connection was still open at the read bound: %v", err)
 		}
 	})
 
@@ -78,6 +85,27 @@ func TestFaults(t *testing.T) {
 		eq(t, actions[any("released")] && actions[any("held")], true, "held and released events")
 		addFault(t, in, J{"route": "GET /api/hosts", "mode": "slow", "delay_ms": 20, "times": 1})
 		in.api(t, "GET", "/api/hosts", nil).is(t, 200)
+	})
+
+	t.Run("slow with times 1 is still released after its last use is spent", func(t *testing.T) {
+		t.Parallel()
+		in := startInstance(t, faultWorld)
+		id := addFault(t, in, J{"route": "GET /api/mcps", "mode": "slow", "times": 1})
+		done := make(chan res, 1)
+		go func() {
+			r, err := send(context.Background(), in.sockClient(), "http://relay", "GET", "/api/mcps", opsTok, nil)
+			if err != nil {
+				r = res{Status: -1, Body: []byte(err.Error())}
+			}
+			done <- r
+		}()
+		ev := in.waitEvent(t, "fakerelay.fault")
+		eq(t, [2]any{ev["fault_id"], ev["action"]}, [2]any{id, "held"}, "hold event")
+		if st := in.ctl(t, "POST", "/v1/faults/"+id+"/release", nil).Status; st >= 300 {
+			t.Fatalf("release of a spent, held fault answered %d", st)
+		}
+		(<-done).is(t, 200)
+		in.api(t, "GET", "/api/mcps", nil).is(t, 200)
 	})
 
 	t.Run("error answers a named or an explicit status", func(t *testing.T) {

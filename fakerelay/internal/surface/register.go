@@ -8,12 +8,16 @@ import (
 	"github.com/barelyworkingcode/relay/fakerelay/internal/sessions"
 )
 
-// Register installs the file, API and session doors.
+// Register installs the file, API and session doors. The file plane goes first
+// because the other two read host status through it.
 func Register(r server.Registrar, d server.Deps) error {
-	for _, reg := range []func(server.Registrar, server.Deps) error{files.Register, api.Register, sessions.Register} {
-		if err := reg(r, d); err != nil {
-			return err
-		}
+	hosts, err := files.Register(r, d)
+	if err != nil {
+		return err
 	}
-	return nil
+	d.Hosts = hosts
+	if err := api.Register(r, d); err != nil {
+		return err
+	}
+	return sessions.Register(r, d)
 }

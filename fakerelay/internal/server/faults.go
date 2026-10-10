@@ -18,6 +18,10 @@ type fault struct {
 	world.Fault
 	left int // applications remaining; meaningful only when Times > 0
 	rel  chan struct{}
+	// holds counts requests waiting on a slow fault; a spent slow fault stays
+	// findable by id until they end.
+	holds int
+	spent bool
 }
 
 type faultSet struct {
@@ -84,6 +88,11 @@ func (s *faultSet) Clear(id string) bool {
 		if id == "" || f.ID == id {
 			found = true
 			close(f.rel)
+			f.rel = make(chan struct{})
+			f.spent = true
+			if f.holds > 0 {
+				kept = append(kept, f)
+			}
 			continue
 		}
 		kept = append(kept, f)
@@ -112,13 +121,20 @@ func (s *faultSet) take(route string, wildcard bool) (*fault, chan struct{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for pass := 0; pass < 2; pass++ {
-		for i, f := range s.list {
+		for _, f := range s.list {
+			if f.spent {
+				continue
+			}
 			if (pass == 0 && f.Route == route) || (pass == 1 && wildcard && f.Route == "*") {
 				rel := f.rel
+				if f.Mode == "slow" {
+					f.holds++
+				}
 				if f.Times > 0 {
 					f.left--
 					if f.left == 0 {
-						s.list = append(s.list[:i:i], s.list[i+1:]...)
+						f.spent = true
+						s.dropIfIdle(f)
 					}
 				}
 				return f, rel
@@ -128,6 +144,20 @@ func (s *faultSet) take(route string, wildcard bool) (*fault, chan struct{}) {
 	return nil, nil
 }
 
+// dropIfIdle removes a spent fault once no request waits on it. The caller
+// holds s.mu.
+func (s *faultSet) dropIfIdle(f *fault) {
+	if !f.spent || f.holds > 0 {
+		return
+	}
+	for i, o := range s.list {
+		if o == f {
+			s.list = append(s.list[:i:i], s.list[i+1:]...)
+			return
+		}
+	}
+}
+
 func (s *faultSet) emit(ctx context.Context, f *fault, action string) {
 	s.log.Begin(ctx, "fakerelay.fault").Set("fault_id", f.ID).Set("route", f.Route).Set("mode", f.Mode).Set("action", action).End("ok", "", nil)
 }
@@ -135,6 +165,12 @@ func (s *faultSet) emit(ctx context.Context, f *fault, action string) {
 // wait holds until release, the delay or ctx ends, and reports whether the
 // request may go on.
 func (s *faultSet) wait(ctx context.Context, f *fault, rel chan struct{}) bool {
+	defer func() {
+		s.mu.Lock()
+		f.holds--
+		s.dropIfIdle(f)
+		s.mu.Unlock()
+	}()
 	s.emit(ctx, f, "held")
 	var timer <-chan time.Time
 	if f.DelayMS > 0 {

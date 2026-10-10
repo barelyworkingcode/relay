@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -23,24 +22,13 @@ const (
 	agentNone    = "none"
 )
 
-// active is the hub of the running instance, for HostStatuses and
-// SetHostStatus.
-var active atomic.Pointer[hub]
-
 // HostStatus is a host agent's state: none, connecting, connected or
 // unreachable.
-type HostStatus struct {
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
-}
+type HostStatus = server.HostStatus
 
 // HostStatuses is the agent state of every host in the world.
-func HostStatuses() map[string]HostStatus {
-	h := active.Load()
-	out := map[string]HostStatus{}
-	if h == nil {
-		return out
-	}
+func (h *hub) HostStatuses() map[string]server.HostStatus {
+	out := map[string]server.HostStatus{}
 	h.sync()
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -53,9 +41,8 @@ func HostStatuses() map[string]HostStatus {
 // SetHostStatus moves a host's agent to status and returns after the
 // host_status frame has gone to every /ws/files connection. It reports false
 // for an unknown host.
-func SetHostStatus(id, status, errText string) bool {
-	h := active.Load()
-	return h != nil && h.setStatus(id, status, errText)
+func (h *hub) SetHostStatus(id, status, errText string) bool {
+	return h.setStatus(id, status, errText)
 }
 
 type hub struct {

@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/barelyworkingcode/relay/fakerelay/internal/events"
-	"github.com/barelyworkingcode/relay/fakerelay/internal/files"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/server"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/state"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/world"
@@ -35,7 +34,7 @@ func (a *api) hostRoutes(r server.Registrar) {
 }
 
 func (a *api) agentStatus(h world.Host) string {
-	if st, found := files.HostStatuses()[h.ID]; found && st.Status != "" {
+	if st, found := a.Hosts.HostStatuses()[h.ID]; found && st.Status != "" {
 		return st.Status
 	}
 	return h.Agent
@@ -298,7 +297,7 @@ func (a *api) disconnectHost(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	files.SetHostStatus(id, "unreachable", "disconnected")
+	a.Hosts.SetHostStatus(id, "unreachable", "disconnected")
 	h.Agent = "unreachable"
 	ev.End("ok", "", nil)
 	ok(w, a.hostView(h))

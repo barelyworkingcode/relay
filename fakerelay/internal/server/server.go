@@ -199,16 +199,20 @@ func (s *Server) Run(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	// Every bound listener is registered at once so a later bind failure
+	// closes the earlier ones.
+	closers = append(closers, func() { os.Remove(s.bridgePath); os.Remove(s.frontPath); os.Remove(s.ctlPath) })
 	closers = append(closers, func() { bl.Close() })
 	fl, err := listenUnix(s.frontPath)
 	if err != nil {
 		return err
 	}
+	closers = append(closers, func() { fl.Close() })
 	cl, err := listenUnix(s.ctlPath)
 	if err != nil {
 		return err
 	}
-	closers = append(closers, func() { os.Remove(s.bridgePath); os.Remove(s.frontPath); os.Remove(s.ctlPath) })
+	closers = append(closers, func() { cl.Close() })
 
 	ready := readyFile{Schema: 1, PID: os.Getpid(), Version: "fakerelay", ConfigDir: s.dir,
 		Sockets:   map[string]string{"bridge": s.bridgePath, "frontend": s.frontPath, "control": s.ctlPath},
@@ -230,6 +234,7 @@ func (s *Server) Run(ctx context.Context) (err error) {
 		if err != nil {
 			return fmt.Errorf("listener %s: %w", t.key, err)
 		}
+		closers = append(closers, func() { l.Close() })
 		h := http.Handler(s.tcpMux)
 		if t.key == "model" {
 			h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

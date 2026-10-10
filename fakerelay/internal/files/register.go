@@ -11,10 +11,9 @@ import (
 )
 
 // Register installs the file routes, /ws/files and the control endpoints.
-func Register(r server.Registrar, d server.Deps) error {
+func Register(r server.Registrar, d server.Deps) (server.HostStatusSource, error) {
 	s := &service{d: d}
 	s.hub = newHub(s)
-	active.Store(s.hub)
 	d.State.OnProjectChange(s.hub.projectChanged)
 
 	const base = "POST /api/projects/{id}/files/"
@@ -34,7 +33,7 @@ func Register(r server.Registrar, d server.Deps) error {
 
 	r.Control("PUT /v1/hosts/{id}/status", s.hub.controlHostStatus)
 	r.Control("POST /v1/projects/{id}/fs-events", s.hub.controlFSEvent)
-	return nil
+	return s.hub, nil
 }
 
 type service struct {

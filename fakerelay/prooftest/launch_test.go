@@ -31,7 +31,7 @@ func TestLaunchIdentity(t *testing.T) {
 	t.Run("a frontend service gets the secret on fd 3 and a clean env", func(t *testing.T) {
 		t.Parallel()
 		in := startInstance(t, launchWorld("normal", "frontend", "manifest"), leaky...)
-		in.waitEvent(t, "service.manifest.register")
+		in.waitRegistered(t)
 		rep := in.report(t, "probe")
 		if !rep.SecretHex64 || !rep.FD3EOF || !rep.HelloOK || !rep.AuthOK {
 			t.Errorf("launch report: %+v", rep)
@@ -60,7 +60,7 @@ func TestLaunchIdentity(t *testing.T) {
 	t.Run("a service without frontend gets no socket variable and 401", func(t *testing.T) {
 		t.Parallel()
 		in := startInstance(t, launchWorld("normal", "manifest"))
-		in.waitEvent(t, "service.manifest.register")
+		in.waitRegistered(t)
 		rep := in.report(t, "probe")
 		eq(t, rep.FrontendEnvSet, false, "RELAY_FRONTEND_SOCKET set")
 		eq(t, rep.ProjectsStatus, 401, "identity without frontend")
@@ -69,7 +69,7 @@ func TestLaunchIdentity(t *testing.T) {
 	t.Run("a wrong secret does not spend the launch", func(t *testing.T) {
 		t.Parallel()
 		in := startInstance(t, launchWorld("wrongsecret", "frontend", "manifest"))
-		in.waitEvent(t, "service.manifest.register")
+		in.waitRegistered(t)
 		rep := in.report(t, "probe")
 		eq(t, [2]bool{rep.WrongSecretRefused, rep.HelloOK}, [2]bool{true, true}, "wrong then right secret")
 	})
@@ -77,7 +77,7 @@ func TestLaunchIdentity(t *testing.T) {
 	t.Run("a second Hello is refused on the same and on another connection", func(t *testing.T) {
 		t.Parallel()
 		in := startInstance(t, launchWorld("twice", "frontend", "manifest"))
-		in.waitEvent(t, "service.manifest.register")
+		in.waitRegistered(t)
 		rep := in.report(t, "probe")
 		eq(t, [3]bool{rep.HelloOK, rep.SecondHelloRefused, rep.OtherConnRefused}, [3]bool{true, true, true}, "repeat Hello")
 	})
@@ -85,11 +85,11 @@ func TestLaunchIdentity(t *testing.T) {
 	t.Run("service restart mints a new launch and stops the old process", func(t *testing.T) {
 		t.Parallel()
 		in := startInstance(t, launchWorld("normal", "frontend", "manifest"))
-		first := in.waitEvent(t, "service.manifest.register")
+		first := in.waitRegistered(t)
 		old := in.report(t, "probe")
 		out, se, code := in.cli(t, "service", "restart", "--id", "probe")
 		eq(t, code, 0, "service restart exit: "+out+se)
-		in.waitEvent(t, "service.manifest.register", "--since", after(first))
+		in.waitRegistered(t, "--since", after(first))
 		fresh := in.report(t, "probe")
 		if fresh.PID == old.PID || !fresh.HelloOK || !fresh.SecretHex64 {
 			t.Errorf("restart did not give a new launch: old %+v new %+v", old, fresh)

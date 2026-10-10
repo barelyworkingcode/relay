@@ -123,7 +123,7 @@ func tour(t *testing.T, in *instance) {
 	own := []string{fmt.Sprintf("Acme %02d", i), fmt.Sprintf("Box %02d", i)}
 
 	// Dispatch: the probe's manifest, its identity request and the stripped bearer.
-	in.waitEvent(t, "service.manifest.register")
+	in.waitRegistered(t)
 	rep := in.report(t, "probe", "X-Trace-Id", trace("probe"))
 	if !rep.HelloOK || !rep.AuthOK || rep.ProjectsStatus != 200 {
 		t.Fatalf("probe report: %+v", rep)
@@ -442,8 +442,10 @@ func tour(t *testing.T, in *instance) {
 	}
 
 	// Logs and state.
-	_, _, code = in.cliTrace(t, "no-such-trace-id", "logs", "--event", "project.delete")
+	_, _, code = in.cliTrace(t, "no-such-trace-id", "logs", "--event", "project.remove")
 	eq(t, code, 1, "logs with no match exits 1")
+	_, _, code = in.cli(t, "logs", "--event", "project.remove")
+	eq(t, code, 0, "the same event without a trace filter matches")
 	out, se, code = in.cli(t, "ctl", "state", "--json")
 	if code != 0 || !strings.Contains(out, "p_main") {
 		t.Errorf("ctl state: exit %d %q %s", code, out, se)

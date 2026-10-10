@@ -325,6 +325,62 @@ func after(ev J) string {
 	return ts.Add(time.Millisecond).UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
+// followFirst runs a followed `logs` for one key until a line matches (and,
+// for service.state, the match accepts it) or ctx ends.
+func (in *instance) followFirst(ctx context.Context, key string, accept func(J) bool, extra []string) (J, error) {
+	since := extra
+	for {
+		args := append([]string{"--config-dir", in.dir, "logs", "--json", "--follow", "--timeout", waitBound.String(), "--event", key}, since...)
+		cmd := exec.CommandContext(ctx, fakerelayBin, args...)
+		cmd.Env = cleanEnv()
+		var so, se bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &so, &se
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("following %s: %v: %s", key, err, se.String())
+		}
+		var first J
+		line := strings.TrimSpace(strings.SplitN(strings.TrimSpace(so.String()), "\n", 2)[0])
+		if err := json.Unmarshal([]byte(line), &first); err != nil {
+			return nil, fmt.Errorf("following %s: bad line %q", key, line)
+		}
+		if accept == nil || accept(first) {
+			return first, nil
+		}
+		since = append(append([]string(nil), extra...), "--since", after(first))
+	}
+}
+
+// waitRegistered returns the service.manifest.register line, and fails at once
+// when a service.state failed line arrives first, so a service that dies
+// before registering is reported where it died.
+func (in *instance) waitRegistered(t testing.TB, extra ...string) J {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type out struct {
+		ev     J
+		failed bool
+		err    error
+	}
+	ch := make(chan out, 2)
+	go func() {
+		ev, err := in.followFirst(ctx, "service.manifest.register", nil, extra)
+		ch <- out{ev: ev, err: err}
+	}()
+	go func() {
+		ev, err := in.followFirst(ctx, "service.state", func(e J) bool { return e["phase"] == "failed" }, extra)
+		ch <- out{ev: ev, failed: true, err: err}
+	}()
+	r := <-ch
+	if r.err != nil {
+		t.Fatalf("waiting for service.manifest.register: %v", r.err)
+	}
+	if r.failed {
+		t.Fatalf("service failed before registering its manifest: %v", r.ev)
+	}
+	return r.ev
+}
+
 // waitServiceFailed waits for the service.state line with phase failed.
 func (in *instance) waitServiceFailed(t testing.TB) J {
 	ev := in.waitEvent(t, "service.state")

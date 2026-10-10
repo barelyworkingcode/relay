@@ -126,9 +126,7 @@ func (s *Server) authenticate(r *http.Request, transport string) (Caller, bool) 
 			if subtle.ConstantTimeCompare([]byte(tok), []byte(c.Token)) != 1 {
 				continue
 			}
-			if c.Expires != "" && !s.expired(c.Expires) {
-				continue
-			} else if c.Expires != "" {
+			if c.Expires != "" && s.expired(c.Expires) {
 				return Caller{}, false
 			}
 			cl := make([]Class, len(c.Classes))

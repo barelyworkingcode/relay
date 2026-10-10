@@ -92,6 +92,21 @@ type Deps struct {
 	Audit    *events.Audit
 	Presence Gate
 	Clock    Clock
+	// Hosts is set by the file plane's registration, before the other
+	// domains register.
+	Hosts HostStatusSource
+}
+
+// HostStatus is a host agent's state.
+type HostStatus struct {
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// HostStatusSource reads and moves host agent states.
+type HostStatusSource interface {
+	HostStatuses() map[string]HostStatus
+	SetHostStatus(id, status, errText string) bool
 }
 
 // Gate is the presence check of a gated operation.
