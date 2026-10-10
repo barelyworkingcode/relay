@@ -5,7 +5,7 @@ devboxWorld test world, through relay's own surfaces, and read the outcome
 back, audit log included. No mocks. It runs on the devbox, never in CI.
 
 ```bash
-go run ./cmd/devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic N]
+go run ./cmd/devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic REF]
 ```
 
 Environment:
@@ -966,10 +966,14 @@ None of this drifts `verify.sh`.
 
 ## Verifying an epic
 
-`go run ./cmd/devboxverify --epic N`, run from a `main` checkout in a desktop
+`go run ./cmd/devboxverify --epic REF`, run from a `main` checkout in a desktop
 Terminal, is an epic's last task: a full run of every journey, both phases,
 exactly as a full `--post` run does, vouching for `main` as a whole. After it,
 the coordinator runs `merge-check --epic N --close`.
+
+`REF` is `N` (issue N in relay) or `owner/repo#N` (issue N in another repo, for
+an epic that lives there). Anything else exits 2 with the usage line. The
+status always posts on relay's own HEAD; only the comment goes to REF's repo.
 
 - Preflight `main` runs right after `head`. It fails, naming both shas, unless
   the checkout is clean and its HEAD equals the default branch's head on
@@ -980,7 +984,7 @@ the coordinator runs `merge-check --epic N --close`.
   journeys do not fail it, as in the exit rule above, and `notrun=` stays in
   the description. A FAIL, a BLOCKED, or a short or empty run posts `failure`.
   A post failure exits 2.
-- Only after a `success` status has posted, the tool comments on issue N with
+- Only after a `success` status has posted, the tool comments on the REF issue with
   one line and nothing else: `Full verify: <owner>/<repo>@<sha40>`.
   merge-check matches that line exactly. A run that did not pass leaves no
   such comment.

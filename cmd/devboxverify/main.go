@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -161,10 +162,10 @@ func run() int {
 	checkout := fs.String("checkout", "", "relay checkout the running app must be built from (default: this checkout)")
 	pr := fs.Int("post", 0, "PR number to post the status and evidence comment to")
 	phaseFlag := fs.String("phase", "", "run only the api or the screen journeys (default: both, api first)")
-	epic := fs.Int("epic", 0, "epic issue number: full run on an up-to-date main, posts devbox/verify-full and comments on the epic")
+	epic := fs.String("epic", "", "epic issue, N or owner/repo#N: full run on an up-to-date main, posts devbox/verify-full and comments on the epic")
 	p, err := parseFlags(fs, os.Args[1:], pr, phaseFlag, epic)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic N]")
+		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic REF]")
 		return 2
 	}
 	screen := p == "" || p == phaseScreen
@@ -295,7 +296,7 @@ func run() int {
 	}
 	screenOnly := map[string]bool{"lock": true, "console": true, "password": true, "sweep": true}
 	checks = slices.DeleteFunc(checks, func(c preflightCheck) bool {
-		return c.name == "pr" && *pr == 0 || c.name == "main" && *epic == 0 || screenOnly[c.name] && !screen
+		return c.name == "pr" && *pr == 0 || c.name == "main" && *epic == "" || screenOnly[c.name] && !screen
 	})
 	if !runPreflight(checks) {
 		return 2
@@ -342,8 +343,10 @@ func run() int {
 		}
 		emit("POSTED", statusState(results), url)
 	}
-	if *epic > 0 {
-		state, err := postFull(context.Background(), *epic, repoSlug, head, results, len(journeys))
+	if *epic != "" {
+		// Deliberate: parseFlags already accepted the value, so this cannot fail.
+		epicRepo, epicNum, _ := parseEpicRef(*epic)
+		state, err := postFull(context.Background(), epicRepo, epicNum, repoSlug, head, results, len(journeys))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "post failed:", scrub(err.Error(), home))
 			return 2
@@ -389,7 +392,7 @@ func fixturesSummary(js []journey) string {
 // parseFlags refuses --post with --phase: a PR's evidence covers every
 // journey, so a one-phase run cannot stand for it. --epic is the same, and
 // a PR's evidence is not an epic's.
-func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string, epic *int) (phase, error) {
+func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string, epic *string) (phase, error) {
 	if err := fs.Parse(args); err != nil {
 		return "", err
 	}
@@ -398,9 +401,12 @@ func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string, epi
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if set["epic"] {
+		if _, _, err := parseEpicRef(*epic); err != nil {
+			return "", err
+		}
+	}
 	switch {
-	case set["epic"] && *epic < 1:
-		return "", errors.New("--epic needs an issue number")
 	case set["epic"] && set["post"]:
 		return "", errors.New("--epic posts its own status; drop --post")
 	case set["epic"] && set["phase"]:
@@ -413,6 +419,22 @@ func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string, epi
 		return "", nil
 	}
 	return parsePhase(*phaseFlag)
+}
+
+var epicRefPattern = regexp.MustCompile(`^(?:([\w.-]+/[\w.-]+)#)?([1-9]\d*)$`)
+
+// parseEpicRef splits an --epic value into its repo and issue number. An empty
+// repo means relay's own, which postFull resolves to the checkout's slug.
+func parseEpicRef(ref string) (repo string, n int, err error) {
+	m := epicRefPattern.FindStringSubmatch(ref)
+	if m == nil {
+		return "", 0, fmt.Errorf("--epic needs N or owner/repo#N, got %q", ref)
+	}
+	n, err = strconv.Atoi(m[2])
+	if err != nil {
+		return "", 0, fmt.Errorf("--epic issue number out of range: %q", ref)
+	}
+	return m[1], n, nil
 }
 
 // afterSweep applies the loop rule: a screen journey must not leave a
