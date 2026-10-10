@@ -295,7 +295,20 @@ func TestModelKeyRequired(t *testing.T) {
 	if keyed == 0 {
 		t.Fatalf("no model_call ok row was made with the session's model key")
 	}
-	g6Event(t, i, harness.EventQuery{Key: "model.request", Fields: map[string]any{"status": "ok", "session_id": s.SessionID}})
+	// session_id is only for a session admitted by launch identity or as a
+	// member of one. A model-key call never carries it, so the line must omit it.
+	okLines := i.Events(harness.EventQuery{Key: "model.request", Fields: map[string]any{"status": "ok"}})
+	if len(okLines) == 0 {
+		t.Fatalf("no model.request ok event for the session's model-key call")
+	}
+	for _, line := range okLines {
+		if _, has := line["session_id"]; has {
+			t.Fatalf("model.request line for a model-key call carries session_id: %v", line["session_id"])
+		}
+		if line.Str("caller_kind") == "" || line.Str("caller") == "" {
+			t.Fatalf("model.request line for a model-key call lacks caller_kind or caller")
+		}
+	}
 
 	unknown := "rmk_" + strings.Repeat("ab", 32)
 	cases := []struct {

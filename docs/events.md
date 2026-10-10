@@ -402,7 +402,7 @@ keys are listed in the rows below.
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
-| `model.request` | At the end of a model request; poll paths stay silent on success | model endpoint (unix, TCP) | `method`, `path`, `http_status`, `transport`, `caller_kind`, `caller`, `session_id`, `model` (absent when unknown) |
+| `model.request` | At the end of a model request; poll paths stay silent on success | model endpoint (unix, TCP) | `method`, `path`, `http_status`, `transport`, `caller_kind`, `caller`, `session_id` (only for a session admitted by launch identity or as a member of one), `model` (absent when unknown) |
 | `model.host.register` | At the end of `appRouter.RegisterModelHost` | bridge `register_model_host` | `service_id` |
 | `model.list` | In relay-sessions `HandleModels` | forwarded `GET /api/models`, `relay model list` | `count` |
 

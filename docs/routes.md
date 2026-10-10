@@ -1246,8 +1246,9 @@ of a tracked agent session's state.
 
 ### ws:/ws turn_done
 
-Server to client. Broadcast once when a turn ends, before that transition's
-`session_state`.
+Server to client. Broadcast once when a tracked session's turn ends, before
+that transition's `session_state`. Only claude, pi and codex sessions are
+tracked (`docs/session-host.md`); a chat session sends neither frame.
 
 - **Frame:** `{"type": "turn_done", "sessionId", "excerpt": "<last 500 runes of the reply>", "at": "<RFC 3339>"}`.
 - **Event:** `chat.turn` (`/ws` turn, relay-sessions).
@@ -1255,7 +1256,8 @@ Server to client. Broadcast once when a turn ends, before that transition's
 ### ws:/ws send_message
 
 Client to server. Sends a message to a session and starts a turn. The reply
-arrives as the session's stream frames, then `turn_done`.
+arrives as the session's stream frames, then `turn_done` for a tracked
+session.
 
 - **Frame:** `{"type": "send_message", "sessionId": "<id>", "text": "<text>",
   "files": [{"name", "mimeType", "data"}], "trace_id": "<id>"}`. `sessionId` is
@@ -1441,7 +1443,8 @@ byte-identical to a model that does not exist.
 
 **Event and audit.** Every call writes `model.request` (`method`, `path`,
 `http_status`, `transport`, `caller_kind`, `caller`, `session_id`, `model`;
-absent fields are omitted). A successful poll of `GET /health`, `GET /props`,
+absent fields are omitted). `session_id` is present only for a session admitted
+by launch identity or as a member of one, never for a model-key or token call. A successful poll of `GET /health`, `GET /props`,
 `GET /models` or `GET /v1/models` writes no event. The audit row is
 `model_call`, or `model_list` for a listing, and a listing is recorded only
 when `audit.log_lists` is on. `X-Trace-Id` is honored. There is no CLI
