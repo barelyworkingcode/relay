@@ -157,6 +157,15 @@ func TestSelectByChange(t *testing.T) {
 			full:   true,
 		},
 		{
+			// Nothing at head declares helperValue and no head file uses it: only the base tree shows the removed declaration.
+			name: "declaration removed from a changed test file runs the full package",
+			change: func(f selFix) {
+				f.edit("e2e/features/helpers_test.go", "func helperValue() int { return 1 }\n\n", "")
+				f.edit("e2e/features/beta_test.go", "\t_ = helperValue()\n", "")
+			},
+			full: true,
+		},
+		{
 			name:   "every-test path runs the full package",
 			change: func(f selFix) { f.write("e2e/harness/h.go", "package harness\n\nconst Root = \"changed\"\n") },
 			areas:  []string{"every-test"},
@@ -309,7 +318,17 @@ var (
 	selectBinOnce sync.Once
 	selectBinPath string
 	selectBinErr  error
+	selectBinDir  string
 )
+
+// TestMain removes the directory selectBin builds into.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if selectBinDir != "" {
+		os.RemoveAll(selectBinDir)
+	}
+	os.Exit(code)
+}
 
 // selectBin builds the selecttests command once per test process.
 func selectBin(t *testing.T) string {
@@ -320,6 +339,7 @@ func selectBin(t *testing.T) string {
 			selectBinErr = err
 			return
 		}
+		selectBinDir = dir
 		selectBinPath = filepath.Join(dir, "selecttests")
 		cmd := exec.Command("go", "build", "-o", selectBinPath, "./cmd/selecttests")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -494,6 +514,21 @@ func TestSelectTestsCommand(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("deleting a test with its row is not narrowing", func(t *testing.T) {
+		t.Parallel()
+		f, base, head := newSelFix(t, func(f selFix) {
+			f.edit("e2e/features/alpha_test.go", "func TestAlphaTwo(t *testing.T) {\n\tt.Parallel()\n}\n", "")
+			narrowingChanges["row removed"](f)
+		})
+		code, stdout := runSelect(t, "--repo", f.root, "--base", base, "--head", head)
+		if code != 0 {
+			t.Fatalf("exit %d, want 0: %s", code, stdout)
+		}
+		if got := lineWith(stdout, "NARROWED "); got != "" {
+			t.Errorf("NARROWED line for a deleted test: %q", got)
+		}
+	})
 
 	t.Run("bad revision and bad usage exit 2", func(t *testing.T) {
 		t.Parallel()
