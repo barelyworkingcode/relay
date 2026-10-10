@@ -789,6 +789,20 @@ left unset) or a `sandbox` value truer than its `false` zero value; a
 resume that gets further before being refused, or one that succeeds, can
 carry both.
 
+`args.session_kind` is the launch `Kind` (`validKind`, `cmd/relay/session_launch.go`),
+one of five values:
+
+| Launch | `session_kind` |
+|---|---|
+| `POST /api/terminals`, any terminal template (shell, a tool template, a custom one), `relay sandbox`, and the drop-in door | `pty` — the template shows in `args.template_id`, never in the kind |
+| `POST /api/sessions` with model `haiku`, `sonnet` or `opus` | `claude` |
+| `POST /api/sessions` with a `pi/…` model | `pi` |
+| `POST /api/sessions` with a `codex/…` model | `codex` |
+| `POST /api/sessions` with any other model (`deriveSessionKind`) | `chat` |
+
+A request whose kind is none of these is refused `invalid_kind`, and the row
+carries the offered value (capped) as `session_kind`.
+
 `session_end` carries a `service` actor — relay-sessions itself reported
 this, tokenlessly, through the `sessions` capability its own built-in
 launch identity holds — naming the session that ended, not the caller's own
