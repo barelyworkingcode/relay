@@ -355,6 +355,8 @@ func driveChiefOfStaff(ctx context.Context, e env, obs, cos *cosConn, run string
 		return
 	}
 	if r.PersonIdleErr = !cos.waitFor(ctx, cosWait, cosIdleAfterRunning(id)); r.PersonIdleErr {
+		// A rate-limited turn ends errored, never idle; classification still reads its frames.
+		r.Frames = obs.snapshot()
 		return
 	}
 	r.Send = cosRequest(ctx, e, run, true, http.MethodPost, "/api/chief-of-staff/messages",

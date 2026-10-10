@@ -54,7 +54,8 @@ re-run passes.
 The cause is structured, never the reply text: an `llm_event` frame whose
 event is an assistant message with `"error":"rate_limit"`. Any other `error`
 value (`authentication_failed`, say) stays a FAIL. Only the turn-outcome checks
-change (no `system/init` model, no idle frame, no `turn_done`, a wrong or
+change (no `system/init` model, no idle frame, no running `session_state`
+frame, not exactly one `turn_done`, a wrong or
 missing excerpt, the first turn errored, no tool call); every later check
 stays FAIL.
 
