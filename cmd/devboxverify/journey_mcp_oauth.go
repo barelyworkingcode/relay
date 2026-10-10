@@ -71,8 +71,9 @@ func gatedCLIStream(ctx context.Context, e env, expect string, onLine func(strin
 
 // withTeardown runs the instance teardown on its own bounded context, so a
 // cancelled journey context still stops the server, and appends any teardown
-// problem to the journey's result: a teardown problem turns a PASS into a FAIL
-// and never replaces an earlier FAIL's detail.
+// problem to the journey's result: a teardown problem turns any non-FAIL
+// result into a FAIL that keeps the earlier detail, and never replaces an
+// earlier FAIL's detail.
 func withTeardown(ctx context.Context, res result, inst *serveInstance) result {
 	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
@@ -80,8 +81,8 @@ func withTeardown(ctx context.Context, res result, inst *serveInstance) result {
 	if problem == "" {
 		return res
 	}
-	if res.State == statePass {
-		return result{res.ID, stateFail, "teardown: " + problem}
+	if res.State != stateFail {
+		return result{res.ID, stateFail, "teardown: " + problem + "; was: " + res.Detail}
 	}
 	res.Detail += "; teardown: " + problem
 	return res
