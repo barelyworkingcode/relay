@@ -139,13 +139,27 @@ func g2Rows(i *harness.Instance, event, outcome string, match map[string]any) []
 	return out
 }
 
+// g2RowsWait reads like g2Rows until a row appears. Refusal rows are fail-open
+// (docs/audit-log.md "Fail-open"): the log's writer may land one after the
+// refusal answers, with no signal to wait on, so the read repeats, bounded by
+// a deadline and never by a sleep.
+func g2RowsWait(t *testing.T, i *harness.Instance, event, outcome string, match map[string]any) []map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if rows := g2Rows(i, event, outcome, match); len(rows) > 0 || time.Now().After(deadline) {
+			return rows
+		}
+	}
+}
+
 // g2RequireRefusal asserts the refusal set of a gated door: the event ends
 // denied for presence_refused, and a denied control_decision row names the
 // gate and the door that asked.
 func g2RequireRefusal(t *testing.T, i *harness.Instance, key, trace, gate, via string) {
 	t.Helper()
 	requireEvent(t, i, harness.EventQuery{Key: key, Trace: trace, Fields: map[string]any{"status": "denied", "reason": "presence_refused"}})
-	if rows := g2Rows(i, "control_decision", "denied", map[string]any{"method": gate, "via": via}); len(rows) == 0 {
+	if rows := g2RowsWait(t, i, "control_decision", "denied", map[string]any{"method": gate, "via": via}); len(rows) == 0 {
 		t.Fatalf("no denied control_decision row with method %s via %s", gate, via)
 	}
 }
@@ -669,7 +683,7 @@ func TestChiefOfStaffConfig(t *testing.T) {
 		if resp := cos.Do(method, "/api/chief-of-staff/config", body, scoped); resp.Status != http.StatusForbidden {
 			t.Fatalf("%s /api/chief-of-staff/config in the chief-of-staff scope answered %d, want 403", method, resp.Status)
 		}
-		if rows := g2Rows(i, "control_decision", "denied", map[string]any{"method": method, "path": "/api/chief-of-staff/config"}); len(rows) != 1 {
+		if rows := g2RowsWait(t, i, "control_decision", "denied", map[string]any{"method": method, "path": "/api/chief-of-staff/config"}); len(rows) != 1 {
 			t.Fatalf("got %d denied control_decision rows for %s, want 1", len(rows), method)
 		}
 	}
@@ -749,7 +763,9 @@ func TestProjectRotateTokenDeniedHTTP(t *testing.T) {
 	if resp.Status != http.StatusForbidden {
 		t.Fatalf("POST rotate_token answered %d, want 403: %s", resp.Status, resp.Body)
 	}
-	if strings.Contains(string(resp.Body), "token\"") {
+	var refused map[string]any
+	resp.JSON(t, &refused)
+	if _, ok := refused["token"]; ok {
 		t.Fatalf("a refused rotation answered a token field: %s", resp.Body)
 	}
 	g2RequireRefusal(t, i, "project.rotate_token", resp.Trace, "project.rotate_token", "http")

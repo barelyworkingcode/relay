@@ -77,9 +77,12 @@ func g4Audit(t *testing.T, i *harness.Instance, flags ...string) []g4Row {
 	return g4Parse(t, res.Stdout)
 }
 
-// g4Wait reads the audit log until ok accepts the rows. A row of a finished
-// call is handed to the log's writer after the call answers, so a read may
-// precede it; each pass costs one process, and the deadline is the bound.
+// g4Wait reads the audit log until ok accepts the rows. It is for fail-open
+// rows only (call_tool, session_message, session_launch, refusals): the log's
+// writer may land one after the call answers, with no signal to wait on, so a
+// read may precede it. Durable rows (credential_issued, config_change,
+// approvals) exist before the act answers and are read once with g4Audit.
+// Each pass costs one process, and the deadline is the bound.
 func g4Wait(t *testing.T, i *harness.Instance, ok func([]g4Row) bool, flags ...string) []g4Row {
 	t.Helper()
 	deadline := time.Now().Add(g4Deadline)
@@ -535,14 +538,7 @@ func TestGateRowsCarryPresenceID(t *testing.T) {
 			return r.str("event") == "control_decision" && r.str("outcome") == "ok" && r.str("method") == op && r.str("presence_id") != ""
 		}
 	}
-	rows := g4Wait(t, i, func(rows []g4Row) bool {
-		for _, op := range []string{"project.grant", "credential.mint", "credential.revoke", "project.rotate_token", "mcp.register"} {
-			if len(g4Where(rows, approvals(op))) == 0 {
-				return false
-			}
-		}
-		return len(g4Where(rows, g4Has2("config_change"))) >= 3 && len(g4Where(rows, g4Has2("credential_revoked"))) >= 1
-	})
+	rows := g4Audit(t, i)
 
 	cases := []struct {
 		op, event, credential string
@@ -574,10 +570,6 @@ func TestGateRowsCarryPresenceID(t *testing.T) {
 			}
 		})
 	}
-}
-
-func g4Has2(event string) func(g4Row) bool {
-	return func(r g4Row) bool { return r.str("event") == event && r.str("presence_id") != "" }
 }
 
 func TestSessionLaunchRows(t *testing.T) {
@@ -672,8 +664,8 @@ func TestRefusalRows(t *testing.T) {
 		refuse("/api/sessions", map[string]string{"projectId": p, "model": ""})
 		blank := g4Wait(t, i, g4Has(func(r g4Row) bool { return r.actorProject() == p && r.str("outcome") != "ok" }), "--event", "session_launch")
 		b := g4Where(blank, func(r g4Row) bool { return r.actorProject() == p })[0]
-		if b.str("error") == "" {
-			t.Fatalf("the blank-model launch row carries no reason: %v", b)
+		if b.str("outcome") != "error" || b.str("error") == "" {
+			t.Fatalf("the blank-model launch row is %v, want outcome error and a reason", b)
 		}
 	})
 
@@ -723,13 +715,11 @@ func TestApproverAnswerRowsBeforeAct(t *testing.T) {
 
 	i.WaitEvent(harness.EventQuery{Key: "debug.presence.answer", Fields: map[string]any{"gated_op": "project.grant", "answer": "approve", "source": "file"}}, g4Deadline)
 
-	rows := g4Wait(t, i, func(rows []g4Row) bool {
-		return len(g4Where(rows, func(r g4Row) bool {
-			return r.str("event") == "config_change" && r.str("presence_id") != ""
-		})) > 0 && len(g4Where(rows, func(r g4Row) bool {
-			return r.str("event") == "control_decision" && r.str("outcome") == "denied" && r.str("method") == "project.rotate_token"
-		})) > 0
-	})
+	// Refusal rows are fail-open, so the denied rotate_token row is waited for;
+	// the approval and act rows are durable and come from the same read.
+	rows := g4Wait(t, i, g4Has(func(r g4Row) bool {
+		return r.str("event") == "control_decision" && r.str("outcome") == "denied" && r.str("method") == "project.rotate_token"
+	}))
 
 	approvalAt, actAt := -1, -1
 	var approval g4Row
@@ -779,7 +769,10 @@ func TestAuditExport(t *testing.T) {
 	i := harness.Start(t, harness.Options{Presence: g4Approve, Credentials: g4Creds})
 	g4Mint(t, i, "acme-one", "read")
 	g4Mint(t, i, "acme-two", "read")
-	issued := g4Wait(t, i, func(rows []g4Row) bool { return len(rows) >= 2 }, "--event", "credential_issued")
+	issued := g4Audit(t, i, "--event", "credential_issued")
+	if len(issued) != 2 {
+		t.Fatalf("two mints wrote %d credential_issued rows, want 2", len(issued))
+	}
 
 	configurer := i.HTTP(i.Credential("configurer"))
 	trace := harness.NewTrace(t)
@@ -825,7 +818,9 @@ func TestAuditRevealPath(t *testing.T) {
 	t.Parallel()
 	i := harness.Start(t, harness.Options{Presence: g4Approve, Credentials: g4Creds})
 	g4Mint(t, i, "acme-reveal", "read")
-	g4Wait(t, i, func(rows []g4Row) bool { return len(rows) > 0 }, "--event", "credential_issued")
+	if rows := g4Audit(t, i, "--event", "credential_issued"); len(rows) == 0 {
+		t.Fatalf("a mint wrote no credential_issued row")
+	}
 
 	trace := harness.NewTrace(t)
 	resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/audit/log", nil, harness.ReqOpts{Trace: trace})

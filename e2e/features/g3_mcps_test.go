@@ -127,8 +127,9 @@ func TestMCPRegisterDeniedHTTP(t *testing.T) {
 		Presence:    map[string]harness.Outcome{"mcp.register": harness.OutcomeDeny},
 	})
 	cmd, args := i.FakeMCPCommand(g3Stdio("acme-reg", echoCatalogue()))
-	// The refusal status of this route family is 500 today; the event and the
-	// audit row are the contract.
+	// The refusal status of this route family is not part of the contract: a
+	// refused register answers a non-2xx status, and the event and the audit
+	// row carry the refusal.
 	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/mcps", map[string]any{
 		"id": "acme-reg", "display_name": "Acme Reg", "transport": "stdio", "command": cmd, "args": args,
 	})

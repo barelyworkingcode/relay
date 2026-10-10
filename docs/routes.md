@@ -545,7 +545,7 @@ Starts a headless agent or a Claude terminal on the Chief of Staff's behalf.
   off); `500` the save failed.
 - **Event:** `project.create` (`project_id`, `kind`). Presence refusals write
   the event with `status: denied`.
-- **Audit row:** `config_change` (credential `project`, subject the project ID).
+- **Audit row:** `config_change` (credential `project_grant`, subject the project ID).
 - **CLI equivalent:** `relay project create`.
 
 ### PUT /api/projects/{id}
