@@ -74,7 +74,33 @@ jobs:
         run: command -v tmux || brew install tmux
       - name: e2e feature tests
         working-directory: e2e
-        run: go test -race -count=1 -timeout 35m ./...
+        run: go test -race -count=1 -timeout 35m $(go list ./... | /usr/bin/grep -v '/contract$')
+
+  contract:
+    name: contract
+    # Each scenario boots a fakerelay and a test-build relay, so it needs cgo + Cocoa.
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: fakerelay/go.sum
+      - name: gofmt (e2e)
+        working-directory: e2e
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: node (host scenarios)
+        run: command -v node || { echo "host scenarios need node on PATH"; exit 1; }
+      - name: tmux (host scenarios)
+        run: command -v tmux || brew install tmux
+      - name: contract scenarios
+        working-directory: e2e
+        run: go test -race -count=1 -timeout 30m ./contract/
 
   fakerelay:
     name: fakerelay

@@ -145,7 +145,8 @@ hand-run tool for Settings UI work.
 | push | `go build ./...` and `go vet ./...`, skipped when the pushed commits touch no Go sources or web assets | `.githooks/pre-push` |
 | PR, and every push to `main` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags relaytest ./...`, `scripts/check-test-build.sh` (`absent` on an untagged build, `present` on a `relaytest` build), and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` | `.github/workflows/ci.yml` (`build` job) |
 | PR, and every push to `main` | the `fakerelay` job on Linux: `gofmt -l`, `go vet ./...`, a `CGO_ENABLED=0` build for Linux and macOS, then `go test -race -count=1 -parallel 24 ./...` in `fakerelay/` | `.github/workflows/ci.yml` (`fakerelay` job) |
-| PR, and every push to `main` | the `e2e` job: `gofmt -l` and `go vet ./...` in `e2e/`, then `go test -race -count=1 ./...` at the runner's default parallelism | `.github/workflows/ci.yml` (`e2e` job) |
+| PR, and every push to `main` | the `e2e` job: `gofmt -l` and `go vet ./...` in `e2e/`, then `go test -race -count=1 ./...` at the runner's default parallelism, minus `e2e/contract` | `.github/workflows/ci.yml` (`e2e` job) |
+| PR, and every push to `main` | the `contract` job: `gofmt -l` in `e2e/`, then `go test -race -count=1 ./contract/` | `.github/workflows/ci.yml` (`contract` job) |
 | `./build.sh --test` | `go vet ./...` before install | `build.sh` |
 
 Do not set `core.hooksPath` in this repo. A global hooks dispatcher runs the
@@ -289,6 +290,37 @@ LC_ALL=C /usr/bin/grep -c -a -e '-tags=relaytest' "$(ps -p <new pid> -o comm=)" 
   journeys fail on the refusals.
 - Project `SKILL.md` files written while the test tray runs may name the test
   bundle path. They are rewritten when the release tray restarts.
+
+## Contract scenarios
+
+`e2e/contract` runs one scenario set against two targets: fakerelay and the
+test-build relay. Each scenario drives both through the same doors, then
+compares the transcripts after normalising paths, ports, pids, generated ids,
+times and tokens. A route, frame or refusal that differs fails the test with
+the step label and both values. This is how fakerelay stays true to relay.
+
+Run all scenarios, or one:
+
+```bash
+cd e2e && go test -race -count=1 ./contract/ [-run TestX]
+```
+
+Host scenarios need `node` and `tmux` on `PATH`. A missing tool fails the
+scenario setup and names the tool. It never skips. The test build points ssh
+at a stub inside a temp root through `X/test-ssh.json`; see
+[`ssh-hosts.md`](ssh-hosts.md), "The test build: ssh stub".
+
+Two rules keep the normaliser honest:
+- A key added to the time or id lists needs a stated reason in the PR. The
+  reviewer checks that it masks no real difference.
+- Order is compared exactly. Only a step that uses `Expect` accepts frames in
+  any order.
+
+The fake-only names have no relay counterpart and are exempt: the control
+socket, `ctl`, faults, `fakerelay.*` events and `sockets.control`.
+
+When a real relay departs from its docs, the departure gets its own issue.
+fakerelay follows the real relay, not the doc.
 
 ## Not covered
 
