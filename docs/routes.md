@@ -950,7 +950,9 @@ Writes a pasted blob to a temporary file on the host.
 
 - **Listeners:** socket. **Credential:** `execute`. **Gate:** none.
 - **Request:** `{"name": string, "data_b64": string}`; the body is at most 16 MiB,
-  and the decoded data at most 10 MiB.
+  and the decoded data at most 10 MiB. `name` is a paste name of the form
+  `eve-paste-<digits>-<lowercase hex>.<png|jpg|gif|webp>` (for example
+  `eve-paste-1700000000-ab12.png`); any other name is `400` `INVALID`.
 - **Response `200`:** `{"path": "<temp path on the host>"}`.
 - **Errors** (`{"error", "code"}`): `404` `HOST_NOT_FOUND`, `400` `INVALID`,
   `413` `TOO_LARGE`, `503` `HOST_UNREACHABLE`.
