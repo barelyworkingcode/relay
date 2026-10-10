@@ -381,13 +381,11 @@ func (s *Server) ListenInternal() error {
 	}))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.guarded(func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if r.Method == http.MethodDelete {
-			if sess, ok := s.sessions.Get(id); ok {
-				s.markDeletingIfAlive(id, func() bool {
-					p := sess.Provider()
-					return p != nil && p.Alive()
-				})
-			}
+		if sess, ok := s.sessions.Get(id); ok {
+			s.markDeletingIfAlive(id, func() bool {
+				p := sess.Provider()
+				return p != nil && p.Alive()
+			})
 		}
 		api.HandleDeleteSession(s.sessions, id, w, r)
 	}))
