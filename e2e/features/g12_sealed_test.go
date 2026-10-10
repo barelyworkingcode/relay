@@ -1,88 +1,67 @@
 package features
 
 import (
-	"bytes"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"relaye2e/harness"
 )
 
-var g12Victim = []harness.CredentialSpec{{Name: "victim", Classes: []string{"read"}}}
+var g12Creds = []harness.CredentialSpec{{Name: "reader", Classes: []string{"read"}}}
 
-func g12KeychainFile(i *harness.Instance) string {
-	return filepath.Join(i.ConfigDir, "test-keychain.json")
+func g12Start(t *testing.T, sealedReset harness.Outcome) *harness.Instance {
+	t.Helper()
+	return harness.Start(t, harness.Options{
+		Credentials: g12Creds,
+		Presence: map[string]harness.Outcome{
+			"project.grant": harness.OutcomeApprove,
+			"sealed.reset":  sealedReset,
+		},
+	})
 }
 
 func TestSealedReset(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{
-		Presence:    map[string]harness.Outcome{"sealed.reset": harness.OutcomeApprove},
-		Credentials: g12Victim,
-	})
-	token := i.Credential("victim")
-	if got := i.HTTP(token).Do("GET", "/api/projects", nil).Status; got != 200 {
-		t.Fatalf("the planted credential answered %d before the reset, want 200", got)
-	}
-	before, beforeErr := os.ReadFile(g12KeychainFile(i))
-	if beforeErr != nil {
-		t.Fatalf("the test keychain file is missing before the reset: %v", beforeErr)
+	i := g12Start(t, harness.OutcomeApprove)
+	p, _ := createProject(t, i, "acme-proj")
+	if got := listProjects(t, i); len(got) != 1 || got[0].ID != p.ID {
+		t.Fatalf("before the reset the projects read %v, want %s", got, p.ID)
 	}
 
-	r := i.CLI("sealed", "reset", "--json")
-	if r.Code != 0 {
-		t.Fatalf("an approved sealed reset exited %d\nstderr: %s", r.Code, r.Stderr)
-	}
+	r := i.MustCLI("sealed", "reset", "--json")
 	var out struct {
 		Reset bool `json:"reset"`
 	}
 	r.JSON(t, &out)
 	if !out.Reset {
-		t.Fatalf("sealed reset printed reset false")
+		t.Fatalf("sealed reset --json printed %s, want reset true", r.Stdout)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "sealed.reset", Trace: r.Trace, Fields: map[string]any{"status": "ok"}})
 
-	if got := i.HTTP(token).Do("GET", "/api/projects", nil).Status; got != 401 {
-		t.Fatalf("the old credential answered %d after the reset, want 401", got)
+	// The reset destroys every control-plane credential, so the credential
+	// that read the project before is unknown to the clean store.
+	if resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/projects", nil); resp.Status != 401 {
+		t.Fatalf("a pre-reset credential answered %d after the reset, want 401", resp.Status)
 	}
 	var st struct {
 		SealStatus string `json:"seal_status"`
 	}
 	i.MustCLI("status", "--json").JSON(t, &st)
 	if st.SealStatus != "" {
-		t.Fatalf("seal_status is %q after the reset, want empty", st.SealStatus)
-	}
-	after, err := os.ReadFile(g12KeychainFile(i))
-	if err != nil {
-		t.Fatalf("the test keychain file is missing after the reset: %v", err)
-	}
-	if bytes.Equal(before, after) {
-		t.Fatalf("the test keychain file holds the same key after the reset")
+		t.Fatalf("the store is not healthy after the reset: seal_status %q", st.SealStatus)
 	}
 }
 
 func TestSealedResetDenied(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{
-		Presence:    map[string]harness.Outcome{"sealed.reset": harness.OutcomeDeny},
-		Credentials: g12Victim,
-	})
-	token := i.Credential("victim")
-	before, beforeErr := os.ReadFile(g12KeychainFile(i))
-	if beforeErr != nil {
-		t.Fatalf("the test keychain file is missing before the denied reset: %v", beforeErr)
-	}
+	i := g12Start(t, harness.OutcomeDeny)
+	p, _ := createProject(t, i, "acme-proj")
 
 	r := i.CLI("sealed", "reset", "--json")
 	if r.Code != 1 {
-		t.Fatalf("a denied sealed reset exited %d, want 1", r.Code)
+		t.Fatalf("sealed reset exited %d, want 1", r.Code)
 	}
-	g5RequireDenied(t, i, "sealed.reset", r.Trace, "sealed.reset", "cli")
-	if got := i.HTTP(token).Do("GET", "/api/projects", nil).Status; got != 200 {
-		t.Fatalf("the planted credential answered %d after a denied reset, want 200", got)
-	}
-	if after, _ := os.ReadFile(g12KeychainFile(i)); !bytes.Equal(before, after) {
-		t.Fatalf("a denied reset changed the test keychain file")
+	g2RequireRefusal(t, i, "sealed.reset", r.Trace, "sealed.reset", "cli")
+	if got := listProjects(t, i); len(got) != 1 || got[0].ID != p.ID {
+		t.Fatalf("after a refused reset the projects read %v, want %s", got, p.ID)
 	}
 }

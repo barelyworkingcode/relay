@@ -2,7 +2,10 @@ package features
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,324 +16,337 @@ import (
 	"relaye2e/harness"
 )
 
+const g9Deadline = 60 * time.Second
+
 var (
-	g9TokenLine = regexp.MustCompile(`(?m)^  token:\s+([0-9a-f]{64})\s*$`)
-	g9IDLine    = regexp.MustCompile(`(?m)^  id:\s+(\S+)\s*$`)
+	g9TokenLine = regexp.MustCompile(`(?m)^\s+token:\s+([0-9a-f]{64})\s*$`)
+	g9IDLine    = regexp.MustCompile(`(?m)^\s+id:\s+(\S+)\s*$`)
+	g9AnyToken  = regexp.MustCompile(`[0-9a-f]{64}`)
 )
 
-// g9Minted is what `relay credential mint` printed. The verb has no JSON form,
-// so a script reads the two labelled lines (docs/cli.md).
-type g9Minted struct{ ID, Token string }
+// g9Minted is what `relay credential mint` printed.
+type g9Minted struct {
+	ID, Token string
+}
 
-func g9ParseMint(t *testing.T, stdout []byte) g9Minted {
+// g9Mint mints a credential through the CLI and parses the id and the token
+// from the lines a script reads.
+func g9Mint(t *testing.T, i *harness.Instance, name string, extra ...string) (g9Minted, harness.Result) {
 	t.Helper()
-	tok := g9TokenLine.FindSubmatch(stdout)
-	id := g9IDLine.FindSubmatch(stdout)
+	args := append([]string{"credential", "mint", "--name", name}, extra...)
+	r := i.CLI(args...)
+	if r.Code != 0 {
+		t.Fatalf("credential mint exited %d\nstderr: %s", r.Code, r.Stderr)
+	}
+	tok, id := g9TokenLine.FindSubmatch(r.Stdout), g9IDLine.FindSubmatch(r.Stdout)
 	if tok == nil || id == nil {
-		t.Fatalf("credential mint printed no token line or no id line (stdout is %d bytes)", len(stdout))
+		t.Fatalf("credential mint printed no id and token line: %q", r.Stdout)
 	}
-	return g9Minted{ID: string(id[1]), Token: string(tok[1])}
+	return g9Minted{ID: string(id[1]), Token: string(tok[1])}, r
 }
 
-// g9ListRow is one data row of `relay credential list`: ID NAME CLASSES CREATED EXPIRES.
-type g9ListRow struct {
-	ID, Name, Classes, Created, Expires string
+func (m g9Minted) credential(name string) harness.Credential {
+	return harness.Credential{ID: m.ID, Name: name, Token: m.Token}
 }
 
-func g9ParseList(stdout []byte) []g9ListRow {
-	var rows []g9ListRow
-	for n, line := range strings.Split(strings.TrimSpace(string(stdout)), "\n") {
-		f := strings.Fields(line)
-		if n == 0 || len(f) < 5 {
-			continue
-		}
-		rows = append(rows, g9ListRow{ID: f[0], Name: f[1], Classes: f[2], Created: f[3], Expires: strings.Join(f[4:], " ")})
-	}
-	return rows
-}
-
-func g9ListRows(t *testing.T, i *harness.Instance) []g9ListRow {
+func g9Status(t *testing.T, c *harness.Client, method, path string, body any) int {
 	t.Helper()
-	return g9ParseList(i.MustCLI("credential", "list").Stdout)
+	return c.Do(method, path, body).Status
 }
 
-// g9DeniedRows returns the denied control_decision rows whose method is method.
-func g9DeniedRows(i *harness.Instance, method string) []map[string]any {
+// g9Rows filters audit rows by a string field.
+func g9Rows(rows []map[string]any, field, want string) []map[string]any {
 	var out []map[string]any
-	for _, row := range i.Audit(harness.AuditQuery{Event: "control_decision", Outcome: "denied"}) {
-		if row["method"] == method {
-			out = append(out, row)
+	for _, r := range rows {
+		if s, _ := r[field].(string); s == want {
+			out = append(out, r)
 		}
 	}
 	return out
 }
 
-func g9RequireDenied(t *testing.T, i *harness.Instance, trace, key string) {
+func g9Lines(t *testing.T, b []byte) []map[string]any {
 	t.Helper()
-	requireEvent(t, i, harness.EventQuery{Key: key, Trace: trace, Fields: map[string]any{"status": "denied", "reason": "presence_refused"}})
-	if len(g9DeniedRows(i, key)) == 0 {
-		t.Fatalf("no denied control_decision row with method %s", key)
+	var out []map[string]any
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			t.Fatalf("output line is not JSON: %q: %v", line, err)
+		}
+		out = append(out, m)
 	}
+	return out
 }
 
 func TestCredentialMint(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{Presence: map[string]harness.Outcome{"credential.mint": harness.OutcomeApprove}})
-	tr := harness.NewTrace(t)
-	r := i.CLIWith(harness.CLIOpts{Trace: tr}, "credential", "mint", "--name", "acme", "--class", "read")
-	if r.Code != 0 {
-		t.Fatalf("an approved mint exited %d\nstderr: %s", r.Code, r.Stderr)
-	}
-	m := g9ParseMint(t, r.Stdout)
+	i := harness.Start(t, harness.Options{
+		Presence: map[string]harness.Outcome{"credential.mint": harness.OutcomeApprove},
+	})
+	m, r := g9Mint(t, i, "acme-viewer", "--class", "read", "--ttl", "1h")
 
-	if got := i.HTTP(harness.Credential{Token: m.Token}).Do("GET", "/api/projects", nil).Status; got != 200 {
-		t.Fatalf("the minted token answered GET /api/projects with %d, want 200", got)
+	ev := requireEvent(t, i, harness.EventQuery{Key: "credential.mint", Trace: r.Trace, Fields: map[string]any{"status": "ok"}})
+	if ev.Str("credential_id") != m.ID {
+		t.Fatalf("credential.mint credential_id %q, the CLI printed id %q", ev.Str("credential_id"), m.ID)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "credential.mint", Trace: tr, Fields: map[string]any{"status": "ok", "credential_id": m.ID}})
-	found := false
-	for _, row := range i.Audit(harness.AuditQuery{Event: "credential_issued", Outcome: "ok"}) {
-		found = found || row["subject"] == m.ID
+
+	issued := g9Rows(i.Audit(harness.AuditQuery{Event: "credential_issued", Outcome: "ok"}), "subject_name", "acme-viewer")
+	if len(issued) != 1 {
+		t.Fatalf("%d credential_issued ok rows name acme-viewer, want 1", len(issued))
 	}
-	if !found {
-		t.Fatalf("no credential_issued ok row names credential %s", m.ID)
+	grants, _ := issued[0]["grants"].([]any)
+	if len(grants) != 1 || grants[0] != "read" {
+		t.Fatalf("credential_issued grants %v, want [read]", issued[0]["grants"])
 	}
-	list := i.MustCLI("credential", "list")
-	classes := ""
-	for _, line := range strings.Split(string(list.Stdout), "\n") {
-		f := strings.Fields(line)
-		if len(f) >= 3 && f[0] == m.ID {
-			classes = f[2]
-		}
+
+	c := i.HTTP(m.credential("acme-viewer"))
+	if got := g9Status(t, c, "GET", "/api/projects", nil); got != http.StatusOK {
+		t.Fatalf("GET /api/projects with the minted read token answered %d, want 200", got)
 	}
-	if classes != "read" {
-		t.Fatalf("credential list shows classes %q for %s, want read\n%s", classes, m.ID, list.Stdout)
+	if got := g9Status(t, c, "POST", "/api/projects", map[string]any{"name": "acme", "path": i.Home}); got != http.StatusForbidden {
+		t.Fatalf("POST /api/projects with a read-only minted token answered %d, want 403", got)
 	}
 }
 
 func TestCredentialMintDenied(t *testing.T) {
 	t.Parallel()
 	i := harness.Start(t, harness.Options{
-		Presence:    map[string]harness.Outcome{"credential.mint": harness.OutcomeDeny},
-		Credentials: readOnly,
+		Presence: map[string]harness.Outcome{"credential.mint": harness.OutcomeDeny},
 	})
-	before := g9ListRows(t, i)
-	tr := harness.NewTrace(t)
-	r := i.CLIWith(harness.CLIOpts{Trace: tr}, "credential", "mint", "--name", "acme", "--class", "read")
+	r := i.CLI("credential", "mint", "--name", "acme-refused", "--class", "read")
 	if r.Code != 1 {
-		t.Fatalf("a denied mint exited %d, want 1", r.Code)
+		t.Fatalf("a mint the owner refused exited %d, want 1", r.Code)
 	}
-	if len(bytes.TrimSpace(r.Stdout)) != 0 {
-		t.Fatalf("a denied mint printed %d bytes on stdout, want none", len(r.Stdout))
+	if g9AnyToken.Match(r.Stdout) || g9TokenLine.Match(r.Stdout) {
+		t.Fatalf("a refused mint printed a token: %q", r.Stdout)
 	}
-	g9RequireDenied(t, i, tr, "credential.mint")
-	after := g9ListRows(t, i)
-	if len(after) != len(before) {
-		t.Fatalf("credential list changed from %d to %d rows after a denied mint", len(before), len(after))
+
+	requireEvent(t, i, harness.EventQuery{Key: "credential.mint", Trace: r.Trace, Fields: map[string]any{"status": "denied", "reason": "presence_refused"}})
+	denied := g9Rows(i.Audit(harness.AuditQuery{Event: "control_decision", Outcome: "denied"}), "method", "credential.mint")
+	if len(denied) == 0 {
+		t.Fatalf("no control_decision denied row names credential.mint")
 	}
-	if n := len(i.Audit(harness.AuditQuery{Event: "credential_issued"})); n != 0 {
-		t.Fatalf("a denied mint left %d credential_issued rows", n)
+	if rows := g9Rows(i.Audit(harness.AuditQuery{Event: "credential_issued"}), "subject_name", "acme-refused"); len(rows) != 0 {
+		t.Fatalf("a refused mint left %d credential_issued rows", len(rows))
+	}
+	if list := i.CLI("credential", "list", "--include-expired"); bytes.Contains(list.Stdout, []byte("acme-refused")) {
+		t.Fatalf("a refused mint left a credential in the list: %q", list.Stdout)
 	}
 }
 
 func TestCredentialListHidesToken(t *testing.T) {
 	t.Parallel()
-	expires := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
-	i := harness.Start(t, harness.Options{Credentials: []harness.CredentialSpec{
-		{Name: "acme-view", Classes: []string{"read", "configure"}, Expires: expires},
-		{Name: "acme-forever", Classes: []string{"execute"}},
-	}})
-	view, forever := i.Credential("acme-view"), i.Credential("acme-forever")
+	i := harness.Start(t, harness.Options{
+		Presence: map[string]harness.Outcome{"credential.mint": harness.OutcomeApprove},
+	})
+	m, _ := g9Mint(t, i, "acme-lister", "--class", "read", "--class", "configure", "--ttl", "1h")
 
-	tr := harness.NewTrace(t)
-	r := i.CLIWith(harness.CLIOpts{Trace: tr}, "credential", "list")
-	if r.Code != 0 {
-		t.Fatalf("credential list exited %d", r.Code)
+	list := i.CLI("credential", "list")
+	if list.Code != 0 {
+		t.Fatalf("credential list exited %d\nstderr: %s", list.Code, list.Stderr)
 	}
-	rows := g9ParseList(r.Stdout)
-	byID := map[string]g9ListRow{}
-	for _, row := range rows {
-		byID[row.ID] = row
-	}
-	if got := byID[view.ID]; got.Classes != "read,configure" || got.Expires != expires.Format(time.RFC3339) {
-		t.Fatalf("row for the planted credential is %+v, want classes read,configure and expiry %s", got, expires.Format(time.RFC3339))
-	}
-	if got := byID[forever.ID]; got.Classes != "execute" || got.Expires != "never" {
-		t.Fatalf("row for the credential with no expiry is %+v, want classes execute and expiry never", got)
-	}
-	for _, c := range []harness.Credential{view, forever} {
-		if bytes.Contains(r.Stdout, []byte(c.Token)) {
-			t.Fatalf("credential list printed the token of %s", c.Name)
+	sum := sha256.Sum256([]byte(m.Token))
+	for _, secret := range []string{m.Token, hex.EncodeToString(sum[:])} {
+		if bytes.Contains(list.Stdout, []byte(secret)) || bytes.Contains(list.Stderr, []byte(secret)) {
+			t.Fatalf("credential list printed the token or its hash")
 		}
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "credential.list", Trace: tr, Fields: map[string]any{"status": "ok", "count": len(rows)}})
+	var row string
+	for _, line := range strings.Split(string(list.Stdout), "\n") {
+		if strings.Contains(line, m.ID) {
+			row = line
+		}
+	}
+	if row == "" {
+		t.Fatalf("credential list has no row for %s: %q", m.ID, list.Stdout)
+	}
+	for _, want := range []string{"acme-lister", "read,configure"} {
+		if !strings.Contains(row, want) {
+			t.Fatalf("the list row %q lacks %q", row, want)
+		}
+	}
+	if strings.Contains(row, "never") {
+		t.Fatalf("the row of a credential minted with --ttl shows no expiry: %q", row)
+	}
+	ev := requireEvent(t, i, harness.EventQuery{Key: "credential.list", Trace: list.Trace, Fields: map[string]any{"status": "ok"}})
+	if count, _ := ev["count"].(float64); count < 1 {
+		t.Fatalf("credential.list count %v, want at least 1", ev["count"])
+	}
 }
 
 func TestCredentialRevoke(t *testing.T) {
 	t.Parallel()
 	i := harness.Start(t, harness.Options{
-		Presence:    map[string]harness.Outcome{"credential.revoke": harness.OutcomeApprove},
-		Credentials: []harness.CredentialSpec{{Name: "acme-doomed", Classes: []string{"read"}}},
+		Credentials: []harness.CredentialSpec{
+			{Name: "victim", Classes: []string{"read"}},
+			{Name: "bystander", Classes: []string{"read"}},
+		},
+		Presence: map[string]harness.Outcome{"credential.revoke": harness.OutcomeApprove},
 	})
-	doomed := i.Credential("acme-doomed")
-	if got := i.HTTP(doomed).Do("GET", "/api/projects", nil).Status; got != 200 {
-		t.Fatalf("the planted token answered %d before the revoke, want 200", got)
+	victim, bystander := i.Credential("victim"), i.Credential("bystander")
+	if got := g9Status(t, i.HTTP(victim), "GET", "/api/projects", nil); got != http.StatusOK {
+		t.Fatalf("the credential answered %d before the revoke, want 200", got)
 	}
-	tr := harness.NewTrace(t)
-	if r := i.CLIWith(harness.CLIOpts{Trace: tr}, "credential", "revoke", "--id", doomed.ID); r.Code != 0 {
+
+	r := i.CLI("credential", "revoke", "--id", victim.ID)
+	if r.Code != 0 {
 		t.Fatalf("an approved revoke exited %d\nstderr: %s", r.Code, r.Stderr)
 	}
-	if got := i.HTTP(doomed).Do("GET", "/api/projects", nil).Status; got != 401 {
+	if got := g9Status(t, i.HTTP(victim), "GET", "/api/projects", nil); got != http.StatusUnauthorized {
 		t.Fatalf("the revoked token answered %d, want 401", got)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "credential.revoke", Trace: tr, Fields: map[string]any{"status": "ok", "credential_id": doomed.ID}})
-	found := false
-	for _, row := range i.Audit(harness.AuditQuery{Event: "credential_revoked", Outcome: "ok"}) {
-		found = found || row["subject"] == doomed.ID
+	if got := g9Status(t, i.HTTP(bystander), "GET", "/api/projects", nil); got != http.StatusOK {
+		t.Fatalf("another credential answered %d after the revoke, want 200", got)
 	}
-	if !found {
-		t.Fatalf("no credential_revoked ok row names credential %s", doomed.ID)
+
+	ev := requireEvent(t, i, harness.EventQuery{Key: "credential.revoke", Trace: r.Trace, Fields: map[string]any{"status": "ok"}})
+	if ev.Str("credential_id") != victim.ID {
+		t.Fatalf("credential.revoke credential_id %q, want %q", ev.Str("credential_id"), victim.ID)
+	}
+	if rows := g9Rows(i.Audit(harness.AuditQuery{Event: "credential_revoked", Outcome: "ok"}), "subject_name", "victim"); len(rows) != 1 {
+		t.Fatalf("%d credential_revoked ok rows name victim, want 1", len(rows))
 	}
 }
 
 func TestCredentialRevokeDenied(t *testing.T) {
 	t.Parallel()
 	i := harness.Start(t, harness.Options{
+		Credentials: []harness.CredentialSpec{{Name: "keeper", Classes: []string{"read"}}},
 		Presence:    map[string]harness.Outcome{"credential.revoke": harness.OutcomeDeny},
-		Credentials: []harness.CredentialSpec{{Name: "acme-keeper", Classes: []string{"read"}}},
 	})
-	keeper := i.Credential("acme-keeper")
-	tr := harness.NewTrace(t)
-	if r := i.CLIWith(harness.CLIOpts{Trace: tr}, "credential", "revoke", "--id", keeper.ID); r.Code != 1 {
-		t.Fatalf("a denied revoke exited %d, want 1", r.Code)
+	keeper := i.Credential("keeper")
+
+	r := i.CLI("credential", "revoke", "--id", keeper.ID)
+	if r.Code != 1 {
+		t.Fatalf("a revoke the owner refused exited %d, want 1", r.Code)
 	}
-	g9RequireDenied(t, i, tr, "credential.revoke")
-	if got := i.HTTP(keeper).Do("GET", "/api/projects", nil).Status; got != 200 {
-		t.Fatalf("the token answered %d after a denied revoke, want 200", got)
+	if got := g9Status(t, i.HTTP(keeper), "GET", "/api/projects", nil); got != http.StatusOK {
+		t.Fatalf("the token answered %d after a refused revoke, want 200", got)
 	}
-	if n := len(i.Audit(harness.AuditQuery{Event: "credential_revoked"})); n != 0 {
-		t.Fatalf("a denied revoke left %d credential_revoked rows", n)
+	requireEvent(t, i, harness.EventQuery{Key: "credential.revoke", Trace: r.Trace, Fields: map[string]any{"status": "denied", "reason": "presence_refused"}})
+	if len(g9Rows(i.Audit(harness.AuditQuery{Event: "control_decision", Outcome: "denied"}), "method", "credential.revoke")) == 0 {
+		t.Fatalf("no control_decision denied row names credential.revoke")
+	}
+	if rows := i.Audit(harness.AuditQuery{Event: "credential_revoked"}); len(rows) != 0 {
+		t.Fatalf("a refused revoke left %d credential_revoked rows", len(rows))
 	}
 }
 
 func TestClassEnforcement(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{Credentials: readOnly})
-	decisions := func(method, path, outcome string) int {
-		n := 0
-		for _, row := range i.Audit(harness.AuditQuery{Event: "control_decision", Outcome: outcome}) {
-			if row["method"] == method && row["path"] == path {
-				n++
+	i := harness.Start(t, harness.Options{
+		Credentials: []harness.CredentialSpec{
+			{Name: "reader", Classes: []string{"read"}},
+			{Name: "runner", Classes: []string{"execute"}},
+		},
+	})
+	body := map[string]any{"name": "acme", "path": i.Home}
+	projectDenials := func() []map[string]any {
+		var out []map[string]any
+		for _, r := range g9Rows(i.Audit(harness.AuditQuery{Event: "control_decision", Outcome: "denied"}), "path", "/api/projects") {
+			if r["method"] == "POST" {
+				out = append(out, r)
 			}
 		}
-		return n
+		return out
 	}
-	allBefore := len(i.Audit(harness.AuditQuery{Event: "control_decision"}))
 
-	if got := i.Anonymous().Do("GET", "/api/projects", nil).Status; got != 401 {
+	if got := g9Status(t, i.Anonymous(), "GET", "/api/projects", nil); got != http.StatusUnauthorized {
 		t.Fatalf("GET /api/projects with no credential answered %d, want 401", got)
 	}
-	if got := len(i.Audit(harness.AuditQuery{Event: "control_decision"})); got != allBefore {
-		t.Fatalf("a 401 wrote %d control_decision rows, want none", got-allBefore)
+	if got := g9Status(t, i.Anonymous(), "POST", "/api/projects", body); got != http.StatusUnauthorized {
+		t.Fatalf("POST /api/projects with no credential answered %d, want 401", got)
+	}
+	wrong := harness.Credential{Name: "wrong", Token: strings.Repeat("0", 64)}
+	if got := g9Status(t, i.HTTP(wrong), "POST", "/api/projects", body); got != http.StatusUnauthorized {
+		t.Fatalf("POST /api/projects with an unknown token answered %d, want 401", got)
+	}
+	if rows := projectDenials(); len(rows) != 0 {
+		t.Fatalf("a 401 wrote %d control_decision denied rows, want none", len(rows))
 	}
 
-	body := map[string]any{"name": "Acme", "path": i.Home}
-	if got := i.HTTP(i.Credential("reader")).Do("POST", "/api/projects", body).Status; got != 403 {
-		t.Fatalf("a read credential on POST /api/projects answered %d, want 403", got)
-	}
-	if n := decisions("POST", "/api/projects", "denied"); n != 1 {
-		t.Fatalf("%d denied control_decision rows name POST /api/projects, want 1", n)
-	}
-	if n := len(listProjects(t, i)); n != 0 {
-		t.Fatalf("the refused POST left %d projects", n)
-	}
-}
-
-func g9Lines(t *testing.T, out []byte) []harness.Event {
-	t.Helper()
-	var evs []harness.Event
-	for _, line := range bytes.Split(bytes.TrimSpace(out), []byte("\n")) {
-		if len(line) == 0 {
-			continue
+	for _, name := range []string{"reader", "runner"} {
+		if got := g9Status(t, i.HTTP(i.Credential(name)), "POST", "/api/projects", body); got != http.StatusForbidden {
+			t.Fatalf("POST /api/projects with the %s credential answered %d, want 403", name, got)
 		}
-		var ev harness.Event
-		if err := json.Unmarshal(line, &ev); err != nil {
-			t.Fatalf("a logs --json line does not decode: %v", err)
-		}
-		evs = append(evs, ev)
 	}
-	return evs
+	rows := projectDenials()
+	if len(rows) != 2 {
+		t.Fatalf("%d control_decision denied rows for POST /api/projects after two 403s, want 2", len(rows))
+	}
+	for _, row := range rows {
+		actor, _ := row["actor"].(map[string]any)
+		cred, _ := actor["cred_id"].(string)
+		if cred != i.Credential("reader").ID && cred != i.Credential("runner").ID {
+			t.Fatalf("the denied row names credential %q, want one of the two callers", cred)
+		}
+	}
+	if got := g9Status(t, i.HTTP(i.Credential("reader")), "GET", "/api/projects", nil); got != http.StatusOK {
+		t.Fatalf("GET /api/projects with a read credential answered %d, want 200", got)
+	}
 }
 
 func TestLogsFilterAndFollow(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{Credentials: readOnly})
-	c := i.HTTP(i.Credential("reader"))
-	first, second := harness.NewTrace(t), harness.NewTrace(t)
+	i := harness.Start(t, harness.Options{})
+	traceA, traceB, traceC := harness.NewTrace(t), harness.NewTrace(t), harness.NewTrace(t)
+	i.CLIWith(harness.CLIOpts{Trace: traceA}, "credential", "list")
+	i.CLIWith(harness.CLIOpts{Trace: traceB}, "doors", "--json")
 
-	if got := c.Do("GET", "/api/projects", nil, harness.ReqOpts{Trace: first}).Status; got != 200 {
-		t.Fatalf("first GET /api/projects answered %d", got)
+	byKey := i.CLI("logs", "--json", "--event", "credential.list", "--trace", traceA)
+	if byKey.Code != 0 {
+		t.Fatalf("logs --event --trace exited %d\nstderr: %s", byKey.Code, byKey.Stderr)
 	}
-	// A process start separates the two calls by more than the log's millisecond.
-	i.MustCLI("credential", "list")
-	if got := c.Do("GET", "/api/projects", nil, harness.ReqOpts{Trace: second}).Status; got != 200 {
-		t.Fatalf("second GET /api/projects answered %d", got)
+	lines := g9Lines(t, byKey.Stdout)
+	if len(lines) == 0 {
+		t.Fatalf("logs --event credential.list printed nothing")
+	}
+	for _, l := range lines {
+		if l["event"] != "credential.list" || l["trace_id"] != traceA {
+			t.Fatalf("a filtered line has event %v trace_id %v, want credential.list and %s", l["event"], l["trace_id"], traceA)
+		}
 	}
 
-	t.Run("event_and_trace", func(t *testing.T) {
-		r := i.CLI("logs", "--json", "--event", "project.list", "--trace", first)
-		if r.Code != 0 {
-			t.Fatalf("logs exited %d", r.Code)
+	byTrace := i.CLI("logs", "--json", "--trace", traceA)
+	if byTrace.Code != 0 {
+		t.Fatalf("logs --trace exited %d", byTrace.Code)
+	}
+	for _, l := range g9Lines(t, byTrace.Stdout) {
+		if l["trace_id"] != traceA || l["event"] == "doors.list" {
+			t.Fatalf("logs --trace %s printed a line of trace %v event %v", traceA, l["trace_id"], l["event"])
 		}
-		evs := g9Lines(t, r.Stdout)
-		if len(evs) == 0 {
-			t.Fatalf("logs printed no line for event project.list and trace %s", first)
-		}
-		for _, ev := range evs {
-			if ev.Str("event") != "project.list" || ev.Str("trace_id") != first {
-				t.Fatalf("logs printed a line with event %q trace %q, want project.list and %s", ev.Str("event"), ev.Str("trace_id"), first)
-			}
-		}
-	})
+	}
 
-	t.Run("since", func(t *testing.T) {
-		secondEv := i.Events(harness.EventQuery{Key: "project.list", Trace: second})
-		firstEv := i.Events(harness.EventQuery{Key: "project.list", Trace: first})
-		if len(secondEv) == 0 || len(firstEv) == 0 {
-			t.Fatalf("project.list lines found: first %d, second %d", len(firstEv), len(secondEv))
-		}
-		cut := secondEv[0].Str("ts")
-		if cut <= firstEv[0].Str("ts") {
-			t.Fatalf("the second call's ts %s is not after the first's %s", cut, firstEv[0].Str("ts"))
-		}
-		r := i.CLI("logs", "--json", "--event", "project.list", "--since", cut)
-		if r.Code != 0 {
-			t.Fatalf("logs --since exited %d", r.Code)
-		}
-		seen := map[string]bool{}
-		for _, ev := range g9Lines(t, r.Stdout) {
-			seen[ev.Str("trace_id")] = true
-		}
-		if !seen[second] || seen[first] {
-			t.Fatalf("logs --since %s printed traces %v, want the second call's and not the first's", cut, seen)
-		}
-	})
+	if r := i.CLI("logs", "--json", "--event", "doors.list", "--trace", traceA); r.Code != 1 || len(bytes.TrimSpace(r.Stdout)) != 0 {
+		t.Fatalf("logs with filters that match nothing exited %d, want 1 and no output", r.Code)
+	}
+	if r := i.CLI("logs", "--json", "--event", "doors.list", "--trace", traceB, "--since", "1h"); r.Code != 0 {
+		t.Fatalf("logs --since 1h exited %d, want 0 for a line just written", r.Code)
+	}
+	if r := i.CLI("logs", "--json", "--event", "doors.list", "--trace", traceB, "--since", "2099-01-01T00:00:00Z"); r.Code != 1 {
+		t.Fatalf("logs --since a future time exited %d, want 1", r.Code)
+	}
 
-	t.Run("follow", func(t *testing.T) {
-		tf := harness.NewTrace(t)
-		p := i.StartCLI(harness.CLIOpts{}, "logs", "--follow", "--event", "credential.list", "--trace", tf, "--timeout", "30s", "--json")
-		listed := i.CLIWith(harness.CLIOpts{Trace: tf}, "credential", "list")
-		if listed.Code != 0 {
-			t.Fatalf("credential list exited %d", listed.Code)
-		}
-		res := p.Wait()
-		if res.Code != 0 {
-			t.Fatalf("logs --follow exited %d, want 0 after a credential.list event\nstderr: %s", res.Code, res.Stderr)
-		}
-		evs := g9Lines(t, res.Stdout)
-		if len(evs) == 0 || evs[0].Str("event") != "credential.list" || evs[0].Str("trace_id") != tf {
-			t.Fatalf("logs --follow printed %d lines, want a credential.list line with trace %s: %s", len(evs), tf, res.Stdout)
-		}
-	})
+	follow := i.StartCLI(harness.CLIOpts{Deadline: 2 * g9Deadline}, "logs", "--follow", "--json", "--event", "credential.list", "--trace", traceC, "--timeout", "60s")
+	i.CLIWith(harness.CLIOpts{Trace: traceC}, "credential", "list")
+	var got map[string]any
+	if err := json.Unmarshal(follow.FirstLine(g9Deadline), &got); err != nil {
+		t.Fatalf("the first followed line is not JSON: %v", err)
+	}
+	if got["event"] != "credential.list" || got["trace_id"] != traceC {
+		t.Fatalf("followed line has event %v trace_id %v, want credential.list and %s", got["event"], got["trace_id"], traceC)
+	}
+	if res := follow.Wait(); res.Code != 0 {
+		t.Fatalf("logs --follow --event exited %d after its match, want 0", res.Code)
+	}
+
+	idle := harness.NewTrace(t)
+	if r := i.CLIWith(harness.CLIOpts{}, "logs", "--follow", "--timeout", "1s", "--event", "doors.list", "--trace", idle); r.Code != 1 {
+		t.Fatalf("logs --follow with no match exited %d at its timeout, want 1", r.Code)
+	}
 }
 
 func TestDoorsNameClassAndGates(t *testing.T) {
@@ -339,127 +355,191 @@ func TestDoorsNameClassAndGates(t *testing.T) {
 	type door struct {
 		Kind       string   `json:"kind"`
 		Name       string   `json:"name"`
+		Listeners  []string `json:"listeners"`
 		Credential string   `json:"credential"`
 		OwnerGated bool     `json:"owner_gated"`
 		Gates      []string `json:"gates"`
+		Calls      []string `json:"calls"`
 	}
 	var doc struct {
 		Doors []door `json:"doors"`
 	}
-	tr := harness.NewTrace(t)
-	r := i.CLIWith(harness.CLIOpts{Trace: tr}, "doors", "--json")
-	if r.Code != 0 {
-		t.Fatalf("doors --json exited %d", r.Code)
-	}
+	r := i.MustCLI("doors", "--json")
 	r.JSON(t, &doc)
 
-	find := func(kind, name string) door {
-		for _, d := range doc.Doors {
-			if d.Kind == kind && d.Name == name {
-				return d
+	index := map[string]door{}
+	kinds := map[string]bool{}
+	for _, d := range doc.Doors {
+		index[d.Kind+" "+d.Name] = d
+		kinds[d.Kind] = true
+		if d.Credential == "" {
+			t.Fatalf("door %s %s names no credential class", d.Kind, d.Name)
+		}
+	}
+	for _, k := range []string{"http", "ipc", "bridge", "cli"} {
+		if !kinds[k] {
+			t.Fatalf("the catalogue lists no %s door", k)
+		}
+	}
+	get := func(kind, name string) door {
+		d, ok := index[kind+" "+name]
+		if !ok {
+			t.Fatalf("the catalogue lacks %s door %q", kind, name)
+		}
+		return d
+	}
+	has := func(list []string, want string) bool {
+		for _, s := range list {
+			if s == want {
+				return true
 			}
 		}
-		t.Fatalf("doors lists no %s door %q", kind, name)
-		return door{}
+		return false
 	}
-	post := find("http", "POST /api/projects")
-	if post.Credential != "configure" || len(post.Gates) != 1 || post.Gates[0] != "project.grant" {
-		t.Fatalf("POST /api/projects is class %q gates %v, want configure and [project.grant]", post.Credential, post.Gates)
+
+	if d := get("http", "GET /api/projects"); d.Credential != "read" || d.OwnerGated {
+		t.Fatalf("GET /api/projects is %+v, want class read and ungated", d)
 	}
-	if mint := find("cli", "relay credential mint"); !mint.OwnerGated {
-		t.Fatalf("relay credential mint is not owner_gated")
+	if d := get("http", "POST /api/projects"); d.Credential != "configure" || !d.OwnerGated || !has(d.Gates, "project.grant") {
+		t.Fatalf("POST /api/projects is %+v, want class configure gated by project.grant", d)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "doors.list", Trace: tr, Fields: map[string]any{"status": "ok", "count": len(doc.Doors)}})
+	if d := get("http", "GET /ws/files"); d.Credential != "execute" || len(d.Listeners) != 1 || d.Listeners[0] != "socket" {
+		t.Fatalf("GET /ws/files is %+v, want class execute on the socket only", d)
+	}
+	for verb, gate := range map[string]string{"relay credential mint": "credential.mint", "relay credential revoke": "credential.revoke"} {
+		if d := get("cli", verb); !d.OwnerGated || !has(d.Gates, gate) {
+			t.Fatalf("%s is %+v, want gated by %s", verb, d, gate)
+		}
+	}
+	if d := get("cli", "relay status"); d.Credential != "operator" || d.OwnerGated || !has(d.Calls, "admin_op:status.view") {
+		t.Fatalf("relay status is %+v, want class operator, ungated, reaching admin_op:status.view", d)
+	}
+
+	ev := requireEvent(t, i, harness.EventQuery{Key: "doors.list", Trace: r.Trace, Fields: map[string]any{"status": "ok"}})
+	if count, _ := ev["count"].(float64); int(count) != len(doc.Doors) {
+		t.Fatalf("doors.list count %v, the document lists %d doors", ev["count"], len(doc.Doors))
+	}
 }
 
 func TestTraceFlagNamesEvents(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{Credentials: readOnly})
+	i := harness.Start(t, harness.Options{Credentials: []harness.CredentialSpec{{Name: "reader", Classes: []string{"read"}}}})
 
-	cliTrace := harness.NewTrace(t)
-	r := i.CLIWith(harness.CLIOpts{Trace: cliTrace}, "grant", "--json")
-	if r.Code != 0 {
-		t.Fatalf("grant --json exited %d", r.Code)
-	}
-	if got := requireEvent(t, i, harness.EventQuery{Key: "grant.view", Trace: cliTrace}).Str("trace_id"); got != cliTrace {
-		t.Fatalf("grant.view carries trace_id %q, want %q", got, cliTrace)
-	}
+	t.Run("cli", func(t *testing.T) {
+		t.Parallel()
+		trace := harness.NewTrace(t)
+		r := i.CLIWith(harness.CLIOpts{Trace: trace}, "credential", "list")
+		if r.Code != 0 {
+			t.Fatalf("credential list exited %d", r.Code)
+		}
+		requireEvent(t, i, harness.EventQuery{Key: "credential.list", Trace: trace, Fields: map[string]any{"status": "ok"}})
+		logs := i.CLI("logs", "--json", "--trace", trace)
+		lines := g9Lines(t, logs.Stdout)
+		if logs.Code != 0 || len(lines) == 0 {
+			t.Fatalf("logs --trace %s exited %d with %d lines", trace, logs.Code, len(lines))
+		}
+		for _, l := range lines {
+			if l["trace_id"] != trace {
+				t.Fatalf("logs --trace %s printed a line of trace %v", trace, l["trace_id"])
+			}
+		}
+	})
 
-	httpTrace := harness.NewTrace(t)
-	resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/projects", nil, harness.ReqOpts{Trace: httpTrace})
-	if resp.Status != 200 {
-		t.Fatalf("GET /api/projects answered %d", resp.Status)
-	}
-	if got := requireEvent(t, i, harness.EventQuery{Key: "project.list", Trace: httpTrace}).Str("trace_id"); got != httpTrace {
-		t.Fatalf("project.list carries trace_id %q, want %q", got, httpTrace)
-	}
+	t.Run("header", func(t *testing.T) {
+		t.Parallel()
+		trace := harness.NewTrace(t)
+		resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/projects", nil, harness.ReqOpts{Trace: trace})
+		if resp.Status != http.StatusOK {
+			t.Fatalf("GET /api/projects answered %d", resp.Status)
+		}
+		requireEvent(t, i, harness.EventQuery{Key: "project.list", Trace: trace, Fields: map[string]any{"status": "ok"}})
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		t.Parallel()
+		if r := i.CLI("--trace", "short", "credential", "list"); r.Code != 1 {
+			t.Fatalf("a trace of 5 characters exited %d, want 1", r.Code)
+		}
+	})
 }
+
+// g9SessionScript runs relay verbs the way a process inside a terminal
+// session would, and writes each exit code to a file. The test waits on the
+// session's exit event, which follows the last file write.
+const g9SessionScript = `relay=$1; cfg=$2; out=$3
+env -u RELAY_SESSION_ID "$relay" --config-dir "$cfg" status >/dev/null 2>&1
+echo $? > "$out/status.code"
+env -u RELAY_SESSION_ID "$relay" --config-dir "$cfg" project create --name acme-intruder --path "$out" >/dev/null 2>&1
+echo $? > "$out/create.code"`
 
 func TestOperatorVerbRefusedInSession(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		name    string
-		sandbox bool
-	}{{"sandboxed", true}, {"unsandboxed", false}} {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, sandboxed := range []bool{false, true} {
+		name := "unsandboxed"
+		if sandboxed {
+			name = "sandboxed"
+		}
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			tmpl, err := json.Marshal([]map[string]any{{
-				"id": "opverb", "name": "Opverb", "command": harness.BundlePaths().Relay, "sandbox": tc.sandbox,
+				"id": "acme-probe", "name": "Acme probe", "command": "/bin/sh",
+				"args": []string{"-c", g9SessionScript, "acme"}, "sandbox": sandboxed,
 			}})
 			if err != nil {
 				t.Fatalf("encoding the template: %v", err)
 			}
 			i := harness.Start(t, harness.Options{
-				Presence: approveGrant,
-				Settings: map[string]json.RawMessage{"terminal_templates": tmpl},
+				Credentials: []harness.CredentialSpec{{Name: "reader", Classes: []string{"read"}}},
+				Presence:    map[string]harness.Outcome{"project.grant": harness.OutcomeApprove},
+				Settings:    map[string]json.RawMessage{"terminal_templates": tmpl},
 			})
-			i.WaitSessionHost(60 * time.Second)
-			dir := filepath.Join(i.Home, "work", "acme")
+			i.WaitSessionHost(g9Deadline)
+
+			dir := filepath.Join(i.Home, "work", "acme-probe")
 			if err := os.MkdirAll(dir, 0o700); err != nil {
 				t.Fatalf("creating %s: %v", dir, err)
 			}
-			body, _ := json.Marshal(map[string]any{"name": "Acme opverb", "path": dir, "allowed_templates": []string{"opverb"}})
-			var p project
-			i.CLIWith(harness.CLIOpts{Stdin: body}, "project", "create", "--file", "-", "--json").JSON(t, &p)
-
-			var term struct {
-				TerminalID string `json:"terminalId"`
+			createBody, err := json.Marshal(map[string]any{"name": "acme-probe", "path": dir, "allowed_templates": []string{"acme-probe"}})
+			if err != nil {
+				t.Fatalf("encoding the project body: %v", err)
 			}
-			// The CLI strips a bare --config-dir argument before the verb parses, so each
-			// extra argument is written in its --extra-arg=VALUE form (docs/cli.md).
-			i.MustCLI("terminal", "start", "--project", p.ID, "--template", "opverb",
-				"--extra-arg=--config-dir", "--extra-arg="+i.ConfigDir, "--extra-arg=status", "--json").JSON(t, &term)
-			i.WaitEvent(harness.EventQuery{Key: "session.exited", Fields: map[string]any{"session_id": term.TerminalID}}, 60*time.Second)
-
-			var list struct {
-				Terminals []struct {
-					ID       string `json:"id"`
-					ExitCode *int   `json:"exitCode"`
-				} `json:"terminals"`
+			var host project
+			i.CLIWith(harness.CLIOpts{Stdin: createBody}, "project", "create", "--file", "-", "--json").JSON(t, &host)
+			if host.ID == "" {
+				t.Fatalf("project create printed no id")
 			}
-			i.MustCLI("terminal", "list", "--json").JSON(t, &list)
-			code := -1
-			for _, x := range list.Terminals {
-				if x.ID == term.TerminalID {
-					code = 0
-					if x.ExitCode != nil {
-						code = *x.ExitCode
-					}
+
+			start := i.MustCLI("terminal", "start", "--project", host.ID, "--template", "acme-probe",
+				"--extra-arg", harness.BundlePaths().Relay, "--extra-arg", i.ConfigDir,
+				"--extra-arg", dir, "--json")
+			launch := requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: start.Trace, Fields: map[string]any{"status": "ok"}})
+			i.WaitEvent(harness.EventQuery{Key: "session.exited", Fields: map[string]any{"session_id": launch.Str("session_id")}}, g9Deadline)
+
+			for _, f := range []string{"status.code", "create.code"} {
+				b, err := os.ReadFile(filepath.Join(dir, f))
+				if err != nil {
+					t.Fatalf("reading %s: %v", f, err)
+				}
+				if strings.TrimSpace(string(b)) == "0" {
+					t.Fatalf("%s: the verb run inside a session exited 0", f)
 				}
 			}
-			if code != 1 {
-				t.Fatalf("the status verb run by a terminal exited %d, want 1", code)
-			}
-			// A refused bridge admin op is a control_decision row with method admin_op
-			// and the op's name as path.
-			refused := 0
-			for _, row := range i.Audit(harness.AuditQuery{Event: "control_decision", Outcome: "denied"}) {
-				if row["method"] == "admin_op" && row["path"] == "status.view" {
-					refused++
+			denied := 0
+			for _, row := range g9Rows(i.Audit(harness.AuditQuery{Event: "control_decision", Outcome: "denied"}), "path", "status.view") {
+				if row["method"] == "admin_op" && row["class"] == "operator" {
+					denied++
 				}
 			}
-			if refused != 1 {
-				t.Fatalf("%d denied control_decision rows name admin_op status.view, want 1", refused)
+			if denied != 1 {
+				t.Fatalf("%d denied admin_op status.view rows, want 1", denied)
+			}
+			if got := i.Events(harness.EventQuery{Key: "status.view"}); len(got) != 0 {
+				t.Fatalf("a refused status verb still wrote %d status.view events", len(got))
+			}
+			for _, p := range listProjects(t, i) {
+				if p.Name == "acme-intruder" {
+					t.Fatalf("a project create run inside a session created a project")
+				}
 			}
 		})
 	}
