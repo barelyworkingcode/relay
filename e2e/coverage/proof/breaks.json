@@ -1,0 +1,142 @@
+[
+  {
+    "area": "sessions",
+    "file": "cmd/relay/session_routes.go",
+    "find": "return resumeError(http.StatusNotFound, \"session not found\")",
+    "replace": "return resumeError(http.StatusBadRequest, \"session not found\")",
+    "why": "resuming an unknown session answers 400 instead of 404"
+  },
+  {
+    "area": "sandbox",
+    "file": "internal/sessions/sandbox/sandbox.go",
+    "find": "writeBlock(&b, \"deny network-outbound\", loopbackTerms(s.TCPLoopbackDeny))",
+    "replace": "writeBlock(&b, \"deny network-inbound\", loopbackTerms(s.TCPLoopbackDeny))",
+    "why": "the loopback port deny is written for the wrong network direction"
+  },
+  {
+    "area": "templates",
+    "file": "cmd/relay/template_routes.go",
+    "find": "endEventHTTP(ev, http.StatusNotFound, \"template not found\")\n\t\t\twriteJSON(w, http.StatusNotFound, map[string]string{\"error\": \"template not found\"})",
+    "replace": "endEventHTTP(ev, http.StatusBadRequest, \"template not found\")\n\t\t\twriteJSON(w, http.StatusBadRequest, map[string]string{\"error\": \"template not found\"})",
+    "why": "GET of an unknown template answers 400 instead of 404"
+  },
+  {
+    "area": "projects",
+    "file": "internal/project/grant_widening.go",
+    "find": "if !slices.Contains(stored, id) {\n\t\t\treturn true",
+    "replace": "if !slices.Contains(stored, id) {\n\t\t\treturn false",
+    "why": "adding an MCP to a project grant is not seen as a widening, so no approval is asked"
+  },
+  {
+    "area": "grants",
+    "file": "cmd/relay/router.go",
+    "find": "tok.DisabledTools != nil && slices.Contains(tok.DisabledTools[mcpID], toolName)",
+    "replace": "tok.DisabledTools != nil && slices.Contains(tok.DisabledTools[toolName], mcpID)",
+    "why": "the disabled-tool lookup swaps key and value, so a disabled tool is still granted"
+  },
+  {
+    "area": "mcps",
+    "file": "internal/mcpbroker/external_mcp.go",
+    "find": "\tif conn, ok := m.conns[id]; ok {\n\t\treturn conn.GetTools()\n\t}\n\treturn nil\n}\n\n// The tool list is part",
+    "replace": "\tif conn, ok := m.conns[id]; ok {\n\t\treturn conn.GetTools()[:0]\n\t}\n\treturn nil\n}\n\n// The tool list is part",
+    "why": "an MCP's tool list comes back empty, so no tool is published"
+  },
+  {
+    "area": "audit",
+    "file": "internal/audit/audit.go",
+    "find": "ev.Actor.ProjectID != q.ProjectID",
+    "replace": "ev.Actor.ProjectID == q.ProjectID",
+    "why": "the audit project filter keeps the other projects' rows"
+  },
+  {
+    "area": "services",
+    "file": "cmd/relay/service_routes.go",
+    "find": "case errors.Is(err, errServiceNotFound):\n\t\treturn http.StatusNotFound",
+    "replace": "case errors.Is(err, errServiceNotFound):\n\t\treturn http.StatusBadRequest",
+    "why": "an unknown service answers 400 instead of 404"
+  },
+  {
+    "area": "models",
+    "file": "internal/modelbroker/normalise.go",
+    "find": "containsString(grant, \"*\") || granted(canon, row, grant, rows)",
+    "replace": "containsString(grant, \"*\") || !granted(canon, row, grant, rows)",
+    "why": "the model grant check is inverted: an ungranted model is allowed"
+  },
+  {
+    "area": "login",
+    "file": "internal/ceremonylimit/ceremonylimit.go",
+    "find": "if now.Before(l.nextAllowed) {",
+    "replace": "if now.After(l.nextAllowed) {",
+    "why": "the ceremony back-off refuses every caller"
+  },
+  {
+    "area": "credentials",
+    "file": "internal/control/control.go",
+    "find": "return http.StatusForbidden\n}\n\n// Handle registers h for pattern under class",
+    "replace": "return http.StatusUnauthorized\n}\n\n// Handle registers h for pattern under class",
+    "why": "a credential of the wrong class answers 401 instead of 403"
+  },
+  {
+    "area": "remote",
+    "file": "internal/enrolment/budget.go",
+    "find": "if len(w.calls) >= budget.MaxCalls {",
+    "replace": "if len(w.calls) > budget.MaxCalls {",
+    "why": "the remote call budget admits one call over the cap"
+  },
+  {
+    "area": "hosts",
+    "file": "cmd/relay/host_routes.go",
+    "find": "case errors.Is(err, errHostNotFound):\n\t\treturn http.StatusNotFound",
+    "replace": "case errors.Is(err, errHostNotFound):\n\t\treturn http.StatusBadRequest",
+    "why": "an unknown host answers 400 instead of 404"
+  },
+  {
+    "area": "files",
+    "file": "cmd/relay/file_routes.go",
+    "find": "projectfs.CodeProjectNotFound, projectfs.CodeHostNotFound, projectfs.CodeENOENT:\n\t\treturn http.StatusNotFound",
+    "replace": "projectfs.CodeProjectNotFound, projectfs.CodeHostNotFound, projectfs.CodeENOENT:\n\t\treturn http.StatusBadRequest",
+    "why": "a missing file answers 400 instead of 404"
+  },
+  {
+    "area": "presence",
+    "file": "internal/presence/presence.go",
+    "find": "!g.clock.now().Before(n.expiry)",
+    "replace": "g.clock.now().Before(n.expiry)",
+    "why": "a live grant is read as expired, so every gated act is refused"
+  },
+  {
+    "area": "sealed",
+    "file": "cmd/relay/sealed_reset.go",
+    "find": "[]string{\"settings.json\", enrolment.CAKeySealedFile, enrolment.CACertFile}",
+    "replace": "[]string{enrolment.CAKeySealedFile, enrolment.CACertFile}",
+    "why": "a sealed reset leaves settings.json in place"
+  },
+  {
+    "area": "doors",
+    "file": "cmd/relay/doors.go",
+    "find": "d.OwnerGated = true\n",
+    "replace": "",
+    "why": "a gated door is listed as not owner-gated"
+  },
+  {
+    "area": "logging",
+    "file": "internal/logging/logread.go",
+    "find": "l.TraceID != f.TraceID",
+    "replace": "l.TraceID == f.TraceID",
+    "why": "the logs trace filter keeps the other traces' lines"
+  },
+  {
+    "area": "instance",
+    "file": "cmd/relay/clock_relaytest.go",
+    "find": "c.offset += by",
+    "replace": "c.offset -= by",
+    "why": "advancing the instance clock moves it backwards"
+  },
+  {
+    "area": "settings-ui",
+    "file": "cmd/relay/overview_seed.go",
+    "find": "return pathsView{Config: a.configDir, Logs: logs}",
+    "replace": "return pathsView{Config: logs, Logs: logs}",
+    "why": "the Overview config path shows the logs folder"
+  }
+]

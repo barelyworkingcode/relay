@@ -47,7 +47,93 @@ func checkMap(repoRoot, features string, fm FeatureMap, featureTests map[string]
 	if err != nil {
 		return nil, err
 	}
-	return append(fs, MapFindings(am, fm, featureTests, tracked, app, stray)...), nil
+	out := append(fs, MapFindings(am, fm, featureTests, tracked, app, stray)...)
+	breaks, _ := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(BreaksPath)))
+	proof, _ := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(ProofDocPath)))
+	return append(out, ProofFindings(am, breaks, proof)...), nil
+}
+
+// Where the map proof keeps its inputs and its record, relative to the repo root.
+const (
+	BreaksPath   = "e2e/coverage/proof/breaks.json"
+	ProofDocPath = "docs/map-proof.md"
+)
+
+// Break is one catalogued defect for an area: find occurs exactly once in
+// file and is replaced by replace.
+type Break struct {
+	Area    string `json:"area"`
+	File    string `json:"file"`
+	Find    string `json:"find"`
+	Replace string `json:"replace"`
+	Why     string `json:"why"`
+}
+
+// ProofFindings applies M5 to the contents of breaks.json and
+// docs/map-proof.md (nil when absent): every non-reserved area that is not
+// journey-only has a break entry and a proof row, and every journey-only area
+// is listed by name under "Journey-only areas".
+func ProofFindings(am AreaMap, breaksJSON, proofMD []byte) []Finding {
+	var out []Finding
+	add := func(where, format string, a ...any) {
+		out = append(out, Finding{"M5", where, fmt.Sprintf(format, a...)})
+	}
+	hasBreak := map[string]bool{}
+	var entries []Break
+	if len(breaksJSON) == 0 {
+		add(BreaksPath, "file is missing or empty")
+	} else if err := json.Unmarshal(breaksJSON, &entries); err != nil {
+		add(BreaksPath, "not a JSON array of breaks: %v", err)
+	}
+	for _, b := range entries {
+		hasBreak[b.Area] = true
+	}
+	rows, journey := parseProofDoc(string(proofMD))
+	var names []string
+	for name := range am.Code {
+		if !IsReserved(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if am.JourneyOnly[name] {
+			if !journey[name] {
+				add(name, "journey-only area is not listed under \"Journey-only areas\" in %s", ProofDocPath)
+			}
+			continue
+		}
+		if !hasBreak[name] {
+			add(name, "area has no break entry in %s", BreaksPath)
+		}
+		if !rows[name] {
+			add(name, "area has no proof row in %s", ProofDocPath)
+		}
+	}
+	return out
+}
+
+// parseProofDoc reads the proof table's first column and the bullet names
+// under the "Journey-only areas" heading.
+func parseProofDoc(md string) (rows, journey map[string]bool) {
+	rows, journey = map[string]bool{}, map[string]bool{}
+	inJourney := false
+	for _, line := range strings.Split(md, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "#"):
+			inJourney = strings.Contains(strings.ToLower(line), "journey-only areas")
+		case inJourney && strings.HasPrefix(line, "- "):
+			name, _, _ := strings.Cut(strings.TrimPrefix(line, "- "), ":")
+			journey[strings.Trim(strings.TrimSpace(name), "`")] = true
+		case !inJourney && strings.HasPrefix(line, "|"):
+			cells := strings.Split(line, "|")
+			if len(cells) > 2 {
+				rows[strings.Trim(strings.TrimSpace(cells[1]), "`")] = true
+			}
+		}
+	}
+	return rows, journey
 }
 
 // MapFindings applies M1 to M4 to already-gathered inputs. tracked is every

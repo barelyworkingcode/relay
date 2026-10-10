@@ -1,0 +1,23 @@
+[
+  {
+    "area": "alpha",
+    "file": "alpha/a.go",
+    "find": "x",
+    "replace": "y",
+    "why": "alpha breaks"
+  },
+  {
+    "area": "beta",
+    "file": "beta/b.go",
+    "find": "x",
+    "replace": "y",
+    "why": "beta breaks"
+  },
+  {
+    "area": "gamma",
+    "file": "gamma/g.go",
+    "find": "x",
+    "replace": "y",
+    "why": "gamma breaks"
+  }
+]

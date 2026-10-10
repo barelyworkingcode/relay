@@ -126,6 +126,7 @@ rule break each fail it, with the rule and the place. The rules:
 | M2 | Every test a row names resolves to a non-reserved area, and no `Test` is defined outside the files directly in `e2e/features` and `e2e/contract`, or under `e2e/coverage`; a miss names the test. |
 | M3 | Every area that is not `every-test`, `no-test` or `journey-only` selects at least one feature test; a miss names the area. |
 | M4 | Every file the app binaries build from (Go, cgo, C, Objective-C, headers, embedded files; the union of `go list -deps -tags relaytest ./cmd/relay ./cmd/relaysessions` and the same without tags, so release-only files count) maps to an area other than `no-test`; a miss names the path. |
+| M5 | Every area that is not `every-test`, `no-test` or `journey-only` has a break in `e2e/coverage/proof/breaks.json` and a row in `docs/map-proof.md`; every `journey-only` area is listed by name there; a miss names the area. `go run ./coverage/cmd/mapproof --repo .. (--areas a,b \| --all) [--record ../docs/map-proof.md]` (in `e2e/`) proves each break turns a selected test red. |
 | syntax | A bad glob, a bad area name, an unknown key, a key given twice in one area, a tab indent or an `Areas:` line that names an undefined area; the area map grammar is in `docs/FEATURES.md`. |
 | H1 to H3 | `t.Parallel()` first; no `time.Sleep`; the e2e module imports nothing of relay's. |
 

@@ -103,6 +103,71 @@ func TestMapRulesM3IgnoresMissingTest(t *testing.T) {
 	}
 }
 
+func TestProofFindingsM5(t *testing.T) {
+	t.Parallel()
+	am := mapOf(
+		map[string][]string{
+			"alpha":      {"a/**"},
+			"beta":       {"b/**"},
+			"jo":         {"j/**"},
+			"every-test": {"e2e/harness/**"},
+			"no-test":    {"scripts/**"},
+		},
+		nil,
+		"jo",
+	)
+	breakFor := func(areas ...string) string {
+		var parts []string
+		for _, a := range areas {
+			parts = append(parts, `{"area":"`+a+`","file":"f.go","find":"x","replace":"y","why":"w"}`)
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	}
+	row := func(a string) string { return "| " + a + " | `f.go` | w | abc123 | TestX | 2026-01-01 |\n" }
+	head := "# Map proof\n\n| Area | File | Break | Base | Red tests | Date |\n|---|---|---|---|---|---|\n"
+	journey := "\n## Journey-only areas\n\n- jo: needs the screen\n"
+	complete := head + row("alpha") + row("beta") + journey
+
+	cases := []struct {
+		name         string
+		breaks, doc  string
+		wantAreas    []string
+		wantNotNamed []string
+		wantNone     bool
+	}{
+		{"all present", breakFor("alpha", "beta"), complete, nil, nil, true},
+		{"no break entry", breakFor("alpha"), complete, []string{"beta"}, []string{"alpha", "jo"}, false},
+		{"no proof row", breakFor("alpha", "beta"), head + row("alpha") + journey, []string{"beta"}, []string{"alpha", "jo"}, false},
+		{"journey-only not listed", breakFor("alpha", "beta"), head + row("alpha") + row("beta"), []string{"jo"}, []string{"alpha", "beta"}, false},
+		{"journey-only listed in the table only", breakFor("alpha", "beta"), head + row("alpha") + row("beta") + row("jo"), []string{"jo"}, []string{"alpha", "beta"}, false},
+		{"breaks file empty", "", complete, []string{"alpha", "beta"}, []string{"jo"}, false},
+		{"proof doc empty", breakFor("alpha", "beta"), "", []string{"alpha", "beta", "jo"}, nil, false},
+		{"breaks file not an array", `{"area":"alpha"}`, complete, []string{"alpha", "beta"}, []string{"jo"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fs := ProofFindings(am, []byte(c.breaks), []byte(c.doc))
+			if c.wantNone {
+				for _, f := range fs {
+					if f.Rule == "M5" {
+						t.Errorf("unexpected M5 finding: %v", f)
+					}
+				}
+			}
+			for _, a := range c.wantAreas {
+				if !has(fs, "M5", a) {
+					t.Errorf("M5 did not name %s: %v", a, fs)
+				}
+			}
+			for _, a := range append(c.wantNotNamed, "every-test", "no-test") {
+				if has(fs, "M5", a) {
+					t.Errorf("M5 named %s, which is satisfied or reserved: %v", a, fs)
+				}
+			}
+		})
+	}
+}
+
 const areasDoc = "## Areas\n\n```yaml\n%s```\n\n### G1 · Goal\n\n%s\n"
 
 func TestParseAreaMapSyntax(t *testing.T) {
@@ -246,6 +311,15 @@ func TestCheckMapOnGitCheckout(t *testing.T) {
 	}
 	if has(fs, "M4", "cmd/relaysessions/main.go") {
 		t.Errorf("M4 reported an app file mapped to a real area")
+	}
+	// M5: the checkout has no breaks.json and no map-proof.md.
+	if !has(fs, "M5", "app") {
+		t.Errorf("M5 missed the area with no break and no proof row: %v", fs)
+	}
+	for _, f := range fs {
+		if f.Rule == "M5" && f.Where == "no-test" {
+			t.Errorf("M5 reported a reserved area")
+		}
 	}
 }
 
