@@ -16,7 +16,7 @@ func TestDispatchProxiesAServiceRoute(t *testing.T) {
 	})
 }
 
-func TestDispatchAfterServiceStops(t *testing.T) {
+func TestDispatchAfterServiceStopsIs404(t *testing.T) {
 	t.Parallel()
 	Check(t, Scenario{
 		Surface: Dispatch,

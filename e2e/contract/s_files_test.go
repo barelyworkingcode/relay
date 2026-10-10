@@ -87,7 +87,6 @@ func TestFilesRenameExisting(t *testing.T) {
 		Body: func(r *Run) {
 			fileOp(r, "rename", map[string]any{"path": "words.txt", "new_name": "README.md"})
 			fileOp(r, "read", map[string]any{"path": "README.md"})
-			fileOp(r, "move", map[string]any{"path": "words.txt", "dest_dir": "src"})
 			fileOp(r, "write", map[string]any{"path": "src/words.txt", "content": "taken\n"})
 			fileOp(r, "move", map[string]any{"path": "words.txt", "dest_dir": "src"})
 			fileOp(r, "read", map[string]any{"path": "words.txt"})

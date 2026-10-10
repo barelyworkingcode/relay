@@ -21,8 +21,8 @@ func TestEventsLogsAfterRequest(t *testing.T) {
 		Body: func(r *Run) {
 			trace := harness.NewTrace(r.T)
 			r.HTTP("ops", "GET", "/api/projects", nil, harness.ReqOpts{Trace: trace})
-			r.CLI("--trace", trace, "logs", "--json", "--event", "project.list")
-			r.CLI("--trace", trace, "logs", "--json", "--event", "project.get")
+			r.CLI("logs", "--json", "--trace", trace, "--event", "project.list")
+			r.CLI("logs", "--json", "--trace", trace, "--event", "project.get")
 		},
 	})
 }
@@ -35,7 +35,7 @@ func TestEventsFollowReturnsOnKey(t *testing.T) {
 		Body: func(r *Run) {
 			trace := harness.NewTrace(r.T)
 			r.HTTP("ops", "GET", "/api/projects/p_acme", nil, harness.ReqOpts{Trace: trace})
-			r.CLI("--trace", trace, "logs", "--json", "--follow", "--event", "project.get", "--timeout", "30s")
+			r.CLI("logs", "--json", "--trace", trace, "--follow", "--event", "project.get", "--timeout", "30s")
 			r.Event(harness.EventQuery{Key: "project.get", Trace: trace})
 		},
 	})
