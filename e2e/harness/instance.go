@@ -45,8 +45,15 @@ type CredentialSpec struct {
 
 // Catalogue is a fake MCP's tool list.
 type Catalogue struct {
-	Initialize json.RawMessage   `json:"initialize,omitempty"` // merged into the initialize result
-	Tools      []json.RawMessage `json:"tools"`                // MCP Tool objects, plus the control key "x-fake"
+	Initialize json.RawMessage        `json:"initialize,omitempty"` // merged into the initialize result
+	Tools      []json.RawMessage      `json:"tools"`                // MCP Tool objects, plus the control key "x-fake"
+	Enumerate  map[string][]EnumValue `json:"enumerate,omitempty"`  // field -> context/enumerate answer; an unlisted field gets method-not-found
+}
+
+// EnumValue is one value a fake MCP answers for a context/enumerate field.
+type EnumValue struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
 }
 
 // FakeMCPSpec attaches a fake MCP server to an instance.

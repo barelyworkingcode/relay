@@ -32,6 +32,15 @@ const (
 type catalogue struct {
 	Initialize json.RawMessage   `json:"initialize,omitempty"`
 	Tools      []json.RawMessage `json:"tools"`
+	// Enumerate maps a field name to the values context/enumerate answers for
+	// it. A field not listed gets method-not-found, as an MCP with no
+	// enumerable fields does.
+	Enumerate map[string][]enumValue `json:"enumerate,omitempty"`
+}
+
+type enumValue struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
 }
 
 type tool struct {
@@ -47,6 +56,9 @@ type fakeMode struct {
 	result   json.RawMessage
 	echo     bool
 	rpcError *rpcError
+	// exit, when set, ends the process with that code once the call's reply is
+	// written (stdio only).
+	exit *int
 }
 
 type rpcError struct {
@@ -61,9 +73,13 @@ type rpcRequest struct {
 }
 
 type server struct {
-	init  json.RawMessage
-	tools []tool
-	log   *calllog.Writer
+	init      json.RawMessage
+	tools     []tool
+	enumerate map[string][]enumValue
+	log       *calllog.Writer
+	// exitCode is set by a call to a tool with an "exit" knob and read by the
+	// stdio loop after it has written the reply.
+	exitCode *int
 }
 
 func main() {
@@ -114,7 +130,7 @@ func load(catPath, logPath string) (*server, error) {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return nil, fmt.Errorf("parse catalogue %q: %w", catPath, err)
 	}
-	s := &server{init: c.Initialize}
+	s := &server{init: c.Initialize, enumerate: c.Enumerate}
 	for i, entry := range c.Tools {
 		t, err := parseTool(entry)
 		if err != nil {
@@ -143,11 +159,12 @@ func parseTool(entry json.RawMessage) (tool, error) {
 			Result   json.RawMessage `json:"result"`
 			Echo     bool            `json:"echo"`
 			RPCError *rpcError       `json:"rpc_error"`
+			Exit     *int            `json:"exit"`
 		}
 		if err := json.Unmarshal(ctl, &m); err != nil {
 			return tool{}, fmt.Errorf("tool %q: bad x-fake: %w", name, err)
 		}
-		t.fake = fakeMode{result: m.Result, echo: m.Echo, rpcError: m.RPCError}
+		t.fake = fakeMode{result: m.Result, echo: m.Echo, rpcError: m.RPCError, exit: m.Exit}
 		delete(fields, "x-fake")
 	}
 	listed, err := json.Marshal(fields)
@@ -181,9 +198,28 @@ func (s *server) handle(transport string, req rpcRequest, auth string) *reply {
 		return result(req.ID, map[string]any{"tools": tools})
 	case "tools/call":
 		return s.callTool(req)
+	case "context/enumerate":
+		return s.enumerateField(req)
 	default:
 		return failure(req.ID, errMethodNotFound, "method not found: "+req.Method)
 	}
+}
+
+func (s *server) enumerateField(req rpcRequest) *reply {
+	var p struct {
+		Field string `json:"field"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return failure(req.ID, errInvalidParams, "invalid params")
+	}
+	values, ok := s.enumerate[p.Field]
+	if !ok {
+		return failure(req.ID, errMethodNotFound, "method not found: context/enumerate")
+	}
+	if values == nil {
+		values = []enumValue{}
+	}
+	return result(req.ID, map[string]any{"field": p.Field, "values": values})
 }
 
 func (s *server) initializeResult(params json.RawMessage) map[string]any {
@@ -220,6 +256,7 @@ func (s *server) callTool(req rpcRequest) *reply {
 		if t.name != p.Name {
 			continue
 		}
+		s.exitCode = t.fake.exit
 		switch {
 		case t.fake.rpcError != nil:
 			return failure(req.ID, t.fake.rpcError.Code, t.fake.rpcError.Message)
@@ -292,6 +329,9 @@ func (s *server) serveStdio(in io.Reader, out io.Writer) error {
 				mu.Unlock()
 				if werr != nil {
 					return werr
+				}
+				if s.exitCode != nil {
+					os.Exit(*s.exitCode)
 				}
 			}
 		}

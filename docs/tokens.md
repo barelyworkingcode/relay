@@ -269,10 +269,13 @@ so entering it raises no presence prompt.
   enforces this, not the session host.
 - The scope moves no credential. It only removes routes from what `proxy`
   reaches, so a caller can narrow itself and cannot widen anything.
-- `POST /api/chief-of-staff/sessions` starts a session narrower than the
-  `POST /api/sessions` that `proxy` already reaches: relay builds the
-  settings and the origin, and `AuthorizeLaunch` and the project's policy
-  still decide. See `docs/session-host.md`.
+- `POST /api/chief-of-staff/sessions` starts a session narrower than
+  `POST /api/sessions`: relay builds the settings and the origin, and
+  `AuthorizeLaunch` and the project's policy still decide. `AuthorizeLaunch`
+  requires `execute`, so a scoped credential holding `proxy` alone is refused
+  with 403 `caller_not_authorized`; the scope never gives `proxy` a launch it
+  could not make otherwise. A frontend service holds both classes. See
+  `docs/session-host.md`.
 
 ### The login credential
 
