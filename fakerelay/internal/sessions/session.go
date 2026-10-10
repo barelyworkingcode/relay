@@ -17,12 +17,14 @@ import (
 
 type session struct {
 	id, projectID, name, directory, folder, model, kind, origin, permMode string
-	headless                                                              bool
+	headless, agentOn, hidden, held, dropped                              bool
 	createdAt, lastMsg, since                                             time.Time
 	host                                                                  map[string]any
 	history                                                               []map[string]any
 	stats                                                                 map[string]any
 	live, processing                                                      bool
+	askedName, claudeID, tool                                             string
+	changed                                                               chan struct{}
 	state                                                                 string
 	agent                                                                 fakes.Agent
 	cancel                                                                context.CancelFunc
@@ -33,9 +35,18 @@ func newStats() map[string]any {
 	return map[string]any{"inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0, "cacheCreationTokens": 0, "costUsd": 0}
 }
 
-// tracked sessions carry attention state; chat and headless ones do not.
+// tracked sessions carry attention state; chat sessions and headless ones
+// launched without agent do not.
 func (x *session) tracked() bool {
-	return !x.headless && (x.kind == "claude" || x.kind == "pi" || x.kind == "codex")
+	return (!x.headless || x.agentOn) && (x.kind == "claude" || x.kind == "pi" || x.kind == "codex")
+}
+
+// wake releases every drop-in waiting on this session. Callers hold s.mu.
+func (x *session) wake() {
+	if x.changed != nil {
+		close(x.changed)
+		x.changed = nil
+	}
 }
 
 func textBlocks(text string) []map[string]any {
@@ -87,9 +98,13 @@ type launchBody struct {
 // launch creates a live session. The caller has authorised the target.
 func (s *svc) launch(t launchTarget, b launchBody, kind, origin string, headless bool) *session {
 	x := &session{id: newUUID(), projectID: t.project.ID, name: b.Name, directory: t.dir, folder: b.Folder, model: b.Model, kind: kind,
-		origin: origin, headless: headless, createdAt: s.now(), host: t.host, live: true, state: "idle", stats: newStats(),
+		origin: origin, headless: headless, askedName: b.Name, createdAt: s.now(), host: t.host, live: true, state: "idle", stats: newStats(),
 		viewers: map[*conn]bool{}}
 	x.since = x.createdAt
+	x.agentOn, _ = b.Settings["agent"].(bool)
+	// Chief of Staff headless sessions stay listed; a client's headless launch
+	// without agent is not.
+	x.hidden = headless && !x.agentOn && origin == ""
 	if mode, _ := b.Settings["permissionMode"].(string); mode != "" {
 		x.permMode = mode
 	}
@@ -120,7 +135,7 @@ func (s *svc) row(x *session) map[string]any {
 	if x.origin != "" {
 		v["origin"] = x.origin
 	}
-	if x.live && x.tracked() {
+	if (x.live || x.dropped) && x.tracked() {
 		v["attention"] = map[string]any{"state": x.state, "since": stamp(x.since)}
 	}
 	return v
@@ -135,7 +150,9 @@ func (s *svc) listSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		rows = append(rows, s.row(s.sessions[id]))
+		if !s.sessions[id].hidden {
+			rows = append(rows, s.row(s.sessions[id]))
+		}
 	}
 	s.mu.Unlock()
 	s.Events.Begin(r.Context(), "session.list").Set("count", len(rows)).End("ok", "", nil)
@@ -167,7 +184,8 @@ func (s *svc) createSession(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, ref.status, ref.msg)
 		return
 	}
-	x := s.launch(t, b, kind, "", false)
+	headless, _ := b.Settings["headless"].(bool)
+	x := s.launch(t, b, kind, "", headless)
 	ev.Set("session_id", x.id).End("ok", "", nil)
 	server.WriteJSON(w, http.StatusCreated, s.createdView(x))
 }
@@ -180,6 +198,12 @@ func (s *svc) createdView(x *session) map[string]any {
 	}
 	if x.permMode != "" {
 		v["permissionMode"] = x.permMode
+	}
+	if x.headless {
+		v["headless"] = true
+	}
+	if x.agentOn {
+		v["agent"] = true
 	}
 	if x.host != nil {
 		v["host"] = x.host
@@ -240,6 +264,8 @@ func (s *svc) beginTurn(id, text, origin string) (*session, *turnRefusal) {
 	switch {
 	case x == nil:
 		return nil, &turnRefusal{"session_not_found", "session: not found"}
+	case x.held:
+		return nil, &turnRefusal{"dropped_in", "session: a terminal holds this session"}
 	case !x.live:
 		return nil, &turnRefusal{"resume_required", "session: provider not running; resume required"}
 	case x.processing:
@@ -255,6 +281,9 @@ func (s *svc) beginTurn(id, text, origin string) (*session, *turnRefusal) {
 			return nil, &turnRefusal{"", err.Error()}
 		}
 		x.agent = ag
+	}
+	if x.claudeID == "" {
+		x.claudeID = newUUID()
 	}
 	x.processing = true
 	x.history = append(x.history, historyMsg("user", text, s.now(), origin))
@@ -304,6 +333,8 @@ func (s *svc) runTurn(x *session, text, origin, trace string) {
 		case "permission_request":
 			s.mu.Lock()
 			s.perms[str(f["permissionId"])] = x.id
+			x.tool = str(f["toolName"])
+			x.wake()
 			s.mu.Unlock()
 			s.setState(x, "asking")
 		}
@@ -315,7 +346,10 @@ func (s *svc) runTurn(x *session, text, origin, trace string) {
 	s.mu.Lock()
 	live := x.live
 	if !failed {
-		x.history = append(x.history, historyMsg("assistant", reply.String(), s.now(), ""))
+		// A headless agent session's reply is not kept in its history.
+		if !(x.headless && x.agentOn) {
+			x.history = append(x.history, historyMsg("assistant", reply.String(), s.now(), ""))
+		}
 		x.lastMsg = s.now()
 		x.stats["inputTokens"] = x.stats["inputTokens"].(int) + words(text)
 		x.stats["outputTokens"] = x.stats["outputTokens"].(int) + words(reply.String())
@@ -327,7 +361,8 @@ func (s *svc) runTurn(x *session, text, origin, trace string) {
 	for k, v := range x.stats {
 		stats[k] = v
 	}
-	x.processing = false
+	x.processing, x.tool = false, ""
+	x.wake()
 	s.mu.Unlock()
 
 	done := map[string]any{"type": "message_complete", "sessionId": x.id}

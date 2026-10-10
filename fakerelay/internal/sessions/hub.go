@@ -189,6 +189,7 @@ func (s *svc) permissionResponse(c *conn, f inFrame) {
 		return
 	}
 	delete(s.perms, f.PermissionID)
+	x.tool = ""
 	agent := x.agent
 	s.mu.Unlock()
 	s.setState(x, "running")
@@ -203,7 +204,7 @@ func (s *svc) sessionCommand(c *conn, f inFrame) {
 		switch {
 		case ref == nil:
 			go s.runTurn(x, f.Text, "", f.TraceID)
-		case ref.code == "resume_required":
+		case ref.code == "resume_required", ref.code == "dropped_in":
 			c.send(map[string]any{"type": "error", "sessionId": f.SessionID, "code": ref.code, "message": ref.msg})
 		default:
 			c.send(errFrame(ref.msg))

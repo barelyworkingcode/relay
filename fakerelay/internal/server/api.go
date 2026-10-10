@@ -48,7 +48,19 @@ type ctxKey int
 const (
 	callerKey ctxKey = iota
 	subjectKey
+	verbBodyKey
 )
+
+// WithVerbBody carries the file a client verb read (`--file`) to its handler.
+func WithVerbBody(ctx context.Context, body []byte) context.Context {
+	return context.WithValue(ctx, verbBodyKey, body)
+}
+
+// VerbBody is the file the client sent with the verb, nil when it sent none.
+func VerbBody(ctx context.Context) []byte {
+	b, _ := ctx.Value(verbBodyKey).([]byte)
+	return b
+}
 
 func withCaller(ctx context.Context, c Caller) context.Context {
 	return context.WithValue(ctx, callerKey, c)

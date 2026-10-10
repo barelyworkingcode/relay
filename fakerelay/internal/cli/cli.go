@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -205,7 +206,16 @@ func (e *env) notRunning(verb string) int {
 
 // forward sends a verb to the running instance and prints its answer.
 func (e *env) forward(argv []string) int {
-	st, b, err := e.call("POST", "/v1/verb", map[string]any{"argv": argv, "trace": e.g.Trace})
+	req := map[string]any{"argv": argv, "trace": e.g.Trace}
+	if len(argv) >= 2 && argv[0] == "project" && (argv[1] == "create" || argv[1] == "edit") {
+		var code int
+		var ok bool
+		if argv, req["body"], code, ok = e.projectFile(argv); !ok {
+			return code
+		}
+		req["argv"] = argv
+	}
+	st, b, err := e.call("POST", "/v1/verb", req)
 	if errors.Is(err, errNotRunning) {
 		return e.notRunning(verbName(argv))
 	}
@@ -235,4 +245,77 @@ func verbName(argv []string) string {
 		words = append(words, a)
 	}
 	return strings.Join(words, " ")
+}
+
+// maxFileBytes is the most a verb reads from --file, as relay's CLI does.
+const maxFileBytes = 8 << 20
+
+// flagValue finds --name VALUE or --name=VALUE (one or two dashes) in argv and
+// returns the index of the value, or -1. eq reports the --name=VALUE form,
+// where the value is part of argv[i].
+func flagValue(argv []string, name string) (i int, eq bool) {
+	for i, a := range argv {
+		t := strings.TrimLeft(a, "-")
+		if len(t) == len(a) || len(a)-len(t) > 2 {
+			continue
+		}
+		if t == name && i+1 < len(argv) {
+			return i + 1, false
+		}
+		if strings.HasPrefix(t, name+"=") {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// projectFile does the client's half of `project create|edit`: it reads
+// --file itself and makes a relative --path absolute against its own working
+// directory, because the service has neither the caller's files nor its
+// directory. The body travels beside argv.
+func (e *env) projectFile(argv []string) ([]string, []byte, int, bool) {
+	argv = append([]string(nil), argv...)
+	if i, eq := flagValue(argv, "path"); i >= 0 {
+		v := argv[i]
+		if eq {
+			v = v[strings.Index(v, "=")+1:]
+		}
+		if v != "" {
+			if abs, err := filepath.Abs(v); err == nil {
+				if eq {
+					argv[i] = argv[i][:strings.Index(argv[i], "=")+1] + abs
+				} else {
+					argv[i] = abs
+				}
+			}
+		}
+	}
+	i, eq := flagValue(argv, "file")
+	if i < 0 {
+		return argv, nil, 0, true
+	}
+	name := argv[i]
+	if eq {
+		name = name[strings.Index(name, "=")+1:]
+	}
+	var rd io.Reader = os.Stdin
+	if name != "-" {
+		f, err := os.Open(name)
+		if err != nil {
+			return nil, nil, e.fail(1, "%v", err), false
+		}
+		defer f.Close()
+		rd = f
+	}
+	b, err := io.ReadAll(io.LimitReader(rd, maxFileBytes+1))
+	if err != nil {
+		return nil, nil, e.fail(1, "read %s: %v", name, err), false
+	}
+	if len(b) > maxFileBytes {
+		return nil, nil, e.fail(1, "%s is larger than %d bytes", name, maxFileBytes), false
+	}
+	if b == nil {
+		b = []byte{}
+	}
+	return argv, b, 0, true
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"mime"
 	"testing"
 	"time"
 
@@ -153,5 +154,123 @@ func TestTerminalsHostCat(t *testing.T) {
 		Surface: Terminals,
 		Spec:    hostTerminalsWorld(),
 		Body:    func(r *Run) { catSession(r, "p_box0001") },
+	})
+}
+
+const absentTerminalID = "123e4567-e89b-42d3-a456-426614174000"
+
+var shTemplate = json.RawMessage(`{"id":"sh","name":"Shell","command":"/bin/sh","sandbox":false}`)
+
+// startTerminal creates a terminal of template and joins it on a raw
+// connection. The caller closes the connection.
+func startTerminal(r *Run, template string) (string, *harness.WSConn) {
+	r.T.Helper()
+	resp := r.HTTP("ops", "POST", "/api/terminals", map[string]any{
+		"templateId": template, "name": "Term", "projectId": "p_acme", "cols": 80, "rows": 24,
+	})
+	var made struct {
+		TerminalID string `json:"terminalId"`
+	}
+	resp.JSON(r.T, &made)
+	if made.TerminalID == "" {
+		r.T.Fatalf("create terminal answered %d with no terminalId", resp.Status)
+	}
+	i := r.Target.I
+	ws := i.WebSocket("/ws", i.Credential("ops"))
+	ws.Send(map[string]any{"type": "join_terminal", "terminalId": made.TerminalID})
+	nextTerminalFrame(r, ws, "terminal_joined")
+	return made.TerminalID, ws
+}
+
+func sendTerminalInput(ws *harness.WSConn, id, text string) {
+	ws.Send(map[string]any{
+		"type": "terminal_input", "terminalId": id,
+		"data": base64.StdEncoding.EncodeToString([]byte(text)),
+	})
+}
+
+// readLog reads the terminal's log unrecorded and notes its shape.
+func readLog(r *Run, id, label string) {
+	r.T.Helper()
+	i := r.Target.I
+	resp := i.SocketHTTP(i.Credential("ops")).Do("GET", "/api/terminals/"+id+"/log", nil)
+	mt, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	r.Note(label, map[string]any{
+		"status": resp.Status, "type": mt, "has_input": bytes.Contains(resp.Body, []byte("hello acme")),
+	})
+}
+
+func TestTerminalsLog(t *testing.T) {
+	t.Parallel()
+	Check(t, Scenario{
+		Surface: Terminals,
+		Spec:    terminalsWorld(),
+		Body: func(r *Run) {
+			id, ws := startTerminal(r, "cat")
+			defer ws.Close()
+			sendTerminalInput(ws, id, "hello acme\r")
+			var seen []byte
+			for !bytes.Contains(seen, []byte("hello acme")) {
+				f := nextTerminalFrame(r, ws, "terminal_output")
+				data, err := base64.StdEncoding.DecodeString(frameField(f, "data"))
+				if err != nil {
+					r.T.Fatalf("terminal_output data is not base64: %v", err)
+				}
+				seen = append(seen, data...)
+			}
+			readLog(r, id, "log")
+
+			tr := harness.NewTrace(r.T)
+			r.HTTP("ops", "GET", "/api/terminals/"+absentTerminalID+"/log", nil, harness.ReqOpts{Trace: tr})
+			r.HTTP("ops", "GET", "/api/terminals/not-a-terminal/log", nil)
+			r.Event(harness.EventQuery{Key: "terminal.log", Trace: tr})
+
+			r.HTTP("ops", "DELETE", "/api/terminals/"+id, nil)
+			readLog(r, id, "log after delete")
+		},
+	})
+}
+
+func TestTerminalsEOFExit(t *testing.T) {
+	t.Parallel()
+	Check(t, Scenario{
+		Surface: Terminals,
+		Spec:    terminalsWorld(),
+		Body: func(r *Run) {
+			id, ws := startTerminal(r, "cat")
+			defer ws.Close()
+			sendTerminalInput(ws, id, "\x04")
+			exit := nextTerminalFrame(r, ws, "terminal_exit")
+			r.Note("terminal_exit", map[string]any{"exitCode": exit["exitCode"]})
+			r.Target.I.WaitEvent(harness.EventQuery{Key: "session.exited", Fields: map[string]any{"session_id": id}}, frameWait)
+			r.Note("session.exited", map[string]any{"session_exited": true})
+			r.HTTP("ops", "GET", "/api/terminals", nil)
+
+			i := r.Target.I
+			again := i.WebSocket("/ws", i.Credential("ops"))
+			defer again.Close()
+			again.Send(map[string]any{"type": "join_terminal", "terminalId": id})
+			joined := nextTerminalFrame(r, again, "terminal_joined")
+			late := nextTerminalFrame(r, again, "terminal_exit")
+			r.Note("rejoin", map[string]any{"state": joined["state"], "exitCode": late["exitCode"]})
+		},
+	})
+}
+
+func TestTerminalsShellExit(t *testing.T) {
+	t.Parallel()
+	spec := terminalsWorld()
+	spec.ConsoleTemplates = []json.RawMessage{shTemplate}
+	Check(t, Scenario{
+		Surface: Terminals,
+		Spec:    spec,
+		Body: func(r *Run) {
+			id, ws := startTerminal(r, "sh")
+			defer ws.Close()
+			sendTerminalInput(ws, id, "exit 3\r")
+			exit := nextTerminalFrame(r, ws, "terminal_exit")
+			r.Note("terminal_exit", map[string]any{"exitCode": exit["exitCode"]})
+			r.HTTP("ops", "GET", "/api/terminals", nil)
+		},
 	})
 }

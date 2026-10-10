@@ -30,6 +30,7 @@ type svc struct {
 	sessions map[string]*session
 	terms    map[string]*terminal
 	perms    map[string]string // permission id -> session id
+	logs     map[string]*termLog
 }
 
 // Register installs the doors and the /ws hub, and seeds the world's sessions.
@@ -37,7 +38,7 @@ func Register(r server.Registrar, d server.Deps) error {
 	calls := fakes.NewCallLog(d.Dir)
 	s := &svc{Deps: d, factory: fakes.NewAgentFactory(calls), started: d.Clock.Now().UTC(),
 		hosts: fakes.WorldModelHost{List: d.World.Models, Log: calls},
-		conns: map[*conn]struct{}{}, sessions: map[string]*session{}, terms: map[string]*terminal{}, perms: map[string]string{}}
+		conns: map[*conn]struct{}{}, sessions: map[string]*session{}, terms: map[string]*terminal{}, perms: map[string]string{}, logs: map[string]*termLog{}}
 	s.seed()
 	r.Route(server.ClassProxy, "GET /api/models", s.listModels)
 	r.Route(server.ClassProxy, "GET /api/sessions", s.listSessions)
@@ -47,11 +48,28 @@ func Register(r server.Registrar, d server.Deps) error {
 	r.Route(server.ClassProxy, "GET /api/terminals", s.listTerminals)
 	r.Route(server.ClassExecute, "POST /api/terminals", s.createTerminal)
 	r.Route(server.ClassProxy, "DELETE /api/terminals/{id}", s.deleteTerminal)
+	r.Route(server.ClassExecute, "POST /api/sessions/{id}/drop-in", s.dropIn)
+	r.Route(server.ClassProxy, "GET /api/terminals/{id}/log", s.terminalLog)
+	// The session host answers an unrouted path under these roots with the Go
+	// mux's 404. The bare root is registered too, so the mux does not redirect
+	// it to the subtree and every other method keeps the dispatch 404.
+	for _, root := range []string{"/api/sessions", "/api/terminals"} {
+		r.Route(server.ClassProxy, root, s.dispatchNotFound)
+		r.Route(server.ClassProxy, root+"/", s.hostNotFound)
+	}
 	r.Route(server.ClassProxy, "GET /ws", s.serveWS)
 	r.Route(server.ClassChiefOfStaff, "POST /api/chief-of-staff/messages", s.cosMessage)
 	r.Route(server.ClassChiefOfStaff, "POST /api/chief-of-staff/sessions", s.cosStart)
 	r.Control("GET /v1/state", s.serveState)
 	return nil
+}
+
+func (s *svc) hostNotFound(w http.ResponseWriter, r *http.Request) {
+	server.WriteText(w, http.StatusNotFound, "404 page not found")
+}
+
+func (s *svc) dispatchNotFound(w http.ResponseWriter, r *http.Request) {
+	server.WriteText(w, http.StatusNotFound, "no service registered for this path")
 }
 
 func (s *svc) now() time.Time { return s.Clock.Now().UTC() }

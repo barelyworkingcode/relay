@@ -175,14 +175,26 @@ func (r *Run) learnCreated(reqBody any, respBody []byte) {
 // counterpart.
 func (r *Run) CLI(args ...string) harness.Result {
 	r.T.Helper()
-	res := r.Target.I.CLI(args...)
+	return r.CLIWith(harness.CLIOpts{}, args...)
+}
+
+// CLIWith is CLI with options, such as a trace or stdin. A CLI that exits 0
+// with one JSON object on stdout has the ids it generated learned before the
+// step is recorded; ids the Spec wrote stay as written.
+func (r *Run) CLIWith(o harness.CLIOpts, args ...string) harness.Result {
+	r.T.Helper()
+	res := r.Target.I.CLIWith(o, args...)
 	r.norm.learn(res.Trace)
 	v := map[string]any{"code": res.Code, "stderr": string(res.Stderr)}
 	out := dropFakeOnlyLines(res.Stdout)
-	lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
+	trimmed := bytes.TrimSpace(out)
+	lines := bytes.Split(trimmed, []byte("\n"))
 	switch {
-	case json.Valid(bytes.TrimSpace(out)) && len(bytes.TrimSpace(out)) > 0:
-		v["stdout_json"] = json.RawMessage(bytes.TrimSpace(out))
+	case json.Valid(trimmed) && len(trimmed) > 0:
+		if res.Code == 0 {
+			r.learnCreated(nil, trimmed)
+		}
+		v["stdout_json"] = json.RawMessage(trimmed)
 	case len(lines) > 1 && allValidJSON(lines):
 		var ls []json.RawMessage
 		for _, l := range lines {

@@ -98,10 +98,10 @@ Wire reference.
 | Persistent terminals | `GET /api/projects/{id}/persistent-sessions` | read |
 | Persistent terminals | `DELETE /api/projects/{id}/persistent-sessions/{name}` | configure |
 | Files | every `/api/projects/{id}/files/*` route, `POST /api/hosts/{id}/pastetmp`, `GET /ws/files` | execute |
-| Sessions | `POST /api/sessions`, `POST /api/sessions/{id}/resume` | execute |
+| Sessions | `POST /api/sessions`, `POST /api/sessions/{id}/resume`, `POST /api/sessions/{id}/drop-in` | execute |
 | Sessions | `GET /api/sessions` | proxy |
 | Terminals | `POST /api/terminals` | execute |
-| Terminals | `GET /api/terminals` | proxy |
+| Terminals | `GET /api/terminals`, `GET /api/terminals/{id}/log` | proxy |
 | Templates | `GET /api/terminal/templates`, `GET /api/terminal/templates/{id}` | read |
 | Templates | `POST /api/terminal/templates`, `PUT` and `DELETE /api/terminal/templates/{id}` | configure |
 | Dispatch | `GET /ws`, `GET /api/models`, `DELETE /api/sessions/{id}`, `DELETE /api/terminals/{id}`, and every other path a manifest claims | proxy |
@@ -113,6 +113,8 @@ Wire reference.
 `DELETE /api/sessions/{id}`, `DELETE /api/terminals/{id}`, `GET /api/models`
 and `/ws` are not relay routes. In relay they reach the session host through
 manifest dispatch. fakerelay serves them itself, and they keep class `proxy`.
+Any other path under `/api/sessions/` or `/api/terminals/` is class `proxy` and
+answers the session host's 404 (see Sessions).
 
 ### Scope
 
@@ -855,7 +857,11 @@ that starts `pi/` is `pi`; one that starts `codex/` is `codex`; any other is
 
 `projectId` is required. `directory` defaults to the project path and must
 stay inside it. `settings` is an object and is passed to the session host.
-Success is 201 with the new session:
+`settings.headless: true` makes a headless session. With `settings.agent: true`
+it is tracked and listed; without `agent` it is neither tracked nor listed in
+`GET /api/sessions`, though drop-in still reaches it. A value that is not a
+boolean counts as false. A turn of a headless `agent` session keeps only the
+user message in its history, so `messageCount` is 1 after one turn. Success is 201 with the new session:
 
 ```json
 {"sessionId":"3f0c…","projectId":"p_acme","name":"Fix the build",
@@ -903,7 +909,8 @@ texts:
 | `live` | the provider process is running. A world session with `state: "dormant"` is `false` |
 | `lastMessageAt` | omitted when no messages |
 | `folder`, `host`, `headless`, `origin` | omitted when empty |
-| `attention` | only for a live session of kind `claude`, `pi` or `codex` that is not headless. Absent otherwise. `since` equals the `since` of the last `session_state` frame |
+| `attention` | only for a live session of kind `claude`, `pi` or `codex` that is not headless, or is headless with `agent`; a session a drop-in has taken stays attended while held (`running`) and after hand-back (`idle`), though `live` is false. Absent otherwise. `since` equals the `since` of the last `session_state` frame |
+| `headless` | `true` for a headless session launched with `agent`. A headless launch without `agent` is not listed at all |
 
 `POST /api/sessions/{id}/resume` (class `execute`):
 
@@ -921,7 +928,57 @@ A resumed session is live again. Its `session_joined` frame then has
 `DELETE /api/sessions/{id}` answers 204 always, including for an unknown id.
 It removes the session. Event `session.delete`.
 
-Events: `session.list`, `session.launch`, `session.resume`, `session.delete`.
+A request under `/api/sessions/` or `/api/terminals/` that matches no route
+above answers 404, `Content-Type: text/plain; charset=utf-8`, body
+`404 page not found\n` (the session host's mux). This covers `.../stop` and
+`.../delete`. It needs class `proxy`, writes no event and changes nothing. Any
+other unclaimed path keeps the dispatch 404. relay-sessions answers 405 for a
+known path with the wrong method; fakerelay does not (D20).
+
+`POST /api/sessions/{id}/drop-in` (class `execute`, socket only) takes a
+headless Claude session over for an echo terminal. Optional body
+`{"cols","rows"}`; 0 or less (or no body) means 120 by 40. A refusal is
+`{"error":"<code>","message":"<text>"}`. Checks run in this order:
+
+| # | Case | Status | `error` | `message` |
+|---|---|---|---|---|
+| 1 | unknown session | 404 | `session_not_found` | `no session <id>` |
+| 2 | kind is not `claude` | 409 | `not_claude` | `only Claude sessions can be taken over; this is a <kind> session` |
+| 3 | the `claude-code` terminal launch is refused (console templates, or the host's for a host project) | the launch refusal's status | the launch code, such as `template_unavailable` | the text `POST /api/terminals` gives |
+| 4 | not headless | 409 | `not_headless` | `this session is not headless; continue it in eve` |
+| 5 | already held | 409 | `dropped_in` | `a terminal already has this session; close it first` |
+| 6 | a turn waits on a permission | 409 | `tool_running` | `a tool is running (<tool>); wait for it to finish or stop the turn, then try again` |
+| 7 | a turn is running | the request waits for the turn to end or the caller to leave, then checks again | | |
+| 8 | no turn has run yet | 409 | `no_conversation` | `the session has not run a turn yet; there is nothing to take over` |
+
+`turn_timeout` is not faked. Success is 201:
+
+```json
+{"sessionId":"3f0c…","claudeSessionId":"9d2e…","host":"testbox",
+ "terminal":{"terminalId":"7a1b…","templateId":"claude-code",
+             "name":"Fix the build (drop-in)","directory":"/home/acme/app","host":null}}
+```
+
+- `claudeSessionId` is a lowercase UUID v4 made at the session's first turn.
+  It is not the session id.
+- `host` is the SSH host's name, omitted for a console project.
+- `terminal` is the `POST /api/terminals` 201 body. `name` is the session's
+  create-request name plus ` (drop-in)`, or `session (drop-in)` without one.
+- On success, in order: the hold is set; the agent stops (`live` becomes
+  false); a tracked session broadcasts `session_state` `running`; the echo
+  terminal starts.
+- While held, `/ws` `send_message` gets the coded `dropped_in` error and a
+  second drop-in gets 409 `dropped_in`.
+- When the drop-in terminal ends (exit, `terminal_close`, or
+  `DELETE /api/terminals/{id}`), the hold clears and a tracked session
+  broadcasts `session_state` `idle` with a new `since`. The session stays
+  dormant, so the next send gets `resume_required`.
+- Event `session.drop_in` (in `relay.log`): `session_id`, `host` (host name or
+  `console`), `terminal_id` (`""` on refusal). A 4xx refusal is `denied` with
+  the code as `reason`; a 5xx is `error`. No audit row is written.
+
+Events: `session.list`, `session.launch`, `session.resume`, `session.delete`,
+`session.drop_in`.
 Session host events go to `relaysessions.log`.
 
 ### /ws frames (G3)
@@ -1028,7 +1085,7 @@ Frames sent to every viewer of a session:
 | Unknown session | `{"type":"error","message":"session: not found"}` |
 | A turn is running | `{"type":"error","message":"session: already processing a message"}`. No `code` |
 | Dormant | coded `resume_required` |
-| A terminal holds the session | coded `dropped_in` |
+| A terminal holds the session | coded `dropped_in`, `message` `session: a terminal holds this session` |
 | Other | `{"type":"error","message":"<text>"}` |
 
 Hub broadcasts go to every connection, joined or not:
@@ -1045,8 +1102,8 @@ Hub broadcasts go to every connection, joined or not:
 
 #### One echo turn, in wire order
 
-For a live, tracked session (kind `claude`, `pi` or `codex`, not headless),
-a viewer sees:
+For a live, tracked session (kind `claude`, `pi` or `codex`, not headless or
+headless with `agent`), a viewer sees:
 
 1. `user_message`
 2. `session_state` `running`
@@ -1075,7 +1132,7 @@ text.
 | `join_terminal` | `terminalId` | adds a viewer, answers `terminal_joined` |
 | `terminal_reconnect` | `terminalId`, `cols`?, `rows`? | resizes when both are positive and different, then acts as `join_terminal` |
 | `leave_terminal` | `terminalId` | removes the viewer. No answer |
-| `terminal_input` | `terminalId`, `data` | `data` is base64 of the bytes to write |
+| `terminal_input` | `terminalId`, `data` | `data` is base64 of the bytes to write. Input to a stopped terminal is dropped. An echo terminal can end on it (see Echo terminal) |
 | `terminal_resize` | `terminalId`, `cols`, `rows` | resizes the terminal |
 | `terminal_close` | `terminalId` | closes it and broadcasts `terminal_closed` |
 | `terminal_list` | none | answers `terminal_list` |
@@ -1113,7 +1170,23 @@ Replies and pushes:
 A frame with an empty `terminalId` is dropped with no answer.
 
 Echo terminal: input bytes come back as `terminal_output` data, with each
-`\r` becoming `\r\n`. See the fake semantics section.
+`\r` becoming `\r\n`. It ends as a real terminal does, with no `ctl` verb.
+A "line" is the bytes since the last `\r`.
+
+- `\x04` on an empty line: exit 0 with no output. `\x04` in the middle of a
+  line is dropped.
+- A `\r` that ends a line whose trimmed text is `exit` or `exit N` (N from 0 to
+  255): the line echoes as usual, then the terminal exits with N (bare `exit`
+  is 0). Any other line, such as `exit 300`, echoes as today.
+- Bytes after the exit point are dropped.
+
+On exit, in order: state `stopped` with the exit code set; the event
+`session.exited` `{session_id: <terminal id>}` in `relay.log` (status `ok`, no
+caller trace); `{"type":"terminal_exit","terminalId","exitCode"}` to each
+viewer. Afterwards `GET /api/terminals` and `terminal_list` show
+`state: "stopped"` and `exitCode` only when not 0. A join answers
+`terminal_joined` with `state: "stopped"`, then `terminal_exit`. The terminal
+stays listed until `terminal_close` or `DELETE`.
 
 checked against relay at `59cdf9e` (G3).
 
@@ -1165,7 +1238,24 @@ sorted by `id`. Row:
 
 `DELETE /api/terminals/{id}` answers 204, or 404 with an empty body for an
 unknown id. It closes the terminal. Events: `terminal.list`, `session.launch`,
-`terminal.delete`.
+`terminal.delete`, `terminal.log`.
+
+`GET /api/terminals/{id}/log` (class `proxy`, socket only):
+
+| Case | Status | Body |
+|---|---|---|
+| a terminal that has run | 200, `Content-Type: text/plain; charset=utf-8` | every byte the terminal sent as `terminal_output`, in order |
+| a UUID-shaped id with no log | 404 | empty |
+| an id that is not 36 characters in 8-4-4-4-12 hex (either case) | 400 | empty |
+
+- The log is kept after exit, after `terminal_close` and after
+  `DELETE /api/terminals/{id}`, for the life of the instance. The id match is
+  exact, so an upper-case form of a lower-case id has no log.
+- The cap is 1 MiB per terminal. Past it, the log keeps the first 64 KiB and
+  the newest bytes.
+- Bytes are added to the log before their `terminal_output` frame is sent.
+- Event `terminal.log` (`terminal_id`) in `relaysessions.log`. A 404 is
+  `error`/`not_found` with error text `Not Found`; a 400 is `error`/`invalid`.
 
 Terminal templates. Shape (omit empty keys):
 
@@ -1392,6 +1482,7 @@ checked against relay at `59cdf9e` (G7).
 | G5 | `RegisterManifest` envelope | `service-manifest.md` for the flow; the bridge types for names and refusals | yes, `59cdf9e` |
 | G6 | presence refusal body | the project routes' gate error mapping | yes, `59cdf9e` |
 | G7 | `relay grant --json` | the grant command | yes, `59cdf9e` |
+| G8 | the terminal log route, how an echo terminal ends, the session-host 404 for unmatched paths, drop-in and the headless/agent launch settings | `routes.md`, `session-host.md` and `events.md` for the doors; the planner's check of relay for the bodies and messages the docs leave out | yes, `5af6c45` |
 
 Other entries marked "checked against relay" (projects, hosts, Chief of
 Staff, door refusals, MCP tools, persistent sessions) fill smaller holes the
@@ -1424,6 +1515,7 @@ relay at `59cdf9e`.
 | D17 | tool listing in the fake contract carries `inputSchema` | `GET /api/mcps/{id}/tools` returns only `name`, `description` and `category`. The input schema stays in the catalogue |
 | D18 | the world's `chief_of_staff` uses snake_case | the HTTP view and body use camelCase (`projectId`, `dailyModelCalls`). Error `message` texts use snake_case names (`project_id is required`) |
 | D19 | world projects carry an `id` | `POST /api/projects` accepts no `id`. The id is generated, and a create needs an absolute `path` |
+| D20 | relay-sessions answers a known path with the wrong method with 405 | fakerelay answers it with the session host's 404, `404 page not found`, as for any unmatched path under `/api/sessions/` or `/api/terminals/`. The 405 is not faked |
 
 ## World spec
 
@@ -1547,10 +1639,12 @@ are `--config-dir` and `--trace`.
 | Verb | Notes |
 |---|---|
 | `serve` | see above |
-| `logs [--json] [--event KEY] [--since T] [--follow [--timeout D]]` | reads the files. `--follow` wakes on the server's append notice on the control socket, never on a timer. With no server it waits out its own `--timeout` |
+| `logs [--json] [--event KEY] [--since T] [--follow [--timeout D]]` | reads the files. `--follow` wakes on the server's append notice on the control socket, never on a timer. With no server it waits out its own `--timeout`. Without `--event`, `--follow` prints matches as they are added, until `--timeout` or a signal. With `--event KEY`, it prints the first match, one already written or a new one, and exits 0, as `docs/cli.md` says. A client that needs the first line a predicate accepts subscribes to `GET /v1/follow` and re-reads `logs --json --event KEY` on each notice |
 | `audit [--tail N] [--project ID] [--event E] [--outcome O] [--json] [--path]` | reads the file |
 | `grant [--project X] [--json]` | see "relay grant --json" |
 | `project update --id ID --files-read-only=true\|false` | |
+| `project create (--name N --path P \| --file F) [--json]` | the core of `POST /api/projects`, gated by `project.grant`. Text: `created project NAME (ID)`; `--json`: the 201 project view on one line. Both forms, or neither, exit 1 (`--file cannot be combined with --name or --path`, `pass --name and --path, or --file`) |
+| `project edit --id ID --file F [--json]` | the core of `PUT /api/projects/{id}`. Gated as `PUT` is: a widening body asks `project.grant`, a narrowing one does not. Text: `updated project NAME (ID)`. Missing `--id` or `--file` exits 1 (`--id is required`, `--file is required`) |
 | `eve enrol`, `eve list`, `eve revoke --id ID` | `eve enrol` is gated by `eve.enrolment.open`. `eve revoke` is gated by `eve.passkey.revoke` and refuses the last passkey (exit 1), as relay does |
 | `service list`, `service restart --id ID\|--name N`, `service stop --id ID\|--name N [--json]` | `stop` ends the service process and prints `stopped service "ID"` (`{"id"}` with `--json`) |
 | `mcp list` | `ENDPOINT` is a stdio MCP's command with its arguments, an HTTP MCP's URL, else `-` |
@@ -1566,6 +1660,15 @@ Rules:
 - A relay flag fakerelay does not support exits 2:
   `error: fakerelay does not support --X`.
 - Any other verb exits 2 and points to this file.
+- `project create` and `project edit` read `--file F` in the CLI process (`-` is
+  stdin, up to 8 MiB) and make a relative `--path` absolute against the CLI's
+  working directory; the service has neither. A file that cannot be opened,
+  read or is too large exits 1 (`error: open F: ...`, `error: read F: ...`,
+  `error: F is larger than 8388608 bytes`). The body rides in `POST /v1/verb`
+  as `body`; argv keeps the absolute `--path` and `--file F`. A core refusal
+  exits 1 as `error: bridge error (code -32603): MESSAGE`, a presence denial
+  with `presence was refused` and a denied `control_decision` row with
+  `via: cli`.
 - relay has no `project list` verb. A client reads projects with
   `grant --json` and `logs --event project.create`.
 - Verbs that relay adds later are added here after they land.
@@ -1584,7 +1687,7 @@ credential and is not on any TCP listener. `ctl` is the client.
 | `PUT /v1/hosts/{id}/status` `{status, error}` | `ctl host status --id --status [--error]` |
 | `POST /v1/projects/{id}/fs-events` `{path, kind}` gives `{delivered}` | `ctl fs-event --project --path [--kind]` |
 | `GET` and `POST /v1/clock` (`set`, or `advance_ms`) | `ctl clock show\|set\|advance` |
-| `POST /v1/verb` `{argv, trace}` gives `{code, stdout, stderr}` | the CLI forwarder |
+| `POST /v1/verb` `{argv, trace, body}` gives `{code, stdout, stderr}`; `body` is base64 bytes, the file of `project create\|edit` | the CLI forwarder |
 | `GET /v1/follow`: NDJSON `{file, size}` per append | inside `logs --follow` |
 
 - `ctl state` returns the live state. `--json` prints it as JSON.
@@ -1734,7 +1837,9 @@ the exit code. There is no restart supervision.
 Where fakerelay differs from relay on purpose:
 
 - **Echo agent and echo terminals.** An agent answers per the model's `reply`.
-  Terminal input comes back as output, with `\r` becoming `\r\n`.
+  Terminal input comes back as output, with `\r` becoming `\r\n`. A terminal
+  ends on `\x04` at an empty line or on an `exit N` line (see Echo terminal).
+  Drop-in starts an echo terminal, not a Claude process.
 - **Events come before the answer, sessions included.** For example,
   `chat.turn` is written before `message_complete`.
 - **Turn order.** For a tracked session the order is `user_message`,
@@ -1768,7 +1873,7 @@ Where fakerelay differs from relay on purpose:
 - `model.sock` and the model endpoint, which arrive with the swap below;
 - the passkey login page;
 - `frontend.request` lines;
-- drop-in;
+- drop-in's `turn_timeout` refusal;
 - tool calls through the bridge;
 - tasks. A service that registers a manifest for them serves them, and
   fakerelay dispatches to it;
