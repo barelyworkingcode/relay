@@ -13,8 +13,8 @@ const enrolDeadline = 60 * time.Second
 
 // EnrolSend opens one TCP connection to ready.json listeners.enrolment, writes
 // each frame as a line and reads its reply line, in order. When relay closes
-// the connection early (it does after 64 frames) the replies read so far are
-// returned. It fails t when a reply does not come in 60 s.
+// the connection early (shortly after the 64th frame) the replies read so far
+// are returned. It fails t when a reply does not come in 60 s.
 func (i *Instance) EnrolSend(frames ...any) []map[string]any {
 	i.t.Helper()
 	addr := i.Ready.Listeners["enrolment"]

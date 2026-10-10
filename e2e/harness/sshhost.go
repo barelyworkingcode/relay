@@ -259,7 +259,7 @@ func (i *Instance) TrustSSHHost(h *SSHHost) {
 		i.t.Fatalf("writing %s: %v", known, werr)
 	}
 	wrapper := filepath.Join(i.Home, ".local", "bin", "ssh")
-	script := fmt.Sprintf("#!/bin/sh\nexec /usr/bin/ssh -o UserKnownHostsFile=%s -o GlobalKnownHostsFile=/dev/null \"$@\"\n", shellQuote(known))
+	script := fmt.Sprintf("#!/bin/sh\nexec /usr/bin/ssh -F /dev/null -o UserKnownHostsFile=%s -o GlobalKnownHostsFile=/dev/null \"$@\"\n", shellQuote(known))
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		i.t.Fatalf("writing %s: %v", wrapper, err)
 	}
