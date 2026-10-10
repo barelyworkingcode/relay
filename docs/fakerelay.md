@@ -823,6 +823,12 @@ cause is reported as `ERROR`.
 
 Behaviour:
 
+- fakerelay writes the event `fakerelay.watch` for every `watch` it answers,
+  with `project_id`: status `ok` once the connection holds the watch and
+  before `watch_ok` is queued, or status `error` with the `watch_error` code
+  as `reason`. A client waits for a held watch with
+  `logs --follow --event fakerelay.watch` or `GET /v1/follow`. relay has no
+  such event.
 - `watch` is idempotent per connection. A repeated `watch` for a watched
   project answers `watch_ok` again.
 - Frames for one project are handled in order, so a `watch` then an `unwatch`
@@ -1563,6 +1569,14 @@ Rules:
   - `text`: the answer is the fixed `text`.
   - `permission`: raises a `permission_request` for `tool`, then echoes on
     approve.
+  - `plan`: a plan-mode turn. `text` (optional) is the plan. The agent
+    writes it to `DIR/home/.claude/plans/<sessionId>.md` before any frame,
+    then sends a `Write` `tool_use` with that `file_path` and its
+    `tool_result`, then an `ExitPlanMode` `tool_use` with `input.plan` equal to
+    `text`. There is no text block, so the history message and the `turn_done`
+    excerpt are `""`, and no `permission_request` is raised. If the file cannot
+    be written the turn ends like `fail` with `apiErrorStatus: 500`. A client
+    reads the plan from `DIR/home/.claude/plans`.
   - `fail`: `message_complete` with `isError: true`.
 - `agent` is the host's initial `host_status`: `none`, `connecting`,
   `connected` or `unreachable`.
@@ -1627,6 +1641,7 @@ Everything the instance owns sits under DIR:
 - `projects/`, `hosts/`, and `trash/` (console deletes)
 - `fakes/<name>.jsonl`, the call logs of the in-process fakes
 - `home/`. Git runs with `HOME` set to it and `GIT_CONFIG_NOSYSTEM=1`.
+  `home/.claude/plans/` holds the plan files of `plan` replies.
 
 Nothing is shared across instances. Every TCP port is `:0` unless the world
 names one. Any number of instances run at once, each in its own DIR.
@@ -1686,6 +1701,8 @@ credential and is not on any TCP listener. `ctl` is the client.
 | `POST /v1/faults` gives 201 `{id}`; `DELETE /v1/faults[/{id}]`; `POST /v1/faults/{id}/release` | `ctl fault add\|clear\|release` |
 | `PUT /v1/hosts/{id}/status` `{status, error}` | `ctl host status --id --status [--error]` |
 | `POST /v1/projects/{id}/fs-events` `{path, kind}` gives `{delivered}` | `ctl fs-event --project --path [--kind]` |
+| `POST /v1/projects/{id}/fs-write` `{path, content, encoding}` gives `{path, kind, delivered}` (fake-only) | `ctl fs-write --project --path (--content \| --file)` |
+| `POST /v1/projects/{id}/watch-error` `{code, error}` gives `{delivered}` (fake-only) | `ctl watch-error --project [--code] [--error]` |
 | `GET` and `POST /v1/clock` (`set`, or `advance_ms`) | `ctl clock show\|set\|advance` |
 | `POST /v1/verb` `{argv, trace, body}` gives `{code, stdout, stderr}`; `body` is base64 bytes, the file of `project create\|edit` | the CLI forwarder |
 | `GET /v1/follow`: NDJSON `{file, size}` per append | inside `logs --follow` |
@@ -1695,6 +1712,21 @@ credential and is not on any TCP listener. `ctl` is the client.
   every `/ws/files` connection.
 - `ctl fs-event` answers `{delivered}`, the number of connections that got the
   frame.
+- `ctl fs-write` writes a file as a process outside relay would. It ignores
+  `files_read_only`, writes no audit row and no `file.*` event, and connects
+  no host agent. It keeps containment: `TRAVERSAL`, `SYMLINK`, and a missing
+  parent is `ENOENT`. Parents are not created. `encoding` is `utf8` (default)
+  or `base64`; `--content` sends `utf8`, `--file` sends `base64`. `--file -`
+  reads stdin; the cap is 10485760 bytes. Exactly one of `--content` and
+  `--file` is required (exit 2). `kind` is `rename` when the file did not
+  exist, else `change`. It answers `{path, kind, delivered}` after the
+  `fs_event` is on the wire of every watching connection.
+- `ctl watch-error` ends every watch on the project and sends each watching
+  connection `{"type":"watch_error","project_id","code","error"}`. `code`
+  defaults to `ERROR` and `error` to `watch failed`; any code in the
+  `/ws/files` list is allowed, others answer 400. It is one-shot: a later
+  `watch` answers `watch_ok`. It answers `{delivered}` after the frame is on
+  each wire. An unknown project answers as `ctl fs-event` does.
 - The clock moves Eve window expiry and credential `expires`.
 
 ## Faults
@@ -1850,6 +1882,11 @@ Where fakerelay differs from relay on purpose:
   `delete_session` does (D6).
 - **`fs_event` comes after a mutating response, or from `ctl fs-event`.** Disk
   is not watched.
+- **`watch_error` can arrive mid-watch with any code.** relay ends an open
+  watch only with `PROJECT_CHANGED`; `ctl watch-error` sends any documented
+  code. This is a parity gap on purpose, to exercise a client's recovery.
+- **`ctl fs-write` is an outside writer.** It bypasses `files_read_only` and
+  the audit log, which relay's own write route does not.
 - **Console delete moves the entry to `DIR/trash`.**
 - **Rename and move refuse an existing destination** with 409 `EEXIST`, on
   console and host projects alike (D10). A case-only rename of the same entry
