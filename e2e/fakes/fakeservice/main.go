@@ -4,7 +4,7 @@
 // registers a manifest and serves the declared routes. Every inbound request
 // and every bridge outcome is appended to the call log.
 //
-//	fakeservice --call-log FILE [--config FILE] [--claim-id ID]
+//	fakeservice --call-log FILE [--config FILE] [--claim-id ID] [--close-bridge-after-register]
 //
 // A refused Hello or RegisterManifest is logged and the process stays up, so a
 // test reads the refusal from the call log rather than from a restart loop.
@@ -60,6 +60,7 @@ func run() error {
 	logPath := flag.String("call-log", "", "call log file (required)")
 	configPath := flag.String("config", "", "declare this file as the editable config")
 	claimID := flag.String("claim-id", "", "register the manifest under this service id")
+	closeBridge := flag.Bool("close-bridge-after-register", false, "close the bridge connection after a successful RegisterManifest and keep running")
 	flag.Parse()
 	if *logPath == "" {
 		return errors.New("--call-log is required")
@@ -107,8 +108,9 @@ func run() error {
 	srv := &http.Server{Handler: handler(log, bearer), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 
-	// The connection stays open for the process lifetime: relay forgets the
-	// manifest when the registering connection closes.
+	// By default the connection stays open for the process lifetime.
+	// --close-bridge-after-register closes it once the manifest is registered,
+	// as a service that registers on a one-shot connection does.
 	conn, err := net.DialTimeout("unix", sockPath, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial bridge: %w", err)
@@ -139,6 +141,9 @@ func run() error {
 				return err
 			}
 			logOutcome(log, "register", rr)
+			if *closeBridge && rr.Type == "OK" {
+				_ = conn.Close()
+			}
 		}
 	}
 

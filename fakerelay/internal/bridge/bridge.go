@@ -77,8 +77,9 @@ type Hooks struct {
 	Events   *events.Log
 	RelayPID int
 	Launch   *launch.Manager
-	// Register installs a manifest and returns the function that forgets it.
-	Register func(serviceID string, m Manifest, socket, token string) (forget func(), err error)
+	// Register installs a manifest. The registration outlives the connection
+	// that made it; only the service's process ending forgets it.
+	Register func(serviceID string, m Manifest, socket, token string) error
 	// Fault runs the BRIDGE <Type> faults for a frame; it may block while a
 	// fault holds the frame.
 	Fault func(typ string) FaultResult
@@ -132,12 +133,6 @@ func Serve(l net.Listener, h Hooks) {
 
 func serveConn(c net.Conn, h Hooks) {
 	defer c.Close()
-	var forgets []func()
-	defer func() {
-		for _, f := range forgets {
-			f()
-		}
-	}()
 	sc := bufio.NewScanner(c)
 	sc.Buffer(make([]byte, 0, 64<<10), maxFrame)
 	for sc.Scan() {
@@ -161,11 +156,7 @@ func serveConn(c net.Conn, h Hooks) {
 		case "Hello":
 			reply(c, hello(ctx, c, req, h))
 		case "RegisterManifest":
-			frame, forget := register(ctx, c, req, h)
-			if forget != nil {
-				forgets = append(forgets, forget)
-			}
-			reply(c, frame)
+			reply(c, register(ctx, c, req, h))
 		default:
 			reply(c, errFrame(CodeUnsupported, "unknown request type: "+req.Type))
 		}
@@ -184,11 +175,11 @@ func hello(ctx context.Context, c net.Conn, req request, h Hooks) []byte {
 	return errFrame(CodeRefused, "hello refused")
 }
 
-func register(ctx context.Context, c net.Conn, req request, h Hooks) ([]byte, func()) {
+func register(ctx context.Context, c net.Conn, req request, h Hooks) []byte {
 	ev := h.Events.Begin(ctx, "service.manifest.register")
-	refuse := func(status, reason string, code int, msg string) ([]byte, func()) {
+	refuse := func(status, reason string, code int, msg string) []byte {
 		ev.End(status, reason, errors.New(msg))
-		return errFrame(code, msg), nil
+		return errFrame(code, msg)
 	}
 	if req.Token != "" {
 		return refuse("denied", "unauthorized", CodeRefused, msgToken)
@@ -222,12 +213,12 @@ func register(ctx context.Context, c net.Conn, req request, h Hooks) ([]byte, fu
 	if err := m.Validate(); err != nil {
 		return refuse("error", "invalid", CodeInvalid, err.Error())
 	}
-	forget, err := h.Register(a.ServiceID, m, a.InternalSocket, a.InternalToken)
+	err = h.Register(a.ServiceID, m, a.InternalSocket, a.InternalToken)
 	if err != nil {
 		return refuse("error", "conflict", CodeInvalid, err.Error())
 	}
 	ev.End("ok", "", nil)
-	return []byte(`{"type":"OK"}`), forget
+	return []byte(`{"type":"OK"}`)
 }
 
 func errFrame(code int, msg string) []byte {

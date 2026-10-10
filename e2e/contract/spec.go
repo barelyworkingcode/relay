@@ -74,10 +74,11 @@ type MCP struct {
 }
 
 // Service is a fakeservice. Config, when set, is written to the file passed
-// as its --config.
+// as its --config. Args are appended to its command line.
 type Service struct {
 	ID, Name string
 	Config   json.RawMessage
+	Args     []string
 }
 
 const (
@@ -264,6 +265,7 @@ func (sp Spec) serviceRecords(fake bool) []any {
 		if len(s.Config) > 0 {
 			args = append(args, "--config", tokInstance+"/fakes/"+s.ID+".config.json")
 		}
+		args = append(args, s.Args...)
 		rec := map[string]any{
 			"id": s.ID, "command": harness.BundlePaths().FakeService, "args": args,
 			"env": map[string]string{}, "autostart": true, "capabilities": []string{"manifest"},
