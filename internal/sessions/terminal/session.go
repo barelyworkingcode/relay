@@ -576,6 +576,9 @@ func (s *Session) Close() {
 	}
 }
 
+// Done is closed once the shim has been collected and the exit recorded.
+func (s *Session) Done() <-chan struct{} { return s.waitDone }
+
 // Alive reports whether the terminal process is still running.
 func (s *Session) Alive() bool { return s.alive.Load() }
 
