@@ -220,6 +220,29 @@ func cosTurnFinished(id, marker string) func([]cosFrame) bool {
 	}
 }
 
+// cosTurnFinishedAfter is true when a turn_done for the session at or after
+// frame index from is followed by an idle frame. It never reads the model's
+// text: delivery of the message is proved by relay's audit rows, and the
+// model may answer with any words, an earlier turn's included.
+func cosTurnFinishedAfter(id string, from int) func([]cosFrame) bool {
+	return func(fs []cosFrame) bool {
+		if from > len(fs) {
+			return false
+		}
+		done := false
+		for _, f := range fs[from:] {
+			switch {
+			case f.SessionID != id:
+			case f.Type == "turn_done":
+				done = true
+			case done && f.Type == "session_state" && f.State == "idle":
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // cosRequest sends a frontend-socket request, in the scope when scoped.
 func cosRequest(ctx context.Context, e env, token string, scoped bool, method, path string, body []byte, timeout time.Duration) frontendResponse {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -394,7 +417,7 @@ func driveChiefOfStaff(ctx context.Context, e env, obs, cos *cosConn, run string
 	r.RejoinSeen = obs.waitFor(ctx, cosWait, cosJoined(id, 2))
 	r.Frames, r.CosFrames = obs.snapshot(), cos.snapshot()
 
-	r.Rows, r.RowsErr = sessionMessageRows(ctx, e, id)
+	r.Rows, r.RowsErr = sessionMessageRows(ctx, e, id, 1)
 	r.Decisions, r.DecErr = controlDecisionRows(ctx, e)
 
 	if err := obs.send(map[string]string{"type": "end_session", "sessionId": id}); err != nil {
@@ -430,15 +453,16 @@ func auditJSONRows(ctx context.Context, e env, args ...string) ([]audit.AuditEve
 	return rows, nil
 }
 
-// sessionMessageRows polls until the completion row for the session is
-// written or the wait ends.
-func sessionMessageRows(ctx context.Context, e env, id string) ([]audit.AuditEvent, string) {
+// sessionMessageRows polls until the session has the wanted number of
+// completion rows or the wait ends. Completion rows go through relay's async
+// audit queue, so a read right after a reply can miss the latest one.
+func sessionMessageRows(ctx context.Context, e env, id string, completions int) ([]audit.AuditEvent, string) {
 	for deadline := time.Now().Add(5 * time.Second); ; {
 		rows, err := auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionMessage), "--grep", id, "--json", "--tail", "50")
 		if err != nil {
 			return nil, err.Error()
 		}
-		if len(messageRowsFor(rows, id, audit.AuditPhaseCompletion)) > 0 || time.Now().After(deadline) || ctx.Err() != nil {
+		if len(messageRowsFor(rows, id, audit.AuditPhaseCompletion)) >= completions || time.Now().After(deadline) || ctx.Err() != nil {
 			return rows, ""
 		}
 		time.Sleep(200 * time.Millisecond)
