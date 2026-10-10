@@ -1254,6 +1254,12 @@ Client to server. Binds the connection to a session and replays it.
 - **Frame:** `{"type": "join_session", "sessionId": "<id>"}`.
 - **Answer:** `session_joined` (with the session's history and `live`), or
   `{"type": "error", "message": "session not found: <id>"}`.
+- **`session_joined.history[]`:** entries `{"timestamp": "<string>",
+  "role": "user"|"assistant"|"tool", "content": <raw JSON>, "toolUseId"?: "<id>",
+  "origin"?: "<writer>", "toolName"?, "files"?}`. `toolUseId` is set on `tool`
+  entries; `origin` on a `user` entry that someone other than the person wrote.
+  Source, fallback and the mapping from Claude's transcript:
+  [History on join](session-host.md#history-on-join).
 
 ### ws:/ws session_state
 

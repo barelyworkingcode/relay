@@ -73,6 +73,13 @@ starts per instance; none touches the network beyond loopback.
   catalogue JSON, required) and `--call-log <file>` (required).
 - `fakeagent` is the claude, pi and codex CLI. It picks its persona from the
   name it is run as and answers `--version`; any other name exits 2.
+  - The claude persona writes its transcript for every turn, before the
+    `result` line, to `$HOME/.claude/projects/<dir name>/<conversation id>.jsonl`.
+    `<dir name>` is its working directory with every character other than
+    `A-Z`, `a-z`, `0-9` replaced by `-`, which is Claude CLI's rule. This is the
+    fake's contract, so a test can read `join_session` history. The line shapes
+    and what history they give are under
+    [History on join](session-host.md#history-on-join).
 
 The catalogue is the harness spec's `Catalogue` field, written to
 `<id>.catalogue.json` in the instance's fake directory. Every request a fake
