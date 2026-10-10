@@ -525,7 +525,7 @@ exercise it. Goals and features above use these names.
 ```yaml
 areas:
   sessions:
-    code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**, RelaySessions.entitlements]
+    code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**, internal/relayfs/**, RelaySessions.entitlements]
     journeys: [session-drop-in, session-drop-in-host, session-drop-in-tool-refused, blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, session-agent-state, session-codex, slow-route-keepalive, session-host-restart, verify-fixtures-removed, chief-of-staff-send, cos-start, cos-start-outside-root, cos-start-host, cos-read-only-profile]
   sandbox:
     code: [cmd/relay/sandbox_*.go, cmd/relay/session_sandbox*.go, internal/bridge/sandbox*.go, internal/sessions/sandbox/**]
@@ -540,13 +540,13 @@ areas:
     code: [cmd/relay/grant_cmd.go, cmd/relay/router.go, internal/project/apply.go, internal/project/grant_widening.go, internal/membership/**, cmd/relay/membership_auth.go]
     journeys: [acme-sandbox-reach, acme-tools-through-bridge, gate-project-grant-neg, gate-project-grant-pos, stale-derived-access-edit, context-number-resave, disabled-tool-refused, grant-narrowing-live]
   mcps:
-    code: [cmd/relay/mcp_*.go, cmd/relay/ipc_mcp*.go, cmd/relay/exec_cmd.go, internal/mcp/**, internal/mcpbroker/**, internal/bridge/**, internal/jsonrpc/**]
+    code: [cmd/relay/mcp_*.go, cmd/relay/ipc_mcp*.go, cmd/relay/exec_cmd.go, internal/mcp/**, internal/mcpbroker/**, internal/bridge/**, internal/jsonrpc/**, cmd/relay/helpers.go]
     journeys: [acme-tools-through-bridge, tool-call-audited, gate-mcp-register-neg, gate-mcp-oauth-start-neg, gate-mcp-oauth-start-pos, gate-mcp-register-pos, disabled-tool-refused, verify-fixtures-removed]
   audit:
-    code: [cmd/relay/audit_*.go, cmd/relay/ipc_audit.go, internal/audit/**]
+    code: [cmd/relay/audit_*.go, cmd/relay/ipc_audit.go, internal/audit/**, internal/relayfs/**]
     journeys: [blank-model-refused, oversized-launch-audit-capped, tool-call-audited, gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, context-number-resave, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos, chief-of-staff-send, cos-start, cos-start-outside-root, cos-start-host]
   services:
-    code: [cmd/relay/service_*.go, cmd/relay/cli_service.go, cmd/relay/enhanced_services.go, cmd/relay/ipc_service*.go, internal/service/**]
+    code: [cmd/relay/service_*.go, cmd/relay/cli_service.go, cmd/relay/enhanced_services.go, cmd/relay/ipc_service*.go, internal/service/**, cmd/relay/helpers.go]
     journeys: [gate-service-register-neg, gate-service-register-pos, service-start-stop, service-restart-on-crash, settings-window-services, session-host-restart, verify-fixtures-removed]
   models:
     code: [cmd/relay/model_*.go, cmd/relay/router_model_host.go, cmd/relay/frontend_model_guard.go, cmd/relay/relay_llm_channel.go, cmd/relay/ipc_models.go, internal/modelbroker/**]
@@ -564,7 +564,7 @@ areas:
     code: [cmd/relay/host_*.go, cmd/relay/ipc_host*.go, internal/sshhost/**, cmd/relay/sshstub_*.go]
     journeys: [permission-mode-restart, slow-route-keepalive, verify-fixtures-removed]
   files:
-    code: [cmd/relay/file_*.go, cmd/relay/audit_file.go, cmd/relay/project_cmd.go, internal/projectfs/**, internal/relayfs/**]
+    code: [cmd/relay/file_*.go, cmd/relay/audit_file.go, cmd/relay/project_cmd.go, internal/projectfs/**]
     journeys: [file-plane-contained]
   presence:
     code: [cmd/relay/presence_gate.go, cmd/relay/presence_provider*.go, cmd/relay/admin_ops.go, cmd/relay/admin_read_ops.go, internal/presence/**]
@@ -588,7 +588,7 @@ areas:
     code: [web/**, cmd/relay/settings_html.go, cmd/relay/ipc_handlers.go, cmd/relay/ipc_overview.go, cmd/relay/overview_seed.go, cmd/relay/status_verbs.go, internal/webassets/**, cmd/relay/helpers.go]
     journeys: [settings-window-services, cos-settings]
   every-test:
-    code: [e2e/harness/**, e2e/fakes/**, e2e/go.mod, e2e/go.sum, go.mod, go.sum]
+    code: [e2e/harness/**, e2e/fakes/**, cmd/relay/admin_ops.go, cmd/relay/admin_read_ops.go, e2e/go.mod, e2e/go.sum, go.mod, go.sum]
     journeys: []
   no-test:
     code: [cmd/devboxverify/**, cmd/devboxpresence/**, cmd/devui/**, cmd/testmcp/**, cmd/testservice/**, .github/**, .githooks/**, .claude/**, scripts/**, e2e/contract/**, e2e/coverage/**, fakerelay/**, .gitignore, .golangci.yml, LICENSE]
@@ -620,7 +620,24 @@ areas:
   is covered only by the full verify at the close of an epic.
 - `journeys` is optional, a list of devboxverify journey ids. Test selection
   ignores it.
-- Any other key is an error. So is a bad name, a bad glob or a duplicate area.
+- Any other key is an error. So is a bad name, a bad glob, a duplicate area or
+  a key given twice in one area.
+
+**Form.** The parser reads the block line by line and enforces these.
+
+- Indent is exactly 0 spaces for `areas:`, 2 for an area name and 4 for its
+  keys. Any other indent is an error, and a tab in the indent is refused.
+- A `#` comment is a whole line that starts with `#` after its indent. A `#`
+  after a value is not a comment and stays part of the value.
+- A glob holds no backslash. Every glob is slash-separated.
+- A blank line is ignored. Any other line must be `key: value`.
+- Only the block under `## Areas` is read, and only when its fence says
+  `yaml`.
+
+**Goal heading.** A heading is a goal heading when its text, after markup is
+stripped, starts with `G` and a number from 1 to 99 (`G1`, `G12`). It may have
+any level. Any other heading ends the goal, so an `Areas:` line counts only
+between a goal heading and the next heading.
 
 **Glob.** A glob is a repo-relative path with `/` separators, no leading `/`
 and no `..`. It matches the whole path with Go's `path.Match` rules: `*` and
@@ -632,7 +649,8 @@ directory, and `dir/**` matches every path under `dir/` at any depth. A bare
 
 - `every-test` holds the files every feature test depends on: the e2e harness
   and fakes, the e2e module files and the root module files. A change to one
-  selects the whole feature package.
+  selects the whole feature package. A file that serves every door, such as the
+operator dispatch tables, sits here too.
 - `no-test` holds the files no feature test can exercise: the verify harness,
   CI and hook configuration, scripts, the contract and coverage packages, the
   fakerelay module and licence and lint files. A change to one selects

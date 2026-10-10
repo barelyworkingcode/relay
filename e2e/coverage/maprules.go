@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -183,14 +184,24 @@ type listedPkg struct {
 // binaries build from, test build included. Cgo, C, Objective-C, headers and
 // embedded files count with the Go files.
 func appBuildFiles(repoRoot string) ([]string, error) {
-	cmd := exec.Command("go", "list", "-deps", "-json", "-tags", "relaytest", "./cmd/relay", "./cmd/relaysessions")
-	cmd.Dir = repoRoot
-	cmd.Env = cleanGitEnv()
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	b, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("go list in %s: %w: %s", repoRoot, err, strings.TrimSpace(stderr.String()))
+	var outputs [][]byte
+	// The release build (no tags) holds files the test build never compiles.
+	for _, tags := range []string{"relaytest", ""} {
+		args := []string{"list", "-deps", "-json"}
+		if tags != "" {
+			args = append(args, "-tags", tags)
+		}
+		args = append(args, "./cmd/relay", "./cmd/relaysessions")
+		cmd := exec.Command("go", args...)
+		cmd.Dir = repoRoot
+		cmd.Env = cleanGitEnv()
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		b, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("go list (tags %q) in %s: %w: %s", tags, repoRoot, err, strings.TrimSpace(stderr.String()))
+		}
+		outputs = append(outputs, b)
 	}
 	root, err := filepath.Abs(repoRoot)
 	if err == nil {
@@ -200,26 +211,28 @@ func appBuildFiles(repoRoot string) ([]string, error) {
 		return nil, err
 	}
 	seen := map[string]bool{}
-	dec := json.NewDecoder(bytes.NewReader(b))
-	for dec.More() {
-		var p listedPkg
-		if err := dec.Decode(&p); err != nil {
-			return nil, fmt.Errorf("decoding go list output: %w", err)
-		}
-		if p.Module == nil || !p.Module.Main {
-			continue
-		}
-		dir, err := filepath.EvalSymlinks(p.Dir)
-		if err != nil {
-			return nil, err
-		}
-		for _, group := range [][]string{p.GoFiles, p.CgoFiles, p.CFiles, p.CXXFiles, p.MFiles, p.HFiles, p.SFiles, p.SwigFiles, p.SwigCXXFiles, p.SysoFiles, p.EmbedFiles} {
-			for _, f := range group {
-				rel, err := filepath.Rel(root, filepath.Join(dir, f))
-				if err != nil {
-					return nil, err
+	for _, b := range outputs {
+		dec := json.NewDecoder(bytes.NewReader(b))
+		for dec.More() {
+			var p listedPkg
+			if err := dec.Decode(&p); err != nil {
+				return nil, fmt.Errorf("decoding go list output: %w", err)
+			}
+			if p.Module == nil || !p.Module.Main {
+				continue
+			}
+			dir, err := filepath.EvalSymlinks(p.Dir)
+			if err != nil {
+				return nil, err
+			}
+			for _, group := range [][]string{p.GoFiles, p.CgoFiles, p.CFiles, p.CXXFiles, p.MFiles, p.HFiles, p.SFiles, p.SwigFiles, p.SwigCXXFiles, p.SysoFiles, p.EmbedFiles} {
+				for _, f := range group {
+					rel, err := filepath.Rel(root, filepath.Join(dir, f))
+					if err != nil {
+						return nil, err
+					}
+					seen[filepath.ToSlash(rel)] = true
 				}
-				seen[filepath.ToSlash(rel)] = true
 			}
 		}
 	}
@@ -251,10 +264,8 @@ func strayTests(e2eDir string) ([]string, error) {
 		if !strings.HasSuffix(p, "_test.go") {
 			return nil
 		}
-		for _, ok := range []string{"features/", "contract/", "coverage/"} {
-			if strings.HasPrefix(rel, ok) {
-				return nil
-			}
+		if dir := path.Dir(rel); dir == "features" || dir == "contract" || strings.HasPrefix(rel, "coverage/") {
+			return nil
 		}
 		f, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
 		if err != nil {

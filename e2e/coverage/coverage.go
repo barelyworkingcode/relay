@@ -102,6 +102,8 @@ func Check(repoRoot string, doors DoorsDoc) ([]Finding, error) {
 			return nil, err
 		}
 		fs = append(fs, mfs...)
+	} else {
+		fs = append(fs, Finding{"info", "FEATURES.md", "map rules M1 to M4 skipped: " + repoRoot + " has no .git"})
 	}
 
 	sort.SliceStable(fs, func(i, j int) bool {

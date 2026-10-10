@@ -46,8 +46,9 @@ func ParseAreaMap(featuresMD string) (AreaMap, []Finding) {
 	fenceLang := ""
 	section := ""
 	goal := ""
-	cur := ""        // area being read
-	inAreas := false // the "areas:" key was seen in the block
+	cur := ""                 // area being read
+	keys := map[string]bool{} // keys seen in the area being read
+	inAreas := false          // the "areas:" key was seen in the block
 	blockSeen := false
 	type goalLine struct {
 		goal, where string
@@ -74,6 +75,10 @@ func ParseAreaMap(featuresMD string) (AreaMap, []Finding) {
 			}
 			blockSeen = true
 			if trim == "" || strings.HasPrefix(trim, "#") {
+				continue
+			}
+			if strings.ContainsRune(line[:len(line)-len(strings.TrimLeft(line, " \t"))], '\t') {
+				bad(where, "indent uses a tab; use spaces")
 				continue
 			}
 			indent := len(line) - len(strings.TrimLeft(line, " "))
@@ -107,12 +112,18 @@ func ParseAreaMap(featuresMD string) (AreaMap, []Finding) {
 					bad(where, "area %q takes keys on the lines below, not a value", key)
 				}
 				cur = key
+				keys = map[string]bool{}
 				m.Code[key] = nil
 			case 4:
 				if cur == "" {
 					bad(where, "key %q sits outside an area", key)
 					continue
 				}
+				if keys[key] {
+					bad(where, "area %s: key %q is given twice", cur, key)
+					continue
+				}
+				keys[key] = true
 				switch key {
 				case "code":
 					items, err := flowList(val)
