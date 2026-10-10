@@ -352,7 +352,8 @@ manager byte for byte. A hidden tool that was not loaded is refused with no
 MCP call (`chat.call_tool`, `denied`, `not_loaded`). Calling a loaded tool
 by its real name works too.
 
-**What is hidden.** Nothing is hidden until the project has a skill that lists
+**What is hidden.** The index header tells the model that the listed names are
+skills, not tools, and that `tool_search` is the first step. Nothing is hidden until the project has a skill that lists
 the MCP's tools: `relay project regen-skill` writes it from the project's
 grant. Before that every tool goes to the model, whatever the threshold. A tool
 is hidden when a project skill lists it, it is
