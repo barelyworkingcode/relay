@@ -46,7 +46,7 @@ func (s *svc) seed() {
 	for _, ws := range s.World.Sessions {
 		x := &session{id: ws.ID, projectID: ws.ProjectID, name: ws.Name, model: ws.Model, kind: s.kindOf(ws.Model),
 			createdAt: s.started, since: s.started, live: ws.State != "dormant", state: "idle", stats: newStats(),
-			viewers: map[*conn]bool{}, permMode: "default"}
+			viewers: map[*conn]bool{}}
 		if x.live == false {
 			x.state = "ended"
 		}
@@ -88,7 +88,7 @@ type launchBody struct {
 func (s *svc) launch(t launchTarget, b launchBody, kind, origin string, headless bool) *session {
 	x := &session{id: newUUID(), projectID: t.project.ID, name: b.Name, directory: t.dir, folder: b.Folder, model: b.Model, kind: kind,
 		origin: origin, headless: headless, createdAt: s.now(), host: t.host, live: true, state: "idle", stats: newStats(),
-		viewers: map[*conn]bool{}, permMode: "default"}
+		viewers: map[*conn]bool{}}
 	x.since = x.createdAt
 	if mode, _ := b.Settings["permissionMode"].(string); mode != "" {
 		x.permMode = mode
@@ -177,7 +177,10 @@ func (s *svc) createdView(x *session) map[string]any {
 	defer s.mu.Unlock()
 	v := map[string]any{"sessionId": x.id, "projectId": x.projectID, "name": x.name, "directory": x.directory, "model": x.model,
 		"providerType": x.kind, "createdAt": x.createdAt.Format(time.RFC3339), "messages": []any{}, "stats": x.stats,
-		"permissionMode": x.permMode, "host": nil}
+	}
+	if x.permMode != "" {
+		v["permissionMode"] = x.permMode
+	}
 	if x.host != nil {
 		v["host"] = x.host
 	}
@@ -316,6 +319,9 @@ func (s *svc) runTurn(x *session, text, origin, trace string) {
 		x.lastMsg = s.now()
 		x.stats["inputTokens"] = x.stats["inputTokens"].(int) + words(text)
 		x.stats["outputTokens"] = x.stats["outputTokens"].(int) + words(reply.String())
+		// relay reports measured speeds after a turn; the fake reports fixed
+		// non-zero ones so the keys appear as they do there.
+		x.stats["timeToFirstToken"], x.stats["tokensPerSecond"] = 0.01, 1.0
 	}
 	stats := map[string]any{}
 	for k, v := range x.stats {

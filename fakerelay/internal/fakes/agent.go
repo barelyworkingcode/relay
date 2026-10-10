@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -31,7 +30,6 @@ type scripted struct {
 	log   *CallLog
 
 	inited atomic.Bool
-	msgSeq atomic.Int64
 
 	mu    sync.Mutex
 	waits map[string]chan bool
@@ -56,7 +54,7 @@ func (a *scripted) Turn(ctx context.Context, text string, emit func(Frame)) erro
 		emit(llm(map[string]any{"type": "system", "subtype": "init", "model": a.info.Model, "cwd": a.info.Directory,
 			"tools": []string{}, "mcp_servers": []string{}}))
 	}
-	msg := map[string]any{"id": "m" + itoa(a.msgSeq.Add(1)), "role": "assistant", "content": []any{}}
+	msg := map[string]any{"id": "msg_" + randID(), "role": "assistant", "content": []any{}}
 	if a.kind == "fail" {
 		emit(llm(map[string]any{"type": "assistant", "message": msg, "error": "api_error", "apiErrorStatus": 529}))
 		return &TurnError{Status: 529}
@@ -126,5 +124,3 @@ func (a *scripted) Answer(permissionID string, approved bool) {
 		ch <- approved
 	}
 }
-
-func itoa(n int64) string { return strconv.FormatInt(n, 10) }

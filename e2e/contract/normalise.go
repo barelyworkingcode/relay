@@ -20,6 +20,10 @@ var (
 	tsRE     = regexp.MustCompile(`\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)`)
 	ctlRE    = regexp.MustCompile(`ControlPath=\S+`)
 	baseIDRE = regexp.MustCompile(uuidRE)
+	// msgIDRE is a model message id: the agent generates a fresh one per turn.
+	msgIDRE = regexp.MustCompile(`msg_[0-9a-f]{16}`)
+	// openUntilRE is the wall-clock close time `relay eve enrol` prints.
+	openUntilRE = regexp.MustCompile(`open until \d\d:\d\d:\d\d`)
 )
 
 // timeKeys hold a clock reading or a duration. Adding a key needs a stated
@@ -131,6 +135,10 @@ func (n *normaliser) text(s string) string {
 	s = portRE.ReplaceAllString(s, "127.0.0.1:<PORT>")
 	s = sockRE.ReplaceAllString(s, "relay-frontend-<PID>.sock")
 	s = tsRE.ReplaceAllString(s, "<TS>")
+	s = openUntilRE.ReplaceAllString(s, "open until <CLOCK>")
+	for _, id := range msgIDRE.FindAllString(s, -1) {
+		n.learn(id)
+	}
 	return n.idRE.ReplaceAllStringFunc(s, func(id string) string {
 		k, ok := n.num[id]
 		if !ok {

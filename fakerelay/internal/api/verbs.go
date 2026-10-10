@@ -8,10 +8,12 @@ import (
 	"flag"
 	"fmt"
 	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/barelyworkingcode/relay/fakerelay/internal/server"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/state"
+	"github.com/barelyworkingcode/relay/fakerelay/internal/world"
 )
 
 func (a *api) verbs(r server.Registrar) {
@@ -172,6 +174,9 @@ func (a *api) eveListVerb(ctx context.Context, args []string) server.VerbResult 
 	var pending []string
 	a.State.Read(func(m *state.Model) { keys, pending = passkeys(m), revocations(m) })
 	a.Events.Begin(ctx, "eve.list").Set("count", len(keys)).End("ok", "", nil)
+	if len(keys) == 0 {
+		return out("no eve passkeys reported\n")
+	}
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "LABEL\tCREDENTIAL ID\tCREATED\tLAST USED\tSTATUS")
@@ -197,7 +202,12 @@ func (a *api) eveRevokeVerb(ctx context.Context, args []string) server.VerbResul
 	ev := a.Events.Begin(ctx, "eve.passkey.revoke").Set("passkey_id", *id)
 	refuse := func(reason, msg string) server.VerbResult {
 		ev.End("error", reason, errors.New(msg))
-		return fail(1, "%s", msg)
+		if reason == "invalid" {
+			return fail(1, "%s", msg)
+		}
+		// The service refuses over the bridge, and the CLI prints that error as
+		// the bridge client words it.
+		return fail(1, "bridge error (code -32603): %s", msg)
 	}
 	if *id == "" {
 		return refuse("invalid", "--id is required")
@@ -236,7 +246,7 @@ func (a *api) eveRevokeVerb(ctx context.Context, args []string) server.VerbResul
 		return nil
 	})
 	ev.End("ok", "", nil)
-	return out("eve passkey %s will stop working on its next use; eve signs out its sessions when it applies the revocation\n", abbrev(*id))
+	return out("eve passkey %s: revocation pending\n  it will stop working on its next use\n  eve signs out every session that passkey minted when it applies the revocation\n", abbrev(*id))
 }
 
 func (a *api) mcpListVerb(ctx context.Context, args []string) server.VerbResult {
@@ -249,8 +259,20 @@ func (a *api) mcpListVerb(ctx context.Context, args []string) server.VerbResult 
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tNAME\tTRANSPORT\tENDPOINT")
 	for _, m := range list {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", m.ID, m.Name, m.Transport, "-")
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", m.ID, m.Name, m.Transport, endpoint(m))
 	}
 	_ = tw.Flush()
 	return server.VerbResult{Stdout: buf.Bytes()}
+}
+
+// endpoint is the ENDPOINT column: a stdio MCP's command with its arguments,
+// an HTTP MCP's URL.
+func endpoint(m world.MCP) string {
+	switch {
+	case m.Transport == "http" && m.URL != "":
+		return m.URL
+	case m.Command != "":
+		return strings.Join(append([]string{m.Command}, m.Args...), " ")
+	}
+	return "-"
 }

@@ -56,11 +56,13 @@ func (a *api) listTemplates(w http.ResponseWriter, r *http.Request) {
 				out = append(out, sortedIDs(h.TerminalTemplates, func(t world.Template) string { return t.ID })...)
 			}
 		default:
+			var all []world.Template
 			for _, t := range m.Templates {
 				if allows(p.AllowedTemplates, t.ID) {
-					out = append(out, t)
+					all = append(all, t)
 				}
 			}
+			out = append(out, sortedIDs(all, func(t world.Template) string { return t.ID })...)
 		}
 	})
 	a.Events.Begin(r.Context(), "template.list").Set("count", len(out)).End("ok", "", nil)

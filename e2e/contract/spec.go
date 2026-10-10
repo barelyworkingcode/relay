@@ -333,11 +333,20 @@ func (sp Spec) fakeWorld() (map[string]json.RawMessage, error) {
 	}
 	var mcps []any
 	for _, c := range sp.MCPs {
-		mcps = append(mcps, map[string]any{"id": c.ID, "name": sp.mcpName(c), "transport": "stdio", "catalogue": c.Catalogue})
+		mcps = append(mcps, map[string]any{"id": c.ID, "name": sp.mcpName(c), "transport": "stdio", "catalogue": c.Catalogue,
+			"command": harness.BundlePaths().FakeMCP,
+			"args": []string{"--catalogue", tokInstance + "/fakes/" + c.ID + ".catalogue.json",
+				"--call-log", tokInstance + "/fakes/" + c.ID + ".calls.jsonl", "--transport", "stdio"}})
 	}
 	if mcps != nil {
 		m["mcps"] = raw(mcps)
 	}
+	// The real target lists the harness's fake pi and codex CLIs as models
+	// (their --list-models output), so the fake world carries the same rows.
+	m["models"] = raw([]map[string]any{
+		{"value": "pi/fake/fake-echo", "label": "pi/fake/fake-echo", "group": "Pi · fake", "provider": "pi", "reply": map[string]string{"kind": "echo"}},
+		{"value": "codex/fake-echo", "label": "Fake Echo", "group": "Codex", "provider": "codex", "reply": map[string]string{"kind": "echo"}},
+	})
 	// The real target's ssh stub looks tools up on the test process's PATH.
 	m["host_path"] = raw(os.Getenv("PATH"))
 	return m, nil

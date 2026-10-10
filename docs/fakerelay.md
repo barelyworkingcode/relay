@@ -862,13 +862,14 @@ Success is 201 with the new session:
  "directory":"/home/acme/app","model":"haiku","providerType":"claude",
  "createdAt":"2026-10-09T10:00:00Z","messages":[],
  "stats":{"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,
-          "cacheCreationTokens":0,"costUsd":0},
- "permissionMode":"default","host":null}
+          "cacheCreationTokens":0,"costUsd":0}}
 ```
 
 `folder`, `settings`, `systemPrompt`, `headless`, `agent`, `origin`,
-`thinkingLevel` and `policy` are omitted when empty. `host` is `null` for a
-console project, or `{"id","name","ssh_argv",…}` for a host project.
+`thinkingLevel`, `policy` and `permissionMode` are omitted when empty, and
+`permissionMode` appears only when the request set one. `host` appears only for
+a host project, as `{"id","name","ssh_argv",…}`; a console project has no
+`host` key.
 
 A refusal is `{"error":"<message>"}` (Simple family, no code). Statuses and
 texts:
@@ -986,7 +987,7 @@ Frames sent to every viewer of a session:
 
 ```json
 {"type":"user_message","sessionId":"3f0c…","text":"hello"}
-{"type":"llm_event","sessionId":"3f0c…","event":{"v":2,"type":"assistant","message":{"id":"m1","role":"assistant","content":[]}}}
+{"type":"llm_event","sessionId":"3f0c…","event":{"v":2,"type":"assistant","message":{"id":"msg_0b8f722ad2df1cee","role":"assistant","content":[]}}}
 {"type":"stats_update","sessionId":"3f0c…","stats":{"inputTokens":3,"outputTokens":4,"cacheReadTokens":0,"cacheCreationTokens":0,"costUsd":0}}
 {"type":"message_complete","sessionId":"3f0c…"}
 {"type":"message_complete","sessionId":"3f0c…","isError":true,"apiErrorStatus":529}
@@ -1189,7 +1190,7 @@ unchanged and applies none of them.
 - The list is for one project, named by the `project` query parameter.
   Without it, or with an unknown id, the list is `[]`. A console project gets
   the console templates its `allowed_templates` permits. A host project gets
-  its host's templates, sorted by `id`, and never the console's.
+  its host's templates, and never the console's. Both lists are sorted by `id`.
 - An `id` must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`. Else 400
   `{"error":"template id must be letters, digits, '.', '_' or '-'"}`.
 - A duplicate id on create answers 409 `{"error":"template \"<id>\" already exists"}`.
@@ -1233,6 +1234,15 @@ checked against relay at `59cdf9e` (G4).
   `{key,label,type,default,min?,max?,step?,options?,placeholder?,hint?}`.
   `type` is `number`, `boolean`, `string`, `string[]` or `select`. fakerelay
   returns the four keys above, and may leave the field lists as shown.
+  The `pi` and `chat` hints are relay's words: "Reasoning depth for models that
+  support it. xhigh is OpenAI codex-max only." and "Let this chat session call
+  relay's own tools (email, calendar, ...)."
+- A message id in an `llm_event` is `msg_` and 16 random hex digits, as relay's
+  agents give. The `stats` of a finished turn also carry `timeToFirstToken` and
+  `tokensPerSecond`, fixed non-zero values here where relay measures them.
+- `eve list` with no passkeys prints `no eve passkeys reported`. `eve revoke`
+  prints `eve passkey ID: revocation pending` and two indented lines. Its
+  refusals read `error: bridge error (code -32603): <message>`.
 - Claude's rows `haiku`, `sonnet` and `opus` are fixed in relay. A world
   models list adds to them.
 
@@ -1442,7 +1452,7 @@ Schema 1:
 | `default_project` | `{home, work}` | absent |
 | `chief_of_staff` | `{project_id, model, daily_model_calls}` | absent |
 | `hosts[]` | `id, name, target, port, identity_file, probe (with node_version and claude_version), tmux_path, terminal_templates`, plus the fake fields `root`, `agent`, `persistent_sessions` | `root ""` is `DIR/hosts/<id>`. `agent "none"` |
-| `mcps[]` | `{id, name, transport, catalogue}`. `catalogue` is the e2e `Catalogue` JSON exactly | |
+| `mcps[]` | `{id, name, transport, catalogue}`, plus `command`, `args` (stdio) or `url` (http). `catalogue` is the e2e `Catalogue` JSON exactly. `command`, `args` and `url` are only what `mcp list` prints in `ENDPOINT`; fakerelay never starts them | `ENDPOINT` is `-` |
 | `models[]` | a `/api/models` row `{value, label, group, provider}`, plus `reply` | `reply {"kind": "echo"}` |
 | `terminal_templates[]` | relay's terminal template | none |
 | `sessions[]` | `{id, project_id, name, model, state: "idle"\|"dormant", messages: [{role, text}]}` | |
@@ -1542,15 +1552,17 @@ are `--config-dir` and `--trace`.
 | `grant [--project X] [--json]` | see "relay grant --json" |
 | `project update --id ID --files-read-only=true\|false` | |
 | `eve enrol`, `eve list`, `eve revoke --id ID` | `eve enrol` is gated by `eve.enrolment.open`. `eve revoke` is gated by `eve.passkey.revoke` and refuses the last passkey (exit 1), as relay does |
-| `service list`, `service restart --id ID\|--name N` | |
-| `mcp list` | |
+| `service list`, `service restart --id ID\|--name N`, `service stop --id ID\|--name N [--json]` | `stop` ends the service process and prints `stopped service "ID"` (`{"id"}` with `--json`) |
+| `mcp list` | `ENDPOINT` is a stdio MCP's command with its arguments, an HTTP MCP's URL, else `-` |
 | `ctl ...` | fake-only, see Control socket |
 
 Rules:
 
 - Every verb except `logs` and `audit` forwards over `POST /v1/verb`. With no
-  server it exits 1 with `error: relay is not running at DIR; ...` and does
-  not create DIR.
+  server it exits 1 with relay's refusal word for word:
+  ``error: relay is not running at DIR; `relay <verb>` requires the service.``
+  plus its five indented lines. `<verb>` is the words before the first flag.
+  It does not create DIR.
 - A relay flag fakerelay does not support exits 2:
   `error: fakerelay does not support --X`.
 - Any other verb exits 2 and points to this file.

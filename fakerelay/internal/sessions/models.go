@@ -86,8 +86,8 @@ func (s *svc) listModels(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"models": rows, "providerSettings": map[string]any{
 		"claude": []any{}, "codex": []any{},
 		"pi": []any{map[string]any{"key": "thinkingLevel", "label": "Thinking Level", "type": "select", "default": "medium",
-			"options": []string{"off", "minimal", "low", "medium", "high", "xhigh"}, "hint": "How hard the model thinks."}},
+			"options": []string{"off", "minimal", "low", "medium", "high", "xhigh"}, "hint": "Reasoning depth for models that support it. xhigh is OpenAI codex-max only."}},
 		"chat": []any{map[string]any{"key": "useRelayTools", "label": "Use Relay Tools", "type": "boolean", "default": false,
-			"hint": "Let the model call the tools relay grants."}},
+			"hint": "Let this chat session call relay's own tools (email, calendar, ...)."}},
 	}})
 }

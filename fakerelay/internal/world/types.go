@@ -235,6 +235,11 @@ type MCP struct {
 	Name      string          `json:"name"`
 	Transport string          `json:"transport"`
 	Catalogue json.RawMessage `json:"catalogue,omitempty"`
+	// Command and Args (stdio) or URL (http) are only what `relay mcp list`
+	// prints in its ENDPOINT column; fakerelay never starts the command.
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	URL     string   `json:"url,omitempty"`
 }
 
 type Model struct {
