@@ -282,6 +282,7 @@ func TestServiceEditDenied(t *testing.T) {
 	i := g5Start(t, g5Deny, g5Sleeper("acme-svc", false))
 	c := i.SocketHTTP(i.Credential("op"))
 
+	rows := 0
 	for name, body := range map[string]map[string]any{
 		"command change": {"display_name": "Acme acme-svc", "command": "/bin/sleep", "args": []string{"601"}},
 		"capability add": {"display_name": "Acme acme-svc", "command": "/bin/sleep", "args": []string{"600"}, "capabilities": []string{"manifest"}},
@@ -291,6 +292,15 @@ func TestServiceEditDenied(t *testing.T) {
 			t.Fatalf("a refused %s answered %d", name, resp.Status)
 		}
 		g2RequireRefusal(t, i, "service.update", resp.Trace, "service.register", "http")
+		// Refusal rows are fail-open and may land after the answer, so the read
+		// repeats until this pass's own row is counted, bounded by a deadline.
+		deadline := time.Now().Add(g5Up)
+		for len(g2Rows(i, "control_decision", "denied", map[string]any{"method": "service.register", "via": "http"})) < rows+1 {
+			if time.Now().After(deadline) {
+				t.Fatalf("a refused %s wrote no denied control_decision row of its own", name)
+			}
+		}
+		rows++
 		got := g5MustGet(t, i, "acme-svc")
 		if len(got.Args) != 1 || got.Args[0] != "600" || len(got.Capabilities) != 0 {
 			t.Fatalf("after a refused %s the service reads args=%v capabilities=%v, want [600] and none", name, got.Args, got.Capabilities)
@@ -446,24 +456,16 @@ func TestServiceRestartOnCrashThenFailed(t *testing.T) {
 	crash := g5Record("acme-crash", "/bin/sh", []string{"-c", "exit 3"}, true)
 	i := g5Start(t, nil, crash)
 
-	i.WaitEvent(harness.EventQuery{Key: "service.state", Fields: map[string]any{"service_id": "acme-crash", "phase": "restarting"}}, g5Up)
-
 	// The restart backoff runs on the server clock (docs/testing.md), so the
-	// test moves the clock instead of waiting out 1s, 2s, 4s, 8s and 16s. Each
-	// move is complete when the command exits; the loop repeats because the next
-	// timer is registered after the process exit, which has no signal of its own.
-	failedQ := harness.EventQuery{Key: "service.state", Fields: map[string]any{"service_id": "acme-crash", "phase": "failed"}}
-	var failed harness.Event
-	for n := 0; n < 400; n++ {
-		if got := i.Events(failedQ); len(got) > 0 {
-			failed = got[0]
-			break
-		}
+	// test moves the clock instead of waiting out 1s, 2s, 4s, 8s and 16s. The
+	// restarting event with attempt N is the signal that the attempt's timer is
+	// armed, so each move waits for it and the clock moves once per attempt,
+	// never far enough to reach the 60s stable-run window.
+	for attempt := 1; attempt <= 5; attempt++ {
+		i.WaitEvent(harness.EventQuery{Key: "service.state", Fields: map[string]any{"service_id": "acme-crash", "phase": "restarting", "attempt": float64(attempt)}}, g5Up)
 		i.ClockAdvance(20 * time.Second)
 	}
-	if failed == nil {
-		t.Fatalf("service never reached failed after the clock moved 400 times")
-	}
+	failed := i.WaitEvent(harness.EventQuery{Key: "service.state", Fields: map[string]any{"service_id": "acme-crash", "phase": "failed"}}, g5Up)
 	if a, _ := failed["attempt"].(float64); int(a) != 5 {
 		t.Fatalf("failed after attempt %v, want 5", failed["attempt"])
 	}
@@ -664,10 +666,12 @@ func TestBridgeHelloAndManifestIdentity(t *testing.T) {
 	t.Parallel()
 	dir := g5Dir(t)
 	good, goodLog := g5Fake(dir, "acme-good", true, []string{"manifest"})
+	// The mute service never reads its launch secret, so its launch stays unspent.
+	mute := g5Record("acme-mute", "/bin/sleep", []string{"600"}, true)
 	// The impostor says Hello as itself and registers its manifest under
 	// another service's id.
 	imp, impLog := g5Fake(dir, "acme-imp", true, []string{"manifest"}, "--claim-id", "acme-good")
-	i := g5Start(t, nil, good, imp)
+	i := g5Start(t, nil, good, imp, mute)
 
 	i.WaitEvent(harness.EventQuery{Key: "bridge.hello", Fields: map[string]any{"status": "ok", "service_id": "acme-good"}}, g5Up)
 	i.WaitEvent(harness.EventQuery{Key: "service.manifest.register", Fields: map[string]any{"status": "ok", "service_id": "acme-good"}}, g5Up)
@@ -690,7 +694,8 @@ func TestBridgeHelloAndManifestIdentity(t *testing.T) {
 		t.Fatalf("a manifest was registered for acme-imp")
 	}
 
-	wrong := i.BridgeSend(map[string]any{"type": "Hello", "name": "acme-good", "token": strings.Repeat("0", 64)})
+	g5WaitRunning(i, "acme-mute")
+	wrong := i.BridgeSend(map[string]any{"type": "Hello", "name": "acme-mute", "token": strings.Repeat("0", 64)})
 	if wrong.Type != "Error" || wrong.Code != -32001 {
 		t.Fatalf("Hello with a wrong secret answered %s code %d, want Error -32001", wrong.Type, wrong.Code)
 	}

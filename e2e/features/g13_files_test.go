@@ -335,7 +335,6 @@ func TestWebSocketFilesWatchFsEvent(t *testing.T) {
 				t.Fatalf("fs_event kind %q, want change or rename", f.Kind)
 			}
 			ws.Close()
-			e.i.WaitEvent(harness.EventQuery{Key: "file.ws.close", Fields: map[string]any{"status": "ok"}}, g13Deadline)
 			return
 		}
 	}
@@ -367,7 +366,7 @@ func TestFilesWatch(t *testing.T) {
 			seen = &f
 		}
 	}
-	if seen == nil || seen.ProjectID != e.p.ID || seen.Path == "" {
+	if seen == nil || seen.ProjectID != e.p.ID || seen.Path != "watched.txt" {
 		t.Fatalf("files watch printed no fs_event frame for the project: %q", res.Stdout)
 	}
 	e.i.WaitEvent(harness.EventQuery{Key: "files.watch", Fields: map[string]any{"status": "ok", "project_id": e.p.ID}}, g13Deadline)

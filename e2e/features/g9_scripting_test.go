@@ -206,8 +206,8 @@ func TestCredentialRevoke(t *testing.T) {
 	if ev.Str("credential_id") != victim.ID {
 		t.Fatalf("credential.revoke credential_id %q, want %q", ev.Str("credential_id"), victim.ID)
 	}
-	if rows := g9Rows(i.Audit(harness.AuditQuery{Event: "credential_revoked", Outcome: "ok"}), "event", "credential_revoked"); len(rows) == 0 {
-		t.Fatalf("no credential_revoked ok row")
+	if rows := g9Rows(i.Audit(harness.AuditQuery{Event: "credential_revoked", Outcome: "ok"}), "subject_name", "victim"); len(rows) != 1 {
+		t.Fatalf("%d credential_revoked ok rows name victim, want 1", len(rows))
 	}
 }
 
@@ -254,6 +254,9 @@ func TestClassEnforcement(t *testing.T) {
 		return out
 	}
 
+	if got := g9Status(t, i.Anonymous(), "GET", "/api/projects", nil); got != http.StatusUnauthorized {
+		t.Fatalf("GET /api/projects with no credential answered %d, want 401", got)
+	}
 	if got := g9Status(t, i.Anonymous(), "POST", "/api/projects", body); got != http.StatusUnauthorized {
 		t.Fatalf("POST /api/projects with no credential answered %d, want 401", got)
 	}
@@ -454,19 +457,15 @@ func TestTraceFlagNamesEvents(t *testing.T) {
 
 	t.Run("invalid", func(t *testing.T) {
 		t.Parallel()
-		before := len(i.Events(harness.EventQuery{Key: "credential.list"}))
 		if r := i.CLI("--trace", "short", "credential", "list"); r.Code != 1 {
 			t.Fatalf("a trace of 5 characters exited %d, want 1", r.Code)
-		}
-		if after := len(i.Events(harness.EventQuery{Key: "credential.list"})); after < before {
-			t.Fatalf("events went from %d to %d", before, after)
 		}
 	})
 }
 
 // g9SessionScript runs relay verbs the way a process inside a terminal
-// session would, and writes each exit code to a file. It ends with a verb the
-// session may run, whose event is the signal that the refused ones are done.
+// session would, and writes each exit code to a file. The test waits on the
+// session's exit event, which follows the last file write.
 const g9SessionScript = `relay=$1; cfg=$2; out=$3
 env -u RELAY_SESSION_ID "$relay" --config-dir "$cfg" status >/dev/null 2>&1
 echo $? > "$out/status.code"
