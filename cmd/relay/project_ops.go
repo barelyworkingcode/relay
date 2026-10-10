@@ -10,6 +10,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/project"
@@ -763,7 +764,9 @@ func (o *ProjectOps) NarrowForEnrolment(
 				return fmt.Errorf("project %q no longer exists", projectID)
 			}
 			if err := project.NarrowsOnly(*proj, f); err != nil {
-				return err
+				// Deliberate: a widening request is the remote client's own
+				// mistake, so the wire reply is invalid params, not internal.
+				return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, err)
 			}
 			if project.NarrowingIsNoop(*proj, f) {
 				found, noop = true, true
