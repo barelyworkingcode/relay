@@ -54,6 +54,9 @@ type Message struct {
 	// Origin names who wrote a user message when it was not the person at
 	// the keyboard; empty means the person.
 	Origin string `json:"origin,omitempty"`
+	// Error is the provider's short code for an API error that ended an
+	// assistant turn (for example "rate_limit"); empty on a normal turn.
+	Error string `json:"error,omitempty"`
 }
 
 // OriginChiefOfStaff marks a user message the Chief of Staff sent through

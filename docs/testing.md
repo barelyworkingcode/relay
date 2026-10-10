@@ -80,6 +80,10 @@ starts per instance; none touches the network beyond loopback.
     fake's contract, so a test can read `join_session` history. The line shapes
     and what history they give are under
     [History on join](session-host.md#history-on-join).
+  - A turn whose prompt is `!error <code>` ends as Claude CLI ends an API
+    error: the assistant line, on stdout and in the transcript, carries a
+    top-level `"error":"<code>"` and `"isApiErrorMessage":true`, and the
+    `result` has `is_error` true.
 
 The catalogue is the harness spec's `Catalogue` field, written to
 `<id>.catalogue.json` in the instance's fake directory. Every request a fake
