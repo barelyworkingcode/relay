@@ -583,6 +583,7 @@ areas:
     journeys: [gate-mcp-oauth-start-pos, gate-sealed-reset-pos]
   tray:
     code: [cmd/relay/trayapp.go, cmd/relay/tray_notify.go, cmd/relay/cocoa_darwin.go, cmd/relay/native_view.go, cmd/relay/icon.go, cmd/relay/platform.go, cmd/relay/cocoa_darwin.h, cmd/relay/cocoa_darwin.m, cmd/relay/init_darwin.go, cmd/relay/timeouts.go, cmd/relay/process_stats_*.go, AppIcon.icns]
+    journey-only: true
     journeys: [settings-window-services]
   settings-ui:
     code: [web/**, cmd/relay/settings_html.go, cmd/relay/ipc_handlers.go, cmd/relay/ipc_overview.go, cmd/relay/overview_seed.go, cmd/relay/status_verbs.go, internal/webassets/**, cmd/relay/helpers.go]

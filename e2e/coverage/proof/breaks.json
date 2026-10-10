@@ -36,10 +36,10 @@
   },
   {
     "area": "mcps",
-    "file": "cmd/relay/mcp_ops.go",
-    "find": "if _, idx := config.FindExternalMcpByID(s, id); idx < 0 {\n\t\t\t\treturn fmt.Errorf(\"%w: %s\", errMcpNotFound, id)\n\t\t\t}\n\t\t\ts.RemoveExternalMcp(id)",
-    "replace": "if _, idx := config.FindExternalMcpByID(s, id); idx < -1 {\n\t\t\t\treturn fmt.Errorf(\"%w: %s\", errMcpNotFound, id)\n\t\t\t}\n\t\t\ts.RemoveExternalMcp(id)",
-    "why": "unregistering an unknown MCP succeeds instead of failing"
+    "file": "internal/mcpbroker/external_mcp.go",
+    "find": "\tif conn, ok := m.conns[id]; ok {\n\t\treturn conn.GetTools()\n\t}\n\treturn nil\n}\n\n// The tool list is part",
+    "replace": "\tif conn, ok := m.conns[id]; ok {\n\t\treturn conn.GetTools()[:0]\n\t}\n\treturn nil\n}\n\n// The tool list is part",
+    "why": "an MCP's tool list comes back empty, so no tool is published"
   },
   {
     "area": "audit",
@@ -131,13 +131,6 @@
     "find": "c.offset += by",
     "replace": "c.offset -= by",
     "why": "advancing the instance clock moves it backwards"
-  },
-  {
-    "area": "tray",
-    "file": "cmd/relay/trayapp.go",
-    "find": "_ = a.remote.Reconcile()\n\ta.modelEndpoint.Reconcile()",
-    "replace": "_ = a.remote\n\ta.modelEndpoint.Reconcile()",
-    "why": "a committed config change no longer re-converges the remote listener"
   },
   {
     "area": "settings-ui",

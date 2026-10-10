@@ -250,12 +250,16 @@ func writeRecord(path string, results []result, am coverage.AreaMap) error {
 		return err
 	}
 	rows := map[string]string{}
+	reasons := map[string]string{}
 	if old, err := os.ReadFile(path); err == nil {
 		inJourney := false
 		for _, line := range strings.Split(string(old), "\n") {
 			switch {
 			case strings.HasPrefix(line, "#"):
 				inJourney = strings.Contains(strings.ToLower(line), "journey-only areas")
+			case inJourney && strings.HasPrefix(line, "- "):
+				name, _, _ := strings.Cut(strings.TrimPrefix(line, "- "), ":")
+				reasons[strings.Trim(strings.TrimSpace(name), "`")] = line
 			case !inJourney && strings.HasPrefix(line, "| ") && !strings.HasPrefix(line, "| Area "):
 				cells := strings.Split(line, " | ")
 				if len(cells) == 6 {
@@ -300,6 +304,10 @@ func writeRecord(path string, results []result, am coverage.AreaMap) error {
 		b.WriteString("None are marked.\n")
 	}
 	for _, n := range names {
+		if kept, ok := reasons[n]; ok {
+			b.WriteString(kept + "\n")
+			continue
+		}
 		fmt.Fprintf(&b, "- %s: no headless e2e test can turn this area red; only the epic-close full verify covers it.\n", n)
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
