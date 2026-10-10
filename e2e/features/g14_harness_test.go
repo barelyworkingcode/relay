@@ -700,20 +700,43 @@ func requireAnyEvent(t *testing.T, i *harness.Instance, trace, key string, reaso
 func TestSSHStubFile(t *testing.T) {
 	t.Parallel()
 
+	sshSeed := map[string]json.RawMessage{"hosts": json.RawMessage(
+		`[{"id":"h_acme01","name":"acme-seed","target":"acme@testbox","created_at":"2026-01-01T00:00:00Z"}]`)}
+	readerCred := []harness.CredentialSpec{{Name: "reader", Classes: []string{"read"}}}
+	sshArgv0 := func(t *testing.T, i *harness.Instance) string {
+		t.Helper()
+		resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/hosts/h_acme01", nil)
+		if resp.Status != 200 {
+			t.Fatalf("GET /api/hosts/h_acme01 answered %d, want 200: %s", resp.Status, resp.Body)
+		}
+		var h struct {
+			SSHArgv []string `json:"ssh_argv"`
+		}
+		resp.JSON(t, &h)
+		if len(h.SSHArgv) == 0 {
+			t.Fatalf("host view has an empty ssh_argv: %s", resp.Body)
+		}
+		return h.SSHArgv[0]
+	}
+
 	invalid := map[string]struct {
+		fault string
 		write func(t *testing.T, path string)
 	}{
 		"unknown_key": {
+			fault: "is not the expected JSON",
 			write: func(t *testing.T, path string) {
 				writeSeamFile(t, path, `{"command":"/bin/sh","unknown":true}`, 0o600)
 			},
 		},
 		"relative_command": {
+			fault: "command is not an absolute path",
 			write: func(t *testing.T, path string) {
 				writeSeamFile(t, path, `{"command":"ssh"}`, 0o600)
 			},
 		},
 		"not_executable": {
+			fault: "command is not executable",
 			write: func(t *testing.T, path string) {
 				plain := filepath.Join(filepath.Dir(path), "plain-file")
 				writeSeamFile(t, plain, "x", 0o600)
@@ -721,11 +744,13 @@ func TestSSHStubFile(t *testing.T) {
 			},
 		},
 		"group_readable": {
+			fault: "has group or other permission bits",
 			write: func(t *testing.T, path string) {
 				writeSeamFile(t, path, `{"command":"/bin/sh"}`, 0o644)
 			},
 		},
 		"symlink": {
+			fault: "cannot be opened as a regular file",
 			write: func(t *testing.T, path string) {
 				real := path + ".real"
 				writeSeamFile(t, real, `{"command":"/bin/sh"}`, 0o600)
@@ -749,6 +774,9 @@ func TestSSHStubFile(t *testing.T) {
 			if !strings.Contains(string(res.Stderr), filepath.Join(dir, "test-ssh.json")) {
 				t.Fatalf("stderr does not name test-ssh.json:\n%s", res.Stderr)
 			}
+			if !strings.Contains(string(res.Stderr), c.fault) {
+				t.Fatalf("stderr does not state the fault %q:\n%s", c.fault, res.Stderr)
+			}
 			if _, err := os.Stat(filepath.Join(dir, "ready.json")); !os.IsNotExist(err) {
 				t.Fatalf("ready.json exists after a refused start (stat error: %v)", err)
 			}
@@ -758,15 +786,25 @@ func TestSSHStubFile(t *testing.T) {
 	t.Run("valid_file_installs_stub", func(t *testing.T) {
 		t.Parallel()
 		stub := harness.BundlePaths().FakeSSH
-		i := harness.Start(t, harness.Options{PrepareConfigDir: func(d string) {
-			writeSeamFile(t, filepath.Join(d, "test-ssh.json"), `{"command":"`+stub+`"}`, 0o600)
-		}})
+		i := harness.Start(t, harness.Options{
+			Credentials: readerCred,
+			Settings:    sshSeed,
+			PrepareConfigDir: func(d string) {
+				writeSeamFile(t, filepath.Join(d, "test-ssh.json"), `{"command":"`+stub+`"}`, 0o600)
+			},
+		})
 		i.WaitEvent(harness.EventQuery{Key: "debug.ssh.stub", Fields: map[string]any{"command": stub}}, 60*time.Second)
+		if got := sshArgv0(t, i); got != stub {
+			t.Fatalf("ssh_argv[0] = %q, want the stub %q", got, stub)
+		}
 	})
 
 	t.Run("absent_file_is_real_ssh", func(t *testing.T) {
 		t.Parallel()
-		i := harness.Start(t, harness.Options{})
+		i := harness.Start(t, harness.Options{Credentials: readerCred, Settings: sshSeed})
+		if got := sshArgv0(t, i); got != "ssh" {
+			t.Fatalf("ssh_argv[0] = %q with no test-ssh.json, want the real ssh", got)
+		}
 		if got := i.Events(harness.EventQuery{Key: "debug.ssh.stub"}); len(got) != 0 {
 			t.Fatalf("debug.ssh.stub written with no test-ssh.json: %v", got)
 		}
