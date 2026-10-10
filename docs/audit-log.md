@@ -478,6 +478,10 @@ handler runs:
   request arrived on (`socket` or `tcp`) — the same axis `ClassReachableOn`
   gates registration on, so a row here and a route's absence from a listener
   are two views of the same boundary.
+- An operator-only verb refused inside a session or sandbox writes a denied
+  row with `method` `admin_op`, `path` the operation name (such as
+  `status.view`), `class` `operator` (not a class any credential holds),
+  `transport` `bridge` and `reason` `session_caller`. No handler runs.
 - `actor.kind` is `control`, a fourth actor alongside `project` / `service` /
   `remote`: this credential is capability-classed, not a tool caller, and
   `--kind control` selects the set. A request refused on the remote
@@ -521,10 +525,11 @@ for arguments, so a truncated value is never mistaken for a short, genuine
 one.
 
 `session_launch` and `session_resume` records carry request-supplied strings
-on a refusal too, and a launch request body may be 1 MiB.
+on a refusal too, and a launch request body may be 1 MiB. A body over that is
+refused `413` before any launch runs and writes no `session_launch` row.
 `newSessionLaunchAuditEvent` builds both and caps them there: `error` at 256 runes, `args.session_kind` and
 `actor.project_id` at 64 runes each, `args.directory` at 1024 runes. A capped
-value keeps its leading runes and ends in `…`, which never occurs in a real
+value keeps its first N runes (the cap) and then `…`, so it is N+1 runes long, which never occurs in a real
 kind or project id. A real directory name can end in `…`, so a capped
 directory also sets `args.directory_truncated` `true`, the same marker shape
 as `path_truncated`.
@@ -789,6 +794,20 @@ left unset) or a `sandbox` value truer than its `false` zero value; a
 resume that gets further before being refused, or one that succeeds, can
 carry both.
 
+`args.session_kind` is the launch `Kind` (`validKind`, `cmd/relay/session_launch.go`),
+one of five values:
+
+| Launch | `session_kind` |
+|---|---|
+| `POST /api/terminals`, any terminal template (shell, a tool template, a custom one), `relay sandbox`, and the drop-in door | `pty` — the template shows in `args.template_id`, never in the kind |
+| `POST /api/sessions` with model `haiku`, `sonnet` or `opus` | `claude` |
+| `POST /api/sessions` with a `pi/…` model | `pi` |
+| `POST /api/sessions` with a `codex/…` model | `codex` |
+| `POST /api/sessions` with any other model (`deriveSessionKind`) | `chat` |
+
+A request whose kind is none of these is refused `invalid_kind`, and the row
+carries the offered value (capped) as `session_kind`.
+
 `session_end` carries a `service` actor — relay-sessions itself reported
 this, tokenlessly, through the `sessions` capability its own built-in
 launch identity holds — naming the session that ended, not the caller's own
@@ -800,6 +819,10 @@ scope:
  "args":{"session_id":"3af1…","root_pid":41221,"exit_status":0,"reason":"exit"},
  "outcome":"ok"}
 ```
+
+A terminal ends the same way: its id, as `relay terminal list` shows it, is the
+`session_id` of its `session_end` row and of the `session.exited` event line.
+A terminal is not in the session ledger, so no ledger record changes.
 
 **`session_bound` is a known, currently real gap, not an oversight left
 undocumented.** The constant was added to `internal/audit/audit.go` up
@@ -1050,9 +1073,15 @@ is readable by the next with no tray involved at all.
 
 An audit record may carry `trace_id`, the ID the log lines of the same action
 carry (docs/logging-standard.md), so a developer can go from a log line to the
-record or back. Tool calls and model calls set it; a remote call's intent and
-completion records share one value. Every other record kind (control decisions,
-sessions, mounts, `mcp_down` / `mcp_up`, issuance and revocation) leaves it out.
+record or back. Exactly five record kinds carry it: `call_tool`, `list_tools`,
+`list_skills`, `model_call` and `model_list`. A remote call's intent and
+completion records share one value. Every other record kind (`control_decision`,
+`session_launch`, `session_bound`, `session_end`, `session_resume`,
+`session_message`, mounts, `file_op`, `host.probe`, `config_change`,
+`mcp_down` / `mcp_up`, issuance and revocation) never carries it, even though
+the request that wrote it had a trace; find those rows by time and by the
+event line of the same action. The key is also left out of a covered row when
+the request had no trace.
 
 On the bridge path the caller may supply the ID, and relay keeps it only when
 it is valid. On the remote path the listener mints a new ID per request, and a

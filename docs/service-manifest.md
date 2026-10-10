@@ -95,6 +95,10 @@ deployment fact, not a code fork — the service has one config loader.
   `bridge/manifest.go`), and at use time `resolveConfigPath`
   (`service_config_file.go`) re-enforces absolute path, allowed-root containment
   (via `EvalSymlinks`), regular-file, and a size cap.
+  The allowed root is the service's `working_dir`, or the config file's own
+  folder when the service has none.
+  `format` names the file's syntax: `jsonc` (the default when absent) or
+  `json`; any other value is rejected at registration.
 
 Field types: leaves `text`, `textarea`, `bool`, `number`, `select` (needs
 `options`), `secret`, `string[]`, `stringMap`, `keyValue`, `json`; recursive
@@ -272,8 +276,13 @@ identity is already gone by the time this runs). Numbers, all in
 |---|---|---|
 | `ServiceRestartBaseDelay` | 1s | delay before the first restart attempt |
 | `ServiceRestartMaxDelay` | 60s | backoff cap (doubles each attempt: 1s, 2s, 4s, 8s, 16s, ...) |
-| `ServiceRestartMaxAttempts` | 5 | consecutive failures before relay gives up |
+| `ServiceRestartMaxAttempts` | 5 | restart attempts in a row before relay gives up |
 | `ServiceRestartStableWindow` | 60s | a run at least this long resets the attempt counter |
+
+A service that exits on every launch is relaunched five times, after 1s, 2s,
+4s, 8s and 16s. Its state reads `restarting` with attempt 1 through 5, one
+per relaunch. The sixth exit (the original launch plus five restarts all
+failed) sets `failed` with attempt 5 and schedules nothing more.
 
 The counter bounds restart *intensity*, not lifetime attempts: a service that
 crashes once a week is restarted forever, one that crashes on every launch is

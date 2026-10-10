@@ -72,7 +72,9 @@ added to reach what only the Settings window or the tray did before
 this document's later sections) runs only from your own terminal. The server
 refuses it from inside a relay session and from any sandboxed process, with
 `this command cannot be run from inside a relay session or a sandbox`, and
-writes a denied `control_decision` row. The same peer check `relay sandbox`
+writes a denied `control_decision` row (`method` `admin_op`, `path` the
+operation name such as `status.view`, `class` `operator`, `transport` `bridge`,
+`reason` `session_caller`). The same peer check `relay sandbox`
 makes decides it. The verbs that predate this rule (`relay credential`,
 `relay enrol`, `relay mcp register` and the others above) keep the caller rule
 they had. `relay doors` lists every door, its credential class and its gates.
@@ -272,8 +274,11 @@ Every subcommand takes the config dir from the first rule that applies:
 1. `--config-dir DIR` or `--config-dir=DIR` anywhere in the arguments before a
    bare `--`. A relative DIR becomes absolute. Given twice: `--config-dir given
    more than once`. A missing, empty or dash-led value: `--config-dir needs a
-   directory path`. To pass a literal `--config-dir` through to a registered
-   command's argv, write it `--args=--config-dir`.
+   directory path`. A bare `--config-dir` is stripped wherever it stands, even
+   right after a flag such as `--extra-arg` (which then loses its value and
+   the next word becomes the directory). To pass a literal `--config-dir`
+   through to a registered command's argv, write it `--args=--config-dir`; for
+   `terminal start`, write `--extra-arg=--config-dir`.
 2. `RELAY_CONFIG_DIR`, when non-empty. It must be an absolute path, else
    `RELAY_CONFIG_DIR must be an absolute path, got "x"`.
 3. The default config dir.
@@ -358,8 +363,10 @@ from `A-Z a-z 0-9 _ -` and does not start with `-`; otherwise the command exits
 `1` with `--trace needs a trace ID of 8 to 64 characters from A-Z a-z 0-9 _ -`.
 Given twice: `--trace given more than once`. Without the flag the server makes
 up a trace for the call. Like `--config-dir`, the flag is stripped before the
-subcommand parses; to pass a literal `--trace` through to a registered
-command's argv, write it `--args=--trace`. For `relay logs` the same value is
+subcommand parses, bare `--trace` included wherever it stands, even after
+`--extra-arg`. To pass a literal `--trace` through to a registered command's
+argv, write it `--args=--trace`; for `terminal start`, write
+`--extra-arg=--trace`. For `relay logs` the same value is
 the trace filter. A trace joins log lines and proves nothing about who acted.
 
 ## Privileged commands prompt — and here is what that looks like
@@ -651,6 +658,7 @@ ones a script usually reads (the full set is in
 | `scope_violation` | boolean, optional | `true` on a `tool_error` the MCP marked as a resource-scope refusal. |
 | `method`, `path`, `class`, `transport` | string, optional | The request of a `control_decision` row. |
 | `phase` | string, optional | `intent` or `completion`, on the two rows of a remote call. Absent on a local call. |
+| `trace_id` | string, optional | The trace of the request, on `call_tool`, `list_tools`, `list_skills`, `model_call` and `model_list` rows only. Every other event kind leaves it out. |
 
 Text mode prints the header `TIME  OUTCOME  PROJECT  MCP  TOOL  MS  CALLER
 DETAIL`, one row per record, a dash in an empty column. With no matching record
@@ -833,7 +841,9 @@ passed. Needs service: yes (`credential.list`; the answer carries no hash).
 Prompts: no. Works over SSH: yes.
 
 No JSON form. Columns: `ID  NAME  CLASSES  CREATED  EXPIRES`, separated by runs
-of spaces. With none registered it prints `no credentials`; with only expired
+of spaces. `CLASSES` is comma-joined; `CREATED` and `EXPIRES` print the stored
+RFC 3339 text as is (`2026-08-28T21:34:57Z`), and `EXPIRES` is `never` when
+the record has none. With none registered it prints `no credentials`; with only expired
 ones and no `--include-expired` it prints `no live credentials (--include-expired
 shows the expired ones)`. Exit codes: `0`; `1` when relay is not running.
 
@@ -1542,7 +1552,9 @@ Needs service: yes. Prompts: yes (`project.grant`). Works over SSH: no.
 `--name` and `--path` create a project with no MCP access; `--file F` takes the
 `POST /api/projects` body for everything else (`-` reads stdin). A relative
 `--path` resolves against the current directory. `--json` prints the project as
-`POST /api/projects` returns it.
+`POST /api/projects` returns it. An access profile (`kind: remote`) is created
+through `--file` with no `path`; a body that gives one is refused, because a
+profile has no folder.
 
 `--json` prints the created project:
 
@@ -1550,7 +1562,7 @@ Needs service: yes. Prompts: yes (`project.grant`). Works over SSH: no.
 |---|---|---|
 | `id` | string | The project id. |
 | `name` | string | Display name. |
-| `path` | string | The project folder. |
+| `path` | string | The project folder; an empty string for an access profile. |
 | `kind` | string, optional | `remote` for an access profile; absent for a local project. |
 | `host_id` | string, optional | The SSH host id of a project on an SSH host. |
 | `mode` | string | The project's mode. |
@@ -1640,13 +1652,17 @@ Exit codes: `0` printed; `1` when relay is not running, when it is run where it 
 ### `project regen-skill`
 
 Needs service: yes. Prompts: no. Works over SSH: yes. Rewrites the project's
-SKILL.md from its current grant. `--json` prints `{"path"}`.
+skills from its current grant. Each MCP the project reaches (or each category
+its tools declare) gets one folder `relay-<slug>` under the skills directory,
+holding a `SKILL.md`; a bucket with no tools gets none, and `relay-*` folders
+that no longer match are removed. Folders without that prefix are left alone.
+`--json` prints `{"path"}`.
 
 Flags: `--id` (the project id, required) and `--json`. `--json` prints:
 
 | Field | JSON type | Meaning |
 |---|---|---|
-| `path` | string | The folder holding the rewritten SKILL.md. |
+| `path` | string | The skills directory, `<project>/.claude/skills`. Each MCP's `SKILL.md` is one folder down, at `relay-<slug>/SKILL.md`. |
 
 Text mode prints `regenerated the skill in PATH`. Exit codes: `0`; `1` when relay is not running or the server refuses the act (`error: bridge error (code -32603): ...`) or a required flag is missing; `2` for an unknown flag.
 
@@ -1756,7 +1772,7 @@ Exit codes: `0` authenticated; `1` when relay is not running, when it is run whe
 Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Resets the
 macOS privacy (TCC) grants for an MCP registered with `--tcc-services`, the
 act of **Reset Permissions** in the MCP Servers tab. It refuses an MCP with no
-such services. `--json` prints the result the tab shows.
+such services: the `mcp.permissions.reset` event ends `error` with reason `internal`, and the exit code is `1`. `--json` prints the result the tab shows.
 
 Flags: `--id` (the MCP id, required) and `--json`. `--json` prints:
 
@@ -1848,6 +1864,11 @@ is not presence-gated (ADR-018 step 3); it still writes a `config_change`
 audit record and still refuses if issuance auditing is off, just with no
 `presence_id` on the record.
 
+Unregistering edits no project: each project's `allowed_mcp_ids` and per-MCP
+grant fields stay as authored (`relay grant` shows them), and the project's
+token lists no tool from the MCP. Registering an MCP under the same id again
+makes that grant live again.
+
 No JSON form. Output: `unregistered mcp "ID"`. Exit codes: `0`; `1` for an
 unknown MCP (`error: bridge error (code -32603): no mcp found with id "ID"`), when
 neither `--id` nor `--name` is given, or when relay is not running; `2` for an
@@ -1897,7 +1918,8 @@ relay service list
 
 `start`, `stop`, `action` and `config` are operator-only. `start` and `stop`
 are the Start and Stop buttons and the tray's service rows; they print
-`{"id"}` with `--json`. `action` runs one action a service's manifest declares,
+`{"id"}` with `--json`. `stop` returns after the process group has exited and
+its log file is closed, so the log holds everything the service wrote. `action` runs one action a service's manifest declares,
 as the Service Inspector does, and prints `{"service_id","action_id","ok":true}`.
 `config` prints a service's config file as `{"service_id","text"}`; with `--set
 FILE` (`-` for stdin) it saves the file and prints `{"service_id","restarted"}`.
@@ -2214,6 +2236,19 @@ supervision. `--json` prints one line:
 | `service_supervision[ID].last_exit_code` | number, optional | The last exit code. |
 | `service_supervision[ID].has_exit_code` | boolean, optional | `true` when `last_exit_code` is meaningful (it can be `0`). |
 
+relay restarts a stdio MCP whose process dies. The delay before attempt N
+starts at 250 ms and doubles each time, capped at 30 s: 250 ms, 500 ms, 1 s,
+2 s, 4 s, 8 s, 16 s, then 30 s. After 8 consecutive failed attempts relay stops
+trying and reports `abandoned`; the MCP then starts again on the next
+reconcile (a settings change or a tray relaunch). A run of 2 minutes or more
+resets the attempt count, so the cap bounds a crash loop, not an MCP's lifetime
+restarts. An HTTP MCP has no process and no restart. An MCP whose first start
+fails (a bad command, a handshake that does not complete) is logged as a start
+failure and is not supervised: relay does not retry it on a timer, and it
+starts again on the next reconcile. Services follow the same shape with their
+own numbers (1 s base, 60 s cap, 5 attempts, 60 s stable window; see
+[`service-manifest.md`](service-manifest.md#restart-supervision)).
+
 The text form is one line:
 `relay dev: 0 MCP(s), 0 service(s) running, sealed store ok`; a degraded store
 ends `sealed store degraded: REASON`. Exit codes: `0`; `1` when relay is not
@@ -2328,7 +2363,9 @@ and starts over with a fresh key. The prompt names what it destroys and is the
 only confirmation; there is no `--yes` and no `--force`. A cancelled prompt
 deletes nothing. Each config dir has its own
 keychain item, so a reset on one instance leaves every other instance's store,
-the installed app's included, untouched. See
+the installed app's included, untouched. A test build on a config dir other
+than the default keeps its key in `X/test-keychain.json` and destroys only that
+file. See
 [`docs/sealed-config.md`](sealed-config.md#break-glass-and-why-there-is-no-offline-recovery-code).
 
 `--json` prints:
@@ -2477,7 +2514,9 @@ provider reports them. The text form is the reply text alone.
 ### `session stop`
 
 `--id` is required. `--json` prints `id` (string): the stopped session. Text form:
-`stopped session ID`.
+`stopped session ID`. The session host answers success for an id it does not
+hold, so a second stop, or a stop of an unknown id, also exits `0`. A stopped
+session is deleted, not left dormant: it cannot be resumed.
 
 ### `session resume`
 
@@ -2488,13 +2527,17 @@ provider reports them. The text form is the reply text alone.
 | `session_id` | string | The session id. |
 | `resumed` | boolean | `false` when the session was already live. |
 
-Text form: `resumed session ID` or `session ID is already live`.
+A resume applies to a dormant session. Every session is dormant after a relay
+restart; an unknown id exits `1` (`404`). Text form: `resumed session ID` or
+`session ID is already live`.
 
 ### `session mode`
 
 `--id` and `--mode` (a permission mode) are required. It changes a session's
-permission mode through the session host; for a local claude session the host
-answers `resume_required`, which is exit `1`. `--json` prints:
+permission mode through the session host. A local claude session relay
+launched answers `resume_required` for any mode, valid or not, which is exit
+`1`; the session stays live. Only a session on an SSH host changes mode in
+place, and there an unknown mode is refused. `--json` prints:
 
 | Field | JSON type | Meaning |
 |---|---|---|
@@ -2772,7 +2815,10 @@ There are no flags. Before relay answers, it prints
 `relay: handing over <id>; waiting up to 60 s for the current turn to end` on
 stderr; on exit it prints `relay: handed back <id>`. The exit status is
 Claude's. Ending the terminal, by quitting Claude, closing the window or
-SIGHUP, hands the session back as idle. It is not gated: there is no presence
+SIGHUP, hands the session back as idle. The hand-back finishes after the
+CLI exits, when relay-sessions sees the terminal end: wait for the session's
+`attention.state` to read `idle` (`relay session list`, or the `/ws`
+`session_state` frame) before a resume or a message. It is not gated: there is no presence
 prompt, as for `relay sandbox`. The same drop-in is `POST
 /api/sessions/{id}/drop-in` (class `execute`), which answers with the new
 terminal for a client to join.
@@ -2796,6 +2842,10 @@ One-shot tool listing and invocation over the bridge, using a **project**
 token — this is the door an agent or a script actually calls tools through,
 as distinct from every command above, which is an *operator* configuring
 relay itself.
+
+No relay command sends `DescribeProject`; that bridge request is reached by a
+client that dials the bridge with a project token (see
+[`routes.md`](routes.md#bridgelisttools-and-bridgecalltool)).
 
 ```
 relay mcpExec --token TOKEN --list [--schema]
