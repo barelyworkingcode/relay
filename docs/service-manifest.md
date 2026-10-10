@@ -95,6 +95,8 @@ deployment fact, not a code fork — the service has one config loader.
   `bridge/manifest.go`), and at use time `resolveConfigPath`
   (`service_config_file.go`) re-enforces absolute path, allowed-root containment
   (via `EvalSymlinks`), regular-file, and a size cap.
+  The allowed root is the service's `working_dir`, or the config file's own
+  folder when the service has none.
 
 Field types: leaves `text`, `textarea`, `bool`, `number`, `select` (needs
 `options`), `secret`, `string[]`, `stringMap`, `keyValue`, `json`; recursive

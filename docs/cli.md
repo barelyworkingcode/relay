@@ -2320,7 +2320,9 @@ and starts over with a fresh key. The prompt names what it destroys and is the
 only confirmation; there is no `--yes` and no `--force`. A cancelled prompt
 deletes nothing. Each config dir has its own
 keychain item, so a reset on one instance leaves every other instance's store,
-the installed app's included, untouched. See
+the installed app's included, untouched. A test build on a config dir other
+than the default keeps its key in `X/test-keychain.json` and destroys only that
+file. See
 [`docs/sealed-config.md`](sealed-config.md#break-glass-and-why-there-is-no-offline-recovery-code).
 
 `--json` prints:
