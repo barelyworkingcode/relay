@@ -99,11 +99,13 @@ func (c *Catalog) Index() string {
 	b.WriteString(indexHeader)
 	for _, s := range c.skills {
 		b.WriteString("\n- ")
-		b.WriteString(s.Name)
 		if d := indexDescription(s.Description); d != "" {
-			b.WriteString(": ")
 			b.WriteString(d)
+			b.WriteString(" ")
 		}
+		b.WriteString("(skill ")
+		b.WriteString(s.Name)
+		b.WriteString("; search for it, do not call it)")
 	}
 	return b.String()
 }

@@ -361,7 +361,9 @@ not in `pinned`, and it is in the live MCP catalogue. Skills are read at
 every Start from `<project dir>/.claude/skills/*/SKILL.md`: the frontmatter
 gives the index line and ranking text, and the first `## Tools` section lists
 the tools. A tool no skill lists is never hidden. The index (one line per
-skill) is appended to the system message for each request; it is not written
+skill, `- <description> (skill <name>; search for it, do not call it)`, or
+`- (skill <name>; ...)` with no description) leads with the description so the
+name does not read as a tool name. It is appended to the system message for each request; it is not written
 into the stored `SystemPrompt`. Loaded names are saved with the turn that
 loaded them in the session's provider state
 (`{"toolSearch":{"loaded":[...]}}`) and restored on resume; a stopped or

@@ -83,10 +83,15 @@ func TestChatToolSearchIndexSaysSkillsAreNotTools(t *testing.T) {
 		{"the statement that the listed names are skills, not tools", "The names below are skills, not tools: never call a skill name."},
 		{"the statement that tool_search is the first step", "Your first step for any task that needs a hidden tool is tool_search"},
 		{"the rule against call_tool before tool_search", "Never call call_tool before tool_search."},
-		{"the skill's index line", "- " + skillName},
+		{"the skill's index line", "(skill " + skillName + "; search for it, do not call it)"},
 	} {
 		if !strings.Contains(system, want.text) {
 			t.Fatalf("the system message lacks %s (%q):\n%s", want.what, want.text, system)
+		}
+	}
+	for _, line := range strings.Split(system, "\n") {
+		if strings.HasPrefix(line, "- "+skillName+":") {
+			t.Fatalf("an index line leads with the skill name: %q", line)
 		}
 	}
 }
