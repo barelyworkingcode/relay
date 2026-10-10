@@ -868,7 +868,9 @@ Creates a client certificate bundle on this Mac.
 - **Listeners:** socket, tcp. **Credential:** `configure`. **Gate:** none.
 - **Request:** `{"name": string (required), "target": string (required), "port": number,
   "identity_file": string, "tmux_path": string}`.
-- **Response `201`:** a host object (a probe runs as part of the create).
+- **Response `201`:** a host object (a probe runs as part of the create). A
+  host that cannot be reached is still created and answers `201`; its `probe.ok`
+  is `false` and `probe.error` names the failure.
 - **Errors:** `400` `host name is required` and similar. **Event:** `host.create` (`host_id`).
 - **Audit row:** `host.probe`.
 
@@ -1090,7 +1092,8 @@ Spends an open window for one browser.
 - **Response `200`:** `{"expires": "<RFC 3339>"}`.
 - **Errors:** `409` the window is closed, already spent, or could not be
   saved; `400` malformed body.
-- **Event:** `eve.enrolment.consume`.
+- **Event:** `eve.enrolment.consume`. A closed or spent window answers `409`
+  with status `error`, reason `conflict`.
 
 ### PUT /api/eve/passkeys
 
@@ -1522,14 +1525,17 @@ is `listeners.enrolment` in `ready.json`.
 
 Limits: 16 concurrent connections; 64 frames per connection, then the server
 closes it; 64 KiB per frame; 10 seconds to the first frame and 30 seconds idle;
-8 pending requests at most; a request lives 15 minutes to be approved and 15
+8 pending requests at most; one lodge per source in any 10 seconds; a request lives 15 minutes to be approved and 15
 more to be collected. Each frame is one JSON object with `type`; decoding is
 strict. The server answers each frame with one JSON line:
 `{"type": "Result", "result": {...}}` or `{"type": "Error", "code": <number>,
 "message": "<text>"}`.
 
 Codes: `-32602` invalid params, `-32601` unknown request type, `-32603` internal,
-`-32000` throttled (the `result` then holds `{"retry_after_seconds": <n>}`).
+`-32000` throttled. A second lodge from the same source within 10 seconds
+answers `-32000` with `{"retry_after_seconds": 10}` in `result`; a lodge into a
+full table of 8 answers `-32000` with no `result`, because the table empties
+when rows expire or an operator acts, not on a clock the listener can quote.
 An operator approves or refuses a request with `relay enrol approve` or
 `relay enrol refuse`; there is no approve door on this listener.
 
@@ -1551,7 +1557,7 @@ Wire type `EnrolmentRequest`. Lodges a request.
   `expires_in_seconds`, and when the CA exists `ca_pem`; with `sas_commit` also
   `sas_nonce`.
 - **Errors:** `-32602` bad request or invalid CSR; `-32000` throttled (per
-  source, per request rate or a full table); `-32603` no CA yet.
+  source within 10 seconds, per request rate, or a full table of 8); `-32603` no CA yet.
 - **Event:** `enrolment.request.lodge` (`request_id`). A throttle is `denied`,
   reason `throttled`.
 

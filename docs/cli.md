@@ -1286,7 +1286,8 @@ refused; `1` for an unknown id
 
 ### `enrol ca-fingerprint`
 
-Prints relay's CA certificate hash — the value a client pins with
+Prints relay's CA certificate hash, `sha256:` and 64 hex characters of the
+SHA-256 over the certificate's DER bytes — the value a client pins with
 `relayremote enrol --ca-fingerprint` so it can tell the real relay from an
 impostor on the network. Reads `ca.crt` straight off disk, so it is the
 one `enrol` subcommand that works with the tray stopped; the certificate is public and the
