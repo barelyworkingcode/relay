@@ -1880,7 +1880,7 @@ Where fakerelay differs from relay on purpose:
   ends at `message_complete`.
 - **`end_session`** stops the provider and sends no `session_ended`. Only
   `delete_session` does (D6).
-- **`fs_event` comes after a mutating response, or from `ctl fs-event`.** Disk
+- **`fs_event` comes after a mutating response, or from `ctl fs-event` or `ctl fs-write`.** Disk
   is not watched.
 - **`watch_error` can arrive mid-watch with any code.** relay ends an open
   watch only with `PROJECT_CHANGED`; `ctl watch-error` sends any documented
