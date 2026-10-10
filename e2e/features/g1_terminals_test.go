@@ -734,6 +734,13 @@ func TestChiefOfStaffScopeDoors(t *testing.T) {
 	forbidden := harness.NewTrace(t)
 	ws.Send(map[string]any{"type": "send_message", "sessionId": sid, "text": "acme forbidden", "trace_id": forbidden})
 
+	// Checked before the control turn so a write by the scoped socket is named
+	// as such, not reported as a missing control turn. The final check below
+	// still runs after the control turn, which covers a turn that lands later.
+	if got := i.Events(harness.EventQuery{Key: "chat.turn", Trace: forbidden}); len(got) != 0 {
+		t.Fatalf("scoped /ws wrote: %d chat.turn lines for the scoped frame's trace, want none", len(got))
+	}
+
 	// Positive control: the same frame on an unscoped /ws with the same
 	// credential runs a turn and writes chat.turn. The control is sent after
 	// the scoped frame, so a turn the scoped socket had started is ahead of it.
