@@ -56,8 +56,15 @@ func run() int {
 		return fail(2, "%v", err)
 	}
 	if failures := coverage.Failures(findings); len(failures) > 0 {
+		var lines []string
 		for _, f := range failures {
 			fmt.Println(f)
+			lines = append(lines, fmt.Sprint(f))
+		}
+		if *summary != "" {
+			if err := appendTo(*summary, blockedText("map findings", lines)); err != nil {
+				return fail(2, "writing summary: %v", err)
+			}
 		}
 		return 1
 	}
@@ -94,7 +101,11 @@ func run() int {
 	}
 
 	if *summary != "" {
-		if err := appendTo(*summary, summaryText(sel)); err != nil {
+		text := summaryText(sel)
+		if code != 0 {
+			text = blockedSelectionText(sel, paths)
+		}
+		if err := appendTo(*summary, text); err != nil {
 			return fail(2, "writing summary: %v", err)
 		}
 	}
@@ -120,6 +131,26 @@ func summaryText(sel coverage.Selection) string {
 	}
 	fmt.Fprintf(&b, "\nNot run: %d\n", sel.Total-n)
 	return b.String()
+}
+
+func blockedText(reason string, lines []string) string {
+	var b strings.Builder
+	b.WriteString("### e2e test selection\n\nBlocked, no tests ran: " + reason + ".\n\n")
+	for _, l := range lines {
+		b.WriteString("- " + l + "\n")
+	}
+	return b.String()
+}
+
+func blockedSelectionText(sel coverage.Selection, narrowed []string) string {
+	var lines []string
+	for _, p := range sel.Unmapped {
+		lines = append(lines, "UNMAPPED "+p)
+	}
+	for _, p := range narrowed {
+		lines = append(lines, "NARROWED "+p+" "+strings.Join(sel.Narrowed[p], ","))
+	}
+	return blockedText("unmapped or narrowed paths (narrowing needs the "+approvedLabel+" label)", lines)
 }
 
 func orNone(s string) string {
