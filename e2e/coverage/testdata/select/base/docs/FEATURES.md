@@ -13,7 +13,7 @@ areas:
   every-test:
     code: [e2e/harness/**, e2e/go.mod, go.mod]
   no-test:
-    code: [scripts/**]
+    code: [scripts/**, e2e/coverage/proof/**]
 ```
 
 ## Goals
