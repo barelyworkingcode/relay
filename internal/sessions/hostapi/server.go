@@ -75,6 +75,7 @@ type Server struct {
 	exitMu      sync.Mutex
 	exitHandler func(id string, rootPID, exitCode int, reason string)
 	dropIns     map[string]string // terminal id -> held agent session id, guarded by exitMu
+	deleting    map[string]bool   // session ids a DELETE /api/sessions/{id} is removing; the exit callback reports "deleted" for them
 	terminating map[string]bool   // session ids this host's own /terminate is closing; read/cleared by the exit callback to tell "closed" apart from an unrelated "exit"
 
 	// hub/sessionWS/terminalWS are the eve-facing manifest surface: one Hub
@@ -103,6 +104,7 @@ func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Se
 		terminals:   terminals,
 		sessions:    sessions,
 		launching:   make(map[string]bool),
+		deleting:    make(map[string]bool),
 		terminating: make(map[string]bool),
 		dropIns:     make(map[string]string),
 	}
@@ -137,12 +139,10 @@ func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Se
 // hook cmd/relaysessions uses to send C5's SessionExited bridge report.
 // rootPID is 0 for a claude/pi/
 // chat session; reason is "closed" when this host's own
-// /terminate caused the exit, "exit" otherwise — C5 also names "idle" and
-// "deleted", neither reachable here yet: idle-close is driven by
-// NotifyViewerChange, which nothing calls without the eve-facing manifest
-// surface this unit does not mount (types.go's package doc), and "deleted"
-// is session.Manager.DeleteSession, a path /terminate never takes (it only
-// ever calls EndSession, C5's own "SIGTERM ... SIGKILL" — not a data wipe).
+// /terminate caused the exit, "deleted" when DELETE /api/sessions/{id} did,
+// "exit" otherwise — C5 also names "idle", not reachable here yet: idle-close
+// is driven by NotifyViewerChange, which nothing calls without the eve-facing
+// manifest surface this unit does not mount (types.go's package doc).
 func (s *Server) SetExitHandler(fn func(id string, rootPID, exitCode int, reason string)) {
 	s.exitMu.Lock()
 	s.exitHandler = fn
@@ -175,6 +175,26 @@ func (s *Server) markTerminatingIfAlive(id string, alive func() bool) {
 	if alive() {
 		s.terminating[id] = true
 	}
+}
+
+// markDeletingIfAlive marks id as being deleted iff alive reports true, under
+// the lock consumeDeleting takes. A session with no live provider produces no
+// exit report to consume the mark, so an unconditional mark would leak.
+func (s *Server) markDeletingIfAlive(id string, alive func() bool) {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	if alive() {
+		s.deleting[id] = true
+	}
+}
+
+// consumeDeleting reports and clears whether id's exit was caused by a delete.
+func (s *Server) consumeDeleting(id string) bool {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	deleted := s.deleting[id]
+	delete(s.deleting, id)
+	return deleted
 }
 
 // consumeTerminating reports and clears whether id's exit was caused by this
@@ -245,7 +265,10 @@ func (s *Server) takeDropIn(terminalID string) (string, bool) {
 // look up beyond the id and exit code the callback already carries.
 func (s *Server) onSessionExit(id string, exitCode int) {
 	reason := "exit"
-	if s.consumeTerminating(id) {
+	closed := s.consumeTerminating(id)
+	if s.consumeDeleting(id) {
+		reason = "deleted"
+	} else if closed {
 		reason = "closed"
 	}
 	s.reportExit(id, 0, exitCode, reason)
@@ -357,7 +380,23 @@ func (s *Server) ListenInternal() error {
 		api.HandleListSessions(s.sessions, w, r)
 	}))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.guarded(func(w http.ResponseWriter, r *http.Request) {
-		api.HandleDeleteSession(s.sessions, r.PathValue("id"), w, r)
+		id := r.PathValue("id")
+		sess, known := s.sessions.Get(id)
+		live := false
+		if known {
+			s.markDeletingIfAlive(id, func() bool {
+				p := sess.Provider()
+				live = p != nil && p.Alive()
+				return live
+			})
+		}
+		api.HandleDeleteSession(s.sessions, id, w, r)
+		if !live {
+			// A dormant or unpersisted session has no provider to exit, so no
+			// exit report follows its delete; relay's ledger would keep the
+			// record. Relay ignores the report for an id its ledger lacks.
+			s.reportExit(id, 0, 0, "deleted")
+		}
 	}))
 	mux.HandleFunc("POST /api/sessions/{id}/message", s.guarded(func(w http.ResponseWriter, r *http.Request) {
 		api.HandleSessionMessageSync(s.sessions, r.PathValue("id"), w, r)

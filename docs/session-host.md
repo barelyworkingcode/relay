@@ -1566,17 +1566,16 @@ once its own Hello confirms it was launched by relay, so relay's dispatch
 table and the created-terminal/session route reservation both come up
 correctly on every start rather than only after a manual re-register.
 
-`reason` is `"exit"` for an ordinary exit, or `"closed"` when this host's own
+`reason` is `"exit"` for an ordinary exit, `"closed"` when this host's own
 `/terminate` marked the session terminating (`markTerminatingIfAlive`) before
-signalling it — `onTerminalExit`/`onSessionExit` (`internal/sessions/hostapi/server.go`)
-consume that flag once and report `"closed"` only if it was set, `"exit"`
-otherwise. These are the **only** two reasons any code in this repo actually
-produces. C5 also names `"idle"` and `"deleted"`, and relay's own consumer
-(`cmd/relay/router_sessions.go`) is prepared to handle both, but neither is
-reachable today: `session.Manager.DeleteSession` kills its target through
-this same exit path without ever marking it terminating, so it too reports
-`"exit"`, not `"deleted"` — and idle-close is covered by gap 4 below.
-`internal/sessions/hostapi/server.go`'s own comment says this plainly.
+signalling it, or `"deleted"` when `DELETE /api/sessions/{id}` marked it
+deleting (`markDeletingIfAlive`) before `session.Manager.DeleteSession` killed
+it. `onTerminalExit`/`onSessionExit` (`internal/sessions/hostapi/server.go`)
+consume each flag once; `"deleted"` wins over `"closed"`. A delete of a session
+with no live provider produces no exit, so the handler reports `"deleted"`
+itself; relay ignores a `"deleted"` report for an id its ledger lacks, so a
+terminal id or an unknown id changes nothing. C5 also names
+`"idle"`, which nothing produces today: idle-close is covered by gap 4 below.
 
 On relay's side, `SessionExited` (`cmd/relay/router_sessions.go`) tears down
 whatever relay itself minted for that session — the launch identity
