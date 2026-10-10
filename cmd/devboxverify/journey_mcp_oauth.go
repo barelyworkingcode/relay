@@ -69,6 +69,24 @@ func gatedCLIStream(ctx context.Context, e env, expect string, onLine func(strin
 	return cliResult{Stdout: stdout.String(), Stderr: stderr.String(), Exit: code}, d
 }
 
+// withTeardown runs the instance teardown on its own bounded context, so a
+// cancelled journey context still stops the server, and appends any teardown
+// problem to the journey's result: a teardown problem turns a PASS into a FAIL
+// and never replaces an earlier FAIL's detail.
+func withTeardown(ctx context.Context, res result, inst *serveInstance) result {
+	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	problem := teardownInstance(tctx, inst)
+	if problem == "" {
+		return res
+	}
+	if res.State == statePass {
+		return result{res.ID, stateFail, "teardown: " + problem}
+	}
+	res.Detail += "; teardown: " + problem
+	return res
+}
+
 // jsonLines decodes every non-empty line of s as a JSON object.
 func jsonLines(s string) ([]map[string]any, error) {
 	var out []map[string]any
@@ -199,11 +217,7 @@ func runOAuthStartPos(ctx context.Context, e env) (res result) {
 		return fail(err.Error())
 	}
 	var inst *serveInstance
-	defer func() {
-		if problem := teardownInstance(ctx, inst); problem != "" {
-			res = fail("teardown: " + problem)
-		}
-	}()
+	defer func() { res = withTeardown(ctx, res, inst) }()
 	inst, err = startServe(ctx, e, dir)
 	if err != nil {
 		return fail(err.Error())
@@ -213,7 +227,7 @@ func runOAuthStartPos(ctx context.Context, e env) (res result) {
 		return fail("the instance has no sealed_key_id after start")
 	}
 	if present, err := keychainItemPresent(ctx, keychainAccountFor(dir)); err != nil {
-		return blocked(id, err.Error())
+		return fail(err.Error())
 	} else if !present {
 		return fail("the instance's login-keychain item is absent")
 	}
@@ -269,8 +283,9 @@ func runOAuthStartPos(ctx context.Context, e env) (res result) {
 		return fail(stream.problem)
 	case authn.Exit != 0:
 		return cliExitFail(id, "mcp authenticate", authn)
-	case len(stream.frames) < 2 || stream.frames[len(stream.frames)-1]["authenticated"] != true:
-		return fail("mcp authenticate's last line is not {authenticated: true}")
+	case len(stream.frames) < 2 || stream.frames[len(stream.frames)-1]["authenticated"] != true ||
+		stream.frames[len(stream.frames)-1]["id"] != mcpID:
+		return fail("mcp authenticate's last line is not {id, authenticated: true} for the MCP")
 	}
 
 	switch h := fx.HitsSince(0); {
@@ -283,7 +298,7 @@ func runOAuthStartPos(ctx context.Context, e env) (res result) {
 	started, err := instanceEvents(ctx, e, inst, trace, "mcp.oauth.start")
 	switch {
 	case err != nil:
-		return blocked(id, err.Error())
+		return fail(err.Error())
 	case len(started) != 1 || started[0]["status"] != "ok" || started[0]["mcp_id"] != mcpID:
 		return fail(fmt.Sprintf("want one mcp.oauth.start event with status ok for the MCP, got %d", len(started)))
 	}

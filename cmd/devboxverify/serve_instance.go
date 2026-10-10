@@ -85,6 +85,10 @@ func strayServerPID(ctx context.Context, dir string) int {
 	if psErr != nil || !strings.HasPrefix(filepath.Base(strings.TrimSpace(string(comm))), "relay") {
 		return 0
 	}
+	args, psErr := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(ready.PID), "-o", "args=").Output()
+	if psErr != nil || !strings.Contains(string(args), dir) {
+		return 0
+	}
 	return ready.PID
 }
 
@@ -134,6 +138,7 @@ func startServe(ctx context.Context, e env, dir string) (*serveInstance, error) 
 
 // Start launches serve on s.Dir and waits for its ready line.
 func (s *serveInstance) Start(ctx context.Context, e env) error {
+	s.removeStderr()
 	errFile, err := os.CreateTemp("", "dbv-serve-stderr-*.log")
 	if err != nil {
 		return fmt.Errorf("serve stderr file: %w", err)
@@ -204,6 +209,15 @@ func (s *serveInstance) stderrTail() string {
 	return ": " + lastLine(string(raw))
 }
 
+// removeStderr deletes the captured stderr file; the failure details that
+// quote it are built before it is called.
+func (s *serveInstance) removeStderr() {
+	if s.stderrPath != "" {
+		_ = os.Remove(s.stderrPath)
+		s.stderrPath = ""
+	}
+}
+
 func (s *serveInstance) kill() {
 	if s.cmd == nil || s.cmd.Process == nil {
 		return
@@ -237,6 +251,7 @@ func (s *serveInstance) Stop(ctx context.Context) error {
 	if s.exitCode != 0 {
 		return fmt.Errorf("relay serve exit %d, want 0%s", s.exitCode, s.stderrTail())
 	}
+	s.removeStderr()
 	return nil
 }
 
@@ -327,9 +342,9 @@ func sealStatus(ctx context.Context, e env, dir string) (string, error) {
 	return out.SealStatus, nil
 }
 
-// keychainAccountFor is the item name docs/sealed-config.md gives dir: the
-// default account for the default config dir, else a name derived from the
-// resolved path.
+// keychainAccountFor is the per-dir item name docs/sealed-config.md gives a
+// dir other than the default one: the prefix plus 16 hex characters of the
+// SHA-256 of the resolved path. Instance dirs are never the default dir.
 func keychainAccountFor(dir string) string {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -401,6 +416,7 @@ func teardownInstance(ctx context.Context, s *serveInstance) string {
 	dir := ""
 	if s != nil {
 		dir = s.Dir
+		defer s.removeStderr()
 	}
 	if dir != "" {
 		if pids := leftoverPIDs(ctx, dir); len(pids) > 0 {

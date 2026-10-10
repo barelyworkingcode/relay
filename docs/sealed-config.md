@@ -315,7 +315,8 @@ made to hang the same way, either.
 
 The bound is `callWithin` (`sealed/deadline.go`), shared by `copyItem` and
 `deleteItem`. The test build's file provider waits the same
-`keychainReadTimeout` and returns the same error text for its `slow` fault.
+`keychainReadTimeout` and returns the same error for its `slow` fault, naming
+the default account where the keychain keyring names the dir's own.
 
 ## One keychain item per config dir
 
@@ -349,8 +350,8 @@ session and no keychain dialog. A release build has no such provider
 chooses a keyring, and `startServerCore` is its one caller. A release build
 returns the login-keychain keyring. A test build returns the file provider
 for a config dir other than the default one, and the login-keychain keyring
-(the default dir's account) for the default dir, so a test build swapped in for the real app uses the
-real keychain as the real app does. If the provider cannot open, `relay
+(the default dir's account) for the default dir, so a test build swapped in
+for the real app uses the real keychain as the real app does. If the provider cannot open, `relay
 serve` exits 1 with `test keychain in <dir> cannot be used: <why>`.
 
 **The store.** `X/test-keychain.json` (`X` is the config dir) holds exactly the

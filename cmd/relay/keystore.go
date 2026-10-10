@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
@@ -37,11 +38,19 @@ func keychainAccount(configDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if dir == def {
+	if dir == def || sameExistingDir(dir, def) {
 		return sealed.DefaultKeychainAccount, nil
 	}
 	sum := sha256.Sum256([]byte(dir))
 	return sealed.DefaultKeychainAccount + "." + hex.EncodeToString(sum[:])[:16], nil
+}
+
+// sameExistingDir reports whether both paths exist and are one directory, which
+// catches a case variant of the default dir on a case-insensitive volume.
+func sameExistingDir(a, b string) bool {
+	ia, errA := os.Stat(a)
+	ib, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(ia, ib)
 }
 
 // resolveDirForKeychain symlink-resolves dir. A directory that does not exist

@@ -28,11 +28,11 @@ func runSealedResetPos(ctx context.Context, e env) (res result) {
 	}
 	trayStore, _, err := readSettings(e.ConfigDir)
 	if err != nil {
-		return blocked(id, "the installed store: "+err.Error())
+		return fail("the installed store: " + err.Error())
 	}
 	trayKey := trayStore.SealedKeyID
 	if status, err := sealStatus(ctx, e, e.ConfigDir); err != nil {
-		return blocked(id, err.Error())
+		return fail(err.Error())
 	} else if status != "" {
 		return blocked(id, "the installed store is already degraded")
 	}
@@ -42,11 +42,7 @@ func runSealedResetPos(ctx context.Context, e env) (res result) {
 		return fail(err.Error())
 	}
 	var inst *serveInstance
-	defer func() {
-		if problem := teardownInstance(ctx, inst); problem != "" {
-			res = fail("teardown: " + problem)
-		}
-	}()
+	defer func() { res = withTeardown(ctx, res, inst) }()
 	inst, err = startServe(ctx, e, dir)
 	if err != nil {
 		return fail(err.Error())
@@ -61,7 +57,7 @@ func runSealedResetPos(ctx context.Context, e env) (res result) {
 		return fail("the instance's admin_secret is not an envelope under its sealed_key_id")
 	}
 	if present, err := keychainItemPresent(ctx, keychainAccountFor(dir)); err != nil {
-		return blocked(id, err.Error())
+		return fail(err.Error())
 	} else if !present {
 		return fail("the instance's login-keychain item is absent")
 	}
@@ -89,7 +85,7 @@ func runSealedResetPos(ctx context.Context, e env) (res result) {
 	events, err := instanceEvents(ctx, e, inst, trace, "sealed.reset")
 	switch {
 	case err != nil:
-		return blocked(id, err.Error())
+		return fail(err.Error())
 	case len(events) != 1 || events[0]["status"] != "ok":
 		return fail(fmt.Sprintf("want one sealed.reset event with status ok, got %d", len(events)))
 	}
@@ -125,7 +121,7 @@ func runSealedResetPos(ctx context.Context, e env) (res result) {
 		return fail("the instance did not start sealed again after the restart")
 	}
 	if present, err := keychainItemPresent(ctx, keychainAccountFor(dir)); err != nil {
-		return blocked(id, err.Error())
+		return fail(err.Error())
 	} else if !present {
 		return fail("the instance's login-keychain item is absent after the restart")
 	}
