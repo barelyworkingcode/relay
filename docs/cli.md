@@ -2259,8 +2259,9 @@ relay is not running; `2` for an unknown flag.
 The body replaces the whole record (`enabled`, `listen`, `enrolment_requests`,
 `enrolment_listen`, `remove`, all booleans except the two addresses), so a field
 the body leaves out is cleared. Needs service: yes. It prompts
-(`remote.configure`) when the change widens what a remote client reaches, and
-then refuses over SSH; a change that only turns things off does not prompt.
+(`remote.configure`) when the change touches `enabled`, `listen`,
+`enrolment_requests` or `enrolment_listen`, in either direction, and then
+refuses over SSH; a body that leaves all four as they are does not prompt.
 Operator-only. `--json` and the text form print the same document and line as
 `remote show`. Exit codes: `0` saved; `1` when `--file` is missing or unreadable
 (`error: open PATH: no such file or directory`), the body is refused, a needed
