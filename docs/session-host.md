@@ -35,6 +35,8 @@ the one field a stored record contributes, and a fresh install defaults it to
 `true`. A restart (`service.restart`, the tray, the Settings UI) resynthesizes
 the record the same way startup does, through `ServiceOps.SessionHost`.
 
+`Args` may also carry `-claude-command`, `-pi-command` and `-codex-command`, each only when the matching template sets a `command` that is an absolute path or starts with `~/` (see [Finding the binary](#finding-the-binary)).
+
 `Args` carries `-relay-mcp-command <relayBin>` alongside the socket flags,
 the relay binary path relay derives `Command` from: relay-sessions
 learns the one binary that serves `relay mcp` this way, with no env fallback
@@ -232,7 +234,7 @@ Error codes C5 names explicitly, each mapped from a manager error:
 | 400 | `invalid_spec` | malformed or self-contradictory request, including a new `claude`, `pi`, `codex` or `chat` launch with a blank model (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`codex`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
 | 409 | `session_exists` | this session id is already live |
 | 502 | `identity_refused` | the shim's Hello did not bind |
-| 500 | `spawn_failed` | the target process could not be started |
+| 500 | `spawn_failed` | the target process could not be started (a target that starts and exits at once is not this: the launch is `201` and the exit is reported like any other) |
 
 ### Read-only projects (`settings.readOnlyProjects`)
 
@@ -350,7 +352,10 @@ manager byte for byte. A hidden tool that was not loaded is refused with no
 MCP call (`chat.call_tool`, `denied`, `not_loaded`). Calling a loaded tool
 by its real name works too.
 
-**What is hidden.** A tool is hidden when a project skill lists it, it is
+**What is hidden.** Nothing is hidden until the project has a skill that lists
+the MCP's tools: `relay project regen-skill` writes it from the project's
+grant. Before that every tool goes to the model, whatever the threshold. A tool
+is hidden when a project skill lists it, it is
 not in `pinned`, and it is in the live MCP catalogue. Skills are read at
 every Start from `<project dir>/.claude/skills/*/SKILL.md`: the frontmatter
 gives the index line and ranking text, and the first `## Tools` section lists
@@ -773,7 +778,7 @@ A session whose model is `codex/<slug>` runs `codex app-server` and speaks its n
 
 ### Launch
 
-On this machine the child is `<codex> app-server` under the shim, with the sandbox profile and launch identity, like pi. Its working directory is the session directory. Its environment is the shared base plus `ensurePath`, `RELAY_SESSION_ID` and `RELAY_BRIDGE_SOCKET`; no relay credential and no `CODEX_*` variable is added. No model key is minted: Codex brings its own login and relay never reads, moves or supplies it. The binary is `CodexConfig.Binary`, else the first hit of `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, then `PATH`.
+On this machine the child is `<codex> app-server` under the shim, with the sandbox profile and launch identity, like pi. Its working directory is the session directory. Its environment is the shared base plus `ensurePath`, `RELAY_SESSION_ID` and `RELAY_BRIDGE_SOCKET`; no relay credential and no `CODEX_*` variable is added. No model key is minted: Codex brings its own login and relay never reads, moves or supplies it. The binary is `CodexConfig.Binary` (the `codex` template's absolute `command`, see [Finding the binary](#finding-the-binary)), else the first hit of `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, then `PATH`.
 
 On an SSH host the provider runs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir, [codex_path, "app-server"], {RELAY_SESSION_ID})]`. `codex_path` is `HostSpec.CodexPath`, which `buildHostSpec` copies from the `command` of the host's `codex` template. An empty path fails `Start` with `host "<id>" has no codex path: set its codex template's command`. A host session is not sandboxed and gets no identity ([ssh-hosts.md](ssh-hosts.md#codex-on-a-host)).
 
@@ -835,6 +840,98 @@ A Codex session on this machine needs a `codex` template with these folders, and
 
 `~/.codex` holds Codex's login and transcripts. Codex's own `config.toml` is not touched.
 
+## What relay expects of an agent CLI
+
+This section is the wire contract between `relay-sessions` and the `claude`, `pi` and `codex` binaries it spawns for a console session on this machine. Anything that speaks it can stand in for the real CLI. Codex's wire is under [Codex sessions](#codex-sessions) above; its binary lookup and model list are repeated here so the three sit together.
+
+### Finding the binary
+
+The operator can name the binary. When the `claude-code`, `pi` or `codex` template in `settings.json` has a `command` that is an absolute path or starts with `~/`, relay passes it to `relay-sessions` as `-claude-command`, `-pi-command` or `-codex-command` on the built-in service record, and that kind runs exactly that file (the model list for pi and codex runs it too). A bare name such as `claude`, or no `command`, leaves the lookup below untouched. Only settings the operator writes feed the flags: no session request, and no value a session can write, chooses the binary. The flags are read when relay starts the session host, so a changed template takes effect at its next start.
+
+With no such command, every lookup falls through to the well-known list. `~` is the home directory of the `relay-sessions` process (`HOME`). The first existing file wins; with none, the name is looked up on `PATH`, and with no hit the bare name is run and the spawn fails.
+
+| Kind | Order |
+|---|---|
+| claude | `~/.local/bin/claude`, `~/.claude/local/claude`, `/usr/local/bin/claude`, `/opt/homebrew/bin/claude`, then `PATH` |
+| pi | `~/.bun/bin/pi`, `~/.local/bin/pi`, `~/.npm-global/bin/pi`, `/opt/homebrew/bin/pi`, `/usr/local/bin/pi`, then `PATH` |
+| codex | `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`, `~/.local/bin/codex`, then `PATH` |
+
+A machine that has a real CLI under `/usr/local/bin` or `/opt/homebrew/bin` therefore shadows a stand-in placed on `PATH`. The child's `PATH` is the inherited one with `~/.local/bin` appended when missing.
+
+### What every spawn has in common
+
+- The child starts in the session directory, with stdin and stdout as pipes. Stderr is a third pipe, read line by line into the service log ([Provider stderr](#provider-stderr)).
+- The environment is the `relay-sessions` environment minus every relay credential variable, plus `RELAY_SESSION_ID`, and `RELAY_BRIDGE_SOCKET` and `RELAY_MODEL_SOCKET` when those sockets exist. No token is ever added.
+- A sandboxed launch runs the binary under the shim ([The shim](#the-shim-relay-sessions-exec)); the binary sees the same argv, stdin and stdout.
+- Both protocols are one JSON object per line, newline-terminated, in each direction. Blank lines are skipped. A line longer than 10 MiB ends reading. A stdout line that is not JSON is passed on as `raw_output` and does not stop the session.
+- Relay writes nothing to stdin until a user sends a message. It does not wait for any output at start-up: the spawn counts as started when the process exists.
+- Relay ends a child by closing its stdin, sending `SIGINT`, and after 3 s killing it. The CLI is expected to exit on stdin EOF or `SIGINT`.
+- Exit is read from the process status. Exit 0 is a quiet end. A non-zero code logs a warning with the stderr tail. In both cases relay emits `process_exited` with `{"exitCode": N}`, unless it killed the child itself, or a newer spawn of the same session has replaced it.
+- A session idle for 15 minutes with no stdin or stdout line is killed.
+
+### claude
+
+Argv, in this order. Flags in brackets appear only when the condition holds.
+
+```
+--print --output-format stream-json --input-format stream-json --verbose --model <model>
+[--resume <id> | --session-id <uuid>]
+[--append-system-prompt-file <path>]
+[--permission-mode <mode>] [--dangerously-skip-permissions]
+[--allowedTools <a,b>] [--disallowedTools <a,b>]
+[--mcp-config <path>]
+[--tools <list> --strict-mcp-config]
+```
+
+`--resume` carries the `session_id` the CLI reported in its last `system`/`init` line. A first spawn passes `--session-id` with a fresh UUID. The system prompt and the MCP config are 0600 files named by path; the CLI may read them.
+
+**stdin.** One line per user message:
+
+```json
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+```
+
+Image attachments precede the text block as `{"type":"image","source":{"type":"base64","media_type":"…","data":"…"}}`.
+
+**stdout, for one turn.** Relay needs these lines, in order:
+
+1. `{"type":"system","subtype":"init","session_id":"<id>","model":"<model>","cwd":"<dir>","tools":[…],"mcp_servers":[…]}`. It sets the session's resume id. The CLI emits it after the first user line, not at start-up.
+2. `{"type":"assistant","message":{"id":"<msg id>","content":[{"type":"text","text":"…"}]}}`. A snapshot with a new `id` opens a message; every content block in it becomes a start, delta and stop. A text, `thinking` or `tool_use` block is understood.
+3. `{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":N,"output_tokens":N},"total_cost_usd":0}`. It ends the turn (`message_complete`). `is_error:true`, or a `subtype` starting with `error`, ends it as a failed turn. `usage` is optional.
+
+Streaming forms are also read: `{"type":"assistant","index":N,"content_block":{…}}`, `{"type":"assistant","index":N,"delta":{"type":"text_delta","text":"…"}}` and `{"type":"assistant","index":N,"content_block_stop":true}`. A `user` line carrying `tool_result` blocks becomes a tool result. Any other `type` is passed on unchanged. A `control_request` line is answered on stdin; only SSH-host sessions produce one.
+
+### pi
+
+Argv: `--mode rpc [--provider relay-router --model <id>] [--thinking <level>] [--session <id>] --session-dir <dir> [--append-system-prompt <path>] [--skill <dir>] [<extra args>]`. The environment adds `PI_OFFLINE=1` and `PI_SKIP_VERSION_CHECK=1`, and `PI_CODING_AGENT_DIR` when the session is brokered.
+
+**stdin.** Relay sends commands, one JSON object per line:
+
+- `{"id":"<uuid>","type":"prompt","message":"hello"}`. A user message. Images, if any, ride in `images`.
+- `{"id":"<uuid>","type":"get_state"}`. Sent once, just after start.
+- `{"type":"abort"}`. Stops the turn.
+
+**stdout.** A reply to a command with an `id` is `{"type":"response","id":"<same id>","success":true,"data":{…}}`. The reply to `get_state` carries `data.sessionId`, which relay keeps for `--session`. A reply that does not arrive within 10 s fails that command and is only logged. The `prompt` reply is not awaited.
+
+For one turn relay needs:
+
+1. `{"type":"agent_start"}`. It opens the turn.
+2. `{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}`, then `text_delta` with `"delta":"…"`, then `text_end`. `thinking_*` and `toolcall_*` are the same shape.
+3. `{"type":"agent_end"}`. It ends the turn (`message_complete`). Usage is read from it when present.
+
+`message_start`, `message_end`, `turn_start`, `turn_end` and `agent_settled` are accepted and ignored. Any other `type` is passed on as `raw_output`, with one warning per type per spawn.
+
+**Model list.** `pi --list-models` (8 s cap, 5 minute cache; stdout and stderr both read) prints a fixed-width table. The header line must contain the words `provider`, `model` and `context`, in that order, and they set the column offsets. Each following row gives a lower-case `provider` (letters, digits, `-`) and a model id. A model is listed as `pi/<provider>/<id>`, group `Pi · <provider>`. Example:
+
+```
+provider   model       context
+fake       fake-echo   128K
+```
+
+### codex
+
+`<codex> app-server` over its own JSON-RPC wire (above). The model list is `<codex> debug models` (8 s cap, 5 minute cache; stdout only), a JSON document `{"models":[{"slug":"…","display_name":"…","visibility":"list"}]}`. Only `visibility:"list"` rows are shown, as `codex/<slug>`.
+
 ## Drop-in
 
 A terminal can take over a headless Claude session. relay hosts the terminal; this host stops the headless process, holds the session and hands it back when the terminal exits. relay's side (the HTTP route, the bridge door and `relay drop-in`) is in [`docs/cli.md`](cli.md).
@@ -880,7 +977,7 @@ id `relaysessions`, schema and levels in
 [`logging-standard.md`](logging-standard.md). relay's `sessionHostClient`
 forwards the request's trace ID in `X-Trace-Id` on each call, so a frontend
 request and its `/launch` share one ID. A chat turn takes its ID from the
-`trace_id` of its `send_message`.
+`trace_id` of its `send_message`. Only a `/ws` `send_message` writes `chat.turn`; a message sent with `POST /api/sessions/{id}/message` or `relay session message` does not.
 
 The `send_message` WebSocket message takes an optional `trace_id`. A valid one
 is kept, otherwise one is minted. The session records the turn when the message
@@ -979,6 +1076,16 @@ are applied after this base, so a template that wants one of the dropped names,
 `CLAUDE_CODE_OAUTH_TOKEN` for example, names it. Services relay starts (relayLLM,
 eve) still inherit relay's environment apart from relay's own tokens; that is not
 covered here.
+
+## CLI doors
+
+`relay session start|list|message|stop|resume|mode` and `relay terminal start|list|log|stop|persistent-list|persistent-kill` reach the same cores the HTTP routes reach. Each is an operator-only `admin_op`, so a session or a sandboxed process is refused (`docs/cli.md`).
+
+- **Launch.** `session start` and `terminal start` build their request with `sessionLaunchRequest` and `terminalLaunchRequest`, the helpers the routes use, and run `launchWithEvent`. The caller is `LaunchCaller{Operator}`: it grants execute and the audit actor is the CLI process. No project token, launch identity or API credential is made for it. The answer is the route's 201 body.
+- **Resume.** `session resume` calls `resumeSession`, which the route calls too. It answers `{"session_id","resumed"}`: `false` for a session that is already live.
+- **Proxied calls.** `session list|message|stop` and `terminal list|log|stop` go through the reverse proxy eve's requests use, so the host sees relay's internal bearer and the trace id. Each writes an allowed `control_decision` row with the proxied method and path, class `operator` and transport `bridge`. An answer larger than 8 MiB is refused by name.
+- **Mode.** `session mode` joins relay-sessions' `/ws`, sends `join_session`, then `set_permission_mode`, and answers on the first `mode_changed` for the session or the first `error` frame (`resume_required` included: a local claude session relay launched always answers it, because its single-use identity cannot be reused by an in-place restart; only an SSH-host session changes mode in place). It gives up after two minutes and closes the socket.
+- **Persistent terminals.** `terminal persistent-list|persistent-kill` call `PersistentSessionOps`, as the project routes do.
 
 ## What a sandboxed session can reach
 
@@ -1205,7 +1312,7 @@ templates are never offered. A host project may launch every template of its
 host; `allowed_templates` gates console templates only. A claude session on a
 host project passes the kind gate iff the host has a `claude-code` template;
 a codex session passes it iff the host has a `codex` template; a chat session
-keeps the console `allowed_templates` gate; pi is refused on a host. A host template never sandboxes: it cannot set `"sandbox": true` or
+keeps the console `allowed_templates` gate, so its project needs `chat` (or `"*"`) listed; pi is refused on a host. A host template never sandboxes: it cannot set `"sandbox": true` or
 carry `read` or `read_write`, and one that omits `sandbox` launches
 unconfined. An empty `command` there runs the host's login shell rather
 than relay's `$SHELL`. Shape, seeding and launch argv are in
@@ -1462,17 +1569,16 @@ once its own Hello confirms it was launched by relay, so relay's dispatch
 table and the created-terminal/session route reservation both come up
 correctly on every start rather than only after a manual re-register.
 
-`reason` is `"exit"` for an ordinary exit, or `"closed"` when this host's own
+`reason` is `"exit"` for an ordinary exit, `"closed"` when this host's own
 `/terminate` marked the session terminating (`markTerminatingIfAlive`) before
-signalling it — `onTerminalExit`/`onSessionExit` (`internal/sessions/hostapi/server.go`)
-consume that flag once and report `"closed"` only if it was set, `"exit"`
-otherwise. These are the **only** two reasons any code in this repo actually
-produces. C5 also names `"idle"` and `"deleted"`, and relay's own consumer
-(`cmd/relay/router_sessions.go`) is prepared to handle both, but neither is
-reachable today: `session.Manager.DeleteSession` kills its target through
-this same exit path without ever marking it terminating, so it too reports
-`"exit"`, not `"deleted"` — and idle-close is covered by gap 4 below.
-`internal/sessions/hostapi/server.go`'s own comment says this plainly.
+signalling it, or `"deleted"` when `DELETE /api/sessions/{id}` marked it
+deleting (`markDeletingIfAlive`) before `session.Manager.DeleteSession` killed
+it. `onTerminalExit`/`onSessionExit` (`internal/sessions/hostapi/server.go`)
+consume each flag once; `"deleted"` wins over `"closed"`. A delete of a session
+with no live provider produces no exit, so the handler reports `"deleted"`
+itself; relay ignores a `"deleted"` report for an id its ledger lacks, so a
+terminal id or an unknown id changes nothing. C5 also names
+`"idle"`, which nothing produces today: idle-close is covered by gap 4 below.
 
 On relay's side, `SessionExited` (`cmd/relay/router_sessions.go`) tears down
 whatever relay itself minted for that session — the launch identity

@@ -41,6 +41,38 @@ starting `BLOCKED environment: ` is the machine's world state (bootstrap or
 `repair.sh`); `not a test machine: …` means this is not a bootstrapped VM.
 A journey FAIL after a green preflight is the product.
 
+### Provider rate limit
+
+Seven journeys run a Claude turn: session-agent-state, session-drop-in,
+session-drop-in-host, session-drop-in-tool-refused, chief-of-staff-send,
+cos-start and cos-start-host. When the provider's usage limit ends that turn
+and the journey sees the limit frame, it reads `BLOCKED` with the detail `provider rate limit (resets <time>)`,
+not FAIL, because the product did nothing wrong. A BLOCKED journey still exits
+1 and never posts `success`: the run is not green until the limit lifts and a
+re-run passes.
+
+The cause is structured, never the reply text: an `llm_event` frame whose
+event is an assistant message with `"error":"rate_limit"`. Any other `error`
+value (`authentication_failed`, say) stays a FAIL. Only the turn-outcome checks
+change (no `system/init` model, no idle frame, no running `session_state`
+frame, not exactly one `turn_done`, a wrong or
+missing excerpt, the first turn errored, no tool call); every later check
+stays FAIL.
+
+The reset time is the `resetsAt` of the session's last `rate_limit_event` with
+status `rejected`, as RFC 3339 UTC. Without one, it is the text after the last
+`resets ` in the first reply text after the hit, cut at the line end and at 64
+runes. With neither, the detail is `provider rate limit`.
+
+cos-start and cos-start-host send their first message inside the start request,
+and the journey joins the session only after the response. When the provider
+answers before the join, the limit frame is never seen, and nothing relay keeps
+afterwards (history, session list, event lines, audit) carries the code. Those
+turns then read the usual FAIL, as `main` does. Before chasing such a FAIL,
+check whether the other Claude journeys in the same run read
+`BLOCKED provider rate limit`. cos-start-host's second turn is watched live and
+reads BLOCKED.
+
 ## The world
 
 The world comes only from devboxWorld's machine marker, which bootstrap's
@@ -122,7 +154,8 @@ credential, and renews P4 when it is due.
   control-plane class P4 lacks. It needs the console session, holds the
   shared browser-test lock for the whole phase, and lets the presence helper
   answer or cancel relay's prompts. In order: mint the run credential, the
-  owner-gate negatives, the NOTRUN positives, the setup positives (probe MCP,
+  owner-gate negatives, the NOTRUN positives, the two `relay serve` instance
+  journeys (OAuth and sealed reset), the setup positives (probe MCP,
   Verify Grant project, crash service), the feature journeys, then token
   rotation, eve's enrolment window, fixture removal and the run credential's
   revocation.
@@ -336,11 +369,50 @@ missing reads BLOCKED naming the journey that sets it.
   `gate-eve-enrolment-open-pos` consumes the window it opened, so a run
   never ends with it open.
 
+**gate-mcp-oauth-start-pos** (screen). Runs the installed binary as `relay
+serve` on `/tmp/dbv-oauth`, a dir the journey recreates, never the tray's
+store. A loopback provider inside the harness serves discovery, dynamic
+registration, the authorization code with PKCE and a one-tool MCP that
+answers only the token it issued. The journey registers the MCP (prompt),
+runs `mcp authenticate --json` (prompt `mcp.oauth.start`), reads the
+authorization URL from the first stdout line and plays the browser: the
+provider answers 302 and relay's callback answers 200. PASS when the
+provider saw one registration, one authorization and one PKCE-verified code
+exchange; `relay logs` has one `mcp.oauth.start` event with `status` ok; a
+`config_change` row with `presence_id` names the MCP; `settings.json` holds
+neither issued token in clear and the access token is an envelope under the
+instance's `sealed_key_id`; and, after the instance restarts, `mcp.state`
+`up` arrives for the MCP, the provider saw a request with the issued token
+and saw no registration, authorization, exchange or refresh.
+BLOCKED when `RELAY_BIN` is a test build (the login keychain is not in use)
+or the provider cannot bind. The instance and the provider are stopped on
+every path; a process left naming the dir is killed and reads FAIL.
+- Waits: serve's one stdout line and its exit; the first stdout line of
+  `mcp authenticate`; the callback's HTTP response; `mcp.state` through
+  `relay logs --follow --since`.
+- Lives in: `journey_mcp_oauth.go`, `oauth_fixture.go`, `serve_instance.go`.
+
+**gate-sealed-reset-pos** (screen). Runs `relay serve` on `/tmp/dbv-sealed`
+from the installed binary. Its sealing key has its own login-keychain item
+(`docs/sealed-config.md`), so a reset there cannot touch the tray's. Before
+anything is reset the journey reads the tray's `sealed_key_id` and FAILs,
+resetting nothing, if the instance holds the same one. It then runs
+`relay sealed reset` (prompt `sealed.reset`, answered only by relay's whole
+zero-count reason, which the tray's store never produces). PASS when
+`sealed.reset` has one `ok` event, the instance holds a new `sealed_key_id`
+with `admin_secret` sealed under it, `relay status` reports no `seal_status`
+now and after a restart, its keychain item is present, and the tray's key id
+and `seal_status` are unchanged. A reset writes no audit row, so the detail
+says not audited. BLOCKED when `RELAY_BIN` is a test build or the installed
+store is already degraded.
+- Waits: as above, plus the `sealed.reset` event, written before the CLI
+  answers.
+- Lives in: `journey_sealed_reset.go`, `serve_instance.go`.
+
 **Owner-gate positives that never run.** `gate-enrolment-create-pos`,
 `gate-enrolment-sign-pos`, `gate-enrolment-update-pos`,
 `gate-enrolment-revoke-pos`, `gate-login-bootstrap-mint-pos`,
-`gate-login-passkey-revoke-pos`, `gate-mcp-oauth-start-pos`,
-`gate-remote-configure-pos`, `gate-sealed-reset-pos` and
+`gate-login-passkey-revoke-pos`, `gate-remote-configure-pos` and
 `gate-eve-passkey-revoke-pos` always read NOTRUN; the detail and the feature
 map ([`docs/FEATURES.md`](../../docs/FEATURES.md)) say why for each.
 
@@ -915,6 +987,10 @@ None of this drifts `verify.sh`.
 
 ## Traps
 
+- A `provider rate limit` BLOCKED is not a defect and not a pass. Wait for the
+  reset it names, then re-run; do not post it as green. The reset read from
+  reply text is the provider's own wording and can be a clock time without a
+  date.
 - Run from an operator shell, never inside a relay session. Relay refuses a
   sandbox attach from inside one.
 - `build.sh` signs and relaunches the app. Unlock the signing keychain first,
@@ -945,6 +1021,12 @@ None of this drifts `verify.sh`.
   `devboxverify-scope` is registered but not connected, so relay holds no
   schema for it. Check it in Settings before reading the FAIL as a
   regression. This can never produce a false PASS.
+- The two instance journeys leave `/tmp/dbv-oauth` and `/tmp/dbv-sealed` and
+  one login-keychain item each (`config-seal-key.<hash>`). The next run
+  recreates the dirs and reuses the items; the harness never deletes a
+  keychain item, since `security delete-generic-password` can raise a dialog.
+  A run that crashed leaves a `relay serve` there; the next run stops it
+  first.
 - Never edit the fixtures from Settings. Any edit with the MCP connected
   drops Verify Stale's `file_dirs`.
 - When showing red then green, run the red build first. A fixed build spends

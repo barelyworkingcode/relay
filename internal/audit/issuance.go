@@ -31,6 +31,10 @@ const (
 	auditMaxIssuanceGrants     = 64
 )
 
+// AuditEventCredentialDisclosed is the event kind of a credential's plaintext
+// reaching its holder without being newly issued.
+const AuditEventCredentialDisclosed = "credential_disclosed"
+
 // CredentialIssuance is one issuance or revocation. There is deliberately no
 // field for a plaintext, a hash, key material, or a public key: this type is
 // the whole input to the record, so a leak would have to be added here first,
@@ -49,6 +53,13 @@ type CredentialIssuance struct {
 	// Calling that credential_issued would be a lie, and leaving it
 	// unrecorded would break the ADR's detection argument (§7.5).
 	ConfigChange bool
+
+	// Disclosed marks a credential_disclosed event: an existing credential's
+	// plaintext was handed to its holder. Nothing new came into existence, so
+	// credential_issued would be a lie, and the act widens who knows the
+	// credential, so it is recorded on the same fail-closed path before the
+	// plaintext leaves. Ignored when ConfigChange or Revoked is set.
+	Disclosed bool
 
 	// Credential is one of cmd/relay's auditCredential* values; Subject is
 	// the identifier of the thing issued, revoked or changed.
@@ -118,6 +129,8 @@ func IssuanceEvent(iss CredentialIssuance) AuditEvent {
 		event = AuditEventConfigChange
 	case iss.Revoked:
 		event = AuditEventCredentialRevoked
+	case iss.Disclosed:
+		event = AuditEventCredentialDisclosed
 	}
 	subject, subjectCut := CapControlString(iss.Subject, auditMaxIssuanceFieldBytes)
 	name, nameCut := CapControlString(iss.Name, auditMaxIssuanceFieldBytes)

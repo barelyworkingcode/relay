@@ -172,7 +172,9 @@ about opening it:
   The real control is the comparison in A3, which plain TCP forces to be
   visible and mandatory.
 - **Lodging raises no *prompt*, ever.** A peer that can reach this port can
-  add a row to a table capped at 8 entries and nothing else. No code path
+  add a row to a table capped at 8 entries and nothing else. A full table
+  refuses the next lodge with `-32000`, and a second lodge from the same source
+  within 10 seconds is refused with `-32000` and `retry_after_seconds` set to the time left in that interval, rounded up (1 to 10). No code path
   from an unauthenticated lodge reaches the presence gate, so nobody on the
   network can make your Mac ask you for a password. You initiate every
   approval, and *that* is what prompts.

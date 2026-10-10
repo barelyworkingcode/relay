@@ -1,17 +1,14 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
-	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // Restricted to identifier-shaped keys so a malformed manifest can't smuggle
@@ -40,38 +37,11 @@ func ipcServiceAction(ipc *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	if ipc.Enhanced == nil {
-		emitActionResult(ipc, msg, false, "no enhanced registry")
-		return
-	}
-	rec := ipc.Enhanced.Get(msg.ServiceID)
-	if rec == nil {
-		emitActionResult(ipc, msg, false, fmt.Sprintf("service %q not registered", msg.ServiceID))
-		return
-	}
-	action := findAction(rec.Manifest.Actions, msg.ActionID)
-	if action == nil {
-		emitActionResult(ipc, msg, false, fmt.Sprintf("action %q not declared by service %q", msg.ActionID, msg.ServiceID))
-		return
-	}
-	path, err := buildActionPath(action, msg.Row)
-	if err != nil {
-		emitActionResult(ipc, msg, false, err.Error())
-		return
-	}
-
 	// Off-main so a slow service can't block the UI on a 10s timeout.
-	client := service.NewStatusClient(rec.InternalSocket, rec.InternalToken)
-	method := action.Method
 	ipc.GoFunc(func() {
-		defer client.CloseIdleConnections()
-		callCtx, cancel := context.WithTimeout(ipc.Ctx, 10*time.Second)
-		defer cancel()
-		_, err := client.DoAction(callCtx, method, path)
+		err := runServiceAction(ipc.Ctx, ipc.Enhanced, msg.ServiceID, msg.ActionID, msg.Row)
 		errStr := ""
 		if err != nil {
-			slog.Warn("service action failed",
-				"service", msg.ServiceID, "action", msg.ActionID, "error", err)
 			errStr = err.Error()
 		}
 		emitActionResult(ipc, msg, err == nil, errStr)

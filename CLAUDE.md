@@ -17,6 +17,7 @@ same change when behaviour moves.
 | Any CLI subcommand | [`docs/cli.md`](docs/cli.md) |
 | Tokens, credentials, expiry, sealing | [`docs/tokens.md`](docs/tokens.md), [`docs/launch-identity.md`](docs/launch-identity.md), [`docs/sealed-config.md`](docs/sealed-config.md) |
 | Presence prompts, gated ops | [`docs/presence-gate.md`](docs/presence-gate.md) |
+| HTTP routes, credential class, request and response | [`docs/routes.md`](docs/routes.md) |
 | Project files for eve (file routes, `/ws/files`, containment, read-only) | [`docs/project-files.md`](docs/project-files.md) |
 | Remote projects, enrolment | [`docs/access-profiles.md`](docs/access-profiles.md), [`docs/install-remote-machine.md`](docs/install-remote-machine.md) |
 | MCP scoping (`contextSchema`, `_meta`) | [`docs/context-schema.md`](docs/context-schema.md) |
@@ -68,6 +69,7 @@ service id.
 ./build.sh --release    # sign + notarize + /tmp/Relay.dmg (implies --test)
 
 go build ./... && go vet ./...        # while working
+(cd e2e && go test -race ./features/)  # the feature tests; builds the test bundle itself
 golangci-lint run ./...               # a ratchet, not a gate: add no new findings
 ```
 
@@ -77,7 +79,9 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 |---|---|
 | commit | `gofmt`, `go build`, `go vet` — seconds |
 | push | `go build ./...`, `go vet ./...` |
-| PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags testapprover ./cmd/relay`, and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` |
+| PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags relaytest ./...`, the test-build absent/present check, and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` |
+| PR and `main` (GitHub Actions) | the `e2e` job: `gofmt` and `go vet` in `e2e/`, then `go test -race -count=1 ./...` |
+| PR and `main` (GitHub Actions) | the `fakerelay` job (Linux): `gofmt`, `go vet`, a cgo-free build for Linux and macOS, then the proof tests in `fakerelay/` |
 
 ## House rules
 
@@ -107,7 +111,7 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
   be. Revocation is never refused for a broken log. Remote calls are
   intent-then-completion, fail-closed; no remote traffic with auditing off.
 - **No relay credential in any child's environment.** Secrets go over fd 3;
-  tokens never appear in a DTO except `rotate`.
+  tokens never appear in a DTO except `rotate` and `reveal` (`relay project token`).
 - **`disclose` governs what the client sees, never what the operator sees.**
 - **Control-plane routes register through `RouteRegistrar`.** `execute` and
   `proxy` routes are absent from the TCP mux, not refused on it.
@@ -124,8 +128,10 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
 
 ### Tests
 
-- Relay has no unit tests and CI rejects a `_test.go` outside `e2e/` and `fakerelay/`. Until
-  `e2e/` exists, a bug's failing repro is a devbox journey (`cmd/devboxverify`).
+- Relay has no unit tests and CI rejects a `_test.go` outside `e2e/` and `fakerelay/`. A bug's
+  failing repro is an `e2e/` feature test that drives relay through its CLI or
+  HTTP; what only the real Mac can show (the screen, Touch ID, the login
+  keychain) is a devbox journey (`cmd/devboxverify`).
 - Time-dependent code takes an injected clock; a test does not sleep to wait
   for one.
 - Report a failure with its output. Do not skip, loosen or delete a test to
@@ -139,9 +145,13 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
   version got wrong. Code is present tense; the *why* goes in `docs/`.
 - Public-repo hygiene: no real hostnames, tokens or personal paths in docs,
   fixtures or test data.
-- A PR that changes code under an area's `code` globs in
-  [`docs/FEATURES.md`](docs/FEATURES.md) updates that area's rows, or says in
-  the PR why nothing a user reaches moved. The reviewer checks it.
+- A PR that adds or changes a feature updates its row in
+  [`docs/FEATURES.md`](docs/FEATURES.md) (ID, doors, proof) and the test the row
+  names, in the same PR. A new door gets a row. Row IDs are never reused. A
+  change to a promise in `docs/THREAT-MODEL.md` updates the promise table in
+  the same PR. A PR that changes code under an area's `code` globs and moves
+  no row says in the PR why nothing a user reaches moved. The reviewer checks
+  it.
 
 ### This file
 

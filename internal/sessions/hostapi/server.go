@@ -43,6 +43,7 @@ type Config struct {
 	// omission the same way api.HandleModels already documents.
 	Permissions *permission.PermissionManager
 	PiBinary    string
+	CodexBinary string
 	ModelSocket string
 }
 
@@ -74,6 +75,7 @@ type Server struct {
 	exitMu      sync.Mutex
 	exitHandler func(id string, rootPID, exitCode int, reason string)
 	dropIns     map[string]string // terminal id -> held agent session id, guarded by exitMu
+	deleting    map[string]bool   // session ids a DELETE /api/sessions/{id} is removing; the exit callback reports "deleted" for them
 	terminating map[string]bool   // session ids this host's own /terminate is closing; read/cleared by the exit callback to tell "closed" apart from an unrelated "exit"
 
 	// hub/sessionWS/terminalWS are the eve-facing manifest surface: one Hub
@@ -102,6 +104,7 @@ func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Se
 		terminals:   terminals,
 		sessions:    sessions,
 		launching:   make(map[string]bool),
+		deleting:    make(map[string]bool),
 		terminating: make(map[string]bool),
 		dropIns:     make(map[string]string),
 	}
@@ -136,12 +139,10 @@ func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Se
 // hook cmd/relaysessions uses to send C5's SessionExited bridge report.
 // rootPID is 0 for a claude/pi/
 // chat session; reason is "closed" when this host's own
-// /terminate caused the exit, "exit" otherwise — C5 also names "idle" and
-// "deleted", neither reachable here yet: idle-close is driven by
-// NotifyViewerChange, which nothing calls without the eve-facing manifest
-// surface this unit does not mount (types.go's package doc), and "deleted"
-// is session.Manager.DeleteSession, a path /terminate never takes (it only
-// ever calls EndSession, C5's own "SIGTERM ... SIGKILL" — not a data wipe).
+// /terminate caused the exit, "deleted" when DELETE /api/sessions/{id} did,
+// "exit" otherwise — C5 also names "idle", not reachable here yet: idle-close
+// is driven by NotifyViewerChange, which nothing calls without the eve-facing
+// manifest surface this unit does not mount (types.go's package doc).
 func (s *Server) SetExitHandler(fn func(id string, rootPID, exitCode int, reason string)) {
 	s.exitMu.Lock()
 	s.exitHandler = fn
@@ -174,6 +175,26 @@ func (s *Server) markTerminatingIfAlive(id string, alive func() bool) {
 	if alive() {
 		s.terminating[id] = true
 	}
+}
+
+// markDeletingIfAlive marks id as being deleted iff alive reports true, under
+// the lock consumeDeleting takes. A session with no live provider produces no
+// exit report to consume the mark, so an unconditional mark would leak.
+func (s *Server) markDeletingIfAlive(id string, alive func() bool) {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	if alive() {
+		s.deleting[id] = true
+	}
+}
+
+// consumeDeleting reports and clears whether id's exit was caused by a delete.
+func (s *Server) consumeDeleting(id string) bool {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	deleted := s.deleting[id]
+	delete(s.deleting, id)
+	return deleted
 }
 
 // consumeTerminating reports and clears whether id's exit was caused by this
@@ -244,7 +265,10 @@ func (s *Server) takeDropIn(terminalID string) (string, bool) {
 // look up beyond the id and exit code the callback already carries.
 func (s *Server) onSessionExit(id string, exitCode int) {
 	reason := "exit"
-	if s.consumeTerminating(id) {
+	closed := s.consumeTerminating(id)
+	if s.consumeDeleting(id) {
+		reason = "deleted"
+	} else if closed {
 		reason = "closed"
 	}
 	s.reportExit(id, 0, exitCode, reason)
@@ -348,7 +372,7 @@ func (s *Server) ListenInternal() error {
 	// before any of them do real work, and for /ws specifically it must run
 	// before hub.HandleUpgrade — Upgrade writes the HTTP 101 immediately,
 	// and that can't be un-sent.
-	modelsCfg := api.ModelsConfig{PiBinary: s.cfg.PiBinary, ModelSocket: s.cfg.ModelSocket}
+	modelsCfg := api.ModelsConfig{PiBinary: s.cfg.PiBinary, CodexBinary: s.cfg.CodexBinary, ModelSocket: s.cfg.ModelSocket}
 	mux.HandleFunc("GET /api/models", s.guarded(func(w http.ResponseWriter, r *http.Request) {
 		api.HandleModels(modelsCfg, w, r)
 	}))
@@ -356,7 +380,23 @@ func (s *Server) ListenInternal() error {
 		api.HandleListSessions(s.sessions, w, r)
 	}))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.guarded(func(w http.ResponseWriter, r *http.Request) {
-		api.HandleDeleteSession(s.sessions, r.PathValue("id"), w, r)
+		id := r.PathValue("id")
+		sess, known := s.sessions.Get(id)
+		live := false
+		if known {
+			s.markDeletingIfAlive(id, func() bool {
+				p := sess.Provider()
+				live = p != nil && p.Alive()
+				return live
+			})
+		}
+		api.HandleDeleteSession(s.sessions, id, w, r)
+		if !live {
+			// A dormant or unpersisted session has no provider to exit, so no
+			// exit report follows its delete; relay's ledger would keep the
+			// record. Relay ignores the report for an id its ledger lacks.
+			s.reportExit(id, 0, 0, "deleted")
+		}
 	}))
 	mux.HandleFunc("POST /api/sessions/{id}/message", s.guarded(func(w http.ResponseWriter, r *http.Request) {
 		api.HandleSessionMessageSync(s.sessions, r.PathValue("id"), w, r)
@@ -677,16 +717,22 @@ func (s *Server) launchTerminal(w http.ResponseWriter, req LaunchRequest) {
 	// returned an error, so there is no "launching" window left for this
 	// table to observe by the time it ever sees this id.
 	//
-	// A failed Info read here (the shim exited in the narrow window between
-	// Create returning and this line) is not papered over with a zero-value
-	// rootStart: a half-set root is exactly what a hostile racing /permission
-	// call could match by accident of a zero start time, so this session is
-	// torn down and reported failed instead of
-	// published with a membership root nothing can actually verify.
+	// A failed Info read means the shim was already collected: a quick-exit
+	// target ends before this line. That is a normal launch that has already
+	// exited, not a spawn failure, so it is published as ended once the exit
+	// is fully recorded, and the exit is reported like any other. The entry
+	// carries no rootStart and is never in byRootPID, so no /permission walk
+	// can match it by a zero start time.
 	rootInfo, ok := membership.NewSource().Info(rootPID)
 	if !ok {
-		s.terminals.Close(req.SessionID)
-		writeErr(w, http.StatusInternalServerError, ErrSpawnFailed, "shim exited before its start time could be read")
+		// Put before waiting: onTerminalExit runs right after Done closes and
+		// must find the entry to report root_pid.
+		s.table.put(&sessionEntry{id: req.SessionID, state: stateEnded, shimPID: rootPID})
+		<-sess.Done()
+		body, _ := json.Marshal(sess.CreatedBody())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(LaunchResponse{SessionID: req.SessionID, RootPID: rootPID, Body: body})
 		return
 	}
 	s.table.put(&sessionEntry{id: req.SessionID, state: stateLive, shimPID: rootPID, rootStart: rootInfo})

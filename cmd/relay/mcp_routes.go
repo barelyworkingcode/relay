@@ -75,7 +75,7 @@ func writeMcpError(w http.ResponseWriter, err error) {
 func RegisterMcpRoutes(rr *control.RouteRegistrar, ops *McpOps) {
 	// execute: a stdio MCP's `command` is the caller's choice of what relay
 	// runs (ADR-015 decision 1) — the same reasoning as service create.
-	rr.Handle(control.ClassExecute, "POST /api/mcps", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassExecute, []string{"mcp.register"}, "POST /api/mcps", func(w http.ResponseWriter, r *http.Request) {
 		var body mcpFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})

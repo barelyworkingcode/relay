@@ -160,6 +160,38 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj config.
 	}
 }
 
+// createProjectFromDoor is the create every door shares: policy validation, the
+// gated ops.Create, then the skill reconcile. A nil lister skips the reconcile.
+func createProjectFromDoor(ctx context.Context, ops *ProjectOps, body project.CreateFields, surfaces project.McpSurfaces, lister SkillLister, via, credID string) (config.Project, error) {
+	if err := validatePermissionPolicy(body.PermissionPolicy); err != nil {
+		return config.Project{}, err
+	}
+	created, err := ops.Create(ctx, body, surfaces, via, credID)
+	if err != nil {
+		return config.Project{}, err
+	}
+	if lister != nil {
+		reconcileProjectSkill(ctx, lister, created)
+	}
+	return created, nil
+}
+
+// updateProjectFromDoor is createProjectFromDoor's counterpart for an update.
+// found is false, with no error, when the id matches no project.
+func updateProjectFromDoor(ctx context.Context, ops *ProjectOps, id string, body project.UpdateFields, surfaces func() project.McpSurfaces, lister SkillLister, via, credID string) (config.Project, bool, error) {
+	if err := validatePermissionPolicy(body.PermissionPolicy); err != nil {
+		return config.Project{}, false, err
+	}
+	updated, found, err := ops.Update(ctx, id, body, surfaces, via, credID)
+	if err != nil || !found {
+		return config.Project{}, found, err
+	}
+	if lister != nil {
+		reconcileProjectSkill(ctx, lister, updated)
+	}
+	return updated, true, nil
+}
+
 // RegisterProjectRoutes wires the project HTTP endpoints. Payloads are
 // snake_case to match relay's on-disk format; Eve normalizes to camelCase
 // on its side.
@@ -208,29 +240,21 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 		writeJSON(w, http.StatusOK, projectToView(s, *proj))
 	})
 
-	rr.Handle(control.ClassConfigure, "POST /api/projects", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassConfigure, []string{"project.grant"}, "POST /api/projects", func(w http.ResponseWriter, r *http.Request) {
 		var body project.CreateFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		if err := validatePermissionPolicy(body.PermissionPolicy); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-
-		created, createErr := ops.Create(r.Context(), body, mcps.AllMcpSurfaces(), auditViaHTTP, credIDOf(r))
+		created, createErr := createProjectFromDoor(r.Context(), ops, body, mcps.AllMcpSurfaces(), skillLister, auditViaHTTP, credIDOf(r))
 		if createErr != nil {
 			writeProjectGateError(w, createErr)
 			return
 		}
-		if skillLister != nil {
-			reconcileProjectSkill(r.Context(), skillLister, created)
-		}
 		writeJSON(w, http.StatusCreated, projectToView(config.DisplaySettings(store), created))
 	})
 
-	rr.Handle(control.ClassConfigure, "PUT /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassConfigure, []string{"project.grant"}, "PUT /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		// Pointer fields distinguish "not in body" from "zero value" so callers
 		// can patch a single field without clearing the others.
@@ -239,18 +263,11 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		if body.PermissionPolicy != nil {
-			if err := validatePermissionPolicy(body.PermissionPolicy); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-				return
-			}
-		}
-		// Shape/grant validation (including path) now happens inside
-		// project.ApplyUpdate against the fully-merged candidate. Whether an
+		// Shape/grant validation (including path) happens inside
+		// project.ApplyUpdate against the fully-merged candidate: whether an
 		// empty path is valid depends on Kind (required for local, mandatory
-		// for remote), so a standalone path-only pre-check can no longer judge
-		// it correctly — the merged candidate is the only place that knows.
-		updated, found, updateErr := ops.Update(r.Context(), id, body, mcps.AllMcpSurfaces, auditViaHTTP, credIDOf(r))
+		// for remote), so a standalone path-only pre-check cannot judge it.
+		updated, found, updateErr := updateProjectFromDoor(r.Context(), ops, id, body, mcps.AllMcpSurfaces, skillLister, auditViaHTTP, credIDOf(r))
 		if updateErr != nil {
 			writeProjectGateError(w, updateErr)
 			return
@@ -258,9 +275,6 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 		if !found {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
-		}
-		if skillLister != nil {
-			reconcileProjectSkill(r.Context(), skillLister, updated)
 		}
 		writeJSON(w, http.StatusOK, projectToView(config.DisplaySettings(store), updated))
 	})
@@ -373,7 +387,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 	//
 	// grant: this issues a credential another party holds (ADR-015 decision
 	// 1), the same reasoning as enrolment create.
-	rr.Handle(control.ClassGrant, "POST /api/projects/{id}/rotate_token", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassGrant, []string{"project.rotate_token"}, "POST /api/projects/{id}/rotate_token", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		// ProjectOps.RotateToken records the rotation itself (so it can
 		// attach the presence_id the gate minted) and withholds the new

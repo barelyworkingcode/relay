@@ -39,17 +39,29 @@ func RelaySessionsHookSocketPath(configDir string) string {
 // Command on load, defense in depth for a caller that reads s.Services
 // directly instead of going through this function). autostart is the one
 // value SH §2.1 leaves to the stored record.
-func BuiltinRelaySessionsService(relayBin, configDir string, autostart bool) config.ServiceConfig {
+func BuiltinRelaySessionsService(relayBin, configDir string, autostart bool, agents config.LocalAgentCommands) config.ServiceConfig {
+	args := []string{
+		"service",
+		"-internal-socket", RelaySessionsInternalSocketPath(configDir),
+		"-hook-socket", RelaySessionsHookSocketPath(configDir),
+		"-relay-mcp-command", relayBin,
+	}
+	// Each flag is present only when the operator's template sets a command,
+	// so an install with none starts relay-sessions exactly as before.
+	for _, f := range []struct{ flag, path string }{
+		{"-claude-command", agents.Claude},
+		{"-pi-command", agents.Pi},
+		{"-codex-command", agents.Codex},
+	} {
+		if f.path != "" {
+			args = append(args, f.flag, f.path)
+		}
+	}
 	return config.ServiceConfig{
-		ID:          config.RelaySessionsServiceID,
-		DisplayName: "Session Host",
-		Command:     RelaySessionsHelperPath(relayBin),
-		Args: []string{
-			"service",
-			"-internal-socket", RelaySessionsInternalSocketPath(configDir),
-			"-hook-socket", RelaySessionsHookSocketPath(configDir),
-			"-relay-mcp-command", relayBin,
-		},
+		ID:           config.RelaySessionsServiceID,
+		DisplayName:  "Session Host",
+		Command:      RelaySessionsHelperPath(relayBin),
+		Args:         args,
 		Autostart:    autostart,
 		Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilitySessions},
 	}
@@ -62,7 +74,7 @@ func BuiltinRelaySessionsService(relayBin, configDir string, autostart bool) con
 // true -- an install that has never decided turns the built-in session host
 // on by default. Does not mutate services; safe to call on a clone of the
 // live settings before StartAllAutostart / ReclaimOrphans see it.
-func EnsureBuiltinRelaySessionsService(services []config.ServiceConfig, relayBin, configDir string) []config.ServiceConfig {
+func EnsureBuiltinRelaySessionsService(services []config.ServiceConfig, relayBin, configDir string, agents config.LocalAgentCommands) []config.ServiceConfig {
 	autostart := true
 	out := make([]config.ServiceConfig, 0, len(services)+1)
 	for _, svc := range services {
@@ -72,7 +84,7 @@ func EnsureBuiltinRelaySessionsService(services []config.ServiceConfig, relayBin
 		}
 		out = append(out, svc)
 	}
-	return append(out, BuiltinRelaySessionsService(relayBin, configDir, autostart))
+	return append(out, BuiltinRelaySessionsService(relayBin, configDir, autostart, agents))
 }
 
 // EnsureBuiltinRelaySessionsRecord adds a relaysessions record to s.Services

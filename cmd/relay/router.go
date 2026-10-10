@@ -13,6 +13,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/logging"
@@ -268,6 +269,25 @@ type appRouter struct {
 	// Projects tab and PUT /api/projects/{id} use, so the three doors share
 	// one queue.
 	projectOps *ProjectOps
+
+	// The remaining fields are the cores the operator-only admin ops reach.
+	// Each is the instance the Settings window or the HTTP routes hold. A
+	// test or partial router leaves them nil and the op refuses by name.
+	hostOps      *HostOps
+	modelCatalog *ModelCatalogOps
+	mcpSurfaces  func() project.McpSurfaces
+	// openURL is Platform.OpenURL: what a browser-needing op calls on a tray.
+	openURL func(string)
+	// headless is true under `relay serve`, where no browser opens and an op
+	// that needs one reports the URL instead.
+	headless    bool
+	overview    func() overviewSeed
+	resetSealed func(ctx context.Context, via string) error
+	// fileOps is the instance the frontend server uses, so a watch from the CLI
+	// and one from /ws/files share one watch hub.
+	fileOps            *FileOps
+	persistentSessions *PersistentSessionOps
+	doors              *doorCatalog
 }
 
 // identityAllowed returns the launch identity bound to this request's peer
@@ -1248,8 +1268,35 @@ func (r *appRouter) AdminOp(ctx context.Context, name string, args json.RawMessa
 	if !ok {
 		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("unknown admin operation: %q", name))
 	}
-	return op(ctx, r, args)
+	if op.caller == adminCallerOperator {
+		if err := bridge.RequireOperatorCaller(ctx); err != nil {
+			r.recordSessionCallerRefusal(name)
+			return nil, err
+		}
+	}
+	return op.handle(ctx, r, args)
 }
+
+// recordSessionCallerRefusal writes the denied control_decision row for an
+// operator-only op a session or sandbox asked for. Deliberate: recording fails
+// open, because the refusal itself does not depend on it.
+func (r *appRouter) recordSessionCallerRefusal(op string) {
+	if r.audit == nil {
+		return
+	}
+	r.audit.RecordDecision(control.ControlDecision{
+		Method:    "admin_op",
+		Path:      op,
+		Class:     adminOperatorDecisionClass,
+		Transport: control.TransportBridge,
+		Allowed:   false,
+		Reason:    "session_caller",
+	})
+}
+
+// adminOperatorDecisionClass labels a control_decision row of the operator
+// rule. It is not a CapabilityClass any credential holds.
+const adminOperatorDecisionClass control.CapabilityClass = "operator"
 
 // callTransport names the door a tool operation arrived through: the remote
 // listener attests its caller, everything else came over the local bridge.

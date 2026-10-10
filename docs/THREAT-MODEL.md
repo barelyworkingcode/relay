@@ -94,23 +94,37 @@ The audit trail (asset C) is part of every promise above. Examples: #147 (a
 cancelled presence prompt left no audit row), #150 (caller-controlled
 terminal escapes in `relay audit`'s table).
 
-## The test-approver build
+## The test build
 
-`./build.sh --test-approver` makes a tray whose presence provider approves
-`project.grant` with no person and refuses every other gated op. It exists so
-verify journeys can create a project on the devbox. It is not a promise
-relay makes to a user: no release carries it, and a release has no switch that
-skips a gate (attacker 5's promise holds). The promises that cover it:
+`./build.sh --test-build` makes a tray with three seams that take the outside
+world away from a test: a presence provider that reads its answers from a file
+in the config dir, a sealing-key store in a file in the config dir instead of
+the login keychain, and a clock the test moves (`relay debug clock`). It
+exists so verify journeys and the e2e tier run with no person and no login
+session. It is not a promise relay makes to a user: no release carries it, and
+a release has no switch that skips a gate, reads a file for a presence answer
+or moves its clock (attacker 5's promise holds). The promises that cover it:
 
-- **Absent from release (assets A, B).** `build.sh` and a Go test check that
-  no release binary holds the approver or the tag. A release that holds it is
-  a relay bug against attacker 5.
-- **One op only (asset B).** The approver cannot approve a credential,
-  enrolment or service operation; unlisted ops are refused, not passed to a
-  dialog.
+- **Absent from release (assets A, B).** `build.sh` and a CI step on every pull
+  request check that no release binary holds a seam symbol or the tag. A
+  release that holds one is a relay bug against attacker 5.
+- **No seam on the real config dir (assets A, B).** The seams act only on a
+  config dir other than the default one. On the default dir the test build
+  approves `project.grant` alone, refuses every other gated op, uses the login
+  keychain and refuses to move the clock, so a test build swapped in for the
+  real app never takes an answer from a file.
+- **What the approver can approve.** In the test build the approver may
+  approve any op in `presence.GatedOps`, not only `project.grant`. The outcome
+  file chooses the answer per op. It is read only on a config dir other than
+  the default one, and it is absent from release builds, so it widens nothing
+  a release or the real app does.
 - **Recorded (asset C).** Each approval is a `control_decision` row with
   `presence_approver`, written before the act; an unrecordable approval
-  refuses the act.
+  refuses the act. Each answer, keychain fault and clock change writes a
+  `debug.*` event.
+
+One residual: a session whose grants include the test config dir could write
+the files in it. The harness keeps that dir under `/tmp`, outside every grant.
 
 ## Out of scope: not a relay bug
 

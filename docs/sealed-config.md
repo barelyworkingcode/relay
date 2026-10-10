@@ -313,6 +313,86 @@ sitting on the desktop from a read that timed out. `sealedResetDigest`
 runs, so it inherits this bound for free — the reset menu item cannot be
 made to hang the same way, either.
 
+The bound is `callWithin` (`sealed/deadline.go`), shared by `copyItem` and
+`deleteItem`. The test build's file provider waits the same
+`keychainReadTimeout` and returns the same error for its `slow` fault, naming
+the default account where the keychain keyring names the dir's own.
+
+## One keychain item per config dir
+
+The login-keychain item's service is `com.barelyworkingcode.relay`. Its
+account depends on the config dir (`keychainAccount`, `cmd/relay/keystore.go`):
+
+- The default config dir keeps the account `config-seal-key`, so the tray's
+  item, key and behaviour do not change.
+- Any other dir gets `config-seal-key.` plus the first 16 hex characters of
+  the SHA-256 of the dir's symlink-resolved absolute path. Both sides of the
+  default-dir comparison are resolved the same way.
+- A dir that cannot be resolved refuses the start naming the dir. It never
+  falls back to the default account.
+
+The reason is `relay sealed reset`: it destroys the item its instance resolved
+to. With one shared item, a reset on a `relay serve` instance off the default
+dir would delete the tray's key. A missing per-dir item on a first run is
+created; nothing adopts or migrates the default item. A non-default instance
+created before this rule names the shared key, finds no item of its own and
+starts degraded; `relay sealed reset` or deleting its `settings.json` is the
+way out.
+
+## The test build's keychain provider
+
+A build with `-tags relaytest` keeps the sealing key in a file in the config
+dir instead of the login keychain, so a harness can run a relay with no login
+session and no keychain dialog. A release build has no such provider
+(`scripts/check-test-build.sh absent` checks it).
+
+`newKeyring(configDir)` (`cmd/relay/keystore.go`) is the one place the program
+chooses a keyring, and `startServerCore` is its one caller. A release build
+returns the login-keychain keyring. A test build returns the file provider
+for a config dir other than the default one, and the login-keychain keyring
+(the default dir's account) for the default dir, so a test build swapped in
+for the real app uses the real keychain as the real app does. If the provider cannot open, `relay
+serve` exits 1 with `test keychain in <dir> cannot be used: <why>`.
+
+**The store.** `X/test-keychain.json` (`X` is the config dir) holds exactly the
+bytes the keychain item holds, and `decodeKeychainPayload` reads both. An
+absent file is an empty keychain. The file is created at start, before any
+sealed write: a start whose `settings.json` names no `sealed_key_id` and holds
+no sealed fields finds no key and creates one. A later start reads it back,
+and a sealed reset replaces it with a new key. `Create` refuses when an item exists. Writes
+go to a temporary file in `X` at mode 0600 and rename over the store.
+`Destroy` removes the file.
+
+**The open check.** The provider refuses to open when `X` is not a directory
+or is not writable, when the store file or the fault file exists and is not a
+regular file owned by this user with no group or other bits, or when the fault
+file is invalid.
+
+**Faults.** `X/test-keychain-fault.json` holds `{"fault": "none|locked|missing|corrupt|slow"}`;
+unknown keys are invalid. The provider reads it on every operation, so a test
+can fault a running instance. Each fault reproduces the shape of the login
+keychain's own failure, so relay's existing handling is what runs:
+
+| Fault | Load | Create | Destroy |
+|---|---|---|---|
+| `locked` | `ErrKeyUnreadable` wrapping `OSStatus -25308 (errSecInteractionNotAllowed)` | the same error, from its existence check | `sealed: deleting keychain item: OSStatus -25308` |
+| `missing` | `ErrKeyMissing` | writes a new item | nil |
+| `corrupt` | `decodeKeychainPayload`'s error on bytes that are not a payload | the same error | removes the file |
+| `slow` | waits `keychainReadTimeout` (3 s), then answers `ErrKeyUnreadable` | its bounded existence check answers first | never returns; the existing delete bound answers |
+
+`slow` runs relay's own bound rather than sleeping for a fixed time, so what
+a test sees is the same bound a stray keychain dialog meets. A running relay
+reads the key once at start, so a fault shows at start, at `relay sealed
+reset`, and at any other operation that goes back to the keychain; a sealed
+write with the key already in memory does not.
+
+Each operation a fault changes writes `debug.keychain.fault` with
+`keychain_op` and `fault`, before the operation acts
+([`docs/events.md`](events.md#test-build-only)).
+
+No CLI path opens the provider: it is built in `startServerCore` and handed to
+the sealed store there, as the login-keychain keyring is.
+
 ## The CLI carries relay's own code identity — this is structural, not incidental
 
 `/Applications/Relay.app/Contents/MacOS/relay credential mint` runs the exact
@@ -392,7 +472,9 @@ every enrolment and the CA that signed them, every passkey — confirming it
 deletes `settings.json`, `ca.key.sealed`, `ca.crt`, and the keychain item
 together, then re-initializes relay from nothing.
 
-There is no CLI reset subcommand, no `--force-reset` flag, no environment
+`relay sealed reset` is the one CLI door, and it is presence-gated: it runs
+only from your own terminal, behind the same prompt as the tray item, and an
+agent's session cannot approve it. There is no `--force-reset` flag, no environment
 variable, and no offline recovery code of any kind. Every one of those would
 be a second door into the sealed store, and a second door is exactly what
 this whole design spends its effort closing on the first one. An operator

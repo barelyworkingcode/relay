@@ -1,0 +1,8 @@
+{"schema":1,"version":"dev","headless":false,"doors":[
+ {"kind":"http","name":"GET /api/projects","credential":"read","owner_gated":false},
+ {"kind":"http","name":"POST /api/projects","credential":"configure","owner_gated":true,"gates":["project.grant"]},
+ {"kind":"ipc","name":"create_project","credential":"settings_window","owner_gated":true,"gates":["project.grant"]},
+ {"kind":"bridge","name":"admin_op:project.create","credential":"operator","owner_gated":false},
+ {"kind":"cli","name":"relay project create","credential":"operator","owner_gated":true,"gates":["project.grant"],"calls":["admin_op:project.create"]},
+ {"kind":"cli","name":"relay status","credential":"operator","owner_gated":false},
+ {"kind":"cli","name":"relay debug clock","credential":"operator","owner_gated":false}]}

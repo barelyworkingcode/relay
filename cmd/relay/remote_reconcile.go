@@ -10,6 +10,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/project"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // Reconcile is a convergence step, not a command: there is deliberately no
@@ -39,6 +40,9 @@ type RemoteSupervisor struct {
 	// goFunc runs the accept loop under the owner's waitgroup; nil falls
 	// back to a bare `go`, for tests.
 	goFunc func(func())
+	// clock times the tool and mount budgets of every RemoteServer this
+	// supervisor binds. Nil reads as wall time.
+	clock serverClock
 
 	// enrolTable is the pending enrolment-request table. Built once, here,
 	// and reused across every EnrolmentRequestServer this supervisor binds
@@ -61,11 +65,13 @@ type RemoteSupervisor struct {
 	lastEnrolReport string
 }
 
-func NewRemoteSupervisor(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *audit.AuditRecorder, configurer RemoteConfigurer, surfaces func() project.McpSurfaces, goFunc func(func())) *RemoteSupervisor {
+func NewRemoteSupervisor(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *audit.AuditRecorder, configurer RemoteConfigurer, surfaces func() project.McpSurfaces, goFunc func(func()), clock serverClock) *RemoteSupervisor {
+	table := newEnrolmentRequestTable()
+	table.setClock(func() time.Time { return clockNow(clock) })
 	return &RemoteSupervisor{
 		ctx: ctx, store: store, router: router, audit: audit,
 		configurer: configurer, surfaces: surfaces, goFunc: goFunc,
-		enrolTable: newEnrolmentRequestTable(),
+		enrolTable: table, clock: clock,
 	}
 }
 
@@ -162,7 +168,7 @@ func (sup *RemoteSupervisor) reconcileToolListenerLocked(settings *config.Settin
 
 	// Bind before tearing down: the old listener's teardown below
 	// compare-and-clears and leaves the new one's hook alone.
-	ns, err := NewRemoteServer(sup.ctx, sup.store, sup.router, sup.audit, sup.configurer, sup.surfaces)
+	ns, err := NewRemoteServer(sup.ctx, sup.store, sup.router, sup.audit, sup.configurer, sup.surfaces, sup.clock)
 	if err != nil {
 		err = fmt.Errorf("remote listener could not bind %s: %w", desired.Listen, err)
 		sup.reportLocked(desired.Listen, err)

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/ceremonylimit"
 )
@@ -374,6 +375,13 @@ func NewWebAuthnVerifier(origin, rpID string) (*WebAuthnVerifier, error) {
 		challenges: newWebAuthnChallengeStore(),
 		limiter:    ceremonylimit.New(),
 	}, nil
+}
+
+// SetClock makes the challenge expiry and the ceremony limiter read now. The
+// caller sets it once, before the verifier serves a request.
+func (v *WebAuthnVerifier) SetClock(now func() time.Time) {
+	v.challenges.setClock(now)
+	v.limiter.SetClock(now)
 }
 
 func (v *WebAuthnVerifier) Origin() string { return v.origin }

@@ -46,6 +46,7 @@ type cosFrame struct {
 	Text      string    // user_message
 	Origin    string    // user_message
 	History   []cosHist // session_joined
+	Limit     limitFrame
 }
 
 func parseCosFrame(raw []byte) cosFrame {
@@ -68,6 +69,7 @@ func parseCosFrame(raw []byte) cosFrame {
 	if f.Type == "llm_event" && f.Event.Type == "system" && f.Event.Subtype == "init" {
 		out.InitModel = f.Event.Model
 	}
+	out.Limit = parseLimitFrame(raw)
 	return out
 }
 
@@ -353,6 +355,8 @@ func driveChiefOfStaff(ctx context.Context, e env, obs, cos *cosConn, run string
 		return
 	}
 	if r.PersonIdleErr = !cos.waitFor(ctx, cosWait, cosIdleAfterRunning(id)); r.PersonIdleErr {
+		// A rate-limited turn ends errored, never idle; classification still reads its frames.
+		r.Frames = obs.snapshot()
 		return
 	}
 	r.Send = cosRequest(ctx, e, run, true, http.MethodPost, "/api/chief-of-staff/messages",
@@ -525,6 +529,7 @@ func classifyChiefOfStaff(r cosRun) result {
 		return fail("no session_joined frame after join_session")
 	}
 	sid := r.SessionID
+	limit := sessionLimit(r.Frames, sid)
 	model := ""
 	for _, f := range r.Frames {
 		if f.Type == "llm_event" && f.SessionID == sid && f.InitModel != "" {
@@ -540,13 +545,13 @@ func classifyChiefOfStaff(r cosRun) result {
 	case r.Person.Status != http.StatusOK:
 		return fail("person's message status %d: %s", r.Person.Status, r.Person.Error)
 	case model == "":
-		return fail("no system/init event with a model after the turn")
+		return limit.turnFail(id, "no system/init event with a model after the turn")
 	case model != agentModelID:
 		return blocked(id, "model is not Haiku: "+model)
 	case r.Delete.Status/100 != 2:
 		return fail("DELETE status %d: session %s may still be running", r.Delete.Status, sid)
 	case r.PersonIdleErr:
-		return fail("no idle session_state frame after the person's turn")
+		return limit.turnFail(id, "no idle session_state frame after the person's turn")
 	case r.Send.TimedOut:
 		return fail("POST /api/chief-of-staff/messages got no answer")
 	case r.Send.Status != http.StatusAccepted:
@@ -560,7 +565,7 @@ func classifyChiefOfStaff(r cosRun) result {
 	case sent.Origin != cosOrigin:
 		return fail("send answered origin %q, want %q", sent.Origin, cosOrigin)
 	case r.TurnWaitErr:
-		return fail("no turn_done carrying the reply, then idle, on the chief-of-staff connection")
+		return limit.turnFail(id, "no turn_done carrying the reply, then idle, on the chief-of-staff connection")
 	case r.List.Status != http.StatusOK:
 		return fail("scoped GET /api/sessions status %d, want 200", r.List.Status)
 	case !r.ListRow.Found:

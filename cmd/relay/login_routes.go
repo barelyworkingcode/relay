@@ -82,6 +82,8 @@ type loginRoutes struct {
 	ops      *LoginOps
 	verifier *login.WebAuthnVerifier
 	auditor  control.ControlAuditor
+	// clock times the passkey record's creation stamp. Nil reads as wall time.
+	clock serverClock
 	// issuance records the two credentials this surface hands out — a
 	// registered passkey and the credential an assertion mints — which the
 	// ceremony's own control_decision row does not name. Set by the frontend
@@ -286,7 +288,7 @@ func (lr *loginRoutes) register(w http.ResponseWriter, ev *logging.Event, ctx co
 
 	id := base64.RawURLEncoding.EncodeToString(result.CredentialID)
 	ev.Set("passkey_id", abbreviatePasskeyID(id))
-	now := time.Now().UTC()
+	now := clockNow(lr.clock).UTC()
 	passkey := config.Passkey{
 		ID:               id,
 		Name:             "browser passkey " + now.Format(time.RFC3339),
@@ -432,8 +434,8 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, ev *logging.Event, ctx cont
 
 // loginCredentialName names the record for the ceremony that produced it, so
 // control.ControlDecision.CredID attributes one browser session rather than a role.
-func loginCredentialName(credentialID string) string {
-	return fmt.Sprintf("%s%s %s", loginCredentialPrefix, abbreviatePasskeyID(credentialID), time.Now().UTC().Format(time.RFC3339))
+func loginCredentialName(credentialID string, now time.Time) string {
+	return fmt.Sprintf("%s%s %s", loginCredentialPrefix, abbreviatePasskeyID(credentialID), now.UTC().Format(time.RFC3339))
 }
 
 // recordLoginOutcome writes the audit record for one ceremony. `relay audit`

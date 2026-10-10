@@ -105,7 +105,7 @@ func RegisterEnrolmentRoutes(rr *control.RouteRegistrar, ops *EnrolmentOps) {
 		writeJSON(w, http.StatusOK, enrolmentViewOf(e))
 	})
 
-	rr.Handle(control.ClassGrant, "POST /api/enrolments", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassGrant, []string{"enrolment.create"}, "POST /api/enrolments", func(w http.ResponseWriter, r *http.Request) {
 		var body enrolmentFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -125,7 +125,7 @@ func RegisterEnrolmentRoutes(rr *control.RouteRegistrar, ops *EnrolmentOps) {
 		writeJSON(w, http.StatusCreated, withBundleError(createdViewOf(created), err))
 	})
 
-	rr.Handle(control.ClassGrant, "DELETE /api/enrolments/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassGrant, []string{"enrolment.revoke"}, "DELETE /api/enrolments/{id}", func(w http.ResponseWriter, r *http.Request) {
 		// EnrolmentOps.Revoke now records the revocation itself, so it can
 		// attach the presence_id the gate minted.
 		if _, err := ops.Revoke(r.Context(), r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
@@ -148,7 +148,7 @@ func RegisterEnrolmentRoutes(rr *control.RouteRegistrar, ops *EnrolmentOps) {
 	// decodes. SetRemoteConfig itself is now gated (remote.configure) when
 	// the request actually widens what a remote client reaches — this
 	// route was ClassExecute's one ungated member (F1); it no longer is.
-	rr.Handle(control.ClassExecute, "PUT /api/remote", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassExecute, []string{"remote.configure"}, "PUT /api/remote", func(w http.ResponseWriter, r *http.Request) {
 		var body remoteConfigFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})

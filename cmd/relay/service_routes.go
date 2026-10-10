@@ -97,7 +97,7 @@ func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 
 	// execute: the body's `command` field is what relay will run — the
 	// caller chooses it, not relay (ADR-015 decision 1).
-	rr.Handle(control.ClassExecute, "POST /api/services", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassExecute, []string{"service.register"}, "POST /api/services", func(w http.ResponseWriter, r *http.Request) {
 		var body serviceFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -112,7 +112,7 @@ func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 	})
 
 	// execute: same reasoning as create — Update can rewrite `command`.
-	rr.Handle(control.ClassExecute, "PUT /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.HandleGated(control.ClassExecute, []string{"service.register"}, "PUT /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var body serviceFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})

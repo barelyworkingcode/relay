@@ -11,13 +11,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
-// runProjectCommand is `relay project`'s dispatcher.
-func runProjectCommand(args []string) {
-	runSubcommands("project", []cliSubcommand{
-		{"update", projectUpdate},
-	}, args)
-}
-
 // projectUpdateRequest is project.update's admin_op payload. A nil
 // FilesReadOnly is "not in the request", as in PUT /api/projects/{id}.
 type projectUpdateRequest struct {
