@@ -678,16 +678,22 @@ func (s *Server) launchTerminal(w http.ResponseWriter, req LaunchRequest) {
 	// returned an error, so there is no "launching" window left for this
 	// table to observe by the time it ever sees this id.
 	//
-	// A failed Info read here (the shim exited in the narrow window between
-	// Create returning and this line) is not papered over with a zero-value
-	// rootStart: a half-set root is exactly what a hostile racing /permission
-	// call could match by accident of a zero start time, so this session is
-	// torn down and reported failed instead of
-	// published with a membership root nothing can actually verify.
+	// A failed Info read means the shim was already collected: a quick-exit
+	// target ends before this line. That is a normal launch that has already
+	// exited, not a spawn failure, so it is published as ended once the exit
+	// is fully recorded, and the exit is reported like any other. The entry
+	// carries no rootStart and is never in byRootPID, so no /permission walk
+	// can match it by a zero start time.
 	rootInfo, ok := membership.NewSource().Info(rootPID)
 	if !ok {
-		s.terminals.Close(req.SessionID)
-		writeErr(w, http.StatusInternalServerError, ErrSpawnFailed, "shim exited before its start time could be read")
+		// Put before waiting: onTerminalExit runs right after Done closes and
+		// must find the entry to report root_pid.
+		s.table.put(&sessionEntry{id: req.SessionID, state: stateEnded, shimPID: rootPID})
+		<-sess.Done()
+		body, _ := json.Marshal(sess.CreatedBody())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(LaunchResponse{SessionID: req.SessionID, RootPID: rootPID, Body: body})
 		return
 	}
 	s.table.put(&sessionEntry{id: req.SessionID, state: stateLive, shimPID: rootPID, rootStart: rootInfo})
