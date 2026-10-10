@@ -274,8 +274,13 @@ identity is already gone by the time this runs). Numbers, all in
 |---|---|---|
 | `ServiceRestartBaseDelay` | 1s | delay before the first restart attempt |
 | `ServiceRestartMaxDelay` | 60s | backoff cap (doubles each attempt: 1s, 2s, 4s, 8s, 16s, ...) |
-| `ServiceRestartMaxAttempts` | 5 | consecutive failures before relay gives up |
+| `ServiceRestartMaxAttempts` | 5 | restart attempts in a row before relay gives up |
 | `ServiceRestartStableWindow` | 60s | a run at least this long resets the attempt counter |
+
+A service that exits on every launch is relaunched five times, after 1s, 2s,
+4s, 8s and 16s. Its state reads `restarting` with attempt 1 through 5, one
+per relaunch. The sixth exit (the original launch plus five restarts all
+failed) sets `failed` with attempt 5 and schedules nothing more.
 
 The counter bounds restart *intensity*, not lifetime attempts: a service that
 crashes once a week is restarted forever, one that crashes on every launch is

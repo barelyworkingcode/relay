@@ -72,7 +72,9 @@ added to reach what only the Settings window or the tray did before
 this document's later sections) runs only from your own terminal. The server
 refuses it from inside a relay session and from any sandboxed process, with
 `this command cannot be run from inside a relay session or a sandbox`, and
-writes a denied `control_decision` row. The same peer check `relay sandbox`
+writes a denied `control_decision` row (`method` `admin_op`, `path` the
+operation name such as `status.view`, `class` `operator`, `transport` `bridge`,
+`reason` `session_caller`). The same peer check `relay sandbox`
 makes decides it. The verbs that predate this rule (`relay credential`,
 `relay enrol`, `relay mcp register` and the others above) keep the caller rule
 they had. `relay doors` lists every door, its credential class and its gates.
@@ -272,8 +274,11 @@ Every subcommand takes the config dir from the first rule that applies:
 1. `--config-dir DIR` or `--config-dir=DIR` anywhere in the arguments before a
    bare `--`. A relative DIR becomes absolute. Given twice: `--config-dir given
    more than once`. A missing, empty or dash-led value: `--config-dir needs a
-   directory path`. To pass a literal `--config-dir` through to a registered
-   command's argv, write it `--args=--config-dir`.
+   directory path`. A bare `--config-dir` is stripped wherever it stands, even
+   right after a flag such as `--extra-arg` (which then loses its value and
+   the next word becomes the directory). To pass a literal `--config-dir`
+   through to a registered command's argv, write it `--args=--config-dir`; for
+   `terminal start`, write `--extra-arg=--config-dir`.
 2. `RELAY_CONFIG_DIR`, when non-empty. It must be an absolute path, else
    `RELAY_CONFIG_DIR must be an absolute path, got "x"`.
 3. The default config dir.
@@ -358,8 +363,10 @@ from `A-Z a-z 0-9 _ -` and does not start with `-`; otherwise the command exits
 `1` with `--trace needs a trace ID of 8 to 64 characters from A-Z a-z 0-9 _ -`.
 Given twice: `--trace given more than once`. Without the flag the server makes
 up a trace for the call. Like `--config-dir`, the flag is stripped before the
-subcommand parses; to pass a literal `--trace` through to a registered
-command's argv, write it `--args=--trace`. For `relay logs` the same value is
+subcommand parses, bare `--trace` included wherever it stands, even after
+`--extra-arg`. To pass a literal `--trace` through to a registered command's
+argv, write it `--args=--trace`; for `terminal start`, write
+`--extra-arg=--trace`. For `relay logs` the same value is
 the trace filter. A trace joins log lines and proves nothing about who acted.
 
 ## Privileged commands prompt — and here is what that looks like
@@ -833,7 +840,9 @@ passed. Needs service: yes (`credential.list`; the answer carries no hash).
 Prompts: no. Works over SSH: yes.
 
 No JSON form. Columns: `ID  NAME  CLASSES  CREATED  EXPIRES`, separated by runs
-of spaces. With none registered it prints `no credentials`; with only expired
+of spaces. `CLASSES` is comma-joined; `CREATED` and `EXPIRES` print the stored
+RFC 3339 text as is (`2026-08-28T21:34:57Z`), and `EXPIRES` is `never` when
+the record has none. With none registered it prints `no credentials`; with only expired
 ones and no `--include-expired` it prints `no live credentials (--include-expired
 shows the expired ones)`. Exit codes: `0`; `1` when relay is not running.
 
@@ -1890,7 +1899,8 @@ relay service list
 
 `start`, `stop`, `action` and `config` are operator-only. `start` and `stop`
 are the Start and Stop buttons and the tray's service rows; they print
-`{"id"}` with `--json`. `action` runs one action a service's manifest declares,
+`{"id"}` with `--json`. `stop` returns after the process group has exited and
+its log file is closed, so the log holds everything the service wrote. `action` runs one action a service's manifest declares,
 as the Service Inspector does, and prints `{"service_id","action_id","ok":true}`.
 `config` prints a service's config file as `{"service_id","text"}`; with `--set
 FILE` (`-` for stdin) it saves the file and prints `{"service_id","restarted"}`.
