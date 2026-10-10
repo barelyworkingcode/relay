@@ -417,7 +417,7 @@ func driveChiefOfStaff(ctx context.Context, e env, obs, cos *cosConn, run string
 	r.RejoinSeen = obs.waitFor(ctx, cosWait, cosJoined(id, 2))
 	r.Frames, r.CosFrames = obs.snapshot(), cos.snapshot()
 
-	r.Rows, r.RowsErr = sessionMessageRows(ctx, e, id)
+	r.Rows, r.RowsErr = sessionMessageRows(ctx, e, id, 1)
 	r.Decisions, r.DecErr = controlDecisionRows(ctx, e)
 
 	if err := obs.send(map[string]string{"type": "end_session", "sessionId": id}); err != nil {
@@ -453,15 +453,16 @@ func auditJSONRows(ctx context.Context, e env, args ...string) ([]audit.AuditEve
 	return rows, nil
 }
 
-// sessionMessageRows polls until the completion row for the session is
-// written or the wait ends.
-func sessionMessageRows(ctx context.Context, e env, id string) ([]audit.AuditEvent, string) {
+// sessionMessageRows polls until the session has the wanted number of
+// completion rows or the wait ends. Completion rows go through relay's async
+// audit queue, so a read right after a reply can miss the latest one.
+func sessionMessageRows(ctx context.Context, e env, id string, completions int) ([]audit.AuditEvent, string) {
 	for deadline := time.Now().Add(5 * time.Second); ; {
 		rows, err := auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionMessage), "--grep", id, "--json", "--tail", "50")
 		if err != nil {
 			return nil, err.Error()
 		}
-		if len(messageRowsFor(rows, id, audit.AuditPhaseCompletion)) > 0 || time.Now().After(deadline) || ctx.Err() != nil {
+		if len(messageRowsFor(rows, id, audit.AuditPhaseCompletion)) >= completions || time.Now().After(deadline) || ctx.Err() != nil {
 			return rows, ""
 		}
 		time.Sleep(200 * time.Millisecond)

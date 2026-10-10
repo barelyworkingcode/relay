@@ -142,7 +142,7 @@ func runCosStart(ctx context.Context, e env) (out result) {
 		}
 		r.Frames = obs.snapshot()
 		r.List = cosRequest(ctx, e, run, true, http.MethodGet, "/api/sessions", nil, frontendRequestTimeout)
-		r.MsgRows, r.RowsErr = sessionMessageRows(ctx, e, id)
+		r.MsgRows, r.RowsErr = sessionMessageRows(ctx, e, id, 1)
 		if r.RowsErr == "" {
 			var err error
 			if r.LaunchRows, err = auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionLaunch), "--grep", id, "--json", "--tail", "20"); err != nil {
@@ -503,14 +503,18 @@ func runCosStartHost(ctx context.Context, e env) (out result) {
 		return
 	}
 	r.SendFrame = len(obs.snapshot())
-	// The rows are written before the 202, so they are read before the second
-	// turn: delivery is judged on them, never on what the model replies.
-	var rowsErr error
-	if r.Msgs, rowsErr = auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionMessage), "--grep", id, "--json", "--tail", "50"); rowsErr == nil {
-		r.Launch, rowsErr = auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionLaunch), "--grep", id, "--json", "--tail", "20")
+	// The intent row is durable before the 202, but the completion row goes
+	// through relay's async audit queue: wait for both prompts' completions.
+	// Delivery is judged on the rows, never on what the model replies.
+	var rowsMsg string
+	if r.Msgs, rowsMsg = sessionMessageRows(ctx, e, id, 2); rowsMsg == "" {
+		var launchErr error
+		if r.Launch, launchErr = auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionLaunch), "--grep", id, "--json", "--tail", "20"); launchErr != nil {
+			rowsMsg = launchErr.Error()
+		}
 	}
-	if rowsErr != nil {
-		r.RowsErr = rowsErr.Error()
+	if rowsMsg != "" {
+		r.RowsErr = rowsMsg
 		return
 	}
 	if cosHostAudit(r) != "" {
@@ -647,8 +651,9 @@ func cosHostAudit(r cosHostRun) string {
 				return fmt.Sprintf("session_message %s origin %q, want %q", phase, o, cosOrigin)
 			}
 		}
-		// The text is recorded only when text logging is on; its byte count
-		// always is, and differs between the two prompts.
+		// The intent row carries the text when log_args is on; the completion
+		// row is matched by text_bytes alone, which differs between the two
+		// prompts.
 		want := cosSendText(r.Marker2)
 		sent := 0
 		for _, row := range rows {

@@ -687,10 +687,13 @@ command whose base64 script, decoded, sets `RELAY_SESSION_ID` to the session
 id; a scoped `POST /api/chief-of-staff/messages` answers 202; the audit then has an
 ok `session_launch` row with origin `chief-of-staff` and `host_id` the host, and
 two intent and two completion `session_message` rows (the start prompt and the
-send), all with that origin, exactly one of each phase carrying the send's text
-"Reply with exactly: verify-<nonce>-host2"; a `turn_done` frame logged after the
-send returned, then idle, ends the second turn. The journey never reads the
-model's reply to the second message, only relay's delivery rows. The session, project and host are deleted whatever the outcome. BLOCKED
+send), all with that origin. In each phase exactly one row is the send's: the
+intent row carries the text "Reply with exactly: verify-<nonce>-host2" when
+`log_args` is on, and the completion row is matched by `text_bytes` alone. A
+`turn_done` frame logged after the send returned, then idle, ends the second
+turn. The journey never reads the model's reply to the second message, only
+relay's delivery rows. The session, project and host are deleted whatever the
+outcome. BLOCKED
 when the host or project cannot be created (setup P11), the audit is
 unreadable or a credential is refused; FAIL when the host's `claude` never
 answers.
