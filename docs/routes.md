@@ -416,7 +416,11 @@ by relay; a body cannot set it.
 
 Starts a headless agent or a Claude terminal on the Chief of Staff's behalf.
 
-- **Listeners:** socket. **Credential:** `chief_of_staff`. **Gate:** none.
+- **Listeners:** socket. **Credential:** `chief_of_staff` (needs
+  `X-Relay-Scope: chief-of-staff` and a credential holding `proxy`), and the
+  credential must also hold `execute`, as for `POST /api/sessions`; without it
+  the route answers `403` `caller_not_authorized`. A frontend service holds
+  both through its `frontend` capability. **Gate:** none.
 - **Request:** JSON body, at most 64 KiB.
 
   | Field | Type | Meaning |
@@ -452,11 +456,23 @@ Starts a headless agent or a Claude terminal on the Chief of Staff's behalf.
 - **Listeners:** socket, tcp. **Credential:** `configure`. **Gate:** none.
 - **Request** (strict; unknown fields refused, at most 4 KiB):
   `{"projectId": string, "model": string, "dailyModelCalls": number}`; all
-  three required. `dailyModelCalls` is a whole number in the allowed range.
+  three required. `model` is `haiku`, `sonnet` or `opus`. `dailyModelCalls` is
+  a whole number from 1 to 10000.
 - **Response `200`:** the config view of `GET`, with `configured: true`.
-- **Errors:** `400` `invalid_body` or a validation code such as
-  `daily_model_calls_invalid`; `413` `body_too_large`; `500` `save_failed`.
-  Bodies are `{"error": "<code>", "message": "<text>"}`.
+- **Errors** (`{"error": "<code>", "message": "<text>"}`):
+
+  | Status | `error` | Cause |
+  |---|---|---|
+  | `400` | `invalid_body` | Bad JSON, an unknown field, or a missing field |
+  | `400` | `project_id_required` | Empty `projectId` |
+  | `400` | `model_invalid` | `model` is not `haiku`, `sonnet` or `opus` |
+  | `400` | `daily_model_calls_invalid` | Not a whole number from 1 to 10000 |
+  | `400` | `project_not_found` | No project has that id |
+  | `400` | `project_unsuitable` | The project is an access profile, runs on an SSH host, has a permission policy, does not allow the model, or does not allow the `claude-code` template |
+  | `413` | `body_too_large` | Over 4 KiB |
+  | `500` | `save_failed` | The settings write failed |
+
+  The checks run in that order; the first failure answers.
 - **Event:** `chief_of_staff.config.set` (`project_id`).
 
 ### DELETE /api/chief-of-staff/config
@@ -545,7 +561,7 @@ Starts a headless agent or a Claude terminal on the Chief of Staff's behalf.
   off); `500` the save failed.
 - **Event:** `project.create` (`project_id`, `kind`). Presence refusals write
   the event with `status: denied`.
-- **Audit row:** `config_change` (credential `project`, subject the project ID).
+- **Audit row:** `config_change` (credential `project_grant`, subject the project ID).
 - **CLI equivalent:** `relay project create`.
 
 ### PUT /api/projects/{id}
