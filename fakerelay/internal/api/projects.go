@@ -2,10 +2,13 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"strings"
@@ -508,4 +511,76 @@ func (a *api) setDefaultProject(w http.ResponseWriter, r *http.Request) {
 	}
 	ev.End("ok", "", nil)
 	ok(w, out)
+}
+
+// runCore runs a project handler for a verb as the HTTP route would and
+// reads its answer. A verb has no other path to the core, so both doors share
+// its validation, gate and events.
+func (a *api) runCore(ctx context.Context, h http.HandlerFunc, method, id string, body []byte) (view map[string]any, msg string) {
+	req := httptest.NewRequest(method, "/api/projects", bytes.NewReader(body)).WithContext(ctx)
+	req.SetPathValue("id", id)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	var parsed map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &parsed)
+	if rec.Code >= 400 {
+		m, _ := parsed["error"].(string)
+		return nil, m
+	}
+	if parsed == nil {
+		// A presence timeout writes no response: the caller left first.
+		return nil, "presence timed out"
+	}
+	return parsed, ""
+}
+
+func (a *api) projectVerbResult(verb string, view map[string]any, msg string, asJSON bool) server.VerbResult {
+	if view == nil {
+		return fail(1, "bridge error (code -32603): %s", msg)
+	}
+	if asJSON {
+		b, _ := json.Marshal(view)
+		return out("%s\n", b)
+	}
+	return out("%s project %v (%v)\n", verb, view["name"], view["id"])
+}
+
+func (a *api) projectCreateVerb(ctx context.Context, args []string) server.VerbResult {
+	fs := flag.NewFlagSet("project create", flag.ContinueOnError)
+	name := fs.String("name", "", "")
+	path := fs.String("path", "", "")
+	file := fs.String("file", "", "")
+	asJSON := fs.Bool("json", false, "")
+	if res, parsed := server.ParseVerbFlags(fs, args); !parsed {
+		return res
+	}
+	body := server.VerbBody(ctx)
+	switch {
+	case *file != "" && (*name != "" || *path != ""):
+		return fail(1, "--file cannot be combined with --name or --path")
+	case *file == "" && (*name == "" || *path == ""):
+		return fail(1, "pass --name and --path, or --file")
+	case *file == "":
+		body, _ = json.Marshal(map[string]string{"name": *name, "path": *path})
+	}
+	view, msg := a.runCore(ctx, a.createProject, http.MethodPost, "", body)
+	return a.projectVerbResult("created", view, msg, *asJSON)
+}
+
+func (a *api) projectEditVerb(ctx context.Context, args []string) server.VerbResult {
+	fs := flag.NewFlagSet("project edit", flag.ContinueOnError)
+	id := fs.String("id", "", "")
+	file := fs.String("file", "", "")
+	asJSON := fs.Bool("json", false, "")
+	if res, parsed := server.ParseVerbFlags(fs, args); !parsed {
+		return res
+	}
+	switch {
+	case *id == "":
+		return fail(1, "--id is required")
+	case *file == "":
+		return fail(1, "--file is required")
+	}
+	view, msg := a.runCore(ctx, a.updateProject, http.MethodPut, *id, server.VerbBody(ctx))
+	return a.projectVerbResult("updated", view, msg, *asJSON)
 }

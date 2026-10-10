@@ -101,6 +101,7 @@ func (s *Server) expired(expires string) bool {
 type verbRequest struct {
 	Argv  []string `json:"argv"`
 	Trace string   `json:"trace"`
+	Body  []byte   `json:"body"`
 }
 
 type verbResponse struct {
@@ -112,7 +113,7 @@ type verbResponse struct {
 func (s *Server) serveVerb(w http.ResponseWriter, r *http.Request) {
 	var req verbRequest
 	if err := decodeStrict(r, &req); err != nil || len(req.Argv) == 0 {
-		WriteError(w, http.StatusBadRequest, "send {argv, trace}")
+		WriteError(w, http.StatusBadRequest, "send {argv, trace, body}")
 		return
 	}
 	s.mu.Lock()
@@ -130,6 +131,7 @@ func (s *Server) serveVerb(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := events.WithTrace(r.Context(), req.Trace)
 	ctx = withCaller(ctx, Caller{Kind: "operator", CredID: "cli"})
+	ctx = WithVerbBody(ctx, req.Body)
 	res := h(ctx, req.Argv[len(strings.Fields(name)):])
 	WriteJSON(w, http.StatusOK, verbResponse{Code: res.Code, Stdout: string(res.Stdout), Stderr: string(res.Stderr)})
 }

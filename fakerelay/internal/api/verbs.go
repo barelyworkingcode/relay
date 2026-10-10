@@ -19,6 +19,8 @@ import (
 func (a *api) verbs(r server.Registrar) {
 	r.Verb("grant", a.grantVerb)
 	r.Verb("project update", a.projectUpdateVerb)
+	r.Verb("project create", a.projectCreateVerb)
+	r.Verb("project edit", a.projectEditVerb)
 	r.Verb("eve enrol", a.eveEnrolVerb)
 	r.Verb("eve list", a.eveListVerb)
 	r.Verb("eve revoke", a.eveRevokeVerb)
