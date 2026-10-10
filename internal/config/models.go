@@ -369,14 +369,12 @@ func (c *ServiceConfig) validateAllowedModels() error {
 }
 
 type ChatTemplate struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Model          string `json:"model"`
-	Mode           string `json:"mode,omitempty"`
-	Voice          string `json:"voice,omitempty"`
-	SystemPrompt   string `json:"system_prompt,omitempty"`
-	AppendClaudeMd bool   `json:"append_claude_md,omitempty"`
-	UseRelayTools  bool   `json:"use_relay_tools,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Model        string `json:"model"`
+	Mode         string `json:"mode,omitempty"`
+	Voice        string `json:"voice,omitempty"`
+	SystemPrompt string `json:"system_prompt,omitempty"`
 	// PresetFor names the modes (home, work) this template is the preset
 	// for: the Ask preset when Mode is not "voice", the voice preset when it
 	// is. A label eve reads to pick a starting template, never a grant:

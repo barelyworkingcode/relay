@@ -178,7 +178,7 @@ application/json`; the entry gives the field table.
 | `default_for` | string[] | Modes this project is the default for |
 | `allowed_mcp_ids` | string[] | MCP IDs the project may use; `["*"]` means all |
 | `allowed_models` | string[] | Model IDs; empty or `["*"]` means all |
-| `chat_templates` | object[] | Chat templates (`id`, `name`, `model`, `mode`, `voice`, `system_prompt`, `append_claude_md`, `use_relay_tools`) |
+| `chat_templates` | object[] | Chat templates (`id`, `name`, `model`, `mode`, `voice`, `system_prompt`) |
 | `allowed_templates` | string[] | Terminal template IDs; `["*"]` means all |
 | `created_at` | string | RFC 3339 |
 | `disabled_tools` | object | MCP ID to tool names turned off |

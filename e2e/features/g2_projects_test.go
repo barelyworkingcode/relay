@@ -916,3 +916,59 @@ func g2Quote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// A config written before chat templates lost append_claude_md and
+// use_relay_tools still loads, and the next save stores the template without them.
+func TestChatTemplateOldFlagsDroppedOnSave(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	project := `[{"id":"proj-acme-tpl","name":"acme-tpl","path":` + g2Quote(dir) + `,"allowed_mcp_ids":[],"allowed_models":["*"],` +
+		`"token":"acme-tpl-test-token-0001",` +
+		`"token_hash":"a8b0fa4d0aae3ac34625f1950b71dbabefb9c4945c2b79b689cf50e0f61e21a6",` +
+		`"chat_templates":[{"id":"default","name":"Default","model":"claude-sonnet","system_prompt":"Be brief.",` +
+		`"append_claude_md":true,"use_relay_tools":true}]}]`
+	i := harness.Start(t, harness.Options{
+		Credentials: g2Creds,
+		Presence:    g2ApproveAll,
+		Settings:    map[string]json.RawMessage{"projects": json.RawMessage(project)},
+	})
+
+	resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/projects/proj-acme-tpl", nil)
+	if resp.Status != 200 {
+		t.Fatalf("GET /api/projects/proj-acme-tpl answered %d: a config with the old template keys did not load", resp.Status)
+	}
+
+	r := i.CLI("project", "update", "--id", "proj-acme-tpl", "--files-read-only=true")
+	if r.Code != 0 {
+		t.Fatalf("project update exited %d\nstderr: %s", r.Code, r.Stderr)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(i.ConfigDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("reading settings.json: %v", err)
+	}
+	var stored struct {
+		Projects []struct {
+			ID            string                       `json:"id"`
+			ChatTemplates []map[string]json.RawMessage `json:"chat_templates"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("decoding settings.json: %v", err)
+	}
+	for _, p := range stored.Projects {
+		if p.ID != "proj-acme-tpl" {
+			continue
+		}
+		if len(p.ChatTemplates) != 1 || string(p.ChatTemplates[0]["model"]) != `"claude-sonnet"` {
+			t.Fatalf("the saved project holds chat templates %v, want the one template with its model kept", p.ChatTemplates)
+		}
+		for _, key := range []string{"append_claude_md", "use_relay_tools"} {
+			if _, present := p.ChatTemplates[0][key]; present {
+				t.Fatalf("the saved chat template still carries %s", key)
+			}
+		}
+		return
+	}
+	t.Fatalf("settings.json has no project proj-acme-tpl after the save")
+}
