@@ -64,6 +64,10 @@ func (d sessionRouteDeps) handleChiefOfStaffMessage(w http.ResponseWriter, r *ht
 		return
 	}
 	if !d.auditor.Ready() {
+		// This refusal returns before sendChiefOfStaffText begins its event, so
+		// it ends its own: one chief_of_staff.send event per request.
+		logging.BeginEvent(r.Context(), "chief_of_staff.send").Set("session_id", body.SessionID).Set("origin", origin).
+			End(logging.OutcomeDenied, "audit_unavailable", errors.New("audit_unavailable"))
 		writeChiefOfStaffError(w, http.StatusServiceUnavailable, "audit_unavailable", "auditing is off; the Chief of Staff cannot send")
 		return
 	}
