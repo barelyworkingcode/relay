@@ -137,6 +137,55 @@ is named by no row. `e2e/coverage/pending.txt`
 lists the issue numbers whose `pending:#N` rows still count as tested. It only
 shrinks: the child that writes a row's tests removes its number.
 
+### Test selection
+
+A PR's `e2e` job runs the feature tests its change reaches, not the whole
+package. `go run ./coverage/cmd/selecttests` (in `e2e/`) decides, as a pure
+function of two commits and the area maps in `docs/FEATURES.md` read at both.
+It runs the map rules (syntax, M1 to M4) first; a finding exits 1. The changed
+paths are `git diff --no-renames --name-only -z base...head`, so a rename names
+both paths. Per path, in order:
+
+1. A changed `e2e/features/*_test.go` runs every `Test` it defines at head.
+   An `init`, a `TestMain`, or a top-level name that another file of the
+   package mentions (checked at base and at head with `go/parser`) runs the
+   whole package. The name check over-approximates: any identifier of that name
+   counts.
+2. Any other test-only path (`*_test.go`, `*.md`, `testdata/`,
+   `test/fixtures/`) selects nothing. A file the app binaries build from is
+   never test-only, even by name, and takes rule 3.
+3. A code path takes the areas of the base map plus the head map. No area:
+   `UNMAPPED <path>`, exit 1, no test runs. `every-test` runs the whole
+   package. `no-test` adds nothing. Any other area selects every test in the
+   rows of the goals that list it, in either map.
+4. `TestFeatureMapCoverage` and the whole `e2e/coverage` package always run.
+5. Narrowing. For each tracked code file at head, the tests the base map
+   selects and the head map does not (tests that still exist at head) must be
+   empty, and no area may gain `journey-only`. Otherwise
+   `NARROWED <path> <tests>` and exit 1, unless the PR carries the
+   `map-narrowing-approved` label. Only the owner applies it.
+
+A docs-only PR runs rule 4 alone. The `contract` and `fakerelay` jobs always
+run whole. A push to `main`, and `--full`, run every feature test; that run is
+the full-e2e evidence for an epic close.
+
+```bash
+cd e2e
+go run ./coverage/cmd/selecttests --repo .. --base origin/main --head HEAD
+go run ./coverage/cmd/selecttests --repo .. --full
+```
+
+Flags: `--repo DIR`, then `--base REV [--head REV]` or `--full`;
+`--labels-json JSON` (the PR's label names); `--env FILE` appends
+`SELECT_RUN=<regex>` (the CI step passes `$GITHUB_ENV`); `--summary FILE`
+appends the job summary: the affected areas, the tests run, the count not run
+and `selected n of N`. Output lines: `AREAS`, `TESTS n/N`, `UNMAPPED`,
+`NARROWED`, `RUN`. Exit 0 selected; 1 a map finding, an unmapped path, or a
+narrowing without the label; 2 usage or a git error (a shallow clone, a missing
+commit). An error never becomes a full run, which is why the job checks out
+with `fetch-depth: 0`. `ci.yml` also triggers on `labeled` and `unlabeled`, so
+adding the label reruns every job.
+
 **The e2e-test-writer agent** (`.claude/agents/e2e-test-writer.md`) writes
 feature tests from the documents and the harness's Go doc alone. A
 `PreToolUse` hook (`.claude/hooks/e2e-read-guard.sh`) refuses file tools under
@@ -157,7 +206,7 @@ hand-run tool for Settings UI work.
 | push | `go build ./...` and `go vet ./...`, skipped when the pushed commits touch no Go sources or web assets | `.githooks/pre-push` |
 | PR, and every push to `main` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags relaytest ./...`, `scripts/check-test-build.sh` (`absent` on an untagged build, `present` on a `relaytest` build), and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` | `.github/workflows/ci.yml` (`build` job) |
 | PR, and every push to `main` | the `fakerelay` job on Linux: `gofmt -l`, `go vet ./...`, a `CGO_ENABLED=0` build for Linux and macOS, then `go test -race -count=1 -parallel 24 ./...` in `fakerelay/` | `.github/workflows/ci.yml` (`fakerelay` job) |
-| PR, and every push to `main` | the `e2e` job: `gofmt -l` and `go vet ./...` in `e2e/`, then `go test -race -count=1 ./...` at the runner's default parallelism, minus `e2e/contract` | `.github/workflows/ci.yml` (`e2e` job) |
+| PR, and every push to `main` | the `e2e` job: `gofmt -l` and `go vet ./...` in `e2e/`, then `selecttests`, `go test -race -count=1 ./coverage/...`, and `go test -race -count=1 ./features -run "$SELECT_RUN"` (the selected tests on a PR, the whole package on `main`; see Test selection) | `.github/workflows/ci.yml` (`e2e` job) |
 | PR, and every push to `main` | the `contract` job: `gofmt -l` in `e2e/`, then `go test -race -count=1 ./contract/` | `.github/workflows/ci.yml` (`contract` job) |
 | `./build.sh --test` | `go vet ./...` before install | `build.sh` |
 

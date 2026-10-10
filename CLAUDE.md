@@ -80,7 +80,7 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 | commit | `gofmt`, `go build`, `go vet` — seconds |
 | push | `go build ./...`, `go vet ./...` |
 | PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags relaytest ./...`, the test-build absent/present check, and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` |
-| PR and `main` (GitHub Actions) | the `e2e` job: `gofmt` and `go vet` in `e2e/`, then `go test -race -count=1 ./...` |
+| PR and `main` (GitHub Actions) | the `e2e` job: `gofmt` and `go vet` in `e2e/`, then the selected feature tests on a PR (the whole package on a push to `main`) plus the coverage package, `go test -race -count=1`; see [selection](docs/testing.md#test-selection) |
 | PR and `main` (GitHub Actions) | the `fakerelay` job (Linux): `gofmt`, `go vet`, a cgo-free build for Linux and macOS, then the proof tests in `fakerelay/` |
 
 ## House rules
