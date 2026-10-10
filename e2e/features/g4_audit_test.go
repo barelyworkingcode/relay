@@ -234,6 +234,15 @@ func TestAuditCLIFilters(t *testing.T) {
 			t.Fatalf("--project %s returned a row for project %q", a.ID, r.actorStr("project_id"))
 		}
 	}
+	grepped := g4Rows(t, i, "--grep", "acme_echo")
+	if len(grepped) == 0 || len(grepped) >= len(g4Rows(t, i)) {
+		t.Fatalf("--grep acme_echo returned %d rows, want some but not all", len(grepped))
+	}
+	for _, r := range grepped {
+		if raw, _ := json.Marshal(r); !strings.Contains(string(raw), "acme_echo") {
+			t.Fatalf("--grep acme_echo returned a row without the text: %s", raw)
+		}
+	}
 	forB := g4Rows(t, i, "--project", b.ID, "--event", "call_tool")
 	if len(forB) != 1 {
 		t.Fatalf("--project %s --event call_tool returned %d rows, want 1", b.ID, len(forB))
@@ -428,7 +437,7 @@ func TestSessionLaunchRows(t *testing.T) {
 	launches := g4Rows(t, i, "--event", "session_launch")
 	for _, c := range []struct{ id, trace, kind string }{
 		{session.SessionID, claude.Trace, "claude"},
-		{term.TerminalID, shell.Trace, ""},
+		{term.TerminalID, shell.Trace, "pty"},
 	} {
 		got := g4Where(launches, func(r g4Row) bool { return r.argStr("session_id") == c.id })
 		if len(got) != 1 {
@@ -438,13 +447,9 @@ func TestSessionLaunchRows(t *testing.T) {
 		if row.str("outcome") != "ok" || row.actorStr("project_id") != p.ID {
 			t.Fatalf("launch %s row outcome %q project %q, want ok and %s", c.id, row.str("outcome"), row.actorStr("project_id"), p.ID)
 		}
-		launchEvent := requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: c.trace, Fields: map[string]any{"status": "ok"}})
-		kind := c.kind
-		if kind == "" {
-			kind = launchEvent.Str("kind")
-		}
-		if kind == "" || row.argStr("session_kind") != kind {
-			t.Fatalf("launch %s row session_kind %q, want %q", c.id, row.argStr("session_kind"), kind)
+		requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: c.trace, Fields: map[string]any{"status": "ok"}})
+		if row.argStr("session_kind") != c.kind {
+			t.Fatalf("launch %s row session_kind %q, want %q", c.id, row.argStr("session_kind"), c.kind)
 		}
 	}
 }
@@ -468,6 +473,9 @@ func TestRefusalRows(t *testing.T) {
 	if len(launches) != 1 || launches[0].actorStr("project_id") != p.ID {
 		t.Fatalf("the refused launch left %v, want one denied session_launch row for %s", launches, p.ID)
 	}
+	if launches[0].str("error") == "" {
+		t.Fatalf("the denied session_launch row carries no reason: %v", launches[0])
+	}
 
 	forbidden := i.HTTP(i.Credential("reader")).Do("POST", "/api/projects", map[string]any{"name": "acme-x", "path": filepath.Join(i.Home, "x")})
 	if forbidden.Status != 403 {
@@ -478,6 +486,9 @@ func TestRefusalRows(t *testing.T) {
 	})
 	if len(decisions) != 1 {
 		t.Fatalf("the refused control-plane call left %d denied control_decision rows with its path, want 1", len(decisions))
+	}
+	if decisions[0].str("error") == "" {
+		t.Fatalf("the denied control_decision row carries no reason: %v", decisions[0])
 	}
 }
 
@@ -621,9 +632,15 @@ func TestChiefOfStaffStartRows(t *testing.T) {
 
 		resp := g4ChiefDo(i, "POST", "/api/chief-of-staff/sessions", map[string]any{"projectId": hosted.ID, "prompt": prompt, "model": "sonnet"})
 		requireEvent(t, i, harness.EventQuery{Key: "chief_of_staff.start", Trace: resp.Trace})
+		if resp.Status != 201 {
+			t.Fatalf("a scoped start of a hosted project answered %d, want 201", resp.Status)
+		}
 		rows := g4Where(g4Rows(t, i, "--event", "session_launch"), func(r g4Row) bool { return r.argStr("host_id") == h.ID })
 		if len(rows) != 1 {
 			t.Fatalf("a hosted start (HTTP %d) left %d session_launch rows with host_id %s, want 1", resp.Status, len(rows), h.ID)
+		}
+		if rows[0].str("outcome") != "ok" {
+			t.Fatalf("hosted launch row outcome %q, want ok", rows[0].str("outcome"))
 		}
 		if rows[0].argStr("origin") != g4Scope || rows[0].sub("args")["prompt_bytes"] != float64(len(prompt)) {
 			t.Fatalf("hosted launch row args %v, want origin %s and prompt_bytes %d", rows[0].sub("args"), g4Scope, len(prompt))

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -751,10 +752,55 @@ func TestProjectTokenReveal(t *testing.T) {
 	if names, r := g2Tools(t, i, token); r.Code != 0 || !hasAll(names, "acme_echo", "acme_ok") {
 		t.Fatalf("the revealed token lists %v (exit %d), want both tools", names, r.Code)
 	}
-	if !g2Has(g2Rows(i, "credential_disclosed", "ok"), nil) {
-		t.Fatalf("no credential_disclosed ok row after the reveal")
+	if !g2Has(g2Rows(i, "credential_disclosed", "ok"), map[string]string{"subject": p.ID}) {
+		t.Fatalf("no credential_disclosed ok row with subject %s after the reveal", p.ID)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "project.reveal_token", Fields: map[string]any{"status": "ok", "project_id": p.ID}})
+}
+
+func TestProjectTokenRevealFromSession(t *testing.T) {
+	t.Parallel()
+	i := harness.Start(t, harness.Options{
+		Credentials: g2Creds,
+		Presence:    g2Presence("project.grant", "project.reveal_token"),
+		Settings: map[string]json.RawMessage{
+			"terminal_templates": json.RawMessage(`[{"id":"relaycli","name":"Relay CLI","command":` + string(g2Marshal(t, harness.BundlePaths().Relay)) + `,"sandbox":true}]`),
+		},
+	})
+	i.WaitSessionHost(60 * time.Second)
+	p := g2Create(t, i, "acme-session-reveal", map[string]any{"allowed_templates": []string{"relaycli"}})
+	token := g2Token(t, i, p.ID)
+	disclosed := len(g2Rows(i, "credential_disclosed", ""))
+	denied := len(g2Rows(i, "control_decision", "denied"))
+
+	body := g2Marshal(t, map[string]any{
+		"projectId":  p.ID,
+		"templateId": "relaycli",
+		"extraArgs":  []string{"--config-dir=" + i.ConfigDir, "project", "token", "--id", p.ID},
+	})
+	r := i.CLIWith(harness.CLIOpts{Stdin: body}, "terminal", "start", "--file", "-", "--json")
+	if r.Code != 0 {
+		t.Fatalf("terminal start exited %d: %s", r.Code, r.Stderr)
+	}
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	r.JSON(t, &term)
+	i.WaitEvent(harness.EventQuery{Key: "session.exited", Fields: map[string]any{"session_id": term.TerminalID}}, 60*time.Second)
+
+	var logged struct {
+		Log string `json:"log"`
+	}
+	i.MustCLI("terminal", "log", "--id", term.TerminalID, "--json").JSON(t, &logged)
+	if strings.Contains(logged.Log, token) {
+		t.Fatalf("a reveal from inside a session printed the token")
+	}
+	if got := len(g2Rows(i, "credential_disclosed", "")); got != disclosed {
+		t.Fatalf("a reveal from inside a session wrote a credential_disclosed row")
+	}
+	if got := len(g2Rows(i, "control_decision", "denied")); got <= denied {
+		t.Fatalf("a reveal from inside a session wrote no denied control_decision row")
+	}
 }
 
 func TestProjectTokenRevealDenied(t *testing.T) {

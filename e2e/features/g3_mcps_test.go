@@ -1,6 +1,7 @@
 package features
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -204,11 +205,11 @@ func TestMCPAuthenticateDenied(t *testing.T) {
 	if res.Code != 1 {
 		t.Fatalf("a refused mcp authenticate exited %d, want 1", res.Code)
 	}
-	if len(res.Stdout) != 0 {
+	for _, raw := range bytes.Split(res.Stdout, []byte("\n")) {
 		var line struct {
 			AuthorizationURL string `json:"authorization_url"`
 		}
-		if json.Unmarshal(res.Stdout, &line) == nil && line.AuthorizationURL != "" {
+		if json.Unmarshal(raw, &line) == nil && line.AuthorizationURL != "" {
 			t.Fatalf("a refused authenticate printed an authorization_url: %s", res.Stdout)
 		}
 	}
@@ -347,17 +348,31 @@ func TestMCPUnregister(t *testing.T) {
 		FakeMCPs:    []harness.FakeMCPSpec{{ID: "acme-stdio", Transport: "stdio", Catalogue: echoCatalogue()}},
 	})
 	g3WaitUp(t, i, "acme-stdio")
-	_, token := g3Project(t, i, "acme-proj", g3GrantBody("acme-stdio"))
+	proj, token := g3Project(t, i, "acme-proj", g3GrantBody("acme-stdio"))
 
 	res := i.MustCLI("mcp", "unregister", "--id", "acme-stdio")
 	requireEvent(t, i, harness.EventQuery{Key: "mcp.unregister", Trace: res.Trace, Fields: map[string]any{"status": "ok", "mcp_id": "acme-stdio"}})
 	if ids := g3MCPIDs(t, i); hasAll(ids, "acme-stdio") {
 		t.Fatalf("GET /api/mcps still lists %v", ids)
 	}
-	// relay grant shows the grant as authored, so the claim "removed from every
-	// project" is read as what the project's token can still reach.
 	if names, _ := g3ListedTools(t, i, token); len(names) != 0 {
 		t.Fatalf("the project's token still lists %v after the MCP was unregistered", names)
+	}
+	var grants []struct {
+		ID   string `json:"id"`
+		MCPs []struct {
+			MCP string `json:"mcp"`
+		} `json:"mcps"`
+	}
+	i.MustCLI("grant", "--project", proj, "--json").JSON(t, &grants)
+	shown := false
+	for _, g := range grants {
+		for _, m := range g.MCPs {
+			shown = shown || (g.ID == proj && m.MCP == "acme-stdio")
+		}
+	}
+	if !shown {
+		t.Fatalf("relay grant --project %s no longer shows acme-stdio as authored: %+v", proj, grants)
 	}
 
 	unknown := i.CLI("mcp", "unregister", "--id", "nope")
