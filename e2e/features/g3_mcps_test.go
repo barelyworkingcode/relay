@@ -1,10 +1,11 @@
 package features
 
 import (
-	"bytes"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,42 +18,29 @@ var g3Creds = []harness.CredentialSpec{
 	{Name: "runner", Classes: []string{"execute"}},
 }
 
-// g3GrantAndReveal approves the two gates a test needs to create a project and
-// read its token.
-var g3GrantAndReveal = map[string]harness.Outcome{
+var g3ApproveAll = map[string]harness.Outcome{
 	"project.grant":        harness.OutcomeApprove,
 	"project.reveal_token": harness.OutcomeApprove,
+	"mcp.register":         harness.OutcomeApprove,
 }
-
-const g3Deadline = 60 * time.Second
 
 func g3Catalogue(tools ...string) harness.Catalogue {
-	var raw []json.RawMessage
+	var c harness.Catalogue
 	for _, name := range tools {
-		raw = append(raw, json.RawMessage(`{"name":"`+name+`","description":"Echo","inputSchema":{"type":"object","properties":{}},"x-fake":{"echo":true}}`))
+		c.Tools = append(c.Tools, json.RawMessage(`{"name":"`+name+`","description":"Say ok","inputSchema":{"type":"object","properties":{}}}`))
 	}
-	return harness.Catalogue{Tools: raw}
+	return c
 }
 
-func g3WaitUp(t *testing.T, i *harness.Instance, id string) {
-	t.Helper()
-	i.WaitEvent(harness.EventQuery{Key: "mcp.state", Fields: map[string]any{"mcp_id": id, "state": "up"}}, mcpUpDeadline)
+func g3Stdio(id string, c harness.Catalogue) harness.FakeMCPSpec {
+	return harness.FakeMCPSpec{ID: id, Transport: "stdio", Catalogue: c}
 }
 
-func g3RegisterArgs(i *harness.Instance, spec harness.FakeMCPSpec) []string {
-	command, args := i.FakeMCPCommand(spec)
-	out := []string{"mcp", "register", "--name", "Acme " + spec.ID, "--id", spec.ID, "--command", command}
-	for _, a := range args {
-		out = append(out, "--args", a)
-	}
-	return out
-}
-
-func g3MCPIDs(t *testing.T, i *harness.Instance) []string {
+func g3ListedMCPs(t *testing.T, i *harness.Instance) []string {
 	t.Helper()
 	resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/mcps", nil)
 	if resp.Status != 200 {
-		t.Fatalf("GET /api/mcps answered %d, want 200", resp.Status)
+		t.Fatalf("GET /api/mcps answered %d", resp.Status)
 	}
 	var rows []struct {
 		ID string `json:"id"`
@@ -65,83 +53,23 @@ func g3MCPIDs(t *testing.T, i *harness.Instance) []string {
 	return ids
 }
 
-// g3RequireRefusal asserts the shared refusal shape of an owner-gated act: the
-// event ends denied with presence_refused, and a control_decision denied row
-// names the gate.
-func g3RequireRefusal(t *testing.T, i *harness.Instance, key, trace, gate string) {
+func g3Call(i *harness.Instance, token, tool string) harness.Result {
+	return i.CLI("mcp", "call", "--token", token, "--tool", tool)
+}
+
+// g3Advance moves the server clock by step until an event matching q is
+// stored. The restart timer is registered after the "down" event, and nothing
+// signals that, so the clock moves again until the timer has fired.
+func g3Advance(t *testing.T, i *harness.Instance, step time.Duration, limit int, q harness.EventQuery) harness.Event {
 	t.Helper()
-	requireEvent(t, i, harness.EventQuery{Key: key, Trace: trace, Fields: map[string]any{"status": "denied", "reason": "presence_refused"}})
-	for _, row := range i.Audit(harness.AuditQuery{Event: "control_decision", Outcome: "denied"}) {
-		if row["method"] == gate {
-			return
+	for n := 0; n < limit; n++ {
+		i.ClockAdvance(step)
+		if got := i.Events(q); len(got) > 0 {
+			return got[0]
 		}
 	}
-	t.Fatalf("no control_decision denied audit row with method %s", gate)
-}
-
-// g3Project creates a project through the CLI with the body's grant and
-// returns its id and revealed token. The instance must approve project.grant
-// and project.reveal_token.
-func g3Project(t *testing.T, i *harness.Instance, name string, body map[string]any) (id, token string) {
-	t.Helper()
-	dir := filepath.Join(i.Home, "work", name)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("creating %s: %v", dir, err)
-	}
-	body["name"] = name
-	body["path"] = dir
-	raw, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("encoding the project body: %v", err)
-	}
-	var p project
-	i.CLIWith(harness.CLIOpts{Stdin: raw}, "project", "create", "--file", "-", "--json").JSON(t, &p)
-	if p.ID == "" {
-		t.Fatalf("project create for %s returned no id", name)
-	}
-	var tok struct {
-		Token string `json:"token"`
-	}
-	i.MustCLI("project", "token", "--id", p.ID, "--json").JSON(t, &tok)
-	if tok.Token == "" {
-		t.Fatalf("project token for %s printed no token", p.ID)
-	}
-	return p.ID, tok.Token
-}
-
-func g3GrantBody(mcp string) map[string]any {
-	return map[string]any{
-		"allowed_mcp_ids": []string{mcp},
-		"access":          map[string]string{mcp: "write"},
-	}
-}
-
-// g3ListedTools runs `mcp call --list --schema` and returns the tool names.
-func g3ListedTools(t *testing.T, i *harness.Instance, token string) ([]string, harness.Result) {
-	t.Helper()
-	res := i.MustCLI("mcp", "call", "--token", token, "--list", "--schema")
-	var tools []struct {
-		Name string `json:"name"`
-	}
-	res.JSON(t, &tools)
-	var names []string
-	for _, tl := range tools {
-		names = append(names, tl.Name)
-	}
-	return names, res
-}
-
-func g3CallTool(i *harness.Instance, token, tool string) harness.Result {
-	return i.CLI("mcp", "call", "--token", token, "--tool", tool, "--args", "{}")
-}
-
-func g3DeniedCallRow(i *harness.Instance, tool string) bool {
-	for _, row := range i.Audit(harness.AuditQuery{Event: "call_tool", Outcome: "denied"}) {
-		if row["tool"] == tool {
-			return true
-		}
-	}
-	return false
+	t.Fatalf("no %s event matching %v after the clock moved %d times by %s", q.Key, q.Fields, limit, step)
+	return nil
 }
 
 func TestMCPRegister(t *testing.T) {
@@ -150,12 +78,24 @@ func TestMCPRegister(t *testing.T) {
 		Credentials: g3Creds,
 		Presence:    map[string]harness.Outcome{"mcp.register": harness.OutcomeApprove},
 	})
-	res := i.MustCLI(g3RegisterArgs(i, harness.FakeMCPSpec{ID: "acme-reg", Catalogue: echoCatalogue()})...)
-	requireEvent(t, i, harness.EventQuery{Key: "mcp.register", Trace: res.Trace, Fields: map[string]any{"status": "ok", "mcp_id": "acme-reg"}})
-	g3WaitUp(t, i, "acme-reg")
+	cmd, args := i.FakeMCPCommand(g3Stdio("acme-reg", echoCatalogue()))
+	argv := []string{"mcp", "register", "--id", "acme-reg", "--name", "Acme Reg", "--command", cmd}
+	for _, a := range args {
+		argv = append(argv, "--args", a)
+	}
+	r := i.MustCLI(argv...)
+	requireEvent(t, i, harness.EventQuery{Key: "mcp.register", Trace: r.Trace, Fields: map[string]any{"status": "ok", "mcp_id": "acme-reg"}})
+	g2WaitMCPUp(i, "acme-reg")
+
 	names, resp := toolNames(t, i, "acme-reg")
 	if !hasAll(names, "acme_echo", "acme_ok") {
 		t.Fatalf("GET tools answered %d with %v, want acme_echo and acme_ok", resp.Status, names)
+	}
+	if !methods(i.FakeMCPCalls("acme-reg"))["tools/list"] {
+		t.Fatalf("the registered fake never saw tools/list")
+	}
+	if rows := g2Rows(i, "config_change", "ok", nil); len(rows) != 1 {
+		t.Fatalf("got %d config_change ok rows, want 1", len(rows))
 	}
 }
 
@@ -165,13 +105,18 @@ func TestMCPRegisterDeniedCLI(t *testing.T) {
 		Credentials: g3Creds,
 		Presence:    map[string]harness.Outcome{"mcp.register": harness.OutcomeDeny},
 	})
-	res := i.CLI(g3RegisterArgs(i, harness.FakeMCPSpec{ID: "acme-reg", Catalogue: echoCatalogue()})...)
-	if res.Code != 1 {
-		t.Fatalf("a refused mcp register exited %d, want 1", res.Code)
+	cmd, args := i.FakeMCPCommand(g3Stdio("acme-reg", echoCatalogue()))
+	argv := []string{"mcp", "register", "--id", "acme-reg", "--name", "Acme Reg", "--command", cmd}
+	for _, a := range args {
+		argv = append(argv, "--args", a)
 	}
-	g3RequireRefusal(t, i, "mcp.register", res.Trace, "mcp.register")
-	if ids := g3MCPIDs(t, i); hasAll(ids, "acme-reg") {
-		t.Fatalf("GET /api/mcps lists %v after a refused register", ids)
+	r := i.CLI(argv...)
+	if r.Code != 1 {
+		t.Fatalf("mcp register exited %d, want 1", r.Code)
+	}
+	g2RequireRefusal(t, i, "mcp.register", r.Trace, "mcp.register", "cli")
+	if ids := g3ListedMCPs(t, i); len(ids) != 0 {
+		t.Fatalf("a refused register left MCPs %v", ids)
 	}
 }
 
@@ -181,16 +126,18 @@ func TestMCPRegisterDeniedHTTP(t *testing.T) {
 		Credentials: g3Creds,
 		Presence:    map[string]harness.Outcome{"mcp.register": harness.OutcomeDeny},
 	})
-	command, args := i.FakeMCPCommand(harness.FakeMCPSpec{ID: "acme-reg", Catalogue: echoCatalogue()})
+	cmd, args := i.FakeMCPCommand(g3Stdio("acme-reg", echoCatalogue()))
+	// The refusal status of this route family is 500 today; the event and the
+	// audit row are the contract.
 	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/mcps", map[string]any{
-		"display_name": "Acme reg", "id": "acme-reg", "transport": "stdio", "command": command, "args": args,
+		"id": "acme-reg", "display_name": "Acme Reg", "transport": "stdio", "command": cmd, "args": args,
 	})
-	if resp.Status == 201 {
-		t.Fatalf("a refused POST /api/mcps answered 201")
+	if resp.Status >= 200 && resp.Status < 300 {
+		t.Fatalf("a refused register answered %d", resp.Status)
 	}
-	g3RequireRefusal(t, i, "mcp.register", resp.Trace, "mcp.register")
-	if ids := g3MCPIDs(t, i); hasAll(ids, "acme-reg") {
-		t.Fatalf("GET /api/mcps lists %v after a refused register", ids)
+	g2RequireRefusal(t, i, "mcp.register", resp.Trace, "mcp.register", "http")
+	if ids := g3ListedMCPs(t, i); len(ids) != 0 {
+		t.Fatalf("a refused register left MCPs %v", ids)
 	}
 }
 
@@ -201,19 +148,14 @@ func TestMCPAuthenticateDenied(t *testing.T) {
 		Presence:    map[string]harness.Outcome{"mcp.oauth.start": harness.OutcomeDeny},
 		FakeMCPs:    []harness.FakeMCPSpec{{ID: "acme-oauth", Transport: "http", OAuth: true, Catalogue: echoCatalogue()}},
 	})
-	res := i.StartCLI(harness.CLIOpts{Deadline: 2 * time.Minute}, "mcp", "authenticate", "--id", "acme-oauth", "--json").Wait()
-	if res.Code != 1 {
-		t.Fatalf("a refused mcp authenticate exited %d, want 1", res.Code)
+	r := i.CLI("mcp", "authenticate", "--id", "acme-oauth", "--json")
+	if r.Code != 1 {
+		t.Fatalf("mcp authenticate exited %d, want 1", r.Code)
 	}
-	for _, raw := range bytes.Split(res.Stdout, []byte("\n")) {
-		var line struct {
-			AuthorizationURL string `json:"authorization_url"`
-		}
-		if json.Unmarshal(raw, &line) == nil && line.AuthorizationURL != "" {
-			t.Fatalf("a refused authenticate printed an authorization_url: %s", res.Stdout)
-		}
+	if strings.Contains(string(r.Stdout), "authorization_url") {
+		t.Fatalf("a refused authenticate printed an authorization URL: %s", r.Stdout)
 	}
-	g3RequireRefusal(t, i, "mcp.oauth.start", res.Trace, "mcp.oauth.start")
+	g2RequireRefusal(t, i, "mcp.oauth.start", r.Trace, "mcp.oauth.start", "cli")
 	if methods(i.FakeMCPCalls("acme-oauth"))["oauth/token"] {
 		t.Fatalf("the fake logged an oauth/token request after a refused authenticate")
 	}
@@ -228,11 +170,11 @@ func TestMCPListShowsState(t *testing.T) {
 			{ID: "acme-http", Transport: "http", Catalogue: echoCatalogue()},
 		},
 	})
-	g3WaitUp(t, i, "acme-stdio")
-	g3WaitUp(t, i, "acme-http")
+	g2WaitMCPUp(i, "acme-stdio")
+	g2WaitMCPUp(i, "acme-http")
 
-	res := i.MustCLI("mcp", "list")
-	requireEvent(t, i, harness.EventQuery{Key: "mcp.list", Trace: res.Trace, Fields: map[string]any{"status": "ok", "count": float64(2)}})
+	r := i.MustCLI("mcp", "list")
+	requireEvent(t, i, harness.EventQuery{Key: "mcp.list", Trace: r.Trace, Fields: map[string]any{"status": "ok", "count": 2}})
 
 	var status struct {
 		MCPHealth map[string]struct {
@@ -241,8 +183,8 @@ func TestMCPListShowsState(t *testing.T) {
 	}
 	i.MustCLI("status", "--json").JSON(t, &status)
 	for _, id := range []string{"acme-stdio", "acme-http"} {
-		if !status.MCPHealth[id].Connected {
-			t.Fatalf("status mcp_health[%s].connected is false, want true", id)
+		if h, ok := status.MCPHealth[id]; !ok || !h.Connected {
+			t.Fatalf("status mcp_health[%s] is %+v (present %v), want connected", id, h, ok)
 		}
 	}
 }
@@ -251,7 +193,7 @@ func TestMCPToolsUnknownID(t *testing.T) {
 	t.Parallel()
 	i := harness.Start(t, harness.Options{Credentials: g3Creds})
 	resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/mcps/nope/tools", nil)
-	if resp.Status != 404 {
+	if resp.Status != http.StatusNotFound {
 		t.Fatalf("GET /api/mcps/nope/tools answered %d, want 404", resp.Status)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "mcp.tools.list", Trace: resp.Trace, Fields: map[string]any{"status": "error", "reason": "not_found"}})
@@ -261,141 +203,140 @@ func TestBridgeToolsScopedToProject(t *testing.T) {
 	t.Parallel()
 	i := harness.Start(t, harness.Options{
 		Credentials: g3Creds,
-		Presence:    g3GrantAndReveal,
+		Presence:    g3ApproveAll,
 		FakeMCPs: []harness.FakeMCPSpec{
-			{ID: "acme-a", Transport: "stdio", Catalogue: g3Catalogue("acme_a_echo")},
-			{ID: "acme-b", Transport: "stdio", Catalogue: g3Catalogue("acme_b_echo")},
+			g3Stdio("acme-alpha", g3Catalogue("acme_alpha_ping")),
+			g3Stdio("acme-beta", g3Catalogue("acme_beta_ping")),
 		},
 	})
-	g3WaitUp(t, i, "acme-a")
-	g3WaitUp(t, i, "acme-b")
-	idA, tokenA := g3Project(t, i, "acme-proj-a", g3GrantBody("acme-a"))
-	_, tokenB := g3Project(t, i, "acme-proj-b", g3GrantBody("acme-b"))
+	g2WaitMCPUp(i, "acme-alpha")
+	g2WaitMCPUp(i, "acme-beta")
+	a := g2Create(t, i, "acme-proj-a", map[string]any{"allowed_mcp_ids": []string{"acme-alpha"}})
+	b := g2Create(t, i, "acme-proj-b", map[string]any{"allowed_mcp_ids": []string{"acme-beta"}})
+	ta, tb := g2Token(t, i, a.ID), g2Token(t, i, b.ID)
 
-	names, list := g3ListedTools(t, i, tokenA)
-	if len(names) != 1 || names[0] != "acme_a_echo" {
-		t.Fatalf("project A lists %v, want only acme_a_echo", names)
+	names, listed := g2ToolNames(i, ta)
+	if len(names) != 1 || names[0] != "acme_alpha_ping" {
+		t.Fatalf("project A's token lists %v (exit %d), want only acme_alpha_ping", names, listed.Code)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "tool.list", Trace: list.Trace, Fields: map[string]any{"status": "ok", "project_id": idA, "count": float64(1)}})
+	requireEvent(t, i, harness.EventQuery{Key: "tool.list", Trace: listed.Trace, Fields: map[string]any{"status": "ok", "count": 1}})
 
-	ok := g3CallTool(i, tokenA, "acme_a_echo")
-	if ok.Code != 0 {
-		t.Fatalf("project A calling its own tool exited %d, want 0", ok.Code)
+	own := g3Call(i, ta, "acme_alpha_ping")
+	if own.Code != 0 {
+		t.Fatalf("project A calling its own tool exited %d\nstderr: %s", own.Code, own.Stderr)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "tool.call", Trace: ok.Trace, Fields: map[string]any{"status": "ok", "tool": "acme_a_echo"}})
+	requireEvent(t, i, harness.EventQuery{Key: "tool.call", Trace: own.Trace, Fields: map[string]any{"status": "ok", "tool": "acme_alpha_ping"}})
 
-	cross := g3CallTool(i, tokenA, "acme_b_echo")
+	other := g3Call(i, ta, "acme_beta_ping")
+	if other.Code != 1 {
+		t.Fatalf("project A calling project B's tool exited %d, want 1", other.Code)
+	}
+	requireEvent(t, i, harness.EventQuery{Key: "tool.call", Trace: other.Trace, Fields: map[string]any{"status": "denied"}})
+	if rows := g2Rows(i, "call_tool", "denied", map[string]any{"tool": "acme_beta_ping"}); len(rows) != 1 {
+		t.Fatalf("got %d denied call_tool rows for acme_beta_ping, want 1", len(rows))
+	}
+
+	cross := g3Call(i, tb, "acme_alpha_ping")
 	if cross.Code != 1 {
-		t.Fatalf("project A calling B's tool exited %d, want 1", cross.Code)
+		t.Fatalf("project B calling project A's tool exited %d, want 1", cross.Code)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "tool.call", Trace: cross.Trace, Fields: map[string]any{"status": "denied"}})
-	if !g3DeniedCallRow(i, "acme_b_echo") {
-		t.Fatalf("no call_tool denied audit row for acme_b_echo")
+	if rows := g2Rows(i, "call_tool", "denied", map[string]any{"tool": "acme_alpha_ping"}); len(rows) != 1 {
+		t.Fatalf("got %d denied call_tool rows for acme_alpha_ping, want 1", len(rows))
 	}
-
-	reverse := g3CallTool(i, tokenB, "acme_a_echo")
-	if reverse.Code != 1 {
-		t.Fatalf("project B calling A's tool exited %d, want 1", reverse.Code)
+	if r := g3Call(i, tb, "acme_beta_ping"); r.Code != 0 {
+		t.Fatalf("project B calling its own tool exited %d", r.Code)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "tool.call", Trace: reverse.Trace, Fields: map[string]any{"status": "denied"}})
-	if calls := i.FakeMCPCalls("acme-b"); len(calls) > 0 {
-		for _, c := range calls {
-			if c.Method == "tools/call" {
-				t.Fatalf("a refused cross-project call reached the fake MCP B")
-			}
+	if calls := i.FakeMCPCalls("acme-beta"); len(calls) == 0 || !methods(calls)["tools/call"] {
+		t.Fatalf("project B's own call never reached its MCP")
+	}
+	for _, c := range i.FakeMCPCalls("acme-alpha") {
+		if c.Method == "tools/call" && strings.Contains(string(c.Params), "acme_beta_ping") {
+			t.Fatalf("a refused call reached the wrong MCP")
 		}
 	}
 }
 
 func TestDisabledToolRefused(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{
-		Credentials: g3Creds,
-		Presence:    g3GrantAndReveal,
-		FakeMCPs:    []harness.FakeMCPSpec{{ID: "acme-stdio", Transport: "stdio", Catalogue: echoCatalogue()}},
-	})
-	g3WaitUp(t, i, "acme-stdio")
-	id, token := g3Project(t, i, "acme-proj", g3GrantBody("acme-stdio"))
-
-	if before := g3CallTool(i, token, "acme_echo"); before.Code != 0 {
-		t.Fatalf("a call before disabling exited %d, want 0", before.Code)
+	i := harness.Start(t, harness.Options{Credentials: g3Creds, Presence: g3ApproveAll, FakeMCPs: acmeStdioMCP()})
+	g2WaitMCPUp(i, "acme-stdio")
+	p := g2Create(t, i, "acme-disabled", map[string]any{"allowed_mcp_ids": []string{"acme-stdio"}})
+	token := g2Token(t, i, p.ID)
+	if r := g3Call(i, token, "acme_echo"); r.Code != 0 {
+		t.Fatalf("the granted tool answered exit %d before it was disabled", r.Code)
 	}
-	put := i.HTTP(i.Credential("configurer")).Do("PUT", "/api/projects/"+id, map[string]any{
+
+	resp := i.HTTP(i.Credential("configurer")).Do("PUT", "/api/projects/"+p.ID, map[string]any{
 		"disabled_tools": map[string][]string{"acme-stdio": {"acme_echo"}},
 	})
-	if put.Status != 200 {
-		t.Fatalf("PUT /api/projects/%s answered %d, want 200", id, put.Status)
+	if resp.Status != 200 {
+		t.Fatalf("PUT /api/projects/%s answered %d: %s", p.ID, resp.Status, resp.Body)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "project.update", Trace: put.Trace, Fields: map[string]any{"status": "ok", "gated": false}})
+	requireEvent(t, i, harness.EventQuery{Key: "project.update", Trace: resp.Trace, Fields: map[string]any{"status": "ok", "gated": false}})
 
-	refused := g3CallTool(i, token, "acme_echo")
+	refused := g3Call(i, token, "acme_echo")
 	if refused.Code != 1 {
-		t.Fatalf("a call to a disabled tool exited %d, want 1", refused.Code)
+		t.Fatalf("calling a disabled tool exited %d, want 1", refused.Code)
 	}
-	if !g3DeniedCallRow(i, "acme_echo") {
-		t.Fatalf("no call_tool denied audit row for the disabled tool")
+	if rows := g2Rows(i, "call_tool", "denied", map[string]any{"tool": "acme_echo"}); len(rows) != 1 {
+		t.Fatalf("got %d denied call_tool rows for acme_echo, want 1", len(rows))
 	}
-	if sibling := g3CallTool(i, token, "acme_ok"); sibling.Code != 0 {
+	if sibling := g3Call(i, token, "acme_ok"); sibling.Code != 0 {
 		t.Fatalf("the sibling tool exited %d, want 0", sibling.Code)
 	}
 }
 
 func TestMCPUnregister(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{
-		Credentials: g3Creds,
-		Presence:    g3GrantAndReveal,
-		FakeMCPs:    []harness.FakeMCPSpec{{ID: "acme-stdio", Transport: "stdio", Catalogue: echoCatalogue()}},
-	})
-	g3WaitUp(t, i, "acme-stdio")
-	proj, token := g3Project(t, i, "acme-proj", g3GrantBody("acme-stdio"))
+	i := harness.Start(t, harness.Options{Credentials: g3Creds, Presence: g3ApproveAll, FakeMCPs: acmeStdioMCP()})
+	g2WaitMCPUp(i, "acme-stdio")
+	p := g2Create(t, i, "acme-unreg", map[string]any{"allowed_mcp_ids": []string{"acme-stdio"}})
+	token := g2Token(t, i, p.ID)
 
-	res := i.MustCLI("mcp", "unregister", "--id", "acme-stdio")
-	requireEvent(t, i, harness.EventQuery{Key: "mcp.unregister", Trace: res.Trace, Fields: map[string]any{"status": "ok", "mcp_id": "acme-stdio"}})
-	if ids := g3MCPIDs(t, i); hasAll(ids, "acme-stdio") {
-		t.Fatalf("GET /api/mcps still lists %v", ids)
+	r := i.MustCLI("mcp", "unregister", "--id", "acme-stdio")
+	requireEvent(t, i, harness.EventQuery{Key: "mcp.unregister", Trace: r.Trace, Fields: map[string]any{"status": "ok", "mcp_id": "acme-stdio"}})
+	if ids := g3ListedMCPs(t, i); len(ids) != 0 {
+		t.Fatalf("GET /api/mcps lists %v after the unregister", ids)
 	}
-	if names, _ := g3ListedTools(t, i, token); len(names) != 0 {
-		t.Fatalf("the project's token still lists %v after the MCP was unregistered", names)
-	}
+
 	var grants []struct {
 		ID   string `json:"id"`
 		MCPs []struct {
 			MCP string `json:"mcp"`
 		} `json:"mcps"`
 	}
-	i.MustCLI("grant", "--project", proj, "--json").JSON(t, &grants)
-	shown := false
+	i.MustCLI("grant", "--json").JSON(t, &grants)
+	kept := false
 	for _, g := range grants {
 		for _, m := range g.MCPs {
-			shown = shown || (g.ID == proj && m.MCP == "acme-stdio")
+			kept = kept || (g.ID == p.ID && m.MCP == "acme-stdio")
 		}
 	}
-	if !shown {
-		t.Fatalf("relay grant --project %s no longer shows acme-stdio as authored: %+v", proj, grants)
+	if !kept {
+		t.Fatalf("relay grant no longer shows the authored grant of acme-stdio: %+v", grants)
 	}
 
-	unknown := i.CLI("mcp", "unregister", "--id", "nope")
-	if unknown.Code != 1 {
-		t.Fatalf("unregistering an unknown id exited %d, want 1", unknown.Code)
+	names, listed := g2ToolNames(i, token)
+	if len(names) != 0 || strings.Contains(string(listed.Stdout), "acme_") {
+		t.Fatalf("after the unregister the token lists %v: %s", names, listed.Stdout)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "mcp.unregister", Trace: unknown.Trace, Fields: map[string]any{"status": "error", "reason": "not_found"}})
+
+	missing := i.CLI("mcp", "unregister", "--id", "no-such-mcp")
+	if missing.Code != 1 {
+		t.Fatalf("unregistering an unknown MCP exited %d, want 1", missing.Code)
+	}
+	requireEvent(t, i, harness.EventQuery{Key: "mcp.unregister", Trace: missing.Trace, Fields: map[string]any{"status": "error", "reason": "not_found"}})
 }
 
-// The positive path resets real macOS privacy grants; it needs a test-machine
-// pass. This test proves only the refusal.
 func TestMCPResetPermissionsRefusesWithoutTCC(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{
-		Credentials: g3Creds,
-		FakeMCPs:    []harness.FakeMCPSpec{{ID: "acme-stdio", Transport: "stdio", Catalogue: echoCatalogue()}},
-	})
-	g3WaitUp(t, i, "acme-stdio")
-	res := i.CLI("mcp", "reset-permissions", "--id", "acme-stdio", "--json")
-	if res.Code != 1 {
-		t.Fatalf("reset-permissions on an MCP with no tcc_services exited %d, want 1", res.Code)
+	i := harness.Start(t, harness.Options{Credentials: g3Creds, FakeMCPs: acmeStdioMCP()})
+	g2WaitMCPUp(i, "acme-stdio")
+	r := i.CLI("mcp", "reset-permissions", "--id", "acme-stdio", "--json")
+	if r.Code != 1 {
+		t.Fatalf("reset-permissions on an MCP with no TCC services exited %d, want 1", r.Code)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "mcp.permissions.reset", Trace: res.Trace, Fields: map[string]any{"status": "error", "reason": "internal"}})
+	requireEvent(t, i, harness.EventQuery{Key: "mcp.permissions.reset", Trace: r.Trace, Fields: map[string]any{"status": "error", "reason": "internal"}})
 }
 
 func TestReloadExternalMCPAdminOnly(t *testing.T) {
@@ -403,9 +344,9 @@ func TestReloadExternalMCPAdminOnly(t *testing.T) {
 	const secret = "acme-planted-admin-secret"
 	i := harness.Start(t, harness.Options{
 		Settings: map[string]json.RawMessage{"admin_secret": json.RawMessage(`"` + secret + `"`)},
-		FakeMCPs: []harness.FakeMCPSpec{{ID: "acme-stdio", Transport: "stdio", Catalogue: echoCatalogue()}},
+		FakeMCPs: acmeStdioMCP(),
 	})
-	g3WaitUp(t, i, "acme-stdio")
+	g2WaitMCPUp(i, "acme-stdio")
 
 	since := time.Now()
 	ok := i.BridgeSend(map[string]any{"type": "ReloadExternalMcp", "name": "acme-stdio", "token": secret})
@@ -430,88 +371,72 @@ func TestReloadExternalMCPAdminOnly(t *testing.T) {
 	requireEvent(t, i, harness.EventQuery{Key: "mcp.reconcile", Trace: rec.Trace, Fields: map[string]any{"status": "ok"}})
 }
 
-// g3AdvanceUntil moves the server clock by step until the event is stored. A
-// timer is registered only after the failure is observed, so one advance can
-// land before it; the loop keeps moving the clock until the event exists.
-func g3AdvanceUntil(t *testing.T, i *harness.Instance, q harness.EventQuery, step time.Duration, limit int) {
-	t.Helper()
-	for n := 0; n < limit; n++ {
-		if len(i.Events(q)) > 0 {
-			return
-		}
-		i.ClockAdvance(step)
-	}
-	if len(i.Events(q)) == 0 {
-		t.Fatalf("no %s event matching %v after advancing the clock %d times by %s", q.Key, q.Fields, limit, step)
-	}
+// g3DieCatalogue has one tool whose call is answered and then ends the MCP.
+func g3DieCatalogue() harness.Catalogue {
+	c := g3Catalogue("acme_ok")
+	c.Tools = append(c.Tools, json.RawMessage(`{"name":"acme_die","description":"Answer, then exit","inputSchema":{"type":"object","properties":{}},"x-fake":{"exit":3}}`))
+	return c
 }
 
 func TestMCPRestartThenAbandon(t *testing.T) {
 	t.Parallel()
 
-	t.Run("restart", func(t *testing.T) {
-		t.Parallel()
-		crash := harness.Catalogue{Tools: []json.RawMessage{
-			json.RawMessage(`{"name":"acme_crash","description":"Replies then exits","inputSchema":{"type":"object","properties":{}},"x-fake":{"echo":true,"exit":3}}`),
-		}}
+	start := func(t *testing.T) (*harness.Instance, string) {
 		i := harness.Start(t, harness.Options{
 			Credentials: g3Creds,
-			Presence:    g3GrantAndReveal,
-			FakeMCPs:    []harness.FakeMCPSpec{{ID: "acme-crash", Transport: "stdio", Catalogue: crash}},
+			Presence:    g3ApproveAll,
+			FakeMCPs:    []harness.FakeMCPSpec{g3Stdio("acme-flaky", g3DieCatalogue())},
 		})
-		g3WaitUp(t, i, "acme-crash")
-		_, token := g3Project(t, i, "acme-proj", g3GrantBody("acme-crash"))
+		g2WaitMCPUp(i, "acme-flaky")
+		p := g2Create(t, i, "acme-flaky-proj", map[string]any{"allowed_mcp_ids": []string{"acme-flaky"}})
+		return i, g2Token(t, i, p.ID)
+	}
 
+	t.Run("restart", func(t *testing.T) {
+		t.Parallel()
+		i, token := start(t)
 		since := time.Now()
-		if res := g3CallTool(i, token, "acme_crash"); res.Code != 0 {
-			t.Fatalf("the call that makes the fake exit returned %d, want 0 (it replies first)", res.Code)
+		if r := g3Call(i, token, "acme_die"); r.Code != 0 {
+			t.Fatalf("the call that ends the MCP exited %d\nstderr: %s", r.Code, r.Stderr)
 		}
-		i.WaitEvent(harness.EventQuery{Key: "mcp.state", Since: since, Fields: map[string]any{"mcp_id": "acme-crash", "state": "down"}}, g3Deadline)
-		g3AdvanceUntil(t, i, harness.EventQuery{Key: "mcp.state", Since: since, Fields: map[string]any{"mcp_id": "acme-crash", "state": "up"}}, 30*time.Second, 40)
-		found := false
-		for _, row := range i.Audit(harness.AuditQuery{Event: "mcp_down"}) {
-			found = found || row["mcp_id"] == "acme-crash"
+		i.WaitEvent(harness.EventQuery{Key: "mcp.state", Since: since, Fields: map[string]any{"mcp_id": "acme-flaky", "state": "down"}}, mcpUpDeadline)
+		g3Advance(t, i, time.Minute, 20, harness.EventQuery{Key: "mcp.state", Since: since, Fields: map[string]any{"mcp_id": "acme-flaky", "state": "restarted"}})
+
+		if rows := g2Rows(i, "mcp_down", "", map[string]any{"mcp_id": "acme-flaky", "supervision": "down"}); len(rows) != 1 {
+			t.Fatalf("got %d mcp_down rows for the outage, want 1", len(rows))
 		}
-		if !found {
-			t.Fatalf("no mcp_down audit row for acme-crash")
+		if r := g3Call(i, token, "acme_ok"); r.Code != 0 {
+			t.Fatalf("a call after the restart exited %d\nstderr: %s", r.Code, r.Stderr)
 		}
 	})
 
 	t.Run("abandon", func(t *testing.T) {
 		t.Parallel()
-		i := harness.Start(t, harness.Options{
-			Credentials: g3Creds,
-			Presence:    map[string]harness.Outcome{"mcp.register": harness.OutcomeApprove, "project.grant": harness.OutcomeApprove, "project.reveal_token": harness.OutcomeApprove},
-		})
-		crash := harness.Catalogue{Tools: []json.RawMessage{
-			json.RawMessage(`{"name":"acme_crash","description":"Replies then exits","inputSchema":{"type":"object","properties":{}},"x-fake":{"echo":true,"exit":3}}`),
-		}}
-		// The wrapper runs the fake until the flag file exists, then fails every
-		// spawn, so the first start works and every restart does not.
-		flag := filepath.Join(i.Dir, "fail-spawns")
-		command, args := i.FakeMCPCommand(harness.FakeMCPSpec{ID: "acme-broken", Catalogue: crash})
-		reg := []string{"mcp", "register", "--name", "Acme broken", "--id", "acme-broken", "--command", "/bin/sh",
-			"--args", "-c", "--args", `if [ -e "` + flag + `" ]; then exit 1; fi; exec "$0" "$@"`, "--args", command}
-		for _, a := range args {
-			reg = append(reg, "--args", a)
+		i, token := start(t)
+		// The fake reads its catalogue when it starts, so a catalogue that does
+		// not parse makes every restart fail while the running process is unaffected.
+		cat := filepath.Join(i.Dir, "fakes", "acme-flaky.catalogue.json")
+		if err := os.WriteFile(cat, []byte("not json"), 0o600); err != nil {
+			t.Fatalf("breaking %s: %v", cat, err)
 		}
-		i.MustCLI(reg...)
-		g3WaitUp(t, i, "acme-broken")
-		_, token := g3Project(t, i, "acme-proj", g3GrantBody("acme-broken"))
-		if err := os.WriteFile(flag, nil, 0o600); err != nil {
-			t.Fatalf("writing %s: %v", flag, err)
+		since := time.Now()
+		if r := g3Call(i, token, "acme_die"); r.Code != 0 {
+			t.Fatalf("the call that ends the MCP exited %d\nstderr: %s", r.Code, r.Stderr)
 		}
-		g3CallTool(i, token, "acme_crash")
+		i.WaitEvent(harness.EventQuery{Key: "mcp.state", Since: since, Fields: map[string]any{"mcp_id": "acme-flaky", "state": "down"}}, mcpUpDeadline)
+		g3Advance(t, i, time.Minute, 60, harness.EventQuery{Key: "mcp.state", Since: since, Fields: map[string]any{"mcp_id": "acme-flaky", "state": "abandoned"}})
 
-		g3AdvanceUntil(t, i, harness.EventQuery{Key: "mcp.state", Fields: map[string]any{"mcp_id": "acme-broken", "state": "abandoned"}}, 60*time.Second, 60)
 		var status struct {
 			MCPHealth map[string]struct {
 				State string `json:"state"`
 			} `json:"mcp_health"`
 		}
 		i.MustCLI("status", "--json").JSON(t, &status)
-		if got := status.MCPHealth["acme-broken"].State; got != "abandoned" {
-			t.Fatalf("status mcp_health[acme-broken].state is %q, want abandoned", got)
+		if got := status.MCPHealth["acme-flaky"].State; got != "abandoned" {
+			t.Fatalf("status mcp_health state is %q, want abandoned", got)
+		}
+		if rows := g2Rows(i, "mcp_down", "", map[string]any{"mcp_id": "acme-flaky", "supervision": "abandoned"}); len(rows) != 1 {
+			t.Fatalf("got %d mcp_down rows with supervision abandoned, want 1", len(rows))
 		}
 	})
 }
