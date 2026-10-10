@@ -1074,6 +1074,7 @@ a `file_op` audit row (`outcome` `ok`, `denied` or `error`; `reason`
 Read-only git, sandboxed, with an argument allowlist and a 10 second limit.
 
 - **Request:** `{"cwd": string, "args": string[], "max_bytes": number}`.
+  `cwd` is a path inside the project; `""` means the project root.
 - **Response `200`:** `{"exit_code": number, "stdout_b64": string, "stderr": string}`.
   A non-zero exit is a result, not an error.
 - **Event:** `file.git`.

@@ -478,6 +478,10 @@ handler runs:
   request arrived on (`socket` or `tcp`) — the same axis `ClassReachableOn`
   gates registration on, so a row here and a route's absence from a listener
   are two views of the same boundary.
+- An operator-only verb refused inside a session or sandbox writes a denied
+  row with `method` `admin_op`, `path` the operation name (such as
+  `status.view`), `class` `operator` (not a class any credential holds),
+  `transport` `bridge` and `reason` `session_caller`. No handler runs.
 - `actor.kind` is `control`, a fourth actor alongside `project` / `service` /
   `remote`: this credential is capability-classed, not a tool caller, and
   `--kind control` selects the set. A request refused on the remote
