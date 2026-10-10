@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -120,6 +121,21 @@ func deleteClaudeHistoryOverSSH(host *sessionstypes.HostSpec, directory, claudeS
 	return err
 }
 
+var claudeErrorCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
+// claudeErrorCode bounds the transcript's error value. Deliberate: it is
+// provider text that reaches clients, so only a short snake_case code passes
+// and anything else becomes "unknown"; no token or sentence can fit.
+func claudeErrorCode(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if claudeErrorCodePattern.MatchString(raw) {
+		return raw
+	}
+	return "unknown"
+}
+
 // parseClaudeHistoryJSONL parses a Claude CLI JSONL transcript from r,
 // grouping assistant messages by message ID. sidechainQueue may be nil (a
 // host session fetches no sub-agent transcripts).
@@ -128,6 +144,7 @@ func parseClaudeHistoryJSONL(r io.Reader, claudeSessionID string, sidechainQueue
 		Type      string `json:"type"`
 		SessionID string `json:"sessionId"`
 		Timestamp string `json:"timestamp"`
+		Error     string `json:"error"`
 		Message   struct {
 			ID      string          `json:"id"`
 			Role    string          `json:"role"`
@@ -139,6 +156,7 @@ func parseClaudeHistoryJSONL(r io.Reader, claudeSessionID string, sidechainQueue
 		messageID string
 		timestamp string
 		blocks    []json.RawMessage
+		errorCode string
 	}
 
 	var messages []sessionstypes.Message
@@ -147,7 +165,7 @@ func parseClaudeHistoryJSONL(r io.Reader, claudeSessionID string, sidechainQueue
 
 	flushAssistant := func(msgID string) {
 		g, ok := assistantGroups[msgID]
-		if !ok || len(g.blocks) == 0 {
+		if !ok || (len(g.blocks) == 0 && g.errorCode == "") {
 			return
 		}
 
@@ -180,6 +198,7 @@ func parseClaudeHistoryJSONL(r io.Reader, claudeSessionID string, sidechainQueue
 			Timestamp: g.timestamp,
 			Role:      "assistant",
 			Content:   content,
+			Error:     g.errorCode,
 		})
 
 		delete(assistantGroups, msgID)
@@ -284,6 +303,9 @@ func parseClaudeHistoryJSONL(r io.Reader, claudeSessionID string, sidechainQueue
 			var blocks []json.RawMessage
 			if json.Unmarshal(entry.Message.Content, &blocks) == nil {
 				g.blocks = append(g.blocks, blocks...)
+			}
+			if code := claudeErrorCode(entry.Error); code != "" {
+				g.errorCode = code
 			}
 		}
 	}
