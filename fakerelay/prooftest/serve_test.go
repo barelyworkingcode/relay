@@ -1,7 +1,13 @@
 package prooftest
 
 import (
+	"bufio"
+	"bytes"
+	"context"
+	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,7 +61,7 @@ func TestServeRules(t *testing.T) {
 			dir, err := newDir()
 			must(t, err, "dir")
 			must(t, os.WriteFile(filepath.Join(dir, "world.json"), []byte(c.world), 0o600), "write world")
-			out, se, code := runBin(t, nil, "--config-dir", dir, "serve")
+			out, se, code := serveUntilReadyOrExit(t, dir)
 			if code != 1 || out != "" || !strings.Contains(se, "world.json") || !strings.Contains(se, c.want) {
 				t.Errorf("exit %d stdout %q stderr %q", code, out, se)
 			}
@@ -80,4 +86,49 @@ func TestServeRules(t *testing.T) {
 			t.Errorf("%s was created by a client verb", dir)
 		}
 	})
+}
+
+// serveUntilReadyOrExit runs serve and returns when it exits. A serve that
+// prints its first stdout line has started, so it is killed and the run fails
+// at once instead of waiting out the bound.
+func serveUntilReadyOrExit(t *testing.T, dir string) (string, string, int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), waitBound)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, fakerelayBin, "--config-dir", dir, "serve")
+	cmd.Env = cleanEnv()
+	var se bytes.Buffer
+	cmd.Stderr = &se
+	pipe, err := cmd.StdoutPipe()
+	must(t, err, "stdout pipe")
+	must(t, cmd.Start(), "start serve")
+	started := make(chan string, 1)
+	drained := make(chan string, 1)
+	go func() {
+		var all strings.Builder
+		r := bufio.NewReader(pipe)
+		if line, _ := r.ReadString('\n'); line != "" {
+			all.WriteString(line)
+			started <- line
+		}
+		rest, _ := io.ReadAll(r)
+		all.Write(rest)
+		drained <- all.String()
+	}()
+	select {
+	case line := <-started:
+		_ = cmd.Process.Kill()
+		<-drained
+		_ = cmd.Wait()
+		t.Fatalf("serve started on an invalid world, first stdout line %q", line)
+	case out := <-drained:
+		err := cmd.Wait()
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return out, se.String(), ee.ExitCode()
+		}
+		must(t, err, "serve wait")
+		return out, se.String(), 0
+	}
+	return "", "", -1
 }

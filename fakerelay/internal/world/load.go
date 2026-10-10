@@ -23,6 +23,8 @@ func Load(dir string) (*World, error) {
 	if err != nil {
 		return nil, fmt.Errorf("world.json: %w", err)
 	}
+	// A file must state its own schema; only the absent file is the empty world.
+	w.Schema = 0
 	var raw any
 	dec := json.NewDecoder(bytes.NewReader(b))
 	if err := dec.Decode(&raw); err != nil {

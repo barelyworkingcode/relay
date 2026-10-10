@@ -146,7 +146,7 @@ func serveConn(c net.Conn, h Hooks) {
 			reply(c, errFrame(CodeParse, "frame is not valid JSON"))
 			continue
 		}
-		if f := h.Fault("BRIDGE " + req.Type); f.Down {
+		if f := h.Fault(req.Type); f.Down {
 			return
 		} else if f.Refuse {
 			if req.Type == "Hello" {

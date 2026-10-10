@@ -33,7 +33,7 @@ func TestPresenceOutcomes(t *testing.T) {
 					gone <- err
 				}()
 				ans := in.waitEvent(t, "debug.presence.answer")
-				eq(t, [2]any{ans["op"], ans["answer"]}, [2]any{"project.grant", "timeout"}, "presence answer")
+				eq(t, [2]any{ans["presence_op"], ans["answer"]}, [2]any{"project.grant", "timeout"}, "presence answer")
 				cancel()
 				if err := <-gone; err == nil {
 					t.Error("a timed-out request got an answer")
@@ -48,7 +48,7 @@ func TestPresenceOutcomes(t *testing.T) {
 				ev := in.events(t, tr, "project.create")
 				eq(t, [2]any{ev[0]["status"], ev[0]["reason"]}, [2]any{"denied", "presence_refused"}, "create event")
 				ans := in.events(t, "", "debug.presence.answer")
-				eq(t, [2]any{ans[0]["op"], ans[0]["answer"]}, [2]any{"project.grant", "deny"}, "presence answer")
+				eq(t, [2]any{ans[0]["presence_op"], ans[0]["answer"]}, [2]any{"project.grant", "deny"}, "presence answer")
 				out, _, _ := in.cli(t, "audit", "--json", "--event", "control_decision", "--outcome", "denied")
 				found := false
 				for _, r := range parseRows(t, out) {

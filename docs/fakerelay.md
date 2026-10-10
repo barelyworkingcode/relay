@@ -1527,7 +1527,7 @@ are `--config-dir` and `--trace`.
 | `audit [--tail N] [--project ID] [--event E] [--outcome O] [--json] [--path]` | reads the file |
 | `grant [--project X] [--json]` | see "relay grant --json" |
 | `project update --id ID --files-read-only=true\|false` | |
-| `eve enrol`, `eve list`, `eve revoke --id ID` | `eve enrol` is gated by `eve.enrolment.open` |
+| `eve enrol`, `eve list`, `eve revoke --id ID` | `eve enrol` is gated by `eve.enrolment.open`. `eve revoke` is gated by `eve.passkey.revoke` and refuses the last passkey (exit 1), as relay does |
 | `service list`, `service restart --id ID\|--name N` | |
 | `mcp list` | |
 | `ctl ...` | fake-only, see Control socket |
@@ -1618,7 +1618,8 @@ op. The ops are `project.grant`, `eve.enrolment.open` and
 | `deny` | 403 `{"error":"presence was refused"}`. The op's event has status `denied` and reason `presence_refused`. One `control_decision` row with `outcome: "denied"` is written (see Presence refusal) |
 | `timeout` | the request is held until the caller leaves. There is no response. The op's event has reason `presence_timeout` |
 
-- Every answer writes `debug.presence.answer` with `op` and `answer`. A client
+- Every answer writes `debug.presence.answer` with `presence_op` (the gated op; `op` is
+  the event name on every event line) and `answer`. A client
   that waits for a timeout waits for that event with `answer: timeout`.
 - The prompt is not shown anywhere. The outcome is the whole gate.
 - The `eve enrol` verb and `POST /api/projects` go through the gate. So does a

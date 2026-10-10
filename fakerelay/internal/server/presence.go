@@ -52,8 +52,9 @@ func (g *presenceGate) Require(ctx context.Context, op string) error {
 	if answer == "" {
 		answer = "deny"
 	}
+	// The gated op rides in presence_op because the event line's own op key is the event name.
 	// The answer line is written before a timeout blocks, so a test can wait on it.
-	g.log.Begin(ctx, "debug.presence.answer", events.Debug()).Set("op", op).Set("answer", answer).End("ok", "", nil)
+	g.log.Begin(ctx, "debug.presence.answer", events.Debug()).Set("presence_op", op).Set("answer", answer).End("ok", "", nil)
 	switch answer {
 	case "approve":
 		return nil

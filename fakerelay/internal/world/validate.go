@@ -210,7 +210,8 @@ func ValidateFault(path string, f Fault) error {
 		if _, ok := FaultNames[f.Name]; f.Name != "" && !ok {
 			return bad(path+".name", "unknown fault name %q", f.Name)
 		}
-		if f.Name == "" && f.Status < 100 {
+		// A BRIDGE error answers with the frame's own refusal, so it needs neither.
+		if f.Name == "" && f.Status < 100 && !strings.HasPrefix(f.Route, "BRIDGE ") {
 			return bad(path, "an error fault needs a name or a status")
 		}
 	}

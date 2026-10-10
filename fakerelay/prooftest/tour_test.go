@@ -234,6 +234,7 @@ func tour(t *testing.T, in *instance) {
 		code string
 	}{{"../outside", "TRAVERSAL"}, {"link", "SYMLINK"}} {
 		eq(t, fop("read", J{"path": c.path}).is(t, 403).obj(t)["code"], any(c.code), "read "+c.path)
+		eq(t, fop("write", J{"path": c.path, "content": "x"}).is(t, 403).obj(t)["code"], any(c.code), "write "+c.path)
 	}
 	_, _, code = in.cli(t, "project", "update", "--id", "p_main", "--files-read-only=true")
 	eq(t, code, 0, "project update exit")
@@ -244,7 +245,13 @@ func tour(t *testing.T, in *instance) {
 	for _, r := range parseRows(t, out) {
 		have[key{r["tool"], r["outcome"], r["error"]}] = true
 	}
-	for _, k := range []key{{"write", "ok", nil}, {"read", "denied", "TRAVERSAL"}, {"read", "denied", "SYMLINK"}, {"write", "denied", "READ_ONLY"}} {
+	// Reads write no file_op row, refused or not (doc, File audit rows).
+	for k := range have {
+		if k.tool == "read" {
+			t.Errorf("a read wrote a file_op row: %v", k)
+		}
+	}
+	for _, k := range []key{{"write", "ok", nil}, {"write", "denied", "TRAVERSAL"}, {"write", "denied", "SYMLINK"}, {"write", "denied", "READ_ONLY"}} {
 		if !have[k] {
 			t.Errorf("audit lacks file_op row %v; have %v", k, have)
 		}
@@ -392,9 +399,15 @@ func tour(t *testing.T, in *instance) {
 	in.api(t, "POST", "/api/chief-of-staff/messages", J{"sessionId": sid, "text": "from cos"}, cos, "chief-of-staff").is(t, 202)
 	sc := in.ws(t, "/ws", opsTok, cos, "chief-of-staff")
 	must(t, sc.WriteJSON(J{"type": "join_session", "sessionId": sid}), "scoped write")
+	// A scoped /ws also receives hub broadcasts (doc, Scope), so frames may
+	// arrive before the close; the close frame is the signal.
 	_ = sc.SetReadDeadline(time.Now().Add(waitBound))
-	if _, _, err := sc.ReadMessage(); !websocketClosed(err, 1008, "chief-of-staff scope is read-only") {
-		t.Errorf("scoped /ws send: %v", err)
+	var scopedErr error
+	for scopedErr == nil {
+		_, _, scopedErr = sc.ReadMessage()
+	}
+	if !websocketClosed(scopedErr, 1008, "chief-of-staff scope is read-only") {
+		t.Errorf("scoped /ws send: %v", scopedErr)
 	}
 
 	// Eve window and passkeys.
@@ -404,7 +417,10 @@ func tour(t *testing.T, in *instance) {
 	in.api(t, "POST", "/api/eve/passkey-enrolment/consume", J{"ip": "203.0.113.9", "label": "Phone"}).is(t, 200)
 	in.api(t, "POST", "/api/eve/passkey-enrolment/consume", J{"ip": "203.0.113.9", "label": "Phone"}).is(t, 409)
 	eq(t, in.api(t, "GET", "/api/eve/passkey-enrolment", nil).is(t, 200).obj(t)["open"], any(false), "window closed")
-	in.api(t, "PUT", "/api/eve/passkeys", J{"passkeys": []J{{"id": "pk1", "label": "Phone", "created": "2026-10-09T10:00:00Z", "last_used": "2026-10-09T10:00:00Z"}}}).is(t, 200)
+	in.api(t, "PUT", "/api/eve/passkeys", J{"passkeys": []J{
+		{"id": "pk1", "label": "Phone", "created": "2026-10-09T10:00:00Z", "last_used": "2026-10-09T10:00:00Z"},
+		{"id": "pk2", "label": "Laptop", "created": "2026-10-09T10:00:00Z", "last_used": "2026-10-09T10:00:00Z"},
+	}}).is(t, 200)
 	out, _, code = in.cli(t, "eve", "list")
 	if code != 0 || !strings.Contains(out, "pk1") {
 		t.Errorf("eve list: exit %d %q", code, out)
