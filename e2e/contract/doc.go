@@ -25,7 +25,8 @@
 // to the transcript. Body decides what is compared by what it calls: Note
 // records a derived value, and a call it does not make records nothing. A
 // scenario must not depend on which target it runs on; Run.Target.Kind exists
-// for the hooks, not for branching.
+// for the hooks, not for branching. Run.CLIWith is Run.CLI with a trace or
+// stdin, and learns the ids a CLI that exits 0 with one JSON object prints.
 //
 // The Spec is rendered twice. The real target gets settings.json, the
 // credentials, the presence map, fake MCPs and the ssh stub. The fake target

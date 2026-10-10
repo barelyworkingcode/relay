@@ -52,3 +52,14 @@ func TestDispatchUpstreamGoneIsBadGateway(t *testing.T) {
 		},
 	})
 }
+
+func TestDispatchGeneratedUnserved(t *testing.T) {
+	t.Parallel()
+	Check(t, Scenario{
+		Surface: Dispatch,
+		Spec:    sessionsWorld(),
+		Body: func(r *Run) {
+			r.HTTP("ops", "GET", "/api/generated/acme.png", nil)
+		},
+	})
+}
