@@ -44,28 +44,34 @@ func writeChiefOfStaffError(w http.ResponseWriter, status int, code, message str
 func (d sessionRouteDeps) handleChiefOfStaffMessage(w http.ResponseWriter, r *http.Request) {
 	const origin = sessiontypes.OriginChiefOfStaff
 
+	// A refusal before delivery starts ends its own event; delivery begins its
+	// own in sendChiefOfStaffText. Each request writes exactly one.
+	refuse := func(status int, code, message string) {
+		ev := logging.BeginEvent(r.Context(), "chief_of_staff.send").Set("origin", origin)
+		endEventHTTP(ev, status, "chief of staff send refused")
+		writeChiefOfStaffError(w, status, code, message)
+	}
+
 	var body chiefOfStaffMessageBody
 	r.Body = http.MaxBytesReader(w, r.Body, maxChiefOfStaffBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			writeChiefOfStaffError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body is larger than 64 KiB")
+			refuse(http.StatusRequestEntityTooLarge, "body_too_large", "request body is larger than 64 KiB")
 			return
 		}
-		writeChiefOfStaffError(w, http.StatusBadRequest, "invalid_body", "body must be JSON {\"sessionId\",\"text\"}")
+		refuse(http.StatusBadRequest, "invalid_body", "body must be JSON {\"sessionId\",\"text\"}")
 		return
 	}
 	if body.SessionID == "" {
-		writeChiefOfStaffError(w, http.StatusBadRequest, "session_id_required", "sessionId is required")
+		refuse(http.StatusBadRequest, "session_id_required", "sessionId is required")
 		return
 	}
 	if strings.TrimSpace(body.Text) == "" {
-		writeChiefOfStaffError(w, http.StatusBadRequest, "text_required", "text is required")
+		refuse(http.StatusBadRequest, "text_required", "text is required")
 		return
 	}
 	if !d.auditor.Ready() {
-		// This refusal returns before sendChiefOfStaffText begins its event, so
-		// it ends its own: one chief_of_staff.send event per request.
 		logging.BeginEvent(r.Context(), "chief_of_staff.send").Set("session_id", body.SessionID).Set("origin", origin).
 			End(logging.OutcomeDenied, "audit_unavailable", errors.New("audit_unavailable"))
 		writeChiefOfStaffError(w, http.StatusServiceUnavailable, "audit_unavailable", "auditing is off; the Chief of Staff cannot send")
