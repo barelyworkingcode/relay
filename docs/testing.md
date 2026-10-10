@@ -1,20 +1,130 @@
 # Testing
 
 Relay has no unit tests. `go test ./...` reports `no test files` for every
-package and exits 0. CI rejects any Go test file outside `e2e/`.
+package and exits 0. CI rejects any Go test file outside `e2e/`; the tests live
+in the e2e module.
 
 ## What proves relay
 
-The devbox journeys in `cmd/devboxverify` drive the real app end to end: the
-running tray, its sockets, the Settings UI and the services it supervises.
-They build `cmd/testmcp` and `cmd/testservice`, two small probe binaries, and
-`cmd/devboxpresence`. See [`cmd/devboxverify/README.md`](../cmd/devboxverify/README.md)
-for the commands, the journeys and how a run is graded.
+Two things prove relay: the e2e feature tests and the devbox journeys.
 
-Until `e2e/` exists, a bug's failing repro is a devbox journey. A behaviour no
-journey reaches is guarded by nothing; the reviewer reads the diff against
-[`docs/THREAT-MODEL.md`](THREAT-MODEL.md) and the security invariants in
-`CLAUDE.md`.
+- **e2e feature tests** (`e2e/`, its own Go module `relaye2e`) start real relay
+  instances and drive them through the CLI and the HTTP API, the way a user or
+  a client does. They run in CI on every PR and on `main`. Every feature-map
+  row in [`FEATURES.md`](FEATURES.md) names the test that proves it.
+- **Devbox journeys** (`cmd/devboxverify`) drive the running tray, the
+  Settings UI and the services it supervises on the test machine. See
+  [`cmd/devboxverify/README.md`](../cmd/devboxverify/README.md).
+
+A bug's failing repro is an e2e feature test where one can reach it, a devbox
+journey otherwise. A behaviour neither reaches is guarded by nothing; the
+reviewer reads the diff against [`THREAT-MODEL.md`](THREAT-MODEL.md) and the
+security invariants in `CLAUDE.md`.
+
+## The e2e module
+
+`e2e/` imports nothing of relay's: it knows relay only from its documents
+(`docs/`) and its binaries. Layout:
+
+| Path | Holds |
+|---|---|
+| `e2e/harness` | starts isolated instances and builds the bundle (`go doc relaye2e/harness`) |
+| `e2e/fakes` | the fake MCP server, model host and agent CLI the instances talk to |
+| `e2e/coverage` | the coverage check, `pending.txt` and its own self-tests |
+| `e2e/features` | the feature tests, and `TestMain` |
+
+**Run it.**
+
+```bash
+cd e2e && go test -race -parallel 32 ./features/     # locally: 32 instances at once
+cd e2e && go test -race -run TestFakeMCPStdioListsTools ./features/   # one test
+```
+
+`TestMain` builds one `-tags relaytest` bundle (the `relay-e2e` binary,
+`relay-sessions` and the fakes) into a run root under `/tmp`, then runs the
+tests. A passing run removes the root. A failing run keeps it, so the instance
+directories can be read, and the next run reaps it.
+
+**The devbox 32 by 3 procedure.** CI runs at the runner's parallelism. On the
+devbox, run the suite three times with 32 instances live at once:
+
+```bash
+cd e2e && go test -race -count=1 -parallel 32 ./features/   # run it three times
+```
+
+`TestInstancesIsolated` boots 32 instances and, when the run allows 32 parallel
+tests, holds them at a barrier so all 32 are live together. It logs
+`barrier: 32 instances live` on success; without that line the run did not
+reach 32 at once.
+
+**Remote in a test.** The harness's default `settings.json` has no `remote`
+block, so an instance opens no remote or enrolment listener. A test that
+enables `remote` sets both listens to `127.0.0.1:0` itself.
+
+**The fakes.** Each is a small program the harness builds into the bundle and
+starts per instance; none touches the network beyond loopback.
+
+- `fakemcp` is an MCP server. Flags: `--catalogue <file>` (tool catalogue JSON,
+  required), `--call-log <file>` (required), `--transport stdio|http`
+  (default `stdio`), `--listen <addr>` (http, default `127.0.0.1:0`), `--oauth`
+  (require OAuth on `/mcp`, http only) and `--token-ttl <d>` (access token
+  lifetime, default 1h).
+- `fakemodelhost` is a registered model host. Flags: `--models <file>` (model
+  catalogue JSON, required) and `--call-log <file>` (required).
+- `fakeagent` is the claude, pi and codex CLI. It picks its persona from the
+  name it is run as and answers `--version`; any other name exits 2.
+
+The catalogue is the harness spec's `Catalogue` field, written to
+`<id>.catalogue.json` in the instance's fake directory. Every request a fake
+serves is appended to its call log before the reply, as one JSON line written
+with a single `write(2)` (`e2e/fakes/calllog`), so a test that has seen the
+reply reads the line with no wait.
+
+**Harness rules.** The coverage check enforces the first two.
+
+- `t.Parallel()` is the first statement of every test.
+- No `time.Sleep`. A test waits on a signal: a command exiting, a ready file,
+  or an event from `relay logs --follow --event <key> --timeout <d>`.
+- Every instance has its own config dir, HOME, TMPDIR, PATH and ports. Nothing
+  touches the real config dir or the running tray.
+- A failed test dumps the instance's evidence into the test log: the serve exit
+  code, the stored logs, the audit file, serve's stderr and each fake's call
+  log, each cut to its last lines. A test run with `-race` also fails on a
+  race report in any relay process's stderr.
+- A test imports the harness and the fakes, never relay's packages.
+
+**The coverage check.** `TestFeatureMapCoverage` starts an instance, reads
+`relay doors --json`, and checks that the door catalogue, `FEATURES.md`, the
+reference documents and the tests describe the same product. A row with no
+test, a door in no row, a missing or stale reference heading and a harness
+rule break each fail it, with the rule and the place. The rules:
+
+| Rule | Meaning |
+|---|---|
+| R1 | Every catalogue door is named by a row. |
+| R2 | Every door a row names is in the catalogue. |
+| R3 | Every row has a test the check accepts (`e2e:`, a live `pending:#N`, or what its kind allows); `journey:` alone proves only an `exception:` row. |
+| R4 | `e2e:` items and test functions agree: every item names a test, names are unique, and no test is unnamed by a row. |
+| R5 | A gated row has refusal proof, and each owner-gated http or cli door has a deny test item. |
+| R6 | Every `event:` key is in `docs/events.md` section 7. |
+| R7 | Row IDs are well formed. |
+| R8 | Every promise maps to rows with a refusal proof. |
+| R9 | A row not proven by CI has an `event:`, `audit:` or `out:` proof item. |
+| Q6 | Every http door has a heading in `docs/routes.md` and every cli verb one in `docs/cli.md`. |
+| H1 to H3 | `t.Parallel()` first; no `time.Sleep`; the e2e module imports nothing of relay's. |
+
+`TestFeatureMapCoverage` is the one test exempt from R4: it checks the map and
+is named by no row. `e2e/coverage/pending.txt`
+lists the issue numbers whose `pending:#N` rows still count as tested. It only
+shrinks: the child that writes a row's tests removes its number.
+
+**The e2e-test-writer agent** (`.claude/agents/e2e-test-writer.md`) writes
+feature tests from the documents and the harness's Go doc alone. A
+`PreToolUse` hook (`.claude/hooks/e2e-read-guard.sh`) refuses file tools under
+`cmd/` and `internal/` and Bash commands that name them. It stops accidental
+reads. It is not a security boundary: a shell command can always find another
+way to read a file. When a document is too thin to write a test from, the
+agent reports a doc gap and the document is fixed.
 
 `scripts/demo.sh` starts the app against `test/fixtures/relay-home` and
 `test/fixtures/scenarios` for hand-run visual checks, and `cmd/devui` is a
@@ -26,7 +136,8 @@ hand-run tool for Settings UI work.
 |---|---|---|
 | commit | `gofmt -l`, `go build ./...`, `go vet ./...` | `.githooks/pre-commit` |
 | push | `go build ./...` and `go vet ./...`, skipped when the pushed commits touch no Go sources or web assets | `.githooks/pre-push` |
-| PR, and every push to `main` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags relaytest ./...`, `scripts/check-test-build.sh` (`absent` on an untagged build, `present` on a `relaytest` build), and a step that fails on any `_test.go` outside `e2e/` | `.github/workflows/ci.yml` |
+| PR, and every push to `main` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags relaytest ./...`, `scripts/check-test-build.sh` (`absent` on an untagged build, `present` on a `relaytest` build), and a step that fails on any `_test.go` outside `e2e/` | `.github/workflows/ci.yml` (`build` job) |
+| PR, and every push to `main` | the `e2e` job: `gofmt -l` and `go vet ./...` in `e2e/`, then `go test -race -count=1 ./...` at the runner's default parallelism | `.github/workflows/ci.yml` (`e2e` job) |
 | `./build.sh --test` | `go vet ./...` before install | `build.sh` |
 
 Do not set `core.hooksPath` in this repo. A global hooks dispatcher runs the

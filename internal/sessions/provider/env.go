@@ -93,10 +93,13 @@ func ensurePath(env []string) []string {
 // well-known install locations, then PATH lookup, then the literal "claude"
 // (exec.LookPath defers the error to spawn time).
 func resolveClaudePath(configured string) string {
+	home, _ := os.UserHomeDir()
 	if configured != "" {
+		if rest, ok := strings.CutPrefix(configured, "~/"); ok && home != "" {
+			return filepath.Join(home, rest)
+		}
 		return configured
 	}
-	home, _ := os.UserHomeDir()
 	candidates := []string{
 		filepath.Join(home, ".local", "bin", "claude"),
 		filepath.Join(home, ".claude", "local", "claude"),

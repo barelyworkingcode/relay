@@ -33,4 +33,6 @@ prompt.md
 /plans/
 
 # Agent worktrees
-.claude/
+.claude/*
+!.claude/agents/
+!.claude/hooks/

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
@@ -148,7 +149,8 @@ func runService(args []string) int {
 		RelayPID:       relayPID,
 		HookSocket:     cfg.hookSocket,
 		Permissions:    perms,
-		PiBinary:       "",
+		PiBinary:       cfg.piCommand,
+		CodexBinary:    cfg.codexCommand,
 		ModelSocket:    cfg.modelSocket,
 	}, terminals, sessions)
 	srv.SetExitHandler(func(id string, rootPID, exitCode int, reason string) {
@@ -213,6 +215,7 @@ func runService(args []string) int {
 func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
 	return session.Config{
 		Claude: provider.ClaudeConfig{
+			Binary:          cfg.claudeCommand,
 			HookSocket:      cfg.hookSocket,
 			HookCommandPath: shimBinary,
 			BridgeSocket:    cfg.bridgeSocket,
@@ -221,12 +224,14 @@ func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
 			RelayMCPCommand: cfg.relayMCPCommand,
 		},
 		Pi: provider.PiConfig{
+			Binary:       cfg.piCommand,
 			DataDir:      cfg.dataDir,
 			BridgeSocket: cfg.bridgeSocket,
 			ModelSocket:  cfg.modelSocket,
 			ShimBinary:   shimBinary,
 		},
 		Codex: provider.CodexConfig{
+			Binary:       cfg.codexCommand,
 			ShimBinary:   shimBinary,
 			BridgeSocket: cfg.bridgeSocket,
 		},
@@ -282,6 +287,9 @@ type serviceConfig struct {
 	dataDir          string
 	modelSocket      string
 	relayMCPCommand  string
+	claudeCommand    string
+	piCommand        string
+	codexCommand     string
 }
 
 // relayLLMDataDir is relayLLM's own data directory, the migration's copy
@@ -343,8 +351,16 @@ func parseServiceArgs(args []string) (serviceConfig, error) {
 	dataDir := fs.String("data-dir", "", "override this host's own data dir (default: ~/Library/Application Support/relay/sessions)")
 	modelSocket := fs.String("model-socket", "", "override RELAY_MODEL_SOCKET for every spawned session (default: env, then relay's own model.sock)")
 	relayMCPCommand := fs.String("relay-mcp-command", "", "absolute path to the relay binary that serves `relay mcp` (default: relay tools disabled)")
+	claudeCommand := fs.String("claude-command", "", "absolute or ~/ path of the claude binary (default: well-known locations, then PATH)")
+	piCommand := fs.String("pi-command", "", "absolute or ~/ path of the pi binary (default: well-known locations, then PATH)")
+	codexCommand := fs.String("codex-command", "", "absolute or ~/ path of the codex binary (default: well-known locations, then PATH)")
 	if err := fs.Parse(args); err != nil {
 		return serviceConfig{}, err
+	}
+	for name, v := range map[string]string{"-claude-command": *claudeCommand, "-pi-command": *piCommand, "-codex-command": *codexCommand} {
+		if v != "" && !filepath.IsAbs(v) && !strings.HasPrefix(v, "~/") {
+			return serviceConfig{}, fmt.Errorf("%s %q is not an absolute path", name, v)
+		}
 	}
 	if *internalSocket == "" || *hookSocket == "" {
 		return serviceConfig{}, fmt.Errorf("-internal-socket and -hook-socket are required")
@@ -379,6 +395,9 @@ func parseServiceArgs(args []string) (serviceConfig, error) {
 		dataDir:          dir,
 		modelSocket:      model,
 		relayMCPCommand:  *relayMCPCommand,
+		claudeCommand:    *claudeCommand,
+		piCommand:        *piCommand,
+		codexCommand:     *codexCommand,
 	}, nil
 }
 

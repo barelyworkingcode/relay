@@ -803,6 +803,19 @@ No JSON form. A script reads the line that starts `  token:` (two spaces, then
 64 hex characters) and the line that starts `  id:`. Exit codes: `0` minted;
 `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing `--name`, an empty or unknown `--class` and a negative `--ttl` are `1` with `error: ...`.
 
+#### The record it writes
+
+`credential mint` appends one object to `api_credentials` in `settings.json`. The token is never stored; a seeded record holds only the SHA-256 of a token the seeder keeps.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | A UUID. |
+| `name` | string | The `--name` value. |
+| `hash` | string | Lower-case hex SHA-256 of the token's text (the 64 hex characters printed at mint, as a string, not decoded to bytes). The token is presented as `Authorization: Bearer <token>`. |
+| `classes` | array of strings | One or more of `read`, `configure`, `grant`, `execute`, `proxy`. Empty grants nothing. |
+| `created` | string | RFC 3339 time. |
+| `expires` | string | RFC 3339 time. Absent means never; an unparseable value counts as expired. |
+
 ### `credential list`
 
 Example:
@@ -1693,6 +1706,22 @@ codes: `0` registered; `1` when relay is not running, when it is run where it ca
 than `stdio` or `http`, or a missing `--command` (stdio) or `--url` (http) is `1`
 with `error: ...`.
 
+#### The record it writes
+
+`mcp register` appends one object to `external_mcps` in `settings.json`. A file seeded with the same object, before relay starts, is equivalent.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | Required. Referenced by `allowed_mcp_ids` in projects and profiles. |
+| `display_name` | string | Required. |
+| `transport` | string | `"stdio"` or `"http"`. Absent means stdio. |
+| `command` | string | Required for stdio; the program to run. |
+| `args` | array of strings | Arguments to the command. Write `[]` when none. |
+| `env` | object, string to string | Environment for the command. Write `{}` when none. A plain string is accepted and sealed on the next write. |
+| `url` | string | Required for http; the MCP endpoint. |
+| `oauth_state` | object | Written by authentication; omit on a seeded record. |
+| `tcc_services` | array of strings | Optional. Services the MCP needs from macOS. |
+
 ### `mcp authenticate`
 
 Needs service: yes. Prompts: yes (`mcp.oauth.start`). Works over SSH: no.
@@ -1942,6 +1971,24 @@ No JSON form. A script reads the first line, `registered service "NAME" (ID)`,
 then `  capabilities: LIST` (`none` when empty), then optional `  allowed models:`
 and `  note:` lines. Exit codes: `0` registered or updated; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A
 missing `--name` or `--command` is `1`.
+
+#### The record it writes
+
+`service register` appends one object to `services` in `settings.json`; a seeded file is equivalent.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | Required. The service's launch name. |
+| `display_name` | string | Required. |
+| `command` | string | Required. |
+| `args` | array of strings | Write `[]` when none. |
+| `env` | object, string to string | Write `{}` when none. A plain string is accepted and sealed on the next write. |
+| `working_dir` | string | Optional. |
+| `autostart` | boolean | Start with relay. Always written, `false` when off. |
+| `url` | string | Optional. |
+| `capabilities` | array of strings | Always write the array, `[]` for none. Values: `frontend`, `manifest`, `models`, `model_host`. A record with no `capabilities` key is read as an older record and migrated. |
+| `allowed_models` | array of strings | With `models`: the model ids the service may call, `["*"]` for all. Absent means none. |
+| `hide_from_menu` | boolean | Optional. Hides the service from the tray menu. |
 
 ### `service unregister`
 
