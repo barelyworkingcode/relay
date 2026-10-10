@@ -26,6 +26,9 @@ func TestSealedReset(t *testing.T) {
 		t.Fatalf("the planted credential answered %d before the reset, want 200", got)
 	}
 	before, beforeErr := os.ReadFile(g12KeychainFile(i))
+	if beforeErr != nil {
+		t.Fatalf("the test keychain file is missing before the reset: %v", beforeErr)
+	}
 
 	r := i.CLI("sealed", "reset", "--json")
 	if r.Code != 0 {
@@ -54,7 +57,7 @@ func TestSealedReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the test keychain file is missing after the reset: %v", err)
 	}
-	if beforeErr == nil && bytes.Equal(before, after) {
+	if bytes.Equal(before, after) {
 		t.Fatalf("the test keychain file holds the same key after the reset")
 	}
 }
@@ -66,7 +69,10 @@ func TestSealedResetDenied(t *testing.T) {
 		Credentials: g12Victim,
 	})
 	token := i.Credential("victim")
-	before, _ := os.ReadFile(g12KeychainFile(i))
+	before, beforeErr := os.ReadFile(g12KeychainFile(i))
+	if beforeErr != nil {
+		t.Fatalf("the test keychain file is missing before the denied reset: %v", beforeErr)
+	}
 
 	r := i.CLI("sealed", "reset", "--json")
 	if r.Code != 1 {

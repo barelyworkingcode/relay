@@ -94,6 +94,17 @@ func TestCredentialMint(t *testing.T) {
 	if !found {
 		t.Fatalf("no credential_issued ok row names credential %s", m.ID)
 	}
+	list := i.MustCLI("credential", "list")
+	classes := ""
+	for _, line := range strings.Split(string(list.Stdout), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 3 && f[0] == m.ID {
+			classes = f[2]
+		}
+	}
+	if classes != "read" {
+		t.Fatalf("credential list shows classes %q for %s, want read\n%s", classes, m.ID, list.Stdout)
+	}
 }
 
 func TestCredentialMintDenied(t *testing.T) {
@@ -305,8 +316,9 @@ func TestLogsFilterAndFollow(t *testing.T) {
 	})
 
 	t.Run("follow", func(t *testing.T) {
-		p := i.StartCLI(harness.CLIOpts{}, "logs", "--follow", "--event", "credential.list", "--timeout", "30s", "--json")
-		listed := i.CLIWith(harness.CLIOpts{Trace: harness.NewTrace(t)}, "credential", "list")
+		tf := harness.NewTrace(t)
+		p := i.StartCLI(harness.CLIOpts{}, "logs", "--follow", "--event", "credential.list", "--trace", tf, "--timeout", "30s", "--json")
+		listed := i.CLIWith(harness.CLIOpts{Trace: tf}, "credential", "list")
 		if listed.Code != 0 {
 			t.Fatalf("credential list exited %d", listed.Code)
 		}
@@ -315,13 +327,8 @@ func TestLogsFilterAndFollow(t *testing.T) {
 			t.Fatalf("logs --follow exited %d, want 0 after a credential.list event\nstderr: %s", res.Code, res.Stderr)
 		}
 		evs := g9Lines(t, res.Stdout)
-		if len(evs) == 0 || evs[0].Str("event") != "credential.list" {
-			t.Fatalf("logs --follow printed %d lines, first event %q, want credential.list", len(evs), func() string {
-				if len(evs) == 0 {
-					return ""
-				}
-				return evs[0].Str("event")
-			}())
+		if len(evs) == 0 || evs[0].Str("event") != "credential.list" || evs[0].Str("trace_id") != tf {
+			t.Fatalf("logs --follow printed %d lines, want a credential.list line with trace %s: %s", len(evs), tf, res.Stdout)
 		}
 	})
 }
@@ -444,7 +451,7 @@ func TestOperatorVerbRefusedInSession(t *testing.T) {
 				t.Fatalf("the status verb run by a terminal exited %d, want 1", code)
 			}
 			// A refused bridge admin op is a control_decision row with method admin_op
-			// and the op's name as path; docs do not state this shape yet.
+			// and the op's name as path.
 			refused := 0
 			for _, row := range i.Audit(harness.AuditQuery{Event: "control_decision", Outcome: "denied"}) {
 				if row["method"] == "admin_op" && row["path"] == "status.view" {
