@@ -33,6 +33,7 @@ type agentFrame struct {
 	Excerpt   string // turn_done
 	InitModel string // llm_event system/init
 	Model     string // session_joined
+	Limit     limitFrame
 }
 
 func parseAgentFrame(raw []byte) agentFrame {
@@ -57,6 +58,7 @@ func parseAgentFrame(raw []byte) agentFrame {
 	case f.Type == "llm_event" && f.Event.Type == "system" && f.Event.Subtype == "init":
 		out.InitModel = f.Event.Model
 	}
+	out.Limit = parseLimitFrame(raw)
 	return out
 }
 
@@ -355,6 +357,7 @@ func classifyAgentState(r agentStateRun) result {
 	case !r.JoinSeen:
 		return fail("no session_joined frame after join_session")
 	}
+	limit := sessionLimit(r.Frames, r.SessionID)
 	var model string
 	for _, f := range r.Frames {
 		if f.Type == "llm_event" && f.SessionID == r.SessionID && f.InitModel != "" {
@@ -370,13 +373,13 @@ func classifyAgentState(r agentStateRun) result {
 	case r.Message.Status != http.StatusOK:
 		return fail(fmt.Sprintf("message status %d: %s", r.Message.Status, r.Message.Error))
 	case model == "":
-		return fail("no system/init event with a model after the turn")
+		return limit.turnFail(id, "no system/init event with a model after the turn")
 	case model != agentModelID:
 		return blocked(id, "model is not Haiku: "+model)
 	case r.Delete.Status/100 != 2:
 		return fail(fmt.Sprintf("DELETE status %d: session %s may still be running", r.Delete.Status, r.SessionID))
 	case r.IdleWaitErr:
-		return fail("no idle session_state frame within 15 s of the reply")
+		return limit.turnFail(id, "no idle session_state frame within 15 s of the reply")
 	}
 	sid := r.SessionID
 	isState := func(s string) func(agentFrame) bool {
@@ -389,9 +392,9 @@ func classifyAgentState(r agentStateRun) result {
 	}
 	switch {
 	case runI < 0:
-		return fail("no running session_state frame")
+		return limit.turnFail(id, "no running session_state frame")
 	case idleI < 0:
-		return fail("no idle session_state frame after running")
+		return limit.turnFail(id, "no idle session_state frame after running")
 	}
 	turns, excerpt := 0, ""
 	for _, f := range r.Frames[:idleI] {
@@ -411,9 +414,9 @@ func classifyAgentState(r agentStateRun) result {
 	}
 	switch {
 	case turns != 1:
-		return fail(fmt.Sprintf("%d turn_done frames before the idle frame, want 1", turns))
+		return limit.turnFail(id, fmt.Sprintf("%d turn_done frames before the idle frame, want 1", turns))
 	case !strings.Contains(excerpt, r.Marker):
-		return fail(fmt.Sprintf("turn_done excerpt %q does not contain %q", excerpt, r.Marker))
+		return limit.turnFail(id, fmt.Sprintf("turn_done excerpt %q does not contain %q", excerpt, r.Marker))
 	case r.IdleList.Status != http.StatusOK:
 		return fail(fmt.Sprintf("GET /api/sessions status %d after idle", r.IdleList.Status))
 	case !r.IdleRow.Found:

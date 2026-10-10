@@ -50,6 +50,7 @@ type dropFrame struct {
 	ToolName   string // llm_event: a tool_use block finished streaming
 	TerminalID string // terminal_*
 	Data       []byte // terminal_output data, terminal_joined scrollback
+	Limit      limitFrame
 }
 
 func parseDropFrame(raw []byte) dropFrame {
@@ -87,6 +88,7 @@ func parseDropFrame(raw []byte) dropFrame {
 			out.ToolName = f.Event.ContentBlock.Name
 		}
 	}
+	out.Limit = parseLimitFrame(raw)
 	return out
 }
 
@@ -798,15 +800,17 @@ func legProblem(l dropInLeg, local bool) *result {
 	case l.Message.Status != http.StatusOK:
 		return fail("message status %d: %s", l.Message.Status, l.Message.Error)
 	}
+	limit := sessionLimit(l.Frames, l.SessionID)
+	turnFail := func(d string) *result { r := limit.turnFail(id, d); return &r }
 	switch m := initModel(l.Frames, l.SessionID); {
 	case m == "":
-		return fail("no system/init event with a model after the turn")
+		return turnFail("no system/init event with a model after the turn")
 	case m != "" && m != agentModelID:
 		return block("model is not Haiku: " + m)
 	case !l.IdleBefore:
-		return fail("the first turn ended neither idle nor errored")
+		return turnFail("the first turn ended neither idle nor errored")
 	case l.TurnErrored:
-		return fail("the first turn ended errored: the host's claude did not answer, so there is no conversation to resume")
+		return turnFail("the first turn ended errored: the host's claude did not answer, so there is no conversation to resume")
 	case l.Refusal == "inside_session" || l.Refusal == "peer_confined":
 		return block("drop-in refused " + l.Refusal + ": run the harness from an operator shell")
 	case l.Refusal != "":
@@ -1034,6 +1038,9 @@ func classifyToolRefused(r toolRefusedRun) result {
 	case r.Turn.Status == http.StatusUnauthorized:
 		return blocked(id, "run credential refused (401) on the message route")
 	case r.ToolName == "":
+		if limit := sessionLimit(r.Frames, r.SessionID); limit.Hit {
+			return blocked(id, limit.detail())
+		}
 		return blocked(id, "the agent made no tool call within 60 s")
 	}
 	switch m := initModel(r.Frames, r.SessionID); {

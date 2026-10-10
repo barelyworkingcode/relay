@@ -41,6 +41,28 @@ starting `BLOCKED environment: ` is the machine's world state (bootstrap or
 `repair.sh`); `not a test machine: …` means this is not a bootstrapped VM.
 A journey FAIL after a green preflight is the product.
 
+### Provider rate limit
+
+Seven journeys run a Claude turn: session-agent-state, session-drop-in,
+session-drop-in-host, session-drop-in-tool-refused, chief-of-staff-send,
+cos-start and cos-start-host. When the provider's usage limit ends that turn,
+the journey reads `BLOCKED` with the detail `provider rate limit (resets <time>)`,
+not FAIL, because the product did nothing wrong. A BLOCKED journey still exits
+1 and never posts `success`: the run is not green until the limit lifts and a
+re-run passes.
+
+The cause is structured, never the reply text: an `llm_event` frame whose
+event is an assistant message with `"error":"rate_limit"`. Any other `error`
+value (`authentication_failed`, say) stays a FAIL. Only the turn-outcome checks
+change (no `system/init` model, no idle frame, no `turn_done`, a wrong or
+missing excerpt, the first turn errored, no tool call); every later check
+stays FAIL.
+
+The reset time is the `resetsAt` of the session's last `rate_limit_event` with
+status `rejected`, as RFC 3339 UTC. Without one, it is the text after the last
+`resets ` in the first reply text after the hit, cut at the line end and at 64
+runes. With neither, the detail is `provider rate limit`.
+
 ## The world
 
 The world comes only from devboxWorld's machine marker, which bootstrap's
@@ -955,6 +977,10 @@ None of this drifts `verify.sh`.
 
 ## Traps
 
+- A `provider rate limit` BLOCKED is not a defect and not a pass. Wait for the
+  reset it names, then re-run; do not post it as green. The reset read from
+  reply text is the provider's own wording and can be a clock time without a
+  date.
 - Run from an operator shell, never inside a relay session. Relay refuses a
   sandbox attach from inside one.
 - `build.sh` signs and relaunches the app. Unlock the signing keychain first,
