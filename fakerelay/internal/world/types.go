@@ -26,6 +26,9 @@ type World struct {
 	Eve            Eve               `json:"eve"`
 	Audit          []json.RawMessage `json:"audit"`
 	Services       []Service         `json:"services"`
+	// HostPath is the PATH a host probe looks node, claude and tmux up on.
+	// Empty means fakerelay's own PATH.
+	HostPath string `json:"host_path,omitempty"`
 }
 
 // Listeners are loopback host:port addresses; "" turns a listener off.
@@ -166,16 +169,18 @@ type Host struct {
 }
 
 type Probe struct {
-	At         string `json:"at,omitempty"`
-	OK         bool   `json:"ok"`
-	OS         string `json:"os,omitempty"`
-	Arch       string `json:"arch,omitempty"`
-	Home       string `json:"home,omitempty"`
-	Shell      string `json:"shell,omitempty"`
-	NodePath   string `json:"node_path,omitempty"`
-	ClaudePath string `json:"claude_path,omitempty"`
-	TmuxPath   string `json:"tmux_path,omitempty"`
-	Error      string `json:"error,omitempty"`
+	At            string `json:"at,omitempty"`
+	OK            bool   `json:"ok"`
+	OS            string `json:"os,omitempty"`
+	Arch          string `json:"arch,omitempty"`
+	Home          string `json:"home,omitempty"`
+	Shell         string `json:"shell,omitempty"`
+	NodePath      string `json:"node_path,omitempty"`
+	NodeVersion   string `json:"node_version,omitempty"`
+	ClaudePath    string `json:"claude_path,omitempty"`
+	ClaudeVersion string `json:"claude_version,omitempty"`
+	TmuxPath      string `json:"tmux_path,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 type PersistentSession struct {
@@ -230,6 +235,11 @@ type MCP struct {
 	Name      string          `json:"name"`
 	Transport string          `json:"transport"`
 	Catalogue json.RawMessage `json:"catalogue,omitempty"`
+	// Command and Args (stdio) or URL (http) are only what `relay mcp list`
+	// prints in its ENDPOINT column; fakerelay never starts the command.
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	URL     string   `json:"url,omitempty"`
 }
 
 type Model struct {

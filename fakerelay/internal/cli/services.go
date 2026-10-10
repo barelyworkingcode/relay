@@ -13,7 +13,7 @@ import (
 )
 
 // RegisterServer installs the verbs that need the running instance's service
-// manager: service list and service restart.
+// manager: service list, service restart and service stop.
 func RegisterServer(r server.Registrar, d server.Deps, m *launch.Manager) {
 	r.Verb("service list", func(ctx context.Context, args []string) server.VerbResult {
 		fs := flag.NewFlagSet("service list", flag.ContinueOnError)
@@ -61,6 +61,30 @@ func RegisterServer(r server.Registrar, d server.Deps, m *launch.Manager) {
 		}
 		ev.End("ok", "", nil)
 		return server.VerbResult{Stdout: []byte(fmt.Sprintf("restarted %s\n", rec.Name))}
+	})
+	r.Verb("service stop", func(ctx context.Context, args []string) server.VerbResult {
+		fs := flag.NewFlagSet("service stop", flag.ContinueOnError)
+		id, name, asJSON := fs.String("id", "", ""), fs.String("name", "", ""), fs.Bool("json", false, "")
+		if res, ok := server.ParseVerbFlags(fs, args); !ok {
+			return res
+		}
+		ev := d.Events.Begin(ctx, "service.stop")
+		if *id == "" && *name == "" {
+			ev.End("error", "invalid", fmt.Errorf("--id or --name is required"))
+			return server.VerbResult{Code: 1, Stderr: []byte("error: --id or --name is required\n")}
+		}
+		rec, ok := m.Find(*id, *name)
+		if !ok {
+			ev.End("error", "not_found", fmt.Errorf("no service found"))
+			return server.VerbResult{Code: 1, Stderr: []byte(fmt.Sprintf("error: no service found with %s\n", quoted(*id, *name)))}
+		}
+		ev.Set("service_id", rec.ID)
+		m.Stop(rec.ID)
+		ev.End("ok", "", nil)
+		if *asJSON {
+			return server.VerbResult{Stdout: []byte(fmt.Sprintf("{\"id\":%q}\n", rec.ID))}
+		}
+		return server.VerbResult{Stdout: []byte(fmt.Sprintf("stopped service %q\n", rec.ID))}
 	})
 }
 

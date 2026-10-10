@@ -96,10 +96,11 @@ terminal escapes in `relay audit`'s table).
 
 ## The test build
 
-`./build.sh --test-build` makes a tray with three seams that take the outside
+`./build.sh --test-build` makes a tray with four seams that take the outside
 world away from a test: a presence provider that reads its answers from a file
 in the config dir, a sealing-key store in a file in the config dir instead of
-the login keychain, and a clock the test moves (`relay debug clock`). It
+the login keychain, a clock the test moves (`relay debug clock`), and an ssh
+stub named in a file in the config dir (`test-ssh.json`). It
 exists so verify journeys and the e2e tier run with no person and no login
 session. It is not a promise relay makes to a user: no release carries it, and
 a release has no switch that skips a gate, reads a file for a presence answer
@@ -111,8 +112,8 @@ or moves its clock (attacker 5's promise holds). The promises that cover it:
 - **No seam on the real config dir (assets A, B).** The seams act only on a
   config dir other than the default one. On the default dir the test build
   approves `project.grant` alone, refuses every other gated op, uses the login
-  keychain and refuses to move the clock, so a test build swapped in for the
-  real app never takes an answer from a file.
+  keychain, refuses to move the clock and runs real ssh, so a test build
+  swapped in for the real app never takes an answer from a file.
 - **What the approver can approve.** In the test build the approver may
   approve any op in `presence.GatedOps`, not only `project.grant`. The outcome
   file chooses the answer per op. It is read only on a config dir other than
@@ -120,7 +121,7 @@ or moves its clock (attacker 5's promise holds). The promises that cover it:
   a release or the real app does.
 - **Recorded (asset C).** Each approval is a `control_decision` row with
   `presence_approver`, written before the act; an unrecordable approval
-  refuses the act. Each answer, keychain fault and clock change writes a
+  refuses the act. Each answer, keychain fault, clock change and ssh stub writes a
   `debug.*` event.
 
 One residual: a session whose grants include the test config dir could write

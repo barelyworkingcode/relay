@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"regexp"
@@ -259,10 +260,11 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusBadRequest, verr.Error())
 		return
 	}
+	ev.Set("project_id", "").Set("kind", "")
 	if !a.gate(server.WithSubject(r.Context(), p.Name), w, ev, "project.grant") {
 		return
 	}
-	ev.Set("project_id", p.ID).Set("kind", kindOf(p))
+	ev.Set("project_id", p.ID).Set("kind", p.Kind)
 	ex["created_at"], _ = json.Marshal(rfc3339(a.now()))
 	var view map[string]any
 	err = a.State.Write(func(m *state.Model) error {
@@ -286,13 +288,6 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	ev.End("ok", "", nil)
 	server.WriteJSON(w, http.StatusCreated, view)
-}
-
-func kindOf(p world.Project) string {
-	if p.Kind == "" {
-		return "local"
-	}
-	return p.Kind
 }
 
 // listAdds reports whether next holds an element prev lacks.
@@ -493,7 +488,7 @@ func (a *api) setDefaultProject(w http.ResponseWriter, r *http.Request) {
 	err := a.State.Write(func(m *state.Model) error {
 		if *body.ProjectID != "" {
 			if _, found := findProject(m, *body.ProjectID); !found {
-				return &httpErr{http.StatusBadRequest, "project not found"}
+				return &httpErr{http.StatusBadRequest, fmt.Sprintf("invalid default project: no project with id %q", *body.ProjectID)}
 			}
 		}
 		if m.DefaultProject == nil {

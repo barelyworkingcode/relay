@@ -425,6 +425,7 @@ of them. A wait for one uses `relay logs --follow --event <key>`.
 | `debug.clock.get` | In the `debug.clock` admin op for `get` (quiet on success) | `relay debug clock`, and every CLI view that reads the clock | `now`, `offset_ms` |
 | `debug.clock.set` | In the `debug.clock` admin op for `set`; `error` / `invalid` or `unavailable` | `relay debug clock set` | `now`, `offset_ms` |
 | `debug.clock.advance` | In the `debug.clock` admin op for `advance`; `error` / `invalid` or `unavailable` | `relay debug clock advance` | `now`, `offset_ms` |
+| `debug.ssh.stub` | At `relay serve` start, when `X/test-ssh.json` names a valid stub; an invalid file stops serve instead | `relay serve` (background, trace `""`) | `command` |
 
 ## 8. Background events and how to wait on them
 

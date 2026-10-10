@@ -69,7 +69,7 @@ func controlDirFor(configDir string, uid int) string {
 // byte-identical for the same host (docs/ssh-hosts.md).
 func SSHArgv(h config.Host, controlDir string) []string {
 	argv := []string{
-		"ssh",
+		sshCommand(),
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",

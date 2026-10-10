@@ -143,7 +143,7 @@ func (e *env) clock(args []string) int {
 func (e *env) show(method, path string, body any, indent bool) int {
 	st, b, err := e.call(method, path, body)
 	if errors.Is(err, errNotRunning) {
-		return e.notRunning("ctl")
+		return e.fail(1, "fakerelay is not running at %s; `fakerelay ctl` requires the service.", e.g.ConfigDir)
 	}
 	if err != nil {
 		return e.fail(1, "%v", err)

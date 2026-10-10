@@ -62,7 +62,7 @@ func (i *Instance) StartCLI(o CLIOpts, args ...string) *Proc {
 	i.t.Helper()
 	full, trace := i.cliArgs(o, args)
 	p := startProc(i.t, procSpec{
-		bin: bundle.Relay, args: full, env: i.env, dir: i.Dir,
+		bin: i.bin, args: full, env: i.env, dir: i.Dir,
 		stdin: o.Stdin, deadline: o.deadline(), trace: trace,
 	})
 	p.onResult = i.noteStderr

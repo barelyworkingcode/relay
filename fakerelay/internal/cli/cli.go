@@ -192,15 +192,22 @@ func (e *env) call(method, path string, body any) (int, []byte, error) {
 	return resp.StatusCode, b, err
 }
 
+// notRunning is relay's refusal for a verb that needs the service, word for
+// word.
 func (e *env) notRunning(verb string) int {
-	return e.fail(1, "relay is not running at %s; `fakerelay %s` requires the service.", e.g.ConfigDir, verb)
+	return e.fail(1, "relay is not running at %s; `relay %s` requires the service.\n"+
+		"  relay is the sole broker of its own credentials: the secrets are sealed and\n"+
+		"  only the tray holds the key (ADR-017 decision 2), and it is the only reader of\n"+
+		"  the configuration for `list`, `grant` and every other command that shows it.\n"+
+		"  Start Relay and retry. `relay audit` and `relay enrol ca-fingerprint` read\n"+
+		"  their own files and still work with relay stopped.", e.g.ConfigDir, verb)
 }
 
 // forward sends a verb to the running instance and prints its answer.
 func (e *env) forward(argv []string) int {
 	st, b, err := e.call("POST", "/v1/verb", map[string]any{"argv": argv, "trace": e.g.Trace})
 	if errors.Is(err, errNotRunning) {
-		return e.notRunning(strings.Join(argv, " "))
+		return e.notRunning(verbName(argv))
 	}
 	if err != nil || st != 200 {
 		return e.fail(1, "%v %s", err, bytes.TrimSpace(b))
@@ -215,4 +222,17 @@ func (e *env) forward(argv []string) int {
 	io.WriteString(e.out, r.Stdout)
 	io.WriteString(e.err, r.Stderr)
 	return r.Code
+}
+
+// verbName is the command words before the first flag, which is how relay
+// names the command in its refusal.
+func verbName(argv []string) string {
+	var words []string
+	for _, a := range argv {
+		if strings.HasPrefix(a, "-") {
+			break
+		}
+		words = append(words, a)
+	}
+	return strings.Join(words, " ")
 }

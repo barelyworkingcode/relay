@@ -40,7 +40,7 @@ func checkGitArgs(args []string) *fileErr {
 		}
 		for _, p := range gitRefusedPrefixes {
 			if strings.HasPrefix(a, p) {
-				return errInvalid("git argument not allowed: " + p)
+				return errInvalid("git argument not allowed: " + a)
 			}
 		}
 		if i > 0 && !strings.HasPrefix(a, "-") {

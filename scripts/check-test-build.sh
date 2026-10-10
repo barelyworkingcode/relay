@@ -35,6 +35,8 @@ seams=(
     '/internal/sealed\.\(\*fileKeyring\)\.Load$'
     ' main\.\(\*testClock\)\.Now$'
     ' main\.adminDebugClock$'
+    '/internal/sshhost\.SetTestCommand$'
+    ' main\.readSSHStub$'
 )
 
 found=()

@@ -49,7 +49,7 @@ func execQuiet(i *Instance, args ...string) []byte {
 }
 
 func newQuietCmd(ctx context.Context, i *Instance, args []string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, bundle.Relay, append([]string{"--config-dir", i.ConfigDir}, args...)...)
+	cmd := exec.CommandContext(ctx, i.bin, append([]string{"--config-dir", i.ConfigDir}, args...)...)
 	cmd.Env = i.env
 	cmd.Dir = i.Dir
 	cmd.WaitDelay = 5 * time.Second

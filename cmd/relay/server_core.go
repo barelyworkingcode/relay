@@ -235,6 +235,10 @@ func startServerCore(opts serverOptions) (*App, error) {
 	}
 	// Built once and handed to every consumer; there is no package-level clock.
 	clock := newServerClock(configDir)
+	if err := installSSHStub(configDir); err != nil {
+		releaseOwnership()
+		return nil, err
+	}
 	store, err := config.ResolveSealedStore(configDir, keyring)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve the sealed store: %w", err)

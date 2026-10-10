@@ -195,7 +195,7 @@ func (h *hub) watch(c *conn, id string) {
 	}
 	if e == nil {
 		if _, err := statDir(t.root); err != nil {
-			e = osErr(err)
+			e = osErrFor(t.hostID != "", err)
 		}
 	}
 	if e != nil {
