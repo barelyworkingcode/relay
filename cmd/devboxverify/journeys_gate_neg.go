@@ -535,9 +535,7 @@ var notRunPositives = []struct{ op, reason string }{
 	{"enrolment.revoke", "out of decided scope: issues or changes a remote identity (G10 later)"},
 	{"login.bootstrap.mint", "the code is only redeemed by the browser ceremony"},
 	{"login.passkey.revoke", "no disposable relay passkey"},
-	{"mcp.oauth.start", "IPC-only door and needs a real OAuth provider"},
 	{"remote.configure", "changes the live mTLS listener the VM stack uses"},
-	{"sealed.reset", "break-glass: destroys the sealed store"},
 }
 
 func notRunPosJourneys() []journey {

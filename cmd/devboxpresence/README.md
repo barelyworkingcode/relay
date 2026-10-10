@@ -88,9 +88,12 @@ signature, and refuses to run a missing, stale or unsigned helper.
 - **Text.** The window's text is read through AX, skipping the password field,
   and re-read until two reads agree. It must contain `--expect`, which names
   the request (the run nonce, or the id acted on), so the helper never
-  approves someone else's request. Two callers carry no nonce: the P4
+  approves someone else's request. Three callers carry no nonce: the P4
   renewal expects relay's whole reason for that mint, closing period
-  included, and the eve enrolment expects relay's fixed reason. Unreadable
+  included, the eve enrolment expects relay's fixed reason, and the sealed
+  reset on the journey's own instance expects relay's whole zero-count reason
+  (a reset prompt for the installed store names its real counts and never
+  matches). Unreadable
   text refuses `answer`; `cancel --expect` still cancels, since cancelling
   approves nothing.
 - **Just before typing.** `answer` counts the agent's windows again and

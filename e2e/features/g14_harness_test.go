@@ -296,11 +296,17 @@ func TestPresenceRefusesUnlistedOp(t *testing.T) {
 	if r.Code == 0 {
 		t.Fatalf("create exited 0 under an invalid outcome file")
 	}
-	// A caller with no console session is refused before the approver is
-	// asked, so the invalid file shows as presence_no_session and no answer event.
-	requireEvent(t, i, harness.EventQuery{Key: "project.create", Trace: tr, Fields: map[string]any{"status": "denied", "reason": "presence_no_session"}})
-	if got := i.Events(harness.EventQuery{Key: "debug.presence.answer", Trace: tr}); len(got) != 0 {
-		t.Fatalf("a caller with no console session produced %d debug.presence.answer events, want none", len(got))
+	// Whether the approver is asked depends on the caller's console session: a
+	// caller with one gets presence_refused and an error/invalid answer event;
+	// one without gets presence_no_session and no answer event.
+	ev := requireAnyEvent(t, i, tr, "project.create", "presence_refused", "presence_no_session")
+	if ev.Str("status") != "denied" {
+		t.Fatalf("project.create status %q, want denied", ev.Str("status"))
+	}
+	for _, a := range i.Events(harness.EventQuery{Key: "debug.presence.answer", Trace: tr}) {
+		if a.Str("status") != "error" || a.Str("reason") != "invalid" {
+			t.Fatalf("debug.presence.answer is %s/%s, want error/invalid", a.Str("status"), a.Str("reason"))
+		}
 	}
 	if n := len(listProjects(t, i)); n != 0 {
 		t.Fatalf("the refused create left %d projects", n)
@@ -370,32 +376,85 @@ func TestKeychainProviderFaults(t *testing.T) {
 
 func TestKeychainOpenRefusal(t *testing.T) {
 	t.Parallel()
-	cases := map[string]func(dir string){
-		"store_group_readable": func(dir string) {
-			os.WriteFile(filepath.Join(dir, "test-keychain.json"), []byte("{}"), 0o644)
-			os.Chmod(filepath.Join(dir, "test-keychain.json"), 0o644)
+
+	// A valid store is planted by a healthy first start, so only the file's
+	// mode or kind can be the reason for the refusal.
+	storeCases := map[string]struct {
+		break_  func(t *testing.T, store string)
+		restore func(t *testing.T, store string)
+	}{
+		"store_group_readable": {
+			break_:  func(t *testing.T, store string) { mustChmod(t, store, 0o644) },
+			restore: func(t *testing.T, store string) { mustChmod(t, store, 0o600) },
 		},
-		"store_symlink": func(dir string) {
-			target := filepath.Join(dir, "elsewhere.json")
-			os.WriteFile(target, []byte("{}"), 0o600)
-			os.Symlink(target, filepath.Join(dir, "test-keychain.json"))
-		},
-		"fault_file_invalid": func(dir string) {
-			os.WriteFile(filepath.Join(dir, "test-keychain-fault.json"), []byte(`{"unknown":true}`), 0o600)
+		"store_symlink": {
+			break_: func(t *testing.T, store string) {
+				mustRename(t, store, store+".real")
+				if err := os.Symlink(store+".real", store); err != nil {
+					t.Fatalf("symlinking %s: %v", store, err)
+				}
+			},
+			restore: func(t *testing.T, store string) {
+				if err := os.Remove(store); err != nil {
+					t.Fatalf("removing the symlink %s: %v", store, err)
+				}
+				mustRename(t, store+".real", store)
+			},
 		},
 	}
-	for name, prep := range cases {
+	for name, c := range storeCases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			dir := ""
-			res := harness.StartFails(t, harness.Options{PrepareConfigDir: func(d string) { dir = d; prep(d) }})
-			if res.Code != 1 {
+			i := harness.Start(t, harness.Options{})
+			i.Stop()
+			store := filepath.Join(i.ConfigDir, "test-keychain.json")
+			if _, err := os.Lstat(store); err != nil {
+				t.Fatalf("a healthy start left no keychain store: %v", err)
+			}
+			c.break_(t, store)
+			if res := i.RestartFails(); res.Code != 1 {
 				t.Fatalf("serve exited %d, want 1", res.Code)
 			}
-			if _, err := os.Stat(filepath.Join(dir, "ready.json")); !os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(i.ConfigDir, "ready.json")); !os.IsNotExist(err) {
 				t.Fatalf("ready.json exists after a refused start (stat error: %v)", err)
 			}
+			c.restore(t, store)
+			i.Restart()
+			if _, err := os.Stat(filepath.Join(i.ConfigDir, "ready.json")); err != nil {
+				t.Fatalf("ready.json missing after the store was fixed: %v", err)
+			}
 		})
+	}
+
+	t.Run("fault_file_invalid", func(t *testing.T) {
+		t.Parallel()
+		dir := ""
+		res := harness.StartFails(t, harness.Options{PrepareConfigDir: func(d string) {
+			dir = d
+			if err := os.WriteFile(filepath.Join(d, "test-keychain-fault.json"), []byte(`{"unknown":true}`), 0o600); err != nil {
+				t.Fatalf("planting the fault file: %v", err)
+			}
+		}})
+		if res.Code != 1 {
+			t.Fatalf("serve exited %d, want 1", res.Code)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "ready.json")); !os.IsNotExist(err) {
+			t.Fatalf("ready.json exists after a refused start (stat error: %v)", err)
+		}
+	})
+}
+
+func mustChmod(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod %s: %v", path, err)
+	}
+}
+
+func mustRename(t *testing.T, from, to string) {
+	t.Helper()
+	if err := os.Rename(from, to); err != nil {
+		t.Fatalf("renaming %s to %s: %v", from, to, err)
 	}
 }
 
@@ -448,7 +507,6 @@ func TestInstancesIsolated(t *testing.T) {
 
 	t.Run("instances", func(t *testing.T) {
 		for k := 0; k < n; k++ {
-			k := k
 			t.Run("i"+strconv.Itoa(k), func(t *testing.T) {
 				t.Parallel()
 				var once sync.Once
@@ -622,4 +680,18 @@ func TestSandboxDeniedLoopbackPorts(t *testing.T) {
 		}
 		requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: tr, Fields: map[string]any{"status": "denied"}})
 	})
+}
+
+// requireAnyEvent returns the trace's event of the key whose reason is one of reasons.
+func requireAnyEvent(t *testing.T, i *harness.Instance, trace, key string, reasons ...string) harness.Event {
+	t.Helper()
+	for _, ev := range i.Events(harness.EventQuery{Key: key, Trace: trace}) {
+		for _, r := range reasons {
+			if ev.Str("reason") == r {
+				return ev
+			}
+		}
+	}
+	t.Fatalf("no %s event on trace %s with reason in %v", key, trace, reasons)
+	return nil
 }
