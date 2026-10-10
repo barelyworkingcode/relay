@@ -119,7 +119,14 @@ func startSSHD(t *testing.T, cfg string) (stop func(), ok bool, why string) {
 	}()
 	stop = func() {
 		pgid := cmd.Process.Pid
+		// Each connection's monitor process leads its own process group, so the
+		// group signal alone misses it; its ssh control master would then live on.
+		// The tree is read before the listener dies, while the parent links hold.
+		conns := descendants(pgid)
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
+		for _, pid := range conns {
+			_ = syscall.Kill(pid, syscall.SIGTERM)
+		}
 		select {
 		case <-exited:
 		case <-time.After(sshdStopTimeout):
@@ -163,6 +170,32 @@ func (w *listenWatch) text() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return string(w.buf)
+}
+
+// descendants lists every process below root, read from ps.
+func descendants(root int) []int {
+	out, err := exec.Command("/bin/ps", "-axo", "pid=,ppid=").Output()
+	if err != nil {
+		return nil
+	}
+	children := map[int][]int{}
+	for _, line := range strings.Split(string(out), "\n") {
+		var pid, ppid int
+		if _, err := fmt.Sscanf(strings.TrimSpace(line), "%d %d", &pid, &ppid); err == nil {
+			children[ppid] = append(children[ppid], pid)
+		}
+	}
+	var all []int
+	queue := []int{root}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		for _, c := range children[next] {
+			all = append(all, c)
+			queue = append(queue, c)
+		}
+	}
+	return all
 }
 
 func keygen(t *testing.T, path string) {
