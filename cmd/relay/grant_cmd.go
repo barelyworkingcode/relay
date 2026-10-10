@@ -125,7 +125,8 @@ func newGrantView(s *config.Settings, p config.Project) grantView {
 	if p.IsRemote() {
 		kind = "access profile"
 	}
-	out := grantView{ID: p.ID, Name: p.Name, Kind: kind, Path: p.Path}
+	// Mcps starts non-nil: a record with no grants must encode as [], not null.
+	out := grantView{ID: p.ID, Name: p.Name, Kind: kind, Path: p.Path, Mcps: []grantMcpView{}}
 
 	for _, mcpID := range grantedMcpIDs(s, p) {
 		row := grantMcpView{
