@@ -44,13 +44,12 @@ func collides(route, served string) bool {
 	return route == served
 }
 
-// register installs a manifest and returns the function that forgets exactly
-// this registration; a later one for the same id replaces it.
-func (d *dispatcher) register(id string, m bridge.Manifest, sock, token string, served []string) (func(), error) {
+// register installs a manifest; a later one for the same id replaces it.
+func (d *dispatcher) register(id string, m bridge.Manifest, sock, token string, served []string) error {
 	for _, r := range m.Routes {
 		for _, p := range served {
 			if collides(r, p) {
-				return nil, fmt.Errorf("manifest registry: route %q collides with %q, which relay serves", r, p)
+				return fmt.Errorf("manifest registry: route %q collides with %q, which relay serves", r, p)
 			}
 		}
 	}
@@ -60,7 +59,7 @@ func (d *dispatcher) register(id string, m bridge.Manifest, sock, token string, 
 		for oid, o := range d.svcs {
 			for _, or := range o.routes {
 				if oid != id && or == r {
-					return nil, fmt.Errorf("manifest registry: route %q already claimed by service %q", r, oid)
+					return fmt.Errorf("manifest registry: route %q already claimed by service %q", r, oid)
 				}
 			}
 		}
@@ -84,7 +83,7 @@ func (d *dispatcher) register(id string, m bridge.Manifest, sock, token string, 
 		},
 	}
 	d.svcs[id] = svc
-	return func() { d.forget(id, svc.gen) }, nil
+	return nil
 }
 
 func (d *dispatcher) forget(id string, gen uint64) {
