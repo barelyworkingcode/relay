@@ -133,19 +133,27 @@ func TestProofFindingsM5(t *testing.T) {
 		breaks, doc  string
 		wantAreas    []string
 		wantNotNamed []string
+		wantNone     bool
 	}{
-		{"all present", breakFor("alpha", "beta"), complete, nil, nil},
-		{"no break entry", breakFor("alpha"), complete, []string{"beta"}, []string{"alpha", "jo"}},
-		{"no proof row", breakFor("alpha", "beta"), head + row("alpha") + journey, []string{"beta"}, []string{"alpha", "jo"}},
-		{"journey-only not listed", breakFor("alpha", "beta"), head + row("alpha") + row("beta"), []string{"jo"}, []string{"alpha", "beta"}},
-		{"journey-only listed in the table only", breakFor("alpha", "beta"), head + row("alpha") + row("beta") + row("jo"), []string{"jo"}, []string{"alpha", "beta"}},
-		{"breaks file empty", "", complete, []string{"alpha", "beta"}, []string{"jo"}},
-		{"proof doc empty", breakFor("alpha", "beta"), "", []string{"alpha", "beta", "jo"}, nil},
-		{"breaks file not an array", `{"area":"alpha"}`, complete, []string{"alpha", "beta"}, []string{"jo"}},
+		{"all present", breakFor("alpha", "beta"), complete, nil, nil, true},
+		{"no break entry", breakFor("alpha"), complete, []string{"beta"}, []string{"alpha", "jo"}, false},
+		{"no proof row", breakFor("alpha", "beta"), head + row("alpha") + journey, []string{"beta"}, []string{"alpha", "jo"}, false},
+		{"journey-only not listed", breakFor("alpha", "beta"), head + row("alpha") + row("beta"), []string{"jo"}, []string{"alpha", "beta"}, false},
+		{"journey-only listed in the table only", breakFor("alpha", "beta"), head + row("alpha") + row("beta") + row("jo"), []string{"jo"}, []string{"alpha", "beta"}, false},
+		{"breaks file empty", "", complete, []string{"alpha", "beta"}, []string{"jo"}, false},
+		{"proof doc empty", breakFor("alpha", "beta"), "", []string{"alpha", "beta", "jo"}, nil, false},
+		{"breaks file not an array", `{"area":"alpha"}`, complete, []string{"alpha", "beta"}, []string{"jo"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			fs := ProofFindings(am, []byte(c.breaks), []byte(c.doc))
+			if c.wantNone {
+				for _, f := range fs {
+					if f.Rule == "M5" {
+						t.Errorf("unexpected M5 finding: %v", f)
+					}
+				}
+			}
 			for _, a := range c.wantAreas {
 				if !has(fs, "M5", a) {
 					t.Errorf("M5 did not name %s: %v", a, fs)
