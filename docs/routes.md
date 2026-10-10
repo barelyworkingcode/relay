@@ -1625,6 +1625,104 @@ Only for an enrolment with `cli_admin`. It can only narrow.
 - **Answer:** `{"type": "Result", "result": {"changed": string[], "grant": {...}}}`.
 - **Event:** `grant.narrow` (`project_id`, `client_id`, `changed`).
 
+## Bridge requests
+
+The bridge socket (`sockets.bridge` in `ready.json`, mode 0600) carries the
+requests a service, a client library or a test sends to relay. A test reaches
+the brokered operations through the CLI and the HTTP doors instead; this section
+lists only the frames a test sends on the socket itself.
+
+**Framing.** Newline-delimited JSON: one request and one reply per line, on a
+connection the client may reuse. A frame is at most 10 MiB.
+
+| Request field | Meaning |
+|---|---|
+| `type` | The request type (required) |
+| `name` | The launch name, MCP id, service id or operation name, by type |
+| `arguments` | A JSON object, by type |
+| `token` | The credential the type needs: the admin secret, a project token or a launch secret |
+| `project_id` | Accepted and not used for a decision on this socket |
+| `trace_id` | Optional; `[A-Za-z0-9_-]{8,64}`. Relay adopts it, or makes one |
+| `kind` | `Hello` only: the identity kind the caller expects (`service` or `project_session`) |
+
+A reply has `type`: `OK`, `Result`, `Tools` or `Error`. `OK` may carry `data`,
+`Result` carries `result`, `Tools` carries `tools`, and `Error` carries `code`
+and `message`. Every request writes one `bridge.request` event (`request_type`,
+`status`, `error`): `denied` for `-32001`, `error` for the other codes.
+
+| Code | Meaning |
+|---|---|
+| `-32001` | Unauthorized: a wrong, missing or unbound credential |
+| `-32700` | The line is not valid JSON |
+| `-32601` | Unknown request type |
+| `-32602` | Invalid params |
+| `-32603` | Internal error |
+
+The error reply is `{"type":"Error","code":-32001,"message":"<text>"}`. A test
+asserts the `code`, never the `message`.
+
+### bridge:Hello
+
+`{"type":"Hello","name":"<service id>","token":"<launch secret>"}`, with an
+optional `kind`. Binds a live launch to the connection's peer. A test cannot
+make one: the secret arrives on the launched process's fd 3. Reply: `OK` with
+`data` `{"kind","service_id","relay_pid"}`, or `-32001` with one fixed message
+for every refusal. See [`launch-identity.md`](launch-identity.md).
+
+### bridge:RegisterManifest
+
+`{"type":"RegisterManifest","arguments":{"serviceId","manifest","internalSocket","internalToken"}}`.
+No `token`: the caller's launch identity must hold the capability. Reply: `OK`;
+`-32602` for a missing or invalid field; `-32001` for a caller with no identity.
+See [`service-manifest.md`](service-manifest.md).
+
+### bridge:RegisterModelHost
+
+`{"type":"RegisterModelHost","arguments":{"service_id","router_socket"}}`.
+`router_socket` is an absolute path. No `token`: the caller's launch identity
+must hold `model_host`, and register under its own service id. Reply: `OK`;
+`-32602` for a missing field or a relative path; `-32001` otherwise. See
+[`model-endpoint.md`](model-endpoint.md).
+
+### bridge:admin frames
+
+`ReloadExternalMcp` (`name` is the MCP id), `ReconcileExternalMcps` (no
+`name`) and `ReloadService` (`name` is the service id). Each carries the admin
+secret in `token`. A wrong or missing secret answers `-32001`, and the handler
+does not run. Reply: `OK`; a reload of an unknown id answers an `Error`. Events:
+`mcp.reload` (`mcp_id`), `mcp.reconcile`, and the service's own events for a
+service reload.
+
+The admin secret is `settings.json` `admin_secret`. A plaintext string planted
+there before start is accepted as the legacy shape, and the next save seals it
+([`sealed-config.md`](sealed-config.md)). Once sealed, no process outside the
+tray can read it back to present here, which is why the CLI reaches these
+operations through `admin_op` instead.
+
+### bridge:admin_op
+
+`{"type":"admin_op","name":"<operation>","arguments":{...}}`. No `token`: the
+0600 socket is the credential, and each operation applies its own gate. A test
+reaches an operation through its CLI command or HTTP route; the `bridge:admin_op:`
+refs in [`FEATURES.md`](FEATURES.md) name the operations. Reply: `Result`, or an
+`Error`.
+
+### bridge:ListTools and bridge:CallTool
+
+`{"type":"ListTools","token":"<project token>"}` answers `Tools`.
+`{"type":"CallTool","name":"<tool>","arguments":{...},"token":"<project token>"}`
+answers `Result`. `DescribeProject` takes the same token and answers
+`ProjectDescription` with `data`. Arguments are forwarded as the original bytes.
+
+### Frames a test never sends
+
+- `SessionExited` is relay-sessions' report that a session ended. It needs the
+  launch identity of the built-in session host.
+- `SandboxAttach` and `DropInAttach` turn the connection into a terminal byte
+  stream. They are reached with `relay sandbox` and `relay drop-in`
+  ([`sandbox-command.md`](sandbox-command.md)).
+- `MountAttach` is the mount plane's preamble and is refused on this socket.
+
 ## 9. Background and not doors
 
 ### bg:service supervision

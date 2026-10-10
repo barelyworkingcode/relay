@@ -70,6 +70,8 @@ jobs:
       - name: go vet (e2e)
         working-directory: e2e
         run: go vet ./...
+      - name: tmux (persistent-session rows)
+        run: command -v tmux || brew install tmux
       - name: e2e feature tests
         working-directory: e2e
         run: go test -race -count=1 -timeout 35m ./...
