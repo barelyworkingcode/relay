@@ -66,18 +66,26 @@ Two consequences follow immediately, and both are covered in full below:
   relay can tell — from the kernel, not from anything the caller sends — that
   the session it is running in cannot show a prompt on the console.
 
-**Verbs for the Settings window and the tray are operator-only.** Every verb
-added to reach what only the Settings window or the tray did before
-(`relay project create`, `relay status`, `relay session start` and the rest of
-this document's later sections) runs only from your own terminal. The server
-refuses it from inside a relay session and from any sandboxed process, with
+**Every ungated mutating verb is operator-only.** A verb that changes relay
+and raises no presence prompt (`relay project update`, `relay mcp unregister`,
+`relay service unregister`, `relay service restart`, `relay enrol refuse`),
+`relay grant`, and every verb added to reach what only the Settings window or
+the tray did before (`relay project create`, `relay status`,
+`relay session start` and the rest of this document's later sections) runs only
+from your own terminal. The server refuses it from inside a relay session and
+from any sandboxed process, with
 `this command cannot be run from inside a relay session or a sandbox`, and
 writes a denied `control_decision` row (`method` `admin_op`, `path` the
-operation name such as `status.view`, `class` `operator`, `transport` `bridge`,
-`reason` `session_caller`). The same peer check `relay sandbox`
-makes decides it. The verbs that predate this rule (`relay credential`,
-`relay enrol`, `relay mcp register` and the others above) keep the caller rule
-they had. `relay doors` lists every door, its credential class and its gates.
+operation name such as `service.unregister`, `class` `operator`, `transport`
+`bridge`, `error` `session_caller`). The same peer check `relay sandbox`
+makes decides it. The gated verbs that predate this rule (`relay credential`
+mutations, `relay enrol create`, `relay mcp register` and the others above)
+keep the presence prompt as their only guard, which a session cannot answer;
+the gated verbs added with it, such as `relay project create`, are both
+prompted and operator-only. Verbs that only list relay-wide state
+(`relay service list`, `relay mcp list` and the other list reads) stay open to
+a session; they hold no project's data. `relay doors` lists every door, its
+credential class and its gates.
 
 ### Quick reference
 
@@ -505,7 +513,8 @@ relay grant [--project ID-OR-NAME] [--json]
 | `--project` | Show one record by id or name. Default: every project and access profile. |
 | `--json` | Emit the same data as JSON instead of a table. |
 
-Needs service: yes. Prompts: no. Works over SSH: yes.
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only: a relay
+session or sandbox is refused with exit `1`.
 
 Exit codes: `0` on success, including when nothing is registered (it prints
 `no projects or access profiles`, in text even with `--json`, so a script
@@ -1287,7 +1296,8 @@ Usage of enrol refuse:
     	pending request id to refuse (required)
 ```
 
-Needs service: yes. Prompts: no. Works over SSH: yes.
+Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only: a relay
+session or sandbox is refused with exit `1`.
 
 No JSON form. Output: `refused enrolment request "REQUEST-ID"`. Exit codes: `0`
 refused; `1` for an unknown id
@@ -1523,12 +1533,13 @@ relay project token --id ID [--json]
 relay project regen-skill --id ID [--json]
 ```
 
-The verbs after `project update` are operator-only and call the cores the
+Every `relay project` verb is operator-only and calls the cores the
 Projects tab and the `/api/projects` routes call.
 
 ### `project update`
 
 Needs service: yes (`project.update`). Prompts: no. Works over SSH: yes.
+Operator-only: a relay session or sandbox is refused with exit `1`.
 Sets `files_read_only` on a project: `true` makes relay refuse write, rename,
 move, delete and mkdir on its files (`docs/project-files.md`), `false`
 clears it. It goes through the same core as `PUT /api/projects/{id}`. It only
@@ -1857,7 +1868,7 @@ Usage of mcp unregister:
 ```
 
 Either `--id` or `--name` resolves to the same record (`ResolveMcpID`
-matches on both). Needs service: yes. **Prompts: no.** Works over SSH: yes.
+matches on both). Needs service: yes. **Prompts: no.** Works over SSH: yes. Operator-only: a relay session or sandbox is refused with exit `1`.
 Unregistering only narrows what a caller already reaches — re-registering
 under the same id still has to pass `mcp register`'s gate — so this command
 is not presence-gated (ADR-018 step 3); it still writes a `config_change`
@@ -2030,7 +2041,7 @@ Usage of service unregister:
     	service display name
 ```
 
-Needs service: yes. **Prompts: no.** Works over SSH: yes. Not presence-gated
+Needs service: yes. **Prompts: no.** Works over SSH: yes. Operator-only: a relay session or sandbox is refused with exit `1`. Not presence-gated
 (ADR-018 step 3), on the same footing as `mcp unregister`: removing a
 service record only narrows what a caller already reaches, and stopping the
 running process is already ungated `configure`
@@ -2052,7 +2063,7 @@ Usage of service restart:
     	service display name
 ```
 
-Needs service: yes. **Prompts: no.** Works over SSH: yes (as far as the
+Needs service: yes. **Prompts: no.** Operator-only: a relay session or sandbox is refused with exit `1`. Works over SSH: yes (as far as the
 gate is concerned — it still needs the bridge socket reachable). It is
 brokered like every other mutating command — this CLI process cannot reach
 the process registry that owns the running service, only the tray can — but

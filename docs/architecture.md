@@ -714,9 +714,10 @@ core, never in the door. `cliVerbTable()` (`cli_verbs.go`) is the one list of
 verbs, `adminOps` (`admin_ops.go`) the one list of ops, and `relay doors` builds
 its document from both plus the HTTP, IPC and bridge tables the server uses.
 
-Each op names who may call it. An op that predates the rule is `socket`: any
-same-user peer on the 0600 bridge socket. Every op added for the Settings
-window and the tray is `operator`: the peer must also not be a member of a live
+Each op names who may call it. `socket` is for a presence-gated op (the prompt
+is its guard) or a relay-wide list read that holds no project's data: any
+same-user peer on the 0600 bridge socket. Every other op is `operator`,
+including the ungated mutating ops and `grant.view`: the peer must also not be a member of a live
 relay session and not run under a Seatbelt sandbox, the two checks
 `SandboxAttach` makes, in the same order
 (`bridge.RequireOperatorCaller`). The rule keeps a sandboxed session, which

@@ -321,7 +321,7 @@ Areas: credentials, logging, doors.
 | `G9.05` | Filter and follow relay's events | `relay logs` prints the structured events filtered by key, trace and time, and follows new ones until its timeout. | none | `relay logs` | `cli:relay logs` | none | `out:cli:relay logs#.msg` `out:cli:relay logs#.trace_id` | `e2e:TestLogsFilterAndFollow` |
 | `G9.06` | List every door | `relay doors --json` lists every HTTP route, IPC op, bridge request and CLI verb of the live server with its credential class and gates. | none | `relay doors` | `cli:relay doors` `bridge:admin_op:doors.list` | none | `event:doors.list=ok#count` `out:cli:relay doors#.doors[]` | `e2e:TestDoorsListsLiveCatalogue` `e2e:TestDoorsNameClassAndGates` |
 | `G9.07` | Name the trace of a call | A verb run with `--trace T` writes its events with `trace_id` T. | none | `--trace`, `X-Trace-Id` | `cli:relay logs` | none | `out:cli:relay logs#.trace_id` | `e2e:TestTraceFlagNamesEvents` |
-| `G9.08` | Operator-only verbs refused inside a session or sandbox | A verb that needs the operator is refused when run from a relay session or a sandbox, and the refusal is audited; nothing it would have changed changes. | none | any `relay` operator verb from a session | `cli:relay status` `bridge:admin_op:status.view` | none | `audit:control_decision=denied` `code:cli:relay status#1` (a verb run by a terminal session, sandboxed or not, is inside a relay session, as cli.md says) | `e2e:TestOperatorVerbRefusedInSession` |
+| `G9.08` | Operator-only verbs refused inside a session or sandbox | A verb that needs the operator is refused when run from a relay session or a sandbox, and the refusal is audited; nothing it would have changed changes. | none | any `relay` operator verb from a session | `cli:relay status` `bridge:admin_op:status.view` `cli:relay service unregister` `bridge:admin_op:service.unregister` | none | `audit:control_decision=denied` `code:cli:relay status#1` `code:cli:relay service unregister#1` (a verb run by a terminal session, sandboxed or not, is inside a relay session, as cli.md says) | `e2e:TestOperatorVerbRefusedInSession` `e2e:TestBug296SandboxedSessionAdminOpsRefused` |
 
 ### G10 · Give a remote machine access — later
 Intent: let another machine reach chosen projects over mTLS.
@@ -470,8 +470,8 @@ a promise there updates this table in the same PR.
 
 | Promise | Attacker | Asset | Promise (short quote) | Rows |
 |---|---|---|---|---|
-| `TM1.1` | 1 A sandboxed session | A, D | It cannot read or write outside its grants | `G1.17` |
-| `TM1.2` | 1 A sandboxed session | A | It reaches no relay-managed service it was not granted | `G14.04` |
+| `TM1.1` | 1 A sandboxed session | A, D | It cannot read or write outside its grants | `G1.17` `G9.08` |
+| `TM1.2` | 1 A sandboxed session | A | It reaches no relay-managed service it was not granted | `G14.04` `G9.08` |
 | `TM1.3` | 1 A sandboxed session | B | It reaches no listener that trusts loopback in place of a credential | `G14.04` `G6.04` |
 | `TM1.4` | 1 A sandboxed session | B | It obtains or keeps no credential it was not issued | `G9.08` |
 | `TM1.5` | 1 A sandboxed session | C | It cannot act without an audit row | `G1.18` `G4.03` |

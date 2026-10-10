@@ -24,8 +24,9 @@ type adminOpHandler func(ctx context.Context, r *appRouter, args json.RawMessage
 type adminCaller string
 
 const (
-	// adminCallerSocket is every op that predates the operator rule: any
-	// same-user peer on the 0600 socket, unchanged.
+	// adminCallerSocket is a presence-gated op (the prompt is its guard) or a
+	// relay-wide list read that holds no project's data: any same-user peer on
+	// the 0600 socket.
 	adminCallerSocket adminCaller = "socket"
 	// adminCallerOperator requires bridge.RequireOperatorCaller: a same-user
 	// peer that is neither a live session's member nor sandboxed.
@@ -47,9 +48,10 @@ type adminOpEntry struct {
 // remove (§7.2's operation table is normative for the op name -> core
 // mapping).
 //
-// Deliberate: an op that predates the operator rule keeps adminCallerSocket;
-// every op added since is adminCallerOperator, so a sandboxed session cannot
-// reach configure- or execute-class work through the CLI's door.
+// Deliberate: adminCallerSocket is only a presence-gated op or a relay-wide
+// list read holding no project's data; every other op is adminCallerOperator,
+// so a sandboxed session cannot reach configure- or execute-class work, or
+// another project's grant, through the CLI's door.
 var adminOps = map[string]adminOpEntry{
 	"credential.mint":           {handle: adminCredentialMint, caller: adminCallerSocket, gates: []string{"credential.mint"}},
 	"credential.revoke":         {handle: adminCredentialRevoke, caller: adminCallerSocket, gates: []string{"credential.revoke"}},
@@ -59,24 +61,24 @@ var adminOps = map[string]adminOpEntry{
 	"enrolment.revoke":          {handle: adminEnrolmentRevoke, caller: adminCallerSocket, gates: []string{"enrolment.revoke"}},
 	"enrolment.request.list":    {handle: adminEnrolmentRequestList, caller: adminCallerSocket},
 	"enrolment.request.approve": {handle: adminEnrolmentRequestApprove, caller: adminCallerSocket, gates: []string{"enrolment.sign"}},
-	"enrolment.request.refuse":  {handle: adminEnrolmentRequestRefuse, caller: adminCallerSocket},
+	"enrolment.request.refuse":  {handle: adminEnrolmentRequestRefuse, caller: adminCallerOperator},
 	"login.bootstrap.mint":      {handle: adminLoginBootstrapMint, caller: adminCallerSocket, gates: []string{"login.bootstrap.mint"}},
 	"login.passkey.revoke":      {handle: adminLoginPasskeyRevoke, caller: adminCallerSocket, gates: []string{"login.passkey.revoke"}},
 	"eve.enrolment.open":        {handle: adminEveEnrolmentOpen, caller: adminCallerSocket, gates: []string{"eve.enrolment.open"}},
 	"eve.passkey.revoke":        {handle: adminEvePasskeyRevoke, caller: adminCallerSocket, gates: []string{"eve.passkey.revoke"}},
 	"mcp.register":              {handle: adminMcpRegister, caller: adminCallerSocket, gates: []string{"mcp.register"}},
-	"mcp.unregister":            {handle: adminMcpUnregister, caller: adminCallerSocket},
+	"mcp.unregister":            {handle: adminMcpUnregister, caller: adminCallerOperator},
 	"service.register":          {handle: adminServiceRegister, caller: adminCallerSocket, gates: []string{"service.register"}},
-	"service.unregister":        {handle: adminServiceUnregister, caller: adminCallerSocket},
-	"service.restart":           {handle: adminServiceRestart, caller: adminCallerSocket},
+	"service.unregister":        {handle: adminServiceUnregister, caller: adminCallerOperator},
+	"service.restart":           {handle: adminServiceRestart, caller: adminCallerOperator},
 	"service.list":              {handle: adminServiceList, caller: adminCallerSocket},
 	"credential.list":           {handle: adminCredentialList, caller: adminCallerSocket},
 	"mcp.list":                  {handle: adminMcpList, caller: adminCallerSocket},
 	"login.list":                {handle: adminLoginList, caller: adminCallerSocket},
 	"eve.list":                  {handle: adminEveList, caller: adminCallerSocket},
 	"enrolment.list":            {handle: adminEnrolmentList, caller: adminCallerSocket},
-	"grant.view":                {handle: adminGrantView, caller: adminCallerSocket},
-	"project.update":            {handle: adminProjectUpdate, caller: adminCallerSocket},
+	"grant.view":                {handle: adminGrantView, caller: adminCallerOperator},
+	"project.update":            {handle: adminProjectUpdate, caller: adminCallerOperator},
 
 	"project.create":       {handle: adminProjectCreate, caller: adminCallerOperator, gates: []string{"project.grant"}},
 	"project.edit":         {handle: adminProjectEdit, caller: adminCallerOperator, gates: []string{"project.grant"}},
