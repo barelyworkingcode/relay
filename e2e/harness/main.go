@@ -59,9 +59,9 @@ func cleanupRoot() {
 		return
 	}
 	if lockFile != nil {
-		lockFile.Close()
+		_ = lockFile.Close()
 	}
-	os.RemoveAll(runRoot)
+	_ = os.RemoveAll(runRoot)
 }
 
 // RepoRoot is the relay repository: the parent of the e2e module root.
@@ -171,7 +171,7 @@ func buildBundle() error {
 func checkBuildInfo(bin string) error {
 	out, err := exec.Command("go", "version", "-m", bin).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("go version -m %s: %v\n%s", bin, err, out)
+		return fmt.Errorf("go version -m %s: %w\n%s", bin, err, out)
 	}
 	info := string(out)
 	race := hasBuildSetting(info, "-race", "true")
@@ -213,12 +213,12 @@ func reapStrays() {
 			continue
 		}
 		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			f.Close()
+			_ = f.Close()
 			continue
 		}
 		killUnder(r)
-		os.RemoveAll(r)
-		f.Close()
+		_ = os.RemoveAll(r)
+		_ = f.Close()
 	}
 }
 
@@ -239,6 +239,6 @@ func killUnder(root string) {
 		if err != nil || pid == self {
 			continue
 		}
-		syscall.Kill(pid, syscall.SIGKILL)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 }

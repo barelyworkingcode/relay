@@ -91,7 +91,7 @@ func (i *Instance) clock(args ...string) ClockState {
 	r := i.MustCLI(append([]string{"debug", "clock"}, append(args, "--json")...)...)
 	var w clockWire
 	r.JSON(i.t, &w)
-	return ClockState{Now: w.Now, OffsetMS: w.OffsetMS}
+	return ClockState(w)
 }
 
 // Clock reads the server clock.

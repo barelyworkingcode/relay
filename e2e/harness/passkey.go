@@ -91,9 +91,9 @@ func (i *Instance) RegisterPasskey(a *Authenticator, bootstrapCode string) (pass
 	var ad bytes.Buffer
 	ad.Write(rpHash[:])
 	ad.WriteByte(0x01 | 0x04 | 0x40)
-	binary.Write(&ad, binary.BigEndian, a.signCount)
+	_ = binary.Write(&ad, binary.BigEndian, a.signCount)
 	ad.Write(make([]byte, 16))
-	binary.Write(&ad, binary.BigEndian, uint16(len(a.credID)))
+	_ = binary.Write(&ad, binary.BigEndian, uint16(len(a.credID)))
 	ad.Write(a.credID)
 	ad.Write(a.coseKey())
 
@@ -133,7 +133,7 @@ func (i *Instance) SignIn(a *Authenticator) (Credential, Response) {
 	var ad bytes.Buffer
 	ad.Write(rpHash[:])
 	ad.WriteByte(0x01 | 0x04) // UP+UV
-	binary.Write(&ad, binary.BigEndian, a.signCount)
+	_ = binary.Write(&ad, binary.BigEndian, a.signCount)
 
 	cd := clientDataJSON("webauthn.get", ch.Challenge, origin)
 	cdHash := sha256.Sum256(cd)
@@ -165,8 +165,8 @@ func (i *Instance) SignIn(a *Authenticator) (Credential, Response) {
 // coseKey is the credential public key as a canonical CTAP2 COSE_Key:
 // {1:2, 3:-7, -1:1, -2:x, -3:y}.
 func (a *Authenticator) coseKey() []byte {
-	x := a.key.PublicKey.X.FillBytes(make([]byte, 32))
-	y := a.key.PublicKey.Y.FillBytes(make([]byte, 32))
+	x := a.key.X.FillBytes(make([]byte, 32))
+	y := a.key.Y.FillBytes(make([]byte, 32))
 	return cborMap(
 		cborPair{cborInt(1), cborInt(2)},
 		cborPair{cborInt(3), cborInt(-7)},

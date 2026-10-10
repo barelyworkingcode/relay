@@ -35,7 +35,7 @@ the one field a stored record contributes, and a fresh install defaults it to
 `true`. A restart (`service.restart`, the tray, the Settings UI) resynthesizes
 the record the same way startup does, through `ServiceOps.SessionHost`.
 
-`Args` may also carry `-claude-command`, `-pi-command` and `-codex-command`, each only when the matching template sets an absolute `command` (see [Finding the binary](#finding-the-binary)).
+`Args` may also carry `-claude-command`, `-pi-command` and `-codex-command`, each only when the matching template sets a `command` that is an absolute path or starts with `~/` (see [Finding the binary](#finding-the-binary)).
 
 `Args` carries `-relay-mcp-command <relayBin>` alongside the socket flags,
 the relay binary path relay derives `Command` from: relay-sessions

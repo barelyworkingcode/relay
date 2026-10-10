@@ -62,7 +62,7 @@ func (b *notifyBuffer) Write(p []byte) (int, error) {
 	b.mu.Unlock()
 	close(old)
 	if b.tee != nil {
-		b.tee.Write(p)
+		_, _ = b.tee.Write(p)
 	}
 	return len(p), nil
 }
@@ -160,7 +160,7 @@ func (p *Proc) limitTimer() (<-chan time.Time, func()) {
 }
 
 func (p *Proc) killForDeadline(what string) {
-	p.cmd.Process.Kill()
+	_ = p.cmd.Process.Kill()
 	<-p.done
 	r := p.result()
 	p.t.Fatalf("%s: process %v passed its deadline and was killed\nstdout: %s\nstderr: %s",

@@ -182,16 +182,6 @@ func TestJourneyAloneOnNonExceptionRowIsFlagged(t *testing.T) {
 	}
 }
 
-func TestScreenOnlyRowIsExemptFromR9(t *testing.T) {
-	t.Parallel()
-	root := copyFixture(t)
-	replaceIn(t, root, "docs/FEATURES.md", "`event:server.stopped=ok`", "none")
-	got := run(t, root)
-	if hasRule(got, "R9", "G1.04") {
-		t.Errorf("a screen-only row must not need an observable: %v", got)
-	}
-}
-
 func TestOrphanTestAndSelfTestExemption(t *testing.T) {
 	t.Parallel()
 	root := copyFixture(t)

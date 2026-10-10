@@ -73,7 +73,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen %q: %w", sockPath, err)
 	}
-	defer os.Remove(sockPath)
+	defer func() { _ = os.Remove(sockPath) }()
 	if err := os.Chmod(sockPath, 0o600); err != nil {
 		return fmt.Errorf("chmod router socket: %w", err)
 	}
@@ -82,7 +82,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("dial bridge: %w", err)
 	}
-	defer bridge.Close()
+	defer func() { _ = bridge.Close() }()
 	br := bufio.NewReader(bridge)
 	if err := call(bridge, br, map[string]any{"type": "Hello", "name": serviceID, "token": secret}); err != nil {
 		return fmt.Errorf("hello: %w", err)
@@ -142,7 +142,7 @@ func readLaunchSecret() (string, error) {
 	if f == nil {
 		return "", errors.New("launch fd is not open")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	b, err := io.ReadAll(io.LimitReader(f, 4096))
 	if err != nil {
 		return "", fmt.Errorf("read launch fd: %w", err)

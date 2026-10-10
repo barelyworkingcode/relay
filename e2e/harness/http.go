@@ -132,7 +132,7 @@ func (c *Client) Do(method, path string, body any, o ...ReqOpts) Response {
 	if err != nil {
 		c.t.Fatalf("%s %s: %v", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		c.t.Fatalf("reading the response to %s %s: %v", method, path, err)

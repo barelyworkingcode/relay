@@ -88,8 +88,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func oauthError(w http.ResponseWriter, status int, code, desc string) {
-	writeJSON(w, status, map[string]string{"error": code, "error_description": desc})
+func oauthError(w http.ResponseWriter, code, desc string) {
+	writeJSON(w, http.StatusBadRequest, map[string]string{"error": code, "error_description": desc})
 }
 
 func (o *oauthServer) protectedResource(w http.ResponseWriter, r *http.Request) {
@@ -127,7 +127,7 @@ func (o *oauthServer) register(w http.ResponseWriter, r *http.Request) {
 		RedirectURIs []string `json:"redirect_uris"`
 	}
 	if json.Unmarshal(body, &req) != nil || len(req.RedirectURIs) == 0 {
-		oauthError(w, http.StatusBadRequest, "invalid_client_metadata", "redirect_uris is required")
+		oauthError(w, "invalid_client_metadata", "redirect_uris is required")
 		return
 	}
 	id := randomToken(16)
@@ -178,7 +178,7 @@ func (o *oauthServer) authorize(w http.ResponseWriter, r *http.Request) {
 
 	redirect := q.Get("redirect_uri")
 	if !isLoopbackRedirect(redirect) {
-		oauthError(w, http.StatusBadRequest, "invalid_request", "redirect_uri must be a loopback http URL")
+		oauthError(w, "invalid_request", "redirect_uri must be a loopback http URL")
 		return
 	}
 	clientID := q.Get("client_id")
@@ -186,7 +186,7 @@ func (o *oauthServer) authorize(w http.ResponseWriter, r *http.Request) {
 	registered, known := o.clients[clientID]
 	o.mu.Unlock()
 	if known && !containsString(registered, redirect) {
-		oauthError(w, http.StatusBadRequest, "invalid_request", "redirect_uri is not registered")
+		oauthError(w, "invalid_request", "redirect_uri is not registered")
 		return
 	}
 	// From here the redirect URI is trusted, so errors go back to it.
@@ -232,7 +232,7 @@ func (o *oauthServer) token(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	form, err := url.ParseQuery(string(body))
 	if err != nil {
-		oauthError(w, http.StatusBadRequest, "invalid_request", "form body expected")
+		oauthError(w, "invalid_request", "form body expected")
 		return
 	}
 	o.record("token", r, redactedForm(form), body)
@@ -243,7 +243,7 @@ func (o *oauthServer) token(w http.ResponseWriter, r *http.Request) {
 	case "refresh_token":
 		o.exchangeRefresh(w, form)
 	default:
-		oauthError(w, http.StatusBadRequest, "unsupported_grant_type", "authorization_code or refresh_token")
+		oauthError(w, "unsupported_grant_type", "authorization_code or refresh_token")
 	}
 }
 
@@ -253,17 +253,17 @@ func (o *oauthServer) exchangeCode(w http.ResponseWriter, form url.Values) {
 	delete(o.codes, form.Get("code")) // single use, even when the rest fails
 	o.mu.Unlock()
 	if !ok {
-		oauthError(w, http.StatusBadRequest, "invalid_grant", "unknown or used code")
+		oauthError(w, "invalid_grant", "unknown or used code")
 		return
 	}
 	if ru := form.Get("redirect_uri"); ru != "" && ru != ac.redirectURI {
-		oauthError(w, http.StatusBadRequest, "invalid_grant", "redirect_uri mismatch")
+		oauthError(w, "invalid_grant", "redirect_uri mismatch")
 		return
 	}
 	sum := sha256.Sum256([]byte(form.Get("code_verifier")))
 	want := base64.RawURLEncoding.EncodeToString(sum[:])
 	if form.Get("code_verifier") == "" || subtle.ConstantTimeCompare([]byte(want), []byte(ac.challenge)) != 1 {
-		oauthError(w, http.StatusBadRequest, "invalid_grant", "code_verifier does not match")
+		oauthError(w, "invalid_grant", "code_verifier does not match")
 		return
 	}
 	o.issue(w, ac.clientID)
@@ -275,7 +275,7 @@ func (o *oauthServer) exchangeRefresh(w http.ResponseWriter, form url.Values) {
 	delete(o.refresh, form.Get("refresh_token")) // rotated on use
 	o.mu.Unlock()
 	if !ok {
-		oauthError(w, http.StatusBadRequest, "invalid_grant", "unknown refresh token")
+		oauthError(w, "invalid_grant", "unknown refresh token")
 		return
 	}
 	o.issue(w, clientID)

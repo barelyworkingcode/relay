@@ -95,7 +95,7 @@ func ScratchDir(t *testing.T) string {
 	d := filepath.Join(runRoot, "s"+NewTrace(t)[3:11])
 	t.Cleanup(func() {
 		if !t.Failed() {
-			os.RemoveAll(d)
+			_ = os.RemoveAll(d)
 		}
 	})
 	return d

@@ -63,8 +63,8 @@ func jsonEqual(got, want any) bool {
 		return false
 	}
 	var gv, wv any
-	json.Unmarshal(g, &gv)
-	json.Unmarshal(w, &wv)
+	_ = json.Unmarshal(g, &gv)
+	_ = json.Unmarshal(w, &wv)
 	return reflect.DeepEqual(gv, wv)
 }
 

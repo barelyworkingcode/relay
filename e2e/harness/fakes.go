@@ -124,12 +124,12 @@ func (i *Instance) stopFakes() {
 		select {
 		case <-f.proc.done:
 		default:
-			f.proc.cmd.Process.Signal(syscall.SIGTERM)
+			_ = f.proc.cmd.Process.Signal(syscall.SIGTERM)
 			tm := time.NewTimer(10 * time.Second)
 			select {
 			case <-f.proc.done:
 			case <-tm.C:
-				f.proc.cmd.Process.Kill()
+				_ = f.proc.cmd.Process.Kill()
 				<-f.proc.done
 			}
 			tm.Stop()
@@ -201,7 +201,7 @@ func (i *Instance) FakeAgentCalls(persona string) []AgentCall {
 	i.t.Helper()
 	name := "fakeagent-" + persona + ".jsonl"
 	var out []AgentCall
-	filepath.WalkDir(i.Tmp, func(path string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(i.Tmp, func(path string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && d.Name() == name {
 			out = append(out, readJSONL[AgentCall](i.t, path)...)
 		}
@@ -239,8 +239,8 @@ func (i *Instance) CompleteOAuth(authorizationURL string) {
 	if err != nil {
 		t.Fatalf("GET the authorization URL: %v", err)
 	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 	loc := resp.Header.Get("Location")
 	if resp.StatusCode < 300 || resp.StatusCode > 399 || loc == "" {
 		t.Fatalf("the authorization URL answered %d with Location %q, expected a redirect", resp.StatusCode, loc)
@@ -257,6 +257,6 @@ func (i *Instance) CompleteOAuth(authorizationURL string) {
 	if err != nil {
 		t.Fatalf("GET relay's OAuth callback: %v", err)
 	}
-	io.Copy(io.Discard, cb.Body)
-	cb.Body.Close()
+	_, _ = io.Copy(io.Discard, cb.Body)
+	_ = cb.Body.Close()
 }

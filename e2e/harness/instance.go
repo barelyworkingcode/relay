@@ -332,19 +332,18 @@ func writeFileAtomic(t *testing.T, path string, data []byte) {
 		t.Fatalf("creating a temp file beside %s: %v", path, err)
 	}
 	name := tmp.Name()
-	if err := tmp.Chmod(0o600); err == nil {
+	err = tmp.Chmod(0o600)
+	if err == nil {
 		_, err = tmp.Write(data)
-		if cerr := tmp.Close(); err == nil {
-			err = cerr
-		}
-	} else {
-		tmp.Close()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
 	}
 	if err == nil {
 		err = os.Rename(name, path)
 	}
 	if err != nil {
-		os.Remove(name)
+		_ = os.Remove(name)
 		t.Fatalf("writing %s: %v", path, err)
 	}
 }
@@ -372,14 +371,14 @@ func (i *Instance) boot() (res Result, ok bool) {
 		bin: bundle.Relay, args: []string{"--config-dir", i.ConfigDir, "serve"},
 		env: i.env, dir: i.Dir, stdoutTee: stdoutFile, stderrTo: stderrFile,
 	})
-	stderrFile.Close() // the child holds its own descriptor
+	_ = stderrFile.Close() // the child holds its own descriptor
 	go func() {
 		<-p.done
-		stdoutFile.Close()
+		_ = stdoutFile.Close()
 	}()
 	i.serve = p
 	i.stopped = false
-	os.WriteFile(filepath.Join(i.Dir, "serve.pid"), []byte(fmt.Sprint(p.cmd.Process.Pid)), 0o600)
+	_ = os.WriteFile(filepath.Join(i.Dir, "serve.pid"), []byte(fmt.Sprint(p.cmd.Process.Pid)), 0o600)
 
 	line, got := p.nextLine(deadline, "waiting for relay serve to be ready")
 	if !got {
@@ -435,13 +434,13 @@ func (i *Instance) Stop() {
 	select {
 	case <-p.done:
 	default:
-		p.cmd.Process.Signal(syscall.SIGTERM)
+		_ = p.cmd.Process.Signal(syscall.SIGTERM)
 		tm := time.NewTimer(stopDeadline)
 		select {
 		case <-p.done:
 			tm.Stop()
 		case <-tm.C:
-			p.cmd.Process.Kill()
+			_ = p.cmd.Process.Kill()
 			<-p.done
 			t.Errorf("serve did not exit within %v of SIGTERM and was killed", stopDeadline)
 		}
@@ -507,5 +506,5 @@ func (i *Instance) cleanup() {
 		i.t.Logf("instance directory kept at %s; the next run removes it", i.Dir)
 		return
 	}
-	os.RemoveAll(i.Dir)
+	_ = os.RemoveAll(i.Dir)
 }
