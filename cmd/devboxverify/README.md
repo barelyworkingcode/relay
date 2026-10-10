@@ -45,8 +45,8 @@ A journey FAIL after a green preflight is the product.
 
 Seven journeys run a Claude turn: session-agent-state, session-drop-in,
 session-drop-in-host, session-drop-in-tool-refused, chief-of-staff-send,
-cos-start and cos-start-host. When the provider's usage limit ends that turn,
-the journey reads `BLOCKED` with the detail `provider rate limit (resets <time>)`,
+cos-start and cos-start-host. When the provider's usage limit ends that turn
+and the journey sees the limit frame, it reads `BLOCKED` with the detail `provider rate limit (resets <time>)`,
 not FAIL, because the product did nothing wrong. A BLOCKED journey still exits
 1 and never posts `success`: the run is not green until the limit lifts and a
 re-run passes.
@@ -63,6 +63,15 @@ The reset time is the `resetsAt` of the session's last `rate_limit_event` with
 status `rejected`, as RFC 3339 UTC. Without one, it is the text after the last
 `resets ` in the first reply text after the hit, cut at the line end and at 64
 runes. With neither, the detail is `provider rate limit`.
+
+cos-start and cos-start-host send their first message inside the start request,
+and the journey joins the session only after the response. When the provider
+answers before the join, the limit frame is never seen, and nothing relay keeps
+afterwards (history, session list, event lines, audit) carries the code. Those
+turns then read the usual FAIL, as `main` does. Before chasing such a FAIL,
+check whether the other Claude journeys in the same run read
+`BLOCKED provider rate limit`. cos-start-host's second turn is watched live and
+reads BLOCKED.
 
 ## The world
 
