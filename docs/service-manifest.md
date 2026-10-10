@@ -97,6 +97,8 @@ deployment fact, not a code fork — the service has one config loader.
   (via `EvalSymlinks`), regular-file, and a size cap.
   The allowed root is the service's `working_dir`, or the config file's own
   folder when the service has none.
+  `format` names the file's syntax: `jsonc` (the default when absent) or
+  `json`; any other value is rejected at registration.
 
 Field types: leaves `text`, `textarea`, `bool`, `number`, `select` (needs
 `options`), `secret`, `string[]`, `stringMap`, `keyValue`, `json`; recursive

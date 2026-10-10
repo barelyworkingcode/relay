@@ -299,9 +299,9 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 |---|---|---|---|
 | `service.list` | Before the list is returned | `GET /api/services`, `relay service list` | `count` |
 | `service.get` | Before the service is returned | `GET /api/services/{id}` | `service_id` |
-| `service.register` | At the end of `ServiceOps.Register` | `relay service register` | `service_id`, `action` (`action` is `create` or `update`) |
-| `service.create` | At the end of `ServiceOps.Create` / `Update` | `POST` and `PUT /api/services`, Settings | `service_id` |
-| `service.update` | At the end of `ServiceOps.Create` / `Update` | `POST` and `PUT /api/services`, Settings | `service_id` |
+| `service.register` | At the end of `ServiceOps.Register`; `relay service register` writes only this event | `relay service register` | `service_id`, `action` (`action` is `create` or `update`) |
+| `service.create` | At the end of `ServiceOps.Create` | `POST /api/services`, Settings add | `service_id` |
+| `service.update` | At the end of `ServiceOps.Update` | `PUT /api/services/{id}` | `service_id` |
 | `service.unregister` | At the end of `ServiceOps.Remove` | `DELETE /api/services/{id}`, `relay service unregister`, Settings | `service_id` |
 | `service.start` | At the end of `ServiceOps.Start` / `Stop` | `POST /api/services/{id}/start` and `/stop`, `relay service start` and `stop`, Settings, tray menu | `service_id` |
 | `service.stop` | At the end of `ServiceOps.Start` / `Stop` | `POST /api/services/{id}/start` and `/stop`, `relay service start` and `stop`, Settings, tray menu | `service_id` |
