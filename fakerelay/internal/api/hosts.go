@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -50,13 +51,6 @@ func (a *api) hostView(h world.Host) map[string]any {
 	case h.Probe != nil:
 		status = "unreachable"
 	}
-	ssh := []string{"ssh", "-o", "BatchMode=yes"}
-	if h.Port != 0 {
-		ssh = append(ssh, "-p", strconv.Itoa(h.Port))
-	}
-	if h.IdentityFile != "" {
-		ssh = append(ssh, "-i", h.IdentityFile)
-	}
 	tpl := h.TerminalTemplates
 	if tpl == nil {
 		tpl = []world.Template{}
@@ -69,7 +63,7 @@ func (a *api) hostView(h world.Host) map[string]any {
 		at = a.started
 	}
 	v := map[string]any{"id": h.ID, "name": h.Name, "target": h.Target, "created_at": rfc3339(a.started),
-		"status": status, "ssh_argv": append(ssh, h.Target), "terminal_templates": tpl}
+		"status": status, "ssh_argv": h.SSHArgv(filepath.Join(a.Dir, "run", "ssh")), "terminal_templates": tpl}
 	if len(created) > 0 {
 		v["created_at"] = strings.Trim(string(created), `"`)
 	}
@@ -85,7 +79,8 @@ func (a *api) hostView(h world.Host) map[string]any {
 	if p := h.Probe; p != nil {
 		probe := map[string]any{"at": rfc3339(at), "ok": p.OK}
 		for k, s := range map[string]string{"os": p.OS, "arch": p.Arch, "home": p.Home, "shell": p.Shell,
-			"node_path": p.NodePath, "claude_path": p.ClaudePath, "tmux_path": p.TmuxPath, "error": p.Error} {
+			"node_path": p.NodePath, "node_version": p.NodeVersion, "claude_path": p.ClaudePath,
+			"claude_version": p.ClaudeVersion, "tmux_path": p.TmuxPath, "error": p.Error} {
 			if s != "" {
 				probe[k] = s
 			}
@@ -95,7 +90,11 @@ func (a *api) hostView(h world.Host) map[string]any {
 	return v
 }
 
-func (a *api) hostByID(w http.ResponseWriter, ev *events.Event, id string) (world.Host, bool) {
+func (a *api) hostByID(w http.ResponseWriter, ev *events.Event, id string, notFound ...string) (world.Host, bool) {
+	msg := "host not found"
+	if len(notFound) > 0 {
+		msg = notFound[0]
+	}
 	var h world.Host
 	var found bool
 	a.State.Read(func(m *state.Model) {
@@ -104,8 +103,8 @@ func (a *api) hostByID(w http.ResponseWriter, ev *events.Event, id string) (worl
 		}
 	})
 	if !found {
-		ev.End("error", "not_found", errors.New("host not found"))
-		server.WriteError(w, http.StatusNotFound, "host not found")
+		ev.End("error", "not_found", errors.New(msg))
+		server.WriteError(w, http.StatusNotFound, msg)
 	}
 	return h, found
 }
@@ -123,7 +122,7 @@ func (a *api) listHosts(w http.ResponseWriter, r *http.Request) {
 
 func (a *api) getHost(w http.ResponseWriter, r *http.Request) {
 	ev := a.Events.Begin(r.Context(), "host.get").Set("host_id", r.PathValue("id"))
-	if h, found := a.hostByID(w, ev, r.PathValue("id")); found {
+	if h, found := a.hostByID(w, ev, r.PathValue("id"), "host not found: "+r.PathValue("id")); found {
 		ev.End("ok", "", nil)
 		ok(w, a.hostView(h))
 	}
@@ -158,7 +157,8 @@ func (a *api) createHost(w http.ResponseWriter, r *http.Request) {
 	h := world.Host{ID: "h_" + events.NewID()[:8], Name: *b.Name, Target: *b.Target, Agent: "none"}
 	h.Root = filepath.Join(a.Dir, "hosts", h.ID)
 	applyHostBody(&h, &b)
-	h.Probe = defaultProbe(h)
+	tools := probeLiveTools(a.World.HostPath)
+	applyProbe(&h, tools, false)
 	ev.Set("host_id", h.ID)
 	if err := os.MkdirAll(h.Root, 0o755); err != nil {
 		ev.End("error", "internal", err)
@@ -174,9 +174,41 @@ func (a *api) createHost(w http.ResponseWriter, r *http.Request) {
 	server.WriteJSON(w, http.StatusCreated, a.hostView(h))
 }
 
-func defaultProbe(h world.Host) *world.Probe {
-	p := &world.Probe{OK: true, OS: "Linux", Arch: "x86_64", Home: "/home/fake", Shell: "/bin/bash", TmuxPath: h.TmuxPath}
-	return p
+// applyProbe runs the probe against h as relay does: an unreachable host
+// fails with ssh's own words, a reachable one answers from the machine, and a
+// host with no templates is seeded with the defaults (docs/ssh-hosts.md).
+func applyProbe(h *world.Host, tools liveTools, down bool) {
+	if down {
+		port := 22
+		if h.Port != 0 {
+			port = h.Port
+		}
+		h.Probe = &world.Probe{Error: fmt.Sprintf("ssh: connect to host %s port %d: Connection refused", h.Target, port)}
+		return
+	}
+	p := world.Probe{OS: "Linux", Arch: "x86_64", Home: "/home/fake", Shell: "/bin/bash"}
+	if h.Probe != nil && h.Probe.OK {
+		p = *h.Probe
+	}
+	p.OK, p.Error = true, ""
+	pick := func(live, kept string) string {
+		if live != "" {
+			return live
+		}
+		return kept
+	}
+	p.NodePath, p.NodeVersion = pick(tools.NodePath, p.NodePath), pick(tools.NodeVersion, p.NodeVersion)
+	p.ClaudePath, p.ClaudeVersion = pick(tools.ClaudePath, p.ClaudePath), pick(tools.ClaudeVersion, p.ClaudeVersion)
+	p.TmuxPath = pick(tools.TmuxPath, p.TmuxPath)
+	h.Probe = &p
+	if len(h.TerminalTemplates) == 0 {
+		h.TerminalTemplates = []world.Template{{ID: "shell", Name: "Shell"}}
+		if p.ClaudePath != "" {
+			cmd, _ := json.Marshal(p.ClaudePath)
+			h.TerminalTemplates = append(h.TerminalTemplates, world.Template{ID: "claude-code", Name: "Claude Code",
+				Rest: map[string]json.RawMessage{"command": cmd}})
+		}
+	}
 }
 
 func applyHostBody(h *world.Host, b *hostBody) {
@@ -267,17 +299,25 @@ func (a *api) deleteHost(w http.ResponseWriter, r *http.Request) {
 func (a *api) probeHost(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	ev := a.Events.Begin(r.Context(), "host.probe").Set("host_id", id)
-	var out world.Host
+	var out, cur world.Host
 	found := false
-	_ = a.State.Write(func(m *state.Model) error {
+	a.State.Read(func(m *state.Model) {
 		if h, f := findHost(m, id); f {
-			if h.Probe == nil {
-				h.Probe = defaultProbe(*h)
-			}
-			out, found = *h, true
+			cur, found = *h, true
 		}
-		return nil
 	})
+	var tools liveTools
+	down := false
+	if found {
+		tools, down = probeLiveTools(a.World.HostPath), a.agentStatus(cur) == "unreachable"
+		_ = a.State.Write(func(m *state.Model) error {
+			if h, f := findHost(m, id); f {
+				applyProbe(h, tools, down)
+				out = *h
+			}
+			return nil
+		})
+	}
 	if !found {
 		ev.End("error", "not_found", errors.New("host not found"))
 		server.WriteError(w, http.StatusNotFound, "host not found")
@@ -306,11 +346,11 @@ func (a *api) disconnectHost(w http.ResponseWriter, r *http.Request) {
 func (a *api) listHostTemplates(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	ev := a.Events.Begin(r.Context(), "host_template.list").Set("host_id", id)
-	h, found := a.hostByID(w, ev, id)
+	h, found := a.hostByID(w, ev, id, fmt.Sprintf("host %q not found", id))
 	if !found {
 		return
 	}
-	out := sortedIDs(h.TerminalTemplates, func(t world.Template) string { return t.ID })
+	out := append([]world.Template(nil), h.TerminalTemplates...)
 	if out == nil {
 		out = []world.Template{}
 	}
@@ -328,7 +368,7 @@ func (a *api) hostTemplateWrite(w http.ResponseWriter, r *http.Request, key stri
 	_ = a.State.Write(func(m *state.Model) error {
 		h, f := findHost(m, id)
 		if !f {
-			herr = &httpErr{http.StatusNotFound, "host not found"}
+			herr = &httpErr{http.StatusNotFound, fmt.Sprintf("host %q not found", id)}
 			return herr
 		}
 		out, herr = fn(h)
@@ -423,12 +463,12 @@ func (a *api) persistentHost(w http.ResponseWriter, r *http.Request, ev *events.
 	a.State.Read(func(m *state.Model) {
 		p, found := findProject(m, r.PathValue("id"))
 		if !found || p.HostID == "" {
-			code, msg = http.StatusNotFound, "project not found"
+			code, msg = http.StatusNotFound, fmt.Sprintf("hosted project %q not found", r.PathValue("id"))
 			return
 		}
 		hp, _ := findHost(m, p.HostID)
 		if hp == nil {
-			code, msg = http.StatusNotFound, "project not found"
+			code, msg = http.StatusNotFound, fmt.Sprintf("host %q of project %q not found", p.HostID, p.ID)
 			return
 		}
 		h = *hp
@@ -479,8 +519,9 @@ func (a *api) killPersistent(w http.ResponseWriter, r *http.Request) {
 	ev := a.Events.Begin(r.Context(), "session.persistent.kill").Set("project_id", r.PathValue("id"))
 	name := r.PathValue("name")
 	if !persistName.MatchString(name) {
-		ev.End("error", "invalid", errors.New("invalid persistent session name"))
-		server.WriteError(w, http.StatusBadRequest, "invalid persistent session name")
+		msg := fmt.Sprintf("%q is not a relay persistent session name", name)
+		ev.End("error", "invalid", errors.New(msg))
+		server.WriteError(w, http.StatusBadRequest, msg)
 		return
 	}
 	h, found := a.persistentHost(w, r, ev)
@@ -500,8 +541,9 @@ func (a *api) killPersistent(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if !killed {
-		ev.End("error", "not_found", errors.New("persistent session not found"))
-		server.WriteError(w, http.StatusNotFound, "persistent session not found")
+		msg := fmt.Sprintf("session %q not found on host %s", name, h.Name)
+		ev.End("error", "not_found", errors.New(msg))
+		server.WriteError(w, http.StatusNotFound, msg)
 		return
 	}
 	ev.End("ok", "", nil)

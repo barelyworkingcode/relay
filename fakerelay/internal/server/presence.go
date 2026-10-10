@@ -80,9 +80,10 @@ func (g *presenceGate) refuse(ctx context.Context, op, reason string, start time
 		via = "http"
 	}
 	row := map[string]any{
-		"id": events.NewID(), "ts": time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+		"id": events.NewUUID(), "ts": time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 		"dur_ms": time.Since(start).Milliseconds(), "event": "control_decision", "actor": actor,
 		"outcome": "denied", "error": reason, "scope": nil, "method": op, "via": via,
+		"presence_approver": "testapprover",
 	}
 	if s, ok := ctx.Value(subjectKey).(string); ok && s != "" {
 		row["subject"] = s

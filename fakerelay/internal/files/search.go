@@ -60,7 +60,7 @@ func (s *service) search(c *call) (any, *fileErr) {
 	ctx := c.r.Context()
 	files, err := s.searchFiles(ctx, root)
 	if err != nil {
-		return nil, osErr(err)
+		return nil, c.osErr(err)
 	}
 	matches, truncated := []match{}, false
 	scanned := 0
@@ -110,7 +110,10 @@ func utf16Len(s string) int {
 }
 
 func compileQuery(q string, isRegex, word bool, cs *bool) (*regexp.Regexp, *fileErr) {
-	if q == "" || utf8.RuneCountInString(q) > 1000 {
+	if q == "" {
+		return nil, errInvalid("Search query is empty")
+	}
+	if utf8.RuneCountInString(q) > 1000 {
 		return nil, errInvalid("query must be 1 to 1000 characters")
 	}
 	pat := q
@@ -129,7 +132,7 @@ func compileQuery(q string, isRegex, word bool, cs *bool) (*regexp.Regexp, *file
 	}
 	re, err := regexp.Compile(pat)
 	if err != nil {
-		return nil, errInvalid("invalid regular expression")
+		return nil, errInvalid("Invalid regex: " + err.Error())
 	}
 	return re, nil
 }

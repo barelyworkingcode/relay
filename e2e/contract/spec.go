@@ -188,9 +188,7 @@ func probeRecord(fake bool) (map[string]any, error) {
 	}
 	// world.json refuses node_version as an unknown key, so only relay's
 	// record carries it. The difference shows in the first Probed scenario.
-	if !fake {
-		rec["node_version"] = nodeVersion
-	}
+	rec["node_version"] = nodeVersion
 	return rec, nil
 }
 
@@ -340,6 +338,8 @@ func (sp Spec) fakeWorld() (map[string]json.RawMessage, error) {
 	if mcps != nil {
 		m["mcps"] = raw(mcps)
 	}
+	// The real target's ssh stub looks tools up on the test process's PATH.
+	m["host_path"] = raw(os.Getenv("PATH"))
 	return m, nil
 }
 

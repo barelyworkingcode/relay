@@ -55,27 +55,28 @@ var (
 	errTimeout   = ferr(504, "TIMEOUT", "timed out")
 )
 
-// osErr maps an OS error to its coded file error.
-func osErr(err error) *fileErr {
+// osErr maps an OS error to its coded file error, worded as relay words it:
+// the console's file plane and the host agent differ on a missing path.
+func (c *call) osErr(err error) *fileErr { return osErrFor(c.t != nil && c.t.hostID != "", err) }
+
+func osErrFor(host bool, err error) *fileErr {
 	var fe *fileErr
-	var pe *fs.PathError
-	text := err.Error()
-	if errors.As(err, &pe) {
-		text = pe.Err.Error()
-	}
 	switch {
 	case errors.As(err, &fe):
 		return fe
 	case errors.Is(err, fs.ErrNotExist):
-		return ferr(404, "ENOENT", text)
+		if host {
+			return ferr(404, "ENOENT", "No such file or directory")
+		}
+		return ferr(404, "ENOENT", "Not found")
 	case errors.Is(err, fs.ErrPermission):
-		return ferr(403, "EACCES", text)
+		return ferr(403, "EACCES", "Permission denied")
 	case errors.Is(err, fs.ErrExist):
-		return ferr(409, "EEXIST", text)
+		return ferr(409, "EEXIST", "Already exists")
 	case errors.Is(err, syscall.EISDIR):
-		return ferr(400, "EISDIR", text)
+		return ferr(400, "EISDIR", "Path is a directory")
 	case errors.Is(err, syscall.ENOTDIR):
-		return ferr(400, "ENOTDIR", text)
+		return ferr(400, "ENOTDIR", "Not a directory")
 	}
 	return ferr(500, "ERROR", "file operation failed")
 }
@@ -267,7 +268,10 @@ func (s *service) actor(c *call) map[string]any {
 func (s *service) row(c *call, id, phase string, dur int64, args map[string]any, outcome string, e *fileErr) map[string]any {
 	row := map[string]any{
 		"id": id, "ts": s.now().UTC().Format("2006-01-02T15:04:05.000Z"), "dur_ms": dur,
-		"event": "file_op", "actor": s.actor(c), "tool": c.tool, "args": args, "outcome": outcome,
+		"event": "file_op", "actor": s.actor(c), "tool": c.tool, "args": args, "outcome": outcome, "scope": nil,
+	}
+	if b, err := json.Marshal(args); err == nil {
+		row["args_bytes"] = len(b)
 	}
 	if c.t.p.ID != "" {
 		row["mcp_root"] = c.t.p.Path
@@ -284,7 +288,7 @@ func (s *service) row(c *call, id, phase string, dur int64, args map[string]any,
 // intent writes the pending row. A failure refuses the operation before it
 // runs. With no audit log the operation runs and writes nothing.
 func (s *service) intent(c *call, args map[string]any) (string, time.Time, error) {
-	id, start := events.NewID(), time.Now()
+	id, start := events.NewUUID(), time.Now()
 	if s.d.Audit == nil {
 		return id, start, nil
 	}
@@ -309,7 +313,7 @@ func (s *service) refusal(c *call, args map[string]any, e *fileErr) {
 	if s.d.Audit == nil {
 		return
 	}
-	_ = s.d.Audit.Append(s.row(c, events.NewID(), "", 0, args, "denied", e))
+	_ = s.d.Audit.Append(s.row(c, events.NewUUID(), "", 0, args, "denied", e))
 }
 
 // cleanRel normalises a root-relative request path.

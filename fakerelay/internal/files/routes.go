@@ -40,17 +40,17 @@ func (s *service) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	f, err := os.Open(p)
 	if err != nil {
-		fail(osErr(err))
+		fail(c.osErr(err))
 		return
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		fail(osErr(err))
+		fail(c.osErr(err))
 		return
 	}
 	if fi.IsDir() {
-		fail(ferr(400, "EISDIR", "illegal operation on a directory"))
+		fail(ferr(400, "EISDIR", "Path is a directory"))
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -118,10 +118,10 @@ func (s *service) paste(c *call, w http.ResponseWriter) (any, *fileErr) {
 	return c.mutatePaste(args, func() (any, *fileErr) {
 		dir := filepath.Join(root, "tmp")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, osErr(err)
+			return nil, c.osErr(err)
 		}
 		if err := os.WriteFile(filepath.Join(dir, req.Name), data, 0o644); err != nil {
-			return nil, osErr(err)
+			return nil, c.osErr(err)
 		}
 		return map[string]string{"path": "/tmp/" + req.Name}, nil
 	})

@@ -27,8 +27,12 @@ var (
 var timeKeys = map[string]bool{
 	"ts": true, "at": true, "created": true, "created_at": true, "createdAt": true,
 	"updated_at": true, "mtime_ms": true, "lastActivity": true, "expires": true,
-	"expires_at": true, "dur_ms": true, "offset_ms": true,
+	"expires_at": true, "dur_ms": true, "duration_ms": true, "offset_ms": true,
 }
+
+// testApproverSuffix is the test seam's wording on a refusal; a release build
+// answers "presence was refused" (docs/cli.md).
+const testApproverSuffix = " by the test approver"
 
 // idKeys hold a trace id, which the target generates.
 var idKeys = map[string]bool{"trace": true, "trace_id": true}
@@ -241,6 +245,14 @@ func (n *normaliser) object(v map[string]any, numeric bool) any {
 		case k == "error" && typ == "host_status":
 			if s, _ := e.(string); s != "disconnected" {
 				out[k] = setOrEmpty(e)
+				continue
+			}
+		case k == "error" && v["code"] == "HOST_UNREACHABLE":
+			out[k] = setOrEmpty(e)
+			continue
+		case k == "error":
+			if s, ok := e.(string); ok && strings.HasSuffix(s, testApproverSuffix) {
+				out[k] = n.text(strings.TrimSuffix(s, testApproverSuffix))
 				continue
 			}
 		case k == "probe":

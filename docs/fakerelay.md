@@ -221,8 +221,13 @@ writes one `control_decision` row with `outcome: "denied"` and `via`, and no
 {"id":"…","ts":"…","dur_ms":4210,"event":"control_decision",
  "actor":{"kind":"control","auth":"token","cred_id":"c1"},
  "outcome":"denied","error":"presence was refused","scope":null,
- "method":"project.grant","subject":"Acme","via":"http"}
+ "method":"project.grant","subject":"Acme","via":"http",
+ "presence_approver":"testapprover"}
 ```
+
+`id` is a UUID. `presence_approver` is there because relay's test build writes
+it on every answer of its test approver, and fakerelay stands in for that
+build.
 
 `via` is `http`, `cli`, `ipc` or `tray`. The HTTP routes that run a gated
 operation also use 409 `{"error":"project changed during approval"}` when
@@ -427,7 +432,9 @@ drive-letter path.
 `PUT /api/default_project/{mode}`: `mode` is `home` or `work`. The key
 `project_id` is required and `""` clears the default. A missing key answers
 400 `{"error":"project_id is required; send \"\" to clear the default"}`. An
-unknown key answers 400 `invalid JSON: …`. The response always has both keys.
+unknown key answers 400 `invalid JSON: …`. An unknown project answers 400
+`{"error":"invalid default project: no project with id \"<id>\""}`. The
+response always has both keys.
 
 Presence applies to every `POST` and to a `PUT` that widens a grant. A `PUT`
 widens when it adds an id to `allowed_mcp_ids`, widens `allowed_tools`,
@@ -438,7 +445,7 @@ name answers 400 `{"error":"project name is required"}` before the gate. A
 `POST` or widening `PUT` while auditing is off answers 403, because the gate
 needs an audit trail.
 
-Events: `project.list`, `project.get`, `project.create`, `project.update`,
+Events: `project.list`, `project.get`, `project.create` (with `project_id` and `kind`; `kind` is the body's, so `""` for a local project, and both are `""` on a refusal), `project.update`,
 `project.remove`.
 
 ### Chief of Staff
@@ -523,26 +530,30 @@ Host JSON (the `hostView`):
           "node_version":"v22.0.0","claude_path":"/usr/bin/claude",
           "claude_version":"2.0.0","tmux_path":"/usr/bin/tmux"},
  "status":"idle",
- "ssh_argv":["ssh","-o","BatchMode=yes","acme@testbox"],
+ "ssh_argv":["ssh","-o","BatchMode=yes","-o","ConnectTimeout=10",
+             "-o","ServerAliveInterval=15","-o","ServerAliveCountMax=3",
+             "-o","ControlMaster=auto","-o","ControlPath=<DIR>/run/ssh/%C",
+             "-o","ControlPersist=600","acme@testbox"],
  "terminal_templates":[]}
 ```
 
 - `port`, `identity_file`, `tmux_path` and `probe` are omitted when empty.
 - `probe.at` is always present. A failed probe has `"ok":false` and `error`.
 - `terminal_templates` is always an array.
-- `ssh_argv` is a ready ssh prefix. fakerelay returns a fixed, plausible
-  array. Eve strips it before the browser sees it.
+- `ssh_argv` is the full fixed-option prefix that `ssh-hosts.md` gives, then
+  `-p`, `-i` and the target. `<DIR>/run/ssh` is the control directory.
+- Eve strips `ssh_argv` before the browser sees it.
 - `status` is `connected`, `idle`, `unreachable` or `unknown`. The rule for
   fakerelay is in the host simulation section.
 
 | Route | Request | Success | Errors |
 |---|---|---|---|
 | `GET /api/hosts` | none | 200, array of host JSON, `[]` when none | |
-| `GET /api/hosts/{id}` | none | 200, host JSON | 404 `{"error":"host not found"}` |
+| `GET /api/hosts/{id}` | none | 200, host JSON | 404 `{"error":"host not found: <id>"}` |
 | `POST /api/hosts` | `{name,target,port?,identity_file?,tmux_path?}` | 201, host JSON, probed once | 400 `{"error":"host name is required"}` or `host target is required` |
 | `PUT /api/hosts/{id}` | any of the same keys | 200, host JSON | 400, 404 |
 | `DELETE /api/hosts/{id}` | none | 204 | 404, 409 |
-| `POST /api/hosts/{id}/probe` | none | 200, host JSON with a new `probe` | 404 |
+| `POST /api/hosts/{id}/probe` | none | 200, host JSON with a new `probe` (see Hosts rules) | 404 `{"error":"host not found"}` |
 | `POST /api/hosts/{id}/disconnect` | none | 200, host JSON | 404 |
 
 `DELETE` with a project still on the host answers 409
@@ -553,7 +564,7 @@ Host templates use the terminal template shape (see Terminals):
 
 | Route | Success | Errors |
 |---|---|---|
-| `GET /api/hosts/{id}/templates` | 200, array | 404 `{"error":"host not found"}` |
+| `GET /api/hosts/{id}/templates` | 200, array in insertion order | 404 `{"error":"host \"<id>\" not found"}` (the template routes all word it so) |
 | `POST /api/hosts/{id}/templates` | 201, the template | 400, 404, 409 |
 | `PUT /api/hosts/{id}/templates/{tid}` | 200, the template | 400, 404 |
 | `DELETE /api/hosts/{id}/templates/{tid}` | 204 | 404 |
@@ -570,9 +581,9 @@ Persistent terminals:
 
 | Case | Status | Body |
 |---|---|---|
-| Project not found, or not a host project | 404 | `{"error":"project not found"}` |
-| Session not found | 404 | `{"error":"persistent session not found"}` |
-| Bad session name | 400 | `{"error":"invalid persistent session name"}` |
+| Project not found, or not a host project | 404 | `{"error":"hosted project \"<id>\" not found"}` |
+| Session not found | 404 | `{"error":"session \"<name>\" not found on host <host name>"}` |
+| Bad session name | 400 | `{"error":"\"<name>\" is not a relay persistent session name"}` |
 | Host has no tmux | 409 | `{"error":"host has no tmux"}` |
 | Host unreachable | 502 | `{"error":"host unreachable"}` |
 | Kill succeeded | 204 | none |
@@ -714,18 +725,20 @@ Body: `{"error":"<message>","code":"<CODE>"}`, plus `"size":<bytes>` on
 | 403 | `TRAVERSAL` | `Path traversal not allowed` | a `..` segment |
 | 403 | `SYMLINK` | `Symbolic links are not opened` | any component is a symlink, on every op except list and search |
 | 403 | `READ_ONLY` | `This project is read-only` | write, mkdir, rename, move or delete with `files_read_only: true` |
-| 403 | `EACCES` | OS text | permission denied |
-| 404 | `ENOENT` | OS text | path missing |
-| 400 | `EISDIR`, `ENOTDIR` | OS text | wrong kind of entry |
-| 409 | `EEXIST` | OS text | destination exists |
+| 403 | `EACCES` | `Permission denied` | permission denied |
+| 404 | `ENOENT` | `Not found` on the console, `No such file or directory` on a host | path missing |
+| 400 | `EISDIR`, `ENOTDIR` | `Path is a directory`, `Not a directory` | wrong kind of entry |
+| 409 | `EEXIST` | `Already exists` | destination exists, on write, mkdir, rename and move |
 | 413 | `TOO_LARGE` | `File too large` | over a limit |
 | 500 | `GIT_MISSING`, `ERROR` | `file operation failed` | git not installed, or any other failure |
 | 503 | `HOST_UNREACHABLE` | `host is not connected` | the host agent is not connected |
 | 503 | `AUDIT_UNAVAILABLE` | `audit log unavailable; the change was not made` | the intent row cannot be written |
 | 504 | `TIMEOUT` | `timed out` | host request or git over its limit |
 
-A client matches `code`. The `error` text of the OS-derived rows follows the
-OS and is not a contract.
+A client matches `code`. The texts above are relay's, and fakerelay words them
+the same. A bad search query answers `Search query is empty` or
+`Invalid regex: <Go's parse error>`. A refused git argument answers
+`git argument not allowed: <the whole argument>`.
 
 The project is read from the current world state on every request. A change
 to `files_read_only`, a path or a host applies to the next call.
@@ -1425,9 +1438,10 @@ Schema 1:
 | `projects[]` | `id, name, path, kind, host_id, mode, files_read_only, allowed_mcp_ids, allowed_models, allowed_templates, chat_templates, permission_policy`, plus `files` and `repos` | `path ""` is `DIR/projects/<id>` |
 | `projects[].files` | `{rel: string \| null (dir) \| {"base64"} \| {"symlink": target}}`, written after `repos`, so it sets the worktree state | |
 | `projects[].repos[]` | `{dir, branch, commits: [{message, files}]}`. Real `git init`, `add` and `commit` | |
+| `host_path` | the `PATH` a host probe looks `node`, `claude` and `tmux` up on | fakerelay's own `PATH` |
 | `default_project` | `{home, work}` | absent |
 | `chief_of_staff` | `{project_id, model, daily_model_calls}` | absent |
-| `hosts[]` | `id, name, target, port, identity_file, probe, tmux_path, terminal_templates`, plus the fake fields `root`, `agent`, `persistent_sessions` | `root ""` is `DIR/hosts/<id>`. `agent "none"` |
+| `hosts[]` | `id, name, target, port, identity_file, probe (with node_version and claude_version), tmux_path, terminal_templates`, plus the fake fields `root`, `agent`, `persistent_sessions` | `root ""` is `DIR/hosts/<id>`. `agent "none"` |
 | `mcps[]` | `{id, name, transport, catalogue}`. `catalogue` is the e2e `Catalogue` JSON exactly | |
 | `models[]` | a `/api/models` row `{value, label, group, provider}`, plus `reply` | `reply {"kind": "echo"}` |
 | `terminal_templates[]` | relay's terminal template | none |
@@ -1680,8 +1694,19 @@ the exit code. There is no restart supervision.
   `HOST_UNREACHABLE`, and a watch answers `watch_error`.
 - `POST /api/hosts/{id}/disconnect` moves the host to `unreachable` with
   error `disconnected`.
-- `POST /api/hosts/{id}/probe` returns the world probe. It is class
-  `configure`, like `disconnect` (D13).
+- `POST /api/hosts/{id}/probe` probes again, as relay does. It is class
+  `configure`, like `disconnect` (D13). Its result:
+  - host `unreachable`: `ok: false` and `error: "ssh: connect to host
+    <target> port <port or 22>: Connection refused"`, with no other field;
+  - otherwise `ok: true`. `os`, `arch`, `home` and `shell` keep the world
+    probe's values. `node_path`, `claude_path` and `tmux_path` come from a
+    lookup on `host_path` (the world's, else fakerelay's own `PATH`), with
+    `node_version` and `claude_version` from `--version`. A tool the lookup
+    misses keeps the world probe's value.
+  - `POST /api/hosts` runs the same probe once.
+  - A successful probe of a host with no templates seeds `shell`/`Shell`,
+    and `claude-code`/`Claude Code` with `command` set to the probed
+    `claude_path` when there is one (`ssh-hosts.md`).
 - `hostView.status` comes from state:
   - agent `connected`: `connected`;
   - probe ok: `idle`;

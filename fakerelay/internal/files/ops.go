@@ -74,7 +74,7 @@ func (s *service) list(c *call) (any, *fileErr) {
 	}
 	des, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, osErr(err)
+		return nil, c.osErr(err)
 	}
 	type entry struct {
 		Name string `json:"name"`
@@ -111,7 +111,7 @@ func (s *service) stat(c *call) (any, *fileErr) {
 	}
 	fi, err := os.Lstat(p)
 	if err != nil {
-		return nil, osErr(err)
+		return nil, c.osErr(err)
 	}
 	return infoOf(fi), nil
 }
@@ -138,17 +138,17 @@ func (s *service) read(c *call) (any, *fileErr) {
 	}
 	fi, err := os.Lstat(p)
 	if err != nil {
-		return nil, osErr(err)
+		return nil, c.osErr(err)
 	}
 	if fi.IsDir() {
-		return nil, ferr(400, "EISDIR", "illegal operation on a directory")
+		return nil, ferr(400, "EISDIR", "Path is a directory")
 	}
 	if fi.Size() > limit {
 		return nil, errTooLarge("File too large", fi.Size())
 	}
 	b, err := os.ReadFile(p)
 	if err != nil {
-		return nil, osErr(err)
+		return nil, c.osErr(err)
 	}
 	return map[string]any{"content": string(b), "size": len(b)}, nil
 }
@@ -200,14 +200,14 @@ func (s *service) write(c *call) (any, *fileErr) {
 		created = statErr != nil
 		f, err := os.OpenFile(p, flags, 0o644)
 		if err != nil {
-			return nil, osErr(err)
+			return nil, c.osErr(err)
 		}
 		_, err = f.Write(data)
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}
 		if err != nil {
-			return nil, osErr(err)
+			return nil, c.osErr(err)
 		}
 		return map[string]string{"path": rel}, nil
 	})
@@ -244,7 +244,7 @@ func (s *service) mkdir(c *call) (any, *fileErr) {
 			return nil, e
 		}
 		if err := os.Mkdir(p, 0o755); err != nil {
-			return nil, osErr(err)
+			return nil, c.osErr(err)
 		}
 		return map[string]string{"path": rel}, nil
 	})
@@ -323,22 +323,22 @@ func (s *service) relocate(c *call, tool, src, dst string) (any, *fileErr) {
 		}
 		fi, err := os.Lstat(from)
 		if err != nil {
-			return nil, osErr(err)
+			return nil, c.osErr(err)
 		}
 		if tf, err := os.Lstat(to); err == nil && !os.SameFile(fi, tf) {
-			return nil, ferr(409, "EEXIST", "destination exists: "+dst)
+			return nil, ferr(409, "EEXIST", "Already exists")
 		}
 		if tool == "move" {
 			di, err := os.Stat(filepath.Dir(to))
 			if err != nil {
-				return nil, osErr(err)
+				return nil, c.osErr(err)
 			}
 			if !di.IsDir() {
 				return nil, errNotDir
 			}
 		}
 		if err := os.Rename(from, to); err != nil {
-			return nil, osErr(err)
+			return nil, c.osErr(err)
 		}
 		return map[string]string{"path": dst}, nil
 	})
@@ -370,7 +370,7 @@ func (s *service) remove(c *call) (any, *fileErr) {
 			return nil, e
 		}
 		if _, err := os.Lstat(p); err != nil {
-			return nil, osErr(err)
+			return nil, c.osErr(err)
 		}
 		var err error
 		if trashed {
@@ -379,7 +379,7 @@ func (s *service) remove(c *call) (any, *fileErr) {
 			err = os.RemoveAll(p)
 		}
 		if err != nil {
-			return nil, osErr(err)
+			return nil, c.osErr(err)
 		}
 		return map[string]bool{"trashed": trashed}, nil
 	})
