@@ -34,3 +34,24 @@ func IsParentClaudeSession(kv string) bool {
 	}
 	return strings.HasPrefix(name, "CLAUDE_CODE_")
 }
+
+// Names of the two variables a sandboxed Claude Code needs; see SandboxedClaude.
+const (
+	ClaudeStoreDirEnv   = "CLAUDE_SECURESTORAGE_CONFIG_DIR"
+	ClaudeNoUpdaterEnv  = "DISABLE_AUTOUPDATER"
+	claudeNoUpdaterFlag = "1"
+)
+
+// SandboxedClaude is the environment a Claude Code gets when it runs inside a
+// sandbox profile. The sandbox cannot write the keychain, so a refreshed
+// token would land in <home>/.claude/.credentials.json while a stale keychain
+// item kept shadowing it; naming the store directory makes Claude use that
+// file and a hashed keychain service name, so the stale item stops winning.
+// The sandbox also may not replace its own binary, so the updater is off.
+// Both values are a path and "1": relay never reads or moves the token.
+func SandboxedClaude(home string) map[string]string {
+	return map[string]string{
+		ClaudeStoreDirEnv:  home + "/.claude",
+		ClaudeNoUpdaterEnv: claudeNoUpdaterFlag,
+	}
+}

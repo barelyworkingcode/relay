@@ -32,10 +32,10 @@
 // default)`, as SP2 measured it; only the unix-socket, loopback and setuid
 // rules below narrow that.
 //
-// Two SP2 findings are load-bearing and invisible in the output: `(with
-// report)` is a syntax error on a deny rule, so no deny here carries one, and
-// `~/Library/Keychains` must stay readable for Claude Code to stay logged in,
-// so a caller that wants that grants it explicitly.
+// One SP2 finding is load-bearing and invisible in the output: `(with
+// report)` is a syntax error on a deny rule, so no deny here carries one.
+// `~/Library/Keychains` is not granted by default; a sandboxed Claude Code
+// does not rely on it, because relay points it at its own credentials file.
 //
 // This package renders text and writes a file. It does not decide whether a
 // session is sandboxed, what a session may reach, or when the profile is
