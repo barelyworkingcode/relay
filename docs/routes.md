@@ -273,7 +273,7 @@ stopping are forwarded to the session host (section 3).
   | `model` | string | `haiku`, `sonnet` or `opus` (Claude), `pi/<id>`, `codex/<id>`, or any other model ID (a chat session) |
   | `directory` | string | Working directory; must lie inside the project |
   | `name` | string | Session name |
-  | `settings` | object | Client settings, merged under the project's `permission_policy`; `agent: true` makes a tracked headless agent |
+  | `settings` | object | Client settings, merged under the project's `permission_policy`; `agent: true` makes a tracked headless agent; `readOnlyProjects: true` (claude only) reads every local project and writes none (`400 invalid_settings` for a non-bool, `400 read_only_needs_claude` for another kind, `403 read_only_local_only` for a host project) |
   | `systemPrompt` | string | Chat and pi system prompt |
   | `appendClaudeMd` | boolean | Append the project's CLAUDE.md |
 
