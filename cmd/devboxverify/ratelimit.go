@@ -7,10 +7,12 @@ import (
 )
 
 // limitFrame is what one /ws frame says about the provider's usage limit.
-// Only llm_event frames fill it.
+// llm_event frames fill it, and a session_joined frame fills Hit and Text
+// from its history.
 type limitFrame struct {
-	// Hit marks the assistant message_start of a turn the CLI ended with
-	// error "rate_limit". The structured field decides; reply text never does.
+	// Hit marks a turn the CLI ended with error "rate_limit": the assistant
+	// message_start, or the last assistant entry of a joined history. The
+	// structured field decides; reply text never does.
 	Hit bool
 	// ResetsAt is a rejected rate_limit_event's resetsAt, in Unix seconds.
 	ResetsAt int64
