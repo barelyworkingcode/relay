@@ -3,6 +3,7 @@ package features
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,6 +43,14 @@ func TestChatToolSearchIndexSaysSkillsAreNotTools(t *testing.T) {
 		t.Fatalf("regen-skill wrote no skill under the project directory")
 	}
 	skillName := filepath.Base(filepath.Dir(skills[0]))
+	skillBody, err := os.ReadFile(skills[0])
+	if err != nil {
+		t.Fatalf("read the regenerated skill: %v", err)
+	}
+	wantDesc := skillFrontmatterDescription(string(skillBody))
+	if wantDesc == "" {
+		t.Fatalf("the regenerated skill has no frontmatter description:\n%s", skillBody)
+	}
 
 	ws := i.WebSocket("/ws", i.Credential("mounter"))
 	defer ws.Close()
@@ -94,4 +103,39 @@ func TestChatToolSearchIndexSaysSkillsAreNotTools(t *testing.T) {
 			t.Fatalf("an index line leads with the skill name: %q", line)
 		}
 	}
+	var indexLine string
+	for _, line := range strings.Split(system, "\n") {
+		if strings.Contains(line, "(skill "+skillName+";") {
+			indexLine = line
+			break
+		}
+	}
+	// The index truncates a long description at 160 bytes plus an ellipsis, so
+	// compare a prefix of at most that length.
+	prefix := wantDesc
+	if len(prefix) > 160 {
+		prefix = prefix[:100]
+	}
+	if !strings.HasPrefix(indexLine, "- "+prefix) {
+		t.Fatalf("the index line does not start with the skill's description\n got: %q\nwant prefix: %q", indexLine, "- "+prefix)
+	}
+}
+
+// skillFrontmatterDescription returns the frontmatter description of a
+// SKILL.md with whitespace collapsed and surrounding quotes removed.
+func skillFrontmatterDescription(body string) string {
+	lines := strings.Split(body, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return ""
+	}
+	for _, line := range lines[1:] {
+		if strings.TrimSpace(line) == "---" {
+			break
+		}
+		if v, ok := strings.CutPrefix(line, "description:"); ok {
+			v = strings.Join(strings.Fields(v), " ")
+			return strings.Trim(v, `"'`)
+		}
+	}
+	return ""
 }
