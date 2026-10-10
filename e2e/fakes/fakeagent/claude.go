@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 )
 
 // runClaude speaks claude's stream-json wire: user lines in, then a system
@@ -52,13 +55,15 @@ func (a *agent) runClaude() int {
 		if cmdline, ok := strings.CutPrefix(text, "!sh "); ok {
 			answer = runShellTurn(cmdline)
 		}
+		msgID := randomID("msg_")
+		content := []map[string]any{{"type": "text", "text": answer}}
 		a.emitJSON(map[string]any{
 			"type": "assistant",
 			"message": map[string]any{
-				"id": randomID("msg_"), "role": "assistant",
-				"content": []map[string]any{{"type": "text", "text": answer}},
+				"id": msgID, "role": "assistant", "content": content,
 			},
 		})
+		writeTranscript(sessionID, cwd, text, msgID, content)
 		a.emitJSON(map[string]any{
 			"type": "result", "subtype": "success", "is_error": false,
 			"session_id": sessionID, "num_turns": turn, "result": answer,
@@ -138,4 +143,49 @@ func runShellTurn(cmdline string) string {
 		}
 	}
 	return fmt.Sprintf("exit: %d", code)
+}
+
+var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
+
+// claudeDirName is Claude CLI's folder name for a working directory: every
+// character other than A-Z, a-z and 0-9 becomes "-".
+func claudeDirName(cwd string) string {
+	return nonAlnum.ReplaceAllString(cwd, "-")
+}
+
+// writeTranscript appends the turn's user and assistant lines to
+// $HOME/.claude/projects/<dir name>/<conversation id>.jsonl, as the real CLI
+// does before it reports the result. The directory name encodes the working
+// directory with symlinks resolved, as the CLI sees it. A write that fails is
+// ignored: the transcript is a convenience for history tests, and a test that
+// needs it fails on its absence.
+func writeTranscript(sessionID, cwd, userText, assistantID string, content []map[string]any) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	if real, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = real
+	}
+	dir := filepath.Join(home, ".claude", "projects", claudeDirName(cwd))
+	if os.MkdirAll(dir, 0o700) != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, sessionID+".jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	ts := time.Now().UTC().Format(time.RFC3339Nano)
+	lines := []map[string]any{
+		{"type": "user", "sessionId": sessionID, "timestamp": ts,
+			"message": map[string]any{"id": randomID("usr_"), "role": "user", "content": userText}},
+		{"type": "assistant", "sessionId": sessionID, "timestamp": ts,
+			"message": map[string]any{"id": assistantID, "role": "assistant", "content": content}},
+	}
+	for _, l := range lines {
+		if b, err := json.Marshal(l); err == nil {
+			_, _ = f.Write(append(b, '\n'))
+		}
+	}
 }

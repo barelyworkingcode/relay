@@ -18,10 +18,23 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
-// encodeClaudeProjectDir applies Claude CLI's project-directory encoding
-// (replace "/" with "-").
+// encodeClaudeProjectDir applies Claude CLI's project-directory encoding:
+// every character outside A-Z, a-z, 0-9 becomes "-". Deliberate: the CLI's
+// rule, not relay's, and it counts UTF-16 code units, so a character outside
+// the BMP yields two dashes. The result is always shell-safe.
 func encodeClaudeProjectDir(dir string) string {
-	return strings.ReplaceAll(dir, "/", "-")
+	var b strings.Builder
+	for _, r := range dir {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r > 0xFFFF:
+			b.WriteString("--")
+		default:
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
 }
 
 const remoteClaudeHistoryTimeout = 10 * time.Second
