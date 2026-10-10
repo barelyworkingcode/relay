@@ -96,6 +96,7 @@ import (
 )
 
 const (
+	axErrInvalidElement  = -25202
 	axErrCannotComplete  = -25204
 	axErrAttrUnsupported = -25205
 	axErrNoValue         = -25212
@@ -110,11 +111,18 @@ var errAXDriver = errors.New("accessibility driver")
 // appeared.
 var errAXCannotComplete = errors.New("target did not answer")
 
+// errAXInvalidElement marks a read or press on an element the page destroyed
+// by re-rendering; a fresh snapshot finds its replacement.
+var errAXInvalidElement = errors.New("element destroyed")
+
 func axTrusted() bool { return C.ax_trusted() == 1 }
 
 func axErr(op string, code C.int) error {
 	if int(code) == axErrCannotComplete {
 		return fmt.Errorf("%w: %s: %w", errAXDriver, op, errAXCannotComplete)
+	}
+	if int(code) == axErrInvalidElement {
+		return fmt.Errorf("%w: %s: AXError %d: %w", errAXDriver, op, int(code), errAXInvalidElement)
 	}
 	return fmt.Errorf("%w: %s: AXError %d", errAXDriver, op, int(code))
 }

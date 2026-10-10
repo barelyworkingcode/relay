@@ -748,7 +748,10 @@ service's card by its display name. Stop is pressed on that card; the window
 must read `stopped` with a Start button, and `relay service list` must show
 the service stopped within 5 s. Start is pressed; the window must show a new
 pid within 10 s and `service.list` must agree. The crash service is then
-stopped through the API, and the window closed if the journey opened it.
+stopped through the API, and the window closed if the journey opened it. A
+press, the first tray read and the window read at restore retry a destroyed
+Accessibility element (AXError -25202) from a fresh snapshot for up to 5 s;
+any other error keeps its result.
 - Lives in: `cmd/relay/trayapp.go` (the Settings... item),
   `cmd/relay/ipc_services.go` (`ipcStartService`, `ipcStopService`),
   `cmd/relay/ipc_handlers.go` (dispatch, `serviceStatusEventPayload`),
