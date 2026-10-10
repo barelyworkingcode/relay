@@ -542,6 +542,20 @@ func TestGrantShowsExactGrant(t *testing.T) {
 		t.Fatalf("the grant shows scope %v, want acme_folders [Alpha Beta]", m.Scope)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "grant.view", Trace: r.Trace, Fields: map[string]any{"status": "ok", "count": 1}})
+
+	bare := g2Create(t, i, "acme-bare", nil)
+	one := i.MustCLI("grant", "--json", "--project", bare.ID)
+	var bareGrants []struct {
+		ID   string          `json:"id"`
+		MCPs json.RawMessage `json:"mcps"`
+	}
+	one.JSON(t, &bareGrants)
+	if len(bareGrants) != 1 || bareGrants[0].ID != bare.ID {
+		t.Fatalf("relay grant --project lists %+v, want the one bare project", bareGrants)
+	}
+	if got := string(bareGrants[0].MCPs); got != "[]" {
+		t.Fatalf("a project with no MCP grants prints mcps %s, want []", got)
+	}
 }
 
 func TestScopeFieldsAndGatedWidening(t *testing.T) {
