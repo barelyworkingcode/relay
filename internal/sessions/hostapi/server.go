@@ -381,13 +381,22 @@ func (s *Server) ListenInternal() error {
 	}))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.guarded(func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if sess, ok := s.sessions.Get(id); ok {
+		sess, known := s.sessions.Get(id)
+		live := false
+		if known {
 			s.markDeletingIfAlive(id, func() bool {
 				p := sess.Provider()
-				return p != nil && p.Alive()
+				live = p != nil && p.Alive()
+				return live
 			})
 		}
 		api.HandleDeleteSession(s.sessions, id, w, r)
+		if !live {
+			// A dormant or unpersisted session has no provider to exit, so no
+			// exit report follows its delete; relay's ledger would keep the
+			// record. Removing an id the ledger lacks is a no-op there.
+			s.reportExit(id, 0, 0, "deleted")
+		}
 	}))
 	mux.HandleFunc("POST /api/sessions/{id}/message", s.guarded(func(w http.ResponseWriter, r *http.Request) {
 		api.HandleSessionMessageSync(s.sessions, r.PathValue("id"), w, r)

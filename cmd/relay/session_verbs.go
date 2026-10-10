@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -302,13 +301,6 @@ func adminSessionStop(ctx context.Context, r *appRouter, args json.RawMessage) (
 	}
 	if _, err := r.proxyOperatorCall(ctx, http.MethodDelete, "/api/sessions/"+url.PathEscape(req.ID), nil); err != nil {
 		return nil, err
-	}
-	// A dormant session has no live provider, so the host reports no exit
-	// for its delete and the ledger record would otherwise outlive it.
-	if r.sessions != nil {
-		if err := r.sessions.Remove(req.ID); err != nil {
-			slog.Warn("session stop: ledger remove failed", "session", req.ID, "error", err)
-		}
 	}
 	return marshalAdminResult(sessionIDRequest{ID: req.ID})
 }

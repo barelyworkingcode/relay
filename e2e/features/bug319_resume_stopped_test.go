@@ -64,6 +64,31 @@ func TestBug319ResumeStoppedDormantSessionIsNotFound(t *testing.T) {
 	b319AssertNotFoundRow(t, i, id)
 }
 
+func TestBug319ResumeHTTPDeletedDormantSessionIsNotFound(t *testing.T) {
+	t.Parallel()
+	i := harness.Start(t, harness.Options{
+		Presence: approveGrant,
+		Credentials: []harness.CredentialSpec{
+			{Name: "runner", Classes: []string{"execute"}},
+			{Name: "proxier", Classes: []string{"proxy"}},
+		},
+	})
+	i.WaitSessionHost(b319Deadline)
+	id := startAgentSession(t, i, "claude-code", "sonnet")
+	i.Restart()
+	i.WaitSessionHost(b319Deadline)
+	del := i.SocketHTTP(i.Credential("proxier")).Do("DELETE", "/api/sessions/"+id, nil)
+	if del.Status != http.StatusNoContent {
+		t.Fatalf("DELETE /api/sessions/%s answered %d (%s), want 204", id, del.Status, del.Body)
+	}
+	i.WaitEvent(harness.EventQuery{Key: "session.delete", Fields: map[string]any{"session_id": id, "status": "ok"}}, b319Deadline)
+	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions/"+id+"/resume", nil)
+	if resp.Status != http.StatusNotFound {
+		t.Fatalf("resume of an HTTP-deleted dormant session answered %d (%s), want 404", resp.Status, resp.Body)
+	}
+	b319AssertNotFoundRow(t, i, id)
+}
+
 func b319AssertNotFoundRow(t *testing.T, i *harness.Instance, id string) {
 	t.Helper()
 	for _, row := range i.Audit(harness.AuditQuery{Event: "session_resume", Outcome: "not_found"}) {
