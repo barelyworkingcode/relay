@@ -4,6 +4,9 @@ package sealed
 
 import "fmt"
 
+// DefaultKeychainAccount mirrors the darwin constant so callers build on every platform.
+const DefaultKeychainAccount = "config-seal-key"
+
 var errKeychainUnavailable = fmt.Errorf("%w: sealed config requires macOS", ErrKeyMissing)
 
 // keychainKeyring is a no-op outside darwin: relay's tray host is
@@ -13,7 +16,7 @@ type keychainKeyring struct{}
 
 // NewKeychainKeyring returns a Keyring that refuses every call outside
 // darwin. See keychain_darwin.go for the real implementation.
-func NewKeychainKeyring(trustedAppPath string) Keyring { return keychainKeyring{} }
+func NewKeychainKeyring(trustedAppPath, account string) Keyring { return keychainKeyring{} }
 
 func (keychainKeyring) Load() (string, []byte, error)   { return "", nil, errKeychainUnavailable }
 func (keychainKeyring) Create() (string, []byte, error) { return "", nil, errKeychainUnavailable }

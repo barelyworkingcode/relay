@@ -13,7 +13,7 @@ import (
 // release build so an in-place swap onto the real config dir behaves as today.
 func newKeyring(configDir string) (sealed.Keyring, error) {
 	if !seamsActive(configDir) {
-		return sealed.NewKeychainKeyring(resolveRelayBin()), nil
+		return sealed.NewKeychainKeyring(resolveRelayBin(), sealed.DefaultKeychainAccount), nil
 	}
 	k, err := sealed.OpenFileKeyring(configDir)
 	if err != nil {
