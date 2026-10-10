@@ -102,3 +102,67 @@ func post(ctx context.Context, ev evidence) (commentURL string, err error) {
 	}
 	return commentURL, nil
 }
+
+const fullContext = "devbox/verify-full"
+
+// mainPreflight requires the checkout to be clean and at the default-branch
+// head on GitHub, so a full run vouches for main and nothing else. It returns
+// the repository's owner/name.
+func mainPreflight(ctx context.Context, checkout, head string) (string, error) {
+	dirty, err := gitOut(checkout, "status", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	if dirty != "" {
+		return "", errors.New("checkout is not clean")
+	}
+	info, err := gh(ctx, "", "repo", "view", "--json", "nameWithOwner,defaultBranchRef", "-q", `.nameWithOwner + " " + .defaultBranchRef.name`)
+	if err != nil {
+		return "", err
+	}
+	slug, branch, ok := strings.Cut(info, " ")
+	if !ok || slug == "" || branch == "" {
+		return "", errors.New("cannot read the repository's default branch")
+	}
+	remote, err := gh(ctx, "", "api", "repos/"+slug+"/commits/"+branch, "-q", ".sha")
+	if err != nil {
+		return "", err
+	}
+	if remote != head {
+		return "", fmt.Errorf("checkout HEAD %s is not %s head %s", head, branch, remote)
+	}
+	return slug, nil
+}
+
+// fullState is success only when every journey in the table ran and none
+// failed or was blocked. A NOTRUN journey is by design (the product did
+// nothing wrong, as in the exit rule), so it does not fail the run; a short
+// or empty run does, since a journey that never reported proves nothing.
+func fullState(rs []result, total int) string {
+	counts, _ := tally(rs)
+	if total == 0 || len(rs) != total || counts[stateFail] != 0 || counts[stateBlocked] != 0 {
+		return "failure"
+	}
+	return "success"
+}
+
+// postFull posts the status first and comments only once it landed, and only
+// on success: the comment line is what merge-check looks for, so it must not
+// exist for a run that did not pass.
+func postFull(ctx context.Context, epic int, slug, head string, rs []result, total int) (string, error) {
+	state := fullState(rs, total)
+	counts, _ := tally(rs)
+	desc := fmt.Sprintf("full %d/%d pass=%d fail=%d blocked=%d notrun=%d", len(rs), total,
+		counts[statePass], counts[stateFail], counts[stateBlocked], counts[stateNotRun])
+	_, err := gh(ctx, "", "api", "-X", "POST", "repos/"+slug+"/statuses/"+head,
+		"-f", "state="+state, "-f", "context="+fullContext, "-f", "description="+desc)
+	if err != nil {
+		return "", err
+	}
+	if state == "success" {
+		if _, err := gh(ctx, "Full verify: "+slug+"@"+head, "issue", "comment", strconv.Itoa(epic), "-R", slug, "--body-file", "-"); err != nil {
+			return "", err
+		}
+	}
+	return state, nil
+}

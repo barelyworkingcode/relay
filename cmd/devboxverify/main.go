@@ -161,9 +161,10 @@ func run() int {
 	checkout := fs.String("checkout", "", "relay checkout the running app must be built from (default: this checkout)")
 	pr := fs.Int("post", 0, "PR number to post the status and evidence comment to")
 	phaseFlag := fs.String("phase", "", "run only the api or the screen journeys (default: both, api first)")
-	p, err := parseFlags(fs, os.Args[1:], pr, phaseFlag)
+	epic := fs.Int("epic", 0, "epic issue number: full run on an up-to-date main, posts devbox/verify-full and comments on the epic")
+	p, err := parseFlags(fs, os.Args[1:], pr, phaseFlag, epic)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--post PR | --phase api|screen]")
+		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic N]")
 		return 2
 	}
 	screen := p == "" || p == phaseScreen
@@ -223,7 +224,7 @@ func run() int {
 		}
 	}()
 
-	var head string
+	var head, repoSlug string
 	var repair repairOutcome
 	checks := []preflightCheck{
 		{"session", func() (string, error) {
@@ -235,6 +236,10 @@ func run() int {
 		{"head", func() (string, error) {
 			head, err = gitOut(*checkout, "rev-parse", "HEAD")
 			return head, err
+		}},
+		{"main", func() (string, error) {
+			repoSlug, err = mainPreflight(context.Background(), *checkout, head)
+			return repoSlug + "@" + head, err
 		}},
 		{"build", func() (string, error) {
 			helper := filepath.Join(filepath.Dir(e.RelayBin), "..", "Helpers", "relay-sessions")
@@ -290,7 +295,7 @@ func run() int {
 	}
 	screenOnly := map[string]bool{"lock": true, "console": true, "password": true, "sweep": true}
 	checks = slices.DeleteFunc(checks, func(c preflightCheck) bool {
-		return c.name == "pr" && *pr == 0 || screenOnly[c.name] && !screen
+		return c.name == "pr" && *pr == 0 || c.name == "main" && *epic == 0 || screenOnly[c.name] && !screen
 	})
 	if !runPreflight(checks) {
 		return 2
@@ -337,6 +342,17 @@ func run() int {
 		}
 		emit("POSTED", statusState(results), url)
 	}
+	if *epic > 0 {
+		state, err := postFull(context.Background(), *epic, repoSlug, head, results, len(journeys))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "post failed:", scrub(err.Error(), home))
+			return 2
+		}
+		emit("POSTED", state, fullContext)
+		if state != "success" {
+			return 1
+		}
+	}
 	return code
 }
 
@@ -371,8 +387,9 @@ func fixturesSummary(js []journey) string {
 }
 
 // parseFlags refuses --post with --phase: a PR's evidence covers every
-// journey, so a one-phase run cannot stand for it.
-func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string) (phase, error) {
+// journey, so a one-phase run cannot stand for it. --epic is the same, and
+// a PR's evidence is not an epic's.
+func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string, epic *int) (phase, error) {
 	if err := fs.Parse(args); err != nil {
 		return "", err
 	}
@@ -382,6 +399,12 @@ func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string) (ph
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	switch {
+	case set["epic"] && *epic < 1:
+		return "", errors.New("--epic needs an issue number")
+	case set["epic"] && set["post"]:
+		return "", errors.New("--epic posts its own status; drop --post")
+	case set["epic"] && set["phase"]:
+		return "", errors.New("--epic runs every phase; drop --phase")
 	case set["post"] && *pr < 1:
 		return "", errors.New("--post needs a PR number")
 	case set["post"] && set["phase"]:

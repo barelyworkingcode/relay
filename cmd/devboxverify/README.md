@@ -5,7 +5,7 @@ devboxWorld test world, through relay's own surfaces, and read the outcome
 back, audit log included. No mocks. It runs on the devbox, never in CI.
 
 ```bash
-go run ./cmd/devboxverify [--checkout DIR] [--post PR | --phase api|screen]
+go run ./cmd/devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic N]
 ```
 
 Environment:
@@ -160,7 +160,8 @@ credential, and renews P4 when it is due.
   rotation, eve's enrolment window, fixture removal and the run credential's
   revocation.
 - No `--phase` runs both in one process, api first. `--post` always runs
-  both and refuses `--phase`.
+  both and refuses `--phase`. `--epic` does the same and refuses both
+  `--post` and `--phase` (usage error, exit 2).
 
 The nightly runs relay `--phase api`, then eve's own run, then relay
 `--phase screen`. The nightly runner owns that order.
@@ -168,7 +169,7 @@ The nightly runs relay `--phase api`, then eve's own run, then relay
 Preflight, in order: `machine` (the marker, read on a VM: `vm; world v<N>`),
 `pin` (the marker's world version is relay's), `fixtures` (every fixture the
 selected journeys declare is in the catalogue), then `session` (not inside a
-relay session), `head`, `build` (the app was built from HEAD, clean tree),
+relay session), `head`, `main` (with `--epic`), `build` (the app was built from HEAD, clean tree),
 `app` (the one running), `helpers`, then for the screen phase `lock`,
 `console`, `password` and `sweep`, then `pr` (with `--post`), `bootstrap` and
 `world`, both run from the marker's `world_checkout`. `pin` reads OK
@@ -962,6 +963,30 @@ None of this drifts `verify.sh`.
   login user's `~/.zshenv` unlocks it when `SSH_CONNECTION` is set (check with
   `ssh localhost 'claude -p "say ok" </dev/null'`). Without it the first turn
   errors and the journey reads FAIL.
+
+## Verifying an epic
+
+`go run ./cmd/devboxverify --epic N`, run from a `main` checkout in a desktop
+Terminal, is an epic's last task: a full run of every journey, both phases,
+exactly as a full `--post` run does, vouching for `main` as a whole. After it,
+the coordinator runs `merge-check --epic N --close`.
+
+- Preflight `main` runs right after `head`. It fails, naming both shas, unless
+  the checkout is clean and its HEAD equals the default branch's head on
+  GitHub. `build` then holds the app to that same HEAD.
+- The status is `devbox/verify-full` on HEAD, description
+  `full <n>/<total> pass=… fail=… blocked=… notrun=…`. It is `success` only when
+  every journey in the table reported and none is FAIL or BLOCKED. NOTRUN
+  journeys do not fail it, as in the exit rule above, and `notrun=` stays in
+  the description. A FAIL, a BLOCKED, or a short or empty run posts `failure`.
+  A post failure exits 2.
+- Only after a `success` status has posted, the tool comments on issue N with
+  one line and nothing else: `Full verify: <owner>/<repo>@<sha40>`.
+  merge-check matches that line exactly. A run that did not pass leaves no
+  such comment.
+- `--epic` writes no PR comment. Stdout ends with
+  `POSTED\t<state>\tdevbox/verify-full`, and the exit code is 1 when the state
+  is `failure`.
 
 ## Verifying a PR
 
