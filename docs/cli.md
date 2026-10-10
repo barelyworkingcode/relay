@@ -1296,7 +1296,8 @@ refused; `1` for an unknown id
 
 ### `enrol ca-fingerprint`
 
-Prints relay's CA certificate hash — the value a client pins with
+Prints relay's CA certificate hash, `sha256:` and 64 hex characters of the
+SHA-256 over the certificate's DER bytes — the value a client pins with
 `relayremote enrol --ca-fingerprint` so it can tell the real relay from an
 impostor on the network. Reads `ca.crt` straight off disk, so it is the
 one `enrol` subcommand that works with the tray stopped; the certificate is public and the
@@ -1304,9 +1305,15 @@ key it corresponds to is not needed to fingerprint it.
 
 Needs service: no. Prompts: no. Works over SSH: yes.
 
+`ca.crt` does not exist on a fresh install. Relay writes it the first time it
+needs a CA: the first start of the remote listener (`listeners.remote` enabled
+with auditing on), or the first `relay enrol create` or `relay enrol sign`.
+`relay enrol ca-fingerprint` itself never creates it.
+
 No JSON form. The one line on stdout is the fingerprint, `sha256:` followed by 64
-hex characters. Exit codes: `0`; `1` when `ca.crt` does not exist yet
-(`error: no CA certificate exists yet at DIR/ca.crt: run ...`).
+hex characters, and nothing else. Exit codes: `0`; `1` when `ca.crt` does not
+exist yet; the error reads "no CA certificate exists yet at DIR/ca.crt" and says to
+run `relay enrol create` or `relay enrol sign` once to generate one.
 
 ## `relay login`
 
@@ -2287,8 +2294,9 @@ relay is not running; `2` for an unknown flag.
 The body replaces the whole record (`enabled`, `listen`, `enrolment_requests`,
 `enrolment_listen`, `remove`, all booleans except the two addresses), so a field
 the body leaves out is cleared. Needs service: yes. It prompts
-(`remote.configure`) when the change widens what a remote client reaches, and
-then refuses over SSH; a change that only turns things off does not prompt.
+(`remote.configure`) when the change touches `enabled`, `listen`,
+`enrolment_requests` or `enrolment_listen`, in either direction, and then
+refuses over SSH; a body that leaves all four as they are does not prompt.
 Operator-only. `--json` and the text form print the same document and line as
 `remote show`. Exit codes: `0` saved; `1` when `--file` is missing or unreadable
 (`error: open PATH: no such file or directory`), the body is refused, a needed

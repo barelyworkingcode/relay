@@ -1120,6 +1120,24 @@ so outright rather than showing an empty table.
 If the log file itself can't be opened at startup, relay logs the error and runs
 with auditing off. The Tool Calls tab says so rather than showing an empty table.
 
+### Host probes
+
+`host.probe` records one ssh probe of a host: a host add, an edit that changes
+the connection fields, and an explicit probe each write one row.
+
+```json
+{"id":"…","ts":"…","event":"host.probe","actor":{"kind":"operator","auth":"none"},
+ "outcome":"ok","args":{"host_id":"host_1","name":"build","target":"user@build.example",
+ "os":"linux","arch":"arm64","node_path":"/usr/bin/node","claude_path":"/usr/bin/claude"}}
+```
+
+- `outcome` is `ok` when the probe reached the host and `error` when it did not;
+  on `error` the `error` field carries the probe's failure text.
+- `args` carries `host_id`, `name` and `target` always, and `os`, `arch`,
+  `node_path` and `claude_path` when the probe found them.
+- `actor.kind` is `operator` with `auth` `none`: a probe runs only from the tray
+  or a `configure` credential, never from a tool call.
+
 ## Reading it from a terminal
 
 ```

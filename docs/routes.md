@@ -900,7 +900,9 @@ Creates a client certificate bundle on this Mac.
 - **Listeners:** socket, tcp. **Credential:** `configure`. **Gate:** none.
 - **Request:** `{"name": string (required), "target": string (required), "port": number,
   "identity_file": string, "tmux_path": string}`.
-- **Response `201`:** a host object (a probe runs as part of the create).
+- **Response `201`:** a host object (a probe runs as part of the create). A
+  host that cannot be reached is still created and answers `201`; its `probe.ok`
+  is `false` and `probe.error` names the failure.
 - **Errors:** `400` `host name is required` and similar. **Event:** `host.create` (`host_id`).
 - **Audit row:** `host.probe`.
 
@@ -982,7 +984,9 @@ Writes a pasted blob to a temporary file on the host.
 
 - **Listeners:** socket. **Credential:** `execute`. **Gate:** none.
 - **Request:** `{"name": string, "data_b64": string}`; the body is at most 16 MiB,
-  and the decoded data at most 10 MiB.
+  and the decoded data at most 10 MiB. `name` is a paste name of the form
+  `eve-paste-<digits>-<lowercase hex>.<png|jpg|gif|webp>` (for example
+  `eve-paste-1700000000-ab12.png`); any other name is `400` `INVALID`.
 - **Response `200`:** `{"path": "<temp path on the host>"}`.
 - **Errors** (`{"error", "code"}`): `404` `HOST_NOT_FOUND`, `400` `INVALID`,
   `413` `TOO_LARGE`, `503` `HOST_UNREACHABLE`.
@@ -1121,7 +1125,8 @@ Spends an open window for one browser.
 - **Response `200`:** `{"expires": "<RFC 3339>"}`.
 - **Errors:** `409` the window is closed, already spent, or could not be
   saved; `400` malformed body.
-- **Event:** `eve.enrolment.consume`.
+- **Event:** `eve.enrolment.consume`. A closed or spent window answers `409`
+  with status `error`, reason `conflict`.
 
 ### PUT /api/eve/passkeys
 
@@ -1574,14 +1579,18 @@ is `listeners.enrolment` in `ready.json`.
 
 Limits: 16 concurrent connections; 64 frames per connection, then the server
 closes it; 64 KiB per frame; 10 seconds to the first frame and 30 seconds idle;
-8 pending requests at most; a request lives 15 minutes to be approved and 15
+8 pending requests at most; one lodge per source in any 10 seconds; a request lives 15 minutes to be approved and 15
 more to be collected. Each frame is one JSON object with `type`; decoding is
 strict. The server answers each frame with one JSON line:
 `{"type": "Result", "result": {...}}` or `{"type": "Error", "code": <number>,
 "message": "<text>"}`.
 
 Codes: `-32602` invalid params, `-32601` unknown request type, `-32603` internal,
-`-32000` throttled (the `result` then holds `{"retry_after_seconds": <n>}`).
+`-32000` throttled. A second lodge from the same source within 10 seconds
+answers `-32000` with `{"retry_after_seconds": N}` in `result`, where N is the time left in the 10 second
+per-source interval, rounded up (1 to 10); a lodge into a
+full table of 8 answers `-32000` with no `result`, because the table empties
+when rows expire or an operator acts, not on a clock the listener can quote.
 An operator approves or refuses a request with `relay enrol approve` or
 `relay enrol refuse`; there is no approve door on this listener.
 
@@ -1595,7 +1604,7 @@ Wire type `EnrolmentRequest`. Lodges a request.
   |---|---|---|
   | `type` | string | `"EnrolmentRequest"` |
   | `csr_pem` | string | A certificate signing request (required) |
-  | `label` | string | Untrusted display label |
+  | `label` | string | Untrusted display label. Optional; when present 1 to 64 bytes of `A-Za-z0-9._-`, else `-32602` |
   | `requested_profile` | string | A hint, 1 to 64 of `A-Za-z0-9._-` |
   | `sas_commit` | string | 64 lowercase hex: commitment to a comparison nonce |
 
@@ -1603,7 +1612,7 @@ Wire type `EnrolmentRequest`. Lodges a request.
   `expires_in_seconds`, and when the CA exists `ca_pem`; with `sas_commit` also
   `sas_nonce`.
 - **Errors:** `-32602` bad request or invalid CSR; `-32000` throttled (per
-  source, per request rate or a full table); `-32603` no CA yet.
+  source within 10 seconds, per request rate, or a full table of 8); `-32603` no CA yet.
 - **Event:** `enrolment.request.lodge` (`request_id`). A throttle is `denied`,
   reason `throttled`.
 
@@ -1643,7 +1652,11 @@ permission), `-32602` invalid params, `-32603` internal.
 
 - **Request:** `{"type": "ListTools", "project_id": string}`.
 - **Answer:** `{"type": "Tools", "tools": [{...tool}]}` limited to what the
-  grant allows.
+  grant allows. A tool is listed only when the grant admits it by its
+  annotations: a read grant (the default for a profile) lists only tools with
+  `readOnlyHint: true`, and a grant that refuses outside-this-Mac tools lists
+  only tools with `openWorldHint: false`. A tool with no annotations is not
+  listed. See [`access-profiles.md`](access-profiles.md).
 - **Event:** `tool.list` (`project_id`, `transport`, `count`).
 
 ### remote:CallTool
