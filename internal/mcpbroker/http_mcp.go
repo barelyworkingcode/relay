@@ -63,6 +63,16 @@ type httpMcpConn struct {
 	oauth httpOAuth
 
 	onTokenRefresh func(oauth *config.OAuthState)
+
+	// now judges token expiry. Nil reads as wall time.
+	now func() time.Time
+}
+
+func (c *httpMcpConn) clockNow() time.Time {
+	if c.now == nil {
+		return time.Now()
+	}
+	return c.now()
 }
 
 // sessionSnapshot holds pre-snapshotted OAuth and session state,
@@ -162,7 +172,7 @@ func (c *httpMcpConn) tokenRefreshSnapshot() (tokenRefreshSnap, bool) {
 	defer c.mu.Unlock()
 	needsRefresh := c.oauth.refreshToken != "" &&
 		!c.oauth.tokenExpiry.IsZero() &&
-		time.Now().After(c.oauth.tokenExpiry.Add(-OAuthTokenRefreshWindow))
+		c.clockNow().After(c.oauth.tokenExpiry.Add(-OAuthTokenRefreshWindow))
 	if !needsRefresh {
 		return tokenRefreshSnap{}, false
 	}
@@ -184,7 +194,7 @@ func (c *httpMcpConn) applyRefreshedToken(meta *oauthMetadata, tokenResp *oauthT
 		c.oauth.refreshToken = tokenResp.RefreshToken
 	}
 	if tokenResp.ExpiresIn > 0 {
-		c.oauth.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+		c.oauth.tokenExpiry = c.clockNow().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	} else {
 		// No expires_in in the refresh response: clear the (now-stale) expiry so
 		// tokenRefreshSnapshot's IsZero() guard disables proactive refresh.
@@ -218,7 +228,7 @@ func (c *httpMcpConn) refreshTokenIfNeeded() error {
 	// refresh failure inside that window shouldn't fail the call — the existing
 	// token still works. Only hard-fail once the token is actually expired.
 	stillValid := func(err error) bool {
-		if !snap.tokenExpiry.IsZero() && time.Now().Before(snap.tokenExpiry) {
+		if !snap.tokenExpiry.IsZero() && c.clockNow().Before(snap.tokenExpiry) {
 			slog.Warn("OAuth proactive refresh failed; proceeding with still-valid token", "url", snap.oauthURL, "error", err)
 			return true
 		}
@@ -477,6 +487,7 @@ func (c *httpMcpConn) doClose() {
 
 func (m *Manager) startHTTP(ctx context.Context, mcpCfg *config.ExternalMcp) error {
 	conn := newHTTPMcpConn(*mcpCfg)
+	conn.now = m.clockOrWall().Now
 	applyStoredOAuthState(conn, mcpCfg.OAuthState)
 
 	if m.onTokenRefresh != nil {

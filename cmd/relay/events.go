@@ -130,7 +130,10 @@ func eventOutcome(err error) (logging.Outcome, string) {
 	var fileErr *projectfs.Error
 	var sandbox *bridge.SandboxRefusal
 	var dropIn *DropInRefusal
+	var unanswered *presenceUnanswered
 	switch {
+	case errors.As(err, &unanswered):
+		return logging.OutcomeDenied, "presence_timeout"
 	case errors.Is(err, presence.ErrRefused):
 		return logging.OutcomeDenied, "presence_refused"
 	case errors.Is(err, presence.ErrNoSession):

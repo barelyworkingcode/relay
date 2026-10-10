@@ -30,6 +30,9 @@ var appInstance *App
 
 // App is the main tray application state.
 type App struct {
+	// clock is the one clock startServerCore built; the tray countdown and
+	// the settings document read it. Nil reads as wall time.
+	clock        serverClock
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
@@ -568,7 +571,7 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 		// It is a pull: nothing on the lodge path calls into the tray, and
 		// LodgeGeneration is the only fact a network peer can move.
 		if a.enrolNotifier == nil {
-			a.enrolNotifier = newPendingEnrolmentNotifier(nil, a.platform.Notify)
+			a.enrolNotifier = newPendingEnrolmentNotifier(func() time.Time { return clockNow(a.clock) }, a.platform.Notify)
 		}
 		a.enrolNotifier.tick(a.ipcCtx.EnrolmentOps.LodgeGeneration(), n, len(views), maxPendingEnrolmentRequests, a.settingsOpen.Load())
 		if n > 0 {
@@ -595,7 +598,7 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 	// rebuild already carries, and reading through the ops core again would
 	// risk a second, later Get() disagreeing with it under a concurrent
 	// Open/Consume.
-	if remaining, open := eveEnrolmentRemaining(s.EveEnrolment, time.Now()); open {
+	if remaining, open := eveEnrolmentRemaining(s.EveEnrolment, clockNow(a.clock)); open {
 		items = append(items, menuItem{Title: "Eve enrolment open — " + remaining, ID: 0})
 	}
 

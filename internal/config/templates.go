@@ -399,6 +399,38 @@ func ValidateHostTemplate(t TerminalTemplate) error {
 	return nil
 }
 
+// LocalAgentCommands is the binary each local agent session kind runs when
+// the operator set its template's command. An entry is non-empty only for an
+// absolute path or a "~/" path: a bare name such as "claude" is what a
+// hand-written template has always carried and keeps the well-known-location
+// lookup, so setting one is not a change of binary.
+type LocalAgentCommands struct {
+	Claude, Pi, Codex string
+}
+
+// LocalAgentCommandsFor reads the claude-code, pi and codex templates of s.
+// Only the operator's settings feed it; no session request does.
+func LocalAgentCommandsFor(s *Settings) LocalAgentCommands {
+	var out LocalAgentCommands
+	if s == nil {
+		return out
+	}
+	for _, t := range s.TerminalTemplates {
+		if !strings.HasPrefix(t.Command, "/") && !strings.HasPrefix(t.Command, "~/") {
+			continue
+		}
+		switch t.ID {
+		case "claude-code":
+			out.Claude = t.Command
+		case "pi":
+			out.Pi = t.Command
+		case "codex":
+			out.Codex = t.Command
+		}
+	}
+	return out
+}
+
 // DefaultHostTemplates is what a successful probe seeds into a host that has
 // no templates: the host's login shell (empty Command), and Claude Code at
 // the probed path when the probe found one.

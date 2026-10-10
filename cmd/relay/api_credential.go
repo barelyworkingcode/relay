@@ -73,21 +73,15 @@ func findAPICredentialByHash(s *config.Settings, hash string) *config.APICredent
 // Expiry is enforced here rather than at reaping time: reaping is lazy, so
 // an expired record outlives its lifetime on disk by design and only this
 // check stands between it and a request.
-func authenticateAPICredential(s *config.Settings, plaintext string) *config.APICredential {
+func authenticateAPICredential(s *config.Settings, plaintext string, now time.Time) *config.APICredential {
 	if plaintext == "" {
 		return nil
 	}
 	cred := findAPICredentialByHash(s, config.HashToken(plaintext))
-	if cred == nil || cred.Expired(time.Now()) {
+	if cred == nil || cred.Expired(now) {
 		return nil
 	}
 	return cred
-}
-
-// mintAPICredentialForever creates a credential that never expires. Does not
-// save; use within store.With.
-func mintAPICredentialForever(s *config.Settings, name string, classes []control.CapabilityClass) (config.APICredential, string, error) {
-	return mintAPICredentialFor(s, name, classes, 0)
 }
 
 // mintAPICredential validates and mints, returning the PLAINTEXT token
@@ -100,7 +94,7 @@ func mintAPICredentialForever(s *config.Settings, name string, classes []control
 // store.With it runs inside — lives here, in the same file as mintAPICredentialFor and
 // addAPICredential, not in credential_cmd.go: a CLI process never calls
 // this directly (AC-15), only the gated core does.
-func mintAPICredential(store config.SettingsStore, req credentialMintRequest) (config.APICredential, string, error) {
+func mintAPICredential(store config.SettingsStore, req credentialMintRequest, now time.Time) (config.APICredential, string, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return config.APICredential{}, "", errors.New("a credential name is required")
@@ -123,8 +117,8 @@ func mintAPICredential(store config.SettingsStore, req credentialMintRequest) (c
 	// reaping schedule: this is a write that was happening anyway, so
 	// sweeping here costs nothing and needs no timer.
 	if err := store.With(func(s *config.Settings) {
-		reapExpiredAPICredentials(s)
-		cred, plaintext, mintErr = mintAPICredentialFor(s, name, classes, req.TTL)
+		reapExpiredAPICredentials(s, now)
+		cred, plaintext, mintErr = mintAPICredentialFor(s, name, classes, req.TTL, now)
 	}); err != nil {
 		return config.APICredential{}, "", fmt.Errorf("save settings: %w", err)
 	}
@@ -197,12 +191,12 @@ func revokeAPICredentialIf(store config.SettingsStore, id string, permitted func
 // land on it rather than mint something inert; a caller that means "now" has
 // no reason to mint at all. Callers that take a lifetime from an operator
 // refuse a negative one at the point of entry instead.
-func mintAPICredentialFor(s *config.Settings, name string, classes []control.CapabilityClass, ttl time.Duration) (config.APICredential, string, error) {
+func mintAPICredentialFor(s *config.Settings, name string, classes []control.CapabilityClass, ttl time.Duration, now time.Time) (config.APICredential, string, error) {
 	plaintext, err := service.GenerateRandomHex(32)
 	if err != nil {
 		return config.APICredential{}, "", err
 	}
-	now := time.Now().UTC()
+	now = now.UTC()
 	cred := config.APICredential{
 		ID:      uuid.New().String(),
 		Name:    name,
@@ -218,7 +212,7 @@ func mintAPICredentialFor(s *config.Settings, name string, classes []control.Cap
 }
 
 // reapExpiredAPICredentials deletes every credential whose lifetime has run
-// out and reports whether it deleted any. Does not save; use within
+// out. Does not save; use within
 // store.With, and only alongside a mutation that was already going to write
 // — never on a timer. A background goroutine rewriting settings.json on a
 // schedule is a writer nothing asked for, against a file that already has
@@ -227,13 +221,10 @@ func mintAPICredentialFor(s *config.Settings, name string, classes []control.Cap
 // Reaping is housekeeping, not enforcement: an expired credential stops
 // authenticating the moment it expires (authenticateAPICredential), whether
 // or not anything has swept it yet.
-func reapExpiredAPICredentials(s *config.Settings) bool {
-	now := time.Now()
-	before := len(s.APICredentials)
+func reapExpiredAPICredentials(s *config.Settings, now time.Time) {
 	s.APICredentials = slices.DeleteFunc(s.APICredentials, func(c config.APICredential) bool {
 		return c.Expired(now)
 	})
-	return len(s.APICredentials) != before
 }
 
 // legacyFrontendCredentialName is reserved. A credential under this name held
@@ -347,10 +338,20 @@ func retireLegacyFrontendCredentialOnStart(store config.SettingsStore) {
 // Settings.APICredentials.
 type credentialAuthorizer struct {
 	store config.SettingsStore
+	clock serverClock
 }
 
-func NewCredentialAuthorizer(store config.SettingsStore) *credentialAuthorizer {
-	return &credentialAuthorizer{store: store}
+func NewCredentialAuthorizer(store config.SettingsStore, clock serverClock) *credentialAuthorizer {
+	return &credentialAuthorizer{store: store, clock: clock}
+}
+
+// clockNow reads c, or wall time when c is nil: a core built without a clock
+// (the zero value) judges against the wall.
+func clockNow(c serverClock) time.Time {
+	if c == nil {
+		return time.Now()
+	}
+	return c.Now()
 }
 
 // bearerToken is the one place a well-formed Authorization header is
@@ -413,7 +414,7 @@ func (a *credentialAuthorizer) resolveCaller(r *http.Request) (holds func(contro
 	if !ok {
 		return nil, control.ErrNoCredential
 	}
-	cred := authenticateAPICredential(config.FreshSettings(a.store), token)
+	cred := authenticateAPICredential(config.FreshSettings(a.store), token, clockNow(a.clock))
 	if cred == nil {
 		return nil, control.ErrNoCredential
 	}

@@ -33,7 +33,7 @@ func adminDoor(op string) string { return adminOpDoorName(op) }
 // cliVerbTable is the one list of commands. runCLI dispatches from it and the
 // doors document reads it, so a command cannot exist in one and not the other.
 func cliVerbTable() []cliVerb {
-	return []cliVerb{
+	table := []cliVerb{
 		{Name: "serve", Run: runServeCommand, Usage: serveUsage},
 
 		{Name: "service register", Run: serviceRegister, Calls: []string{adminDoor("service.register")}},
@@ -119,6 +119,7 @@ func cliVerbTable() []cliVerb {
 
 		{Name: "doors", Run: runDoorsCommand, Calls: []string{adminDoor("doors.list")}, Usage: doorsUsage},
 	}
+	return append(table, testBuildVerbs()...)
 }
 
 // runCLI runs the verb whose name is the longest prefix of args. A first word

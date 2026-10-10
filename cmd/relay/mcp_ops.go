@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/logging"
@@ -133,6 +134,8 @@ type McpOps struct {
 	// that was happening is not resurrected by the persist — is otherwise
 	// unreachable without standing up an OAuth server to make it happen in.
 	StartFlow func(mcpURL string, openURL func(string)) (*mcpbroker.OAuthResult, error)
+	// Clock stamps the OAuth token expiry. Nil reads as wall time.
+	Clock serverClock
 }
 
 func (o *McpOps) runQueued(ctx context.Context, fn func() error) error {
@@ -166,7 +169,7 @@ func (o *McpOps) startFlow(mcpURL string, openURL func(string)) (*mcpbroker.OAut
 	if o.StartFlow != nil {
 		return o.StartFlow(mcpURL, openURL)
 	}
-	return mcpbroker.StartOAuthFlow(mcpURL, openURL)
+	return mcpbroker.StartOAuthFlow(mcpURL, openURL, func() time.Time { return clockNow(o.Clock) })
 }
 
 func (o *McpOps) List() []config.ExternalMcp {

@@ -102,6 +102,40 @@ type Manager struct {
 
 	// Opens the per-MCP stderr log. Nil until SetStderrLog is called.
 	openStderr StderrLogOpener
+
+	// clock times restart backoff, the stable window, downtime figures and
+	// the OAuth token expiry of connections started afterwards. Nil reads as
+	// wall time.
+	clock Clock
+}
+
+// Clock is the time source for supervision and OAuth token expiry.
+type Clock interface {
+	Now() time.Time
+	// After fires once the clock reaches Now()+d.
+	After(d time.Duration) <-chan time.Time
+}
+
+type wallClock struct{}
+
+func (wallClock) Now() time.Time                         { return time.Now() }
+func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// SetClock installs the clock before the first MCP starts; a connection
+// already running keeps the one it started with.
+func (m *Manager) SetClock(c Clock) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clock = c
+}
+
+func (m *Manager) clockOrWall() Clock {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.clock == nil {
+		return wallClock{}
+	}
+	return m.clock
 }
 
 type pendingResponse struct {
@@ -733,8 +767,9 @@ func (m *Manager) reportHealth(ev HealthEvent) {
 // spending its restart budget. It never exits because the child died.
 func (s *mcpSupervisor) run(conn *externalMcpConn) {
 	attempt := 0
+	clk := s.mgr.clockOrWall()
 	for {
-		up := time.Now()
+		up := clk.Now()
 		select {
 		case <-s.ctx.Done():
 			return
@@ -750,16 +785,16 @@ func (s *mcpSupervisor) run(conn *externalMcpConn) {
 		// INTENSITY, not lifetime attempts, so an MCP that dies once a week
 		// is recovered forever while one that dies on every spawn is
 		// abandoned after a bounded number of tries.
-		if time.Since(up) >= MCPRestartStableWindow {
+		if clk.Now().Sub(up) >= MCPRestartStableWindow {
 			attempt = 0
 		}
-		downAt := time.Now()
+		downAt := clk.Now()
 		s.mgr.reportHealth(HealthEvent{
 			ID: s.id, DisplayName: s.cfg.DisplayName,
 			State: HealthDown, Err: conn.readerFailure(),
 		})
 
-		next := s.restart(&attempt, downAt)
+		next := s.restart(&attempt, downAt, clk)
 		if next == nil {
 			return
 		}
@@ -774,7 +809,7 @@ func (s *mcpSupervisor) run(conn *externalMcpConn) {
 // — relay cannot know whether the child sent the mail before it died. The
 // caller sees the failure and decides; relay restores the capability, not
 // the call.
-func (s *mcpSupervisor) restart(attempt *int, downAt time.Time) *externalMcpConn {
+func (s *mcpSupervisor) restart(attempt *int, downAt time.Time, clk Clock) *externalMcpConn {
 	var lastErr error
 	for {
 		*attempt++
@@ -787,11 +822,11 @@ func (s *mcpSupervisor) restart(attempt *int, downAt time.Time) *externalMcpConn
 			s.mgr.reportHealth(HealthEvent{
 				ID: s.id, DisplayName: s.cfg.DisplayName,
 				State: HealthAbandoned, Attempt: *attempt - 1,
-				Downtime: time.Since(downAt), Err: lastErr,
+				Downtime: clk.Now().Sub(downAt), Err: lastErr,
 			})
 			return nil
 		}
-		if !sleepCtx(s.ctx, mcpRestartDelay(*attempt)) {
+		if !sleepCtx(s.ctx, clk, mcpRestartDelay(*attempt)) {
 			return nil
 		}
 
@@ -802,7 +837,7 @@ func (s *mcpSupervisor) restart(attempt *int, downAt time.Time) *externalMcpConn
 			s.mgr.reportHealth(HealthEvent{
 				ID: s.id, DisplayName: s.cfg.DisplayName,
 				State: HealthRestarted, Attempt: *attempt,
-				Downtime: time.Since(downAt),
+				Downtime: clk.Now().Sub(downAt),
 			})
 			return conn
 		}
@@ -835,16 +870,14 @@ func mcpRestartDelay(attempt int) time.Duration {
 	return d
 }
 
-func sleepCtx(ctx context.Context, d time.Duration) bool {
+func sleepCtx(ctx context.Context, clk Clock, d time.Duration) bool {
 	if d <= 0 {
 		return ctx.Err() == nil
 	}
-	t := time.NewTimer(d)
-	defer t.Stop()
 	select {
 	case <-ctx.Done():
 		return false
-	case <-t.C:
+	case <-clk.After(d):
 		return true
 	}
 }
