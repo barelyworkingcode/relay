@@ -151,7 +151,7 @@ when known. `docs/logging-schema.json` enforces them.
 Five events replace a line that exists today and keep every key and value of
 it; only `msg` changes, to the event key: `session.drop_in`,
 `chief_of_staff.send`, `model.request`, `chat.turn` and `session.state`. Their
-"existing" keys are not repeated here.
+keys are listed in the rows below.
 
 ### Server
 
@@ -183,7 +183,7 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `chief_of_staff.config.set` | At the end of `SetChiefOfStaff` | `PUT /api/chief-of-staff/config`, Settings | `project_id` |
 | `chief_of_staff.config.clear` | At the end of `ClearChiefOfStaff` | `DELETE /api/chief-of-staff/config`, Settings | none |
 | `chief_of_staff.send` | When a message is sent to the Chief of Staff session | `POST /api/chief-of-staff/messages` | `session_id` (`origin` (existing)) |
-| `chief_of_staff.start` | When a Chief of Staff session is started | `POST /api/chief-of-staff/sessions` | `session_id`, `project_id`, `kind` |
+| `chief_of_staff.start` | When a Chief of Staff session is started | `POST /api/chief-of-staff/sessions` | `session_id`, `project_id`, `kind` (the outcome follows the HTTP status: `403` is `denied`, `400` is `error` with reason `invalid`) |
 
 ### Grants
 
@@ -380,8 +380,8 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `terminal.list` | In `handleProxyList`, `listViaHost` | `GET /api/terminals`, `relay terminal list` | `count` |
 | `session.launch` | In `launchWithEvent` | `POST /api/sessions`, `POST /api/terminals`, `relay session start`, `relay terminal start` | `session_id`, `project_id`, `kind` (on a refusal `reason` is the launch refusal code) |
 | `session.resume` | In `resumeSession` | `POST /api/sessions/{id}/resume`, `relay session resume` | `session_id`, `project_id` |
-| `session.drop_in` | In `dropIn` | `POST /api/sessions/{id}/drop-in`, bridge `drop_in_attach` (`relay drop-in`) | `session_id` (`host`, `terminal_id` (existing)) |
-| `session.mode` | At the end of `adminSessionMode` | `relay session mode` | `session_id` |
+| `session.drop_in` | In `dropIn` | `POST /api/sessions/{id}/drop-in`, bridge `drop_in_attach` (`relay drop-in`) | `session_id`, `host`, `terminal_id` |
+| `session.mode` | At the end of `adminSessionMode` | `relay session mode` | `session_id` (a `resume_required` answer from a local claude session ends the event `error` with reason `internal`) |
 | `session.persistent.list` | Before the list is returned | `GET /api/projects/{id}/persistent-sessions`, `relay terminal persistent-list` | `project_id` |
 | `session.persistent.kill` | At the end of `PersistentSessionOps.Kill` | `DELETE /api/projects/{id}/persistent-sessions/{name}`, `relay terminal persistent-kill` | `project_id` |
 | `session.exited` | At the end of `appRouter.SessionExited` | bridge `session_exited` | `session_id` |
@@ -390,19 +390,19 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 | `terminal.delete` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes, `relay terminal stop`, `relay terminal log` | `terminal_id` |
 | `terminal.log` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes, `relay terminal stop`, `relay terminal log` | `terminal_id` |
 | `session.ws.close` | At connection end in the relay-sessions hub | `/ws` | none |
-| `session.state` | On an agent state change (background, relay-sessions) | none (background) | none (existing keys) |
+| `session.state` | On an agent state change (background, relay-sessions) | none (background) | `session_id`, `from`, `to` (the agent states before and after) |
 
 ### Sandbox
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
-| `sandbox.attach` | At the end of `appRouter.SandboxAttach` | bridge `sandbox_attach` (`relay sandbox`) | `project_id`, `template`, `session_id` |
+| `sandbox.attach` | At the end of `appRouter.SandboxAttach` | bridge `sandbox_attach` (`relay sandbox`) | `project_id`, `template`, `session_id` (a folder in no project ends `error` with reason `not_found`; a template outside `allowed_templates` ends `denied`) |
 
 ### Models
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
-| `model.request` | At the end of a model request; poll paths stay silent on success | model endpoint (unix, TCP) | none (existing keys) |
+| `model.request` | At the end of a model request; poll paths stay silent on success | model endpoint (unix, TCP) | `method`, `path`, `http_status`, `transport`, `caller_kind`, `caller`, `session_id` (only for a session admitted by launch identity or as a member of one), `model` (absent when unknown) |
 | `model.host.register` | At the end of `appRouter.RegisterModelHost` | bridge `register_model_host` | `service_id` |
 | `model.list` | In relay-sessions `HandleModels` | forwarded `GET /api/models`, `relay model list` | `count` |
 
@@ -410,7 +410,7 @@ it; only `msg` changes, to the event key: `session.drop_in`,
 
 | Event | When written | Doors | Fields |
 |---|---|---|---|
-| `chat.turn` | At the end of a chat turn (relay-sessions) | `/ws` turn | none (existing keys) |
+| `chat.turn` | At the end of a chat turn (relay-sessions) | `/ws` `send_message` only; `POST /api/sessions/{id}/message` and `relay session message` write none | `session_id` (tool search is not a field here: it logs its own `chat.tool_search` line at session start) |
 
 ### Test build only
 

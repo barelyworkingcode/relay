@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -45,16 +48,20 @@ func (a *agent) runClaude() int {
 			})
 		}
 		turn++
+		answer := "echo: " + text
+		if cmdline, ok := strings.CutPrefix(text, "!sh "); ok {
+			answer = runShellTurn(cmdline)
+		}
 		a.emitJSON(map[string]any{
 			"type": "assistant",
 			"message": map[string]any{
 				"id": randomID("msg_"), "role": "assistant",
-				"content": []map[string]any{{"type": "text", "text": "echo: " + text}},
+				"content": []map[string]any{{"type": "text", "text": answer}},
 			},
 		})
 		a.emitJSON(map[string]any{
 			"type": "result", "subtype": "success", "is_error": false,
-			"session_id": sessionID, "num_turns": turn, "result": "echo: " + text,
+			"session_id": sessionID, "num_turns": turn, "result": answer,
 			"total_cost_usd": 0,
 			"usage":          map[string]int{"input_tokens": 1, "output_tokens": 1},
 		})
@@ -115,4 +122,20 @@ func mcpServerEntries(path string) []map[string]string {
 		out = append(out, map[string]string{"name": name, "status": "connected"})
 	}
 	return out
+}
+
+// runShellTurn runs cmdline through /bin/sh -c in the session's working
+// directory and answers "exit: N". A command that cannot start answers
+// "exit: -1".
+func runShellTurn(cmdline string) string {
+	cmd := exec.Command("/bin/sh", "-c", cmdline)
+	code := 0
+	if err := cmd.Run(); err != nil {
+		code = -1
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		}
+	}
+	return fmt.Sprintf("exit: %d", code)
 }

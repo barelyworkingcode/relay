@@ -352,7 +352,10 @@ manager byte for byte. A hidden tool that was not loaded is refused with no
 MCP call (`chat.call_tool`, `denied`, `not_loaded`). Calling a loaded tool
 by its real name works too.
 
-**What is hidden.** A tool is hidden when a project skill lists it, it is
+**What is hidden.** Nothing is hidden until the project has a skill that lists
+the MCP's tools: `relay project regen-skill` writes it from the project's
+grant. Before that every tool goes to the model, whatever the threshold. A tool
+is hidden when a project skill lists it, it is
 not in `pinned`, and it is in the live MCP catalogue. Skills are read at
 every Start from `<project dir>/.claude/skills/*/SKILL.md`: the frontmatter
 gives the index line and ranking text, and the first `## Tools` section lists
@@ -974,7 +977,7 @@ id `relaysessions`, schema and levels in
 [`logging-standard.md`](logging-standard.md). relay's `sessionHostClient`
 forwards the request's trace ID in `X-Trace-Id` on each call, so a frontend
 request and its `/launch` share one ID. A chat turn takes its ID from the
-`trace_id` of its `send_message`.
+`trace_id` of its `send_message`. Only a `/ws` `send_message` writes `chat.turn`; a message sent with `POST /api/sessions/{id}/message` or `relay session message` does not.
 
 The `send_message` WebSocket message takes an optional `trace_id`. A valid one
 is kept, otherwise one is minted. The session records the turn when the message
@@ -1081,7 +1084,7 @@ covered here.
 - **Launch.** `session start` and `terminal start` build their request with `sessionLaunchRequest` and `terminalLaunchRequest`, the helpers the routes use, and run `launchWithEvent`. The caller is `LaunchCaller{Operator}`: it grants execute and the audit actor is the CLI process. No project token, launch identity or API credential is made for it. The answer is the route's 201 body.
 - **Resume.** `session resume` calls `resumeSession`, which the route calls too. It answers `{"session_id","resumed"}`: `false` for a session that is already live.
 - **Proxied calls.** `session list|message|stop` and `terminal list|log|stop` go through the reverse proxy eve's requests use, so the host sees relay's internal bearer and the trace id. Each writes an allowed `control_decision` row with the proxied method and path, class `operator` and transport `bridge`. An answer larger than 8 MiB is refused by name.
-- **Mode.** `session mode` joins relay-sessions' `/ws`, sends `join_session`, then `set_permission_mode`, and answers on the first `mode_changed` for the session or the first `error` frame (`resume_required` included). It gives up after two minutes and closes the socket.
+- **Mode.** `session mode` joins relay-sessions' `/ws`, sends `join_session`, then `set_permission_mode`, and answers on the first `mode_changed` for the session or the first `error` frame (`resume_required` included: a local claude session relay launched always answers it, because its single-use identity cannot be reused by an in-place restart; only an SSH-host session changes mode in place). It gives up after two minutes and closes the socket.
 - **Persistent terminals.** `terminal persistent-list|persistent-kill` call `PersistentSessionOps`, as the project routes do.
 
 ## What a sandboxed session can reach
@@ -1309,7 +1312,7 @@ templates are never offered. A host project may launch every template of its
 host; `allowed_templates` gates console templates only. A claude session on a
 host project passes the kind gate iff the host has a `claude-code` template;
 a codex session passes it iff the host has a `codex` template; a chat session
-keeps the console `allowed_templates` gate; pi is refused on a host. A host template never sandboxes: it cannot set `"sandbox": true` or
+keeps the console `allowed_templates` gate, so its project needs `chat` (or `"*"`) listed; pi is refused on a host. A host template never sandboxes: it cannot set `"sandbox": true` or
 carry `read` or `read_write`, and one that omits `sandbox` launches
 unconfined. An empty `command` there runs the host's login shell rather
 than relay's `$SHELL`. Shape, seeding and launch argv are in

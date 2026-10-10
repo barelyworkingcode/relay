@@ -525,10 +525,11 @@ for arguments, so a truncated value is never mistaken for a short, genuine
 one.
 
 `session_launch` and `session_resume` records carry request-supplied strings
-on a refusal too, and a launch request body may be 1 MiB.
+on a refusal too, and a launch request body may be 1 MiB. A body over that is
+refused `413` before any launch runs and writes no `session_launch` row.
 `newSessionLaunchAuditEvent` builds both and caps them there: `error` at 256 runes, `args.session_kind` and
 `actor.project_id` at 64 runes each, `args.directory` at 1024 runes. A capped
-value keeps its leading runes and ends in `…`, which never occurs in a real
+value keeps its first N runes (the cap) and then `…`, so it is N+1 runes long, which never occurs in a real
 kind or project id. A real directory name can end in `…`, so a capped
 directory also sets `args.directory_truncated` `true`, the same marker shape
 as `path_truncated`.

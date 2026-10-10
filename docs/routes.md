@@ -273,7 +273,7 @@ stopping are forwarded to the session host (section 3).
   | `model` | string | `haiku`, `sonnet` or `opus` (Claude), `pi/<id>`, `codex/<id>`, or any other model ID (a chat session) |
   | `directory` | string | Working directory; must lie inside the project |
   | `name` | string | Session name |
-  | `settings` | object | Client settings, merged under the project's `permission_policy`; `agent: true` makes a tracked headless agent |
+  | `settings` | object | Client settings, merged under the project's `permission_policy`; `headless: true` makes a headless session, and `agent: true` with it keeps a headless session tracked; `readOnlyProjects: true` (claude only) reads every local project and writes none (`400 invalid_settings` for a non-bool, `400 read_only_needs_claude` for another kind, `403 read_only_local_only` for a host project) |
   | `systemPrompt` | string | Chat and pi system prompt |
   | `appendClaudeMd` | boolean | Append the project's CLAUDE.md |
 
@@ -288,6 +288,22 @@ stopping are forwarded to the session host (section 3).
   - `413` body too large;
   - `502` the session host answered with a failure (`{"error":"launch failed"}`);
   - `503` the session ledger or the session host is unavailable.
+
+  A refusal body is `{"error": "<message>"}`; the machine-readable code below is
+  the event `reason` and the text of the `session_launch` audit row.
+- **Launch refusal codes** (the one list for `POST /api/sessions`,
+  `POST /api/terminals`, the resume route and `relay sandbox`):
+
+  | Status | Codes |
+  |---|---|
+  | `403` | `caller_not_authorized`, `project_required`, `project_not_available`, `template_not_allowed`, `provider_not_available_on_host`, `model_not_allowed`, `model_system_only`, `directory_outside_project`, `read_only_local_only`, `session_id_not_allowed`, `session_not_resumable`, `persist_session_invalid`, `tmux_not_available` |
+  | `400` | `invalid_kind`, `invalid_request`, `invalid_settings`, `model_required`, `read_only_needs_claude`, `host_unavailable`, `model_endpoint_unavailable`, `model_key_mint_failed`, `sandbox_unavailable`, `internal` |
+  | `502` | `persist_list_failed` |
+
+  A launch needs the kind's template in the project's `allowed_templates`
+  (`["*"]` covers all): `claude-code` for a Claude model, `pi`, `codex`, or
+  `chat` for any other model ID. A chat launch in a project whose list lacks
+  `chat` is refused `template_not_allowed`.
 - **Event:** `session.launch` (fields `session_id`, `project_id`, `kind`). On a
   launch refusal the status is `denied` and `reason` is the launch refusal
   code, including for a `400` such as a blank model. A malformed or oversized
@@ -1200,7 +1216,7 @@ Also relay's own door `GET /api/terminals`.
 
 - **Response `200`:** `text/plain`, the terminal's replay log. Works after the
   terminal exits while its log files remain.
-- **Errors:** `404` no log; `400` an unreadable log.
+- **Errors:** `404` no log; `400` a malformed terminal id or an unreadable log.
 - **Event:** `terminal.log` (`terminal_id`). **CLI equivalent:** `relay terminal log`.
 
 ### proxy:DELETE /api/terminals/{id}
@@ -1246,11 +1262,29 @@ of a tracked agent session's state.
 
 ### ws:/ws turn_done
 
-Server to client. Broadcast once when a turn ends, before that transition's
-`session_state`.
+Server to client. Broadcast once when a tracked session's turn ends, before
+that transition's `session_state`. Only claude, pi and codex sessions are
+tracked (`docs/session-host.md`), and a headless one only with `agent: true`;
+a chat session or an untracked headless one sends neither frame.
 
 - **Frame:** `{"type": "turn_done", "sessionId", "excerpt": "<last 500 runes of the reply>", "at": "<RFC 3339>"}`.
 - **Event:** `chat.turn` (`/ws` turn, relay-sessions).
+
+### ws:/ws send_message
+
+Client to server. Sends a message to a session and starts a turn. The reply
+arrives as the session's stream frames, then `turn_done` for a tracked
+session.
+
+- **Frame:** `{"type": "send_message", "sessionId": "<id>", "text": "<text>",
+  "files": [{"name", "mimeType", "data"}], "trace_id": "<id>"}`. `sessionId` is
+  required. `files` is optional; `data` is base64. `trace_id` is optional: a
+  valid one is kept, otherwise relay-sessions mints one.
+- **Answer:** none on success. A failure is an `error` frame: a missing
+  `sessionId` answers a plain `error`; `resume_required` and `dropped_in` carry
+  `code` and `sessionId`; any other failure carries the message.
+- **Event:** `chat.turn`, written for this frame only. `relay session message`
+  and `POST /api/sessions/{id}/message` do not write it.
 
 ### ws:/ws set_permission_mode
 
@@ -1258,8 +1292,10 @@ Client to server. Changes a Claude session's permission mode.
 
 - **Frame:** `{"type": "set_permission_mode", "sessionId": "<id>", "mode": "<mode>"}`.
   `mode` is one of `default`, `acceptEdits`, `plan`, `bypassPermissions`.
-- **Answer:** `mode_changed`, or `error`; a session that needs a restart answers
-  `resume_required`.
+- **Answer:** `mode_changed`, or `error`. A local Claude session relay launched
+  answers `resume_required` for any mode, valid or not, and stays live; only a
+  session on an SSH host changes mode in place, and there an unknown mode
+  answers a plain `error`.
 - **CLI equivalent:** `relay session mode`.
 
 ### ws:/ws mode_changed
@@ -1424,7 +1460,8 @@ byte-identical to a model that does not exist.
 
 **Event and audit.** Every call writes `model.request` (`method`, `path`,
 `http_status`, `transport`, `caller_kind`, `caller`, `session_id`, `model`;
-absent fields are omitted). A successful poll of `GET /health`, `GET /props`,
+absent fields are omitted). `session_id` is present only for a session admitted
+by launch identity or as a member of one, never for a model-key or token call. A successful poll of `GET /health`, `GET /props`,
 `GET /models` or `GET /v1/models` writes no event. The audit row is
 `model_call`, or `model_list` for a listing, and a listing is recorded only
 when `audit.log_lists` is on. `X-Trace-Id` is honored. There is no CLI
