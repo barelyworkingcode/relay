@@ -2,9 +2,12 @@
 // builders (terminal, provider, mcp) share about what a spawned child must not
 // inherit from relay-sessions' own environment beyond relay's credentials.
 //
+// It also holds SandboxedClaude, the two variables a Claude Code needs inside
+// a sandbox profile, which cmd/relay applies to a launch's environment.
+//
 // It is a leaf on purpose: those packages keep their own copies of the relay
 // credential list rather than depend on each other, and this rule needs the
-// same property, with no imports at all.
+// same property, with only the standard library imported.
 package childenv
 
 import "strings"
@@ -33,4 +36,25 @@ func IsParentClaudeSession(kv string) bool {
 		return true
 	}
 	return strings.HasPrefix(name, "CLAUDE_CODE_")
+}
+
+// Names of the two variables a sandboxed Claude Code needs; see SandboxedClaude.
+const (
+	ClaudeStoreDirEnv   = "CLAUDE_SECURESTORAGE_CONFIG_DIR"
+	ClaudeNoUpdaterEnv  = "DISABLE_AUTOUPDATER"
+	claudeNoUpdaterFlag = "1"
+)
+
+// SandboxedClaude is the environment a Claude Code gets when it runs inside a
+// sandbox profile. The sandbox cannot write the keychain, so a refreshed
+// token would land in <home>/.claude/.credentials.json while a stale keychain
+// item kept shadowing it; naming the store directory makes Claude use that
+// file and a hashed keychain service name, so the stale item stops winning.
+// The sandbox also may not replace its own binary, so the updater is off.
+// Both values are a path and "1": relay never reads or moves the token.
+func SandboxedClaude(home string) map[string]string {
+	return map[string]string{
+		ClaudeStoreDirEnv:  home + "/.claude",
+		ClaudeNoUpdaterEnv: claudeNoUpdaterFlag,
+	}
 }

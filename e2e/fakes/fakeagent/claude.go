@@ -16,6 +16,12 @@ import (
 // init (once, on the first user line, as the real CLI does), an assistant
 // snapshot and a result per turn.
 func (a *agent) runClaude() int {
+	// A terminal launch hands the persona a tty rather than a stream-json
+	// pipe; it has nothing to speak to, so it ends and the host reports the
+	// exit.
+	if st, err := os.Stdin.Stat(); err == nil && st.Mode()&os.ModeCharDevice != 0 {
+		return 0
+	}
 	sessionID := flagValue(a.args, "--resume")
 	if sessionID == "" {
 		sessionID = flagValue(a.args, "--session-id")

@@ -1149,6 +1149,21 @@ executing a binary already named by absolute path, and `relay mcp` reaches
 relay only by dialing the bridge socket, already allowed by the unix-socket
 rule.
 
+### Claude's login in the sandbox
+
+A sandboxed Claude Code cannot write the keychain. After its token expires, the
+refreshed token lands in `~/.claude/.credentials.json` while the stale keychain
+item keeps shadowing it, and the login is lost. So when relay launches Claude
+Code inside a sandbox profile (a `claude` session, or a terminal from the
+`claude-code` template), the child gets
+`CLAUDE_SECURESTORAGE_CONFIG_DIR=<home>/.claude`. Claude then reads and writes
+that file and uses a hashed keychain service name, so the stale item no longer
+shadows it. It also gets `DISABLE_AUTOUPDATER=1`, because the sandbox may not
+replace its own binary. Both values are a path and `1`; relay never reads or
+moves the token. A template's own `env` wins over either default. An
+unsandboxed launch gets neither. If the file holds no login yet, run `/login`
+once inside the sandbox to seed it.
+
 The unix-socket rule denies connecting to any socket beneath relay's config
 dir, relayLLM's data dir and eve's data dir (when set), then reopens only
 relay's own `relay.sock`, `model.sock` and `relaysessions-hook.sock`. Under
@@ -1284,6 +1299,10 @@ folders:
   { "id": "shell", "name": "Shell", "sandbox": true, "read_write": ["~"] }
 ]
 ```
+
+The `~/Library/Keychains` read grant in the example no longer decides whether
+Claude stays logged in; the credentials file does (see [Claude's login in the
+sandbox](#claudes-login-in-the-sandbox)).
 
 Each entry is an absolute path or starts with `~`, and never `/`. A directory
 grants its subtree; an existing regular file grants that file, and a
