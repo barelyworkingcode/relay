@@ -137,7 +137,7 @@ rare.
 Intent: start a chat, Claude, pi, Codex or terminal session in a project and work in it.
 It worked: the session starts in the project folder, answers, and stops when told; it cannot reach another project.
 Why must-have: eve's everyday path; every chat goes through it.
-Areas: sessions, sandbox, templates, audit.
+Areas: sessions, sandbox, templates, audit, presence.
 
 | ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
 |---|---|---|---|---|---|---|---|---|
@@ -175,7 +175,7 @@ Areas: sessions, sandbox, templates, audit.
 Intent: grant a project its folder, mail account and chosen tools, and nothing wider.
 It worked: `relay grant` shows exactly what was granted, and a session in it is refused everything else.
 Why must-have: the product's security promise; a silent widening is the worst failure relay has.
-Areas: projects, grants, sandbox.
+Areas: projects, grants, sandbox, presence.
 
 Creating a project and widening a grant are `project.grant`, an owner gate. Journeys cover the gate itself (the harness creates Verify Grant as the owner; a session has no door to it), the effect of an approved grant (preflight, acme-sandbox-reach) and the ungated edits: narrowing that takes effect in a live session, and re-saves that change nothing.
 
@@ -198,7 +198,7 @@ Creating a project and widening a grant are `project.grant`, an owner gate. Jour
 Intent: register an MCP server and have a project's agents call its tools.
 It worked: the tools appear in the project's session, a call returns, and a disabled tool is refused.
 Why must-have: every mail, calendar and file action an agent takes goes through the bridge.
-Areas: mcps, grants, audit.
+Areas: mcps, grants, audit, presence.
 
 | ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
 |---|---|---|---|---|---|---|---|---|
@@ -237,7 +237,7 @@ Areas: audit.
 Intent: run relayLLM, eve, the scheduler and other services under relay, started at login and restarted on a crash.
 It worked: the services are up after login, a crashed one comes back, and the tray and `relay service list` show the true state.
 Why must-have: eve, chat and scheduled runs all sit on this; a service that stays down after a crash is noticed late. Scheduling itself lives in relayScheduler; relay's part is keeping it running.
-Areas: services, tray.
+Areas: services, tray, presence.
 
 | ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
 |---|---|---|---|---|---|---|---|---|
@@ -272,7 +272,7 @@ Areas: models, sessions, audit.
 Intent: reach relay's and eve's web pages from a browser with a passkey.
 It worked: a registered passkey signs in; a revoked one no longer does.
 Why should: used when away from the Mac; a break is loud, since the sign-in fails in front of the user.
-Areas: login.
+Areas: login, presence.
 
 | ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
 |---|---|---|---|---|---|---|---|---|
@@ -310,7 +310,7 @@ Areas: tray, settings-ui.
 Intent: give a script a scoped credential for relay's control plane.
 It worked: the credential's class allows what it should and nothing more; a revoked one gets 401.
 Why should: every journey and several clients depend on it, but a break is loud.
-Areas: credentials, logging, doors.
+Areas: credentials, logging, doors, presence.
 
 | ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
 |---|---|---|---|---|---|---|---|---|
@@ -327,7 +327,7 @@ Areas: credentials, logging, doors.
 Intent: let another machine reach chosen projects over mTLS.
 It worked: an approved client reaches its projects and only those; a revoked one is refused.
 Why later: set up rarely; almost every step is an owner gate.
-Areas: remote.
+Areas: remote, presence.
 
 | ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
 |---|---|---|---|---|---|---|---|---|
@@ -372,7 +372,7 @@ Areas: hosts.
 Intent: start over when the keychain key is lost.
 It worked: relay names what it destroys, and starts clean.
 Why later: break-glass only; it is an owner gate by design.
-Areas: sealed.
+Areas: sealed, presence.
 
 | ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
 |---|---|---|---|---|---|---|---|---|
@@ -397,7 +397,7 @@ Areas: files.
 Intent: start a relay that is picked by its config dir alone, so a test harness or a second profile runs next to the tray without touching it.
 It worked: `relay serve --config-dir X` prints `X/ready.json` once every listener is up; a verb with the same dir (or `RELAY_CONFIG_DIR`) reaches that instance only; a dir with no server fails naming the dir and is not created.
 Why later: a harness and power-user path; the tray's everyday behaviour is unchanged.
-Areas: instance, sandbox, remote, models.
+Areas: instance, sandbox, remote, models, presence.
 
 | ID | Feature | Claim | Simple door | Power door | Doors | Gate | Proof | Test |
 |---|---|---|---|---|---|---|---|---|
@@ -525,7 +525,7 @@ exercise it. Goals and features above use these names.
 ```yaml
 areas:
   sessions:
-    code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**]
+    code: [cmd/relay/session_*.go, cmd/relay/router_sessions.go, cmd/relay/sessionhost_client.go, cmd/relay/persistent_session_*.go, cmd/relay/mount_session.go, cmd/relaysessions/**, internal/sessions/**, internal/relayfs/**, RelaySessions.entitlements]
     journeys: [session-drop-in, session-drop-in-host, session-drop-in-tool-refused, blank-model-refused, permission-mode-restart, oversized-launch-audit-capped, acme-sandbox-reach, session-chat-lifecycle, terminal-lifecycle, terminal-extra-args, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, session-agent-state, session-codex, slow-route-keepalive, session-host-restart, verify-fixtures-removed, chief-of-staff-send, cos-start, cos-start-outside-root, cos-start-host, cos-read-only-profile]
   sandbox:
     code: [cmd/relay/sandbox_*.go, cmd/relay/session_sandbox*.go, internal/bridge/sandbox*.go, internal/sessions/sandbox/**]
@@ -537,22 +537,22 @@ areas:
     code: [cmd/relay/project_*.go, cmd/relay/ipc_projects.go, cmd/relay/skills.go, internal/project/**]
     journeys: [v1-conversion-refusal, gate-project-grant-neg, gate-project-rotate-token-neg, gate-project-grant-pos, stale-derived-access-edit, context-number-resave, grant-narrowing-live, gate-project-rotate-token-pos, verify-fixtures-removed, cos-read-only-profile, cos-settings]
   grants:
-    code: [cmd/relay/grant_cmd.go, cmd/relay/router.go, internal/project/apply.go, internal/project/grant_widening.go, internal/membership/**]
+    code: [cmd/relay/grant_cmd.go, cmd/relay/router.go, internal/project/apply.go, internal/project/grant_widening.go, internal/membership/**, cmd/relay/membership_auth.go]
     journeys: [acme-sandbox-reach, acme-tools-through-bridge, gate-project-grant-neg, gate-project-grant-pos, stale-derived-access-edit, context-number-resave, disabled-tool-refused, grant-narrowing-live]
   mcps:
-    code: [cmd/relay/mcp_*.go, cmd/relay/ipc_mcp*.go, cmd/relay/exec_cmd.go, internal/mcp/**, internal/mcpbroker/**, internal/bridge/**, internal/jsonrpc/**]
+    code: [cmd/relay/mcp_*.go, cmd/relay/ipc_mcp*.go, cmd/relay/exec_cmd.go, internal/mcp/**, internal/mcpbroker/**, internal/bridge/**, internal/jsonrpc/**, cmd/relay/helpers.go]
     journeys: [acme-tools-through-bridge, tool-call-audited, gate-mcp-register-neg, gate-mcp-oauth-start-neg, gate-mcp-oauth-start-pos, gate-mcp-register-pos, disabled-tool-refused, verify-fixtures-removed]
   audit:
-    code: [cmd/relay/audit_*.go, cmd/relay/ipc_audit.go, internal/audit/**]
+    code: [cmd/relay/audit_*.go, cmd/relay/ipc_audit.go, internal/audit/**, internal/relayfs/**]
     journeys: [blank-model-refused, oversized-launch-audit-capped, tool-call-audited, gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, context-number-resave, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos, chief-of-staff-send, cos-start, cos-start-outside-root, cos-start-host]
   services:
-    code: [cmd/relay/service_*.go, cmd/relay/cli_service.go, cmd/relay/enhanced_services.go, cmd/relay/ipc_service*.go, internal/service/**]
+    code: [cmd/relay/service_*.go, cmd/relay/cli_service.go, cmd/relay/enhanced_services.go, cmd/relay/ipc_service*.go, internal/service/**, cmd/relay/helpers.go]
     journeys: [gate-service-register-neg, gate-service-register-pos, service-start-stop, service-restart-on-crash, settings-window-services, session-host-restart, verify-fixtures-removed]
   models:
     code: [cmd/relay/model_*.go, cmd/relay/router_model_host.go, cmd/relay/frontend_model_guard.go, cmd/relay/relay_llm_channel.go, cmd/relay/ipc_models.go, internal/modelbroker/**]
     journeys: [model-list-and-completion]
   login:
-    code: [cmd/relay/login_*.go, cmd/relay/ipc_login.go, cmd/relay/eve_*.go, internal/login/**, internal/ceremonylimit/**]
+    code: [cmd/relay/login_*.go, cmd/relay/ipc_login.go, cmd/relay/eve_*.go, internal/login/**, internal/ceremonylimit/**, docs/auth-flow.html]
     journeys: [gate-eve-enrolment-open-neg, gate-eve-passkey-revoke-neg, gate-login-bootstrap-mint-neg, gate-login-passkey-revoke-neg, gate-login-bootstrap-mint-pos, gate-login-passkey-revoke-pos, gate-eve-enrolment-open-pos, gate-eve-passkey-revoke-pos]
   credentials:
     code: [cmd/relay/credential_*.go, cmd/relay/api_credential.go, cmd/relay/frontend_*.go, internal/control/**, internal/peertoken/**]
@@ -561,7 +561,7 @@ areas:
     code: [cmd/relay/enrol*.go, cmd/relay/ipc_enrolments.go, cmd/relay/remote_*.go, internal/enrolment/**]
     journeys: [gate-enrolment-create-neg, gate-enrolment-sign-neg, gate-enrolment-update-neg, gate-enrolment-revoke-neg, gate-remote-configure-neg, gate-enrolment-create-pos, gate-enrolment-sign-pos, gate-enrolment-update-pos, gate-enrolment-revoke-pos, gate-remote-configure-pos]
   hosts:
-    code: [cmd/relay/host_*.go, cmd/relay/ipc_host*.go, internal/sshhost/**]
+    code: [cmd/relay/host_*.go, cmd/relay/ipc_host*.go, internal/sshhost/**, cmd/relay/sshstub_*.go]
     journeys: [permission-mode-restart, slow-route-keepalive, verify-fixtures-removed]
   files:
     code: [cmd/relay/file_*.go, cmd/relay/audit_file.go, cmd/relay/project_cmd.go, internal/projectfs/**]
@@ -573,21 +573,107 @@ areas:
     code: [cmd/relay/sealed_reset.go, cmd/relay/sealed_verbs.go, cmd/relay/keystore*.go, internal/sealed/**, internal/config/**]
     journeys: [gate-sealed-reset-neg, gate-sealed-reset-pos, gate-mcp-oauth-start-pos]
   doors:
-    code: [cmd/relay/doors.go, cmd/relay/cli_verbs.go, internal/bridge/operator_caller.go]
+    code: [cmd/relay/doors.go, cmd/relay/cli_verbs.go, internal/bridge/operator_caller.go, cmd/relay/cli_helpers.go]
     journeys: []
   logging:
-    code: [cmd/relay/logs_cmd.go, cmd/relay/trace_flag.go, cmd/relay/events.go, internal/logging/**]
+    code: [cmd/relay/logs_cmd.go, cmd/relay/trace_flag.go, cmd/relay/events.go, internal/logging/**, cmd/relay/log_rotate.go, docs/logging-schema.json]
     journeys: []
   instance:
-    code: [cmd/relay/server_core.go, cmd/relay/serve_cmd.go, cmd/relay/platform_headless.go, cmd/relay/config_dir.go, cmd/relay/main.go, cmd/relay/clock*.go]
+    code: [cmd/relay/server_core.go, cmd/relay/serve_cmd.go, cmd/relay/platform_headless.go, cmd/relay/config_dir.go, cmd/relay/main.go, cmd/relay/clock*.go, cmd/relay/testbuild_relaytest.go, build.sh, Info.plist, Relay.entitlements]
     journeys: [gate-mcp-oauth-start-pos, gate-sealed-reset-pos]
   tray:
-    code: [cmd/relay/trayapp.go, cmd/relay/tray_notify.go, cmd/relay/cocoa_darwin.go, cmd/relay/native_view.go, cmd/relay/icon.go, cmd/relay/platform.go]
+    code: [cmd/relay/trayapp.go, cmd/relay/tray_notify.go, cmd/relay/cocoa_darwin.go, cmd/relay/native_view.go, cmd/relay/icon.go, cmd/relay/platform.go, cmd/relay/cocoa_darwin.h, cmd/relay/cocoa_darwin.m, cmd/relay/init_darwin.go, cmd/relay/timeouts.go, cmd/relay/process_stats_*.go, AppIcon.icns]
     journeys: [settings-window-services]
   settings-ui:
-    code: [web/**, cmd/relay/settings_html.go, cmd/relay/ipc_handlers.go, cmd/relay/ipc_overview.go, cmd/relay/overview_seed.go, cmd/relay/status_verbs.go, internal/webassets/**]
+    code: [web/**, cmd/relay/settings_html.go, cmd/relay/ipc_handlers.go, cmd/relay/ipc_overview.go, cmd/relay/overview_seed.go, cmd/relay/status_verbs.go, internal/webassets/**, cmd/relay/helpers.go]
     journeys: [settings-window-services, cos-settings]
+  every-test:
+    code: [e2e/harness/**, e2e/fakes/**, cmd/relay/admin_ops.go, cmd/relay/admin_read_ops.go, e2e/go.mod, e2e/go.sum, go.mod, go.sum]
+    journeys: []
+  no-test:
+    code: [cmd/devboxverify/**, cmd/devboxpresence/**, cmd/devui/**, cmd/testmcp/**, cmd/testservice/**, .github/**, .githooks/**, .claude/**, scripts/**, e2e/contract/**, e2e/coverage/**, fakerelay/**, .gitignore, .golangci.yml, LICENSE]
+    journeys: []
 ```
+
+## Area map grammar
+
+The areas block above is the map from code to tests. A program reads it, so
+its form is fixed. This section is the whole format, written so another repo
+can use it unchanged; only the `e2e:` test item kind is specific to relay.
+
+**Block.** One fenced `yaml` block under the `## Areas` heading, in this shape
+and no other (flow lists on one line, no anchors, no block lists):
+
+```
+areas:
+  <name>:
+    code: [<glob>, <glob>]
+    journey-only: true
+    journeys: [<id>, <id>]
+```
+
+- `<name>` matches `^[a-z][a-z0-9-]*$` and is unique in the block.
+- `code` is required and holds one or more globs.
+- `journey-only` is optional, `true` or `false`. `true` says no headless e2e
+  test can turn this area red. A `journey-only` area still needs globs and its
+  files are still mapped, but it needs no test of its own and a change to it
+  is covered only by the full verify at the close of an epic.
+- `journeys` is optional, a list of devboxverify journey ids. Test selection
+  ignores it.
+- Any other key is an error. So is a bad name, a bad glob, a duplicate area or
+  a key given twice in one area.
+
+**Form.** The parser reads the block line by line and enforces these.
+
+- Indent is exactly 0 spaces for `areas:`, 2 for an area name and 4 for its
+  keys. Any other indent is an error, and a tab in the indent is refused.
+- A `#` comment is a whole line that starts with `#` after its indent. A `#`
+  after a value is not a comment and stays part of the value.
+- A glob holds no backslash. Every glob is slash-separated.
+- A blank line is ignored. Any other line must be `key: value`.
+- Only the block under `## Areas` is read, and only when its fence says
+  `yaml`.
+
+**Goal heading.** A heading is a goal heading when its text, after markup is
+stripped, starts with `G` and a number from 1 to 99 (`G1`, `G12`). It may have
+any level. Any other heading ends the goal, so an `Areas:` line counts only
+between a goal heading and the next heading.
+
+**Glob.** A glob is a repo-relative path with `/` separators, no leading `/`
+and no `..`. It matches the whole path with Go's `path.Match` rules: `*` and
+`?` never cross a `/`. `**` is allowed only as the last segment, after a
+directory, and `dir/**` matches every path under `dir/` at any depth. A bare
+`**` is an error: no glob maps the whole tree.
+
+**Reserved areas.** Two names have a fixed meaning and no test list.
+
+- `every-test` holds the files every feature test depends on: the e2e harness
+  and fakes, the e2e module files and the root module files. A change to one
+  selects the whole feature package. A file that serves every door, such as the
+operator dispatch tables, sits here too.
+- `no-test` holds the files no feature test can exercise: the verify harness,
+  CI and hook configuration, scripts, the contract and coverage packages, the
+  fakerelay module and licence and lint files. A change to one selects
+  nothing. A file that the app builds from never maps to `no-test` alone.
+
+**Goal `Areas:` line.** Each goal heading is followed by one line
+`Areas: <name>, <name>.` The areas a test belongs to are the areas of every
+goal whose rows name it. A name that the block does not define is an error.
+A goal with a gated row lists `presence`.
+
+**Test-only paths.** A path is test-only when it is `*_test.go`, `*.md`, any
+path under a `testdata/` directory, or any path under `test/fixtures/`. A path
+containing `..` is never test-only. Every other tracked file needs a glob.
+
+**What the check enforces** (rules in [`testing.md`](testing.md)):
+
+- M1: every tracked file that is not test-only matches a glob.
+- M2: every test a row names resolves to a non-reserved area, and no `Test`
+  sits outside the feature, contract and coverage packages.
+- M3: every area that is neither reserved nor `journey-only` selects at least
+  one feature test.
+- M4: every file the app binaries build from maps to an area other than
+  `no-test`.
 
 ## Notes
 

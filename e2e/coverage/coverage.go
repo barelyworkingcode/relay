@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Finding is one miss. Rule is R1..R9, Q6, H1..H3, syntax or pending; the
+// Finding is one miss. Rule is R1..R9, M1..M4, Q6, H1..H3, syntax or pending; the
 // rule "info" is a note and never a failure.
 type Finding struct {
 	Rule  string
@@ -96,6 +96,15 @@ func Check(repoRoot string, doors DoorsDoc) ([]Finding, error) {
 	fs = append(fs, x.rules()...)
 	fs = append(fs, referenceHeadings(doors, routes, cli)...)
 	fs = append(fs, src.findings...)
+	if isGitCheckout(repoRoot) {
+		mfs, err := checkMap(repoRoot, features, fm, src.featureTests)
+		if err != nil {
+			return nil, err
+		}
+		fs = append(fs, mfs...)
+	} else {
+		fs = append(fs, Finding{"info", "FEATURES.md", "map rules M1 to M4 skipped: " + repoRoot + " has no .git"})
+	}
 
 	sort.SliceStable(fs, func(i, j int) bool {
 		if fs[i].Rule != fs[j].Rule {
@@ -107,6 +116,14 @@ func Check(repoRoot string, doors DoorsDoc) ([]Finding, error) {
 		return fs[i].Msg < fs[j].Msg
 	})
 	return fs, nil
+}
+
+// isGitCheckout reports whether repoRoot is itself a git work tree root (a
+// worktree has a .git file). The map rules read tracked files and go list, so
+// a plain copy of the tree, such as a test fixture, skips them.
+func isGitCheckout(repoRoot string) bool {
+	_, err := os.Stat(filepath.Join(repoRoot, ".git"))
+	return err == nil
 }
 
 // referenceHeadings is Q6: every http door has a heading in routes.md whose

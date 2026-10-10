@@ -122,7 +122,15 @@ rule break each fail it, with the rule and the place. The rules:
 | R8 | Every promise maps to rows with a refusal proof. |
 | R9 | A row not proven by CI has an `event:`, `audit:` or `out:` proof item. |
 | Q6 | Every http door has a heading in `docs/routes.md` and every cli verb one in `docs/cli.md`. |
+| M1 | Every tracked file that is not test-only matches an area glob in `docs/FEATURES.md`; a miss names the path. |
+| M2 | Every test a row names resolves to a non-reserved area, and no `Test` is defined outside the files directly in `e2e/features` and `e2e/contract`, or under `e2e/coverage`; a miss names the test. |
+| M3 | Every area that is not `every-test`, `no-test` or `journey-only` selects at least one feature test; a miss names the area. |
+| M4 | Every file the app binaries build from (Go, cgo, C, Objective-C, headers, embedded files; the union of `go list -deps -tags relaytest ./cmd/relay ./cmd/relaysessions` and the same without tags, so release-only files count) maps to an area other than `no-test`; a miss names the path. |
+| syntax | A bad glob, a bad area name, an unknown key, a key given twice in one area, a tab indent or an `Areas:` line that names an undefined area; the area map grammar is in `docs/FEATURES.md`. |
 | H1 to H3 | `t.Parallel()` first; no `time.Sleep`; the e2e module imports nothing of relay's. |
+
+M1 to M4 and the syntax rule read `git ls-files` and `go list`, so they run
+only when the repository root is a git checkout. Without a `.git` they are skipped and the check reports an `info` finding, which never fails the test.
 
 `TestFeatureMapCoverage` is the one test exempt from R4: it checks the map and
 is named by no row. `e2e/coverage/pending.txt`
