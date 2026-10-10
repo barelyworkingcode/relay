@@ -294,14 +294,14 @@ func TestHostPasteTmp(t *testing.T) {
 	payload := []byte("acme pasted bytes")
 
 	r := i.SocketHTTP(i.Credential("operator")).Do("POST", "/api/hosts/"+host.ID+"/pastetmp", map[string]any{
-		"name": "acme.png", "data_b64": base64.StdEncoding.EncodeToString(payload),
+		"name": "eve-paste-1700000000-ab12.png", "data_b64": base64.StdEncoding.EncodeToString(payload),
 	})
 	var out struct {
 		Path string `json:"path"`
 	}
 	r.JSON(t, &out)
 	if r.Status != 200 || out.Path == "" {
-		t.Fatalf("pastetmp answered %d with path %q, want 200 and a path; body %s", r.Status, out.Path, r.Body)
+		t.Fatalf("pastetmp answered %d with path %q, want 200 and a path", r.Status, out.Path)
 	}
 	t.Cleanup(func() { _ = os.Remove(out.Path) })
 	got, err := os.ReadFile(out.Path)
@@ -370,4 +370,21 @@ func TestHostTemplateRemove(t *testing.T) {
 	if _, list := g11Templates(t, i, "h_acme0001"); g11HasTemplate(list, "shell") {
 		t.Fatalf("the list %v still holds the removed template", list)
 	}
+}
+
+func TestHostPasteTmpRefusesOtherNames(t *testing.T) {
+	t.Parallel()
+	i, _, host := g11Reachable(t, harness.Options{})
+
+	r := i.SocketHTTP(i.Credential("operator")).Do("POST", "/api/hosts/"+host.ID+"/pastetmp", map[string]any{
+		"name": "acme.txt", "data_b64": base64.StdEncoding.EncodeToString([]byte("acme")),
+	})
+	var out struct {
+		Code string `json:"code"`
+	}
+	r.JSON(t, &out)
+	if r.Status != 400 || out.Code != "INVALID" {
+		t.Fatalf("a non-conforming name answered %d code %q, want 400 INVALID", r.Status, out.Code)
+	}
+	requireEvent(t, i, harness.EventQuery{Key: "host.pastetmp", Trace: r.Trace, Fields: map[string]any{"status": "error", "reason": "invalid", "host_id": host.ID}})
 }
