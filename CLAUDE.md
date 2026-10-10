@@ -41,6 +41,11 @@ updates it), and the **verify harness** is `cmd/devboxverify`. Planners and
 reviewers judge security findings against the threat model: a finding names
 the attacker, the asset and the promise broken, or it is out of scope.
 
+The **verify cadence** is `epic`: a PR needs no `devbox/verify` status. CI runs
+the e2e tests the change reaches ([selection](docs/testing.md#test-selection)),
+and each epic's last task runs `devboxverify --epic N` on `main`
+([README](cmd/devboxverify/README.md)).
+
 ADR-NNN citations in code and docs are labels for reasoning recorded in those
 documents; there is no ADR directory to look in.
 
