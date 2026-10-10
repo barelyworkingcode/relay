@@ -164,7 +164,7 @@ func TestFilesGit(t *testing.T) {
 			fileOp(r, "git", map[string]any{"args": []string{"log", "--oneline"}})
 			fileOp(r, "git", map[string]any{"args": []string{"commit", "-m", "x"}})
 			fileOp(r, "git", map[string]any{"args": []string{"diff", "--output=/tmp/x"}})
-			fileOp(r, "git", map[string]any{"cwd": "one", "args": []string{"rev-parse", "--show-toplevel"}})
+			fileOp(r, "git", map[string]any{"cwd": "one", "args": []string{"rev-parse", "--show-prefix"}})
 		},
 	})
 }

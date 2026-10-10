@@ -70,12 +70,8 @@ func TestEveWindowCloses(t *testing.T) {
 	})
 }
 
-// eveEnrol opens the window through the CLI and records the exit code only.
-// The verb prints the expiry as a wall-clock time of day, which no
-// normalisation rule masks, so the output is read on a path the transcript
-// does not record.
+// eveEnrol opens the enrolment window through the CLI.
 func eveEnrol(r *Run) {
 	r.T.Helper()
-	res := r.Target.I.CLI("eve", "enrol")
-	r.Note("eve enrol", map[string]any{"code": res.Code})
+	r.CLI("eve", "enrol")
 }
