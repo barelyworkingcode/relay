@@ -338,6 +338,8 @@ A bounded in-memory ring of the most recent `ring_size` events backs the Tool
 Calls tab's first paint and its live tail, so opening the tab never re-reads the
 file.
 
+The Overview's "Recent tool calls" does not use the ring: `GET /api/audit/recent-tool-calls` reads the newest 6 `call_tool` rows from the file, so a restart or control traffic cannot empty it.
+
 ## Events are not audit records
 
 `relay logs` and the event lines in `logs/relay.log` (`docs/events.md`) are a

@@ -253,6 +253,10 @@ let state = {
     auditExpanded: {},                      // event id -> bool
     auditFollow: true,                      // append live events as they arrive
     auditLoaded: false,
+    // The Overview's newest call_tool rows, read from the log file so they survive a restart; the empty state waits for the first answer.
+    recentToolCalls: [],
+    recentToolCallsRequested: false,
+    recentToolCallsLoaded: false,
     auditError: null,
     auditExportPath: null,
 
@@ -278,6 +282,7 @@ let state = {
 // How many live events the Tool Calls tab keeps in the DOM. The Go-side ring
 // is the real buffer; this only bounds what one open window renders.
 const AUDIT_MAX_ROWS = 500;
+const RECENT_TOOL_CALLS_MAX = 6;
 
 function showPage(page) {
     state.page = page;
@@ -291,9 +296,12 @@ function showPage(page) {
     });
     // The Tool Calls tab is the only one not seeded by the initial payload:
     // the log can be large, so it's fetched the first time it's shown. The
-    // Overview tab's "Recent tool calls" needs the same ring, so it shares
-    // the fetch-once-then-live-tail behaviour.
+    // Overview tab also loads it: the audit status tile reads the same ring.
     if ((page === 'audit' || page === 'overview') && !state.auditLoaded) queryAudit();
+    if (page === 'overview' && !state.recentToolCallsRequested) {
+        state.recentToolCallsRequested = true;
+        ipc(JSON.stringify({ type: 'recent_tool_calls' }));
+    }
     // Pending enrolment requests are never seeded (state.pendingEnrolmentRequests'
     // own comment) — refetched on every visit, not just the first, since a
     // network peer can change the table while the operator is on another tab.
@@ -595,10 +603,13 @@ function renderOverviewAttention() {
 }
 
 function renderOverviewRecentToolCalls() {
-    const rows = (state.auditEvents || []).filter(ev => ev.event === 'call_tool').slice(0, 6);
+    const loaded = state.recentToolCallsLoaded;
+    const rows = state.recentToolCalls || [];
     let html = '<div class="ov-section"><div class="page-header" style="margin-bottom:8px"><h3 style="margin:0">Recent tool calls</h3>';
     html += '<button type="button" class="btn btn-sm" ' + bind(showPage, 'audit') + '>See all</button></div>';
-    if (!rows.length) {
+    if (!loaded) {
+        html += '<div class="empty-state">Loading\u2026</div>';
+    } else if (!rows.length) {
         html += '<div class="empty-state">No tool calls recorded yet.</div>';
     } else {
         for (const ev of rows) {
@@ -7417,8 +7428,25 @@ window.onAuditEvents = function(events, status) {
     if (state.page === 'audit' || state.page === 'overview') render();
 };
 
+window.onRecentToolCalls = function(events) {
+    // A call that arrived live while the read was in flight may be missing from
+    // the answer; keep it unless the answer already has it.
+    const loaded = events || [];
+    const seen = new Set(loaded.map(e => e.id));
+    const live = state.recentToolCalls.filter(e => !seen.has(e.id));
+    state.recentToolCalls = live.concat(loaded).slice(0, RECENT_TOOL_CALLS_MAX);
+    state.recentToolCallsLoaded = true;
+    if (state.page === 'overview') render();
+};
+
 window.onAuditEvent = function(ev) {
     if (!ev) return;
+    // Before the follow check: the Overview's list stays live even when the
+    // Tool Calls tab has Follow switched off.
+    if (ev.event === 'call_tool') {
+        state.recentToolCalls = [ev].concat(state.recentToolCalls).slice(0, RECENT_TOOL_CALLS_MAX);
+        if (!state.auditFollow && state.page === 'overview') render('push');
+    }
     if (state.auditStatus) {
         state.auditStatus.recorded = (state.auditStatus.recorded || 0) + 1;
     }

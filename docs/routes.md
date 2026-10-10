@@ -711,6 +711,18 @@ discloses and changes nothing.
 - **Errors:** `400` `limit` or `deep` unparseable, or an unknown `outcome` or `kind`.
 - **Event:** `audit.query` (`count`). **CLI equivalent:** `relay audit`.
 
+### GET /api/audit/recent-tool-calls
+
+- **Listeners:** socket, tcp. **Credential:** `read`. **Gate:** none.
+- **Request:** none. Query parameters are ignored: the filter (`call_tool`) and
+  the count (6) are fixed.
+- **Response `200`:** array of at most 6 audit rows, newest first, read from the
+  log file (the same read as `relay audit --event call_tool --tail 6`), so it
+  survives a restart and control traffic cannot push calls out of it. `[]`
+  when auditing is off. Same redaction as `GET /api/audit`.
+- **Event:** `audit.recent_tool_calls` (`count`). **CLI equivalent:**
+  `relay audit --event call_tool --tail 6`.
+
 ### GET /api/audit/log
 
 - **Listeners:** socket, tcp. **Credential:** `read`. **Gate:** none.

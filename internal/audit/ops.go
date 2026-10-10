@@ -136,6 +136,25 @@ func (o *AuditOps) Query(f AuditQueryFields) ([]AuditEvent, error) {
 	return o.Audit.Query(f.toQuery()), nil
 }
 
+// RecentToolCallsLimit is how many rows the Overview's "Recent tool calls"
+// shows. Fixed here so no door can widen what a read credential gets.
+const RecentToolCallsLimit = 6
+
+// RecentToolCalls answers the newest call_tool rows from the log file, the
+// same read `relay audit` does, so the list agrees with it after a restart
+// and control traffic cannot push calls out of it the way it does the ring.
+func (o *AuditOps) RecentToolCalls() []AuditEvent {
+	if o == nil || !o.Audit.Enabled() {
+		return []AuditEvent{}
+	}
+	o.Audit.Flush()
+	events := o.Audit.Query(AuditQuery{Event: AuditEventCallTool, Deep: true, Limit: RecentToolCallsLimit})
+	if events == nil {
+		return []AuditEvent{}
+	}
+	return events
+}
+
 // ExportContext writes a *filtered* view to disk and returns the path written:
 // handing someone the whole log to answer one question over-shares by
 // default, same as the IPC handler this replaces.
