@@ -2807,7 +2807,10 @@ There are no flags. Before relay answers, it prints
 `relay: handing over <id>; waiting up to 60 s for the current turn to end` on
 stderr; on exit it prints `relay: handed back <id>`. The exit status is
 Claude's. Ending the terminal, by quitting Claude, closing the window or
-SIGHUP, hands the session back as idle. It is not gated: there is no presence
+SIGHUP, hands the session back as idle. The hand-back finishes after the
+CLI exits, when relay-sessions sees the terminal end: wait for the session's
+`attention.state` to read `idle` (`relay session list`, or the `/ws`
+`session_state` frame) before a resume or a message. It is not gated: there is no presence
 prompt, as for `relay sandbox`. The same drop-in is `POST
 /api/sessions/{id}/drop-in` (class `execute`), which answers with the new
 terminal for a client to join.

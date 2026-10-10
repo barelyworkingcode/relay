@@ -232,6 +232,9 @@ func TestModelEndpointRoutes(t *testing.T) {
 		} `json:"data"`
 	}
 	router.JSON(t, &routerBody)
+	if len(routerBody.Data) == 0 {
+		t.Fatalf("GET /models listed no models, want the fake host's catalogue")
+	}
 	for _, row := range routerBody.Data {
 		if row.Status.Value != "loaded" {
 			t.Fatalf("GET /models row %s has status %q, want loaded", row.ID, row.Status.Value)

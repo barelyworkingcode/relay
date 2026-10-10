@@ -273,7 +273,7 @@ stopping are forwarded to the session host (section 3).
   | `model` | string | `haiku`, `sonnet` or `opus` (Claude), `pi/<id>`, `codex/<id>`, or any other model ID (a chat session) |
   | `directory` | string | Working directory; must lie inside the project |
   | `name` | string | Session name |
-  | `settings` | object | Client settings, merged under the project's `permission_policy`; `agent: true` makes a tracked headless agent; `readOnlyProjects: true` (claude only) reads every local project and writes none (`400 invalid_settings` for a non-bool, `400 read_only_needs_claude` for another kind, `403 read_only_local_only` for a host project) |
+  | `settings` | object | Client settings, merged under the project's `permission_policy`; `headless: true` makes a headless session, and `agent: true` with it keeps a headless session tracked; `readOnlyProjects: true` (claude only) reads every local project and writes none (`400 invalid_settings` for a non-bool, `400 read_only_needs_claude` for another kind, `403 read_only_local_only` for a host project) |
   | `systemPrompt` | string | Chat and pi system prompt |
   | `appendClaudeMd` | boolean | Append the project's CLAUDE.md |
 
@@ -1264,7 +1264,8 @@ of a tracked agent session's state.
 
 Server to client. Broadcast once when a tracked session's turn ends, before
 that transition's `session_state`. Only claude, pi and codex sessions are
-tracked (`docs/session-host.md`); a chat session sends neither frame.
+tracked (`docs/session-host.md`), and a headless one only with `agent: true`;
+a chat session or an untracked headless one sends neither frame.
 
 - **Frame:** `{"type": "turn_done", "sessionId", "excerpt": "<last 500 runes of the reply>", "at": "<RFC 3339>"}`.
 - **Event:** `chat.turn` (`/ws` turn, relay-sessions).

@@ -335,20 +335,16 @@ func TestDropInHandsOver(t *testing.T) {
 	p := g1tProject(t, i, "acme-dropin", map[string]any{"allowed_templates": []string{"claude-code", "chat"}})
 	dir := g1tDir(i, "acme-dropin")
 
-	// Only a Chief of Staff start builds the headless settings a drop-in needs
-	// (docs/session-host.md, "Session origin"); a plain start is not headless.
-	var started struct {
-		SessionID string `json:"sessionId"`
-	}
-	headless := i.SocketHTTP(i.Credential("scoped")).Do("POST", "/api/chief-of-staff/sessions",
-		map[string]any{"projectId": p.ID, "prompt": "acme hello", "model": "sonnet"}, harness.ReqOpts{Header: g1tScope})
-	if headless.Status != 201 {
-		t.Fatalf("a Chief of Staff start answered %d, want 201", headless.Status)
-	}
-	headless.JSON(t, &started)
-	sid := started.SessionID
+	// A headless session is one started with settings headless: true; agent:
+	// true keeps it tracked (docs/routes.md, POST /api/sessions, settings).
+	sid := g1tStartSession(t, i, p.ID, "sonnet", `{"headless":true,"agent":true}`)
 	i.MustCLI("session", "message", "--id", sid, "--text", "hi", "--json")
 
+	// The /ws connection opens before the drop-in starts, so the hand-back's
+	// session_state frame cannot pass it by.
+	ws := i.WebSocket("/ws", i.Credential("mounter"))
+	defer ws.Close()
+	dropStart := time.Now()
 	tty := i.StartCLITTY(harness.CLIOpts{}, dir, "drop-in", sid)
 	i.WaitEvent(harness.EventQuery{Key: "session.drop_in",
 		Fields: map[string]any{"status": "ok", "session_id": sid}}, g1tEventDeadline)
@@ -357,6 +353,20 @@ func TestDropInHandsOver(t *testing.T) {
 	if _, ok := g1tSessions(t, i)[sid]; !ok {
 		t.Fatalf("session %s is not listed after the terminal closed and handed it back", sid)
 	}
+	g1tAwaitHandBack(t, ws, sid, dropStart)
+
+	// A handed-back session is dormant, so a resume brings it back, and the
+	// resumed session answers a message.
+	resumed := i.MustCLI("session", "resume", "--id", sid, "--json")
+	var back struct {
+		SessionID string `json:"session_id"`
+		Resumed   bool   `json:"resumed"`
+	}
+	resumed.JSON(t, &back)
+	if !back.Resumed || back.SessionID != sid {
+		t.Fatalf("resume after the hand-back printed %+v, want resumed true for %s", back, sid)
+	}
+	g1sSendText(t, i, sid, "again", "echo: again")
 
 	chat := g1tStartSession(t, i, p.ID, "fake-echo", "")
 	trace := harness.NewTrace(t)
@@ -365,6 +375,35 @@ func TestDropInHandsOver(t *testing.T) {
 	}
 	g1tEvent(t, i, harness.EventQuery{Key: "session.drop_in", Trace: trace,
 		Fields: map[string]any{"status": "denied", "session_id": chat}})
+}
+
+// g1tAwaitHandBack reads /ws frames until sid's session_state reads idle with
+// a since stamp after the drop-in began. The idle that the session's last
+// message left behind is earlier than that stamp, so it does not count.
+func g1tAwaitHandBack(t *testing.T, ws *harness.WSConn, sid string, dropStart time.Time) {
+	t.Helper()
+	for n := 0; n < g1tFrameLimit; n++ {
+		var f struct {
+			Type      string `json:"type"`
+			SessionID string `json:"sessionId"`
+			State     string `json:"state"`
+			Since     string `json:"since"`
+		}
+		if err := json.Unmarshal(ws.Next(g1tFrameDeadline), &f); err != nil {
+			t.Fatalf("decoding a frame: %v", err)
+		}
+		if f.Type != "session_state" || f.SessionID != sid || f.State != "idle" {
+			continue
+		}
+		since, err := time.Parse(time.RFC3339Nano, f.Since)
+		if err != nil {
+			t.Fatalf("session_state since %q is not RFC 3339: %v", f.Since, err)
+		}
+		if since.After(dropStart) {
+			return
+		}
+	}
+	t.Fatalf("session %s did not read idle after the drop-in in %d frames", sid, g1tFrameLimit)
 }
 
 func TestLaunchAuditCapped(t *testing.T) {
@@ -572,8 +611,9 @@ func TestChatToolSearch(t *testing.T) {
 	ws.Send(map[string]any{"type": "join_session", "sessionId": sid})
 	before := g1tCallCount(i)
 	trace := harness.NewTrace(t)
-	// A chat session's turn is proven by its chat.turn event: the /ws
-	// frames for a chat turn do not reach this connection (see the report).
+	// A chat session's turn is proven by its chat.turn event. A chat session
+	// is not tracked, so it sends no turn_done frame (docs/session-host.md,
+	// "Which sessions are tracked"; docs/routes.md, ws:/ws turn_done).
 	ws.Send(map[string]any{"type": "send_message", "sessionId": sid, "text": "find acme", "trace_id": trace})
 	i.WaitEvent(harness.EventQuery{Key: "chat.turn", Fields: map[string]any{"status": "ok", "session_id": sid}}, g1tEventDeadline)
 	names := g1tToolNames(g1tChatPosts(i, before))
@@ -687,6 +727,25 @@ func TestChiefOfStaffScopeDoors(t *testing.T) {
 	g1tEvent(t, i, harness.EventQuery{Key: "chief_of_staff.send", Trace: trace,
 		Fields: map[string]any{"status": "ok", "session_id": sid}})
 	g1tAwaitTurnDone(t, ws, sid)
+
+	// The scoped /ws cannot write (docs/THREAT-MODEL.md 3a). This send_message
+	// would start a turn if it were honoured, and a turn that runs writes
+	// chat.turn with its trace (docs/routes.md, ws:/ws send_message).
+	forbidden := harness.NewTrace(t)
+	ws.Send(map[string]any{"type": "send_message", "sessionId": sid, "text": "acme forbidden", "trace_id": forbidden})
+
+	// Positive control: the same frame on an unscoped /ws with the same
+	// credential runs a turn and writes chat.turn. The control is sent after
+	// the scoped frame, so a turn the scoped socket had started is ahead of it.
+	control := i.WebSocket("/ws", i.Credential("scoped"))
+	defer control.Close()
+	controlTrace := harness.NewTrace(t)
+	g1tTurn(t, control, sid, "acme control", controlTrace)
+	i.WaitEvent(harness.EventQuery{Key: "chat.turn", Trace: controlTrace,
+		Fields: map[string]any{"status": "ok", "session_id": sid}}, g1tEventDeadline)
+	if got := i.Events(harness.EventQuery{Key: "chat.turn", Trace: forbidden}); len(got) != 0 {
+		t.Fatalf("a send_message on the scoped /ws wrote %d chat.turn lines, want none", len(got))
+	}
 }
 
 func TestChiefOfStaffStart(t *testing.T) {

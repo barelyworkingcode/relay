@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,10 @@ const (
 	// tmux gives relay no event, so the poll is the only signal (ruling on G1.12).
 	g1sTmuxDeadline = 60 * time.Second
 )
+
+// g1sScope narrows a request to the Chief of Staff scope. The runner
+// credential holds proxy, which the scope needs.
+var g1sScope = http.Header{"X-Relay-Scope": {"chief-of-staff"}}
 
 // g1sStates are the attention states a live tracked session can report
 // (docs/session-host.md, "States"). "ended" never reaches a list row.
@@ -555,28 +560,53 @@ func TestTerminalStart(t *testing.T) {
 func TestTerminalList(t *testing.T) {
 	t.Parallel()
 	i := harness.Start(t, g1sOptions(harness.Options{
-		Settings: map[string]json.RawMessage{"terminal_templates": g1sSleepTemplate},
+		Settings:      map[string]json.RawMessage{"terminal_templates": g1sSleepTemplate},
+		FakeModelHost: g1sEchoModels(),
 	}))
 	i.WaitSessionHost(g1sHostDeadline)
-	projectID := g1sCreateProject(t, i, "acme-term-list", map[string]any{"allowed_templates": []string{"acme-sleep"}})
+	i.WaitModelHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-term-list", map[string]any{"allowed_templates": []string{"acme-sleep", "claude-code"}})
 	terminalID, _ := g1sStartTerminal(t, i, projectID)
+
+	// A Chief of Staff terminal carries the chief-of-staff origin in the list
+	// (docs/session-host.md, "Session origin"). Its start answers 201.
+	cos := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/chief-of-staff/sessions",
+		map[string]any{"projectId": projectID, "prompt": "acme hello", "model": "sonnet", "mode": "terminal"},
+		harness.ReqOpts{Header: g1sScope, Trace: harness.NewTrace(t)})
+	if cos.Status != 201 {
+		t.Fatalf("a Chief of Staff terminal start answered %d, want 201: %s", cos.Status, cos.Body)
+	}
 
 	res := i.MustCLI("terminal", "list", "--json")
 	var out struct {
 		Terminals []struct {
 			ID         string `json:"id"`
 			TemplateID string `json:"templateId"`
+			Origin     string `json:"origin"`
 		} `json:"terminals"`
 	}
 	res.JSON(t, &out)
 	found := false
+	cosRows := 0
 	for _, term := range out.Terminals {
 		if term.ID == terminalID {
 			found = term.TemplateID == "acme-sleep"
+			if term.Origin != "" {
+				t.Fatalf("a person's terminal row %s has origin %q, want none", terminalID, term.Origin)
+			}
+		}
+		if term.Origin == "chief-of-staff" {
+			cosRows++
+			if term.TemplateID != "claude-code" {
+				t.Fatalf("the Chief of Staff terminal row has template %q, want claude-code", term.TemplateID)
+			}
 		}
 	}
 	if !found {
 		t.Fatalf("terminal list holds %d terminals and not %s with template acme-sleep", len(out.Terminals), terminalID)
+	}
+	if cosRows != 1 {
+		t.Fatalf("terminal list holds %d rows with origin chief-of-staff, want 1", cosRows)
 	}
 	g1sEvent(t, i, harness.EventQuery{Key: "terminal.list", Trace: res.Trace,
 		Fields: map[string]any{"status": "ok", "count": len(out.Terminals)}})
