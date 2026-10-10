@@ -461,6 +461,20 @@ func (i *Instance) Restart() {
 	}
 }
 
+// RestartFails stops serve and starts it again on the same config dir, and
+// requires it to exit before it is ready, returning its exit and stderr. A
+// later Restart starts it once the cause is removed.
+func (i *Instance) RestartFails() Result {
+	i.t.Helper()
+	i.Stop()
+	i.writeSeams()
+	res, ok := i.boot()
+	if ok {
+		i.t.Fatalf("serve became ready after restart; expected it to refuse to start")
+	}
+	return res
+}
+
 func (i *Instance) noteStderr(r Result) {
 	if strings.Contains(string(r.Stderr), "WARNING: DATA RACE") {
 		i.mu.Lock()
