@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -20,6 +21,9 @@ const (
 // writeSeams writes the test-build seam files from the instance's current state.
 func (i *Instance) writeSeams() {
 	i.t.Helper()
+	if i.fake {
+		return // a fake takes its presence from world.json and ctl
+	}
 	i.writePresenceFile()
 	i.writeFaultFile()
 }
@@ -57,6 +61,16 @@ func (i *Instance) writeFaultFile() {
 func (i *Instance) SetPresence(outcomes map[string]Outcome) {
 	i.t.Helper()
 	i.presence = outcomes
+	if i.fake {
+		args := []string{"presence"}
+		for op, o := range outcomes {
+			args = append(args, op+"="+string(o))
+		}
+		if r := i.Ctl(args...); r.Code != 0 {
+			i.t.Fatalf("fakerelay ctl %v exited %d\nstderr: %s", args, r.Code, r.Stderr)
+		}
+		return
+	}
 	i.writePresenceFile()
 }
 
@@ -104,5 +118,15 @@ func (i *Instance) ClockSet(at time.Time) ClockState {
 
 // ClockAdvance moves the server clock forward by by.
 func (i *Instance) ClockAdvance(by time.Duration) ClockState {
+	if i.fake {
+		i.t.Helper()
+		r := i.Ctl("clock", "advance", strconv.FormatInt(by.Milliseconds(), 10))
+		if r.Code != 0 {
+			i.t.Fatalf("fakerelay ctl clock advance exited %d\nstderr: %s", r.Code, r.Stderr)
+		}
+		var w clockWire
+		r.JSON(i.t, &w)
+		return ClockState(w)
+	}
 	return i.clock("advance", by.String())
 }

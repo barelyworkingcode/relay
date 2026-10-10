@@ -83,6 +83,9 @@ type Options struct {
 	FakeMCPs         []FakeMCPSpec
 	FakeModelHost    *FakeModelHostSpec
 	BootDeadline     time.Duration // default 90s
+	// SSHStub links the fakessh stub, writes its config and points relay at it
+	// through test-ssh.json, so host projects run with no second machine.
+	SSHStub bool
 	// PrepareConfigDir runs after the harness wrote its files and before serve
 	// starts, so a test can plant a file the harness has no option for.
 	PrepareConfigDir func(configDir string)
@@ -104,6 +107,8 @@ type Instance struct {
 	Ready                     Ready
 
 	t     *testing.T
+	bin   string // the server binary: bundle.Relay, or bundle.FakeRelay for a fake
+	fake  bool
 	n     int
 	env   []string
 	opts  Options
@@ -151,7 +156,11 @@ func StartFails(t *testing.T, o Options) Result {
 	return res
 }
 
-func newInstance(t *testing.T, o Options) *Instance {
+func newInstance(t *testing.T, o Options) *Instance { return newInstanceFor(t, o, nil) }
+
+// newInstanceFor builds the instance; a non-nil fo makes it a fakerelay whose
+// world.json replaces settings.json and the seam files.
+func newInstanceFor(t *testing.T, o Options, fo *FakeOptions) *Instance {
 	t.Helper()
 	if runRoot == "" {
 		t.Fatalf("harness.Main did not run: use it from TestMain")
@@ -159,7 +168,7 @@ func newInstance(t *testing.T, o Options) *Instance {
 	n := int(nextN.Add(1))
 	dir := filepath.Join(runRoot, fmt.Sprintf("%03d", n))
 	i := &Instance{
-		t: t, n: n, Dir: dir, opts: o,
+		t: t, n: n, Dir: dir, opts: o, bin: bundle.Relay, fake: fo != nil,
 		ConfigDir:  filepath.Join(dir, "x"),
 		Home:       filepath.Join(dir, "home"),
 		Tmp:        filepath.Join(dir, "tmp"),
@@ -176,8 +185,16 @@ func newInstance(t *testing.T, o Options) *Instance {
 	}
 	i.env = buildEnv(i.Home, i.Tmp, filepath.Join(i.Home, ".local", "bin"))
 	i.linkAgents()
-	i.writeSettings()
-	i.writeSeams()
+	if fo != nil {
+		i.bin = bundle.FakeRelay
+		i.writeWorld(fo)
+	} else {
+		i.writeSettings()
+		i.writeSeams()
+	}
+	if o.SSHStub {
+		i.installSSHStub()
+	}
 	if o.PrepareConfigDir != nil {
 		o.PrepareConfigDir(i.ConfigDir)
 	}
@@ -375,7 +392,7 @@ func (i *Instance) boot() (res Result, ok bool) {
 	// The readiness line is read through the Proc, then the tee keeps copying
 	// the rest of stdout into serve.stdout for the failure dump.
 	p := startProc(t, procSpec{
-		bin: bundle.Relay, args: []string{"--config-dir", i.ConfigDir, "serve"},
+		bin: i.bin, args: []string{"--config-dir", i.ConfigDir, "serve"},
 		env: i.env, dir: i.Dir, stdoutTee: stdoutFile, stderrTo: stderrFile,
 	})
 	_ = stderrFile.Close() // the child holds its own descriptor

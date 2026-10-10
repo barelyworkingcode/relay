@@ -21,6 +21,7 @@ import (
 // Bundle holds the absolute paths of the binaries a run builds.
 type Bundle struct {
 	Relay, Sessions, FakeMCP, FakeModelHost, FakeAgent, FakeService string
+	FakeRelay, FakeSSH                                              string
 }
 
 var (
@@ -34,7 +35,7 @@ var (
 const runLockName = "run.lock"
 
 // fakeNames are the fake binaries under e2e/fakes, built into bundle/fakes.
-var fakeNames = []string{"fakemcp", "fakemodelhost", "fakeagent", "fakeservice"}
+var fakeNames = []string{"fakemcp", "fakemodelhost", "fakeagent", "fakeservice", "fakessh"}
 
 // Main builds the bundle, runs the tests and removes the run root unless a test
 // failed. A failed run keeps its root so the instance directories can be read;
@@ -125,6 +126,8 @@ func buildBundle() error {
 		FakeModelHost: filepath.Join(b, "fakes", "fakemodelhost"),
 		FakeAgent:     filepath.Join(b, "fakes", "fakeagent"),
 		FakeService:   filepath.Join(b, "fakes", "fakeservice"),
+		FakeRelay:     filepath.Join(b, "fakes", "fakerelay"),
+		FakeSSH:       filepath.Join(b, "fakes", "fakessh"),
 	}
 	e2eDir := filepath.Join(repoRoot, "e2e")
 	type job struct {
@@ -136,6 +139,8 @@ func buildBundle() error {
 		// relay-sessions is untagged: it has no test seams.
 		{"relay-sessions", []string{"build", "-C", repoRoot, "-race", "-o", bundle.Sessions, "./cmd/relaysessions"}},
 	}
+	// fakerelay is its own module, so it builds from its own directory.
+	jobs = append(jobs, job{"fakerelay", []string{"build", "-C", filepath.Join(repoRoot, "fakerelay"), "-race", "-o", bundle.FakeRelay, "./cmd/fakerelay"}})
 	for _, n := range fakeNames {
 		jobs = append(jobs, job{n, []string{"build", "-C", e2eDir, "-race", "-o", filepath.Join(b, "fakes", n), "./fakes/" + n}})
 	}
