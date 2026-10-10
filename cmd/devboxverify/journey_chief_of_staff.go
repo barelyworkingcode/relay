@@ -220,6 +220,29 @@ func cosTurnFinished(id, marker string) func([]cosFrame) bool {
 	}
 }
 
+// cosTurnFinishedAfter is true when a turn_done for the session at or after
+// frame index from is followed by an idle frame. It never reads the model's
+// text: delivery of the message is proved by relay's audit rows, and the
+// model may answer with any words, an earlier turn's included.
+func cosTurnFinishedAfter(id string, from int) func([]cosFrame) bool {
+	return func(fs []cosFrame) bool {
+		if from > len(fs) {
+			return false
+		}
+		done := false
+		for _, f := range fs[from:] {
+			switch {
+			case f.SessionID != id:
+			case f.Type == "turn_done":
+				done = true
+			case done && f.Type == "session_state" && f.State == "idle":
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // cosRequest sends a frontend-socket request, in the scope when scoped.
 func cosRequest(ctx context.Context, e env, token string, scoped bool, method, path string, body []byte, timeout time.Duration) frontendResponse {
 	ctx, cancel := context.WithTimeout(ctx, timeout)

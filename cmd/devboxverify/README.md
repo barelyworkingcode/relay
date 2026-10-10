@@ -684,11 +684,13 @@ start answers 201 with origin `chief-of-staff` and mode `headless`; a
 `turn_done` frame holds the marker, then idle; the scoped `GET /api/sessions`
 row has origin `chief-of-staff`; the local process list holds an `ssh ... -T --`
 command whose base64 script, decoded, sets `RELAY_SESSION_ID` to the session
-id; a scoped `POST /api/chief-of-staff/messages` answers 202 and a second
-`turn_done` holds "verify-<nonce>-host2"; the audit has an ok `session_launch`
-row with origin `chief-of-staff` and `host_id` the host, and two intent and two
-completion `session_message` rows (the start prompt and the send), all with that
-origin. The session, project and host are deleted whatever the outcome. BLOCKED
+id; a scoped `POST /api/chief-of-staff/messages` answers 202; the audit then has an
+ok `session_launch` row with origin `chief-of-staff` and `host_id` the host, and
+two intent and two completion `session_message` rows (the start prompt and the
+send), all with that origin, exactly one of each phase carrying the send's text
+"Reply with exactly: verify-<nonce>-host2"; a `turn_done` frame logged after the
+send returned, then idle, ends the second turn. The journey never reads the
+model's reply to the second message, only relay's delivery rows. The session, project and host are deleted whatever the outcome. BLOCKED
 when the host or project cannot be created (setup P11), the audit is
 unreadable or a credential is refused; FAIL when the host's `claude` never
 answers.
@@ -697,7 +699,9 @@ answers.
 - Reached by: the minted credential for the start, send and list; the run
   credential for host, project and delete; `/ws`; `relay audit --json`.
 - Traps: needs setup P11. Every wait is a response, the presence dialog result or
-  a `turn_done` frame; the process list is read once, after the first turn.
+  a `turn_done` frame; the process list is read once, after the first turn. The
+  audit rows are read right after the 202, before the second turn is awaited,
+  so a delivery failure reads FAIL even when the provider limit ends that turn.
 
 **disabled-tool-refused** (screen). In a live session in Verify Grant,
 `testmcp_ping` answers; a `PUT /api/projects/{id}` with `disabled_tools`

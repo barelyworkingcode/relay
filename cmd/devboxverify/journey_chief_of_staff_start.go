@@ -398,12 +398,13 @@ type cosHostRun struct {
 	PS          string
 	PSErr       string
 
-	Send     frontendResponse
-	Turn2Err bool
-	RowsErr  string
-	Limit    providerLimit      // set when a turn wait fails
-	Launch   []audit.AuditEvent // session_launch rows naming the session
-	Msgs     []audit.AuditEvent // session_message rows naming the session
+	Send      frontendResponse
+	SendFrame int // frames logged when the send returned
+	Turn2Err  bool
+	RowsErr   string
+	Limit     providerLimit      // set when a turn wait fails
+	Launch    []audit.AuditEvent // session_launch rows naming the session
+	Msgs      []audit.AuditEvent // session_message rows naming the session
 
 	Delete   frontendResponse
 	Teardown string
@@ -501,17 +502,22 @@ func runCosStartHost(ctx context.Context, e env) (out result) {
 	if r.Send.Status != http.StatusAccepted {
 		return
 	}
-	if r.Turn2Err = !obs.waitFor(ctx, cosTurnWait, cosTurnFinished(id, r.Marker2)); r.Turn2Err {
-		r.Limit = sessionLimit(obs.snapshot(), id)
-		return
-	}
-	// Both rows are written before the 202, so one read follows the second turn.
+	r.SendFrame = len(obs.snapshot())
+	// The rows are written before the 202, so they are read before the second
+	// turn: delivery is judged on them, never on what the model replies.
 	var rowsErr error
 	if r.Msgs, rowsErr = auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionMessage), "--grep", id, "--json", "--tail", "50"); rowsErr == nil {
 		r.Launch, rowsErr = auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionLaunch), "--grep", id, "--json", "--tail", "20")
 	}
 	if rowsErr != nil {
 		r.RowsErr = rowsErr.Error()
+		return
+	}
+	if cosHostAudit(r) != "" {
+		return
+	}
+	if r.Turn2Err = !obs.waitFor(ctx, cosTurnWait, cosTurnFinishedAfter(id, r.SendFrame)); r.Turn2Err {
+		r.Limit = sessionLimit(obs.snapshot(), id)
 	}
 	return
 }
@@ -586,13 +592,14 @@ func classifyCosStartHost(r cosHostRun) result {
 		return blocked(id, "run credential refused (401) on the send route")
 	case r.Send.Status != http.StatusAccepted:
 		return fail("scoped POST /api/chief-of-staff/messages status %d, want 202: %s", r.Send.Status, r.Send.Error)
-	case r.Turn2Err:
-		return r.Limit.turnFail(id, "no turn_done carrying the second marker, then idle, after the scoped message")
 	case r.RowsErr != "":
 		return blocked(id, r.RowsErr)
 	}
 	if d := cosHostAudit(r); d != "" {
 		return fail("%s", d)
+	}
+	if r.Turn2Err {
+		return r.Limit.turnFail(id, "no turn_done, then idle, after the scoped message was delivered")
 	}
 	switch {
 	case r.Delete.Status/100 != 2:
@@ -600,12 +607,13 @@ func classifyCosStartHost(r cosHostRun) result {
 	case r.Teardown != "":
 		return fail("hosted fixtures not removed%s", r.Teardown)
 	}
-	return result{id, statePass, fmt.Sprintf("Chief of Staff started a headless Haiku agent in a project on SSH host %s and sent it a second message: row marked %s, launch row ok with host_id, session child is ssh -T -- setting RELAY_SESSION_ID, both turns carried their markers, intent and completion rows carry the origin",
+	return result{id, statePass, fmt.Sprintf("Chief of Staff started a headless Haiku agent in a project on SSH host %s and sent it a second message: row marked %s, launch row ok with host_id, session child is ssh -T -- setting RELAY_SESSION_ID, the first turn carried its marker, the audit shows the second message delivered with the origin, and a later turn_done then idle followed",
 		r.Host, cosOrigin)}
 }
 
-// cosHostAudit checks the launch row names the host and the message rows of
-// both turns (the start prompt and the send) carry the origin.
+// cosHostAudit checks the launch row names the host, the message rows of both
+// turns (the start prompt and the send) carry the origin, and the send's
+// intent and completion rows carry the second text.
 func cosHostAudit(r cosHostRun) string {
 	if r.HostID == "" {
 		return "host id unknown"
@@ -638,6 +646,19 @@ func cosHostAudit(r cosHostRun) string {
 			if o := rowArgs(row).Origin; o != cosOrigin {
 				return fmt.Sprintf("session_message %s origin %q, want %q", phase, o, cosOrigin)
 			}
+		}
+		// The text is recorded only when text logging is on; its byte count
+		// always is, and differs between the two prompts.
+		want := cosSendText(r.Marker2)
+		sent := 0
+		for _, row := range rows {
+			a := rowArgs(row)
+			if a.TextBytes == len(want) && (a.Text == nil || *a.Text == want) {
+				sent++
+			}
+		}
+		if sent != 1 {
+			return fmt.Sprintf("%d %s session_message rows carry the second text %q, want 1", sent, phase, want)
 		}
 	}
 	return ""
