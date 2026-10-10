@@ -278,6 +278,12 @@ func TestSessionStop(t *testing.T) {
 	if _, ok := g1sFindSession(list, s.SessionID); ok {
 		t.Fatalf("session list still holds the stopped session %s", s.SessionID)
 	}
+
+	unknown := i.CLI("session", "stop", "--id", "no-such-session", "--json")
+	if unknown.Code != 0 {
+		t.Fatalf("stopping an unknown session exited %d, want 0: %s", unknown.Code, unknown.Stderr)
+	}
+	i.WaitEvent(harness.EventQuery{Key: "session.delete", Trace: unknown.Trace, Fields: map[string]any{"status": "ok"}}, g1sWait)
 }
 
 func TestSessionResume(t *testing.T) {
@@ -307,6 +313,7 @@ func TestSessionResume(t *testing.T) {
 		t.Fatalf("after a restart the list holds %+v, want the one dormant session", list)
 	}
 
+	resumeRowsBefore := g1sAuditCount(i, "session_resume", "ok")
 	res := i.MustCLI("session", "resume", "--id", s.SessionID, "--json")
 	var back resumed
 	res.JSON(t, &back)
@@ -314,8 +321,8 @@ func TestSessionResume(t *testing.T) {
 		t.Fatalf("session resume printed %+v, want resumed:true for %s", back, s.SessionID)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "session.resume", Trace: res.Trace, Fields: map[string]any{"status": "ok", "session_id": s.SessionID}})
-	if got := g1sAuditCount(i, "session_resume", "ok"); got < 1 {
-		t.Fatalf("no session_resume ok audit row")
+	if got := g1sAuditCount(i, "session_resume", "ok"); got != resumeRowsBefore+1 {
+		t.Fatalf("session_resume ok rows: %d after the dormant resume, want %d", got, resumeRowsBefore+1)
 	}
 	list, _ := g1sSessions(t, i)
 	got, ok := g1sFindSession(list, s.SessionID)
@@ -390,6 +397,17 @@ func TestTerminalStart(t *testing.T) {
 
 	term, r := g1sStartTerminal(t, i, p.ID, "shell")
 	requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: r.Trace, Fields: map[string]any{"status": "ok", "session_id": term.TerminalID, "kind": "pty"}})
+	var started struct {
+		Directory string `json:"directory"`
+	}
+	r.JSON(t, &started)
+	folder, err := filepath.EvalSymlinks(filepath.Join(i.Home, "work", "acme-terminal"))
+	if err != nil {
+		t.Fatalf("resolving the project folder: %v", err)
+	}
+	if got, err := filepath.EvalSymlinks(started.Directory); err != nil || got != folder {
+		t.Fatalf("terminal directory %q, want the project folder %q", started.Directory, folder)
+	}
 
 	denied := i.CLI("terminal", "start", "--project", p.ID, "--template", "acme-blocked", "--json")
 	if denied.Code != 1 {

@@ -440,8 +440,9 @@ func TestChatToolSearch(t *testing.T) {
 		tools = append(tools, raw)
 	}
 	i := harness.Start(t, harness.Options{
-		Presence: approveGrant,
-		FakeMCPs: []harness.FakeMCPSpec{{ID: "acme-stdio", Transport: "stdio", Catalogue: harness.Catalogue{Tools: tools}}},
+		Presence:    approveGrant,
+		Credentials: []harness.CredentialSpec{{Name: "proxier", Classes: []string{"proxy"}}},
+		FakeMCPs:    []harness.FakeMCPSpec{{ID: "acme-stdio", Transport: "stdio", Catalogue: harness.Catalogue{Tools: tools}}},
 		FakeModelHost: &harness.FakeModelHostSpec{ID: "acme-models", Models: []json.RawMessage{
 			json.RawMessage(`{"id":"fake-echo","object":"model","owned_by":"fake","context_length":512}`),
 		}},
@@ -450,6 +451,7 @@ func TestChatToolSearch(t *testing.T) {
 	i.WaitSessionHost(g1tWait)
 	i.WaitEvent(harness.EventQuery{Key: "mcp.state", Fields: map[string]any{"mcp_id": "acme-stdio", "state": "up"}}, g1tWait)
 	p, _ := g1tProject(t, i, "acme-search", map[string]any{"allowed_mcp_ids": []string{"acme-stdio"}, "allowed_models": []string{"fake-echo"}, "allowed_templates": []string{"chat"}})
+	ws := i.WebSocket("/ws", i.Credential("proxier"))
 
 	// toolsOfTurn runs one chat turn and returns the tool names the model host
 	// received with it.
@@ -458,7 +460,11 @@ func TestChatToolSearch(t *testing.T) {
 		before := len(g1tChatRequests(t, i))
 		var s g1tSession
 		i.MustCLI("session", "start", "--project", p.ID, "--model", "fake-echo", "--settings", `{"useRelayTools":true}`, "--json").JSON(t, &s)
-		i.MustCLI("session", "message", "--id", s.SessionID, "--text", "hi", "--json")
+		ws.Send(map[string]any{"type": "join_session", "sessionId": s.SessionID})
+		g1tFramesUntil(t, ws, func(f g1tFrame) bool { return f.Type == "session_joined" })
+		trace := "acme-search-" + s.SessionID
+		ws.Send(map[string]any{"type": "send_message", "sessionId": s.SessionID, "text": "hi", "trace_id": trace})
+		i.WaitEvent(harness.EventQuery{Key: "chat.turn", Trace: trace, Fields: map[string]any{"status": "ok", "session_id": s.SessionID}}, g1tWait)
 		reqs := g1tChatRequests(t, i)
 		if len(reqs) != before+1 {
 			t.Fatalf("one chat turn made %d model requests, want 1", len(reqs)-before)
@@ -577,7 +583,8 @@ func TestAgentStateFrames(t *testing.T) {
 		g1tFramesUntil(t, ws, func(f g1tFrame) bool { return f.Type == "session_joined" })
 
 		since := time.Now()
-		i.MustCLI("session", "message", "--id", s.SessionID, "--text", "hi", "--json")
+		trace := "acme-state-" + s.SessionID
+		ws.Send(map[string]any{"type": "send_message", "sessionId": s.SessionID, "text": "hi", "trace_id": trace})
 		frames := g1tFramesUntil(t, ws, func(f g1tFrame) bool {
 			return f.Type == "session_state" && f.SessionID == s.SessionID && f.State == "idle"
 		})
@@ -604,6 +611,7 @@ func TestAgentStateFrames(t *testing.T) {
 			t.Fatalf("%s: turn_done must come before the idle session_state: %+v", model, frames)
 		}
 		i.WaitEvent(harness.EventQuery{Key: "session.state", Since: since, Fields: map[string]any{"session_id": s.SessionID, "to": "idle"}}, g1tWait)
+		i.WaitEvent(harness.EventQuery{Key: "chat.turn", Trace: trace, Fields: map[string]any{"status": "ok", "session_id": s.SessionID}}, g1tWait)
 	}
 }
 
