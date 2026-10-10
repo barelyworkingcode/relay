@@ -394,7 +394,7 @@ func (s *Server) ListenInternal() error {
 		if !live {
 			// A dormant or unpersisted session has no provider to exit, so no
 			// exit report follows its delete; relay's ledger would keep the
-			// record. Removing an id the ledger lacks is a no-op there.
+			// record. Relay ignores the report for an id its ledger lacks.
 			s.reportExit(id, 0, 0, "deleted")
 		}
 	}))

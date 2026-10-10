@@ -1571,7 +1571,10 @@ correctly on every start rather than only after a manual re-register.
 signalling it, or `"deleted"` when `DELETE /api/sessions/{id}` marked it
 deleting (`markDeletingIfAlive`) before `session.Manager.DeleteSession` killed
 it. `onTerminalExit`/`onSessionExit` (`internal/sessions/hostapi/server.go`)
-consume each flag once; `"deleted"` wins over `"closed"`. C5 also names
+consume each flag once; `"deleted"` wins over `"closed"`. A delete of a session
+with no live provider produces no exit, so the handler reports `"deleted"`
+itself; relay ignores a `"deleted"` report for an id its ledger lacks, so a
+terminal id or an unknown id changes nothing. C5 also names
 `"idle"`, which nothing produces today: idle-close is covered by gap 4 below.
 
 On relay's side, `SessionExited` (`cmd/relay/router_sessions.go`) tears down

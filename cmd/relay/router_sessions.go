@@ -28,6 +28,15 @@ func (r *appRouter) SessionExited(ctx context.Context, req bridge.SessionExitedR
 		return err
 	}
 
+	// A delete report names whatever id the caller passed. Only a session
+	// the ledger holds may be torn down by it: a terminal id or an invented
+	// one must leave accounts and audit untouched.
+	if req.Reason == "deleted" && r.sessions != nil {
+		if _, ok := r.sessions.Get(req.SessionID); !ok {
+			return nil
+		}
+	}
+
 	if acc, ok := r.sessionAccounts.take(req.SessionID); ok {
 		acc.end(r.modelKeys)
 	}
