@@ -917,8 +917,8 @@ func g2Quote(s string) string {
 	return string(b)
 }
 
-// A config written before chat templates lost append_claude_md and
-// use_relay_tools still loads, and the next save stores the template without them.
+// A config whose chat template carries append_claude_md or use_relay_tools
+// loads, and the next save stores the template without them.
 func TestChatTemplateOldFlagsDroppedOnSave(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
