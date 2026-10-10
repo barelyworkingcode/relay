@@ -372,9 +372,10 @@ const (
 	MsgSetChiefOfStaff            = "set_chief_of_staff"
 
 	// Tool Calls / audit log (ipc_audit.go)
-	MsgQueryAudit     = "query_audit"
-	MsgExportAudit    = "export_audit"
-	MsgRevealAuditLog = "reveal_audit_log"
+	MsgQueryAudit      = "query_audit"
+	MsgExportAudit     = "export_audit"
+	MsgRevealAuditLog  = "reveal_audit_log"
+	MsgRecentToolCalls = "recent_tool_calls"
 
 	// Hosts (ipc_hosts.go)
 	MsgListHosts      = "list_hosts"
@@ -451,9 +452,10 @@ var ipcHandlers = map[string]ipcEntry{
 	MsgSetChiefOfStaff:            {handle: ipcSetChiefOfStaff},
 
 	// Tool Calls (ipc_audit.go)
-	MsgQueryAudit:     {handle: ipcQueryAudit},
-	MsgExportAudit:    {handle: ipcExportAudit},
-	MsgRevealAuditLog: {handle: ipcRevealAuditLog},
+	MsgQueryAudit:      {handle: ipcQueryAudit},
+	MsgExportAudit:     {handle: ipcExportAudit},
+	MsgRevealAuditLog:  {handle: ipcRevealAuditLog},
+	MsgRecentToolCalls: {handle: ipcRecentToolCalls},
 
 	// Remote Clients (ipc_enrolments.go)
 	MsgCreateEnrolment:         {handle: ipcCreateEnrolment, gates: []string{"enrolment.create"}},

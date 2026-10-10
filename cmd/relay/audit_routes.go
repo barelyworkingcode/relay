@@ -87,6 +87,15 @@ func RegisterAuditRoutes(rr *control.RouteRegistrar, ops *audit.AuditOps) {
 		writeJSON(w, http.StatusOK, events)
 	})
 
+	// Takes no query: the filter and the count are fixed in the core so a read
+	// credential gets nothing this route's panel does not already show.
+	rr.Handle(control.ClassRead, "GET /api/audit/recent-tool-calls", func(w http.ResponseWriter, r *http.Request) {
+		ev := logging.BeginEvent(r.Context(), "audit.recent_tool_calls")
+		events := ops.RecentToolCalls()
+		ev.Set("count", len(events)).End(logging.OutcomeOK, "", nil)
+		writeJSON(w, http.StatusOK, events)
+	})
+
 	rr.Handle(control.ClassConfigure, "POST /api/audit/export", func(w http.ResponseWriter, r *http.Request) {
 		var body audit.AuditQueryFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

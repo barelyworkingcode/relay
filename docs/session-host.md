@@ -352,19 +352,22 @@ manager byte for byte. A hidden tool that was not loaded is refused with no
 MCP call (`chat.call_tool`, `denied`, `not_loaded`). Calling a loaded tool
 by its real name works too.
 
-**What is hidden.** Nothing is hidden until the project has a skill that lists
-the MCP's tools: `relay project regen-skill` writes it from the project's
-grant. Before that every tool goes to the model, whatever the threshold. A tool
-is hidden when a project skill lists it, it is
-not in `pinned`, and it is in the live MCP catalogue. Skills are read at
-every Start from `<project dir>/.claude/skills/*/SKILL.md`: the frontmatter
+**What is hidden.** The index header tells the model that the listed names are
+skills, not tools, and that `tool_search` is the first step. Nothing is hidden
+until the project has a skill that lists the MCP's tools: `relay project
+regen-skill` writes it from the project's grant. Before that every tool goes to
+the model, whatever the threshold. A tool is hidden when a project skill lists
+it, it is not in `pinned`, and it is in the live MCP catalogue. Skills are read
+at every Start from `<project dir>/.claude/skills/*/SKILL.md`: the frontmatter
 gives the index line and ranking text, and the first `## Tools` section lists
-the tools. A tool no skill lists is never hidden. The index (one line per
-skill) is appended to the system message for each request; it is not written
-into the stored `SystemPrompt`. Loaded names are saved with the turn that
-loaded them in the session's provider state
-(`{"toolSearch":{"loaded":[...]}}`) and restored on resume; a stopped or
-failed turn saves none.
+the tools. A tool no skill lists is never hidden. The index (one line per skill,
+`- <description> (skill <name>; search for it, do not call it)`, or `- (skill
+<name>; ...)` with no description) leads with the description so the name does
+not read as a tool name. It is appended to the system message for each request;
+it is not written into the stored `SystemPrompt`. Loaded names are saved with
+the turn that loaded them in the session's provider state
+(`{"toolSearch":{"loaded":[...]}}`) and restored on resume; a stopped or failed
+turn saves none.
 
 **Symlinks.** The reader `lstat`s `.claude`, `skills`, each skill
 directory and `SKILL.md` and skips any symlink, then opens with

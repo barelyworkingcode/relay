@@ -62,6 +62,13 @@ func ipcQueryAudit(ctx *IPCContext, raw json.RawMessage) {
 	ctx.UI.EmitEvent("onAuditEvents", events, auditStatusOf(ctx.Audit))
 }
 
+// Reads the log file, so it runs off the UI thread.
+func ipcRecentToolCalls(ctx *IPCContext, _ json.RawMessage) {
+	ctx.GoFunc(func() {
+		dispatchEmit(ctx, "onRecentToolCalls", ctx.AuditOps.RecentToolCalls())
+	})
+}
+
 // Exporting a *filtered* view is the point: handing someone the whole log to
 // answer one question over-shares by default.
 func ipcExportAudit(ctx *IPCContext, raw json.RawMessage) {
