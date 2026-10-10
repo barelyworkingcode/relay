@@ -122,7 +122,7 @@ func (s *svc) holdSession(r *http.Request, id string) (string, *refusal) {
 		case x.claudeID == "":
 			ref = &refusal{http.StatusConflict, "no_conversation", "the session has not run a turn yet; there is nothing to take over"}
 		default:
-			x.held, x.live, x.agent = true, false, nil
+			x.held, x.dropped, x.live, x.agent = true, true, false, nil
 			claudeID = x.claudeID
 		}
 		s.mu.Unlock()

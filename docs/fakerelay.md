@@ -860,7 +860,8 @@ stay inside it. `settings` is an object and is passed to the session host.
 `settings.headless: true` makes a headless session. With `settings.agent: true`
 it is tracked and listed; without `agent` it is neither tracked nor listed in
 `GET /api/sessions`, though drop-in still reaches it. A value that is not a
-boolean counts as false. Success is 201 with the new session:
+boolean counts as false. A turn of a headless `agent` session keeps only the
+user message in its history, so `messageCount` is 1 after one turn. Success is 201 with the new session:
 
 ```json
 {"sessionId":"3f0c…","projectId":"p_acme","name":"Fix the build",
@@ -908,7 +909,7 @@ texts:
 | `live` | the provider process is running. A world session with `state: "dormant"` is `false` |
 | `lastMessageAt` | omitted when no messages |
 | `folder`, `host`, `headless`, `origin` | omitted when empty |
-| `attention` | only for a live session of kind `claude`, `pi` or `codex` that is not headless, or is headless with `agent`. Absent otherwise. `since` equals the `since` of the last `session_state` frame |
+| `attention` | only for a live session of kind `claude`, `pi` or `codex` that is not headless, or is headless with `agent`; a session a drop-in has taken stays attended while held (`running`) and after hand-back (`idle`), though `live` is false. Absent otherwise. `since` equals the `since` of the last `session_state` frame |
 | `headless` | `true` for a headless session launched with `agent`. A headless launch without `agent` is not listed at all |
 
 `POST /api/sessions/{id}/resume` (class `execute`):
@@ -1254,7 +1255,7 @@ unknown id. It closes the terminal. Events: `terminal.list`, `session.launch`,
   the newest bytes.
 - Bytes are added to the log before their `terminal_output` frame is sent.
 - Event `terminal.log` (`terminal_id`) in `relaysessions.log`. A 404 is
-  `error`/`not_found`; a 400 is `error`/`invalid`.
+  `error`/`not_found` with error text `Not Found`; a 400 is `error`/`invalid`.
 
 Terminal templates. Shape (omit empty keys):
 

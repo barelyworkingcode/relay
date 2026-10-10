@@ -269,7 +269,7 @@ func (s *svc) terminalLog(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	if l == nil {
-		ev.End("error", "not_found", errors.New("no log"))
+		ev.End("error", "not_found", errors.New("Not Found"))
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}

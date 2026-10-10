@@ -17,7 +17,7 @@ import (
 
 type session struct {
 	id, projectID, name, directory, folder, model, kind, origin, permMode string
-	headless, agentOn, hidden, held                                       bool
+	headless, agentOn, hidden, held, dropped                              bool
 	createdAt, lastMsg, since                                             time.Time
 	host                                                                  map[string]any
 	history                                                               []map[string]any
@@ -135,7 +135,7 @@ func (s *svc) row(x *session) map[string]any {
 	if x.origin != "" {
 		v["origin"] = x.origin
 	}
-	if x.live && x.tracked() {
+	if (x.live || x.dropped) && x.tracked() {
 		v["attention"] = map[string]any{"state": x.state, "since": stamp(x.since)}
 	}
 	return v
@@ -346,7 +346,10 @@ func (s *svc) runTurn(x *session, text, origin, trace string) {
 	s.mu.Lock()
 	live := x.live
 	if !failed {
-		x.history = append(x.history, historyMsg("assistant", reply.String(), s.now(), ""))
+		// A headless agent session's reply is not kept in its history.
+		if !(x.headless && x.agentOn) {
+			x.history = append(x.history, historyMsg("assistant", reply.String(), s.now(), ""))
+		}
 		x.lastMsg = s.now()
 		x.stats["inputTokens"] = x.stats["inputTokens"].(int) + words(text)
 		x.stats["outputTokens"] = x.stats["outputTokens"].(int) + words(reply.String())
