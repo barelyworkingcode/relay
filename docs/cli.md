@@ -67,7 +67,7 @@ Two consequences follow immediately, and both are covered in full below:
   the session it is running in cannot show a prompt on the console.
 
 **Every ungated mutating verb is operator-only.** A verb that changes relay
-and raises no presence prompt (`relay project` verbs, `relay mcp unregister`,
+and raises no presence prompt (`relay project update`, `relay mcp unregister`,
 `relay service unregister`, `relay service restart`, `relay enrol refuse`),
 `relay grant`, and every verb added to reach what only the Settings window or
 the tray did before (`relay project create`, `relay status`,
@@ -78,9 +78,11 @@ from any sandboxed process, with
 writes a denied `control_decision` row (`method` `admin_op`, `path` the
 operation name such as `service.unregister`, `class` `operator`, `transport`
 `bridge`, `error` `session_caller`). The same peer check `relay sandbox`
-makes decides it. Gated verbs (`relay credential`, `relay enrol create`,
-`relay mcp register` and the others above) keep the presence prompt as their
-guard, which a session cannot answer. Verbs that only list relay-wide state
+makes decides it. The gated verbs that predate this rule (`relay credential`
+mutations, `relay enrol create`, `relay mcp register` and the others above)
+keep the presence prompt as their only guard, which a session cannot answer;
+the gated verbs added with it, such as `relay project create`, are both
+prompted and operator-only. Verbs that only list relay-wide state
 (`relay service list`, `relay mcp list` and the other list reads) stay open to
 a session; they hold no project's data. `relay doors` lists every door, its
 credential class and its gates.
