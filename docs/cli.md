@@ -1302,8 +1302,8 @@ with auditing on), or the first `relay enrol create` or `relay enrol sign`.
 
 No JSON form. The one line on stdout is the fingerprint, `sha256:` followed by 64
 hex characters, and nothing else. Exit codes: `0`; `1` when `ca.crt` does not
-exist yet (`error: no CA certificate exists yet at DIR/ca.crt: run `relay enrol
-create` or `relay enrol sign` once to generate one`).
+exist yet; the error reads "no CA certificate exists yet at DIR/ca.crt" and says to
+run `relay enrol create` or `relay enrol sign` once to generate one.
 
 ## `relay login`
 

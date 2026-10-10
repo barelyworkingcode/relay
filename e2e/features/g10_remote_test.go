@@ -55,8 +55,14 @@ func g10Start(t *testing.T, presence map[string]harness.Outcome) *harness.Instan
 // g10Profile creates an access profile that allows acme_ok and acme_note.
 func g10Profile(t *testing.T, i *harness.Instance) string {
 	t.Helper()
+	return g10ProfileNamed(t, i, "acme-profile")
+}
+
+// g10ProfileNamed creates the same access profile under another name.
+func g10ProfileNamed(t *testing.T, i *harness.Instance, name string) string {
+	t.Helper()
 	body, err := json.Marshal(map[string]any{
-		"name": "acme-profile", "kind": "remote",
+		"name": name, "kind": "remote",
 		"allowed_mcp_ids": []string{"acme-stdio"},
 		"allowed_tools":   map[string][]string{"acme-stdio": {"acme_ok", "acme_note"}},
 		"access":          map[string]string{"acme-stdio": "read"},
@@ -515,6 +521,20 @@ func TestEnrolmentUpdate(t *testing.T) {
 	if e, resp := g10GetEnrolment(t, i, "acme-client"); resp.Status != 200 || e.Budget.MaxCalls != 5 {
 		t.Fatalf("GET /api/enrolments/acme-client answered %d with max_calls %d, want 5", resp.Status, e.Budget.MaxCalls)
 	}
+
+	other := g10ProfileNamed(t, i, "acme-profile-two")
+	r = i.CLI("enrol", "update", "--client-id", "acme-client", "--grant", other)
+	if r.Code != 0 {
+		t.Fatalf("an approved enrol update --grant exited %d\nstderr: %s", r.Code, r.Stderr)
+	}
+	requireEvent(t, i, harness.EventQuery{Key: "enrolment.update", Trace: r.Trace, Fields: map[string]any{"status": "ok", "client_id": "acme-client"}})
+	e, resp := g10GetEnrolment(t, i, "acme-client")
+	if resp.Status != 200 || len(e.ProjectIDs) != 1 || e.ProjectIDs[0] != other {
+		t.Fatalf("GET /api/enrolments/acme-client answered %d %+v, want the grant list replaced by %s", resp.Status, e, other)
+	}
+	if e.Budget.MaxCalls != 5 {
+		t.Fatalf("a grant update changed max_calls to %d, want 5 kept", e.Budget.MaxCalls)
+	}
 }
 
 func TestEnrolmentUpdateDenied(t *testing.T) {
@@ -601,6 +621,9 @@ func TestEnrolmentListAndGet(t *testing.T) {
 	list.JSON(t, &all)
 	if list.Status != 200 || len(all) != 1 || all[0].ClientID != "acme-client" {
 		t.Fatalf("GET /api/enrolments answered %d %+v, want the one enrolment", list.Status, all)
+	}
+	if len(all[0].ProjectIDs) != 1 || all[0].ProjectIDs[0] != profile {
+		t.Fatalf("the list shows profiles %v for acme-client, want [%s]", all[0].ProjectIDs, profile)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "enrolment.list", Trace: list.Trace, Fields: map[string]any{"status": "ok", "count": 1}})
 

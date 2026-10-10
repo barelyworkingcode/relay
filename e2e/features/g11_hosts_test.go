@@ -237,6 +237,7 @@ func TestHostProbe(t *testing.T) {
 	t.Parallel()
 	i, _, host := g11Reachable(t, harness.Options{})
 
+	before := len(i.Audit(harness.AuditQuery{Event: "host.probe"}))
 	res := i.MustCLI("host", "probe", "--id", host.ID, "--json")
 	var probed g11Host
 	res.JSON(t, &probed)
@@ -247,8 +248,13 @@ func TestHostProbe(t *testing.T) {
 		t.Fatalf("status is %q after a good probe, want connected or idle", probed.Status)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "host.probe", Trace: res.Trace, Fields: map[string]any{"status": "ok", "host_id": host.ID}})
-	if rows := i.Audit(harness.AuditQuery{Event: "host.probe"}); len(rows) == 0 {
-		t.Fatalf("no host.probe audit row after a probe")
+	rows := i.Audit(harness.AuditQuery{Event: "host.probe"})
+	if len(rows) != before+1 {
+		t.Fatalf("host.probe audit rows went from %d to %d after one probe, want exactly one more", before, len(rows))
+	}
+	args, _ := rows[len(rows)-1]["args"].(map[string]any)
+	if got, _ := args["host_id"].(string); got != host.ID {
+		t.Fatalf("the new host.probe audit row names host %q, want %q", got, host.ID)
 	}
 
 	dead := i.HTTP(i.Credential("operator")).Do("POST", "/api/hosts", map[string]any{

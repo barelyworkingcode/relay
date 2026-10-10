@@ -1533,7 +1533,8 @@ strict. The server answers each frame with one JSON line:
 
 Codes: `-32602` invalid params, `-32601` unknown request type, `-32603` internal,
 `-32000` throttled. A second lodge from the same source within 10 seconds
-answers `-32000` with `{"retry_after_seconds": 10}` in `result`; a lodge into a
+answers `-32000` with `{"retry_after_seconds": N}` in `result`, where N is the time left in the 10 second
+per-source interval, rounded up (1 to 10); a lodge into a
 full table of 8 answers `-32000` with no `result`, because the table empties
 when rows expire or an operator acts, not on a clock the listener can quote.
 An operator approves or refuses a request with `relay enrol approve` or

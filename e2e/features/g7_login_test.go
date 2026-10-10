@@ -389,13 +389,29 @@ func TestEveEnrolmentWindowConsume(t *testing.T) {
 		return writer.Do("POST", "/api/eve/passkey-enrolment/consume", map[string]string{"ip": "203.0.113.9", "label": "Acme phone"})
 	}
 
+	reader := i.HTTP(i.Credential("eve-reader"))
+	windowOpen := func(want bool) {
+		t.Helper()
+		resp := reader.Do("GET", "/api/eve/passkey-enrolment", nil)
+		var st struct {
+			Open bool `json:"open"`
+		}
+		resp.JSON(t, &st)
+		if resp.Status != 200 || st.Open != want {
+			t.Fatalf("GET /api/eve/passkey-enrolment answered %d open=%v, want 200 open=%v", resp.Status, st.Open, want)
+		}
+	}
+
+	windowOpen(false)
 	i.MustCLI("eve", "enrol")
+	windowOpen(true)
 	first := consume()
 	if first.Status != 200 {
 		t.Fatalf("the first consume answered %d, want 200", first.Status)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "eve.enrolment.consume", Trace: first.Trace, Fields: map[string]any{"status": "ok"}})
 
+	windowOpen(false)
 	second := consume()
 	if second.Status != 409 {
 		t.Fatalf("the second consume answered %d, want 409", second.Status)
@@ -404,6 +420,7 @@ func TestEveEnrolmentWindowConsume(t *testing.T) {
 
 	i.MustCLI("eve", "enrol")
 	i.ClockAdvance(6 * time.Minute)
+	windowOpen(false)
 	late := consume()
 	if late.Status != 409 {
 		t.Fatalf("a consume after the window expired answered %d, want 409", late.Status)
@@ -427,6 +444,9 @@ func TestEvePasskeyReport(t *testing.T) {
 	requireEvent(t, i, harness.EventQuery{Key: "eve.passkey.report", Trace: report.Trace, Fields: map[string]any{"status": "ok", "count": 2}})
 
 	i.MustCLI("eve", "revoke", "--id", a)
+	if got := g7Revocations(t, i); !g7Contains(got, a) {
+		t.Fatalf("GET /api/eve/passkeys/revocations lists %v, want %s", got, a)
+	}
 	if got := g7ReportEve(t, i, a, b); !g7Contains(got, a) {
 		t.Fatalf("a report that still lists %s was answered with revocations %v", a, got)
 	}
