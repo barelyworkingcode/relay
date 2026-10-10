@@ -240,7 +240,7 @@ func classifyCosStart(r cosStartRun) result {
 	case !r.JoinSeen:
 		return fail("no session_joined frame after join_session")
 	case r.TurnWaitErr:
-		return fail("no turn_done carrying the marker, then idle, after the headless start")
+		return sessionLimit(r.Frames, sid).turnFail(id, "no turn_done carrying the marker, then idle, after the headless start")
 	case model != agentModelID:
 		return fail("system/init model %q, want %q", model, agentModelID)
 	case r.List.Status != http.StatusOK:
@@ -401,6 +401,7 @@ type cosHostRun struct {
 	Send     frontendResponse
 	Turn2Err bool
 	RowsErr  string
+	Limit    providerLimit      // set when a turn wait fails
 	Launch   []audit.AuditEvent // session_launch rows naming the session
 	Msgs     []audit.AuditEvent // session_message rows naming the session
 
@@ -484,6 +485,7 @@ func runCosStartHost(ctx context.Context, e env) (out result) {
 	}
 	// The wait on model output: the turn_done frame carrying the marker.
 	if r.TurnWaitErr = !obs.waitFor(ctx, cosTurnWait, cosTurnFinished(id, r.Marker)); r.TurnWaitErr {
+		r.Limit = sessionLimit(obs.snapshot(), id)
 		return
 	}
 	r.List = cosRequest(ctx, e, cosTok, true, http.MethodGet, "/api/sessions", nil, frontendRequestTimeout)
@@ -500,6 +502,7 @@ func runCosStartHost(ctx context.Context, e env) (out result) {
 		return
 	}
 	if r.Turn2Err = !obs.waitFor(ctx, cosTurnWait, cosTurnFinished(id, r.Marker2)); r.Turn2Err {
+		r.Limit = sessionLimit(obs.snapshot(), id)
 		return
 	}
 	// Both rows are written before the 202, so one read follows the second turn.
@@ -566,7 +569,7 @@ func classifyCosStartHost(r cosHostRun) result {
 	case !r.JoinSeen:
 		return fail("no session_joined frame after join_session")
 	case r.TurnWaitErr:
-		return fail("no turn_done carrying the marker, then idle, after the hosted start (host claude cannot sign in over ssh? setup P11)")
+		return r.Limit.turnFail(id, "no turn_done carrying the marker, then idle, after the hosted start (host claude cannot sign in over ssh? setup P11)")
 	case r.List.Status != http.StatusOK:
 		return fail("scoped GET /api/sessions status %d, want 200", r.List.Status)
 	case r.PSErr != "":
@@ -584,7 +587,7 @@ func classifyCosStartHost(r cosHostRun) result {
 	case r.Send.Status != http.StatusAccepted:
 		return fail("scoped POST /api/chief-of-staff/messages status %d, want 202: %s", r.Send.Status, r.Send.Error)
 	case r.Turn2Err:
-		return fail("no turn_done carrying the second marker, then idle, after the scoped message")
+		return r.Limit.turnFail(id, "no turn_done carrying the second marker, then idle, after the scoped message")
 	case r.RowsErr != "":
 		return blocked(id, r.RowsErr)
 	}
