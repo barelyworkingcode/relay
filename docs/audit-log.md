@@ -521,7 +521,8 @@ for arguments, so a truncated value is never mistaken for a short, genuine
 one.
 
 `session_launch` and `session_resume` records carry request-supplied strings
-on a refusal too, and a launch request body may be 1 MiB.
+on a refusal too, and a launch request body may be 1 MiB. A body over that is
+refused `413` before any launch runs and writes no `session_launch` row.
 `newSessionLaunchAuditEvent` builds both and caps them there: `error` at 256 runes, `args.session_kind` and
 `actor.project_id` at 64 runes each, `args.directory` at 1024 runes. A capped
 value keeps its leading runes and ends in `…`, which never occurs in a real

@@ -2469,7 +2469,9 @@ provider reports them. The text form is the reply text alone.
 ### `session stop`
 
 `--id` is required. `--json` prints `id` (string): the stopped session. Text form:
-`stopped session ID`.
+`stopped session ID`. The session host answers success for an id it does not
+hold, so a second stop, or a stop of an unknown id, also exits `0`. A stopped
+session is deleted, not left dormant: it cannot be resumed.
 
 ### `session resume`
 
@@ -2480,13 +2482,17 @@ provider reports them. The text form is the reply text alone.
 | `session_id` | string | The session id. |
 | `resumed` | boolean | `false` when the session was already live. |
 
-Text form: `resumed session ID` or `session ID is already live`.
+A resume applies to a dormant session. Every session is dormant after a relay
+restart; an unknown id exits `1` (`404`). Text form: `resumed session ID` or
+`session ID is already live`.
 
 ### `session mode`
 
 `--id` and `--mode` (a permission mode) are required. It changes a session's
-permission mode through the session host; for a local claude session the host
-answers `resume_required`, which is exit `1`. `--json` prints:
+permission mode through the session host. A local claude session relay
+launched answers `resume_required` for any mode, valid or not, which is exit
+`1`; the session stays live. Only a session on an SSH host changes mode in
+place, and there an unknown mode is refused. `--json` prints:
 
 | Field | JSON type | Meaning |
 |---|---|---|
