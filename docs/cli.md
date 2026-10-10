@@ -1749,7 +1749,7 @@ Exit codes: `0` authenticated; `1` when relay is not running, when it is run whe
 Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Resets the
 macOS privacy (TCC) grants for an MCP registered with `--tcc-services`, the
 act of **Reset Permissions** in the MCP Servers tab. It refuses an MCP with no
-such services. `--json` prints the result the tab shows.
+such services: the `mcp.permissions.reset` event ends `error` with reason `internal`, and the exit code is `1`. `--json` prints the result the tab shows.
 
 Flags: `--id` (the MCP id, required) and `--json`. `--json` prints:
 
@@ -2788,6 +2788,10 @@ One-shot tool listing and invocation over the bridge, using a **project**
 token — this is the door an agent or a script actually calls tools through,
 as distinct from every command above, which is an *operator* configuring
 relay itself.
+
+No relay command sends `DescribeProject`; that bridge request is reached by a
+client that dials the bridge with a project token (see
+[`routes.md`](routes.md#bridgelisttools-and-bridgecalltool)).
 
 ```
 relay mcpExec --token TOKEN --list [--schema]
