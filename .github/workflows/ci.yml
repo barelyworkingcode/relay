@@ -43,11 +43,11 @@ jobs:
           go build -tags relaytest -o "$out/tagged" ./cmd/relay
           scripts/check-test-build.sh absent "$out/release"
           scripts/check-test-build.sh present "$out/tagged"
-      - name: no unit tests outside e2e
+      - name: no unit tests outside e2e and fakerelay
         run: |
-          stray=$(find . -name '*_test.go' -not -path './e2e/*' -not -path './.git/*')
+          stray=$(find . -name '*_test.go' -not -path './e2e/*' -not -path './fakerelay/*' -not -path './.git/*')
           if [ -n "$stray" ]; then
-            echo "_test.go files outside e2e/:"; echo "$stray"; exit 1
+            echo "_test.go files outside e2e/ and fakerelay/:"; echo "$stray"; exit 1
           fi
 
   e2e:
@@ -75,3 +75,30 @@ jobs:
       - name: e2e feature tests
         working-directory: e2e
         run: go test -race -count=1 -timeout 35m ./...
+
+  fakerelay:
+    name: fakerelay
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: fakerelay
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: fakerelay/go.sum
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "not gofmt-clean:"; echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: build without cgo
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build ./...
+          done
+      - name: proof
+        run: go test -race -count=1 -parallel 24 -timeout 15m ./...

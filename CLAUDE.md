@@ -29,6 +29,7 @@ same change when behaviour moves.
 | `relay sandbox`, the bridge takeover seam | [`docs/sandbox-command.md`](docs/sandbox-command.md) |
 | SSH host projects | [`docs/ssh-hosts.md`](docs/ssh-hosts.md) |
 | Model endpoint, model keys | [`docs/model-endpoint.md`](docs/model-endpoint.md) |
+| Fake relay for tests (`fakerelay/`: world spec, wire reference, surface) | [`docs/fakerelay.md`](docs/fakerelay.md) |
 | Tests | [`docs/testing.md`](docs/testing.md), [`docs/testing-roadmap.md`](docs/testing-roadmap.md) |
 | Devbox verify (layer 2, the running app) | [`cmd/devboxverify/README.md`](cmd/devboxverify/README.md) |
 | Judging a security finding: who relay defends against, and what's out of scope | [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) |
@@ -78,8 +79,9 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 |---|---|
 | commit | `gofmt`, `go build`, `go vet` — seconds |
 | push | `go build ./...`, `go vet ./...` |
-| PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags relaytest ./...`, the test-build absent/present check, and a step that fails on any `_test.go` outside `e2e/` |
+| PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags relaytest ./...`, the test-build absent/present check, and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` |
 | PR and `main` (GitHub Actions) | the `e2e` job: `gofmt` and `go vet` in `e2e/`, then `go test -race -count=1 ./...` |
+| PR and `main` (GitHub Actions) | the `fakerelay` job (Linux): `gofmt`, `go vet`, a cgo-free build for Linux and macOS, then the proof tests in `fakerelay/` |
 
 ## House rules
 
@@ -126,7 +128,7 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
 
 ### Tests
 
-- Relay has no unit tests and CI rejects a `_test.go` outside `e2e/`. A bug's
+- Relay has no unit tests and CI rejects a `_test.go` outside `e2e/` and `fakerelay/`. A bug's
   failing repro is an `e2e/` feature test that drives relay through its CLI or
   HTTP; what only the real Mac can show (the screen, Touch ID, the login
   keychain) is a devbox journey (`cmd/devboxverify`).

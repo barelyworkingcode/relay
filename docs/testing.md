@@ -1,8 +1,8 @@
 # Testing
 
 Relay has no unit tests. `go test ./...` reports `no test files` for every
-package and exits 0. CI rejects any Go test file outside `e2e/`; the tests live
-in the e2e module.
+package and exits 0. CI rejects any Go test file outside `e2e/` and `fakerelay/`; relay's tests live
+in the e2e module, and fakerelay's proof tests in its own module.
 
 ## What proves relay
 
@@ -143,7 +143,8 @@ hand-run tool for Settings UI work.
 |---|---|---|
 | commit | `gofmt -l`, `go build ./...`, `go vet ./...` | `.githooks/pre-commit` |
 | push | `go build ./...` and `go vet ./...`, skipped when the pushed commits touch no Go sources or web assets | `.githooks/pre-push` |
-| PR, and every push to `main` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags relaytest ./...`, `scripts/check-test-build.sh` (`absent` on an untagged build, `present` on a `relaytest` build), and a step that fails on any `_test.go` outside `e2e/` | `.github/workflows/ci.yml` (`build` job) |
+| PR, and every push to `main` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags relaytest ./...`, `scripts/check-test-build.sh` (`absent` on an untagged build, `present` on a `relaytest` build), and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` | `.github/workflows/ci.yml` (`build` job) |
+| PR, and every push to `main` | the `fakerelay` job on Linux: `gofmt -l`, `go vet ./...`, a `CGO_ENABLED=0` build for Linux and macOS, then `go test -race -count=1 -parallel 24 ./...` in `fakerelay/` | `.github/workflows/ci.yml` (`fakerelay` job) |
 | PR, and every push to `main` | the `e2e` job: `gofmt -l` and `go vet ./...` in `e2e/`, then `go test -race -count=1 ./...` at the runner's default parallelism | `.github/workflows/ci.yml` (`e2e` job) |
 | `./build.sh --test` | `go vet ./...` before install | `build.sh` |
 
