@@ -901,6 +901,39 @@ Image attachments precede the text block as `{"type":"image","source":{"type":"b
 
 Streaming forms are also read: `{"type":"assistant","index":N,"content_block":{…}}`, `{"type":"assistant","index":N,"delta":{"type":"text_delta","text":"…"}}` and `{"type":"assistant","index":N,"content_block_stop":true}`. A `user` line carrying `tool_result` blocks becomes a tool result. Any other `type` is passed on unchanged. A `control_request` line is answered on stdin; only SSH-host sessions produce one.
 
+### History on join
+
+`join_session` on `/ws` answers with `session_joined`, whose `history[]` is built from one of two sources.
+
+1. **Claude's transcript**, when the session is a `claude` session with a conversation id (the `claudeSessionId` in its provider state, the id the CLI reported in its `init` line). Relay reads `<home>/.claude/projects/<dir name>/<conversation id>.jsonl`.
+2. **The session's stored messages** (the user and assistant turns relay itself recorded) in every other case.
+
+**The folder name.** `<dir name>` is the session's working directory with every character other than `A-Z`, `a-z` and `0-9` replaced by `-`. That is Claude CLI's rule, and relay must read the folder the CLI wrote. `/Users/x/World/Acme Corp` becomes `-Users-x-World-Acme-Corp`; `/Users/x/.local/a_b` becomes `-Users-x--local-a-b`. A local session resolves symlinks in its directory first and encodes the resolved path, with `<home>` the console user's home. A session on an SSH host encodes the directory as stored (no symlink resolution) and reads `~/.claude/projects/<dir name>/<conversation id>.jsonl` on that host with `cat` over its `ssh_argv`, with a 10 second limit.
+
+**A missing or unreadable transcript is not an error.** If the file cannot be opened or fetched, the directory cannot be resolved, or the read fails, relay writes a debug log line and answers with the stored messages. A transcript that reads cleanly but yields no entries falls back the same way. Lines that are not valid JSON, and lines whose `sessionId` is not the conversation id, are skipped. Stored messages may be an empty list; `history` is then `[]`, never absent.
+
+**Entry shape.** Each `history[]` entry is an object:
+
+| Field | Present | Meaning |
+|---|---|---|
+| `timestamp` | always | the transcript line's `timestamp` string, unchanged (empty string if the line had none) |
+| `role` | always | `"user"`, `"assistant"` or `"tool"` |
+| `content` | always | raw JSON, by role (below) |
+| `toolUseId` | `role` `"tool"` only | the `tool_use_id` of the `tool_result` block, to pair it with a `tool_use` block |
+| `origin` | a `user` entry only, when the stored message it matches names a writer other than the person (for example `"chief-of-staff"`) | who wrote the message; absent means the person |
+| `toolName`, `files` | never from a transcript | stored messages may carry them |
+
+**How transcript lines map.** Lines are read in file order.
+
+- **`type:"user"`, `message.content` a JSON string.** One `user` entry; `content` is that string.
+- **`type:"user"`, `message.content` an array.** Each `tool_result` block becomes a `tool` entry, in order: `content` is the block's `content` as written (string or array; `""` if absent) and `toolUseId` is its `tool_use_id`. The `text` blocks are then joined with `\n` into one `user` entry whose `content` is that JSON string, placed after the `tool` entries; no `text` blocks, no `user` entry. Other block types are dropped. All entries from the line take the line's `timestamp`.
+- **`type:"user"`, no `message.content`.** Nothing.
+- **`type:"assistant"`.** Lines are grouped by `message.id`; a line with no id is dropped. The group's `content` blocks are concatenated in line order into one `assistant` entry, whose `content` is the JSON array of those blocks (each block unchanged) and whose `timestamp` is the first line's. A group is emitted when the next `user` line is read, or at the end of the file; so two lines with the same id, even apart, make one entry, positioned where the group closes (after any earlier assistant groups, before the user entry that closed it).
+- **Sub-agent transcripts.** For a local read only, each `tool_use` block named `Agent` or `Task` is followed in `content` by an `{"type":"agent_transcript","agentId":…,"persona":…,"messages":[{"role","content"}…]}` block, taken in modification-time order from `<dir name>/<conversation id>/subagents/agent-*.jsonl` (sidechain lines only). Files beyond the number of such blocks are unused.
+- **Any other `type`** (`system`, `summary`, `result`, …) is ignored.
+
+**Origins.** After a transcript read, each `user` entry takes the `origin` of the next stored user message with the same plain text. An entry with no match gets none.
+
 ### pi
 
 Argv: `--mode rpc [--provider relay-router --model <id>] [--thinking <level>] [--session <id>] --session-dir <dir> [--append-system-prompt <path>] [--skill <dir>] [<extra args>]`. The environment adds `PI_OFFLINE=1` and `PI_SKIP_VERSION_CHECK=1`, and `PI_CODING_AGENT_DIR` when the session is brokered.
