@@ -96,10 +96,11 @@ terminal escapes in `relay audit`'s table).
 
 ## The test build
 
-`./build.sh --test-build` makes a tray with three seams that take the outside
+`./build.sh --test-build` makes a tray with four seams that take the outside
 world away from a test: a presence provider that reads its answers from a file
 in the config dir, a sealing-key store in a file in the config dir instead of
-the login keychain, and a clock the test moves (`relay debug clock`). It
+the login keychain, a clock the test moves (`relay debug clock`), and an ssh
+stub named in a file in the config dir (`test-ssh.json`). It
 exists so verify journeys and the e2e tier run with no person and no login
 session. It is not a promise relay makes to a user: no release carries it, and
 a release has no switch that skips a gate, reads a file for a presence answer
@@ -120,7 +121,7 @@ or moves its clock (attacker 5's promise holds). The promises that cover it:
   a release or the real app does.
 - **Recorded (asset C).** Each approval is a `control_decision` row with
   `presence_approver`, written before the act; an unrecordable approval
-  refuses the act. Each answer, keychain fault and clock change writes a
+  refuses the act. Each answer, keychain fault, clock change and ssh stub writes a
   `debug.*` event.
 
 One residual: a session whose grants include the test config dir could write

@@ -172,7 +172,7 @@ go build -race -tags relaytest -o "$R/relay" ./cmd/relay   # a throwaway build
 run while a process runs from that bundle, and it rejects `--release`.
 `--test` is allowed.
 
-**Three seams, three files in the config dir `X`.** Each acts only on a dir
+**Four seams, four controls in the config dir `X`.** Each acts only on a dir
 other than the default one ([below](#the-default-config-dir)).
 
 | Seam | Control | Design |
@@ -180,8 +180,9 @@ other than the default one ([below](#the-default-config-dir)).
 | Presence | `X/test-presence.json` | [`presence-gate.md`](presence-gate.md#the-test-build-presence) |
 | Keychain | `X/test-keychain.json` (the store), `X/test-keychain-fault.json` | [`sealed-config.md`](sealed-config.md#the-test-builds-keychain-provider) |
 | Clock | `relay debug clock [set <RFC3339> \| advance <duration>]` | below |
+| ssh stub | `X/test-ssh.json` | [`ssh-hosts.md`](ssh-hosts.md#the-test-build-ssh-stub) |
 
-All three files are private to the user: regular files, owned by the user,
+All the files are private to the user: regular files, owned by the user,
 mode 0600. A harness keeps `X` under `/tmp`, outside every grant, so a session
 cannot write them.
 

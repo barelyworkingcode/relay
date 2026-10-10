@@ -694,6 +694,36 @@ host with no scheduler change. The cron stays on the console, which is what
   Windows OpenSSH); set `persist` on it for a psmux shell that outlives the
   link.
 
+## The test build: ssh stub
+
+A `relaytest` build can run every ssh call against a program instead of
+OpenSSH, so the e2e tier drives host projects with no second machine. The
+release build has no such switch: its `sshCommand()` is the constant `"ssh"`.
+
+- **The file.** `X/test-ssh.json` in the config dir `X`:
+  `{"command":"<absolute path>"}`. Unknown keys are refused. `command` must be
+  an absolute path to a regular executable file.
+- **Private file.** The file is opened with `O_NOFOLLOW` and must be a regular
+  file, owned by the user, with no group or other bits, at most 64 KiB. These
+  are the rules the presence outcome file has.
+- **Where it acts.** The file is read only on a config dir the test seams act
+  on, never the default one ([testing.md](testing.md#the-default-config-dir)).
+  There the file is not read, and real ssh runs.
+- **Absent file.** Real ssh.
+- **Invalid file.** `relay serve` exits 1 and names the file and the fault. It
+  never falls back to real ssh, so a test aimed at a stub cannot reach a real
+  host.
+- **Success.** `serve` logs a `slog.Warn` line and writes the event
+  `debug.ssh.stub` with the field `command` ([events.md](events.md#test-build-only)).
+- **Reach.** The stub replaces argv[0] in `SSHArgv`, so every consumer of
+  `ssh_argv` uses it: probe, check, disconnect, tmux, the file-agent pool,
+  `hostView` and relay-sessions' `-tt` launches. relay-sessions is a child of
+  serve, so it takes the command through the argv relay hands it.
+
+`scripts/check-test-build.sh` lists `sshhost.SetTestCommand` and
+`main.readSSHStub` as seam symbols: `absent` fails on either, `present`
+needs both.
+
 ## Fixtures
 
 Shared by the Go and Node `RemoteCommand` tests. Inputs → decoded script.
