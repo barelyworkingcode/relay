@@ -110,12 +110,15 @@ func (a *api) hostByID(w http.ResponseWriter, ev *events.Event, id string, notFo
 }
 
 func (a *api) listHosts(w http.ResponseWriter, r *http.Request) {
-	out := []map[string]any{}
-	a.State.Read(func(m *state.Model) {
-		for _, h := range m.Hosts {
-			out = append(out, a.hostView(h))
-		}
-	})
+	var hosts []world.Host
+	a.State.Read(func(m *state.Model) { hosts = append(hosts, m.Hosts...) })
+	// Views are built after the read returns: hostView reaches the hub, which
+	// takes the state lock again, and a nested read queues behind a waiting
+	// writer that is itself queued behind the outer read.
+	out := make([]map[string]any, 0, len(hosts))
+	for _, h := range hosts {
+		out = append(out, a.hostView(h))
+	}
 	a.Events.Begin(r.Context(), "host.list").Set("count", len(out)).End("ok", "", nil)
 	ok(w, out)
 }
@@ -472,13 +475,17 @@ func (a *api) persistentHost(w http.ResponseWriter, r *http.Request, ev *events.
 			return
 		}
 		h = *hp
+	})
+	// The agent status comes from the hub, which takes the state lock itself,
+	// so it is read after the callback returns.
+	if code == 0 {
 		switch {
 		case h.TmuxPath == "" && (h.Probe == nil || h.Probe.TmuxPath == ""):
 			code, msg = http.StatusConflict, "host has no tmux"
 		case a.agentStatus(h) == "unreachable" || (h.Probe != nil && !h.Probe.OK):
 			code, msg = http.StatusBadGateway, "host unreachable"
 		}
-	})
+	}
 	if code != 0 {
 		reason := map[int]string{http.StatusNotFound: "not_found", http.StatusConflict: "conflict", http.StatusBadGateway: "upstream"}[code]
 		ev.End("error", reason, errors.New(msg))
