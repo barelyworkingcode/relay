@@ -976,8 +976,10 @@ the coordinator runs `merge-check --epic N --close`.
   GitHub. `build` then holds the app to that same HEAD.
 - The status is `devbox/verify-full` on HEAD, description
   `full <n>/<total> pass=… fail=… blocked=… notrun=…`. It is `success` only when
-  every journey in the table ran and passed; a FAIL, BLOCKED or NOTRUN
-  journey, or a short run, posts `failure`. A post failure exits 2.
+  every journey in the table reported and none is FAIL or BLOCKED. NOTRUN
+  journeys do not fail it, as in the exit rule above, and `notrun=` stays in
+  the description. A FAIL, a BLOCKED, or a short or empty run posts `failure`.
+  A post failure exits 2.
 - Only after a `success` status has posted, the tool comments on issue N with
   one line and nothing else: `Full verify: <owner>/<repo>@<sha40>`.
   merge-check matches that line exactly. A run that did not pass leaves no

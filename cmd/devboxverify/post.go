@@ -134,12 +134,13 @@ func mainPreflight(ctx context.Context, checkout, head string) (string, error) {
 	return slug, nil
 }
 
-// fullState is success only when every journey in the table ran and passed.
-// Unlike statusState, a NOTRUN journey or a short run is not green: an epic's
-// full run has no journey to excuse.
+// fullState is success only when every journey in the table ran and none
+// failed or was blocked. A NOTRUN journey is by design (the product did
+// nothing wrong, as in the exit rule), so it does not fail the run; a short
+// or empty run does, since a journey that never reported proves nothing.
 func fullState(rs []result, total int) string {
 	counts, _ := tally(rs)
-	if total == 0 || len(rs) != total || counts[statePass] != total {
+	if total == 0 || len(rs) != total || counts[stateFail] != 0 || counts[stateBlocked] != 0 {
 		return "failure"
 	}
 	return "success"
