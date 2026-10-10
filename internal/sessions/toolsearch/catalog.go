@@ -86,9 +86,9 @@ func (c *Catalog) Skills() []Skill { return append([]Skill(nil), c.skills...) }
 func (c *Catalog) Covered(name string) bool { return c.covered[name] }
 
 const indexHeader = `## Hidden tools
-Some tools are hidden to keep this conversation small. Each line below is a skill: a group of hidden tools.
-To use one, call tool_search with a few words describing the task. It returns the matching tool definitions.
-Then call call_tool with {"name": "<tool name>", "arguments": {<arguments>}}.`
+Some tools are hidden to keep this conversation small. The names below are skills, not tools: never call a skill name.
+Your first step for any task that needs a hidden tool is tool_search, with a few words describing the task. It returns the matching tool definitions.
+Then call call_tool with {"name": "<tool name from tool_search>", "arguments": {<arguments>}}. Never call call_tool before tool_search.`
 
 // Index renders the system-prompt block, or "" when no skill is indexed.
 func (c *Catalog) Index() string {
@@ -99,11 +99,13 @@ func (c *Catalog) Index() string {
 	b.WriteString(indexHeader)
 	for _, s := range c.skills {
 		b.WriteString("\n- ")
-		b.WriteString(s.Name)
 		if d := indexDescription(s.Description); d != "" {
-			b.WriteString(": ")
 			b.WriteString(d)
+			b.WriteString(" ")
 		}
+		b.WriteString("(skill ")
+		b.WriteString(s.Name)
+		b.WriteString("; search for it, do not call it)")
 	}
 	return b.String()
 }
