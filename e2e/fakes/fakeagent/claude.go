@@ -55,17 +55,34 @@ func (a *agent) runClaude() int {
 		if cmdline, ok := strings.CutPrefix(text, "!sh "); ok {
 			answer = runShellTurn(cmdline)
 		}
+		// "!error <code>" ends the turn as the CLI ends one on an API error:
+		// a top-level error on the assistant line and an error result.
+		errCode, isErr := strings.CutPrefix(text, "!error ")
+		if !isErr {
+			errCode = ""
+		} else {
+			answer = "API Error: " + errCode
+		}
 		msgID := randomID("msg_")
 		content := []map[string]any{{"type": "text", "text": answer}}
-		a.emitJSON(map[string]any{
+		frame := map[string]any{
 			"type": "assistant",
 			"message": map[string]any{
 				"id": msgID, "role": "assistant", "content": content,
 			},
-		})
-		writeTranscript(sessionID, cwd, text, msgID, content)
+		}
+		if isErr {
+			frame["error"] = errCode
+			frame["isApiErrorMessage"] = true
+		}
+		a.emitJSON(frame)
+		writeTranscript(sessionID, cwd, text, msgID, content, errCode)
+		subtype := "success"
+		if isErr {
+			subtype = "error_during_execution"
+		}
 		a.emitJSON(map[string]any{
-			"type": "result", "subtype": "success", "is_error": false,
+			"type": "result", "subtype": subtype, "is_error": isErr,
 			"session_id": sessionID, "num_turns": turn, "result": answer,
 			"total_cost_usd": 0,
 			"usage":          map[string]int{"input_tokens": 1, "output_tokens": 1},
@@ -159,7 +176,7 @@ func claudeDirName(cwd string) string {
 // directory with symlinks resolved, as the CLI sees it. A write that fails is
 // ignored: the transcript is a convenience for history tests, and a test that
 // needs it fails on its absence.
-func writeTranscript(sessionID, cwd, userText, assistantID string, content []map[string]any) {
+func writeTranscript(sessionID, cwd, userText, assistantID string, content []map[string]any, errCode string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
@@ -182,6 +199,10 @@ func writeTranscript(sessionID, cwd, userText, assistantID string, content []map
 			"message": map[string]any{"id": randomID("usr_"), "role": "user", "content": userText}},
 		{"type": "assistant", "sessionId": sessionID, "timestamp": ts,
 			"message": map[string]any{"id": assistantID, "role": "assistant", "content": content}},
+	}
+	if errCode != "" {
+		lines[1]["error"] = errCode
+		lines[1]["isApiErrorMessage"] = true
 	}
 	for _, l := range lines {
 		if b, err := json.Marshal(l); err == nil {
