@@ -36,6 +36,7 @@ func has(fs []Finding, rule, where string) bool {
 }
 
 func TestMapRulesPureInputs(t *testing.T) {
+	t.Parallel()
 	am := mapOf(
 		map[string][]string{
 			"alpha":      {"cmd/alpha/**"},
@@ -93,6 +94,7 @@ func TestMapRulesPureInputs(t *testing.T) {
 }
 
 func TestMapRulesM3IgnoresMissingTest(t *testing.T) {
+	t.Parallel()
 	// A row names TestGone, which no feature file defines: the area selects nothing.
 	am := mapOf(map[string][]string{"alpha": {"a/**"}}, map[string][]string{"G1": {"alpha"}})
 	fm := FeatureMap{Rows: []Row{rowOf("G1.01", "TestGone")}}
@@ -104,6 +106,7 @@ func TestMapRulesM3IgnoresMissingTest(t *testing.T) {
 const areasDoc = "## Areas\n\n```yaml\n%s```\n\n### G1 · Goal\n\n%s\n"
 
 func TestParseAreaMapSyntax(t *testing.T) {
+	t.Parallel()
 	good := "areas:\n  alpha:\n    code: [a/**, b/*.go]\n    journey-only: true\n"
 	cases := []struct {
 		name, block, goal, want string
@@ -112,6 +115,8 @@ func TestParseAreaMapSyntax(t *testing.T) {
 		{"mid ** glob", "areas:\n  alpha:\n    code: [a/**/b.go]\n", "Areas: alpha.", "glob"},
 		{"bad area name", "areas:\n  Alpha_1:\n    code: [a/**]\n", "Areas: Alpha_1.", "area name"},
 		{"unknown key", "areas:\n  alpha:\n    code: [a/**]\n    colour: red\n", "Areas: alpha.", "unknown key"},
+		{"key twice", "areas:\n  alpha:\n    code: [a/**]\n    code: [b/**]\n", "Areas: alpha.", "given twice"},
+		{"tab indent", "areas:\n  alpha:\n\tcode: [a/**]\n", "Areas: alpha.", "tab"},
 		{"undefined area", good, "Areas: alpha, ghost.", "ghost"},
 	}
 	for _, c := range cases {
@@ -139,6 +144,7 @@ func sprintDoc(block, goal string) string {
 }
 
 func TestGlobMatch(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		glob, path string
 		want       bool
@@ -162,6 +168,7 @@ func TestGlobMatch(t *testing.T) {
 }
 
 func TestIsTestOnly(t *testing.T) {
+	t.Parallel()
 	for p, want := range map[string]bool{
 		"x_test.go":                true,
 		"a.md":                     true,
@@ -183,6 +190,7 @@ func TestIsTestOnly(t *testing.T) {
 // TestCheckMapOnGitCheckout drives the rules through the real entry point:
 // git ls-files for tracked paths, go list for app files, a scan for stray Tests.
 func TestCheckMapOnGitCheckout(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	write := func(rel, body string) {
 		p := filepath.Join(root, filepath.FromSlash(rel))
@@ -201,6 +209,8 @@ func TestCheckMapOnGitCheckout(t *testing.T) {
 	write("orphan/notes.md", "# notes\n")
 	write("orphan/testdata/x.json", "{}\n")
 	write("e2e/go.mod", "module acme.test/e2e\n\ngo 1.21\n")
+	write("e2e/features/sub/x_test.go", "package sub\n\nimport \"testing\"\n\nfunc TestSub(t *testing.T) {}\n")
+	write("e2e/contract/deep/x_test.go", "package deep\n\nimport \"testing\"\n\nfunc TestDeep(t *testing.T) {}\n")
 	write("e2e/other/o_test.go", "package other\n\nimport \"testing\"\n\nfunc TestOther(t *testing.T) {}\n")
 	write("docs/FEATURES.md", sprintDoc("areas:\n  app:\n    code: [cmd/relaysessions/**]\n  no-test:\n    code: [cmd/relay/**, go.mod, e2e/**, docs/**]\n", "Areas: app."))
 	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}} {
@@ -226,10 +236,32 @@ func TestCheckMapOnGitCheckout(t *testing.T) {
 	if !has(fs, "M2", "e2e/other/o_test.go: TestOther") {
 		t.Errorf("M2 missed the stray Test: %v", fs)
 	}
+	for _, name := range []string{"e2e/features/sub/x_test.go: TestSub", "e2e/contract/deep/x_test.go: TestDeep"} {
+		if !has(fs, "M2", name) {
+			t.Errorf("M2 missed the Test in a subpackage: %s: %v", name, fs)
+		}
+	}
 	if !has(fs, "M4", "cmd/relay/main.go") {
 		t.Errorf("M4 missed the app file mapped only to no-test: %v", fs)
 	}
 	if has(fs, "M4", "cmd/relaysessions/main.go") {
 		t.Errorf("M4 reported an app file mapped to a real area")
+	}
+}
+
+// A tree with no .git skips the map rules with a note, not a failure.
+func TestCheckSkipsMapRulesWithoutGit(t *testing.T) {
+	t.Parallel()
+	all, err := Check(fixtureRepo, loadDoors(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRule(all, "info", "map rules M1 to M4 skipped") {
+		t.Errorf("no info finding for the skipped map rules: %v", all)
+	}
+	for _, f := range Failures(all) {
+		if strings.HasPrefix(f.Rule, "M") {
+			t.Errorf("map rule failed on a non-git tree: %s", f)
+		}
 	}
 }
