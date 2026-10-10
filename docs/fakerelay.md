@@ -358,7 +358,7 @@ reserves its whole subtree, cut at the first `{`. The `/` catch-all is not
 reserved. checked against relay at `59cdf9e` (G5).
 
 Registering writes the event `service.manifest.register`. The routes are
-dropped when the service's bridge connection closes or its process exits.
+dropped when the service's process exits.
 
 ### Dispatch
 

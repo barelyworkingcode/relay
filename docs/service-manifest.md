@@ -135,7 +135,7 @@ Lifecycle:
 
 - **Re-register** replaces the prior record (the service is the source of truth
   for its own routes, address, token); the dispatch table rebuilds.
-- **Bridge disconnect / process exit** ⇒ relay `Forget`s the service and drops
+- **Process exit** ⇒ relay `Forget`s the service and drops
   its routes; subsequent requests 404 until re-registration.
 - **Route conflict** (two services declare the same exact route string) fails
   the second `RegisterManifest`; the service can log and exit or back off.

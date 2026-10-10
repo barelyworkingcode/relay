@@ -257,7 +257,7 @@ func (s *Server) Run(ctx context.Context) (err error) {
 		defer wg.Done()
 		bridge.Serve(bl, bridge.Hooks{Events: s.log, RelayPID: os.Getpid(), Launch: s.launch,
 			Fault: s.faults.bridgeFault,
-			Register: func(id string, m bridge.Manifest, sock, tok string) (func(), error) {
+			Register: func(id string, m bridge.Manifest, sock, tok string) error {
 				s.mu.Lock()
 				served := append([]string(nil), s.relayPaths...)
 				s.mu.Unlock()

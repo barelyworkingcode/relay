@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"relaye2e/harness"
 )
 
 func TestDispatchProxiesAServiceRoute(t *testing.T) {
@@ -60,6 +62,22 @@ func TestDispatchGeneratedUnserved(t *testing.T) {
 		Spec:    sessionsWorld(),
 		Body: func(r *Run) {
 			r.HTTP("ops", "GET", "/api/generated/acme.png", nil)
+		},
+	})
+}
+
+// A service that registers on a one-shot bridge connection and closes it keeps
+// its routes while its process runs.
+func TestDispatchRoutesSurviveBridgeClose(t *testing.T) {
+	t.Parallel()
+	sp := serviceWorld()
+	sp.Services[0].Args = []string{"--close-bridge-after-register"}
+	Check(t, Scenario{
+		Surface: Dispatch,
+		Spec:    sp,
+		Body: func(r *Run) {
+			r.Event(harness.EventQuery{Key: "service.manifest.register", Fields: map[string]any{"service_id": "acmesvc"}})
+			r.HTTP("ops", "GET", "/fakesvc/status", nil)
 		},
 	})
 }
