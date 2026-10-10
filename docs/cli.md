@@ -651,6 +651,7 @@ ones a script usually reads (the full set is in
 | `scope_violation` | boolean, optional | `true` on a `tool_error` the MCP marked as a resource-scope refusal. |
 | `method`, `path`, `class`, `transport` | string, optional | The request of a `control_decision` row. |
 | `phase` | string, optional | `intent` or `completion`, on the two rows of a remote call. Absent on a local call. |
+| `trace_id` | string, optional | The trace of the request, on `call_tool`, `list_tools`, `list_skills`, `model_call` and `model_list` rows only. Every other event kind leaves it out. |
 
 Text mode prints the header `TIME  OUTCOME  PROJECT  MCP  TOOL  MS  CALLER
 DETAIL`, one row per record, a dash in an empty column. With no matching record
@@ -1535,7 +1536,9 @@ Needs service: yes. Prompts: yes (`project.grant`). Works over SSH: no.
 `--name` and `--path` create a project with no MCP access; `--file F` takes the
 `POST /api/projects` body for everything else (`-` reads stdin). A relative
 `--path` resolves against the current directory. `--json` prints the project as
-`POST /api/projects` returns it.
+`POST /api/projects` returns it. An access profile (`kind: remote`) is created
+through `--file` with no `path`; a body that gives one is refused, because a
+profile has no folder.
 
 `--json` prints the created project:
 
@@ -1543,7 +1546,7 @@ Needs service: yes. Prompts: yes (`project.grant`). Works over SSH: no.
 |---|---|---|
 | `id` | string | The project id. |
 | `name` | string | Display name. |
-| `path` | string | The project folder. |
+| `path` | string | The project folder; an empty string for an access profile. |
 | `kind` | string, optional | `remote` for an access profile; absent for a local project. |
 | `host_id` | string, optional | The SSH host id of a project on an SSH host. |
 | `mode` | string | The project's mode. |
@@ -1633,13 +1636,17 @@ Exit codes: `0` printed; `1` when relay is not running, when it is run where it 
 ### `project regen-skill`
 
 Needs service: yes. Prompts: no. Works over SSH: yes. Rewrites the project's
-SKILL.md from its current grant. `--json` prints `{"path"}`.
+skills from its current grant. Each MCP the project reaches (or each category
+its tools declare) gets one folder `relay-<slug>` under the skills directory,
+holding a `SKILL.md`; a bucket with no tools gets none, and `relay-*` folders
+that no longer match are removed. Folders without that prefix are left alone.
+`--json` prints `{"path"}`.
 
 Flags: `--id` (the project id, required) and `--json`. `--json` prints:
 
 | Field | JSON type | Meaning |
 |---|---|---|
-| `path` | string | The folder holding the rewritten SKILL.md. |
+| `path` | string | The skills directory, `<project>/.claude/skills`. Each MCP's `SKILL.md` is one folder down, at `relay-<slug>/SKILL.md`. |
 
 Text mode prints `regenerated the skill in PATH`. Exit codes: `0`; `1` when relay is not running or the server refuses the act (`error: bridge error (code -32603): ...`) or a required flag is missing; `2` for an unknown flag.
 
@@ -1840,6 +1847,11 @@ under the same id still has to pass `mcp register`'s gate — so this command
 is not presence-gated (ADR-018 step 3); it still writes a `config_change`
 audit record and still refuses if issuance auditing is off, just with no
 `presence_id` on the record.
+
+Unregistering edits no project: each project's `allowed_mcp_ids` and per-MCP
+grant fields stay as authored (`relay grant` shows them), and the project's
+token lists no tool from the MCP. Registering an MCP under the same id again
+makes that grant live again.
 
 No JSON form. Output: `unregistered mcp "ID"`. Exit codes: `0`; `1` for an
 unknown MCP (`error: bridge error (code -32603): no mcp found with id "ID"`), when
@@ -2206,6 +2218,19 @@ supervision. `--json` prints one line:
 | `service_supervision[ID].next_attempt` | string, optional | RFC 3339 time of the next restart. |
 | `service_supervision[ID].last_exit_code` | number, optional | The last exit code. |
 | `service_supervision[ID].has_exit_code` | boolean, optional | `true` when `last_exit_code` is meaningful (it can be `0`). |
+
+relay restarts a stdio MCP whose process dies. The delay before attempt N
+starts at 250 ms and doubles each time, capped at 30 s: 250 ms, 500 ms, 1 s,
+2 s, 4 s, 8 s, 16 s, then 30 s. After 8 consecutive failed attempts relay stops
+trying and reports `abandoned`; the MCP then starts again on the next
+reconcile (a settings change or a tray relaunch). A run of 2 minutes or more
+resets the attempt count, so the cap bounds a crash loop, not an MCP's lifetime
+restarts. An HTTP MCP has no process and no restart. An MCP whose first start
+fails (a bad command, a handshake that does not complete) is logged as a start
+failure and is not supervised: relay does not retry it on a timer, and it
+starts again on the next reconcile. Services follow the same shape with their
+own numbers (1 s base, 60 s cap, 5 attempts, 60 s stable window; see
+[`service-manifest.md`](service-manifest.md#restart-supervision)).
 
 The text form is one line:
 `relay dev: 0 MCP(s), 0 service(s) running, sealed store ok`; a degraded store
