@@ -24,8 +24,11 @@ type selFix struct {
 
 func (f selFix) git(args ...string) string {
 	f.t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", f.root, "-c", "user.name=Acme", "-c", "user.email=acme@example.test", "-c", "commit.gpgsign=false"}, args...)...)
-	cmd.Env = cleanGitEnv()
+	cmd := exec.Command("git", append([]string{"-C", f.root, "-c", "user.name=Acme", "-c", "user.email=acme@example.test", "-c", "commit.gpgsign=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0"}, args...)...)
+	// Deliberate: the fixture's git ignores the machine's global and system
+	// config (hooks, maintenance), so no detached process can still be writing
+	// under .git when t.TempDir cleanup runs.
+	cmd.Env = append(cleanGitEnv(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		f.t.Fatalf("git %v: %v: %s", args, err, out)
