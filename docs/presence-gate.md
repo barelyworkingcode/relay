@@ -212,8 +212,9 @@ there is no sink to record into, before anything is touched.
 
 **What does change:** both commands now work over SSH (§"Why the peer's
 audit session decides..." below no longer applies to them — there is no
-prompt for a session to fail to display), and a local process can call
-either without a password. This is a genuine, named cost, not an oversight:
+prompt for a session to fail to display), and your own terminal can call
+either without a password. A relay session or a sandbox is refused: both
+ops are operator-only. This is a genuine, named cost, not an oversight:
 see ADR-018's step-3 record for the escalation analysis
 (`docs/decisions/018-configuration-is-a-capability-of-an-identity.md`) and
 `docs/decisions/017-implementation-spec.md` §6.4, whose rows for these two
