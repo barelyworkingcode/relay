@@ -356,7 +356,10 @@ serve` exits 1 with `test keychain in <dir> cannot be used: <why>`.
 
 **The store.** `X/test-keychain.json` (`X` is the config dir) holds exactly the
 bytes the keychain item holds, and `decodeKeychainPayload` reads both. An
-absent file is an empty keychain. `Create` refuses when an item exists. Writes
+absent file is an empty keychain. The file is created at start, before any
+sealed write: a start whose `settings.json` names no `sealed_key_id` and holds
+no sealed fields finds no key and creates one. A later start reads it back,
+and a sealed reset replaces it with a new key. `Create` refuses when an item exists. Writes
 go to a temporary file in `X` at mode 0600 and rename over the store.
 `Destroy` removes the file.
 
