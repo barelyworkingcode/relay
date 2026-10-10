@@ -39,7 +39,9 @@ func TestFilesHostRenameExisting(t *testing.T) {
 		Surface: Files,
 		Spec:    acmeHostSpec(),
 		Body: func(r *Run) {
-			hostFileOp(r, "rename", map[string]any{"path": "docs/one.txt", "new_name": "util.go"})
+			hostFileOp(r, "write", map[string]any{"path": "docs/taken.txt", "content": "taken\n"})
+			hostFileOp(r, "rename", map[string]any{"path": "docs/one.txt", "new_name": "taken.txt"})
+			hostFileOp(r, "read", map[string]any{"path": "docs/one.txt"})
 			hostFileOp(r, "write", map[string]any{"path": "src/one.txt", "content": "taken\n"})
 			hostFileOp(r, "move", map[string]any{"path": "docs/one.txt", "dest_dir": "src"})
 			hostFileOp(r, "read", map[string]any{"path": "docs/one.txt"})
