@@ -1,7 +1,9 @@
 package features
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,610 +13,750 @@ import (
 	"relaye2e/harness"
 )
 
-const g1sWait = 60 * time.Second
+const (
+	// g1sHostDeadline bounds the wait for a session host, model host or
+	// manifest to register after boot or restart.
+	g1sHostDeadline = 60 * time.Second
+	// g1sEventDeadline bounds the wait for an event that relay-sessions writes
+	// after its answer.
+	g1sEventDeadline = 30 * time.Second
+	// g1sTmuxDeadline bounds the bounded poll for a tmux session on the host.
+	// tmux gives relay no event, so the poll is the only signal (ruling on G1.12).
+	g1sTmuxDeadline = 60 * time.Second
+)
 
-var g1sCredentials = []harness.CredentialSpec{
-	{Name: "runner", Classes: []string{"execute"}},
-	{Name: "proxy", Classes: []string{"proxy"}},
-	{Name: "reader", Classes: []string{"read"}},
-	{Name: "configurer", Classes: []string{"configure"}},
+// g1sStates are the attention states a live tracked session can report
+// (docs/session-host.md, "States"). "ended" never reaches a list row.
+var g1sStates = []string{"starting", "running", "idle", "asking", "errored", "stalled"}
+
+// g1sSleepTemplate is a terminal template that runs until it is stopped. It
+// turns sandboxing off, so a test needs no Seatbelt profile.
+var g1sSleepTemplate = json.RawMessage(`[{"id":"acme-sleep","name":"Acme sleep","command":"/bin/sleep","args":["600"],"sandbox":false}]`)
+
+// g1sEchoModels is the fake model host's catalogue: a chat model that answers
+// "echo: <text>" and a model relayLLM marks reserved for system use.
+func g1sEchoModels() *harness.FakeModelHostSpec {
+	return &harness.FakeModelHostSpec{
+		ID: "acme-models",
+		Models: []json.RawMessage{
+			json.RawMessage(`{"id":"fake-echo","object":"model","owned_by":"fake","context_length":8192}`),
+			json.RawMessage(`{"id":"acme-system","object":"model","owned_by":"fake","context_length":8192,"system":true}`),
+		},
+	}
 }
 
-// g1sBoot starts an instance with the credentials and the grant outcome the
-// session rows need, and waits for the session host (and the model host when
-// the options attach one).
-func g1sBoot(t *testing.T, o harness.Options) *harness.Instance {
-	t.Helper()
-	o.Credentials = append(append([]harness.CredentialSpec{}, g1sCredentials...), o.Credentials...)
+// g1sOptions adds the credentials every G1 test uses and approves the one
+// owner gate the setup needs, project.grant, for project creation.
+func g1sOptions(o harness.Options) harness.Options {
+	o.Credentials = []harness.CredentialSpec{
+		{Name: "runner", Classes: []string{"execute", "proxy", "read"}},
+		{Name: "reader", Classes: []string{"read"}},
+		{Name: "configurer", Classes: []string{"configure"}},
+	}
 	if o.Presence == nil {
-		o.Presence = approveGrant
+		o.Presence = map[string]harness.Outcome{"project.grant": harness.OutcomeApprove}
 	}
-	i := harness.Start(t, o)
-	if o.FakeModelHost != nil {
-		i.WaitModelHost(g1sWait)
-	}
-	i.WaitSessionHost(g1sWait)
-	return i
+	return o
 }
 
-// g1sProject creates a project whose folder is new; fields are merged into the
-// project-create body.
-func g1sProject(t *testing.T, i *harness.Instance, name string, fields map[string]any) project {
+// g1sCreateProject creates a local project in a folder under the instance's
+// home, with the extra body fields, and returns its id.
+func g1sCreateProject(t *testing.T, i *harness.Instance, name string, extra map[string]any) string {
 	t.Helper()
 	dir := filepath.Join(i.Home, "work", name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("creating %s: %v", dir, err)
 	}
 	body := map[string]any{"name": name, "path": dir}
-	for k, v := range fields {
+	for k, v := range extra {
 		body[k] = v
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("encoding the project body: %v", err)
 	}
-	var p project
-	i.CLIWith(harness.CLIOpts{Stdin: raw}, "project", "create", "--file", "-", "--json").JSON(t, &p)
+	res := i.CLIWith(harness.CLIOpts{Stdin: raw}, "project", "create", "--file", "-", "--json")
+	if res.Code != 0 {
+		t.Fatalf("project create exited %d\nstderr: %s", res.Code, res.Stderr)
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	res.JSON(t, &p)
 	if p.ID == "" {
-		t.Fatalf("project create printed no id")
+		t.Fatalf("project create printed no id: %s", res.Stdout)
 	}
-	return p
+	return p.ID
 }
 
-type g1sSession struct {
-	SessionID    string `json:"sessionId"`
-	ProviderType string `json:"providerType"`
-}
-
-// g1sStartSession runs `relay session start` and returns the session and the CLI result.
-func g1sStartSession(t *testing.T, i *harness.Instance, projectID, model string, extra ...string) (g1sSession, harness.Result) {
+// g1sEvent returns the first stored line matching q. A relay-process door
+// writes its event before it answers, so the line is already there.
+func g1sEvent(t *testing.T, i *harness.Instance, q harness.EventQuery) harness.Event {
 	t.Helper()
-	args := append([]string{"session", "start", "--project", projectID, "--model", model, "--json"}, extra...)
-	r := i.MustCLI(args...)
-	var s g1sSession
-	r.JSON(t, &s)
-	if s.SessionID == "" {
-		t.Fatalf("session start printed no sessionId: %s", r.Stdout)
+	got := i.Events(q)
+	if len(got) == 0 {
+		t.Fatalf("no %s line matching %v for trace %q", q.Key, q.Fields, q.Trace)
 	}
-	return s, r
+	return got[0]
 }
 
-type g1sListedSession struct {
+// g1sAudit reports whether an audit row of the event and outcome names the
+// project as its actor.
+func g1sAudit(t *testing.T, i *harness.Instance, event, outcome, projectID string) bool {
+	t.Helper()
+	for _, row := range i.Audit(harness.AuditQuery{Event: event, Outcome: outcome}) {
+		actor, _ := row["actor"].(map[string]any)
+		if actor["project_id"] == projectID {
+			return true
+		}
+	}
+	return false
+}
+
+type g1sSessionRow struct {
 	ID           string `json:"id"`
-	ProjectID    string `json:"projectId"`
 	Live         bool   `json:"live"`
 	MessageCount int    `json:"messageCount"`
-	Origin       string `json:"origin"`
-	Headless     bool   `json:"headless"`
+	Attention    *struct {
+		State string `json:"state"`
+	} `json:"attention"`
 }
 
-func g1sSessions(t *testing.T, i *harness.Instance) ([]g1sListedSession, harness.Result) {
+type g1sSessionList struct {
+	Sessions []g1sSessionRow `json:"sessions"`
+}
+
+// g1sListSessions reads relay session list and returns the rows.
+func g1sListSessions(t *testing.T, i *harness.Instance) (g1sSessionList, string) {
 	t.Helper()
-	r := i.MustCLI("session", "list", "--json")
-	var out struct {
-		Sessions []g1sListedSession `json:"sessions"`
-	}
-	r.JSON(t, &out)
-	return out.Sessions, r
+	res := i.MustCLI("session", "list", "--json")
+	var out g1sSessionList
+	res.JSON(t, &out)
+	return out, res.Trace
 }
 
-func g1sFindSession(list []g1sListedSession, id string) (g1sListedSession, bool) {
-	for _, s := range list {
+func g1sFindSession(list g1sSessionList, id string) (g1sSessionRow, bool) {
+	for _, s := range list.Sessions {
 		if s.ID == id {
 			return s, true
 		}
 	}
-	return g1sListedSession{}, false
+	return g1sSessionRow{}, false
 }
 
-func g1sSay(t *testing.T, i *harness.Instance, id, text string) string {
+// g1sLaunchClaude starts a claude session over the execute door and returns
+// its id.
+func g1sLaunchClaude(t *testing.T, i *harness.Instance, projectID string) string {
 	t.Helper()
-	r := i.MustCLI("session", "message", "--id", id, "--text", text, "--json")
-	var out struct {
+	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions",
+		map[string]any{"projectId": projectID, "model": "sonnet"}, harness.ReqOpts{Trace: harness.NewTrace(t)})
+	if resp.Status != 201 {
+		t.Fatalf("POST /api/sessions for claude answered %d, want 201: %s", resp.Status, resp.Body)
+	}
+	var s struct {
+		SessionID string `json:"sessionId"`
+	}
+	resp.JSON(t, &s)
+	if s.SessionID == "" {
+		t.Fatalf("the 201 body holds no sessionId: %s", resp.Body)
+	}
+	return s.SessionID
+}
+
+// g1sSendText sends text to a session through relay session message and
+// checks the echo reply.
+func g1sSendText(t *testing.T, i *harness.Instance, sessionID, text, want string) harness.Result {
+	t.Helper()
+	res := i.MustCLI("session", "message", "--id", sessionID, "--text", text, "--json")
+	var reply struct {
 		Text string `json:"text"`
 	}
-	r.JSON(t, &out)
-	return out.Text
+	res.JSON(t, &reply)
+	if reply.Text != want {
+		t.Fatalf("reply text %q, want %q", reply.Text, want)
+	}
+	return res
 }
 
-func g1sAuditCount(i *harness.Instance, event, outcome string) int {
-	return len(i.Audit(harness.AuditQuery{Event: event, Outcome: outcome}))
+// g1sStartTerminal starts the sleep template in a project and returns the
+// terminal id and the CLI trace.
+func g1sStartTerminal(t *testing.T, i *harness.Instance, projectID string) (string, string) {
+	t.Helper()
+	res := i.MustCLI("terminal", "start", "--project", projectID, "--template", "acme-sleep", "--json")
+	var out struct {
+		TerminalID string `json:"terminalId"`
+	}
+	res.JSON(t, &out)
+	if out.TerminalID == "" {
+		t.Fatalf("terminal start printed no terminalId: %s", res.Stdout)
+	}
+	return out.TerminalID, res.Trace
+}
+
+// g1sCreateHost registers the loopback sshd as a host, adds a persistent
+// tmux template to it and returns the host id.
+func g1sCreateHost(t *testing.T, i *harness.Instance, ssh *harness.SSHHost) string {
+	t.Helper()
+	i.TrustSSHHost(ssh)
+	c := i.HTTP(i.Credential("configurer"))
+	create := c.Do("POST", "/api/hosts", map[string]any{
+		"name": "acme-box", "target": ssh.Target, "port": ssh.Port, "identity_file": ssh.IdentityFile,
+	})
+	if create.Status != 201 {
+		t.Fatalf("POST /api/hosts answered %d, want 201: %s", create.Status, create.Body)
+	}
+	var host struct {
+		ID string `json:"id"`
+	}
+	create.JSON(t, &host)
+	tmpl := c.Do("POST", "/api/hosts/"+host.ID+"/templates", map[string]any{
+		"id": "acme-tmux", "name": "Acme tmux", "command": "/bin/sleep", "args": []string{"600"}, "persist": true,
+	})
+	if tmpl.Status != 201 {
+		t.Fatalf("POST host template answered %d, want 201: %s", tmpl.Status, tmpl.Body)
+	}
+	return host.ID
+}
+
+type g1sPersistentRow struct {
+	Name       string `json:"name"`
+	TemplateID string `json:"template_id"`
+	N          int    `json:"n"`
+}
+
+// g1sAwaitPersistent polls relay terminal persistent-list until the tmux
+// session of the acme-tmux terminal shows up on the host. This is a bounded
+// poll: tmux gives relay no event (ruling on G1.12). It returns the row and
+// the trace of the list call that found it.
+func g1sAwaitPersistent(t *testing.T, i *harness.Instance, projectID string) (g1sPersistentRow, string) {
+	t.Helper()
+	deadline := time.Now().Add(g1sTmuxDeadline)
+	for {
+		res := i.CLI("terminal", "persistent-list", "--project", projectID, "--json")
+		if res.Code != 0 {
+			t.Fatalf("persistent-list exited %d\nstderr: %s", res.Code, res.Stderr)
+		}
+		var rows []g1sPersistentRow
+		res.JSON(t, &rows)
+		for _, r := range rows {
+			if strings.HasSuffix(r.Name, "-acme-tmux-1") {
+				return r, res.Trace
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no acme-tmux persistent session on the host within %v", g1sTmuxDeadline)
+		}
+	}
 }
 
 func TestChatSessionAnswers(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{FakeModelHost: fakeEchoModels()})
-	p := g1sProject(t, i, "acme-chat", map[string]any{"allowed_templates": []string{"chat"}})
+	i := harness.Start(t, g1sOptions(harness.Options{FakeModelHost: g1sEchoModels()}))
+	i.WaitModelHost(g1sHostDeadline)
+	i.WaitSessionHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-chat", map[string]any{"allowed_templates": []string{"chat"}})
 
-	s, r := g1sStartSession(t, i, p.ID, "fake-echo")
-	if s.ProviderType != "chat" {
-		t.Fatalf("providerType %q, want chat", s.ProviderType)
-	}
-	requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: r.Trace, Fields: map[string]any{"status": "ok", "session_id": s.SessionID, "kind": "chat", "project_id": p.ID}})
-	if got := g1sAuditCount(i, "session_launch", "ok"); got != 1 {
-		t.Fatalf("session_launch ok rows: %d, want 1", got)
-	}
-	if got := g1sSay(t, i, s.SessionID, "hi"); got != "echo: hi" {
-		t.Fatalf("reply %q, want %q", got, "echo: hi")
-	}
-
-	// The power path: the same launch over the HTTP door.
-	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions", map[string]any{"projectId": p.ID, "model": "fake-echo"})
+	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions",
+		map[string]any{"projectId": projectID, "model": "fake-echo"}, harness.ReqOpts{Trace: harness.NewTrace(t)})
 	if resp.Status != 201 {
-		t.Fatalf("POST /api/sessions answered %d, want 201", resp.Status)
+		t.Fatalf("a chat launch answered %d, want 201: %s", resp.Status, resp.Body)
 	}
-	var created g1sSession
-	resp.JSON(t, &created)
-	requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: resp.Trace, Fields: map[string]any{"status": "ok", "session_id": created.SessionID, "kind": "chat"}})
+	var s struct {
+		SessionID string `json:"sessionId"`
+	}
+	resp.JSON(t, &s)
+	if s.SessionID == "" {
+		t.Fatalf("the chat launch returned no sessionId: %s", resp.Body)
+	}
+	g1sEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: resp.Trace,
+		Fields: map[string]any{"status": "ok", "session_id": s.SessionID}})
+	if !g1sAudit(t, i, "session_launch", "ok", projectID) {
+		t.Fatalf("no ok session_launch audit row names project %s", projectID)
+	}
+	g1sSendText(t, i, s.SessionID, "hi", "echo: hi")
 }
 
 func TestSessionLaunchUngrantedRefused(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{})
-	p := g1sProject(t, i, "acme-ungranted", map[string]any{"allowed_templates": []string{"shell"}})
-	body := map[string]any{"projectId": p.ID, "model": "sonnet"}
+	i := harness.Start(t, g1sOptions(harness.Options{}))
+	i.WaitSessionHost(g1sHostDeadline)
+	// No allowed_templates: the project grants no template to a claude launch.
+	projectID := g1sCreateProject(t, i, "acme-ungranted", nil)
 
-	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions", body)
+	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions",
+		map[string]any{"projectId": projectID, "model": "sonnet"}, harness.ReqOpts{Trace: harness.NewTrace(t)})
 	if resp.Status != 403 {
-		t.Fatalf("a launch without claude-code in allowed_templates answered %d, want 403", resp.Status)
+		t.Fatalf("a launch in an ungranted project answered %d, want 403: %s", resp.Status, resp.Body)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: resp.Trace, Fields: map[string]any{"status": "denied"}})
-	if got := g1sAuditCount(i, "session_launch", "denied"); got != 1 {
-		t.Fatalf("session_launch denied rows: %d, want 1", got)
+	g1sEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: resp.Trace,
+		Fields: map[string]any{"status": "denied", "reason": "template_not_allowed"}})
+	if !g1sAudit(t, i, "session_launch", "denied", projectID) {
+		t.Fatalf("no denied session_launch audit row names project %s", projectID)
 	}
-
-	weak := i.SocketHTTP(i.Credential("reader")).Do("POST", "/api/sessions", body)
-	if weak.Status != 403 {
-		t.Fatalf("a launch with a read-only credential answered %d, want 403", weak.Status)
-	}
-	if got := i.Events(harness.EventQuery{Key: "session.launch", Trace: weak.Trace}); len(got) != 0 {
-		t.Fatalf("a class refusal wrote %d session.launch lines", len(got))
-	}
-	if list, _ := g1sSessions(t, i); len(list) != 0 {
-		t.Fatalf("a refused launch left %d sessions", len(list))
+	if list, _ := g1sListSessions(t, i); len(list.Sessions) != 0 {
+		t.Fatalf("a refused launch left %d sessions", len(list.Sessions))
 	}
 }
 
 func TestSessionBlankModelRefused(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{})
-	p := g1sProject(t, i, "acme-blank", map[string]any{"allowed_templates": []string{"chat"}})
-	before, _ := g1sSessions(t, i)
+	i := harness.Start(t, g1sOptions(harness.Options{}))
+	i.WaitSessionHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-blank", map[string]any{"allowed_templates": []string{"chat"}})
 
-	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions", map[string]any{"projectId": p.ID, "model": ""})
+	// A blank model is a chat launch (docs/session-host.md, "A session names its model").
+	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions",
+		map[string]any{"projectId": projectID, "model": ""}, harness.ReqOpts{Trace: harness.NewTrace(t)})
 	if resp.Status != 400 {
-		t.Fatalf("a blank model answered %d, want 400", resp.Status)
+		t.Fatalf("a blank-model launch answered %d, want 400: %s", resp.Status, resp.Body)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: resp.Trace, Fields: map[string]any{"status": "denied"}})
-	if got := g1sAuditCount(i, "session_launch", "error"); got != 1 {
-		t.Fatalf("session_launch error rows: %d, want 1", got)
+	g1sEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: resp.Trace,
+		Fields: map[string]any{"status": "denied", "reason": "model_required"}})
+	if !g1sAudit(t, i, "session_launch", "error", projectID) {
+		t.Fatalf("no error session_launch audit row names project %s", projectID)
 	}
-	after, _ := g1sSessions(t, i)
-	if len(after) != len(before) {
-		t.Fatalf("session list went from %d to %d after a refused launch", len(before), len(after))
+	if list, _ := g1sListSessions(t, i); len(list.Sessions) != 0 {
+		t.Fatalf("a refused launch left %d sessions", len(list.Sessions))
 	}
 }
 
 func TestSystemModelChatRefused(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{FakeModelHost: &harness.FakeModelHostSpec{
-		ID: "acme-models",
-		Models: []json.RawMessage{
-			json.RawMessage(`{"id":"fake-echo","object":"model","owned_by":"fake","context_length":8192}`),
-			json.RawMessage(`{"id":"fake-system","object":"model","owned_by":"fake","context_length":8192,"system":true}`),
-		},
-	}})
-	// The catalogue read decides the refusal; a model list proves relay has it.
-	if _, ids := modelIDs(t, i); !hasAll(ids, "fake-echo") {
-		t.Fatalf("model list %v lacks fake-echo", ids)
-	}
-	p := g1sProject(t, i, "acme-system", map[string]any{"allowed_templates": []string{"chat"}})
+	i := harness.Start(t, g1sOptions(harness.Options{FakeModelHost: g1sEchoModels()}))
+	i.WaitModelHost(g1sHostDeadline)
+	i.WaitSessionHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-system", map[string]any{"allowed_templates": []string{"chat"}})
+	runner := i.SocketHTTP(i.Credential("runner"))
 
-	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions", map[string]any{"projectId": p.ID, "model": "fake-system"})
-	if resp.Status != 403 {
-		t.Fatalf("a chat launch on a system model answered %d, want 403", resp.Status)
+	refused := runner.Do("POST", "/api/sessions",
+		map[string]any{"projectId": projectID, "model": "acme-system"}, harness.ReqOpts{Trace: harness.NewTrace(t)})
+	if refused.Status != 403 {
+		t.Fatalf("a chat launch on a system model answered %d, want 403: %s", refused.Status, refused.Body)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: resp.Trace, Fields: map[string]any{"status": "denied"}})
-	if list, _ := g1sSessions(t, i); len(list) != 0 {
-		t.Fatalf("a refused launch left %d sessions", len(list))
+	g1sEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: refused.Trace,
+		Fields: map[string]any{"status": "denied", "reason": "model_system_only"}})
+	if !g1sAudit(t, i, "session_launch", "denied", projectID) {
+		t.Fatalf("no denied session_launch audit row names project %s", projectID)
+	}
+
+	// The same launch on a model that is not system-only starts, so the refusal
+	// above comes from the system flag and not from the chat launch itself.
+	ok := runner.Do("POST", "/api/sessions",
+		map[string]any{"projectId": projectID, "model": "fake-echo"}, harness.ReqOpts{Trace: harness.NewTrace(t)})
+	if ok.Status != 201 {
+		t.Fatalf("a chat launch on fake-echo answered %d, want 201: %s", ok.Status, ok.Body)
+	}
+	list, _ := g1sListSessions(t, i)
+	if len(list.Sessions) != 1 {
+		t.Fatalf("after one refused and one started launch the list holds %d sessions, want 1", len(list.Sessions))
 	}
 }
 
 func TestSessionListAndAuth(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{})
-	p := g1sProject(t, i, "acme-list", map[string]any{"allowed_templates": []string{"claude-code"}})
-	s, _ := g1sStartSession(t, i, p.ID, "sonnet")
+	i := harness.Start(t, g1sOptions(harness.Options{}))
+	i.WaitSessionHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-list", map[string]any{"allowed_templates": []string{"claude-code"}})
+	id := g1sLaunchClaude(t, i, projectID)
 
-	list, r := g1sSessions(t, i)
-	got, ok := g1sFindSession(list, s.SessionID)
-	if !ok || !got.Live || got.ProjectID != p.ID {
-		t.Fatalf("session list %+v lacks the live session %s of %s", list, s.SessionID, p.ID)
+	list, trace := g1sListSessions(t, i)
+	row, ok := g1sFindSession(list, id)
+	if !ok {
+		t.Fatalf("session list holds %d rows and not %s", len(list.Sessions), id)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "session.list", Trace: r.Trace, Fields: map[string]any{"status": "ok", "count": len(list)}})
+	if !row.Live {
+		t.Fatalf("a launched session is listed as not live")
+	}
+	if row.Attention == nil || !containsString(g1sStates, row.Attention.State) {
+		t.Fatalf("a live claude session carries attention %+v, want one of %v", row.Attention, g1sStates)
+	}
+	g1sEvent(t, i, harness.EventQuery{Key: "session.list", Trace: trace,
+		Fields: map[string]any{"status": "ok", "count": len(list.Sessions)}})
 
-	anon := i.SocketHTTP(harness.Credential{}).Do("GET", "/api/sessions", nil)
-	if anon.Status != 401 {
-		t.Fatalf("GET /api/sessions with no header answered %d, want 401", anon.Status)
+	runner := i.SocketHTTP(i.Credential("runner"))
+	if resp := runner.Do("GET", "/api/sessions", nil); resp.Status != 200 {
+		t.Fatalf("GET /api/sessions with the execute and proxy class answered %d, want 200", resp.Status)
 	}
-	viaHTTP := i.SocketHTTP(i.Credential("proxy")).Do("GET", "/api/sessions", nil)
-	if viaHTTP.Status != 200 {
-		t.Fatalf("GET /api/sessions with a proxy credential answered %d, want 200", viaHTTP.Status)
+	if resp := i.SocketHTTP(harness.Credential{}).Do("GET", "/api/sessions", nil); resp.Status != 401 {
+		t.Fatalf("GET /api/sessions with no credential answered %d, want 401", resp.Status)
 	}
+	if resp := i.SocketHTTP(i.Credential("reader")).Do("GET", "/api/sessions", nil); resp.Status != 403 {
+		t.Fatalf("GET /api/sessions with a read-only credential answered %d, want 403", resp.Status)
+	}
+}
+
+func containsString(set []string, s string) bool {
+	for _, v := range set {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSessionMessage(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{})
-	p := g1sProject(t, i, "acme-message", map[string]any{"allowed_templates": []string{"claude-code"}})
-	s, _ := g1sStartSession(t, i, p.ID, "sonnet")
+	i := harness.Start(t, g1sOptions(harness.Options{}))
+	i.WaitSessionHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-message", map[string]any{"allowed_templates": []string{"claude-code"}})
+	id := g1sLaunchClaude(t, i, projectID)
 
-	if got := g1sSay(t, i, s.SessionID, "hi"); got != "echo: hi" {
-		t.Fatalf("reply %q, want %q", got, "echo: hi")
-	}
-	i.WaitEvent(harness.EventQuery{Key: "session.message", Fields: map[string]any{"status": "ok", "session_id": s.SessionID}}, g1sWait)
+	sent := g1sSendText(t, i, id, "hi", "echo: hi")
+	i.WaitEvent(harness.EventQuery{Key: "session.message", Trace: sent.Trace,
+		Fields: map[string]any{"status": "ok", "session_id": id}}, g1sEventDeadline)
 
-	if r := i.CLI("session", "message", "--id", "no-such-session", "--text", "hi", "--json"); r.Code != 1 {
+	if r := i.CLI("session", "message", "--id", "acme-missing-session", "--text", "hi"); r.Code != 1 {
 		t.Fatalf("a message to an unknown session exited %d, want 1", r.Code)
+	}
+	missing := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions/acme-missing-session/message",
+		map[string]any{"text": "hi"})
+	if missing.Status != 404 {
+		t.Fatalf("a message to an unknown session answered %d, want 404", missing.Status)
 	}
 }
 
 func TestSessionStop(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{})
-	p := g1sProject(t, i, "acme-stop", map[string]any{"allowed_templates": []string{"claude-code"}})
-	s, _ := g1sStartSession(t, i, p.ID, "sonnet")
+	i := harness.Start(t, g1sOptions(harness.Options{}))
+	i.WaitSessionHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-stop", map[string]any{"allowed_templates": []string{"claude-code"}})
+	id := g1sLaunchClaude(t, i, projectID)
 
-	r := i.MustCLI("session", "stop", "--id", s.SessionID, "--json")
+	stop := i.MustCLI("session", "stop", "--id", id, "--json")
 	var stopped struct {
 		ID string `json:"id"`
 	}
-	r.JSON(t, &stopped)
-	if stopped.ID != s.SessionID {
-		t.Fatalf("session stop printed id %q, want %s", stopped.ID, s.SessionID)
+	stop.JSON(t, &stopped)
+	if stopped.ID != id {
+		t.Fatalf("session stop named %q, want %q", stopped.ID, id)
 	}
-	i.WaitEvent(harness.EventQuery{Key: "session.delete", Fields: map[string]any{"status": "ok", "session_id": s.SessionID}}, g1sWait)
-	list, _ := g1sSessions(t, i)
-	if _, ok := g1sFindSession(list, s.SessionID); ok {
-		t.Fatalf("session list still holds the stopped session %s", s.SessionID)
+	i.WaitEvent(harness.EventQuery{Key: "session.delete", Trace: stop.Trace,
+		Fields: map[string]any{"status": "ok", "session_id": id}}, g1sEventDeadline)
+	if list, _ := g1sListSessions(t, i); len(list.Sessions) != 0 {
+		if _, still := g1sFindSession(list, id); still {
+			t.Fatalf("a stopped session is still listed")
+		}
 	}
 
-	unknown := i.CLI("session", "stop", "--id", "no-such-session", "--json")
-	if unknown.Code != 0 {
-		t.Fatalf("stopping an unknown session exited %d, want 0: %s", unknown.Code, unknown.Stderr)
+	// A stop of an id the host does not hold still succeeds.
+	if r := i.CLI("session", "stop", "--id", "acme-missing-session"); r.Code != 0 {
+		t.Fatalf("stopping an unknown session exited %d, want 0", r.Code)
 	}
-	i.WaitEvent(harness.EventQuery{Key: "session.delete", Trace: unknown.Trace, Fields: map[string]any{"status": "ok"}}, g1sWait)
+	gone := i.SocketHTTP(i.Credential("runner")).Do("DELETE", "/api/sessions/acme-missing-session", nil)
+	if gone.Status != 204 {
+		t.Fatalf("DELETE of an unknown session answered %d, want 204", gone.Status)
+	}
 }
 
 func TestSessionResume(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{})
-	p := g1sProject(t, i, "acme-resume", map[string]any{"allowed_templates": []string{"claude-code"}})
-	s, _ := g1sStartSession(t, i, p.ID, "sonnet")
-	if got := g1sSay(t, i, s.SessionID, "hi"); got != "echo: hi" {
-		t.Fatalf("reply %q, want %q", got, "echo: hi")
+	i := harness.Start(t, g1sOptions(harness.Options{}))
+	i.WaitSessionHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-resume", map[string]any{"allowed_templates": []string{"claude-code"}})
+	id := g1sLaunchClaude(t, i, projectID)
+	g1sSendText(t, i, id, "hi", "echo: hi")
+
+	before, _ := g1sListSessions(t, i)
+	beforeRow, ok := g1sFindSession(before, id)
+	if !ok {
+		t.Fatalf("session list holds no %s before the restart", id)
 	}
 
-	type resumed struct {
+	// Every session is dormant after a relay restart. Wait for the session host
+	// to register again: the earlier registration line is already in the log.
+	since := time.Now()
+	i.Restart()
+	i.WaitEvent(harness.EventQuery{Key: "service.manifest.register", Since: since,
+		Fields: map[string]any{"service_id": "relaysessions", "status": "ok"}}, g1sHostDeadline)
+
+	dormant, _ := g1sListSessions(t, i)
+	row, ok := g1sFindSession(dormant, id)
+	if !ok {
+		t.Fatalf("session list holds no %s after the restart", id)
+	}
+	if row.Live {
+		t.Fatalf("a session is live after a relay restart")
+	}
+
+	res := i.MustCLI("session", "resume", "--id", id, "--json")
+	var resumed struct {
 		SessionID string `json:"session_id"`
 		Resumed   bool   `json:"resumed"`
 	}
-	var live resumed
-	liveRes := i.MustCLI("session", "resume", "--id", s.SessionID, "--json")
-	liveRes.JSON(t, &live)
+	res.JSON(t, &resumed)
+	if !resumed.Resumed || resumed.SessionID != id {
+		t.Fatalf("resume of a dormant session printed %+v, want resumed true for %s", resumed, id)
+	}
+	g1sEvent(t, i, harness.EventQuery{Key: "session.resume", Trace: res.Trace,
+		Fields: map[string]any{"status": "ok", "session_id": id}})
+	if !g1sAudit(t, i, "session_resume", "ok", projectID) {
+		t.Fatalf("no ok session_resume audit row names project %s", projectID)
+	}
+
+	after, _ := g1sListSessions(t, i)
+	afterRow, ok := g1sFindSession(after, id)
+	if !ok || afterRow.MessageCount != beforeRow.MessageCount {
+		t.Fatalf("resumed session has %d messages, want the %d it had before the restart", afterRow.MessageCount, beforeRow.MessageCount)
+	}
+	g1sSendText(t, i, id, "again", "echo: again")
+
+	again := i.MustCLI("session", "resume", "--id", id, "--json")
+	var live struct {
+		Resumed bool `json:"resumed"`
+	}
+	again.JSON(t, &live)
 	if live.Resumed {
-		t.Fatalf("resuming a live session answered resumed:true")
+		t.Fatalf("resume of a live session answered resumed true")
 	}
 
-	// A restart ages every live session to dormant: the stopped state a resume brings back.
-	i.Restart()
-	i.WaitSessionHost(g1sWait)
-	if list, _ := g1sSessions(t, i); len(list) != 1 || list[0].Live {
-		t.Fatalf("after a restart the list holds %+v, want the one dormant session", list)
+	stop := i.MustCLI("session", "stop", "--id", id)
+	i.WaitEvent(harness.EventQuery{Key: "session.delete", Trace: stop.Trace,
+		Fields: map[string]any{"status": "ok", "session_id": id}}, g1sEventDeadline)
+	if r := i.CLI("session", "resume", "--id", id); r.Code != 1 {
+		t.Fatalf("resume of a stopped session exited %d, want 1", r.Code)
 	}
-
-	resumeRowsBefore := g1sAuditCount(i, "session_resume", "ok")
-	res := i.MustCLI("session", "resume", "--id", s.SessionID, "--json")
-	var back resumed
-	res.JSON(t, &back)
-	if !back.Resumed || back.SessionID != s.SessionID {
-		t.Fatalf("session resume printed %+v, want resumed:true for %s", back, s.SessionID)
+	gone := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions/"+id+"/resume", nil)
+	if gone.Status != 404 {
+		t.Fatalf("resume of a stopped session answered %d, want 404", gone.Status)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "session.resume", Trace: res.Trace, Fields: map[string]any{"status": "ok", "session_id": s.SessionID}})
-	if got := g1sAuditCount(i, "session_resume", "ok"); got != resumeRowsBefore+1 {
-		t.Fatalf("session_resume ok rows: %d after the dormant resume, want %d", got, resumeRowsBefore+1)
+	if rows := i.Audit(harness.AuditQuery{Event: "session_resume", Outcome: "not_found"}); len(rows) == 0 {
+		t.Fatalf("no not_found session_resume audit row for the stopped session")
 	}
-	list, _ := g1sSessions(t, i)
-	got, ok := g1sFindSession(list, s.SessionID)
-	if !ok || !got.Live || got.MessageCount < 1 {
-		t.Fatalf("after resume the list holds %+v for %s, want a live session with its history", got, s.SessionID)
-	}
-
-	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions/no-such-session/resume", nil)
-	if resp.Status != 404 {
-		t.Fatalf("resuming an unknown session answered %d, want 404", resp.Status)
-	}
-	if got := g1sAuditCount(i, "session_resume", "not_found"); got != 1 {
-		t.Fatalf("session_resume not_found rows: %d, want 1", got)
-	}
-}
-
-// g1sAddTemplate creates a console terminal template over HTTP.
-func g1sAddTemplate(t *testing.T, i *harness.Instance, tmpl map[string]any) {
-	t.Helper()
-	resp := i.SocketHTTP(i.Credential("configurer")).Do("POST", "/api/terminal/templates", tmpl)
-	if resp.Status != 201 {
-		t.Fatalf("POST /api/terminal/templates answered %d, want 201: %s", resp.Status, resp.Body)
-	}
-}
-
-type g1sTerminal struct {
-	TerminalID string `json:"terminalId"`
-}
-
-func g1sStartTerminal(t *testing.T, i *harness.Instance, projectID, template string) (g1sTerminal, harness.Result) {
-	t.Helper()
-	r := i.MustCLI("terminal", "start", "--project", projectID, "--template", template, "--json")
-	var term g1sTerminal
-	r.JSON(t, &term)
-	if term.TerminalID == "" {
-		t.Fatalf("terminal start printed no terminalId: %s", r.Stdout)
-	}
-	return term, r
-}
-
-type g1sListedTerminal struct {
-	ID         string `json:"id"`
-	TemplateID string `json:"templateId"`
-	State      string `json:"state"`
-	Origin     string `json:"origin"`
-}
-
-func g1sTerminals(t *testing.T, i *harness.Instance) ([]g1sListedTerminal, harness.Result) {
-	t.Helper()
-	r := i.MustCLI("terminal", "list", "--json")
-	var out struct {
-		Terminals []g1sListedTerminal `json:"terminals"`
-	}
-	r.JSON(t, &out)
-	return out.Terminals, r
-}
-
-func g1sFindTerminal(list []g1sListedTerminal, id string) (g1sListedTerminal, bool) {
-	for _, x := range list {
-		if x.ID == id {
-			return x, true
-		}
-	}
-	return g1sListedTerminal{}, false
 }
 
 func TestTerminalStart(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{})
-	g1sAddTemplate(t, i, map[string]any{"id": "acme-blocked", "name": "Acme blocked", "command": "/bin/cat"})
-	p := g1sProject(t, i, "acme-terminal", map[string]any{"allowed_templates": []string{"shell"}})
+	i := harness.Start(t, g1sOptions(harness.Options{
+		Settings: map[string]json.RawMessage{"terminal_templates": g1sSleepTemplate},
+	}))
+	i.WaitSessionHost(g1sHostDeadline)
+	granted := g1sCreateProject(t, i, "acme-term-granted", map[string]any{"allowed_templates": []string{"acme-sleep"}})
+	ungranted := g1sCreateProject(t, i, "acme-term-ungranted", nil)
 
-	term, r := g1sStartTerminal(t, i, p.ID, "shell")
-	requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: r.Trace, Fields: map[string]any{"status": "ok", "session_id": term.TerminalID, "kind": "pty"}})
-	var started struct {
-		Directory string `json:"directory"`
+	terminalID, trace := g1sStartTerminal(t, i, granted)
+	if terminalID == "" {
+		t.Fatalf("terminal start returned no id")
 	}
-	r.JSON(t, &started)
-	folder, err := filepath.EvalSymlinks(filepath.Join(i.Home, "work", "acme-terminal"))
-	if err != nil {
-		t.Fatalf("resolving the project folder: %v", err)
-	}
-	if got, err := filepath.EvalSymlinks(started.Directory); err != nil || got != folder {
-		t.Fatalf("terminal directory %q, want the project folder %q", started.Directory, folder)
+	g1sEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: trace,
+		Fields: map[string]any{"status": "ok", "kind": "pty"}})
+	if !g1sAudit(t, i, "session_launch", "ok", granted) {
+		t.Fatalf("no ok session_launch audit row names project %s", granted)
 	}
 
-	denied := i.CLI("terminal", "start", "--project", p.ID, "--template", "acme-blocked", "--json")
-	if denied.Code != 1 {
-		t.Fatalf("a template outside allowed_templates exited %d, want 1", denied.Code)
+	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/terminals",
+		map[string]any{"projectId": ungranted, "templateId": "acme-sleep"}, harness.ReqOpts{Trace: harness.NewTrace(t)})
+	if resp.Status != 403 {
+		t.Fatalf("a terminal from a template the project does not allow answered %d, want 403: %s", resp.Status, resp.Body)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: denied.Trace, Fields: map[string]any{"status": "denied"}})
-	if got := g1sAuditCount(i, "session_launch", "denied"); got != 1 {
-		t.Fatalf("session_launch denied rows: %d, want 1", got)
-	}
+	g1sEvent(t, i, harness.EventQuery{Key: "session.launch", Trace: resp.Trace,
+		Fields: map[string]any{"status": "denied", "reason": "template_not_allowed"}})
 }
 
 func TestTerminalList(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{})
-	p := g1sProject(t, i, "acme-terminal-list", map[string]any{"allowed_templates": []string{"shell"}})
-	term, _ := g1sStartTerminal(t, i, p.ID, "shell")
+	i := harness.Start(t, g1sOptions(harness.Options{
+		Settings: map[string]json.RawMessage{"terminal_templates": g1sSleepTemplate},
+	}))
+	i.WaitSessionHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-term-list", map[string]any{"allowed_templates": []string{"acme-sleep"}})
+	terminalID, _ := g1sStartTerminal(t, i, projectID)
 
-	list, r := g1sTerminals(t, i)
-	got, ok := g1sFindTerminal(list, term.TerminalID)
-	if !ok || got.TemplateID != "shell" || got.Origin != "" {
-		t.Fatalf("terminal list %+v lacks %s on template shell started by a person", list, term.TerminalID)
+	res := i.MustCLI("terminal", "list", "--json")
+	var out struct {
+		Terminals []struct {
+			ID         string `json:"id"`
+			TemplateID string `json:"templateId"`
+		} `json:"terminals"`
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "terminal.list", Trace: r.Trace, Fields: map[string]any{"status": "ok", "count": len(list)}})
+	res.JSON(t, &out)
+	found := false
+	for _, term := range out.Terminals {
+		if term.ID == terminalID {
+			found = term.TemplateID == "acme-sleep"
+		}
+	}
+	if !found {
+		t.Fatalf("terminal list holds %d terminals and not %s with template acme-sleep", len(out.Terminals), terminalID)
+	}
+	g1sEvent(t, i, harness.EventQuery{Key: "terminal.list", Trace: res.Trace,
+		Fields: map[string]any{"status": "ok", "count": len(out.Terminals)}})
 }
 
 func TestTerminalLog(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{})
-	g1sAddTemplate(t, i, map[string]any{"id": "acme-echo", "name": "Acme echo", "command": "/bin/echo", "args": []string{"acme-marker"}})
-	p := g1sProject(t, i, "acme-terminal-log", map[string]any{"allowed_templates": []string{"acme-echo"}})
-	term, _ := g1sStartTerminal(t, i, p.ID, "acme-echo")
-	i.WaitEvent(harness.EventQuery{Key: "session.exited", Fields: map[string]any{"session_id": term.TerminalID}}, g1sWait)
+	i := harness.Start(t, g1sOptions(harness.Options{
+		Settings: map[string]json.RawMessage{"terminal_templates": g1sSleepTemplate},
+	}))
+	i.WaitSessionHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-term-log", map[string]any{"allowed_templates": []string{"acme-sleep"}})
+	terminalID, _ := g1sStartTerminal(t, i, projectID)
 
-	r := i.MustCLI("terminal", "log", "--id", term.TerminalID, "--json")
-	var out struct {
-		ID  string `json:"id"`
-		Log string `json:"log"`
+	res := i.MustCLI("terminal", "log", "--id", terminalID, "--json")
+	var out map[string]any
+	res.JSON(t, &out)
+	if out["id"] != terminalID {
+		t.Fatalf("terminal log names %v, want %s", out["id"], terminalID)
 	}
-	r.JSON(t, &out)
-	if out.ID != term.TerminalID || !strings.Contains(out.Log, "acme-marker") {
-		t.Fatalf("terminal log printed id %q and log %q, want %s holding acme-marker", out.ID, out.Log, term.TerminalID)
+	if _, ok := out["log"].(string); !ok {
+		t.Fatalf("terminal log holds no log string: %v", out)
 	}
-	i.WaitEvent(harness.EventQuery{Key: "terminal.log", Trace: r.Trace, Fields: map[string]any{"status": "ok", "terminal_id": term.TerminalID}}, g1sWait)
+	g1sEvent(t, i, harness.EventQuery{Key: "terminal.log", Trace: res.Trace,
+		Fields: map[string]any{"status": "ok", "terminal_id": terminalID}})
 
-	if bad := i.CLI("terminal", "log", "--id", "no-such-terminal", "--json"); bad.Code != 1 {
-		t.Fatalf("the log of an unknown terminal exited %d, want 1", bad.Code)
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		t.Fatalf("reading random bytes for a terminal id: %v", err)
+	}
+	raw[6] = raw[6]&0x0f | 0x40
+	raw[8] = raw[8]&0x3f | 0x80
+	unknown := fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+
+	if r := i.CLI("terminal", "log", "--id", unknown); r.Code != 1 {
+		t.Fatalf("log of an unknown terminal exited %d, want 1", r.Code)
+	}
+	missing := i.SocketHTTP(i.Credential("runner")).Do("GET", "/api/terminals/"+unknown+"/log", nil)
+	if missing.Status != 404 {
+		t.Fatalf("log of an unknown terminal answered %d, want 404", missing.Status)
+	}
+	malformed := i.SocketHTTP(i.Credential("runner")).Do("GET", "/api/terminals/acme-missing-terminal/log", nil)
+	if malformed.Status != 400 {
+		t.Fatalf("log of a malformed terminal id answered %d, want 400", malformed.Status)
 	}
 }
 
 func TestTerminalStop(t *testing.T) {
 	t.Parallel()
-	i := g1sBoot(t, harness.Options{})
-	p := g1sProject(t, i, "acme-terminal-stop", map[string]any{"allowed_templates": []string{"shell"}})
-	term, _ := g1sStartTerminal(t, i, p.ID, "shell")
+	i := harness.Start(t, g1sOptions(harness.Options{
+		Settings: map[string]json.RawMessage{"terminal_templates": g1sSleepTemplate},
+	}))
+	i.WaitSessionHost(g1sHostDeadline)
+	projectID := g1sCreateProject(t, i, "acme-term-stop", map[string]any{"allowed_templates": []string{"acme-sleep"}})
+	terminalID, _ := g1sStartTerminal(t, i, projectID)
 
-	r := i.MustCLI("terminal", "stop", "--id", term.TerminalID, "--json")
-	i.WaitEvent(harness.EventQuery{Key: "terminal.delete", Trace: r.Trace, Fields: map[string]any{"status": "ok", "terminal_id": term.TerminalID}}, g1sWait)
-	list, _ := g1sTerminals(t, i)
-	if _, ok := g1sFindTerminal(list, term.TerminalID); ok {
-		t.Fatalf("terminal list still holds the stopped terminal %s", term.TerminalID)
-	}
-	if bad := i.CLI("terminal", "stop", "--id", "no-such-terminal", "--json"); bad.Code != 1 {
-		t.Fatalf("stopping an unknown terminal exited %d, want 1", bad.Code)
-	}
-}
-
-func TestSessionMountClassChecked(t *testing.T) {
-	t.Parallel()
-	i := g1sBoot(t, harness.Options{FakeModelHost: fakeEchoModels()})
-	proxy := i.SocketHTTP(i.Credential("proxy"))
-
-	resp := proxy.Do("GET", "/api/models", nil)
-	if resp.Status != 200 {
-		t.Fatalf("GET /api/models with a proxy credential answered %d, want 200", resp.Status)
-	}
-	i.WaitEvent(harness.EventQuery{Key: "model.list", Trace: resp.Trace, Fields: map[string]any{"status": "ok"}}, g1sWait)
-
-	if anon := i.SocketHTTP(harness.Credential{}).Do("GET", "/api/models", nil); anon.Status != 401 {
-		t.Fatalf("GET /api/models with no credential answered %d, want 401", anon.Status)
-	}
-	if weak := i.SocketHTTP(i.Credential("reader")).Do("GET", "/api/models", nil); weak.Status != 403 {
-		t.Fatalf("GET /api/models with a read credential answered %d, want 403", weak.Status)
-	}
-
-	// The client reuses its connection, so the second call rides the first's.
-	again := proxy.Do("GET", "/api/models", nil)
-	if again.Status != 200 {
-		t.Fatalf("the second GET /api/models answered %d, want 200", again.Status)
-	}
-}
-
-type g1sPersistent struct {
-	Name       string `json:"name"`
-	TemplateID string `json:"template_id"`
-}
-
-// g1sHostProject registers the SSH host, gives it a persistent template and
-// creates a project on it, then starts one terminal from that template.
-// tmux gives relay no event to report, so the caller polls for the session.
-func g1sHostProject(t *testing.T, i *harness.Instance, host *harness.SSHHost) project {
-	t.Helper()
-	i.TrustSSHHost(host)
-	api := i.HTTP(i.Credential("configurer"))
-	create := api.Do("POST", "/api/hosts", map[string]any{
-		"name": "acme-box", "target": host.Target, "port": host.Port, "identity_file": host.IdentityFile,
-	})
-	if create.Status != 201 {
-		t.Fatalf("POST /api/hosts answered %d, want 201", create.Status)
-	}
-	var h struct {
+	stop := i.MustCLI("terminal", "stop", "--id", terminalID, "--json")
+	var stopped struct {
 		ID string `json:"id"`
 	}
-	create.JSON(t, &h)
-	tmpl := api.Do("POST", "/api/hosts/"+h.ID+"/templates", map[string]any{"id": "acme-persist", "name": "Acme persistent", "persist": true})
-	if tmpl.Status != 201 {
-		t.Fatalf("POST /api/hosts/{id}/templates answered %d, want 201", tmpl.Status)
+	stop.JSON(t, &stopped)
+	if stopped.ID != terminalID {
+		t.Fatalf("terminal stop named %q, want %q", stopped.ID, terminalID)
 	}
-	p := g1sProject(t, i, "acme-hosted", map[string]any{"host_id": h.ID})
-	return p
-}
+	i.WaitEvent(harness.EventQuery{Key: "terminal.delete", Trace: stop.Trace,
+		Fields: map[string]any{"status": "ok", "terminal_id": terminalID}}, g1sEventDeadline)
 
-func g1sPersistentList(t *testing.T, i *harness.Instance, projectID string) ([]g1sPersistent, harness.Result) {
-	t.Helper()
-	r := i.MustCLI("terminal", "persistent-list", "--project", projectID, "--json")
-	var list []g1sPersistent
-	r.JSON(t, &list)
-	return list, r
-}
+	list := i.MustCLI("terminal", "list", "--json")
+	var out struct {
+		Terminals []struct {
+			ID string `json:"id"`
+		} `json:"terminals"`
+	}
+	list.JSON(t, &out)
+	for _, term := range out.Terminals {
+		if term.ID == terminalID {
+			t.Fatalf("a stopped terminal is still listed")
+		}
+	}
 
-// g1sAwaitPersistent polls persistent-list until the host reports a session.
-func g1sAwaitPersistent(t *testing.T, i *harness.Instance, projectID string) ([]g1sPersistent, harness.Result) {
-	t.Helper()
-	deadline := time.NewTimer(30 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(250 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		list, r := g1sPersistentList(t, i, projectID)
-		if len(list) > 0 {
-			return list, r
-		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("the host listed no persistent session within 30s for project %s", projectID)
-		case <-tick.C:
-		}
+	if r := i.CLI("terminal", "stop", "--id", "acme-missing-terminal"); r.Code != 1 {
+		t.Fatalf("stop of an unknown terminal exited %d, want 1", r.Code)
+	}
+	gone := i.SocketHTTP(i.Credential("runner")).Do("DELETE", "/api/terminals/acme-missing-terminal", nil)
+	if gone.Status != 404 {
+		t.Fatalf("DELETE of an unknown terminal answered %d, want 404", gone.Status)
 	}
 }
 
 func TestPersistentSessionList(t *testing.T) {
 	t.Parallel()
-	host := harness.StartSSHHost(t)
-	i := g1sBoot(t, harness.Options{})
-	p := g1sHostProject(t, i, host)
-	t.Cleanup(func() {
-		// Best effort: leave no tmux session behind on the machine.
-		list, _ := g1sPersistentList(t, i, p.ID)
-		for _, s := range list {
-			i.CLI("terminal", "persistent-kill", "--project", p.ID, "--name", s.Name)
-		}
+	ssh := harness.StartSSHHost(t)
+	i := harness.Start(t, g1sOptions(harness.Options{}))
+	i.WaitSessionHost(g1sHostDeadline)
+	hostID := g1sCreateHost(t, i, ssh)
+	hostProject := g1sCreateProject(t, i, "acme-remote", map[string]any{
+		"host_id": hostID, "allowed_templates": []string{"acme-tmux"},
 	})
-	g1sStartTerminal(t, i, p.ID, "acme-persist")
+	i.MustCLI("terminal", "start", "--project", hostProject, "--template", "acme-tmux", "--json")
 
-	list, r := g1sAwaitPersistent(t, i, p.ID)
-	if len(list) != 1 || list[0].TemplateID != "acme-persist" || list[0].Name == "" {
-		t.Fatalf("persistent-list returned %+v, want one session of template acme-persist", list)
+	row, trace := g1sAwaitPersistent(t, i, hostProject)
+	if row.TemplateID != "acme-tmux" || !strings.HasPrefix(row.Name, "relay-") {
+		t.Fatalf("persistent session %+v, want an acme-tmux session named relay-...", row)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "session.persistent.list", Trace: r.Trace, Fields: map[string]any{"status": "ok", "project_id": p.ID}})
+	g1sEvent(t, i, harness.EventQuery{Key: "session.persistent.list", Trace: trace,
+		Fields: map[string]any{"status": "ok", "project_id": hostProject}})
 
-	local := g1sProject(t, i, "acme-local", nil)
-	if bad := i.CLI("terminal", "persistent-list", "--project", local.ID, "--json"); bad.Code != 1 {
-		t.Fatalf("persistent-list for a local project exited %d, want 1", bad.Code)
+	localProject := g1sCreateProject(t, i, "acme-local-plain", nil)
+	if r := i.CLI("terminal", "persistent-list", "--project", localProject); r.Code != 1 {
+		t.Fatalf("persistent-list of a project without a host exited %d, want 1", r.Code)
+	}
+	refused := i.HTTP(i.Credential("reader")).Do("GET", "/api/projects/"+localProject+"/persistent-sessions", nil)
+	if refused.Status != 404 {
+		t.Fatalf("persistent sessions of a project without a host answered %d, want 404", refused.Status)
 	}
 }
 
 func TestPersistentSessionKill(t *testing.T) {
 	t.Parallel()
-	host := harness.StartSSHHost(t)
-	i := g1sBoot(t, harness.Options{})
-	p := g1sHostProject(t, i, host)
-	t.Cleanup(func() {
-		list, _ := g1sPersistentList(t, i, p.ID)
-		for _, s := range list {
-			i.CLI("terminal", "persistent-kill", "--project", p.ID, "--name", s.Name)
-		}
+	ssh := harness.StartSSHHost(t)
+	i := harness.Start(t, g1sOptions(harness.Options{}))
+	i.WaitSessionHost(g1sHostDeadline)
+	hostID := g1sCreateHost(t, i, ssh)
+	hostProject := g1sCreateProject(t, i, "acme-kill", map[string]any{
+		"host_id": hostID, "allowed_templates": []string{"acme-tmux"},
 	})
-	g1sStartTerminal(t, i, p.ID, "acme-persist")
-	list, _ := g1sAwaitPersistent(t, i, p.ID)
-	name := list[0].Name
+	i.MustCLI("terminal", "start", "--project", hostProject, "--template", "acme-tmux", "--json")
+	row, _ := g1sAwaitPersistent(t, i, hostProject)
 
-	r := i.MustCLI("terminal", "persistent-kill", "--project", p.ID, "--name", name, "--json")
+	kill := i.MustCLI("terminal", "persistent-kill", "--project", hostProject, "--name", row.Name, "--json")
 	var killed struct {
 		ProjectID string `json:"project_id"`
 		Name      string `json:"name"`
 	}
-	r.JSON(t, &killed)
-	if killed.ProjectID != p.ID || killed.Name != name {
-		t.Fatalf("persistent-kill printed %+v, want project %s name %s", killed, p.ID, name)
+	kill.JSON(t, &killed)
+	if killed.ProjectID != hostProject || killed.Name != row.Name {
+		t.Fatalf("persistent-kill printed %+v, want %s and %s", killed, hostProject, row.Name)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "session.persistent.kill", Trace: r.Trace, Fields: map[string]any{"status": "ok", "project_id": p.ID}})
-	after, _ := g1sPersistentList(t, i, p.ID)
-	for _, s := range after {
-		if s.Name == name {
-			t.Fatalf("persistent-list still holds the killed session %s", name)
+	g1sEvent(t, i, harness.EventQuery{Key: "session.persistent.kill", Trace: kill.Trace,
+		Fields: map[string]any{"status": "ok", "project_id": hostProject}})
+
+	after := i.MustCLI("terminal", "persistent-list", "--project", hostProject, "--json")
+	var rows []g1sPersistentRow
+	after.JSON(t, &rows)
+	for _, r := range rows {
+		if r.Name == row.Name {
+			t.Fatalf("a killed persistent session is still listed")
 		}
 	}
-	if bad := i.CLI("terminal", "persistent-kill", "--project", p.ID, "--name", name, "--json"); bad.Code != 1 {
-		t.Fatalf("killing an unknown persistent session exited %d, want 1", bad.Code)
+
+	// The same name with a higher ordinal is a name the host does not hold.
+	unknown := strings.TrimSuffix(row.Name, "1") + "9"
+	if r := i.CLI("terminal", "persistent-kill", "--project", hostProject, "--name", unknown); r.Code != 1 {
+		t.Fatalf("kill of an unknown persistent session exited %d, want 1", r.Code)
 	}
+	gone := i.HTTP(i.Credential("configurer")).Do("DELETE", "/api/projects/"+hostProject+"/persistent-sessions/"+unknown, nil)
+	if gone.Status != 404 {
+		t.Fatalf("DELETE of an unknown persistent session answered %d, want 404", gone.Status)
+	}
+}
+
+func TestSessionMountClassChecked(t *testing.T) {
+	t.Parallel()
+	i := harness.Start(t, g1sOptions(harness.Options{}))
+	i.WaitSessionHost(g1sHostDeadline)
+
+	if resp := i.SocketHTTP(harness.Credential{}).Do("GET", "/api/models", nil); resp.Status != 401 {
+		t.Fatalf("GET /api/models through the / mount with no credential answered %d, want 401", resp.Status)
+	}
+	if resp := i.SocketHTTP(i.Credential("reader")).Do("GET", "/api/models", nil); resp.Status != 403 {
+		t.Fatalf("GET /api/models through the / mount with a read-only credential answered %d, want 403", resp.Status)
+	}
+	resp := i.SocketHTTP(i.Credential("runner")).Do("GET", "/api/models", nil, harness.ReqOpts{Trace: harness.NewTrace(t)})
+	if resp.Status != 200 {
+		t.Fatalf("GET /api/models with the proxy class answered %d, want 200: %s", resp.Status, resp.Body)
+	}
+	var models struct {
+		Models []json.RawMessage `json:"models"`
+	}
+	resp.JSON(t, &models)
+	i.WaitEvent(harness.EventQuery{Key: "model.list", Trace: resp.Trace,
+		Fields: map[string]any{"status": "ok"}}, g1sEventDeadline)
 }

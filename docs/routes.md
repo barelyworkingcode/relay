@@ -1200,7 +1200,7 @@ Also relay's own door `GET /api/terminals`.
 
 - **Response `200`:** `text/plain`, the terminal's replay log. Works after the
   terminal exits while its log files remain.
-- **Errors:** `404` no log; `400` an unreadable log.
+- **Errors:** `404` no log; `400` a malformed terminal id or an unreadable log.
 - **Event:** `terminal.log` (`terminal_id`). **CLI equivalent:** `relay terminal log`.
 
 ### proxy:DELETE /api/terminals/{id}
