@@ -147,9 +147,9 @@ func fullState(rs []result, total int) string {
 }
 
 // postFull posts the status first and comments only once it landed, and only
-// on success: the comment line is what merge-check looks for, so it must not
+// on success, on issue epic of epicRepo (relay when empty): the comment line is what merge-check looks for, so it must not
 // exist for a run that did not pass.
-func postFull(ctx context.Context, epic int, slug, head string, rs []result, total int) (string, error) {
+func postFull(ctx context.Context, epicRepo string, epic int, slug, head string, rs []result, total int) (string, error) {
 	state := fullState(rs, total)
 	counts, _ := tally(rs)
 	desc := fmt.Sprintf("full %d/%d pass=%d fail=%d blocked=%d notrun=%d", len(rs), total,
@@ -160,7 +160,12 @@ func postFull(ctx context.Context, epic int, slug, head string, rs []result, tot
 		return "", err
 	}
 	if state == "success" {
-		if _, err := gh(ctx, "Full verify: "+slug+"@"+head, "issue", "comment", strconv.Itoa(epic), "-R", slug, "--body-file", "-"); err != nil {
+		// The status always lands on relay's HEAD; only the comment follows the
+		// epic, which may live in another repo.
+		if epicRepo == "" {
+			epicRepo = slug
+		}
+		if _, err := gh(ctx, "Full verify: "+slug+"@"+head, "issue", "comment", strconv.Itoa(epic), "-R", epicRepo, "--body-file", "-"); err != nil {
 			return "", err
 		}
 	}
