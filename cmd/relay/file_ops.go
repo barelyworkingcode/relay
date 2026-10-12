@@ -29,15 +29,15 @@ type FileHostPool interface {
 	Statuses() []FileHostStatus
 }
 
-// FileOps is the one core behind the file routes and /ws/files (docs/
-// project-files.md). It resolves the project from fresh settings on every
-// call, so a change to files_read_only or a project's path applies to the
-// next request.
 // RevocationFeed is the source of eve's pending passkey revocations.
 type RevocationFeed interface {
 	SubscribeRevocations(fn func(ids []string)) (cancel func())
 }
 
+// FileOps is the one core behind the file routes and /ws/files (docs/
+// project-files.md). It resolves the project from fresh settings on every
+// call, so a change to files_read_only or a project's path applies to the
+// next request.
 type FileOps struct {
 	Store config.SettingsStore
 	Audit *audit.AuditRecorder

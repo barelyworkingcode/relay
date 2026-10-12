@@ -1122,7 +1122,7 @@ Eve (the web front end) uses these three doors to open a one-time window for a
 second browser and to mirror its passkey list. The design is in
 [`eve-passkey-enrolment.md`](eve-passkey-enrolment.md). Pending revocations
 also reach eve as an `eve_passkey_revocations` frame on `GET /ws/files`
-([section 4](#wsfiles-eve_passkey_revocations)).
+([section 4](#wswsfiles-eve_passkey_revocations)).
 
 ### GET /api/eve/passkey-enrolment
 

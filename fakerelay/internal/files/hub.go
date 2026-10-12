@@ -503,7 +503,11 @@ func (h *hub) pendingRevocations() []string {
 func (h *hub) PushRevocations() {
 	h.revMu.Lock()
 	defer h.revMu.Unlock()
-	frame := revocationFrame(h.pendingRevocations())
+	ids := h.pendingRevocations()
+	if len(ids) == 0 {
+		return
+	}
+	frame := revocationFrame(ids)
 	h.mu.Lock()
 	conns := make([]*conn, 0, len(h.conns))
 	for c := range h.conns {

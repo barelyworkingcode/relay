@@ -191,6 +191,9 @@ func (o *EvePasskeyOps) publishRevocations() {
 		return
 	}
 	ids := evePasskeyRevocationIDs(config.FreshSettings(o.Store))
+	if len(ids) == 0 {
+		return
+	}
 	for key := range o.subs {
 		(*key)(slices.Clone(ids))
 	}
@@ -270,8 +273,8 @@ func (o *EvePasskeyOps) List() []evePasskeyView {
 	return evePasskeyViews(config.DisplaySettings(o.Store))
 }
 
-// Revocations is the pending id set eve polls and, decisively, checks on
-// every login attempt (decision 10).
+// Revocations is the pending id set relay pushes to eve and eve also checks
+// at every login attempt (decision 10).
 func (o *EvePasskeyOps) Revocations() []string {
 	if o == nil || o.Store == nil {
 		return []string{}
@@ -281,8 +284,8 @@ func (o *EvePasskeyOps) Revocations() []string {
 
 // Revoke records a pending revocation. It never touches eve -- it cannot
 // (decision 9) -- so its whole effect is appending to
-// EvePasskeyRevocations; eve applies it on its own next poll or login
-// check.
+// EvePasskeyRevocations; relay pushes the pending set to eve, and eve also
+// checks it at every login.
 func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (_ config.EvePasskeyRevocation, err error) {
 	ev := logging.BeginEvent(ctx, "eve.passkey.revoke")
 	defer func() {

@@ -54,8 +54,8 @@ func eveList() {
 }
 
 // eveRevoke brokers eve.passkey.revoke over admin_op: relay records the
-// revocation as pending and eve applies it on its own next poll or login
-// check (docs/eve-passkey-enrolment.md decision 10).
+// revocation as pending, pushes the pending set to eve, and eve also checks
+// it at every login (docs/eve-passkey-enrolment.md decision 10).
 func eveRevoke(args []string) {
 	fs := flag.NewFlagSet("eve revoke", flag.ExitOnError)
 	id := fs.String("id", "", "credential id of the eve passkey to revoke (required)")
