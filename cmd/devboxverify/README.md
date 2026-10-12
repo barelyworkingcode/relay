@@ -808,9 +808,9 @@ lacks the execute class, so `POST /api/projects/p1/files/list` answers 403),
 and confirms both in `relay audit --event control_decision --json`. It opens
 Settings > Tool Calls and sets the `Any outcome` pop-up to `ok`: the page shows at
 least one `ok` outcome pill (an empty or unreadable table fails the step) and
-no `control_decision` text. It ticks the box: the text appears. It unticks the
-box and reads its numeric `AXValue` back: the step fails if the box reads
-ticked or cannot be read. It then sets the pop-up to `denied`: the text is there. The pop-up goes back
+no `control_decision` text. It ticks the box and reads it back as ticked: the text appears. It unticks the
+box and reads its numeric `AXValue` back. Both reads poll up to the UI wait; the
+step fails if the box never reads the expected state or cannot be read. It then sets the pop-up to `denied`: the text is there. The pop-up goes back
 to `Any outcome`, the box is left unticked and the window is closed if the
 journey opened it.
 - Lives in: `web/src/app.js` (`auditMatches`, `toggleAuditShowAllowedControl`).

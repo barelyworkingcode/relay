@@ -145,13 +145,16 @@ func (s *liveAuditViewSteps) run(ctx context.Context) (r auditViewRun) {
 	if r.StepErr = s.pressToggle(ctx); r.StepErr != nil {
 		return r
 	}
+	if r.StepErr = s.requireToggle(ctx, true); r.StepErr != nil {
+		return r
+	}
 	if r.ShownOn, r.StepErr = s.controlRowShown(ctx); r.StepErr != nil || !r.ShownOn {
 		return r
 	}
 	if r.StepErr = s.pressToggle(ctx); r.StepErr != nil {
 		return r
 	}
-	if r.StepErr = s.requireUnticked(ctx); r.StepErr != nil {
+	if r.StepErr = s.requireToggle(ctx, false); r.StepErr != nil {
 		return r
 	}
 	if r.StepErr = s.choose(ctx, auditOutcomeLabel, "denied"); r.StepErr != nil {
@@ -220,22 +223,31 @@ func (s *liveAuditViewSteps) pressToggle(ctx context.Context) error {
 	return n.press()
 }
 
-func (s *liveAuditViewSteps) requireUnticked(ctx context.Context) error {
-	n, release, err := s.toggleNode(ctx)
-	if err != nil {
-		return err
+// requireToggle polls until the box reads want. At the deadline it fails on
+// the last read: unreadable, or still in the other state.
+func (s *liveAuditViewSteps) requireToggle(ctx context.Context, want bool) error {
+	state := map[bool]string{true: "ticked", false: "unticked"}
+	var last error
+	for deadline := time.Now().Add(cosUIWait); ; time.Sleep(cosPollGap) {
+		n, release, err := s.toggleNode(ctx)
+		switch {
+		case err != nil:
+			last = err
+		case n == nil:
+			last = fmt.Errorf("no %q checkbox", auditToggleLabel)
+		case n.Checked == nil:
+			last = fmt.Errorf("%q checkbox state cannot be read", auditToggleLabel)
+		case *n.Checked == want:
+			release()
+			return nil
+		default:
+			last = fmt.Errorf("%q still reads %s after the press, want %s", auditToggleLabel, state[!want], state[want])
+		}
+		release()
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return last
+		}
 	}
-	defer release()
-	if n == nil {
-		return fmt.Errorf("no %q checkbox", auditToggleLabel)
-	}
-	if n.Checked == nil {
-		return fmt.Errorf("%q checkbox state cannot be read", auditToggleLabel)
-	}
-	if *n.Checked {
-		return fmt.Errorf("%q is still ticked after the second press", auditToggleLabel)
-	}
-	return nil
 }
 
 // restore puts the outcome back to its empty option and unticks the box.
