@@ -21,7 +21,10 @@ const (
 type axNode struct {
 	Role, Subrole, Label, Help string
 	// Value is AXValue alone; Label prefers AXTitle.
-	Value    string
+	Value string
+	// Checked is the numeric AXValue of a check box or switch; nil when the
+	// node is neither or the value cannot be read.
+	Checked  *bool
 	Children []*axNode
 	press    func() error
 	focus    func() error

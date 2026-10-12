@@ -229,7 +229,10 @@ func (s *liveAuditViewSteps) requireUnticked(ctx context.Context) error {
 	if n == nil {
 		return fmt.Errorf("no %q checkbox", auditToggleLabel)
 	}
-	if n.Value == "1" {
+	if n.Checked == nil {
+		return fmt.Errorf("%q checkbox state cannot be read", auditToggleLabel)
+	}
+	if *n.Checked {
 		return fmt.Errorf("%q is still ticked after the second press", auditToggleLabel)
 	}
 	return nil
@@ -245,7 +248,10 @@ func (s *liveAuditViewSteps) restore(ctx context.Context) error {
 		return err
 	}
 	defer release()
-	if n != nil && n.Value == "1" {
+	if n != nil && n.Checked == nil {
+		return fmt.Errorf("%q checkbox state cannot be read", auditToggleLabel)
+	}
+	if n != nil && *n.Checked {
 		if err := n.press(); err != nil {
 			return err
 		}

@@ -37,6 +37,26 @@ static int ax_string(axref el, const char *attr, char **out) {
 	return kAXErrorSuccess;
 }
 
+// Copies a numeric or boolean attribute as an int. *has is 0 when the value is
+// neither, so a caller can tell "unreadable" from zero.
+static int ax_int(axref el, const char *attr, int *out, int *has) {
+	*out = 0;
+	*has = 0;
+	CFStringRef name = CFStringCreateWithCString(NULL, attr, kCFStringEncodingUTF8);
+	CFTypeRef val = NULL;
+	AXError err = AXUIElementCopyAttributeValue((AXUIElementRef)el, name, &val);
+	CFRelease(name);
+	if (err != kAXErrorSuccess) return err;
+	if (val && CFGetTypeID(val) == CFNumberGetTypeID()) {
+		*has = CFNumberGetValue(val, kCFNumberIntType, out) ? 1 : 0;
+	} else if (val && CFGetTypeID(val) == CFBooleanGetTypeID()) {
+		*out = CFBooleanGetValue(val) ? 1 : 0;
+		*has = 1;
+	}
+	if (val) CFRelease(val);
+	return kAXErrorSuccess;
+}
+
 // Copies an attribute that holds an array of elements, or one element.
 static int ax_elements(axref el, const char *attr, CFArrayRef *out) {
 	*out = NULL;
@@ -162,6 +182,25 @@ func (s *axSnapshot) text(el C.axref, attr string) (string, error) {
 	return C.GoString(out), nil
 }
 
+// checked reads AXValue as a number: nil when the element has none.
+func (s *axSnapshot) checked(el C.axref) (*bool, error) {
+	name := C.CString("AXValue")
+	defer C.free(unsafe.Pointer(name))
+	var v, has C.int
+	switch code := C.ax_int(el, name, &v, &has); int(code) {
+	case 0:
+	case axErrAttrUnsupported, axErrNoValue:
+		return nil, nil
+	default:
+		return nil, axErr("read AXValue", code)
+	}
+	if has == 0 {
+		return nil, nil
+	}
+	b := v != 0
+	return &b, nil
+}
+
 func (s *axSnapshot) elements(el C.axref, attr string) (C.CFArrayRef, error) {
 	name := C.CString(attr)
 	defer C.free(unsafe.Pointer(name))
@@ -193,6 +232,11 @@ func (s *axSnapshot) node(el C.axref) (*axNode, error) {
 	}
 	if n.Value, err = s.text(el, "AXValue"); err != nil {
 		return nil, err
+	}
+	if n.Role == "AXCheckBox" || n.Role == "AXSwitch" {
+		if n.Checked, err = s.checked(el); err != nil {
+			return nil, err
+		}
 	}
 	for _, attr := range []string{"AXTitle", "AXDescription", "AXValue"} {
 		if n.Label, err = s.text(el, attr); err != nil || n.Label != "" {
