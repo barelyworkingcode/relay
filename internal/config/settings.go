@@ -322,6 +322,19 @@ func (s *Settings) UpdateProjectChatTemplates(id string, templates []ChatTemplat
 	proj.ChatTemplates = templates
 }
 
+// SetProjectAgents replaces the project's agent list. An empty list is stored
+// as nil so the key drops out of settings.json.
+func (s *Settings) SetProjectAgents(id string, agents []AgentEntry) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	if len(agents) == 0 {
+		agents = nil
+	}
+	proj.Agents = agents
+}
+
 // UpdateProjectAllowedTemplates: no SyncProjectToken call, for the same reason
 // as UpdateProjectChatTemplates. A nil list is stored as empty: none.
 func (s *Settings) UpdateProjectAllowedTemplates(id string, templates []string) {

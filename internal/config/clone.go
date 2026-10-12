@@ -185,10 +185,19 @@ func cloneChatTemplates(ts []ChatTemplate) []ChatTemplate {
 	return out
 }
 
+func cloneAgents(as []AgentEntry) []AgentEntry {
+	out := cloneSlice(as)
+	for i := range out {
+		out[i].Args = cloneSlice(out[i].Args)
+	}
+	return out
+}
+
 func cloneProject(p Project) Project {
 	p.AllowedMcpIDs = cloneSlice(p.AllowedMcpIDs)
 	p.AllowedModels = cloneSlice(p.AllowedModels)
 	p.ChatTemplates = cloneChatTemplates(p.ChatTemplates)
+	p.Agents = cloneAgents(p.Agents)
 	p.AllowedTemplates = cloneSlice(p.AllowedTemplates)
 	p.DisabledTools = cloneStringSliceMap(p.DisabledTools)
 	p.Context = cloneContextMap(p.Context)

@@ -173,6 +173,17 @@ func validateChatTemplatePresets(templates []config.ChatTemplate) error {
 	return nil
 }
 
+func validateChatTemplateAgentClash(proj *config.Project) error {
+	for _, t := range proj.ChatTemplates {
+		for _, a := range proj.Agents {
+			if strings.EqualFold(t.Name, a.Name) {
+				return fmt.Errorf("%q is already an agent in %s", t.Name, proj.Name)
+			}
+		}
+	}
+	return nil
+}
+
 // ValidateShape is the single point that decides whether a given
 // combination of Kind, Path, GenerateSkill, AllowedTemplates,
 // AllowedMcpIDs and AllowedModels is coherent — called from both the create
@@ -211,6 +222,11 @@ func ValidateShape(proj *config.Project) error {
 		// Remote projects refuse any template below, so presets are only
 		// reachable here.
 		if err := validateChatTemplatePresets(proj.ChatTemplates); err != nil {
+			return err
+		}
+		// Only the reverse direction lives here: the agent doors check a new
+		// agent name against templates themselves.
+		if err := validateChatTemplateAgentClash(proj); err != nil {
 			return err
 		}
 		if err := validateProjectPath(proj.Path, proj.IsHosted()); err != nil {
