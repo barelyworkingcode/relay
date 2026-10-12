@@ -1202,7 +1202,7 @@ Also relay's own door `GET /api/sessions` (section 2.1), which forwards here.
   | `host` | object | SSH host chip; absent for this Mac |
   | `headless` | boolean | Present for headless agents |
   | `origin` | string | Set when someone other than the person started it (`chief-of-staff`) |
-  | `attention` | object | `{"state", "since"}` for a live tracked session; `state` is `starting`, `running`, `idle`, `asking`, `errored`, `stalled` |
+  | `attention` | object | `{"state", "since"}` (plus `"exit": {"code", "stderr"}` when a provider exit left the session `errored`) for a live tracked session; `state` is `starting`, `running`, `idle`, `asking`, `errored`, `stalled` |
 
 - **Event:** `session.list` (relay's door writes it).
 
@@ -1284,7 +1284,11 @@ of a tracked agent session's state.
 
 - **Frame:** `{"type": "session_state", "sessionId": "<id>", "state": "<state>",
   "since": "<RFC 3339 with milliseconds>"}`. `state` is `starting`, `running`,
-  `idle`, `asking`, `errored`, `stalled` or `ended`.
+  `idle`, `asking`, `errored`, `stalled` or `ended`. An `errored` frame from a
+  provider exit adds `"exit": {"code": N, "stderr": ["..."]}`: the exit code and
+  the last stderr lines (redacted, at most 10 lines of 1024 bytes). The joined
+  `process_exited` frame carries `exit` for every non-zero exit relay did not
+  cause, including one that moves the session to `ended`.
 - **Event:** `session.state` (background, written by relay-sessions).
 
 ### ws:/ws turn_done

@@ -519,10 +519,11 @@ func (p *CodexProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *
 		return
 	}
 	slog.Info("codex process exited", "session", p.session.ID, "exitCode", exitCode)
-	if !killed.Load() {
+	wasKilled := killed.Load()
+	if !wasKilled {
 		warnProviderExit(p.session.ID, "codex", exitCode, tail)
 	}
-	data, _ := json.Marshal(map[string]interface{}{"exitCode": exitCode})
+	data := providerExitData(exitCode, tail, wasKilled)
 	p.handler("process_exited", data)
 }
 

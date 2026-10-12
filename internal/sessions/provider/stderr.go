@@ -3,6 +3,7 @@ package provider
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -102,6 +103,18 @@ func logStdoutReadError(sessionID, kind string, err error) {
 		return
 	}
 	slog.Error("provider stdout read error", "session", sessionID, "kind", kind, "error", err)
+}
+
+// providerExitData is the process_exited handler data. failed and stderrTail
+// are set exactly when warnProviderExit logs its line.
+func providerExitData(exitCode int, tail []string, killed bool) json.RawMessage {
+	d := map[string]any{"exitCode": exitCode}
+	if exitCode != 0 && !killed {
+		d["failed"] = true
+		d["stderrTail"] = tail
+	}
+	data, _ := json.Marshal(d)
+	return data
 }
 
 func warnProviderExit(sessionID, kind string, exitCode int, tail []string) {

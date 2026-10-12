@@ -1170,14 +1170,22 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 		}
 		sess.SetProcessing(false)
 		m.tools.clear(sess.ID)
-		m.signal(sess, attention.ProcessExited)
+		var payload struct {
+			ExitCode   int      `json:"exitCode"`
+			Failed     bool     `json:"failed"`
+			StderrTail []string `json:"stderrTail"`
+		}
+		_ = json.Unmarshal(data, &payload)
 		msg = map[string]any{"type": events.WSMsgProcessExited, "sessionId": sess.ID}
+		if payload.Failed {
+			x := &attention.Exit{Code: payload.ExitCode, Stderr: payload.StderrTail}
+			m.signalExit(sess, x)
+			msg["exit"] = x
+		} else {
+			m.signal(sess, attention.ProcessExited)
+		}
 		m.persist(sess)
 		if fn := m.exitHandler(); fn != nil {
-			var payload struct {
-				ExitCode int `json:"exitCode"`
-			}
-			_ = json.Unmarshal(data, &payload)
 			fn(sess.ID, payload.ExitCode)
 		}
 

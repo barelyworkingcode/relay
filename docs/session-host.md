@@ -752,6 +752,7 @@ Both frames go out through `Hub.Broadcast`: every `/ws` connection gets them, wh
 
 ```json
 {"type":"session_state","sessionId":"<id>","state":"idle","since":"2026-10-05T14:03:07.123Z"}
+{"type":"session_state","sessionId":"<id>","state":"errored","since":"2026-10-05T14:03:07.123Z","exit":{"code":127,"stderr":["env: /opt/acme/bin/claude: No such file or directory"]}}
 {"type":"turn_done","sessionId":"<id>","excerpt":"<last 500 runes>","at":"2026-10-05T14:03:07.123Z"}
 ```
 
@@ -759,11 +760,13 @@ Both frames go out through `Hub.Broadcast`: every `/ws` connection gets them, wh
 
 Frames for one session arrive in order: a transition and its frames happen under that session's lock. Broadcasting excerpts gives no new reach, since `/ws` is open only to credentials that can already `join_session` any session.
 
+`exit` is on a `session_state` frame only when a provider process that relay did not kill exited non-zero and that exit moved the session into `errored`: `code` is the exit code and `stderr` is the provider's last stderr lines, oldest first (see [Provider stderr](#provider-stderr)). The `process_exited` frame to a joined client carries `exit` whenever relay did not kill the process and the code is non-zero, even when the exit moves the session to `ended`. Any later state change clears it from the state.
+
 A launch that fails sends `errored` for an id that never appears in the list. A client treats it as transient.
 
 ### List field
 
-`GET /api/sessions` rows for live tracked sessions carry `"attention": {"state": "...", "since": "..."}`. The field is absent for untracked, persisted-only and ended sessions: `ended` reaches a client only as a frame. `since` equals the `since` of the last `session_state` frame for that session.
+`GET /api/sessions` rows for live tracked sessions carry `"attention": {"state": "...", "since": "..."}`; an `errored` row from a provider exit adds `"exit": {"code": N, "stderr": [...]}`, the same object the frame carries. The field is absent for untracked, persisted-only and ended sessions: `ended` reaches a client only as a frame. `since` equals the `since` of the last `session_state` frame for that session.
 
 Rows for headless sessions (listed only when launched with `"agent": true`) also carry `"headless": true`, the flag the drop-in handoff requires; the key is absent for ordinary chats.
 
@@ -869,7 +872,7 @@ A machine that has a real CLI under `/usr/local/bin` or `/opt/homebrew/bin` ther
 - Both protocols are one JSON object per line, newline-terminated, in each direction. Blank lines are skipped. A line longer than 10 MiB ends reading. A stdout line that is not JSON is passed on as `raw_output` and does not stop the session.
 - Relay writes nothing to stdin until a user sends a message. It does not wait for any output at start-up: the spawn counts as started when the process exists.
 - Relay ends a child by closing its stdin, sending `SIGINT`, and after 3 s killing it. The CLI is expected to exit on stdin EOF or `SIGINT`.
-- Exit is read from the process status. Exit 0 is a quiet end. A non-zero code logs a warning with the stderr tail. In both cases relay emits `process_exited` with `{"exitCode": N}`, unless it killed the child itself, or a newer spawn of the same session has replaced it.
+- Exit is read from the process status. Exit 0 is a quiet end. A non-zero code logs a warning with the stderr tail. In both cases relay emits `process_exited` with `{"exitCode": N}` (a non-zero exit relay did not cause adds `"failed": true` and `"stderrTail": [...]`), unless it killed the child itself, or a newer spawn of the same session has replaced it.
 - A session idle for 15 minutes with no stdin or stdout line is killed.
 
 ### claude
@@ -1044,8 +1047,8 @@ Each line is redacted before it is logged, then truncated to 1024 bytes on a
 rune boundary; reading continues past an overlong line rather than stopping
 there, since a `bufio.Scanner`'s default 64 KiB limit would otherwise block
 the child. Redaction runs, in order: the exact secrets the caller passed in
-(the identity secret for claude; the model key and the identity secret for
-pi), then `rmk_[0-9a-f]{64}`, then `sk-[A-Za-z0-9_-]{20,}`, then
+(the identity secret for claude and codex; the model key and the identity
+secret for pi), then `rmk_[0-9a-f]{64}`, then `sk-[A-Za-z0-9_-]{20,}`, then
 `(?i)(bearer\s+)<token>`.
 
 The child's stderr is wired through a plain `os.Pipe()`, not
@@ -1088,6 +1091,12 @@ This is what names a mid-session crash, whose stderr lines otherwise log only
 at `Debug`. A zero exit adds nothing, and neither does a stop relay itself
 initiates: `Kill()` marks the spawn killed before it signals, and that exit
 logs no crash `Warn` whatever its code, though `process_exited` still follows.
+The same tail, with the exit code, also reaches the client as `exit` on the
+`errored` `session_state` frame, on `process_exited` and in the list's
+`attention`, under the same redaction and the same cap of 10 lines of 1024
+bytes. The provider hands the manager `failed` and `stderrTail` in the
+`process_exited` handler data under the same condition as the `Warn`: not
+killed by relay and a non-zero code. stderr never goes into an event line.
 The early-failure paths (identity refused, spawn failed) drain stderr
 themselves and close stdout unread.
 
