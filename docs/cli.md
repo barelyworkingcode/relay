@@ -2497,7 +2497,7 @@ when set. The text form is `started session SESSION-ID`.
 | `sessions[].headless` | boolean, optional | `true` for a session with no terminal attached. |
 | `sessions[].origin` | string, optional | Who started it, when not a person at a screen. |
 | `sessions[].host` | object, optional | `{"id","name"}` of the SSH host of a host project. |
-| `sessions[].attention` | object, optional | Why the session needs someone. |
+| `sessions[].attention` | object, optional | Why the session needs someone. `exit` (`code`, `stderr[]`) is present on an `errored` session whose provider exited non-zero. |
 
 Text form: the line `N sessions`, then one `ID<TAB>NAME` line per session.
 

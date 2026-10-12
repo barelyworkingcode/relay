@@ -23,6 +23,13 @@ const (
 	ExcerptRunes  = 500
 )
 
+// Exit is what a failed provider process left behind. Stderr is the same
+// redacted, bounded tail the session host logs, oldest line first.
+type Exit struct {
+	Code   int      `json:"code"`
+	Stderr []string `json:"stderr,omitempty"`
+}
+
 type Signal int
 
 const (

@@ -76,12 +76,16 @@ func NewSessionHandlers(hub *Hub, mgr *session.Manager, perms *permission.Permis
 // StateChanged implements attention.Sink. It broadcasts to every connection,
 // joined or not, so a board watching all sessions needs no join_session.
 func (sh *SessionHandlers) StateChanged(c attention.Change) {
-	sh.hub.Broadcast(mustJSON(map[string]any{
+	msg := map[string]any{
 		"type":      events.WSMsgSessionState,
 		"sessionId": c.SessionID,
 		"state":     string(c.State),
 		"since":     attention.FormatTime(c.Since),
-	}))
+	}
+	if c.Exit != nil {
+		msg["exit"] = c.Exit
+	}
+	sh.hub.Broadcast(mustJSON(msg))
 }
 
 // TurnDone implements attention.Sink.

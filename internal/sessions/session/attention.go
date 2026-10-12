@@ -55,6 +55,13 @@ func (m *Manager) signal(sess *sessionstypes.Session, sig attention.Signal) {
 	}
 }
 
+// signalExit is ProcessExited with the provider's failure detail.
+func (m *Manager) signalExit(sess *sessionstypes.Session, x *attention.Exit) {
+	if tracked(sess) {
+		m.attn.Exited(sess.ID, x)
+	}
+}
+
 // onPermissionPending is the permission manager's pending observer. Sessions
 // the manager does not hold are ignored.
 func (m *Manager) onPermissionPending(sessionID string, pending int) {

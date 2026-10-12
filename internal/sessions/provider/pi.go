@@ -526,11 +526,12 @@ func (p *PiProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spa
 		return
 	}
 	slog.Info("pi process exited", "session", p.session.ID, "exitCode", exitCode)
-	if !killed.Load() {
+	wasKilled := killed.Load()
+	if !wasKilled {
 		warnProviderExit(p.session.ID, "pi", exitCode, tail)
 	}
 
-	data, _ := json.Marshal(map[string]interface{}{"exitCode": exitCode})
+	data := providerExitData(exitCode, tail, wasKilled)
 	p.handler("process_exited", data)
 }
 

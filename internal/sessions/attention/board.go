@@ -12,12 +12,14 @@ import (
 type Attention struct {
 	State State  `json:"state"`
 	Since string `json:"since"`
+	Exit  *Exit  `json:"exit,omitempty"`
 }
 
 type Change struct {
 	SessionID string
 	State     State
 	Since     time.Time
+	Exit      *Exit
 }
 
 type TurnDone struct {
@@ -43,6 +45,7 @@ type entry struct {
 	excerpt []rune
 	dead    bool
 	held    bool
+	exit    *Exit
 }
 
 type Board struct {
@@ -76,7 +79,22 @@ func (b *Board) Signal(sessionID string, sig Signal) {
 		}
 	}
 	defer e.mu.Unlock()
-	b.apply(e, sig, time.Time{})
+	b.apply(e, sig, time.Time{}, nil)
+}
+
+// Exited applies ProcessExited. When that moves the session into errored, x
+// rides on the Change and stays on the entry until the next state change.
+func (b *Board) Exited(sessionID string, x *Exit) {
+	e := b.lookup(sessionID, false)
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.dead {
+		return
+	}
+	b.apply(e, ProcessExited, time.Time{}, x)
 }
 
 // Reply appends to the current turn's excerpt and counts as activity.
@@ -107,7 +125,11 @@ func (b *Board) Get(sessionID string) (Attention, bool) {
 	if e.dead {
 		return Attention{}, false
 	}
-	return Attention{State: e.state, Since: FormatTime(e.since)}, true
+	a := Attention{State: e.state, Since: FormatTime(e.since)}
+	if e.state == Errored {
+		a.Exit = e.exit
+	}
+	return a, true
 }
 
 // Sweep moves every running session whose last event is StallAfter old to
@@ -125,7 +147,7 @@ func (b *Board) sweep() {
 	for _, e := range list {
 		e.mu.Lock()
 		if !e.dead && !e.held && e.state == Running && now.Sub(e.last) >= StallAfter {
-			b.apply(e, StallTimeout, e.last.Add(StallAfter))
+			b.apply(e, StallTimeout, e.last.Add(StallAfter), nil)
 		}
 		e.mu.Unlock()
 	}
@@ -178,7 +200,8 @@ func (b *Board) sweepLoop(stop <-chan struct{}) {
 }
 
 // apply runs under e.mu. since overrides the transition time when non-zero.
-func (b *Board) apply(e *entry, sig Signal, since time.Time) {
+// x is kept only when ProcessExited moves the session into errored.
+func (b *Board) apply(e *entry, sig Signal, since time.Time, x *Exit) {
 	if e.held && sig != HandedBack && sig != SessionEnded {
 		return
 	}
@@ -210,11 +233,15 @@ func (b *Board) apply(e *entry, sig Signal, since time.Time) {
 			since = now
 		}
 		e.state, e.since = next, since
+		e.exit = nil
+		if sig == ProcessExited && next == Errored {
+			e.exit = x
+		}
 		logging.BeginEvent(context.Background(), "session.state").
 			Set("session_id", e.id).Set("from", string(prev)).Set("to", string(next)).
 			End(logging.OutcomeOK, "", nil)
 		if b.sink != nil {
-			b.sink.StateChanged(Change{SessionID: e.id, State: next, Since: since})
+			b.sink.StateChanged(Change{SessionID: e.id, State: next, Since: since, Exit: e.exit})
 		}
 	}
 	b.countRunning(wasCounted, next == Running && !e.held)
