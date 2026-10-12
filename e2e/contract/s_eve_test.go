@@ -55,6 +55,37 @@ func TestEvePasskeys(t *testing.T) {
 	})
 }
 
+// eveRevocationWorld gives the caller the classes /ws/files (execute) and the
+// revocation frame (read) need, beside the configure of the passkey report.
+func eveRevocationWorld() Spec {
+	s := eveWorld()
+	s.Credentials = []harness.CredentialSpec{{Name: "ops", Classes: []string{"read", "configure", "execute"}}}
+	return s
+}
+
+func TestEveRevocationsOnWSFiles(t *testing.T) {
+	t.Parallel()
+	Check(t, Scenario{
+		Surface: Eve,
+		Spec:    eveRevocationWorld(),
+		Body: func(r *Run) {
+			r.HTTP("ops", "PUT", "/api/eve/passkeys", map[string]any{"passkeys": []map[string]any{
+				{"id": "pk-acme-0001", "label": "Laptop", "created": "2026-10-01T09:00:00Z", "last_used": "2026-10-02T09:00:00Z"},
+				{"id": "pk-acme-0002", "label": "Phone", "created": "2026-10-03T09:00:00Z", "last_used": "2026-10-04T09:00:00Z"},
+				{"id": "pk-acme-0003", "label": "Tablet", "created": "2026-10-05T09:00:00Z", "last_used": "2026-10-06T09:00:00Z"},
+			}})
+			r.CLI("eve", "revoke", "--id", "pk-acme-0001")
+			w := r.WS("/ws/files", "ops")
+			w.Expect("eve_passkey_revocations", nil)
+			r.CLI("eve", "revoke", "--id", "pk-acme-0002")
+			w.Expect("eve_passkey_revocations", func(f map[string]any) bool {
+				ids, _ := f["revocations"].([]any)
+				return len(ids) == 2
+			})
+		},
+	})
+}
+
 func TestEveWindowCloses(t *testing.T) {
 	t.Parallel()
 	Check(t, Scenario{
