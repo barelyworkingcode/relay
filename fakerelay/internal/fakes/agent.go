@@ -13,7 +13,7 @@ import (
 )
 
 // NewAgentFactory builds the in-process agents. The model's reply decides the
-// persona: echo, text, permission, plan or fail. Each agent records its calls
+// persona: echo, text, permission, plan, fail or exit. Each agent records its calls
 // to the call log as agent-<persona>. A plan agent writes its plan under
 // home/.claude/plans.
 func NewAgentFactory(log *CallLog, home string) AgentFactory {
@@ -54,6 +54,9 @@ func llm(ev map[string]any) Frame {
 
 func (a *scripted) Turn(ctx context.Context, text string, emit func(Frame)) error {
 	a.log.Record(a.name(), "turn", map[string]any{"session_id": a.info.ID, "text": text})
+	if a.kind == "exit" {
+		return &ExitError{Code: a.reply.Code, Stderr: append([]string(nil), a.reply.Stderr...)}
+	}
 	var planPath string
 	if a.kind == "plan" {
 		var err error

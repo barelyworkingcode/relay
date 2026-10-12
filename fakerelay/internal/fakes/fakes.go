@@ -42,4 +42,13 @@ type ModelHost interface {
 // TurnError is a failed turn: message_complete carries isError and Status.
 type TurnError struct{ Status int }
 
+// ExitError is a turn the provider process did not survive: it exited with
+// Code, leaving Stderr as its last lines. The session is no longer live.
+type ExitError struct {
+	Code   int
+	Stderr []string
+}
+
+func (e *ExitError) Error() string { return fmt.Sprintf("process exited with code %d", e.Code) }
+
 func (e *TurnError) Error() string { return fmt.Sprintf("api error %d", e.Status) }

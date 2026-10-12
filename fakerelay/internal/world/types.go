@@ -250,11 +250,14 @@ type Model struct {
 	Reply    Reply  `json:"reply"`
 }
 
-// Reply scripts the echo agent: kind echo, text, permission, plan or fail.
+// Reply scripts the echo agent: kind echo, text, permission, plan, fail or
+// exit. Code and Stderr belong to exit only.
 type Reply struct {
-	Kind string `json:"kind"`
-	Text string `json:"text,omitempty"`
-	Tool string `json:"tool,omitempty"`
+	Kind   string   `json:"kind"`
+	Text   string   `json:"text,omitempty"`
+	Tool   string   `json:"tool,omitempty"`
+	Code   int      `json:"code,omitempty"`
+	Stderr []string `json:"stderr,omitempty"`
 }
 
 type Session struct {
