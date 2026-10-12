@@ -211,6 +211,12 @@ hand-run tool for Settings UI work.
 | PR, and every push to `main` | the `contract` job: `gofmt -l` in `e2e/`, then `go test -race -count=1 ./contract/` | `.github/workflows/ci.yml` (`contract` job) |
 | `./build.sh --test` | `go vet ./...` before install | `build.sh` |
 
+The `protect-default-branch` ruleset requires a PR for every change to `main`,
+and the `build`, `contract`, `e2e`, `fakerelay` and `guards` checks from GitHub
+Actions on its head. GitHub auto-merge waits on exactly those. A PR that adds
+or renames a gating job needs the ruleset changed before it merges: a required
+job that never reports holds every PR open, and an unrequired one is not waited on.
+
 Do not set `core.hooksPath` in this repo. A global hooks dispatcher runs the
 files in `.githooks/`, and a local value skips its push checks.
 
