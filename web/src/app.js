@@ -252,6 +252,7 @@ let state = {
     auditFilter: { project_id: '', mcp_id: '', outcome: '', event: '', kind: '', text: '', deep: false },
     auditExpanded: {},                      // event id -> bool
     auditFollow: true,                      // append live events as they arrive
+    auditShowAllowedControl: false,         // allowed control_decision rows are hidden unless on
     auditLoaded: false,
     // The Overview's newest call_tool rows, read from the log file so they survive a restart; the empty state waits for the first answer.
     recentToolCalls: [],
@@ -7127,6 +7128,11 @@ function toggleAuditFollow(on) {
     render();
 }
 
+function toggleAuditShowAllowedControl(on) {
+    state.auditShowAllowedControl = !!on;
+    render();
+}
+
 function toggleAuditRow(id) {
     state.auditExpanded[id] = !state.auditExpanded[id];
     render();
@@ -7137,6 +7143,7 @@ function toggleAuditRow(id) {
 // keystroke re-filters what is loaded without a round trip.
 function auditMatches(ev) {
     const f = state.auditFilter;
+    if (ev.event === 'control_decision' && ev.outcome === 'ok' && !state.auditShowAllowedControl) return false;
     if (f.project_id && (ev.actor || {}).project_id !== f.project_id) return false;
     if (f.mcp_id && ev.mcp_id !== f.mcp_id) return false;
     if (f.outcome === 'scope_violation') {
@@ -7280,6 +7287,8 @@ function renderAudit() {
     html += auditSelect('event', 'All events', AUDIT_EVENT_KINDS, f.event);
     html += '<label style="font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:5px">';
     html += '<input type="checkbox"' + (state.auditFollow ? ' checked' : '') + ' onchange="toggleAuditFollow(this.checked)">Follow</label>';
+    html += '<label style="font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:5px">';
+    html += '<input type="checkbox"' + (state.auditShowAllowedControl ? ' checked' : '') + ' onchange="toggleAuditShowAllowedControl(this.checked)">Show allowed control checks</label>';
     html += '</div>';
 
     const rows = auditVisible();

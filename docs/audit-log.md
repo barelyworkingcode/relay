@@ -475,6 +475,13 @@ handler runs:
  "method":"POST","path":"/api/mcps","class":"execute","transport":"socket","outcome":"denied","error":"class not granted"}
 ```
 
+The Settings Tool Calls tab hides allowed `control_decision` rows by default,
+because eve's 30 s heartbeat writes one per beat and buries the refusals. A
+checkbox, `Show allowed control checks`, brings them back for the window's
+lifetime. Denied, unauthorized and error rows always show. The hide is a view
+filter only: the file, the ring and `relay audit` are unchanged and return
+every row.
+
 - `method` and `path` name the route the decision was about; `class` is the
   ADR-015 class it was checked against and `transport` is the listener the
   request arrived on (`socket` or `tcp`) — the same axis `ClassReachableOn`
