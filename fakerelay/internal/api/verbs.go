@@ -247,6 +247,10 @@ func (a *api) eveRevokeVerb(ctx context.Context, args []string) server.VerbResul
 		m.Eve.Revocations = append(m.Eve.Revocations, b)
 		return nil
 	})
+	// The frame is on every reader's wire before the verb answers.
+	if p, ok := a.Hosts.(interface{ PushRevocations() }); ok {
+		p.PushRevocations()
+	}
 	ev.End("ok", "", nil)
 	return out("eve passkey %s: revocation pending\n  it will stop working on its next use\n  eve signs out every session that passkey minted when it applies the revocation\n", abbrev(*id))
 }

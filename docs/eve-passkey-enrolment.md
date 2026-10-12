@@ -79,8 +79,9 @@ credentials, but the operator's one place for "who can sign in" is relay's
 Settings → Passkeys, and its CLI twins. So eve *reports* its credential list
 to relay (public metadata only), relay *mirrors* it for display, and revoking
 is relay's act behind the same presence gate as revoking one of relay's own.
-Eve then *pulls* the revocation — on a slow poll and, decisively, on every
-login attempt — so a revoked passkey fails on its very next use. The whole
+Relay then *pushes* the pending revocations to eve the moment they are
+approved, and eve also checks them on every login attempt, so a revoked
+passkey fails on its very next use. The whole
 second half of this document is that design.
 
 ## Relay: the window
@@ -253,7 +254,9 @@ login-screen button visibility in Playwright.
 read `auth.json` — it is eve's file, in eve's data dir, and a second reader
 of a credential file is a second place it can be wrong. Instead eve sends
 relay its credential list at startup and after every change (an enrolment, a
-revocation it applied, a login that bumped `lastUsedAt`). Only display
+revocation it applied, a login that bumped `lastUsedAt`). There is no timer:
+a periodic report would write an audit row each time and tell relay nothing
+new. Only display
 metadata travels: id, label, created, last used. Never a public key, never a
 counter. Relay stores the mirror in settings so the Passkeys tab and
 `relay eve list` read it the way `relay login list` reads relay's own —
@@ -264,13 +267,24 @@ behind the presence gate exactly as `login.passkey.revoke` does. Relay
 records the revocation as *pending* and notifies the console. It does not
 touch eve; it cannot.
 
-**10. Eve pulls, and checks at the moment that matters.** Eve asks relay for
-pending revocations every 30 seconds and — the part that makes this a
-security control rather than housekeeping — on every login attempt, before
-it accepts the assertion. A revoked passkey therefore stops working on its
-next use, whatever the poll timing. When eve applies a revocation it deletes
-the credential, ends every session that credential minted, and re-reports;
-the report is the acknowledgement (decision 12).
+**10. Relay pushes; eve checks at the moment that matters.** Relay sends the
+pending set to eve as an `eve_passkey_revocations` frame on the `/ws/files`
+connection eve already holds open: `{"type": "eve_passkey_revocations",
+"revocations": [ids]}`, always the whole pending set. Two things trigger it.
+An approved revoke sends it to every connected reader at once, and a new
+connection receives it on connect when the set is not empty (so a revocation
+approved while eve was down arrives when eve returns). `/ws/files` carries it
+because eve holds that socket anyway; a second socket would be a second
+thing to reconnect. Only a caller that holds `read` gets the frame; a
+`/ws/files` caller without it receives none, because the pending set is
+what `GET /api/eve/passkeys/revocations` already guards with `read`. The
+part that makes this a security control rather than housekeeping is still
+the check on every login attempt, before eve accepts the assertion, so a
+revoked passkey stops working on its next use whatever the push timing.
+When eve applies a revocation it deletes the credential, ends every session
+that credential minted, and re-reports; the report is the acknowledgement
+(decision 12). Unrevoke and Report publish nothing: they only shrink the
+set, and eve acts on a frame only for ids it holds.
 
 **11. Sessions know their parent.** Eve's session store records which
 credential minted each token. That is what turns "revoke" into "and sign
@@ -297,7 +311,8 @@ long. Deleting `auth.json` on the console remains the break-glass.
 relay during a login, it logs loudly and accepts the assertion. Relay being
 down already makes eve nearly useless (sessions live behind it), and a hard
 fail here would turn a relay restart into a lock-out on every device. The
-30-second poll catches up as soon as relay is back.
+pending set arrives on eve's next `/ws/files` connect, as soon as relay is
+back.
 
 ## Relay: the mirror and the revocation
 
@@ -318,14 +333,15 @@ so a stale mirror (eve down for a week) is visibly stale in the tab.
 
 ### Core: `EvePasskeyOps`
 
-`Store`, `Audit`, `Gate`, `OnChange`, `Notify`; nil-safe. Five methods.
+`Store`, `Audit`, `Gate`, `OnChange`, `Notify`; nil-safe. Six methods.
 
 | Method | Gate | Effect |
 |---|---|---|
 | `Report(list)` | no | Replaces `eve_passkeys` (stamping `reported`), drops every pending revocation whose id is absent from `list` or whose id is the only entry in `list`. Fires `OnChange`. |
 | `List()` | no | The mirror, each entry with `revocation_pending: bool`. |
 | `Revocations()` | no | Pending ids. |
-| `Revoke(ctx, id, via)` | **yes** — `eve.passkey.revoke` | Refuses before the gate if `id` is not in the mirror, is already pending, or is the last non-pending credential. Otherwise appends a pending revocation, records it in the audit log, notifies the console. |
+| `Revoke(ctx, id, via)` | **yes** — `eve.passkey.revoke` | Refuses before the gate if `id` is not in the mirror, is already pending, or is the last non-pending credential. Otherwise appends a pending revocation, records it in the audit log, publishes the whole pending set to every `SubscribeRevocations` subscriber, notifies the console. |
+| `SubscribeRevocations(fn)` | no | Registers `fn`. Calls it at once with the pending set when that is non-empty, then with the whole pending set after every `Revoke` commit. Calls are serialised and the snapshot is taken under the same lock, so no push precedes it; `fn` must not block. Returns a cancel func. `/ws/files` is the one subscriber. |
 | `Unrevoke(id)` | no | Withdraws a pending revocation eve has not yet applied. Narrowing nothing, so ungated, like unregistering an MCP. |
 
 Presence prompt reason for `eve.passkey.revoke`: `revoke the Eve passkey %s`
@@ -359,6 +375,10 @@ console to start over`.
   | `PUT /api/eve/passkeys` | `configure` | body `{"passkeys": [{id, label, created, last_used}]}` → `200 {"revocations": [ids]}` (the still-pending set after this report, so eve learns of new revocations on the same round-trip) |
   | `GET /api/eve/passkeys/revocations` | `read` | `200 {"revocations": [ids]}` |
 
+- **WebSocket (frontend socket, for eve)** — `GET /ws/files` carries
+  `eve_passkey_revocations` to a connection whose caller holds `read`
+  (decision 10; frame in [`routes.md`](routes.md)).
+
 Relay notifies the console on `Revoke` — *Eve passkey revoked: it stops
 working on its next use* — and again when a report confirms it is gone.
 
@@ -378,11 +398,15 @@ last credential (decision 13).
 
 ### `PasskeySync` (`passkey-sync.js`)
 
-The only eve code that knows the two routes above. It owns:
+The only eve code that knows the two routes above and the frame. It owns:
 
 - `report()` — PUT the current list; apply whatever revocations come back;
-  called at startup, after every `addCredential` / `removeCredential` /
-  login, and on the 30-second poll timer (`.unref()`'d).
+  called at startup and after every `addCredential` / `removeCredential` /
+  login. There is no timer.
+- `handleRevocations(ids)` — called for each `eve_passkey_revocations` frame
+  on `/ws/files`; applies the ids, then reports once, which is the
+  acknowledgement. A frame is the only time eve reports without a local
+  change.
 - `checkRevoked(credentialId)` — GET revocations; `true` if the id is
   pending. Used by the login route before accepting an assertion. On a relay
   error: log at error level and return `false` (decision 14).
@@ -405,14 +429,21 @@ verify as today and mint the session with its `credentialId`.
    that can sign in to eve, with when it last did.
 2. *Revoke* on a row, answer the presence prompt. The row says *revocation
    pending*.
-3. Within 30 seconds — or immediately, if that browser tries to sign in —
-   eve deletes the credential and signs that browser out. The row
+3. At once — eve receives the revocation as soon as it is approved, and
+   checks again if that browser tries to sign in — eve deletes the
+   credential and signs that browser out. The row
    disappears and the console gets a notification.
 
 ## Tests
 
 Relay has no unit tests. Proof for passkey report, revoke and unrevoke is the
-devbox journeys, and later the e2e feature tests.
+devbox journeys and the e2e feature tests. The push is proved by
+`TestEvePasskeyRevocationPushed` (a revoke reaches a reader's `/ws/files`
+within two seconds, and a new connection gets the pending set; reports and
+pushes leave one `control_decision` row per request),
+`TestEvePasskeyRevocationNeedsRead` (a caller without `read` gets no frame)
+and the contract scenario `TestEveRevocationsOnWSFiles`, which runs against
+fakerelay and relay alike.
 
 Eve: `SessionStore` parent tracking and `revokeByCredential`;
 `AuthService.removeCredential` including the last-credential refusal;

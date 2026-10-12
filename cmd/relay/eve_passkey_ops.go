@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
@@ -148,6 +149,51 @@ type EvePasskeyOps struct {
 	// report path, for a revocation eve confirms it applied). Nil is safe
 	// and raises nothing.
 	Notify func(title, body string)
+
+	// subMu serialises revocation callbacks and guards subs. It is held
+	// while a callback runs, which is why a callback must not block.
+	subMu sync.Mutex
+	subs  map[*func(ids []string)]struct{}
+}
+
+// SubscribeRevocations registers fn. fn is called at once with the pending
+// set when it is non-empty, then with the whole pending set after every
+// Revoke commit. Calls are serialised; fn must not block. Nil-safe.
+func (o *EvePasskeyOps) SubscribeRevocations(fn func(ids []string)) (cancel func()) {
+	if o == nil || fn == nil {
+		return func() {}
+	}
+	key := &fn
+	// The snapshot is taken under subMu so a Revoke that commits meanwhile
+	// publishes after it, never before.
+	o.subMu.Lock()
+	defer o.subMu.Unlock()
+	if o.subs == nil {
+		o.subs = make(map[*func(ids []string)]struct{})
+	}
+	o.subs[key] = struct{}{}
+	if o.Store != nil {
+		if ids := evePasskeyRevocationIDs(config.FreshSettings(o.Store)); len(ids) > 0 {
+			fn(ids)
+		}
+	}
+	return func() {
+		o.subMu.Lock()
+		defer o.subMu.Unlock()
+		delete(o.subs, key)
+	}
+}
+
+func (o *EvePasskeyOps) publishRevocations() {
+	o.subMu.Lock()
+	defer o.subMu.Unlock()
+	if len(o.subs) == 0 {
+		return
+	}
+	ids := evePasskeyRevocationIDs(config.FreshSettings(o.Store))
+	for key := range o.subs {
+		(*key)(slices.Clone(ids))
+	}
 }
 
 func (o *EvePasskeyOps) runQueued(ctx context.Context, fn func() error) error {
@@ -288,6 +334,7 @@ func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (_ config.Ev
 		}
 		return config.EvePasskeyRevocation{}, err
 	}
+	o.publishRevocations()
 	o.notifyConsole("Relay", "Eve passkey revoked: it stops working on its next use")
 	return rec, nil
 }

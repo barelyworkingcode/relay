@@ -478,7 +478,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		},
 		eveEnrolmentOps: eveEnrolmentOps,
 		evePasskeyOps:   evePasskeyOps,
-		fileOps:         &FileOps{Store: store, Audit: auditOps.Recorder()},
+		fileOps:         &FileOps{Store: store, Audit: auditOps.Recorder(), Revocations: evePasskeyOps},
 		enhanced:        enhanced,
 		sessionHost:     sessionHost,
 		issuance:        issuanceAuditorOrNil(auditOps.Recorder()),
