@@ -916,7 +916,7 @@ texts:
 | `live` | the provider process is running. A world session with `state: "dormant"` is `false` |
 | `lastMessageAt` | omitted when no messages |
 | `folder`, `host`, `headless`, `origin` | omitted when empty |
-| `attention` | only for a live session of kind `claude`, `pi` or `codex` that is not headless, or is headless with `agent`; a session a drop-in has taken stays attended while held (`running`) and after hand-back (`idle`), though `live` is false. Absent otherwise. `since` equals the `since` of the last `session_state` frame |
+| `attention` | only for a live session of kind `claude`, `pi` or `codex` that is not headless, or is headless with `agent`; a session a drop-in has taken stays attended while held (`running`) and after hand-back (`idle`), though `live` is false, and so does a session whose provider exited on an `exit` model (`errored`, with `exit`). Absent otherwise. `since` equals the `since` of the last `session_state` frame. `exit` (`{"code":N,"stderr":[…]}`, `stderr` omitted when empty) is present until the next state change or a resume |
 | `headless` | `true` for a headless session launched with `agent`. A headless launch without `agent` is not listed at all |
 
 `POST /api/sessions/{id}/resume` (class `execute`):
@@ -1131,6 +1131,25 @@ checked against relay at `59cdf9e` (G3).
 The event `chat.turn` is written once per turn, before `message_complete`
 leaves the fake. It carries `session_id` and the trace. It never carries the
 text.
+
+#### One exit turn, in wire order
+
+A turn on a model whose reply is `exit` (see World spec) plays relay's
+provider-exit order. A viewer of a tracked session sees:
+
+1. `user_message`
+2. `session_state` `running`
+3. `session_state` `errored` with `exit` `{"code":N,"stderr":[…]}` (`stderr`
+   omitted when empty)
+4. `process_exited` with the same `exit`
+
+There is no `llm_event`, no `turn_done` and no `message_complete`: a process
+exit is not a turn-end signal. `chat.turn` is written before frame 3, with
+status `error`, reason `internal` and error `process_exited`. The session is
+not live from frame 3 on, and the list row already shows `attention.exit`
+once frame 4 arrives. The next `send_message` gets the coded
+`resume_required` error. An untracked session sends 1 and 4 only. A resume or
+any later state change clears the exit (G3, `session-host.md`).
 
 #### Client to server and back, terminals
 
@@ -1484,7 +1503,7 @@ checked against relay at `59cdf9e` (G7).
 |---|---|---|---|
 | G1 | file route bodies and errors | the eve file-plane contract, equal to relay's file routes | yes, `59cdf9e` |
 | G2 | `/ws/files` frames | the same contract and relay's watch hub | yes, `59cdf9e` |
-| G3 | `/ws` session and terminal frames | `session-host.md` for `session_state` and `turn_done`; the session host handlers for the rest. relayLLM's event protocol is not available | yes, `59cdf9e` |
+| G3 | `/ws` session and terminal frames | `session-host.md` for `session_state` and `turn_done`; the session host handlers for the rest. relayLLM's event protocol is not available. The exit turn follows `session-host.md` (Provider exit: `session_state` `errored` with `exit`, `process_exited`, `attention.exit`) and `internal/sessions/attention/board.go`, where `ProcessExited` is not a turn-end signal | yes, `59cdf9e` |
 | G4 | session and terminal rows, models, templates, `/api/audit` | session host list handlers, template routes, audit routes | yes, `59cdf9e` |
 | G5 | `RegisterManifest` envelope | `service-manifest.md` for the flow; the bridge types for names and refusals | yes, `59cdf9e` |
 | G6 | presence refusal body | the project routes' gate error mapping | yes, `59cdf9e` |
@@ -1579,6 +1598,11 @@ Rules:
     be written the turn ends like `fail` with `apiErrorStatus: 500`. A client
     reads the plan from `DIR/home/.claude/plans`.
   - `fail`: `message_complete` with `isError: true`.
+  - `exit`: the provider process exits during the turn. `code` (1 to 255,
+    required) is the exit code. `stderr` (optional, at most 10 lines of at
+    most 1024 bytes) is its last stderr. `code` and `stderr` are refused on
+    every other kind. The turn plays the order in "One exit turn" under the
+    `/ws` frames.
 - `agent` is the host's initial `host_status`: `none`, `connecting`,
   `connected` or `unreachable`.
 - `mcps[].catalogue` keeps `inputSchema` for each tool. `GET

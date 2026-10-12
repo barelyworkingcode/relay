@@ -26,6 +26,7 @@ type session struct {
 	askedName, claudeID, tool                                             string
 	changed                                                               chan struct{}
 	state                                                                 string
+	exit                                                                  *fakes.ExitError
 	agent                                                                 fakes.Agent
 	cancel                                                                context.CancelFunc
 	viewers                                                               map[*conn]bool
@@ -135,8 +136,12 @@ func (s *svc) row(x *session) map[string]any {
 	if x.origin != "" {
 		v["origin"] = x.origin
 	}
-	if (x.live || x.dropped) && x.tracked() {
-		v["attention"] = map[string]any{"state": x.state, "since": stamp(x.since)}
+	if (x.live || x.dropped || x.exit != nil) && x.tracked() {
+		att := map[string]any{"state": x.state, "since": stamp(x.since)}
+		if x.exit != nil {
+			att["exit"] = exitView(x.exit)
+		}
+		v["attention"] = att
 	}
 	return v
 }
@@ -221,7 +226,7 @@ func (s *svc) resumeSession(w http.ResponseWriter, r *http.Request) {
 	x := s.sessions[id]
 	resumed := false
 	if x != nil && !x.live {
-		x.live, x.state, x.since, resumed = true, "idle", s.now(), true
+		x.live, x.state, x.since, x.exit, resumed = true, "idle", s.now(), nil, true
 	}
 	s.mu.Unlock()
 	if x == nil {
@@ -296,7 +301,7 @@ func (s *svc) setState(x *session, st string) {
 		return
 	}
 	s.mu.Lock()
-	x.state, x.since = st, s.now()
+	x.state, x.since, x.exit = st, s.now(), nil
 	since := x.since
 	s.mu.Unlock()
 	s.broadcast(map[string]any{"type": "session_state", "sessionId": x.id, "state": st, "since": stamp(since)})
@@ -342,10 +347,12 @@ func (s *svc) runTurn(x *session, text, origin, trace string) {
 	})
 	var terr *fakes.TurnError
 	failed := errors.As(err, &terr)
+	var xerr *fakes.ExitError
+	exited := errors.As(err, &xerr)
 
 	s.mu.Lock()
 	live := x.live
-	if !failed {
+	if !failed && !exited {
 		// A headless agent session's reply is not kept in its history.
 		if !(x.headless && x.agentOn) {
 			x.history = append(x.history, historyMsg("assistant", reply.String(), s.now(), ""))
@@ -365,6 +372,10 @@ func (s *svc) runTurn(x *session, text, origin, trace string) {
 	x.wake()
 	s.mu.Unlock()
 
+	if exited {
+		s.providerExited(ctx, x, xerr)
+		return
+	}
 	done := map[string]any{"type": "message_complete", "sessionId": x.id}
 	ev := s.Events.Begin(ctx, "chat.turn", events.Sessions()).Set("session_id", x.id)
 	switch {
@@ -381,6 +392,35 @@ func (s *svc) runTurn(x *session, text, origin, trace string) {
 		ev.End("ok", "", nil)
 	}
 	s.toViewers(x, done)
+}
+
+func exitView(e *fakes.ExitError) map[string]any {
+	v := map[string]any{"code": e.Code}
+	if len(e.Stderr) > 0 {
+		v["stderr"] = e.Stderr
+	}
+	return v
+}
+
+// providerExited plays relay's order for a provider that dies mid-turn. The
+// state and the exit are in place before process_exited leaves, so a list read
+// after that frame already sees them. No turn_done and no message_complete: a
+// process exit does not end a turn.
+func (s *svc) providerExited(ctx context.Context, x *session, e *fakes.ExitError) {
+	s.Events.Begin(ctx, "chat.turn", events.Sessions()).Set("session_id", x.id).End("error", "internal", errors.New("process_exited"))
+	s.mu.Lock()
+	x.live = false
+	tracked := x.tracked()
+	var since time.Time
+	if tracked {
+		x.state, x.since, x.exit = "errored", s.now(), e
+		since = x.since
+	}
+	s.mu.Unlock()
+	if tracked {
+		s.broadcast(map[string]any{"type": "session_state", "sessionId": x.id, "state": "errored", "since": stamp(since), "exit": exitView(e)})
+	}
+	s.toViewers(x, map[string]any{"type": "process_exited", "sessionId": x.id, "exit": exitView(e)})
 }
 
 func lastRunes(s string, n int) string {

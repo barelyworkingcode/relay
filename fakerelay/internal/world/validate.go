@@ -36,7 +36,7 @@ var (
 	idRe          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	serviceCaps   = map[string]bool{"frontend": true, "manifest": true, "models": true, "model_host": true}
 	agentStates   = map[string]bool{"none": true, "connecting": true, "connected": true, "unreachable": true}
-	replyKinds    = map[string]bool{"echo": true, "text": true, "permission": true, "plan": true, "fail": true}
+	replyKinds    = map[string]bool{"echo": true, "text": true, "permission": true, "plan": true, "fail": true, "exit": true}
 	faultModes    = map[string]bool{"down": true, "slow": true, "error": true}
 	sessionStates = map[string]bool{"idle": true, "dormant": true}
 )
@@ -160,7 +160,10 @@ func Validate(w *World) error {
 		}
 		models[m.Value] = true
 		if !replyKinds[m.Reply.Kind] {
-			return bad(p+".reply.kind", "must be echo, text, permission, plan or fail")
+			return bad(p+".reply.kind", "must be echo, text, permission, plan, fail or exit")
+		}
+		if err := validExit(p+".reply", m.Reply); err != nil {
+			return err
 		}
 	}
 	sessions := map[string]bool{}
@@ -271,6 +274,34 @@ func checkFiles(path string, files map[string]File) error {
 		}
 		if strings.HasSuffix(rel, "/") && f.Kind != FileDir {
 			return bad(p, "a key ending in / is a directory and must be null")
+		}
+	}
+	return nil
+}
+
+const (
+	maxExitStderrLines = 10
+	maxExitStderrBytes = 1024
+)
+
+// validExit checks the exit detail of a reply: required in range for kind
+// exit, refused on every other kind.
+func validExit(p string, r Reply) error {
+	if r.Kind != "exit" {
+		if r.Code != 0 || r.Stderr != nil {
+			return bad(p, "code and stderr belong to kind exit only")
+		}
+		return nil
+	}
+	if r.Code < 1 || r.Code > 255 {
+		return bad(p+".code", "must be 1 to 255")
+	}
+	if len(r.Stderr) > maxExitStderrLines {
+		return bad(p+".stderr", "at most %d lines", maxExitStderrLines)
+	}
+	for i, l := range r.Stderr {
+		if len(l) > maxExitStderrBytes {
+			return bad(fmt.Sprintf("%s.stderr[%d]", p, i), "at most %d bytes", maxExitStderrBytes)
 		}
 	}
 	return nil
