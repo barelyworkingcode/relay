@@ -252,6 +252,8 @@ type fileFrame struct {
 	Kind      string `json:"kind,omitempty"`
 	Code      string `json:"code,omitempty"`
 	Error     string `json:"error,omitempty"`
+
+	Revocations []string `json:"revocations,omitempty"`
 }
 
 // filesConn is one subscriber to the watch hub. ws is nil for a subscriber
@@ -419,7 +421,7 @@ func hostStatusFrame(s FileHostStatus) fileFrame {
 
 // serveFilesWS serves GET /ws/files: eve's one connection for watch events
 // and host status.
-func (o *FileOps) serveFilesWS(w http.ResponseWriter, r *http.Request) {
+func (o *FileOps) serveFilesWS(w http.ResponseWriter, r *http.Request, pushRevocations bool) {
 	ws, err := filesWSUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -433,6 +435,11 @@ func (o *FileOps) serveFilesWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	defer o.subscribeHostStatus(c)()
+	if pushRevocations && o.Revocations != nil {
+		defer o.Revocations.SubscribeRevocations(func(ids []string) {
+			c.send(fileFrame{Type: "eve_passkey_revocations", Revocations: ids})
+		})()
+	}
 
 	go c.writeLoop()
 

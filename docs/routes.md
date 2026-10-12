@@ -1120,7 +1120,9 @@ WebSocket upgrade. Class `execute`, socket only. Frames are in section 4.
 
 Eve (the web front end) uses these three doors to open a one-time window for a
 second browser and to mirror its passkey list. The design is in
-[`eve-passkey-enrolment.md`](eve-passkey-enrolment.md).
+[`eve-passkey-enrolment.md`](eve-passkey-enrolment.md). Pending revocations
+also reach eve as an `eve_passkey_revocations` frame on `GET /ws/files`
+([section 4](#wswsfiles-eve_passkey_revocations)).
 
 ### GET /api/eve/passkey-enrolment
 
@@ -1355,6 +1357,18 @@ Server to client. Sent for every known SSH host on connect, then on each change.
 
 - **Frame:** `{"type": "host_status", "host_id", "name", "status", "error"}`.
   `status` is `connecting`, `connected` or `unreachable`; `error` is set when unreachable.
+
+### ws:/ws/files eve_passkey_revocations
+
+Server to client. Eve's pending passkey revocations, the whole set each time.
+
+- **Frame:** `{"type": "eve_passkey_revocations", "revocations": ["<passkey id>", ...]}`.
+- **Sent:** on connect when the pending set is not empty, and after every
+  approved `eve.passkey.revoke`. Never after an unrevoke or a report.
+- **Who gets it:** a connection whose caller holds `read`. A caller without
+  `read` still connects and gets every other frame, but never this one.
+  Relay checks `read` without writing a `control_decision` row; the
+  connection's own row is the one the route already writes.
 
 ### ws:/ws/files watch_ok
 

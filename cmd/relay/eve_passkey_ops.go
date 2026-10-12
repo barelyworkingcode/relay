@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
@@ -148,6 +149,54 @@ type EvePasskeyOps struct {
 	// report path, for a revocation eve confirms it applied). Nil is safe
 	// and raises nothing.
 	Notify func(title, body string)
+
+	// subMu serialises revocation callbacks and guards subs. It is held
+	// while a callback runs, which is why a callback must not block.
+	subMu sync.Mutex
+	subs  map[*func(ids []string)]struct{}
+}
+
+// SubscribeRevocations registers fn. fn is called at once with the pending
+// set when it is non-empty, then with the whole pending set after every
+// Revoke commit. Calls are serialised; fn must not block. Nil-safe.
+func (o *EvePasskeyOps) SubscribeRevocations(fn func(ids []string)) (cancel func()) {
+	if o == nil || fn == nil {
+		return func() {}
+	}
+	key := &fn
+	// The snapshot is taken under subMu so a Revoke that commits meanwhile
+	// publishes after it, never before.
+	o.subMu.Lock()
+	defer o.subMu.Unlock()
+	if o.subs == nil {
+		o.subs = make(map[*func(ids []string)]struct{})
+	}
+	o.subs[key] = struct{}{}
+	if o.Store != nil {
+		if ids := evePasskeyRevocationIDs(config.FreshSettings(o.Store)); len(ids) > 0 {
+			fn(ids)
+		}
+	}
+	return func() {
+		o.subMu.Lock()
+		defer o.subMu.Unlock()
+		delete(o.subs, key)
+	}
+}
+
+func (o *EvePasskeyOps) publishRevocations() {
+	o.subMu.Lock()
+	defer o.subMu.Unlock()
+	if len(o.subs) == 0 {
+		return
+	}
+	ids := evePasskeyRevocationIDs(config.FreshSettings(o.Store))
+	if len(ids) == 0 {
+		return
+	}
+	for key := range o.subs {
+		(*key)(slices.Clone(ids))
+	}
 }
 
 func (o *EvePasskeyOps) runQueued(ctx context.Context, fn func() error) error {
@@ -224,8 +273,8 @@ func (o *EvePasskeyOps) List() []evePasskeyView {
 	return evePasskeyViews(config.DisplaySettings(o.Store))
 }
 
-// Revocations is the pending id set eve polls and, decisively, checks on
-// every login attempt (decision 10).
+// Revocations is the pending id set relay pushes to eve and eve also checks
+// at every login attempt (decision 10).
 func (o *EvePasskeyOps) Revocations() []string {
 	if o == nil || o.Store == nil {
 		return []string{}
@@ -235,8 +284,8 @@ func (o *EvePasskeyOps) Revocations() []string {
 
 // Revoke records a pending revocation. It never touches eve -- it cannot
 // (decision 9) -- so its whole effect is appending to
-// EvePasskeyRevocations; eve applies it on its own next poll or login
-// check.
+// EvePasskeyRevocations; relay pushes the pending set to eve, and eve also
+// checks it at every login.
 func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (_ config.EvePasskeyRevocation, err error) {
 	ev := logging.BeginEvent(ctx, "eve.passkey.revoke")
 	defer func() {
@@ -288,6 +337,7 @@ func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (_ config.Ev
 		}
 		return config.EvePasskeyRevocation{}, err
 	}
+	o.publishRevocations()
 	o.notifyConsole("Relay", "Eve passkey revoked: it stops working on its next use")
 	return rec, nil
 }

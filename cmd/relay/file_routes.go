@@ -408,6 +408,11 @@ func RegisterFileRoutes(rr *control.RouteRegistrar, o *FileOps) {
 	})
 
 	rr.Handle(control.ClassExecute, "GET /ws/files", func(w http.ResponseWriter, r *http.Request) {
-		o.serveFilesWS(w, r)
+		// Authorize rewrites *r, so it gets a clone; it records nothing (the
+		// registrar's wrapper does), so this adds no control_decision row.
+		// Revocation frames go only to a caller holding read; no authorizer
+		// sends none.
+		push := rr.Authz != nil && rr.Authz.Authorize(r.Clone(r.Context()), control.ClassRead) == nil
+		o.serveFilesWS(w, r, push)
 	})
 }

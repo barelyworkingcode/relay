@@ -29,6 +29,11 @@ type FileHostPool interface {
 	Statuses() []FileHostStatus
 }
 
+// RevocationFeed is the source of eve's pending passkey revocations.
+type RevocationFeed interface {
+	SubscribeRevocations(fn func(ids []string)) (cancel func())
+}
+
 // FileOps is the one core behind the file routes and /ws/files (docs/
 // project-files.md). It resolves the project from fresh settings on every
 // call, so a change to files_read_only or a project's path applies to the
@@ -47,6 +52,9 @@ type FileOps struct {
 	WatchRecheck time.Duration
 	// Clock times the recheck; nil means the wall clock.
 	Clock clock.Clock
+	// Revocations feeds eve_passkey_revocations frames on /ws/files; nil
+	// sends none.
+	Revocations RevocationFeed
 
 	hubOnce sync.Once
 	hub     *watchHub

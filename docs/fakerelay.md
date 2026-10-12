@@ -816,6 +816,7 @@ Server to client:
 | `watch_error` | `type`, `project_id`, `code`, `error` | the connection holds no watch for that project afterwards |
 | `fs_event` | `type`, `project_id`, `path`, `kind` | `path` is root-relative with no leading slash. `kind` is `change` or `rename` |
 | `host_status` | `type`, `host_id`, `name`, `status`, `error`? | `status` is `connecting`, `connected` or `unreachable`. `error` is omitted when empty |
+| `eve_passkey_revocations` | `type`, `revocations` | the whole pending eve passkey revocation set. Sent only to a connection whose caller holds `read`: after the upgrade when the set is not empty, and by `eve revoke` before the verb answers |
 
 `watch_error.code` is one of `ENOENT`, `UNSUPPORTED`, `HOST_UNREACHABLE`,
 `PROJECT_NOT_FOUND`, `NOT_AVAILABLE`, `PROJECT_CHANGED` or `ERROR`. Any other
@@ -1660,7 +1661,7 @@ are `--config-dir` and `--trace`.
 | `project update --id ID --files-read-only=true\|false` | |
 | `project create (--name N --path P \| --file F) [--json]` | the core of `POST /api/projects`, gated by `project.grant`. Text: `created project NAME (ID)`; `--json`: the 201 project view on one line. Both forms, or neither, exit 1 (`--file cannot be combined with --name or --path`, `pass --name and --path, or --file`) |
 | `project edit --id ID --file F [--json]` | the core of `PUT /api/projects/{id}`. Gated as `PUT` is: a widening body asks `project.grant`, a narrowing one does not. Text: `updated project NAME (ID)`. Missing `--id` or `--file` exits 1 (`--id is required`, `--file is required`) |
-| `eve enrol`, `eve list`, `eve revoke --id ID` | `eve enrol` is gated by `eve.enrolment.open`. `eve revoke` is gated by `eve.passkey.revoke` and refuses the last passkey (exit 1), as relay does |
+| `eve enrol`, `eve list`, `eve revoke --id ID` | `eve enrol` is gated by `eve.enrolment.open`. `eve revoke` is gated by `eve.passkey.revoke` and refuses the last passkey (exit 1), as relay does. A successful `eve revoke` puts an `eve_passkey_revocations` frame on the wire of every `/ws/files` reader before it answers |
 | `service list`, `service restart --id ID\|--name N`, `service stop --id ID\|--name N [--json]` | `stop` ends the service process and prints `stopped service "ID"` (`{"id"}` with `--json`) |
 | `mcp list` | `ENDPOINT` is a stdio MCP's command with its arguments, an HTTP MCP's URL, else `-` |
 | `ctl ...` | fake-only, see Control socket |

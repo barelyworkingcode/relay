@@ -97,6 +97,11 @@ projects with settings every two seconds and sends `PROJECT_CHANGED` when one
 is deleted or its path or host changes. A connection that cannot keep up is
 closed; eve reconnects and watches again.
 
+The same socket carries eve's pending passkey revocations as an
+`eve_passkey_revocations` frame, on connect when any are pending and after
+every approved revoke, to callers that hold `read`
+([`eve-passkey-enrolment.md`](eve-passkey-enrolment.md) decision 10).
+
 `relay files watch --project ID [--until TYPE] [--timeout DURATION]` joins the same
 hub. The `files.watch` admin op builds a subscriber with `newFilesConn` and no
 WebSocket, queues the same `host_status`, `watch_ok`, `watch_error` and `fs_event`

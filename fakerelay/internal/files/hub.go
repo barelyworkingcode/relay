@@ -54,6 +54,10 @@ type hub struct {
 	conns     map[*conn]bool
 	hosts     map[string]*HostStatus
 	connectMu sync.Mutex
+	// revMu orders every eve_passkey_revocations frame: a connect snapshot
+	// and a push each read the pending set and queue it under revMu, so a
+	// connection never sees an older set after a newer one.
+	revMu sync.Mutex
 }
 
 func newHub(s *service) *hub {
@@ -71,6 +75,7 @@ type conn struct {
 	closed  chan struct{}
 	once    sync.Once
 	watches map[string]bool // guarded by hub.mu
+	read    bool            // the caller holds read: it gets eve_passkey_revocations
 }
 
 func (c *conn) close() {
@@ -143,9 +148,11 @@ func (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	c := &conn{ws: ws, out: make(chan outFrame, queueDepth), closed: make(chan struct{}), watches: map[string]bool{}}
+	c := &conn{ws: ws, out: make(chan outFrame, queueDepth), closed: make(chan struct{}), watches: map[string]bool{},
+		read: slices.Contains(server.CallerFrom(r.Context()).Classes, server.ClassRead)}
 	go c.writeLoop()
 	h.sync()
+	h.revMu.Lock()
 	h.mu.Lock()
 	h.conns[c] = true
 	frames := h.heldFrames()
@@ -153,6 +160,10 @@ func (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {
 	for _, f := range frames {
 		c.send(f, false)
 	}
+	if ids := h.pendingRevocations(); c.read && len(ids) > 0 {
+		c.send(revocationFrame(ids), false)
+	}
+	h.revMu.Unlock()
 	defer func() {
 		h.mu.Lock()
 		delete(h.conns, c)
@@ -461,4 +472,51 @@ func (h *hub) ensure(t *target) *fileErr {
 		return nil
 	}
 	return errHostDown
+}
+
+func revocationFrame(ids []string) map[string]any {
+	return map[string]any{"type": "eve_passkey_revocations", "revocations": ids}
+}
+
+// pendingRevocations is the pending eve passkey revocation ids, stored as
+// strings or {"id"} objects.
+func (h *hub) pendingRevocations() []string {
+	out := []string{}
+	h.s.d.State.Read(func(m *state.Model) {
+		for _, raw := range m.Eve.Revocations {
+			var id string
+			var o struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(raw, &id) == nil {
+				out = append(out, id)
+			} else if json.Unmarshal(raw, &o) == nil && o.ID != "" {
+				out = append(out, o.ID)
+			}
+		}
+	})
+	return out
+}
+
+// PushRevocations sends the whole pending set to every /ws/files connection
+// whose caller holds read, and returns once each frame is on the wire.
+func (h *hub) PushRevocations() {
+	h.revMu.Lock()
+	defer h.revMu.Unlock()
+	ids := h.pendingRevocations()
+	if len(ids) == 0 {
+		return
+	}
+	frame := revocationFrame(ids)
+	h.mu.Lock()
+	conns := make([]*conn, 0, len(h.conns))
+	for c := range h.conns {
+		if c.read {
+			conns = append(conns, c)
+		}
+	}
+	h.mu.Unlock()
+	for _, c := range conns {
+		c.send(frame, true)
+	}
 }
