@@ -760,7 +760,7 @@ Both frames go out through `Hub.Broadcast`: every `/ws` connection gets them, wh
 
 Frames for one session arrive in order: a transition and its frames happen under that session's lock. Broadcasting excerpts gives no new reach, since `/ws` is open only to credentials that can already `join_session` any session.
 
-`exit` is on a `session_state` frame only when a provider process that relay did not kill exited non-zero and that exit moved the session into `errored`: `code` is the exit code and `stderr` is the provider's last stderr lines, oldest first (see [Provider stderr](#provider-stderr)). The `process_exited` frame to a joined client carries the same `exit`. Any later state change clears it.
+`exit` is on a `session_state` frame only when a provider process that relay did not kill exited non-zero and that exit moved the session into `errored`: `code` is the exit code and `stderr` is the provider's last stderr lines, oldest first (see [Provider stderr](#provider-stderr)). The `process_exited` frame to a joined client carries `exit` whenever relay did not kill the process and the code is non-zero, even when the exit moves the session to `ended`. Any later state change clears it from the state.
 
 A launch that fails sends `errored` for an id that never appears in the list. A client treats it as transient.
 

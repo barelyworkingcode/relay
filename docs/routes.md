@@ -1287,7 +1287,8 @@ of a tracked agent session's state.
   `idle`, `asking`, `errored`, `stalled` or `ended`. An `errored` frame from a
   provider exit adds `"exit": {"code": N, "stderr": ["..."]}`: the exit code and
   the last stderr lines (redacted, at most 10 lines of 1024 bytes). The joined
-  `process_exited` frame carries the same `exit`.
+  `process_exited` frame carries `exit` for every non-zero exit relay did not
+  cause, including one that moves the session to `ended`.
 - **Event:** `session.state` (background, written by relay-sessions).
 
 ### ws:/ws turn_done
