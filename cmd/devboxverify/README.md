@@ -800,6 +800,25 @@ every path past the first read; a restore that does not read back is FAIL.
   Grant project, with no run credential, under the LaunchAgent recipe, and
   without the Accessibility grant (P7). Posting keys needs the same grant.
 
+**audit-view-control-filter** (screen). The Settings Tool Calls tab hides
+allowed `control_decision` rows until `Show allowed control checks` is
+ticked, and always shows refused ones. The journey makes one allowed row
+(`GET /api/chief-of-staff/config`) and one denied row (the run credential
+lacks the execute class, so `POST /api/projects/p1/files/list` answers 403),
+and confirms both in `relay audit --event control_decision --json`. It opens
+Settings > Tool Calls and sets the `Any outcome` pop-up to `ok`: the page shows at
+least one `ok` outcome pill (an empty or unreadable table fails the step) and
+no `control_decision` text. It ticks the box and reads it back as ticked: the text appears. It unticks the
+box and reads its numeric `AXValue` back. Both reads poll up to the UI wait; the
+step fails if the box never reads the expected state or cannot be read. It then sets the pop-up to `denied`: the text is there. The pop-up goes back
+to `Any outcome`, the box is left unticked and the window is closed if the
+journey opened it.
+- Lives in: `web/src/app.js` (`auditMatches`, `toggleAuditShowAllowedControl`).
+- Reached by: Accessibility from the harness (the checkbox is an
+  `AXCheckBox` titled by its label; the pop-up is chosen by type-ahead as in
+  cos-settings); the run credential for the routes.
+- Traps: BLOCKED without the Accessibility grant or a run credential.
+
 **slow-route-keepalive** (screen). A relay route that runs past the 10 s
 read deadline must not poison the connection it arrived on. The journey adds
 host `blackhole-<nonce>` (target `192.0.2.1`, which drops packets) and

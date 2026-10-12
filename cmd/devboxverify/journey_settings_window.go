@@ -21,7 +21,10 @@ const (
 type axNode struct {
 	Role, Subrole, Label, Help string
 	// Value is AXValue alone; Label prefers AXTitle.
-	Value    string
+	Value string
+	// Checked is the numeric AXValue of a check box or switch; nil when the
+	// node is neither or the value cannot be read.
+	Checked  *bool
 	Children []*axNode
 	press    func() error
 	focus    func() error
@@ -261,6 +264,8 @@ type liveSettingsSteps struct {
 	token  string
 	svcID  string
 	opened bool
+	// visibleRows makes settingsWindow snapshot tables by their visible rows.
+	visibleRows bool
 }
 
 func (s *liveSettingsSteps) displayName() string { return crashNamePrefix + s.e.Nonce }
@@ -288,7 +293,11 @@ func (s *liveSettingsSteps) StartFixture(ctx context.Context) (svcView, result, 
 }
 
 func (s *liveSettingsSteps) settingsWindow() (*axNode, func(), error) {
-	wins, release, err := axWindows(s.e.RelayPID)
+	walk := axWindows
+	if s.visibleRows {
+		walk = axWindowsVisibleRows
+	}
+	wins, release, err := walk(s.e.RelayPID)
 	if err != nil {
 		return nil, release, err
 	}

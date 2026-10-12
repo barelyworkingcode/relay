@@ -232,6 +232,7 @@ Areas: audit.
 | `G4.09` | Chief of Staff start rows | A scoped start writes a `session_launch` row with `origin`, `prompt_bytes` and, for a hosted project, `host_id`; a start that cannot be recorded is refused. | n/a | `relay audit --event session_launch` | `http:POST /api/chief-of-staff/sessions` | none | `audit:session_launch=ok` `event:chief_of_staff.start=denied/audit_unavailable` | `e2e:TestChiefOfStaffStartRows` `journey:cos-start` `journey:cos-start-outside-root` `journey:cos-start-host` |
 | `G4.10` | Export the log | An export writes the filtered rows to a file named `toolcalls-export-<timestamp>.jsonl` beside the audit log and answers its path. | Settings > Tool Calls > Export | `relay audit --json` | `http:POST /api/audit/export` `ipc:export_audit` | none | `event:audit.export=ok#count` `out:http:POST /api/audit/export#.path` | `e2e:TestAuditExport` |
 | `G4.11` | Reveal the log file | The reveal returns the path of the audit file. | Settings > Tool Calls > Reveal Log | `relay audit --path` | `http:GET /api/audit/log` `ipc:reveal_audit_log` | none | `event:audit.path.get=ok` | `e2e:TestAuditRevealPath` |
+| `G4.12` | Allowed control checks hidden in Settings | The Settings Tool Calls tab hides allowed `control_decision` rows unless a checkbox is ticked; denied and error rows always show. | Settings > Tool Calls > Show allowed control checks | exception: a filter of the Settings view only; `relay audit --event control_decision` returns every row | `ipc:query_audit` | none | `audit:control_decision=ok` `audit:control_decision=denied` | `journey:audit-view-control-filter` |
 
 ### G5 · Keep background services running, including scheduled work — must-have
 Intent: run relayLLM, eve, the scheduler and other services under relay, started at login and restarted on a crash.
@@ -545,7 +546,7 @@ areas:
     journeys: [acme-tools-through-bridge, tool-call-audited, gate-mcp-register-neg, gate-mcp-oauth-start-neg, gate-mcp-oauth-start-pos, gate-mcp-register-pos, disabled-tool-refused, verify-fixtures-removed]
   audit:
     code: [cmd/relay/audit_*.go, cmd/relay/ipc_audit.go, internal/audit/**, internal/relayfs/**]
-    journeys: [blank-model-refused, oversized-launch-audit-capped, tool-call-audited, gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, context-number-resave, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos, chief-of-staff-send, cos-start, cos-start-outside-root, cos-start-host]
+    journeys: [blank-model-refused, oversized-launch-audit-capped, tool-call-audited, gate-credential-mint-pos, gate-mcp-register-pos, gate-project-grant-pos, gate-service-register-pos, context-number-resave, session-chat-lifecycle, terminal-lifecycle, model-list-and-completion, session-chat-resume, chat-tool-search-tokens, gate-project-rotate-token-pos, gate-eve-enrolment-open-pos, gate-credential-revoke-pos, chief-of-staff-send, cos-start, cos-start-outside-root, cos-start-host, audit-view-control-filter]
   services:
     code: [cmd/relay/service_*.go, cmd/relay/cli_service.go, cmd/relay/enhanced_services.go, cmd/relay/ipc_service*.go, internal/service/**, cmd/relay/helpers.go]
     journeys: [gate-service-register-neg, gate-service-register-pos, service-start-stop, service-restart-on-crash, settings-window-services, session-host-restart, verify-fixtures-removed]
@@ -588,7 +589,7 @@ areas:
     journeys: [settings-window-services]
   settings-ui:
     code: [web/**, cmd/relay/settings_html.go, cmd/relay/ipc_handlers.go, cmd/relay/ipc_overview.go, cmd/relay/overview_seed.go, cmd/relay/status_verbs.go, internal/webassets/**, cmd/relay/helpers.go]
-    journeys: [settings-window-services, cos-settings]
+    journeys: [settings-window-services, cos-settings, audit-view-control-filter]
   every-test:
     code: [e2e/harness/**, e2e/fakes/**, cmd/relay/admin_ops.go, cmd/relay/admin_read_ops.go, e2e/go.mod, e2e/go.sum, go.mod, go.sum]
     journeys: []
