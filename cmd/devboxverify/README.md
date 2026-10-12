@@ -806,9 +806,10 @@ ticked, and always shows refused ones. The journey makes one allowed row
 (`GET /api/chief-of-staff/config`) and one denied row (the run credential
 lacks the execute class, so `POST /api/projects/p1/files/list` answers 403),
 and confirms both in `relay audit --event control_decision --json`. It opens
-Settings > Tool Calls and sets the `Any outcome` pop-up to `ok`: the page has
+Settings > Tool Calls and sets the `Any outcome` pop-up to `ok`: the page shows at
+least one `ok` outcome pill (an empty or unreadable table fails the step) and
 no `control_decision` text. It ticks the box: the text appears. It unticks the
-box and sets the pop-up to `denied`: the text is there. The pop-up goes back
+box, reads it back as unticked, and sets the pop-up to `denied`: the text is there. The pop-up goes back
 to `Any outcome`, the box is left unticked and the window is closed if the
 journey opened it.
 - Lives in: `web/src/app.js` (`auditMatches`, `toggleAuditShowAllowedControl`).

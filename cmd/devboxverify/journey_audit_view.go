@@ -19,6 +19,7 @@ const (
 	auditToggleLabel  = "Show allowed control checks"
 	auditControlText  = audit.AuditEventControlDecision
 	auditLoadingText  = "Loading…"
+	auditOKPill       = "ok"
 	// The run credential holds read, configure, grant and proxy but not
 	// execute, so relay refuses a file-plane route before its handler runs.
 	auditDeniedPath = "/api/projects/p1/files/list"
@@ -42,7 +43,21 @@ type auditViewRun struct {
 	RestoreErr error
 }
 
+// classifyAuditView reports the step result first; a failed restore is
+// appended to a failing detail and fails a passing run on its own.
 func classifyAuditView(r auditViewRun) result {
+	res := classifyAuditSteps(r)
+	if r.RestoreErr == nil {
+		return res
+	}
+	if res.State == statePass {
+		return result{res.ID, stateFail, "restore: " + r.RestoreErr.Error()}
+	}
+	res.Detail += "; restore: " + r.RestoreErr.Error()
+	return res
+}
+
+func classifyAuditSteps(r auditViewRun) result {
 	const id = auditViewID
 	fail := func(d string) result { return result{id, stateFail, d} }
 	switch {
@@ -52,8 +67,6 @@ func classifyAuditView(r auditViewRun) result {
 		return r.Setup
 	case errors.Is(r.StepErr, errAXDriver):
 		return blocked(id, r.StepErr.Error())
-	case r.RestoreErr != nil:
-		return fail("restore: " + r.RestoreErr.Error())
 	case r.AllowedStatus != http.StatusOK:
 		return blocked(id, fmt.Sprintf("fixture: GET %s answered %d", cosConfigPath, r.AllowedStatus))
 	case r.DeniedStatus != http.StatusForbidden:
@@ -67,7 +80,7 @@ func classifyAuditView(r auditViewRun) result {
 	case r.StepErr != nil:
 		return fail(r.StepErr.Error())
 	case !r.HiddenOK:
-		return fail(`outcome "ok" with the box unticked still shows control_decision rows`)
+		return fail(`outcome ok shows no rows, or the box unticked still shows control_decision rows; the table is not readable or not filtered`)
 	case !r.ShownOn:
 		return fail(`ticking "` + auditToggleLabel + `" does not show control_decision rows`)
 	case !r.ShownDeny:
@@ -132,6 +145,9 @@ func (s *liveAuditViewSteps) run(ctx context.Context) (r auditViewRun) {
 		return r
 	}
 	if r.StepErr = s.pressToggle(ctx); r.StepErr != nil {
+		return r
+	}
+	if r.StepErr = s.requireUnticked(ctx); r.StepErr != nil {
 		return r
 	}
 	if r.StepErr = s.choose(ctx, auditOutcomeLabel, "denied"); r.StepErr != nil {
@@ -200,6 +216,21 @@ func (s *liveAuditViewSteps) pressToggle(ctx context.Context) error {
 	return n.press()
 }
 
+func (s *liveAuditViewSteps) requireUnticked(ctx context.Context) error {
+	n, release, err := s.toggleNode(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if n == nil {
+		return fmt.Errorf("no %q checkbox", auditToggleLabel)
+	}
+	if n.Value == "1" {
+		return fmt.Errorf("%q is still ticked after the second press", auditToggleLabel)
+	}
+	return nil
+}
+
 // restore puts the outcome back to its empty option and unticks the box.
 func (s *liveAuditViewSteps) restore(ctx context.Context) error {
 	if win, err := s.findWindow(ctx, 2*time.Second); err != nil || win == nil {
@@ -224,9 +255,12 @@ func (s *liveAuditViewSteps) controlRowShown(ctx context.Context) (bool, error) 
 	return p.hasText(auditControlText), err
 }
 
-// controlRowHidden waits for the list to finish loading, then reports whether
-// no control_decision row is on it.
+// controlRowHidden waits for the list to finish loading and for at least one
+// visible outcome pill ("ok" static text), then reports whether no
+// control_decision row is on it. An empty or unreadable table never counts as
+// hidden: the outcome filter is "ok", so a readable table shows an ok pill.
 func (s *liveAuditViewSteps) controlRowHidden(ctx context.Context) (bool, error) {
-	p, err := s.Page(ctx, cosUIWait, func(p cosPage) bool { return !p.hasText(auditLoadingText) })
-	return err == nil && !p.hasText(auditLoadingText) && !p.hasText(auditControlText), err
+	ready := func(p cosPage) bool { return !p.hasText(auditLoadingText) && p.hasText(auditOKPill) }
+	p, err := s.Page(ctx, cosUIWait, ready)
+	return err == nil && ready(p) && !p.hasText(auditControlText), err
 }

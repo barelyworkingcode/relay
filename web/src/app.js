@@ -7314,7 +7314,7 @@ function renderAudit() {
 function renderAuditRow(ev) {
     const a = ev.actor || {};
     const expanded = !!state.auditExpanded[ev.id];
-    let html = '<tr class="row" tabindex="0" role="button" aria-expanded="' + expanded + '" ' + bind(toggleAuditRow, ev.id) + '>';
+    let html = '<tr class="row" tabindex="0" aria-expanded="' + expanded + '" ' + bind(toggleAuditRow, ev.id) + '>';
     html += '<td class="audit-time">' + esc(auditFmtTime(ev.ts)) + '</td>';
     html += '<td class="audit-outcome-cell"><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + '</span>';
     // A scope violation is a distinct finding from an ordinary tool_error — a
