@@ -91,7 +91,11 @@ func classifyAuditSteps(r auditViewRun) result {
 }
 
 func runAuditViewFilter(ctx context.Context, e env) result {
-	s := &liveAuditViewSteps{liveCosSteps{liveSettingsSteps: liveSettingsSteps{e: e}}}
+	// The Tool Calls table lists up to 500 rows, newest first, and a full walk
+	// of it exceeds the snapshot node cap. The rows this journey wrote are the
+	// newest, so the rows on screen are the ones that matter; every page read,
+	// the toggle lookup and the restore walk visible rows only.
+	s := &liveAuditViewSteps{liveCosSteps{liveSettingsSteps: liveSettingsSteps{e: e, visibleRows: true}}}
 	return classifyAuditView(s.run(ctx))
 }
 

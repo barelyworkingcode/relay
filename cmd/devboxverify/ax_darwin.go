@@ -132,6 +132,9 @@ func axErr(op string, code C.int) error {
 type axSnapshot struct {
 	refs  []C.axref
 	count int
+	// visibleRows makes the walk descend an AXTable's AXVisibleRows instead of
+	// its AXChildren, so a long table costs only the rows on screen.
+	visibleRows bool
 }
 
 func (s *axSnapshot) release() {
@@ -213,7 +216,11 @@ func (s *axSnapshot) node(el C.axref) (*axNode, error) {
 		}
 		return nil
 	}
-	kids, err := s.elements(el, "AXChildren")
+	childAttr := "AXChildren"
+	if s.visibleRows && n.Role == "AXTable" {
+		childAttr = "AXVisibleRows"
+	}
+	kids, err := s.elements(el, childAttr)
 	if err != nil {
 		return nil, err
 	}
@@ -230,13 +237,13 @@ func (s *axSnapshot) node(el C.axref) (*axNode, error) {
 
 // axRoots snapshots the elements an app attribute names. An app that does
 // not answer is a driver error, not an empty tree.
-func axRoots(pid int, attr string) ([]*axNode, func(), error) {
+func axRoots(pid int, attr string, visibleRows bool) ([]*axNode, func(), error) {
 	app := C.ax_app(C.int(pid))
 	if app == nil {
 		return nil, func() {}, fmt.Errorf("%w: no element for pid %d", errAXDriver, pid)
 	}
 	defer C.ax_release(app)
-	s := &axSnapshot{}
+	s := &axSnapshot{visibleRows: visibleRows}
 	roots, err := s.elements(app, attr)
 	if err != nil {
 		s.release()
@@ -256,7 +263,7 @@ func axRoots(pid int, attr string) ([]*axNode, func(), error) {
 }
 
 func axExtras(pid int) (*axNode, func(), error) {
-	roots, release, err := axRoots(pid, "AXExtrasMenuBar")
+	roots, release, err := axRoots(pid, "AXExtrasMenuBar", false)
 	if err != nil {
 		return nil, release, err
 	}
@@ -267,7 +274,13 @@ func axExtras(pid int) (*axNode, func(), error) {
 	return roots[0], release, nil
 }
 
-func axWindows(pid int) ([]*axNode, func(), error) { return axRoots(pid, "AXWindows") }
+func axWindows(pid int) ([]*axNode, func(), error) { return axRoots(pid, "AXWindows", false) }
+
+// axWindowsVisibleRows is axWindows with each AXTable walked through its
+// AXVisibleRows. The node cap still applies.
+func axWindowsVisibleRows(pid int) ([]*axNode, func(), error) {
+	return axRoots(pid, "AXWindows", true)
+}
 
 // axFocus sets AXFocused on an element, so that key events posted to its
 // process reach it even while the app is in the background.

@@ -261,6 +261,8 @@ type liveSettingsSteps struct {
 	token  string
 	svcID  string
 	opened bool
+	// visibleRows makes settingsWindow snapshot tables by their visible rows.
+	visibleRows bool
 }
 
 func (s *liveSettingsSteps) displayName() string { return crashNamePrefix + s.e.Nonce }
@@ -288,7 +290,11 @@ func (s *liveSettingsSteps) StartFixture(ctx context.Context) (svcView, result, 
 }
 
 func (s *liveSettingsSteps) settingsWindow() (*axNode, func(), error) {
-	wins, release, err := axWindows(s.e.RelayPID)
+	walk := axWindows
+	if s.visibleRows {
+		walk = axWindowsVisibleRows
+	}
+	wins, release, err := walk(s.e.RelayPID)
 	if err != nil {
 		return nil, release, err
 	}
