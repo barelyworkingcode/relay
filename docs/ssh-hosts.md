@@ -790,3 +790,28 @@ The end-to-end acceptance for this feature is the devbox registered as a
 host *of itself* (`admin@localhost`): a host project on it must show its
 files, open a terminal, run a chat session that edits a file, answer a
 permission prompt, and survive a relayLLM restart with its history intact.
+
+## Outside read-only viewers
+
+`hosts[].show_all_tmux_sessions` defaults off and is editable through the
+existing host PUT patch or configuration file. The public host DTO echoes
+it when true; absent means false. Each `POST /api/tmux/views` reads fresh host settings, checks
+that opt-in, verifies the selected binary's tmux version (3.2 or later,
+which has attach `-f`), then enumerates the actual server. Console viewing uses
+the local tmux binary without a host opt-in. psmux is unsupported here.
+
+The complete name must match exactly; control characters, colon and pipe
+are refused. The launch targets the enumerated session ID and uses the
+server-derived pane working directory. It executes only
+`attach -f read-only,ignore-size`, with no new-session or writable retry.
+
+The viewer is an ordinary relay-sessions PTY with `readOnly` and `outside`
+metadata. Session methods refuse input and resize for every caller. Closing
+it, its last browser disconnect, SSH loss and server shutdown collect only
+the attach/SSH client. They never run kill-session or terminate the outside
+pane's process. Outside sessions acquire no managed-session authority;
+persistent-session kill still requires a relay-owned project name.
+
+The viewer's size follows the window: it starts at the window's size and
+rereads it every 3 s over the same ssh. It never sets a tmux option or
+resizes the window; browser dimensions size nothing.

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
@@ -39,6 +40,8 @@ const (
 // Session is one PTY-backed terminal, spawned locally or (Host != nil) over
 // ssh, through an internal/sessions/shim child.
 type Session struct {
+	ReadOnly   bool
+	Outside    bool
 	ID         string
 	TemplateID string
 	Name       string
@@ -100,6 +103,9 @@ type launchOutcome struct {
 // ErrSessionExists is returned by Manager.Create for a duplicate session id.
 var ErrSessionExists = errors.New("terminal: session already exists")
 
+// ErrReadOnly refuses input and resize on an outside viewer.
+var ErrReadOnly = errors.New("terminal: read-only viewer")
+
 // ErrIdentityRefused is returned when the shim's Hello was refused (C5's
 // identity_refused, 502).
 var ErrIdentityRefused = errors.New("terminal: identity refused")
@@ -134,10 +140,14 @@ func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode i
 	}
 
 	targetArgv := spec.Argv
+	if spec.View != nil {
+		// validate has already checked the target.
+		targetArgv, _ = spec.View.attachArgv()
+	}
 	if spec.Host != nil {
 		// No key: a host session's env is written into the remote command line
 		// (expandModelKey).
-		name, args, err := buildHostTargetArgv(spec.Host, spec.Directory, spec.Argv, expandModelKey(spec.Env, ""))
+		name, args, err := buildHostTargetArgv(spec.Host, spec.Directory, targetArgv, expandModelKey(spec.Env, ""))
 		if err != nil {
 			return nil, err
 		}
@@ -207,6 +217,8 @@ func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode i
 
 	s := &Session{
 		ID:          spec.SessionID,
+		ReadOnly:    spec.ReadOnly,
+		Outside:     spec.Outside,
 		TemplateID:  spec.TemplateID,
 		Name:        spec.Name,
 		Directory:   spec.Directory,
@@ -239,6 +251,13 @@ func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode i
 
 	go s.readLoop()
 	go s.waitForExit()
+	if spec.View != nil {
+		// A viewer nobody joins would hold its client on the owner's session
+		// forever; the first join cancels this, the last leave closes it.
+		s.idleTimeout = viewJoinWait
+		s.StartIdleTimer()
+		go s.followViewSize(*spec.View, spec.Host)
+	}
 
 	return s, nil
 }
@@ -494,6 +513,9 @@ func (s *Session) waitForExit() {
 // reach in and close the fd — the only thing that unblocks it — without
 // waiting on the same mutex this call would otherwise be holding.
 func (s *Session) Write(data []byte) error {
+	if s.ReadOnly {
+		return ErrReadOnly
+	}
 	if !s.alive.Load() {
 		return fmt.Errorf("terminal not running")
 	}
@@ -505,8 +527,16 @@ func (s *Session) Write(data []byte) error {
 	return err
 }
 
-// Resize changes the PTY window size.
+// Resize changes the PTY window size. A read-only viewer's size follows the
+// tmux window it shows, never its viewers.
 func (s *Session) Resize(cols, rows uint16) error {
+	if s.ReadOnly {
+		return ErrReadOnly
+	}
+	return s.setSize(cols, rows)
+}
+
+func (s *Session) setSize(cols, rows uint16) error {
 	f := s.ptmx.Load()
 	if f == nil {
 		return fmt.Errorf("terminal not running")
@@ -515,7 +545,24 @@ func (s *Session) Resize(cols, rows uint16) error {
 	s.cols = cols
 	s.rows = rows
 	s.mu.Unlock()
-	return pty.Setsize(f, &pty.Winsize{Rows: rows, Cols: cols})
+	return setWinsize(f, cols, rows)
+}
+
+// setWinsize goes through SyscallConn rather than pty.Setsize: Setsize calls
+// f.Fd(), which switches the fd to blocking mode underneath readLoop's
+// concurrent Read and races it.
+func setWinsize(f *os.File, cols, rows uint16) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var ioctlErr error
+	if err := rc.Control(func(fd uintptr) {
+		ioctlErr = unix.IoctlSetWinsize(int(fd), unix.TIOCSWINSZ, &unix.Winsize{Row: rows, Col: cols})
+	}); err != nil {
+		return err
+	}
+	return ioctlErr
 }
 
 // Size returns the current PTY dimensions.
@@ -601,6 +648,8 @@ func (s *Session) ScrollbackBytes() []byte {
 // shape (types.go's CreatedBody doc comment).
 func (s *Session) CreatedBody() CreatedBody {
 	return CreatedBody{
+		ReadOnly:   s.ReadOnly,
+		Outside:    s.Outside,
 		TerminalID: s.ID,
 		TemplateID: s.TemplateID,
 		Name:       s.Name,

@@ -454,7 +454,8 @@ type Host struct {
 	TerminalTemplates []TerminalTemplate `json:"terminal_templates,omitempty"`
 	// TmuxPath is the operator's override for the host's tmux/psmux; empty
 	// defers to the probe's (EffectiveTmuxPath).
-	TmuxPath string `json:"tmux_path,omitempty"`
+	TmuxPath            string `json:"tmux_path,omitempty"`
+	ShowAllTmuxSessions bool   `json:"show_all_tmux_sessions,omitempty"`
 }
 
 // EffectiveTmuxPath is the tmux a persist template on h runs: the operator's

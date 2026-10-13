@@ -27,6 +27,9 @@ type SandboxSpec struct {
 // caller (relay resolves argv from the template before ever reaching this
 // package — C5's own "argv: pty only; relay resolves it from the template").
 type CreateSpec struct {
+	ReadOnly    bool
+	Outside     bool
+	View        *ViewTarget // set only with ReadOnly and Outside; argv comes from it
 	SessionID   string
 	TemplateID  string // echoed into CreatedBody only; never used to resolve argv here
 	Name        string
@@ -86,12 +89,20 @@ func expandModelKey(env map[string]string, key string) map[string]string {
 }
 
 func (s CreateSpec) validate() error {
+	if s.Outside || s.ReadOnly || s.View != nil {
+		if !s.Outside || !s.ReadOnly || s.View == nil || len(s.Argv) > 0 || s.Identity != nil || s.Sandbox != nil || s.ModelKey != "" || s.TemplateID != "" {
+			return errors.New("terminal: an outside viewer is a read-only tmux attach with no argv or launch privileges")
+		}
+		if _, err := s.View.attachArgv(); err != nil {
+			return err
+		}
+	}
 	if s.SessionID == "" {
 		return errors.New("terminal: session id is required")
 	}
 	// A host session may omit argv: buildHostTargetArgv then runs the host's
 	// own login shell. A console session has no such fallback.
-	if len(s.Argv) == 0 && s.Host == nil {
+	if len(s.Argv) == 0 && s.Host == nil && s.View == nil {
 		return errors.New("terminal: argv is required")
 	}
 	if s.Host != nil && s.Identity != nil {
@@ -109,6 +120,8 @@ func (s CreateSpec) validate() error {
 // handleTerminalCreate) — verified against relayLLM's actual current
 // field, `terminalId`, not eve's C11 prose ("body.id"), which is stale.
 type CreatedBody struct {
+	ReadOnly   bool              `json:"readOnly,omitempty"`
+	Outside    bool              `json:"outside,omitempty"`
 	TerminalID string            `json:"terminalId"`
 	TemplateID string            `json:"templateId"`
 	Name       string            `json:"name"`
