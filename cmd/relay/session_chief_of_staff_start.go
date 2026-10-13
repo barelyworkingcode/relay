@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -35,6 +36,7 @@ type chiefOfStaffStartBody struct {
 	Folder    string `json:"folder"`
 	Prompt    string `json:"prompt"`
 	Model     string `json:"model"`
+	Entry     string `json:"entry"`
 	Mode      string `json:"mode"`
 }
 
@@ -46,7 +48,125 @@ type chiefOfStaffStartResult struct {
 	Mode      string `json:"mode"`
 	Kind      string `json:"kind"`
 	Origin    string `json:"origin"`
+	Entry     string `json:"entry,omitempty"`
+	EntryType string `json:"entryType,omitempty"`
 	At        string `json:"at"`
+}
+
+const (
+	chiefOfStaffEntryAgent = "agent"
+	chiefOfStaffEntryChat  = "chat"
+)
+
+// chiefOfStaffTarget is what an entry name resolved to: exactly one of Agent
+// and Chat is meaningful, as Type says.
+type chiefOfStaffTarget struct {
+	Type  string
+	Agent config.AgentEntry
+	Chat  config.ChatTemplate
+}
+
+// chiefOfStaffRefusalBody is the coded error family plus the names a caller
+// could have used instead. Choices is omitted when there are none.
+type chiefOfStaffRefusalBody struct {
+	Error   string   `json:"error"`
+	Message string   `json:"message"`
+	Choices []string `json:"choices,omitempty"`
+}
+
+func writeChiefOfStaffRefusal(w http.ResponseWriter, r *LaunchRefusal) {
+	writeJSON(w, r.Status, chiefOfStaffRefusalBody{Error: r.Code, Message: r.Message, Choices: r.Choices})
+}
+
+// chiefOfStaffEntryChoices lists the names a start could use: agents, then
+// chats, in stored order, each name once.
+func chiefOfStaffEntryChoices(proj *config.Project) []string {
+	var names []string
+	add := func(name string) {
+		if len(names) >= maxRefusalChoices {
+			return
+		}
+		for _, n := range names {
+			if strings.EqualFold(n, name) {
+				return
+			}
+		}
+		names = append(names, name)
+	}
+	for _, a := range proj.Agents {
+		add(a.Name)
+	}
+	for _, t := range proj.ChatTemplates {
+		add(t.Name)
+	}
+	return names
+}
+
+// resolveChiefOfStaffEntry finds name among the project's agents and chat
+// templates, case-insensitively. Names are unique across both, so a second
+// match (hand-edited settings) is refused rather than guessed at.
+func resolveChiefOfStaffEntry(proj *config.Project, name string, fields sessionLaunchAuditFields) (chiefOfStaffTarget, *LaunchRefusal) {
+	shown := capAuditText(name, maxRefusalNameRunes)
+	var agents []config.AgentEntry
+	var chats []config.ChatTemplate
+	for _, a := range proj.Agents {
+		if strings.EqualFold(a.Name, name) {
+			agents = append(agents, a)
+		}
+	}
+	for _, t := range proj.ChatTemplates {
+		if strings.EqualFold(t.Name, name) {
+			chats = append(chats, t)
+		}
+	}
+	switch {
+	case len(agents)+len(chats) == 0:
+		choices := chiefOfStaffEntryChoices(proj)
+		message := fmt.Sprintf("No agent or chat %q in %s; %s has none", shown, proj.Name, proj.Name)
+		if len(choices) > 0 {
+			message = fmt.Sprintf("No agent or chat %q in %s. Choices: %s", shown, proj.Name, strings.Join(choices, ", "))
+		}
+		return chiefOfStaffTarget{}, deniedRefusal(http.StatusNotFound, "entry_not_found", message, choices, fields)
+	case len(agents) > 0 && len(chats) > 0:
+		return chiefOfStaffTarget{}, deniedRefusal(http.StatusConflict, "entry_ambiguous",
+			fmt.Sprintf("An agent and a chat in %s are both named %q; rename the chat in eve", proj.Name, shown), nil, fields)
+	case len(agents)+len(chats) > 1:
+		kind, first := "chats", ""
+		if len(agents) > 0 {
+			kind, first = "agents", agents[0].Name
+		} else {
+			first = chats[0].Name
+		}
+		return chiefOfStaffTarget{}, deniedRefusal(http.StatusConflict, "entry_ambiguous",
+			fmt.Sprintf("Two %s in %s are named %q; rename one in eve", kind, proj.Name, shown), []string{first}, fields)
+	case len(agents) == 1:
+		return chiefOfStaffTarget{Type: chiefOfStaffEntryAgent, Agent: agents[0]}, nil
+	}
+	t := chats[0]
+	if t.Model == "" {
+		return chiefOfStaffTarget{}, deniedRefusal(http.StatusBadRequest, "entry_invalid",
+			fmt.Sprintf("chat %q in %s has no model", capAuditText(t.Name, maxRefusalNameRunes), proj.Name), nil, fields)
+	}
+	return chiefOfStaffTarget{Type: chiefOfStaffEntryChat, Chat: t}, nil
+}
+
+// chatTemplateLaunch builds the launch for a chat template as eve's
+// applyChatDefaults does. Entry stays empty on purpose: the start is then a
+// raw-model one, so the model policy and the system-model refusal apply as
+// for any chat. Mode, voice and preset are ignored.
+func chatTemplateLaunch(req LaunchRequest, proj *config.Project, t config.ChatTemplate) LaunchRequest {
+	req.Kind = deriveSessionKind(t.Model)
+	req.Model = t.Model
+	req.SystemPrompt = t.SystemPrompt
+	req.Name = proj.Name + " - " + t.Name
+	req.Entry = ""
+	if req.Kind == KindClaude {
+		req.ClientSettings = json.RawMessage(`{"headless":true,"agent":true}`)
+	} else {
+		req.ClientSettings = json.RawMessage(`{"headless":true,"agent":true,"useRelayTools":true}`)
+		req.AppendClaudeMd = true
+	}
+	return req
 }
 
 // handleChiefOfStaffStart is the only door that starts a session on the Chief
@@ -74,7 +194,7 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 			writeChiefOfStaffError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body is larger than 64 KiB")
 			return
 		}
-		writeChiefOfStaffError(w, http.StatusBadRequest, "invalid_body", "body must be JSON {\"projectId\",\"folder\",\"prompt\",\"model\",\"mode\"}")
+		writeChiefOfStaffError(w, http.StatusBadRequest, "invalid_body", "body must be JSON {\"projectId\",\"folder\",\"prompt\",\"model\",\"entry\",\"mode\"}")
 		return
 	}
 	prompt := strings.TrimSpace(body.Prompt)
@@ -92,11 +212,17 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 	case utf8.RuneCountInString(prompt) > maxChiefOfStaffPromptRunes:
 		writeChiefOfStaffError(w, http.StatusBadRequest, "prompt_too_long", "prompt is longer than 8000 characters")
 		return
-	case body.Model == "":
-		writeChiefOfStaffError(w, http.StatusBadRequest, "model_required", "model is required")
+	case body.Model != "" && body.Entry != "":
+		writeChiefOfStaffError(w, http.StatusBadRequest, "model_or_entry", "send model or entry, not both")
+		return
+	case body.Model == "" && body.Entry == "":
+		writeChiefOfStaffError(w, http.StatusBadRequest, "model_or_entry", "send model or entry")
 		return
 	case mode != chiefOfStaffModeHeadless && mode != chiefOfStaffModeTerminal:
 		writeChiefOfStaffError(w, http.StatusBadRequest, "mode_invalid", `mode must be "headless" or "terminal"`)
+		return
+	case body.Entry != "" && mode == chiefOfStaffModeTerminal:
+		writeChiefOfStaffError(w, http.StatusBadRequest, "mode_invalid", "an entry start is headless only")
 		return
 	case !folderSyntaxOK(body.Folder):
 		writeChiefOfStaffError(w, http.StatusBadRequest, "folder_invalid", "folder must be a relative path with no .. segment")
@@ -109,14 +235,26 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 	}
 
 	caller := resolveLaunchCaller(r, d.store)
-	kind := KindPTY
-	if mode == chiefOfStaffModeHeadless {
+	// An entry's kind is known only once it resolves.
+	kind := ""
+	switch {
+	case body.Entry != "":
+	case mode == chiefOfStaffModeHeadless:
 		kind = deriveSessionKind(body.Model)
+	default:
+		kind = KindPTY
 	}
-	ev.Set("project_id", body.ProjectID).Set("kind", kind)
+	ev.Set("project_id", body.ProjectID)
+	if kind != "" {
+		ev.Set("kind", kind)
+	}
+	if body.Entry != "" {
+		ev.Set("entry", capAuditText(body.Entry, maxRefusalNameRunes))
+	}
 	fields := sessionLaunchAuditFields{
 		Actor: callerAuditActor(caller), ProjectID: body.ProjectID, Kind: kind,
 		Origin: origin, PromptBytes: len(prompt),
+		Entry: body.Entry,
 	}
 	deny := func(status int, code, message string) {
 		d.auditor.Record(newSessionLaunchAuditEvent(fields, audit.AuditOutcomeDenied, message))
@@ -143,7 +281,29 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 		Name: chiefOfStaffSessionName(prompt), Model: body.Model,
 		Origin: origin, PromptBytes: len(prompt),
 	}
-	if mode == chiefOfStaffModeHeadless {
+	entryName, entryType := "", ""
+	if body.Entry != "" {
+		// After the project and folder checks, so a name is never confirmed to
+		// a caller who could not start there anyway.
+		target, refusal := resolveChiefOfStaffEntry(proj, body.Entry, fields)
+		if refusal != nil {
+			d.auditor.Record(refusal.Audit)
+			endEvent(ev, refusal)
+			writeChiefOfStaffRefusal(w, refusal)
+			return
+		}
+		entryType = target.Type
+		req.ClientSettings = json.RawMessage(`{"headless":true,"agent":true}`)
+		if target.Type == chiefOfStaffEntryAgent {
+			entryName = target.Agent.Name
+			req.Entry = entryName
+			fields.Entry = entryName
+		} else {
+			entryName = target.Chat.Name
+			req = chatTemplateLaunch(req, proj, target.Chat)
+		}
+		ev.Set("entry", capAuditText(entryName, maxRefusalNameRunes)).Set("entry_type", entryType)
+	} else if mode == chiefOfStaffModeHeadless {
 		req.ClientSettings = json.RawMessage(`{"headless":true,"agent":true}`)
 	} else {
 		// A terminal session cannot run on a host (checkTerminalExtraArgs
@@ -171,7 +331,7 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 	switch {
 	case refusal != nil:
 		endEvent(ev, refusal)
-		writeChiefOfStaffError(w, refusal.Status, refusal.Code, refusal.Message)
+		writeChiefOfStaffRefusal(w, refusal)
 		return
 	case err != nil || result == nil || resp == nil:
 		writeChiefOfStaffError(w, http.StatusBadGateway, "launch_failed", "the session could not be started")
@@ -191,10 +351,11 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 		}
 	}
 
-	ev.Set("session_id", result.SessionID)
+	ev.Set("session_id", result.SessionID).Set("kind", result.Spec.Kind)
 	writeJSON(w, http.StatusCreated, chiefOfStaffStartResult{
 		SessionID: result.SessionID, Name: req.Name, ProjectID: body.ProjectID,
-		Directory: result.Spec.Directory, Mode: mode, Kind: kind, Origin: origin,
+		Directory: result.Spec.Directory, Mode: mode, Kind: result.Spec.Kind, Origin: origin,
+		Entry: entryName, EntryType: entryType,
 		At: time.Now().UTC().Format(time.RFC3339),
 	})
 }

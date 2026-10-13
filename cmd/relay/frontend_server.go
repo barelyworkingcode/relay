@@ -329,6 +329,8 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 	if deps.sessionHost.ready() {
 		RegisterSessionRoutes(rr, deps.sessionHost)
 	}
+	RegisterChiefOfStaffAgentRoutes(rr, deps.store, deps.sessionHost.agentLists)
+	RegisterChatTemplateRoutes(rr, newChatTemplateOps(deps.projectOps))
 	RegisterFileRoutes(rr, deps.fileOps)
 
 	// Catch-all dispatcher: any path not matched by a more specific handler
