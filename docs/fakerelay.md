@@ -2211,6 +2211,13 @@ The product list/detail/scoped WebSocket contracts match Relay, including
 answers 502. Control-only `PUT /v1/outside-sessions` replaces fixture rows and
 emits a replacement snapshot. It is not a product mutation door.
 
+The snapshot's `machines` lists the console always and each world host that
+has a project, sorted by name, as relay probes them. A host whose `probe.os`
+is a Windows shell (`MINGW*`, `MSYS*`, `CYGWIN*` or `Windows`) reports
+`unsupported` and shows no rows. A fixture row may name a machine the world
+does not declare; that machine is listed too, and `machine_status` sets its
+status (or the console's, or a host's).
+
 Class-read `POST /api/tmux/views` uses the existing terminal hub and requires
 exact inventory, host opt-in and supported read-only capability. Viewer list,
 join and reconnect metadata carries `readOnly:true,outside:true`. Input and

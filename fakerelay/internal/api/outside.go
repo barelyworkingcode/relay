@@ -6,30 +6,73 @@ import (
 	"github.com/barelyworkingcode/relay/fakerelay/internal/world"
 	"github.com/gorilla/websocket"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 )
 
 func outsideRow(s world.OutsideFixture) map[string]any {
 	return map[string]any{"id": s.ID, "name": s.Name, "projectId": s.ProjectID, "hostId": s.HostID, "machine": s.Machine, "directory": s.Directory, "branch": s.Branch, "state": s.State, "since": s.Since, "updatedAt": s.UpdatedAt, "source": s.Source, "outside": true, "readOnly": true, "tmuxSession": s.TmuxSession, "viewable": s.Viewable, "viewReason": s.ViewReason}
 }
+
+// outsideSnapshot lists every probed machine the way relay does: the console,
+// plus each SSH host that has a project. A host whose probe reports a Windows
+// shell is "unsupported" and contributes no rows. Fixture rows may also name a
+// machine the world does not declare; it is listed too, so a scenario can
+// stage one without a host.
 func (a *api) outsideSnapshot() map[string]any {
 	rows := []map[string]any{}
-	machines := []map[string]any{}
-	seen := map[string]bool{}
+	type machine struct {
+		hostID *string
+		name   string
+		status string
+	}
+	byKey := map[string]*machine{"": {name: "Console", status: "reachable"}}
+	unsupported := map[string]bool{}
 	a.State.Read(func(m *state.Model) {
-		for _, s := range m.OutsideSessions {
-			rows = append(rows, outsideRow(s))
-			key := s.Machine
-			if !seen[key] {
-				seen[key] = true
-				status := s.MachineStatus
-				if status == "" {
-					status = "reachable"
+		for _, h := range m.Hosts {
+			for _, p := range m.Projects {
+				if p.HostID != h.ID {
+					continue
 				}
-				machines = append(machines, map[string]any{"hostId": s.HostID, "machine": s.Machine, "status": status, "lastProbeAt": rfc3339(a.now()), "error": ""})
+				id := h.ID
+				mc := &machine{hostID: &id, name: h.Name, status: "reachable"}
+				if h.Probe != nil && (strings.HasPrefix(h.Probe.OS, "MINGW") || strings.HasPrefix(h.Probe.OS, "MSYS") || strings.HasPrefix(h.Probe.OS, "CYGWIN") || h.Probe.OS == "Windows") {
+					mc.status = "unsupported"
+					unsupported[h.ID] = true
+				}
+				byKey[h.ID] = mc
+				break
+			}
+		}
+		for _, s := range m.OutsideSessions {
+			key := ""
+			if s.HostID != nil {
+				key = *s.HostID
+			}
+			if unsupported[key] {
+				continue
+			}
+			rows = append(rows, outsideRow(s))
+			mc := byKey[key]
+			if mc == nil {
+				mc = &machine{hostID: s.HostID, name: s.Machine, status: "reachable"}
+				byKey[key] = mc
+			}
+			if s.MachineStatus != "" {
+				mc.status = s.MachineStatus
 			}
 		}
 	})
+	machines := []map[string]any{}
+	list := make([]*machine, 0, len(byKey))
+	for _, mc := range byKey {
+		list = append(list, mc)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].name < list[j].name })
+	for _, mc := range list {
+		machines = append(machines, map[string]any{"hostId": mc.hostID, "machine": mc.name, "status": mc.status, "lastProbeAt": rfc3339(a.now()), "error": ""})
+	}
 	return map[string]any{"type": "outside_sessions", "revision": a.outsideRevision, "probeIntervalMs": 15000, "sessions": rows, "machines": machines}
 }
 func (a *api) outsideRoutes(r server.Registrar) {
