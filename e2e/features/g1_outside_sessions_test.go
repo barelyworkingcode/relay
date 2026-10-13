@@ -75,8 +75,7 @@ func osStart(t *testing.T, host bool) *osRig {
 	}
 	// Ready signal: every machine has completed one probe, so a later change
 	// of lastProbeAt is a probe that started after the files were planted.
-	osPoll(t, "a first probe of every machine", func() bool {
-		s := r.snap()
+	osSubscribe(t, i).until(osBound, func(s osSnap) bool {
 		n := 0
 		for _, m := range s.Machines {
 			if m.LastProbeAt != "" && m.Status == "reachable" {
@@ -116,25 +115,30 @@ func (r *osRig) hostProject() string {
 	return root
 }
 
-func osPoll(t *testing.T, what string, f func() bool) {
-	t.Helper()
-	for end := time.Now().Add(osBound); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-		if f() {
-			return
-		}
-	}
-	t.Fatalf("no %s within %s", what, osBound)
+type osSub struct {
+	t  *testing.T
+	ws *harness.WSConn
 }
 
-func (r *osRig) snap() osSnap {
-	r.t.Helper()
-	resp := cosDo(r.t, r.i, "GET", osListPath, nil)
-	if resp.Status != http.StatusOK {
-		r.t.Fatalf("GET %s answered %d, want 200: %s", osListPath, resp.Status, resp.Body)
+func osSubscribe(t *testing.T, i *harness.Instance) *osSub {
+	t.Helper()
+	return &osSub{t: t, ws: i.WebSocket("/ws/outside-sessions", i.Credential("cos"), harness.ReqOpts{Header: g1tScope})}
+}
+
+// until reads whole snapshots (sent on open and on each change) until f holds;
+// it fails t if none arrives before bound.
+func (s *osSub) until(bound time.Duration, f func(osSnap) bool) osSnap {
+	s.t.Helper()
+	end := time.Now().Add(bound)
+	for {
+		var snap osSnap
+		if err := json.Unmarshal(s.ws.Next(time.Until(end)), &snap); err != nil {
+			s.t.Fatalf("decoding a snapshot: %v", err)
+		}
+		if f(snap) {
+			return snap
+		}
 	}
-	var s osSnap
-	resp.JSON(r.t, &s)
-	return s
 }
 
 func (s osSnap) at(dir string) *osRow {
@@ -150,22 +154,20 @@ func (s osSnap) at(dir string) *osRow {
 // machine has completed a probe after the move.
 func (r *osRig) probe() osSnap {
 	r.t.Helper()
+	sub := osSubscribe(r.t, r.i)
 	before := map[string]string{}
-	for _, m := range r.snap().Machines {
+	for _, m := range sub.until(osBound, func(osSnap) bool { return true }).Machines { // the snapshot on open, before the move
 		before[m.Machine] = m.LastProbeAt
 	}
 	r.i.ClockAdvance(osProbeStep)
-	var out osSnap
-	osPoll(r.t, "completed probe of every machine", func() bool {
-		out = r.snap()
-		for _, m := range out.Machines {
+	return sub.until(osBound, func(s osSnap) bool {
+		for _, m := range s.Machines {
 			if m.LastProbeAt == before[m.Machine] {
 				return false
 			}
 		}
 		return true
 	})
-	return out
 }
 
 type osProc struct {
@@ -354,6 +356,7 @@ func TestOutsideHookReportUpdatesSnapshot(t *testing.T) {
 		t.Fatalf("row before the report = %+v, want idle", row)
 	}
 
+	sub := osSubscribe(t, r.i)
 	script, err := filepath.Abs("../../scripts/outside-session-report.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -365,15 +368,10 @@ func TestOutsideHookReportUpdatesSnapshot(t *testing.T) {
 	if out, err := hook.CombinedOutput(); err != nil {
 		t.Fatalf("the report hook failed: %v\n%s", err, out)
 	}
-	// The hook has renamed its file into the spool; the clock now runs.
-	for end := time.Now().Add(osHookBound); ; time.Sleep(50 * time.Millisecond) {
-		if row := r.snap().at(p.dir); row != nil && row.State == "asking" && row.Source == "hook" {
-			return
-		}
-		if time.Now().After(end) {
-			t.Fatalf("no asking row from source hook within %s of the report; snapshot %+v", osHookBound, r.snap())
-		}
-	}
+	sub.until(osHookBound, func(s osSnap) bool {
+		row := s.at(p.dir)
+		return row != nil && row.State == "asking" && row.Source == "hook"
+	})
 }
 
 // AC5: a hookless state change shows at the next completed probe.
@@ -455,20 +453,22 @@ func TestOutsideExcludesManagedSessions(t *testing.T) {
 	i := r.i
 	pid := agProject(t, i, "acme-managed", nil)
 	agAdd(t, i, pid, agEntry{Name: "Researcher", Kind: "claude", Model: "sonnet"})
+	ws := i.WebSocket("/ws", i.Credential("cos"), harness.ReqOpts{Header: g1tScope})
 	resp := cosDo(t, i, "POST", "/api/chief-of-staff/sessions", map[string]any{"projectId": pid, "prompt": "acme hello", "entry": "Researcher"})
 	if resp.Status != http.StatusCreated {
 		t.Fatalf("starting a managed session answered %d, want 201: %s", resp.Status, resp.Body)
 	}
 	var started struct {
 		Directory string `json:"directory"`
+		SessionID string `json:"sessionId"`
 	}
 	resp.JSON(t, &started)
 	dir, err := filepath.EvalSymlinks(started.Directory)
 	if err != nil {
 		t.Fatalf("resolving %s: %v", started.Directory, err)
 	}
-	// Signal: the fake agent logs its start line once the managed process runs.
-	osPoll(t, "managed claude start", func() bool { return len(agStartArgvs(i, "claude")) > 0 })
+	// Signal: the first turn is done, so the managed process runs.
+	g1tAwaitTurnDone(t, ws, started.SessionID)
 	managed := &osProc{dir: dir, home: i.Home, sid: "acme-managed"}
 	out, err := exec.Command("lsof", "-a", "-d", "cwd", "-Fpn").Output()
 	if err != nil {
