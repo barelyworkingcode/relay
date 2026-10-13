@@ -28,6 +28,9 @@ func (s *svc) serveState(w http.ResponseWriter, r *http.Request) {
 		x := s.sessions[id]
 		row := s.row(x)
 		row["state"], row["processing"] = x.state, x.processing
+		if x.launcher != nil {
+			row["launcher"] = x.launcher
+		}
 		sessions = append(sessions, row)
 	}
 	terms := []map[string]any{}

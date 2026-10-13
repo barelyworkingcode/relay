@@ -24,6 +24,7 @@ type session struct {
 	stats                                                                 map[string]any
 	live, processing                                                      bool
 	askedName, claudeID, tool                                             string
+	launcher                                                              *launcher
 	changed                                                               chan struct{}
 	state                                                                 string
 	exit                                                                  *fakes.ExitError
@@ -94,6 +95,13 @@ type launchBody struct {
 	Settings       map[string]any `json:"settings"`
 	SystemPrompt   string         `json:"systemPrompt"`
 	AppendClaudeMd bool           `json:"appendClaudeMd"`
+	Entry          string         `json:"entry"`
+}
+
+// launcher is the command an agent entry starts the session with.
+type launcher struct {
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
 }
 
 // launch creates a live session. The caller has authorised the target.
@@ -176,6 +184,10 @@ func (s *svc) createSession(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	if b.Entry != "" {
+		s.createByEntry(w, ev, b)
+		return
+	}
 	kind := s.kindOf(b.Model)
 	ev.Set("kind", kind).Set("project_id", b.ProjectID)
 	if kind == "chat" && b.Model == "" {
@@ -193,6 +205,117 @@ func (s *svc) createSession(w http.ResponseWriter, r *http.Request) {
 	x := s.launch(t, b, kind, "", headless)
 	ev.Set("session_id", x.id).End("ok", "", nil)
 	server.WriteJSON(w, http.StatusCreated, s.createdView(x))
+}
+
+// createByEntry starts a session from a project's agent entry. The project and
+// directory checks run first, so only a caller allowed into the project sees
+// the entry names.
+func (s *svc) createByEntry(w http.ResponseWriter, ev *events.Event, b launchBody) {
+	ev.Set("project_id", b.ProjectID).Set("entry", b.Entry)
+	refuse := func(ref *refusal) {
+		ev.End("denied", ref.code, errors.New(ref.msg))
+		server.WriteError(w, ref.status, ref.msg)
+	}
+	if b.Model != "" {
+		refuse(&refusal{http.StatusBadRequest, "model_or_entry", "send model or entry, not both"})
+		return
+	}
+	t, ref := s.authorize(b.ProjectID, b.Directory, "", "agent")
+	if ref != nil {
+		refuse(ref)
+		return
+	}
+	entry, ref := s.resolveEntry(t.project, b.Entry)
+	if ref != nil {
+		refuse(ref)
+		return
+	}
+	ev.Set("kind", entry.Kind)
+	if entry.Command != "" {
+		ev.Set("command", entry.Command)
+	}
+	model := world.SessionModel(entry)
+	if ref := s.checkEntryModel(t.project, entry, model); ref != nil {
+		refuse(ref)
+		return
+	}
+	b.Model = model
+	x := s.launch(t, b, entry.Kind, "", false)
+	if entry.Command != "" {
+		x.launcher = &launcher{Command: entry.Command, Args: entry.Args}
+	}
+	ev.Set("session_id", x.id).End("ok", "", nil)
+	server.WriteJSON(w, http.StatusCreated, s.createdView(x))
+}
+
+func (s *svc) resolveEntry(p world.Project, name string) (world.AgentEntry, *refusal) {
+	entry, _, found := world.FindAgent(p, name)
+	if !found {
+		msg := `no agent "` + name + `" in ` + p.Name + "; " + p.Name + " has no agents"
+		if len(p.Agents) > 0 {
+			names := make([]string, len(p.Agents))
+			for i, a := range p.Agents {
+				names[i] = a.Name
+			}
+			msg = `no agent "` + name + `" in ` + p.Name + "; agents: " + strings.Join(names, ", ")
+		}
+		return entry, &refusal{http.StatusNotFound, "entry_not_found", msg}
+	}
+	if rule := world.ValidateStoredAgent(entry); rule != nil {
+		return entry, &refusal{http.StatusBadRequest, "entry_invalid", `agent "` + entry.Name + `" is not valid: ` + rule.Message}
+	}
+	return entry, nil
+}
+
+// checkEntryModel applies the project's model allowlist and the kind's offered
+// models to the model an entry asks for.
+func (s *svc) checkEntryModel(p world.Project, e world.AgentEntry, model string) *refusal {
+	if model == "" {
+		if allowed(p.AllowedModels, "") {
+			return nil
+		}
+		return &refusal{http.StatusForbidden, "model_not_allowed", `agent "` + e.Name + `" has no model, and ` + p.Name + ` allows only its listed models`}
+	}
+	if !allowed(p.AllowedModels, model) {
+		return &refusal{http.StatusForbidden, "model_not_allowed", "model is not allowed for this project"}
+	}
+	offered := s.offeredModels(e.Kind)
+	if len(offered) == 0 {
+		return &refusal{http.StatusServiceUnavailable, "models_unavailable", "the model list for " + e.Kind + " could not be read"}
+	}
+	var choices []string
+	for _, o := range offered {
+		if allowed(p.AllowedModels, world.SessionModel(world.AgentEntry{Kind: e.Kind, Model: o})) {
+			choices = append(choices, o)
+		}
+		if o == e.Model {
+			return nil
+		}
+	}
+	return &refusal{http.StatusBadRequest, "model_not_offered", `model "` + e.Model + `" is not offered for ` + e.Kind + "; models: " + strings.Join(choices, ", ")}
+}
+
+// offeredModels is what a kind offers: claude's fixed rows, the world's codex
+// rows without their prefix, and the world's chat rows for pi.
+func (s *svc) offeredModels(kind string) []string {
+	var out []string
+	if kind == "claude" {
+		for _, m := range fixedModels {
+			out = append(out, m.Value)
+		}
+		return out
+	}
+	s.State.Read(func(m *state.Model) {
+		for _, row := range m.Models {
+			switch {
+			case kind == "codex" && row.Provider == "codex":
+				out = append(out, strings.TrimPrefix(row.Value, "codex/"))
+			case kind == "pi" && s.kindOf(row.Value) == "chat":
+				out = append(out, row.Value)
+			}
+		}
+	})
+	return out
 }
 
 func (s *svc) createdView(x *session) map[string]any {

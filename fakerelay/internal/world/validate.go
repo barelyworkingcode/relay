@@ -9,7 +9,7 @@ import (
 )
 
 // PresenceOps are the gated operations a world may script.
-var PresenceOps = map[string]bool{"project.grant": true, "eve.enrolment.open": true, "eve.passkey.revoke": true}
+var PresenceOps = map[string]bool{"project.grant": true, "eve.enrolment.open": true, "eve.passkey.revoke": true, "project.agent": true}
 
 // Classes are the credential classes a world may grant.
 var Classes = map[string]bool{"read": true, "configure": true, "grant": true, "execute": true, "proxy": true}
@@ -120,6 +120,9 @@ func Validate(w *World) error {
 		}
 		if pr.Mode != "" && pr.Mode != "home" && pr.Mode != "work" {
 			return bad(p+".mode", "must be home or work")
+		}
+		if err := checkAgents(p+".agents", pr); err != nil {
+			return err
 		}
 		if err := checkFiles(p+".files", pr.Files); err != nil {
 			return err
@@ -303,6 +306,35 @@ func validExit(p string, r Reply) error {
 		if len(l) > maxExitStderrBytes {
 			return bad(fmt.Sprintf("%s.stderr[%d]", p, i), "at most %d bytes", maxExitStderrBytes)
 		}
+	}
+	return nil
+}
+
+// checkAgents applies the agent door's rules to a seeded list. A stored
+// command is already an absolute path.
+func checkAgents(path string, pr Project) error {
+	if len(pr.Agents) == 0 {
+		return nil
+	}
+	if pr.Kind == "remote" {
+		return bad(path, "project is not available for agents")
+	}
+	if len(pr.Agents) > MaxAgentEntries {
+		return bad(path, "a project holds at most %d agents", MaxAgentEntries)
+	}
+	seen := Project{Name: pr.Name, ChatTemplates: pr.ChatTemplates}
+	for i, a := range pr.Agents {
+		p := fmt.Sprintf("%s[%d]", path, i)
+		if err := ValidateStoredAgent(a); err != nil {
+			return bad(p, "%s", err.Message)
+		}
+		if a.Kind == "pi" && pr.HostID != "" {
+			return bad(p+".kind", "pi is not available on a host project")
+		}
+		if err := AgentNameClash(seen, a.Name, ""); err != nil {
+			return bad(p+".name", "%s", err.Message)
+		}
+		seen.Agents = append(seen.Agents, a)
 	}
 	return nil
 }
