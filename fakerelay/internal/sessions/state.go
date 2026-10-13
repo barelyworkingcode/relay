@@ -13,7 +13,7 @@ import (
 func (s *svc) serveState(w http.ResponseWriter, r *http.Request) {
 	var model map[string]any
 	s.State.Read(func(m *state.Model) {
-		b, _ := json.Marshal(map[string]any{"projects": m.Projects, "hosts": m.Hosts, "mcps": m.MCPs, "models": m.Models,
+		b, _ := json.Marshal(map[string]any{"outside_sessions": m.OutsideSessions, "projects": m.Projects, "hosts": m.Hosts, "mcps": m.MCPs, "models": m.Models,
 			"templates": m.Templates, "default_project": m.DefaultProject, "chief_of_staff": m.ChiefOfStaff, "eve": m.Eve})
 		_ = json.Unmarshal(b, &model)
 	})

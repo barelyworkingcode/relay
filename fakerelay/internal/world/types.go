@@ -10,22 +10,23 @@ import (
 
 // World is the whole spec. It is read once at serve and never mutated.
 type World struct {
-	Schema         int               `json:"schema"`
-	Listeners      Listeners         `json:"listeners"`
-	Credentials    []Credential      `json:"credentials"`
-	Presence       map[string]string `json:"presence"`
-	Faults         []Fault           `json:"faults"`
-	Projects       []Project         `json:"projects"`
-	DefaultProject *DefaultProject   `json:"default_project,omitempty"`
-	ChiefOfStaff   *ChiefOfStaff     `json:"chief_of_staff,omitempty"`
-	Hosts          []Host            `json:"hosts"`
-	MCPs           []MCP             `json:"mcps"`
-	Models         []Model           `json:"models"`
-	Templates      []Template        `json:"terminal_templates"`
-	Sessions       []Session         `json:"sessions"`
-	Eve            Eve               `json:"eve"`
-	Audit          []json.RawMessage `json:"audit"`
-	Services       []Service         `json:"services"`
+	Schema          int               `json:"schema"`
+	Listeners       Listeners         `json:"listeners"`
+	Credentials     []Credential      `json:"credentials"`
+	Presence        map[string]string `json:"presence"`
+	Faults          []Fault           `json:"faults"`
+	Projects        []Project         `json:"projects"`
+	DefaultProject  *DefaultProject   `json:"default_project,omitempty"`
+	ChiefOfStaff    *ChiefOfStaff     `json:"chief_of_staff,omitempty"`
+	Hosts           []Host            `json:"hosts"`
+	MCPs            []MCP             `json:"mcps"`
+	Models          []Model           `json:"models"`
+	Templates       []Template        `json:"terminal_templates"`
+	OutsideSessions []OutsideFixture  `json:"outside_sessions,omitempty"`
+	Sessions        []Session         `json:"sessions"`
+	Eve             Eve               `json:"eve"`
+	Audit           []json.RawMessage `json:"audit"`
+	Services        []Service         `json:"services"`
 	// HostPath is the PATH a host probe looks node, claude and tmux up on.
 	// Empty means fakerelay's own PATH.
 	HostPath string `json:"host_path,omitempty"`
@@ -159,17 +160,19 @@ type ChiefOfStaff struct {
 
 // Host is a simulated SSH host. Root stands in for the remote machine.
 type Host struct {
-	ID                 string              `json:"id"`
-	Name               string              `json:"name"`
-	Target             string              `json:"target"`
-	Port               int                 `json:"port,omitempty"`
-	IdentityFile       string              `json:"identity_file,omitempty"`
-	Probe              *Probe              `json:"probe,omitempty"`
-	TmuxPath           string              `json:"tmux_path,omitempty"`
-	TerminalTemplates  []Template          `json:"terminal_templates,omitempty"`
-	Root               string              `json:"root"`
-	Agent              string              `json:"agent"`
-	PersistentSessions []PersistentSession `json:"persistent_sessions,omitempty"`
+	ShowAllTmuxSessions bool                `json:"show_all_tmux_sessions,omitempty"`
+	TmuxViewSupported   *bool               `json:"tmux_view_supported,omitempty"`
+	ID                  string              `json:"id"`
+	Name                string              `json:"name"`
+	Target              string              `json:"target"`
+	Port                int                 `json:"port,omitempty"`
+	IdentityFile        string              `json:"identity_file,omitempty"`
+	Probe               *Probe              `json:"probe,omitempty"`
+	TmuxPath            string              `json:"tmux_path,omitempty"`
+	TerminalTemplates   []Template          `json:"terminal_templates,omitempty"`
+	Root                string              `json:"root"`
+	Agent               string              `json:"agent"`
+	PersistentSessions  []PersistentSession `json:"persistent_sessions,omitempty"`
 }
 
 type Probe struct {
@@ -297,4 +300,31 @@ type Service struct {
 	WorkingDir   string            `json:"working_dir"`
 	Capabilities []string          `json:"capabilities"`
 	Autostart    bool              `json:"autostart"`
+}
+
+// OutsideFixture is a display-only row, separate from managed sessions.
+type OutsideFixture struct {
+	ID            string      `json:"id"`
+	Name          string      `json:"name"`
+	ProjectID     *string     `json:"project_id"`
+	HostID        *string     `json:"host_id"`
+	Machine       string      `json:"machine"`
+	Directory     string      `json:"directory"`
+	Branch        string      `json:"branch"`
+	State         string      `json:"state"`
+	Since         string      `json:"since"`
+	UpdatedAt     string      `json:"updated_at"`
+	Source        string      `json:"source"`
+	Outside       bool        `json:"outside"`
+	ReadOnly      bool        `json:"read_only"`
+	TmuxSession   *string     `json:"tmux_session"`
+	Viewable      bool        `json:"viewable"`
+	ViewReason    string      `json:"view_reason"`
+	LatestTurn    OutsideTurn `json:"latest_turn"`
+	MachineStatus string      `json:"machine_status,omitempty"`
+}
+type OutsideTurn struct {
+	Text     string `json:"text"`
+	At       string `json:"at"`
+	Complete bool   `json:"complete"`
 }

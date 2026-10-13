@@ -51,6 +51,9 @@ func bad(path, format string, a ...any) error { return vErr{path, fmt.Sprintf(fo
 // Validate checks structure, ids, references and enums. It reports the first
 // problem with its JSON path.
 func Validate(w *World) error {
+	if err := ValidateOutside(w.OutsideSessions); err != nil {
+		return err
+	}
 	if w.Schema != 1 {
 		return bad("schema", "must be 1")
 	}
@@ -360,4 +363,28 @@ func ChatTemplatesOf(p Project) []ChatTemplate {
 		}
 	}
 	return out
+}
+
+func ValidateOutside(rows []OutsideFixture) error {
+	if len(rows) > 512 {
+		return bad("outside_sessions", "at most 512 rows")
+	}
+	seen := map[string]bool{}
+	for i, o := range rows {
+		path := fmt.Sprintf("outside_sessions[%d]", i)
+		if !strings.HasPrefix(o.ID, "outside:") || len(o.ID) <= len("outside:") || seen[o.ID] {
+			return bad(path+".id", "must be a unique outside identity")
+		}
+		seen[o.ID] = true
+		if o.State != "running" && o.State != "asking" && o.State != "idle" {
+			return bad(path+".state", "invalid state")
+		}
+		if o.Source != "probe" && o.Source != "hook" {
+			return bad(path+".source", "invalid source")
+		}
+		if o.MachineStatus != "" && o.MachineStatus != "reachable" && o.MachineStatus != "unreachable" {
+			return bad(path+".machine_status", "invalid status")
+		}
+	}
+	return nil
 }

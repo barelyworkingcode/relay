@@ -26,14 +26,17 @@ type api struct {
 	started time.Time
 	calls   *fakes.CallLog
 
-	mu      sync.Mutex
-	extra   map[string]map[string]json.RawMessage // project fields the model has no slot for
-	probeAt map[string]time.Time
+	mu                 sync.Mutex
+	extra              map[string]map[string]json.RawMessage // project fields the model has no slot for
+	probeAt            map[string]time.Time
+	outsideMu          sync.Mutex
+	outsideRevision    uint64
+	outsideSubscribers map[chan map[string]any]bool
 }
 
 // Register installs the doors and verbs.
 func Register(r server.Registrar, d server.Deps) error {
-	a := &api{Deps: d, started: d.Clock.Now(), calls: fakes.NewCallLog(d.Dir), extra: map[string]map[string]json.RawMessage{}, probeAt: map[string]time.Time{}}
+	a := &api{Deps: d, started: d.Clock.Now(), calls: fakes.NewCallLog(d.Dir), extra: map[string]map[string]json.RawMessage{}, outsideSubscribers: map[chan map[string]any]bool{}, probeAt: map[string]time.Time{}}
 	if err := a.openSeededWindow(); err != nil {
 		return err
 	}
@@ -41,6 +44,7 @@ func Register(r server.Registrar, d server.Deps) error {
 	a.agentRoutes(r)
 	a.cosConfigRoutes(r)
 	a.cosAgentRoutes(r)
+	a.outsideRoutes(r)
 	a.hostRoutes(r)
 	a.templateRoutes(r)
 	a.mcpRoutes(r)

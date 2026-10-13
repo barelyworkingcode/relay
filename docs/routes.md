@@ -2031,3 +2031,12 @@ only, and a test never drives one.
 | `/handoff` | Relay takes a headless session for a drop-in |
 | `/handback` | Relay returns a session after a failed drop-in |
 | `/terminate` | Relay ends a session (for example when its project is removed) |
+
+## Outside sessions (Chief of Staff scope)
+
+`GET /api/chief-of-staff/outside-sessions`, `GET
+/api/chief-of-staff/outside-sessions/{id}` and `GET /ws/outside-sessions` are
+class `chief_of_staff`, socket only. They expose display-only snapshots and
+fresh latest-turn detail; no outside action door exists. Client WebSocket data
+frames close with 1008. Schemas, bounds, errors and timing are in
+[outside sessions](outside-sessions.md).

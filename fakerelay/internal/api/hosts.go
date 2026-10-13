@@ -63,7 +63,7 @@ func (a *api) hostView(h world.Host) map[string]any {
 		at = a.started
 	}
 	v := map[string]any{"id": h.ID, "name": h.Name, "target": h.Target, "created_at": rfc3339(a.started),
-		"status": status, "ssh_argv": h.SSHArgv(filepath.Join(a.Dir, "run", "ssh")), "terminal_templates": tpl}
+		"show_all_tmux_sessions": h.ShowAllTmuxSessions, "status": status, "ssh_argv": h.SSHArgv(filepath.Join(a.Dir, "run", "ssh")), "terminal_templates": tpl}
 	if len(created) > 0 {
 		v["created_at"] = strings.Trim(string(created), `"`)
 	}
@@ -132,11 +132,12 @@ func (a *api) getHost(w http.ResponseWriter, r *http.Request) {
 }
 
 type hostBody struct {
-	Name         *string `json:"name"`
-	Target       *string `json:"target"`
-	Port         *int    `json:"port"`
-	IdentityFile *string `json:"identity_file"`
-	TmuxPath     *string `json:"tmux_path"`
+	ShowAllTmuxSessions *bool   `json:"show_all_tmux_sessions"`
+	Name                *string `json:"name"`
+	Target              *string `json:"target"`
+	Port                *int    `json:"port"`
+	IdentityFile        *string `json:"identity_file"`
+	TmuxPath            *string `json:"tmux_path"`
 }
 
 func (a *api) createHost(w http.ResponseWriter, r *http.Request) {
@@ -215,6 +216,9 @@ func applyProbe(h *world.Host, tools liveTools, down bool) {
 }
 
 func applyHostBody(h *world.Host, b *hostBody) {
+	if b.ShowAllTmuxSessions != nil {
+		h.ShowAllTmuxSessions = *b.ShowAllTmuxSessions
+	}
 	if b.Name != nil {
 		h.Name = *b.Name
 	}

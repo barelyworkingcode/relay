@@ -1,0 +1,97 @@
+package prooftest
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+const outsideAPI = "/api/chief-of-staff/outside-sessions"
+
+func outsideFixture(text string) J {
+	return J{"id": "outside:acme", "name": "Acme Claude", "project_id": nil, "host_id": nil, "machine": "Console", "directory": "/work/acme",
+		"branch": "main", "state": "idle", "since": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", "source": "probe",
+		"outside": true, "read_only": true, "tmux_session": nil, "viewable": false, "view_reason": "not_in_tmux",
+		"latest_turn": J{"text": text, "at": "2026-01-01T00:00:00Z", "complete": true}}
+}
+func outsideFake(t *testing.T, rows []J, hosts []J) *instance {
+	return startInstance(t, func(string) any {
+		return J{"schema": 1, "credentials": creds(), "outside_sessions": rows, "hosts": hosts}
+	})
+}
+func outsideScoped(in *instance, t *testing.T, method, path string, body any) res {
+	return in.api(t, method, path, body, "X-Relay-Scope", "chief-of-staff")
+}
+
+// Regression: fixture updates retain old membership/turns or lose display-only wire fields.
+func TestOutsideFixtureSnapshotAndFreshDetail(t *testing.T) {
+	row := outsideFixture("old reply")
+	in := outsideFake(t, []J{row}, nil)
+	c := in.ws(t, "/ws/outside-sessions", opsTok, "X-Relay-Scope", "chief-of-staff")
+	s := until(t, c, isType("outside_sessions"))[0]
+	eq[any](t, s["probeIntervalMs"], float64(15000), "probe cadence")
+	listed := s["sessions"].([]any)[0].(map[string]any)
+	for key, want := range (J{"id": "outside:acme", "outside": true, "readOnly": true, "directory": "/work/acme", "branch": "main", "state": "idle", "source": "probe", "viewable": false, "viewReason": "not_in_tmux"}) {
+		eq[any](t, listed[key], want, key)
+	}
+	before := s["revision"].(float64)
+	text := strings.Repeat("界", 8200) + "tail"
+	row["latest_turn"] = J{"text": text, "at": "2026-01-01T00:01:00Z", "complete": false}
+	row["state"] = "running"
+	in.ctl(t, "PUT", "/v1/outside-sessions", []J{row}).is(t, 200)
+	frames := until(t, c, func(f J) bool { return f["type"] == "outside_sessions" && f["revision"].(float64) > before })
+	next := frames[len(frames)-1]
+	eq[any](t, next["sessions"].([]any)[0].(map[string]any)["state"], "running", "updated state")
+	d := outsideScoped(in, t, "GET", outsideAPI+"/outside:acme", nil).is(t, 200).obj(t)
+	turn := d["lastTurn"].(map[string]any)
+	eq[any](t, turn["text"], strings.Repeat("界", 8188)+"tail", "latest text cap")
+	eq[any](t, d["lastExcerpt"], strings.Repeat("界", 496)+"tail", "same-turn excerpt")
+	eq[any](t, turn["complete"], false, "partial complete flag")
+	row["latest_turn"] = J{"text": "", "at": "", "complete": false}
+	in.ctl(t, "PUT", "/v1/outside-sessions", []J{row}).is(t, 200)
+	empty := outsideScoped(in, t, "GET", outsideAPI+"/outside:acme", nil).is(t, 200).obj(t)["lastTurn"].(map[string]any)
+	eq[any](t, empty["text"], "", "empty latest text")
+	eq[any](t, empty["at"], "", "empty latest at")
+	eq[any](t, empty["complete"], false, "empty completion")
+
+	row["machine_status"] = "unreachable"
+	in.ctl(t, "PUT", "/v1/outside-sessions", []J{row}).is(t, 200)
+	eq[any](t, outsideScoped(in, t, "GET", outsideAPI+"/outside:acme", nil).is(t, 502).obj(t)["error"], "outside_status_unavailable", "failed read")
+	in.ctl(t, "PUT", "/v1/outside-sessions", []J{}).is(t, 200)
+	until(t, c, func(f J) bool { return f["type"] == "outside_sessions" && len(f["sessions"].([]any)) == 0 })
+	eq[any](t, outsideScoped(in, t, "GET", outsideAPI+"/outside:acme", nil).is(t, 404).obj(t)["error"], "outside_session_not_found", "expired identity")
+	reconnect := in.ws(t, "/ws/outside-sessions", opsTok, "X-Relay-Scope", "chief-of-staff")
+	reseed := until(t, reconnect, isType("outside_sessions"))[0]
+	eq[any](t, len(reseed["sessions"].([]any)), 0, "reconnect full membership")
+}
+
+// Regression: fixture mutation accepts invalid identity/state or outside data gains action authority.
+func TestOutsideFixtureValidationAndScope(t *testing.T) {
+	in := outsideFake(t, []J{outsideFixture("")}, nil)
+	for _, c := range []struct {
+		field string
+		value any
+	}{{"id", "managed"}, {"state", "unknown"}, {"source", "unknown"}} {
+		row := outsideFixture("")
+		row[c.field] = c.value
+		in.ctl(t, "PUT", "/v1/outside-sessions", []J{row}).is(t, 400)
+	}
+	in.ctl(t, "PUT", "/v1/outside-sessions", []J{outsideFixture(""), outsideFixture("")}).is(t, 400)
+	for _, path := range []string{"/api/tmux/views", "/api/sessions/outside:acme/send"} {
+		outsideScoped(in, t, "POST", path, J{"sessionName": "acme", "text": "input"}).is(t, http.StatusForbidden)
+	}
+	in.apiAs(t, roTok, "GET", outsideAPI, nil).is(t, 403)
+	for _, typ := range []int{websocket.TextMessage, websocket.BinaryMessage} {
+		c := in.ws(t, "/ws/outside-sessions", opsTok, "X-Relay-Scope", "chief-of-staff")
+		until(t, c, isType("outside_sessions"))
+		must(t, c.WriteControl(websocket.PingMessage, []byte("ready"), time.Now().Add(waitBound)), "control ping")
+		must(t, c.WriteMessage(typ, []byte("input")), "outside data frame")
+		_, _, err := c.ReadMessage()
+		if !websocket.IsCloseError(err, 1008) {
+			t.Fatalf("outside data close %v, want 1008", err)
+		}
+	}
+}

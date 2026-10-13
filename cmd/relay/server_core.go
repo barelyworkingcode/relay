@@ -735,6 +735,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 		return nil, fmt.Errorf("failed to start frontend server: %w", err)
 	}
 	frontend.routeDeps.loginOps = loginOps
+	app.goFunc(func() { frontend.routeDeps.outside.Run(ctx) })
 	frontend.FileOps().Hosts = hostPool
 	// The router reaches the instances the frontend server holds, so a CLI
 	// door and an HTTP door share one watch hub and one tmux lister.
