@@ -83,6 +83,7 @@ func TestAgentsRefusals(t *testing.T) {
 			post(map[string]any{"name": "scout", "kind": "pi"})
 			post(map[string]any{"name": "scout", "kind": "claude", "args": []string{"x"}})
 			post(map[string]any{"name": "ghost", "kind": "claude", "command": "nosuchwrapper"})
+			post(map[string]any{"name": "ghost", "kind": "claude", "command": "/tmp/a'b"})
 
 			tr = harness.NewTrace(r.T)
 			r.HTTP("ops", "POST", base, map[string]any{"name": "researcher", "kind": "codex"}, harness.ReqOpts{Trace: tr})

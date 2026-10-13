@@ -536,6 +536,40 @@ func TestAgentCommandNotFound(t *testing.T) {
 	}
 }
 
+func TestAgentCommandRefusesShellQuoting(t *testing.T) {
+	t.Parallel()
+	i := agStart(t)
+	pid := agProject(t, i, "acme-quote", nil)
+	marker := filepath.Join(t.TempDir(), "marker")
+
+	cmds := []string{
+		`/tmp/x\'; touch ` + marker + `; #`,
+		`/tmp/a'b`,
+		`/tmp/a"b`,
+		`/tmp/a$b`,
+		"/tmp/a`b`",
+		`/tmp/a\b`,
+	}
+	for _, c := range cmds {
+		resp := agPost(t, i, pid, agEntry{Name: "ghost", Kind: "claude", Model: "sonnet", Command: c})
+		e := agRefusal(t, resp, http.StatusBadRequest, "command_invalid")
+		if e.Message != "command must be a program name or an absolute path" {
+			t.Fatalf("refusal of %q has message %q", c, e.Message)
+		}
+	}
+	r := i.CLI("project", "agents", "add", "--id", pid, "--name", "ghost", "--kind", "claude", "--model", "sonnet", "--command", cmds[0])
+	if r.Code != 1 || !strings.Contains(string(r.Stderr), "command must be a program name or an absolute path") {
+		t.Fatalf("CLI add exited %d with stderr %q, want 1 refusing the command grammar", r.Code, r.Stderr)
+	}
+
+	if n := len(agList(t, i, pid)); n != 0 {
+		t.Fatalf("a refused add stored %d entries", n)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the command ran: marker stat err = %v", err)
+	}
+}
+
 func TestAgentWriteNeedsPresence(t *testing.T) {
 	t.Parallel()
 	i := agStart(t)
