@@ -420,18 +420,22 @@ func TestOutsideIDGrantsNoAuthority(t *testing.T) {
 		t.Fatalf("no row for %s", p.dir)
 	}
 	cos := r.i.SocketHTTP(r.i.Credential("cos"))
+	if resp := cos.Do("POST", "/api/chief-of-staff/messages", map[string]any{"sessionId": row.ID, "text": "acme refused"}, harness.ReqOpts{Header: g1tScope}); resp.Status < 400 || resp.Status >= 500 {
+		t.Fatalf("POST /api/chief-of-staff/messages answered %d, want a 4xx refusal: %s", resp.Status, resp.Body)
+	}
+	// The unscoped instance credential holds proxy and execute, so these reach
+	// the session lookup; the outside id is unknown to it.
 	for _, c := range []struct {
 		method, path string
 		body         any
+		want         int
 	}{
-		{"POST", "/api/chief-of-staff/messages", map[string]any{"sessionId": row.ID, "text": "acme refused"}},
-		{"DELETE", "/api/sessions/" + row.ID, nil},
-		{"POST", "/api/sessions/" + row.ID + "/resume", nil},
-		{"POST", "/api/sessions/" + row.ID + "/message", map[string]any{"text": "acme refused"}},
+		{"DELETE", "/api/sessions/" + row.ID, nil, http.StatusNoContent},
+		{"POST", "/api/sessions/" + row.ID + "/resume", nil, http.StatusNotFound},
+		{"POST", "/api/sessions/" + row.ID + "/message", map[string]any{"text": "acme refused"}, http.StatusNotFound},
 	} {
-		resp := cos.Do(c.method, c.path, c.body, harness.ReqOpts{Header: g1tScope})
-		if resp.Status < 400 || resp.Status >= 500 {
-			t.Fatalf("%s %s answered %d, want a 4xx refusal: %s", c.method, c.path, resp.Status, resp.Body)
+		if resp := cos.Do(c.method, c.path, c.body); resp.Status != c.want {
+			t.Fatalf("%s %s answered %d, want %d: %s", c.method, c.path, resp.Status, c.want, resp.Body)
 		}
 	}
 	select {
