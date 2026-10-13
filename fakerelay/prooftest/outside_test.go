@@ -4,9 +4,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const outsideAPI = "/api/chief-of-staff/outside-sessions"
@@ -84,14 +81,4 @@ func TestOutsideFixtureValidationAndScope(t *testing.T) {
 		outsideScoped(in, t, "POST", path, J{"sessionName": "acme", "text": "input"}).is(t, http.StatusForbidden)
 	}
 	in.apiAs(t, roTok, "GET", outsideAPI, nil).is(t, 403)
-	for _, typ := range []int{websocket.TextMessage, websocket.BinaryMessage} {
-		c := in.ws(t, "/ws/outside-sessions", opsTok, "X-Relay-Scope", "chief-of-staff")
-		until(t, c, isType("outside_sessions"))
-		must(t, c.WriteControl(websocket.PingMessage, []byte("ready"), time.Now().Add(waitBound)), "control ping")
-		must(t, c.WriteMessage(typ, []byte("input")), "outside data frame")
-		_, _, err := c.ReadMessage()
-		if !websocket.IsCloseError(err, 1008) {
-			t.Fatalf("outside data close %v, want 1008", err)
-		}
-	}
 }

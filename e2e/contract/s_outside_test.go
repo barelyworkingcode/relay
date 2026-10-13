@@ -1,11 +1,10 @@
 package contract
 
 import (
-	"encoding/json"
-	"testing"
-
 	"bytes"
+	"encoding/json"
 	"io"
+	"testing"
 	"time"
 )
 
@@ -23,12 +22,16 @@ func TestOutsideContractReadAndRefusals(t *testing.T) {
 					Type            string
 					ProbeIntervalMs int
 					Sessions        []json.RawMessage
+					Machines        []struct {
+						HostID          *string
+						Machine, Status string
+					}
 				}
 				resp.JSON(r.T, &s)
 				if s.Type != "outside_sessions" || s.ProbeIntervalMs != 15000 || len(s.Sessions) != 0 {
 					r.T.Fatalf("empty outside wire: %+v", s)
 				}
-				r.Note("outside empty contract", map[string]any{"type": s.Type, "probeIntervalMs": s.ProbeIntervalMs, "count": len(s.Sessions)})
+				r.Note("outside empty contract", map[string]any{"type": s.Type, "probeIntervalMs": s.ProbeIntervalMs, "count": len(s.Sessions), "machines": s.Machines})
 			} else {
 				var e struct{ Error string }
 				resp.JSON(r.T, &e)
