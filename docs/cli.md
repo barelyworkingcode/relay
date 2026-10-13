@@ -1715,7 +1715,7 @@ unknown or the id is missing; `2` for an unknown flag.
 ### `project agents add`
 
 Needs service: yes. Prompts: yes (`project.agent`). Works over SSH: no. Adds
-an agent to the project. `--command` takes a program name or an absolute path.
+an agent to the project. `--command` takes a program name or an absolute path (no `\`, `'`, `"`, `$` or backtick).
 relay looks a name up in the login shell of the project's machine (this Mac,
 or the SSH host of a host project) and stores the absolute path it finds. A
 name the shell reports only as a builtin, alias or function is not found.

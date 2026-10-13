@@ -670,7 +670,7 @@ the stored value.
   | `name` | string | What a person says to start it. 1 to 40 letters, digits, dots, dashes or underscores, starting with a letter or digit. Unique in the project, without regard to case, across agents and chat templates |
   | `kind` | string | `claude`, `codex` or `pi`. `pi` is refused on a host project |
   | `model` | string | Optional for claude and codex, required for pi. At most 200 bytes, no spaces or control characters. Shape only: whether the kind offers it is checked at start |
-  | `command` | string | A program name (looked up in the login shell on the project's machine) or an absolute path. relay stores the absolute path the lookup returns |
+  | `command` | string | A program name (looked up in the login shell on the project's machine) or an absolute path (no `\`, `'`, `"`, `$` or backtick). relay stores the absolute path the lookup returns |
   | `args` | string[] | Only with `command`. At most 16, each at most 256 bytes, no NUL and no `${`. Passed verbatim, never expanded |
 
   A project holds at most 32 agents.

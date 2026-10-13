@@ -81,7 +81,7 @@ func commandShapeOK(c string) bool {
 	if !strings.HasPrefix(c, "/") {
 		return bareCmdRe.MatchString(c)
 	}
-	if len(c) > 1024 || hasControl(c) {
+	if len(c) > 1024 || hasControl(c) || strings.ContainsAny(c, "\\'\"$`") {
 		return false
 	}
 	for _, seg := range strings.Split(c, "/") {
@@ -97,7 +97,7 @@ func ValidateStoredAgent(e AgentEntry) *AgentRuleError {
 	if err := ValidateAgentShape(e); err != nil {
 		return err
 	}
-	if e.Command != "" && !strings.HasPrefix(e.Command, "/") {
+	if e.Command != "" && (!strings.HasPrefix(e.Command, "/") || !commandShapeOK(e.Command)) {
 		return ruleErr("command_invalid", "command must be a program name or an absolute path")
 	}
 	return nil

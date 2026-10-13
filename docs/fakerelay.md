@@ -478,7 +478,8 @@ Rules: `name` matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`; `kind` is `claude`,
 `codex` or `pi`; `model` is at most 200 bytes with no whitespace or control
 character, and `pi` needs one; `command` is a bare name
 (`^[A-Za-z0-9._+][A-Za-z0-9._+-]{0,63}$`) or an absolute path of at most 1024
-bytes with no control character and no `..` segment; `args` (at most 16, each
+bytes with no control character, no `..` segment and none of `\`, `'`, `"`, `$` or
+backtick; `args` (at most 16, each
 at most 256 bytes, no NUL, no `${`) need a `command`.
 
 Errors are `{"error":<code>,"message":<text>}`. Checks run in this order, and

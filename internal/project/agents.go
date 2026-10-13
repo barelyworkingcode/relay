@@ -73,16 +73,17 @@ func ValidateAgentEntryShape(e config.AgentEntry) *AgentRuleError {
 const argsInvalidMessage = "args: at most 16, each at most 256 bytes, with no NUL or ${"
 
 // validAgentPath reports whether c is an absolute path of bounded length with
-// no control character and no ".." segment. Backslash also separates, so a
-// Windows-style segment cannot hide a "..".
+// no control character, no ".." segment and none of \ ' " $ or backtick. The
+// lookup interpolates the path into a login-shell command line, and those
+// characters break its quoting under some shells.
 func validAgentPath(c string) bool {
 	if !strings.HasPrefix(c, "/") || len(c) > maxAgentCommandBytes {
 		return false
 	}
-	if strings.ContainsFunc(c, unicode.IsControl) {
+	if strings.ContainsFunc(c, unicode.IsControl) || strings.ContainsAny(c, "\\'\"$`") {
 		return false
 	}
-	for _, seg := range strings.FieldsFunc(c, func(r rune) bool { return r == '/' || r == '\\' }) {
+	for _, seg := range strings.Split(c, "/") {
 		if seg == ".." {
 			return false
 		}
