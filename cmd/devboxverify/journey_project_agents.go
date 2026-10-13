@@ -168,14 +168,16 @@ func buttonAfterText(text, label string) func([]*axNode) *axNode {
 }
 
 // formFieldsAfter lists the text fields after the agent form's title. The
-// form's fields are Name, then Command; the kind and model are pop-ups.
+// form's fields are Name, then Command; the kind and model are pop-ups. The
+// title is matched without case: the page styles section titles in capitals
+// and WebKit exposes the styled text.
 func formFieldsAfter(page []*axNode) []*axNode {
 	var out []*axNode
 	seen := false
 	for _, n := range page {
 		switch {
 		case !seen:
-			seen = n.Role == "AXStaticText" && n.Label == "Add agent"
+			seen = n.Role == "AXStaticText" && strings.EqualFold(normText(n.Label), "Add agent")
 		case n.Role == "AXTextField":
 			out = append(out, n)
 		}
