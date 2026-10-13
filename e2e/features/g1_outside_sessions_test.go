@@ -32,6 +32,7 @@ const (
 type osRow struct {
 	ID        string  `json:"id"`
 	HostID    *string `json:"hostId"`
+	ProjectID *string `json:"projectId"`
 	Machine   string  `json:"machine"`
 	Directory string  `json:"directory"`
 	Branch    string  `json:"branch"`
@@ -279,6 +280,11 @@ func TestOutsideDiscoveryWithoutHooks(t *testing.T) {
 func TestOutsideRowFieldsAndStates(t *testing.T) {
 	t.Parallel()
 	r := osStart(t, false)
+	// A pathless remote project contains no folder, so no row may name it.
+	pathless, _ := json.Marshal(map[string]any{"name": "acme-profile", "kind": "remote"})
+	if res := r.i.CLIWith(harness.CLIOpts{Stdin: pathless}, "project", "create", "--file", "-", "--json"); res.Code != 0 {
+		t.Fatalf("project create for the pathless remote project exited %d\nstderr: %s", res.Code, res.Stderr)
+	}
 	root := t.TempDir()
 	want := map[string]string{"busy": "running", "waiting": "asking", "done": "idle"}
 	procs := map[string]*osProc{}
@@ -297,6 +303,9 @@ func TestOutsideRowFieldsAndStates(t *testing.T) {
 		}
 		if row.State != state || row.Branch != "acme-branch" || row.Machine != "Console" || !row.Outside || !row.ReadOnly {
 			t.Fatalf("row for %s = %+v, want state %s, branch acme-branch, machine Console, outside and readOnly", name, row, state)
+		}
+		if row.ProjectID != nil {
+			t.Fatalf("row for %s has projectId %q, want null: its folder is under no project", name, *row.ProjectID)
 		}
 	}
 }
