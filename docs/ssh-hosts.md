@@ -565,6 +565,39 @@ Resume reuses the stored thread id.
 **Idle, stop, kill** are unchanged: they act on the local `ssh` process, and
 `ssh` propagates SIGINT/SIGTERM/hangup to the remote command.
 
+## Entry commands on a host
+
+A project's agent list ([architecture.md](architecture.md#agent-list)) may name a
+program for each agent. On a host project the program lives on the host.
+
+- **Lookup.** A write that gives a program name resolves it with
+  `cmdlookup.OnHost`. It runs `config.Host.SSHArgv` plus `-T`, `--` and a
+  `sh -c` script built by `RemoteCommandForOS`, so the stub and the real ssh
+  take the same path. The script has two sections. The first is the login-shell
+  lookup the host probe uses (`"$SHELL" -lic 'command -v NAME'`, from
+  `sshhost.LoginShellLookup`), which sees a `PATH` set in the host's shell rc
+  file. The second is plain `command -v NAME`. The first non-empty line of the
+  first section wins, else of the second, and it must start with `/`. A
+  builtin, alias or function prints a bare word and is `command_not_found`.
+  A name that is an absolute path goes through the same lookup, so a file that
+  is not executable is not found.
+- **Result.** relay stores the absolute path, and the write answers with the
+  host's name as `machine`. The lookup is capped at 15 seconds. A host that
+  does not answer is `502 machine_unreachable` with the ssh text; a name the
+  host does not know is `422 command_not_found`.
+- **Kinds.** `pi` is refused on a host project (`kind_not_available_on_host`),
+  as pi sessions are.
+- **Start.** A start by entry sends the stored path to the session host as a
+  launcher. relay-sessions wraps `[command, args..., <kind's args>]` in
+  `RemoteCommandForOS` in the session directory, as it does for a host claude
+  or codex session ([session-host.md](session-host.md#launcher-an-agent-entrys-program)).
+  The host's `claude` or `codex` path is not needed for an entry that names a
+  command. relay does not check on a start that the file still exists on the
+  host; a missing file shows as the spawn failing.
+- **Not changed.** A host session is still not sandboxed and gets no model key
+  or launch identity. An entry on a host project runs with the host account's
+  own permissions.
+
 ## eve
 
 **Project record** (`project-normalize.js`): gains `hostId` (string, `''` for

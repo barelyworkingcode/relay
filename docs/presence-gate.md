@@ -112,6 +112,21 @@ what runs.** Concretely:
   security boundary to a holder. Only `relay project token` reaches it, from an
   operator caller; it is recorded as `credential_disclosed` before the token
   returns.
+- **Writing a project's agent list** (`project.agent`) — adds, updates and
+  removes an agent entry. An entry names the program a session start runs
+  (`command` and `args`), so a write chooses what relay executes, as
+  `mcp.register` does. The digest binds `project_id`, `action`, `name`,
+  `new_name`, `kind`, `model`, `command` and `args`, so an approval for one
+  entry cannot be redeemed for another, and the prompt names the resolved
+  path and the machine it runs on. **Removal is gated here too**, unlike
+  `mcp.unregister`: the approved acceptance criterion is that every write to
+  the list needs the owner's presence, and the gate fails closed on that
+  reading. A remove only shrinks what a start can run, so it is not an
+  escalation, but a remove by a caller that merely holds `configure` would
+  change what a named start does. The cost is that `relay project agents
+  remove` needs the prompt. The write still runs
+  `requireIssuanceAuditor` first and records `config_change` with credential
+  `agent_entry` ([`audit-log.md`](audit-log.md)). Listing is not gated.
 - **Widening a project's grant shape** (`project.grant`) — see below.
 - **Changing relay's remote-listener configuration** (`remote.configure`,
   `PUT /api/remote` / IPC `update_remote_config`, both onto
@@ -220,6 +235,13 @@ see ADR-018's step-3 record for the escalation analysis
 `docs/decisions/017-implementation-spec.md` §6.4, whose rows for these two
 ops are marked narrowed rather than deleted — the record of what used to be
 gated, and why, is kept.
+
+**`project.agent` is gated on removal as well**, unlike these two. This does
+not contradict the rule above: the rule says removal is not an escalation and
+need not gate, and it does not say removal must not. A project's agent list is
+a single owner-approved surface, and an unprompted remove would be the one
+write to it that skips the owner. Nothing else in relay depends on the
+removal being ungated.
 
 **`project.grant` stays gated**, unlike these two — an update to any of its
 ten fields *can* widen the grant, so decision 1's rule keeps every one of

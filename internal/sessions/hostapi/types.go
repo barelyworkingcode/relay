@@ -41,6 +41,8 @@ package hostapi
 import (
 	"encoding/json"
 	"time"
+
+	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
 // LaunchRequest is C5's POST /launch body (v1). Only the fields this
@@ -82,6 +84,10 @@ type LaunchRequest struct {
 	// Origin names who asked for this session when it was not the person at
 	// a frontend. The host accepts only the Chief of Staff origin.
 	Origin string `json:"origin,omitempty"`
+	// Launcher replaces the program a claude, codex or pi session runs. It is
+	// omitted when the agent entry names no command; the host refuses one on a
+	// pty or chat launch.
+	Launcher *sessionstypes.Launcher `json:"launcher,omitempty"`
 }
 
 // PTYSpec is C5's non-null "pty" object.
@@ -198,6 +204,7 @@ type sessionRequestBody struct {
 	Settings       json.RawMessage `json:"settings,omitempty"`
 	SystemPrompt   string          `json:"systemPrompt,omitempty"`
 	AppendClaudeMd bool            `json:"appendClaudeMd,omitempty"`
+	Entry          string          `json:"entry,omitempty"`
 }
 
 // permissionRequestBody mirrors internal/sessions/hook's wire shape for

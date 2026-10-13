@@ -368,6 +368,16 @@ func (c *ServiceConfig) validateAllowedModels() error {
 	return nil
 }
 
+// AgentEntry is one named way to start a session in a project. Command, when
+// set, is the absolute path on the project's machine.
+type AgentEntry struct {
+	Name    string   `json:"name"`
+	Kind    string   `json:"kind"`
+	Model   string   `json:"model,omitempty"`
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+}
+
 type ChatTemplate struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -532,6 +542,9 @@ type Project struct {
 	AllowedMcpIDs []string       `json:"allowed_mcp_ids"`
 	AllowedModels []string       `json:"allowed_models"`
 	ChatTemplates []ChatTemplate `json:"chat_templates,omitempty"`
+	// Agents is the project's named launch list. Only the agent doors write
+	// it; the project create and update paths leave it as stored.
+	Agents []AgentEntry `json:"agents,omitempty"`
 	// AllowedTemplates names the terminal templates (Settings.TerminalTemplates)
 	// this project may launch, its claude, pi and chat sessions included:
 	// empty is none, a lone "*" is every template, otherwise the ids listed.

@@ -803,6 +803,12 @@ left unset) or a `sandbox` value truer than its `false` zero value; a
 resume that gets further before being refused, or one that succeeds, can
 carry both.
 
+A start that names an agent entry adds two args, both omitted otherwise:
+`entry` (the entry's name as stored) and `command` (the entry's absolute
+path). A refusal of such a start (`entry_not_found`, `entry_invalid`,
+`model_not_offered`, `models_unavailable`, `model_not_allowed`) writes the
+denied row like any other launch refusal.
+
 `args.session_kind` is the launch `Kind` (`validKind`, `cmd/relay/session_launch.go`),
 one of five values:
 
@@ -991,6 +997,25 @@ for either op with no matching presence event is not the detection signal
 it would be for `mcp.register` or `service.register`; it is simply what an
 unregister looks like now. `docs/presence-gate.md#what-is-not-gated-and-why-removal-is-not-escalation`
 has the escalation argument in full.
+
+An entry in a project's agent list lands here as credential `agent_entry`.
+`subject` is the project id and `subject_name` the project name. Every add,
+update and remove writes one, and each carries a `presence_id`:
+
+```json
+{"id":"…","ts":"…","event":"config_change","actor":{"kind":"operator","auth":"none","pid":41221,"proc":"relay","parent":"claude"},
+ "credential":"agent_entry","subject":"p_acme","subject_name":"Acme",
+ "grants":["action=add","entry=mywrapper","kind=claude","model=sonnet","command=/opt/acme/bin/mywrapper","args=[\"--profile\",\"work\"]"],
+ "via":"cli","presence_id":"p_9a2…","outcome":"ok"}
+```
+
+- `action=` is `add`, `update` or `remove`; `entry=` is the entry's name.
+- `kind=` and `model=` are omitted when empty. `command=` and `args=` (a JSON
+  array) are omitted when the entry has no command.
+- An update that renames adds `renamed_from=<old name>`.
+- A remove carries `action`, `entry` and the `command` the entry ran.
+- `command=` is the absolute path the lookup resolved, never the name the
+  caller typed.
 
 ```
 relay audit --grep cli_admin        # every toggle and every remote narrowing

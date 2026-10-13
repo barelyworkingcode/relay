@@ -31,6 +31,7 @@ const (
 	eveRevokePosID = "gate-eve-passkey-revoke-pos"
 	fixturesID     = "verify-fixtures-removed"
 	revokePosID    = "gate-credential-revoke-pos"
+	agentPosID     = "gate-project-agent-pos"
 
 	p4Name          = "devbox-verify"
 	probePrefix     = "devboxverify-probe-"
@@ -58,6 +59,10 @@ var gateSetupJourneys = slices.Concat(
 		{mcpPosID, []string{"mcps", "presence", "audit"}, nil, phaseScreen, gateTimeout, runMcpPos},
 		{grantPosID, []string{"projects", "grants", "presence", "audit"}, nil, phaseScreen, gateTimeout, runGrantPos},
 		{servicePosID, []string{"services", "presence", "audit"}, nil, phaseScreen, gateTimeout, runServicePos},
+		// After the Verify Grant project exists: the entry is added to and removed from it.
+		{agentPosID, []string{"projects", "presence", "audit"}, nil, phaseScreen, 2 * gateTimeout, runAgentPos},
+		{agentsSettingsID, []string{"projects", "settings-ui", "presence", "audit"}, nil, phaseScreen, 120 * time.Second, runProjectAgentsSettings},
+		{agentsHostID, []string{"projects", "hosts", "sessions"}, nil, phaseScreen, 300 * time.Second, runProjectAgentsHost},
 		{readOnlyProfileID, []string{"sessions", "sandbox", "projects"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runReadOnlyProfile},
 	},
 )
@@ -674,6 +679,111 @@ func classifyServicePos(r servicePosRun) result {
 	return result{id, statePass, "registered after the prompt was answered; config change recorded with presence"}
 }
 
+type agentPosRun struct {
+	Add       frontendResponse
+	AddDialog dialogResult
+	Entry     agentEntry
+	ListedAdd bool
+	ListErr   error
+	AddRow    *audit.AuditEvent
+	AddRowErr error
+	Remove    frontendResponse
+	RemDialog dialogResult
+	GoneAfter bool
+	RemoveRow *audit.AuditEvent
+	RemRowErr error
+	WantCmd   string
+	WantEntry string
+}
+
+// runAgentPos adds an entry to the Verify Grant project through the gated
+// HTTP door, reads the entry back and its audit row, then removes it through
+// the same gate. The removal runs whenever the add was accepted, so the
+// project is left as it was found.
+func runAgentPos(ctx context.Context, e env) result {
+	token, res, ok := runCredential(e, agentPosID)
+	if !ok {
+		return res
+	}
+	pid := e.Run.GrantProjectID
+	if pid == "" {
+		return blocked(agentPosID, "no grant project: "+grantPosID+" did not pass")
+	}
+	r := agentPosRun{WantEntry: "verify-" + e.Nonce + "-pos", WantCmd: filepath.Join(e.BinDir, "testmcp")}
+	body := jsonBody(agentEntry{Name: r.WantEntry, Kind: "claude", Model: agentModel, Command: r.WantCmd})
+	r.Add, r.AddDialog = gatedFrontend(ctx, e, token, http.MethodPost, agentsPath(pid), body, fmt.Sprintf("%q", r.WantEntry))
+	if r.Add.Status == http.StatusCreated {
+		var v struct {
+			Entry agentEntry `json:"entry"`
+		}
+		_ = json.Unmarshal(r.Add.Body, &v)
+		r.Entry = v.Entry
+		var entries []agentEntry
+		entries, r.ListErr = listAgentEntries(ctx, e, token, pid)
+		r.ListedAdd = hasAgentEntry(entries, r.WantEntry)
+		r.AddRow, r.AddRowErr = agentConfigRow(ctx, e, pid, "add", r.WantEntry)
+
+		r.Remove, r.RemDialog = gatedFrontend(ctx, e, token, http.MethodDelete, agentsPath(pid)+"/"+r.WantEntry, nil, fmt.Sprintf("%q", r.WantEntry))
+		if r.Remove.Status == http.StatusOK {
+			entries, r.ListErr = listAgentEntries(ctx, e, token, pid)
+			r.GoneAfter = r.ListErr == nil && !hasAgentEntry(entries, r.WantEntry)
+			r.RemoveRow, r.RemRowErr = agentConfigRow(ctx, e, pid, "remove", r.WantEntry)
+		}
+	}
+	return classifyAgentPos(r)
+}
+
+func classifyAgentPos(r agentPosRun) result {
+	const id = agentPosID
+	fail := func(d string) result { return result{id, stateFail, d} }
+	if res, refused := positiveRefusal(id, r.Add.Error, r.AddDialog); refused {
+		return res
+	}
+	switch {
+	case r.Add.Status == 0:
+		return blocked(id, "frontend socket unreachable")
+	case r.Add.Status == http.StatusUnauthorized:
+		return blocked(id, "run credential refused (401)")
+	case r.Add.Status != http.StatusCreated:
+		return fail(fmt.Sprintf("POST %s status %d: %s", agentsPath("{id}"), r.Add.Status, r.Add.Error))
+	case r.Entry.Name != r.WantEntry || r.Entry.Command != r.WantCmd:
+		return fail(fmt.Sprintf("201 answered entry %q with command %q, want %q with %q", r.Entry.Name, r.Entry.Command, r.WantEntry, r.WantCmd))
+	case r.ListErr != nil:
+		return blocked(id, "list agents: "+r.ListErr.Error())
+	case !r.ListedAdd:
+		return fail("the new entry is not in GET " + agentsPath("{id}"))
+	}
+	if res, bad := agentRowFailure(id, "add", r.AddRow, r.AddRowErr, r.WantCmd); bad {
+		return res
+	}
+	if res, refused := positiveRefusal(id, r.Remove.Error, r.RemDialog); refused {
+		res.Detail = "remove: " + res.Detail
+		return res
+	}
+	switch {
+	case r.Remove.Status != http.StatusOK:
+		return fail(fmt.Sprintf("DELETE entry status %d: %s", r.Remove.Status, r.Remove.Error))
+	case !r.GoneAfter:
+		return fail("the entry is still listed after the gated remove")
+	}
+	if res, bad := agentRowFailure(id, "remove", r.RemoveRow, r.RemRowErr, r.WantCmd); bad {
+		return res
+	}
+	return result{id, statePass, "entry added and removed after each prompt was answered; listed between; both config changes recorded with presence and the resolved command"}
+}
+
+// agentRowFailure judges the config_change row an entry write should have
+// produced. An add row also names the resolved command.
+func agentRowFailure(id, action string, row *audit.AuditEvent, rowErr error, wantCmd string) (result, bool) {
+	if res, bad := rowFailure(id, "agent_entry "+action+" config_change", row, rowErr); bad {
+		return res, true
+	}
+	if !slices.Contains(row.Grants, "command="+wantCmd) {
+		return result{id, stateFail, fmt.Sprintf("agent_entry %s row grants %v do not name command=%s", action, row.Grants, wantCmd)}, true
+	}
+	return result{}, false
+}
+
 type rotatePosRun struct {
 	Resp      frontendResponse
 	Dialog    dialogResult
@@ -1018,8 +1128,8 @@ func runFixturesRemoved(ctx context.Context, e env) result {
 			r.Errs = append(r.Errs, err.Error())
 		}
 	}
-	for _, pattern := range []string{"grant-*", "crash-*.env"} {
-		matches, _ := filepath.Glob(filepath.Join(gateStateDir(), pattern))
+	for _, pattern := range []string{filepath.Join(gateStateDir(), "grant-*"), filepath.Join(gateStateDir(), "crash-*.env"), agentWrapperGlob()} {
+		matches, _ := filepath.Glob(pattern)
 		for _, m := range matches {
 			if err := os.RemoveAll(m); err != nil {
 				r.Errs = append(r.Errs, "cannot remove a state entry: "+err.Error())

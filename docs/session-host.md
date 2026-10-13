@@ -236,6 +236,37 @@ Error codes C5 names explicitly, each mapped from a manager error:
 | 502 | `identity_refused` | the shim's Hello did not bind |
 | 500 | `spawn_failed` | the target process could not be started (a target that starts and exits at once is not this: the launch is `201` and the exit is reported like any other) |
 
+### Launcher: an agent entry's program
+
+A start by agent entry may carry a launcher: `LaunchRequest.launcher`, JSON
+`{"command":"/abs/path","args":["..."]}`, omitted when the entry has no
+command. `entry` also rides on the request body so the session host can
+record it. relay decides both; relay-sessions never reads a launcher from
+disk.
+
+- **Argv.** The kind's program is `[command, args..., <the kind's own args>]`
+  in place of `[claudePath | codexPath | piPath, <the kind's own args>]`
+  (`Launcher.Program(fallback)`). The launcher's `args` are passed verbatim:
+  they do not go through `expandArgv`. No environment is added.
+- **On a host.** The same argv goes through `RemoteCommandForOS`, so the
+  command is an absolute path on the host. A launcher also skips the refusal
+  for an empty `ClaudePath` or `CodexPath`: the entry names the program, so
+  the host's own claude or codex path need not be set.
+- **Refused.** A launcher on a `pty` or `chat` launch, or one whose command is
+  not an absolute path, is `400 invalid_spec`.
+- **No model.** A claude or codex entry may have no model. The request then
+  carries `entry` and no `model`: the blank-model refusal is skipped for those
+  two kinds when `entry` is set, claude leaves out `--model`, and codex leaves
+  out the `model` key, so the program's own default applies. A start without an
+  entry keeps the refusal.
+- **Sandbox.** A local entry's command file is added to the session's sandbox
+  read list as a literal, so the profile lets it run. relay checks first that
+  it is a regular file, and refuses `entry_invalid` otherwise.
+- **Ledger and resume.** The ledger record gains `entry`. A resume re-reads the
+  entry by name and sends its current launcher with the stored model; a
+  removed entry refuses the resume `entry_not_found`, and an entry whose kind
+  has changed refuses it `entry_invalid`.
+
 ### Read-only projects (`settings.readOnlyProjects`)
 
 A claude session started with `settings.readOnlyProjects: true` reads every

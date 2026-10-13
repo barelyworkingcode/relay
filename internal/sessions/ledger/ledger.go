@@ -47,6 +47,9 @@ type Record struct {
 	// Origin is who started the session when it was not the person; a resume
 	// carries it back to the host.
 	Origin string `json:"origin,omitempty"`
+	// Entry names the project agent entry the session started from; a resume
+	// reads that entry again for its current launcher.
+	Entry string `json:"entry,omitempty"`
 	// SessionRequest is the exact eve-facing create body relay pushed to
 	// relay-sessions (after policy merge) — kept so a resume can rebuild an
 	// equivalent LaunchSpec without asking the (possibly gone) original

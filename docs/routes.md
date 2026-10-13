@@ -111,7 +111,7 @@ depends on the route family:
 
 | Family | Refusal status |
 |---|---|
-| Project routes (`project.grant`, `project.rotate_token`) | `403` |
+| Project routes (`project.grant`, `project.rotate_token`, `project.agent`) | `403` |
 | Service, MCP, enrolment and remote-config routes | `500` |
 
 The `500` is what the code answers today; the event line still reads `denied`.
@@ -179,6 +179,7 @@ application/json`; the entry gives the field table.
 | `allowed_mcp_ids` | string[] | MCP IDs the project may use; `["*"]` means all |
 | `allowed_models` | string[] | Model IDs; empty or `["*"]` means all |
 | `chat_templates` | object[] | Chat templates (`id`, `name`, `model`, `mode`, `voice`, `system_prompt`) |
+| `agents` | object[] | The project's agent list (`name`, `kind`, `model`, `command`, `args`); absent when empty. Written only through the agent routes |
 | `allowed_templates` | string[] | Terminal template IDs; `["*"]` means all |
 | `created_at` | string | RFC 3339 |
 | `disabled_tools` | object | MCP ID to tool names turned off |
@@ -270,7 +271,8 @@ stopping are forwarded to the session host (section 3).
   | Field | Type | Meaning |
   |---|---|---|
   | `projectId` | string | Project to launch in (required for a project session) |
-  | `model` | string | `haiku`, `sonnet` or `opus` (Claude), `pi/<id>`, `codex/<id>`, or any other model ID (a chat session) |
+  | `model` | string | `haiku`, `sonnet` or `opus` (Claude), `pi/<id>`, `codex/<id>`, or any other model ID (a chat session). Send `model` or `entry`, not both |
+  | `entry` | string | The name of an agent in the project's agent list, matched without regard to case. The agent sets the kind, the model and the program the session runs |
   | `directory` | string | Working directory; must lie inside the project |
   | `name` | string | Session name |
   | `settings` | object | Client settings, merged under the project's `permission_policy`; `headless: true` makes a headless session, and `agent: true` with it keeps a headless session tracked; `readOnlyProjects: true` (claude only) reads every local project and writes none (`400 invalid_settings` for a non-bool, `400 read_only_needs_claude` for another kind, `403 read_only_local_only` for a host project) |
@@ -297,14 +299,42 @@ stopping are forwarded to the session host (section 3).
   | Status | Codes |
   |---|---|
   | `403` | `caller_not_authorized`, `project_required`, `project_not_available`, `template_not_allowed`, `provider_not_available_on_host`, `model_not_allowed`, `model_system_only`, `directory_outside_project`, `read_only_local_only`, `session_id_not_allowed`, `session_not_resumable`, `persist_session_invalid`, `tmux_not_available` |
-  | `400` | `invalid_kind`, `invalid_request`, `invalid_settings`, `model_required`, `read_only_needs_claude`, `host_unavailable`, `model_endpoint_unavailable`, `model_key_mint_failed`, `sandbox_unavailable`, `internal` |
+  | `404` | `entry_not_found` |
+  | `400` | `invalid_kind`, `invalid_request`, `invalid_settings`, `model_required`, `model_or_entry`, `entry_invalid`, `model_not_offered`, `read_only_needs_claude`, `host_unavailable`, `model_endpoint_unavailable`, `model_key_mint_failed`, `sandbox_unavailable`, `internal` |
   | `502` | `persist_list_failed` |
+  | `503` | `models_unavailable` |
 
   A launch needs the kind's template in the project's `allowed_templates`
   (`["*"]` covers all): `claude-code` for a Claude model, `pi`, `codex`, or
   `chat` for any other model ID. A chat launch in a project whose list lacks
   `chat` is refused `template_not_allowed`.
-- **Event:** `session.launch` (fields `session_id`, `project_id`, `kind`). On a
+- **Start by agent entry:** a body with `entry` and no `model` starts the
+  named agent of the project's list. The check runs after the project and
+  directory checks, so only a caller already allowed to launch in the project
+  sees the names.
+  1. relay finds the entry in this project's list only. An unknown name is
+     `404 entry_not_found`, and the message lists the project's agent names
+     (`no agent "x" in Acme; agents: a, b`, or `Acme has no agents`).
+  2. The entry sets the kind and the model. The kind's template and the
+     project's `allowed_models` apply as for any start. An entry with no
+     model on a project that restricts `allowed_models` is
+     `403 model_not_allowed`.
+  3. The kind must offer the model: `haiku`, `sonnet` and `opus` for claude,
+     the codex slugs for codex, the model endpoint's non-system model ids for
+     pi. Otherwise `400 model_not_offered`, and the message lists the offered
+     models. A list relay cannot read is `503 models_unavailable`. A claude or
+     codex entry with no model starts on the binary's own default.
+  4. A stored entry that no longer passes validation, or whose command file is
+     not a regular file on the local machine, is `400 entry_invalid`.
+  5. An entry with a `command` starts that program with its `args` in front of
+     the kind's own arguments, on the project's machine. An entry with none
+     starts the kind's default binary, as a start without an entry does.
+
+  A body with both `model` and `entry` is `400 model_or_entry`. A body with
+  neither is `400 model_required`, as before. A project with no agent list
+  starts exactly as it did.
+- **Event:** `session.launch` (fields `session_id`, `project_id`, `kind`, and
+  `entry` and `command` when the start named an agent). On a
   launch refusal the status is `denied` and `reason` is the launch refusal
   code, including for a `400` such as a blank model. A malformed or oversized
   body writes no `session.launch` event.
@@ -618,6 +648,89 @@ the stored value.
   regeneration is unavailable in this process; `500` other failures.
 - **Event:** `project.regen_skill` (`project_id`).
 - **CLI equivalent:** `relay project regen-skill`.
+
+### GET /api/projects/{id}/agents
+
+- **Listeners:** socket, tcp. **Credential:** `read`. **Gate:** none.
+- **Response `200`:** `{"projectId","entries":[...]}`, each entry
+  `{"name","kind","model"?,"command"?,"args"?}` in stored order. A remote
+  project answers `200` with `entries: []`.
+- **Errors:** `404 project_not_found`.
+- **Event:** `agent.list` (`project_id`, `count`).
+- **CLI equivalent:** `relay project agents list`.
+
+### POST /api/projects/{id}/agents
+
+- **Listeners:** socket, tcp. **Credential:** `configure`.
+  **Gate:** `project.agent`.
+- **Request:** one agent entry, at most 64 KiB, unknown keys refused.
+
+  | Field | Type | Meaning |
+  |---|---|---|
+  | `name` | string | What a person says to start it. 1 to 40 letters, digits, dots, dashes or underscores, starting with a letter or digit. Unique in the project, without regard to case, across agents and chat templates |
+  | `kind` | string | `claude`, `codex` or `pi`. `pi` is refused on a host project |
+  | `model` | string | Optional for claude and codex, required for pi. At most 200 bytes, no spaces or control characters. Shape only: whether the kind offers it is checked at start |
+  | `command` | string | A program name (looked up in the login shell on the project's machine) or an absolute path (no `\`, `'`, `"`, `$` or backtick). relay stores the absolute path the lookup returns |
+  | `args` | string[] | Only with `command`. At most 16, each at most 256 bytes, no NUL and no `${`. Passed verbatim, never expanded |
+
+  A project holds at most 32 agents.
+- **Response `201`:** `{"projectId","projectName","machine","entry"}`.
+  `machine` is `this Mac` or the host's name; `entry.command` is the stored
+  absolute path.
+- **Errors** (the coded family `{"error","message"}`, in this order):
+
+  | Status | `error` | When |
+  |---|---|---|
+  | `400` | `invalid_body` | not one JSON entry, or an unknown key |
+  | `400` | `name_invalid`, `kind_invalid`, `model_invalid`, `model_required`, `command_invalid`, `args_need_command`, `args_invalid` | the entry's shape |
+  | `404` | `project_not_found` | unknown project id |
+  | `400` | `project_not_available` | a remote project, which has no sessions |
+  | `400` | `kind_not_available_on_host` | pi on a host project |
+  | `400` | `too_many_entries` | over 32 |
+  | `409` | `name_taken` | the message names the clash: `"Researcher" is already a chat template in Acme`, or `... an agent in Acme` |
+  | `422` | `command_not_found` | also carries `command` and `machine`: `mywrapper was not found on testbox` |
+  | `502` | `machine_unreachable` | also carries `machine`: `testbox could not be reached: <ssh text>` |
+  | `403` | | the prompt was refused, or the write could not be recorded; the Simple family `{"error"}` |
+  | `409` | `project_changed` | the project's host or kind moved, or the entry changed, while the prompt was open |
+
+  A command that the login shell reports only as a builtin, alias or function
+  is `command_not_found`: the answer must be an absolute path.
+- **Event:** `agent.add` (`project_id`, `name`, `machine`). Presence refusals
+  write the event with `status: denied`.
+- **Audit row:** `config_change` (credential `agent_entry`, subject the
+  project ID) with the owner's `presence_id`.
+- **CLI equivalent:** `relay project agents add`.
+
+### PUT /api/projects/{id}/agents/{name}
+
+- **Listeners:** socket, tcp. **Credential:** `configure`.
+  **Gate:** `project.agent`.
+- **Request:** the whole replacement entry, as for `POST`. A different `name`
+  renames the entry. The path `name` matches without regard to case.
+- **Response `200`:** as for `POST`.
+- **Errors:** as for `POST`, with `404 entry_not_found`
+  (`no agent "x" in Acme`) in place of `too_many_entries`.
+- **Event:** `agent.update` (`project_id`, `name`, `machine`).
+- **Audit row:** `config_change` (credential `agent_entry`); a rename adds
+  `renamed_from`.
+- **CLI equivalent:** `relay project agents update`.
+
+### DELETE /api/projects/{id}/agents/{name}
+
+- **Listeners:** socket, tcp. **Credential:** `configure`.
+  **Gate:** `project.agent`.
+- **Response `200`:** `{"projectId","name"}`.
+- **Errors:** `404 project_not_found` or `entry_not_found`; `403` the prompt
+  was refused or the write could not be recorded; `409 project_changed`.
+- **Event:** `agent.remove` (`project_id`, `name`, `machine`).
+- **Audit row:** `config_change` (credential `agent_entry`) naming the command
+  the entry ran.
+- **CLI equivalent:** `relay project agents remove`.
+
+`POST /api/projects` and `PUT /api/projects/{id}` never write `agents`: a body
+key `agents` is not read, and a save through them leaves the list as stored.
+A chat template save that reuses an agent's name is refused on those routes
+with `400` and `"Researcher" is already an agent in Acme`.
 
 ## 2.3 MCP servers and tools (G3)
 

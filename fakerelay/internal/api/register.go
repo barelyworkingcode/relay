@@ -38,6 +38,7 @@ func Register(r server.Registrar, d server.Deps) error {
 		return err
 	}
 	a.projectRoutes(r)
+	a.agentRoutes(r)
 	a.cosConfigRoutes(r)
 	a.hostRoutes(r)
 	a.templateRoutes(r)

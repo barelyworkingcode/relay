@@ -395,6 +395,7 @@ Project JSON (the `projectView`). Keys use relay's `settings.json` names.
 |---|---|
 | `id`, `name`, `path`, `mode`, `allowed_mcp_ids`, `allowed_models`, `allowed_templates`, `created_at` | always present |
 | `mode` | `home`, `work` or `both`. A stored empty mode reads as `both` |
+| `agents` | omitted when empty. The project's agent entries, see Agents below |
 | `kind`, `host_id`, `default_for`, `chat_templates`, `disabled_tools`, `context`, `allowed_tools`, `access`, `allow_external`, `permission_policy`, `generate_skill`, `session_folders`, `mounts`, `files_read_only` | omitted when empty or false |
 | `kind` | omitted for a local project. `remote` marks an access profile |
 
@@ -447,8 +448,89 @@ name answers 400 `{"error":"project name is required"}` before the gate. A
 `POST` or widening `PUT` while auditing is off answers 403, because the gate
 needs an audit trail.
 
+A chat template whose name equals an agent name (case-insensitive) on a
+non-remote project answers 400 `{"error":"\"Researcher\" is already an agent in
+Acme"}` on `POST` and `PUT /api/projects`. `agents` is never read from a
+project body; only the agent routes write it.
+
 Events: `project.list`, `project.get`, `project.create` (with `project_id` and `kind`; `kind` is the body's, so `""` for a local project, and both are `""` on a refusal), `project.update`,
 `project.remove`.
+
+#### Agents
+
+A project holds up to 32 named agent entries. Entry JSON:
+
+```json
+{"name":"mywrapper","kind":"claude","model":"sonnet","command":"/opt/acme/bin/mywrapper","args":["--profile","work"]}
+```
+
+`model`, `command` and `args` are omitted when empty.
+
+| Route | Class | Success |
+|---|---|---|
+| `GET /api/projects/{id}/agents` | read | 200 `{"projectId","entries":[…]}`; a remote project answers `entries: []` |
+| `POST /api/projects/{id}/agents` | configure, gate `project.agent` | 201 `{"projectId","projectName","machine","entry"}` |
+| `PUT /api/projects/{id}/agents/{name}` | configure, gate `project.agent` | 200, same body. The body replaces the entry whole and may rename it |
+| `DELETE /api/projects/{id}/agents/{name}` | configure, gate `project.agent` | 200 `{"projectId","name"}` |
+
+The body of `POST` and `PUT` is an entry, at most 64 KiB, with no unknown key.
+Rules: `name` matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`; `kind` is `claude`,
+`codex` or `pi`; `model` is at most 200 bytes with no whitespace or control
+character, and `pi` needs one; `command` is a bare name
+(`^[A-Za-z0-9._+][A-Za-z0-9._+-]{0,63}$`) or an absolute path of at most 1024
+bytes with no control character, no `..` segment and none of `\`, `'`, `"`, `$` or
+backtick; `args` (at most 16, each
+at most 256 bytes, no NUL, no `${`) need a `command`.
+
+Errors are `{"error":<code>,"message":<text>}`. Checks run in this order, and
+the first failure answers:
+
+| Order | Status | `error` | `message` |
+|---|---|---|---|
+| 1 | 400 | `invalid_body` | `request body must be one JSON agent entry`, for bad JSON, an unknown key, trailing data and an oversize body alike. No event |
+| 2 | 400 | `name_invalid` | `agent name must be 1 to 40 letters, digits, dots, dashes or underscores, starting with a letter or digit` |
+| 2 | 400 | `kind_invalid` | `kind must be claude, codex or pi` |
+| 2 | 400 | `model_invalid` | `model must be at most 200 bytes with no spaces or control characters` |
+| 2 | 400 | `model_required` | `a pi agent needs a model` |
+| 2 | 400 | `command_invalid` | `command must be a program name or an absolute path` |
+| 2 | 400 | `args_need_command` | `args need a command` |
+| 2 | 400 | `args_invalid` | `args: at most 16, each at most 256 bytes, with no NUL or ${` |
+| 3 | 404 | `project_not_found` | `project not found` |
+| 4 | 400 | `project_not_available` | `project is not available for agents` (a remote project) |
+| 5 | 400 | `kind_not_available_on_host` | `pi is not available on a host project` |
+| 6 | 400 | `too_many_entries` | `a project holds at most 32 agents` (add) |
+| 6 | 404 | `entry_not_found` | `no agent "x" in Acme` (update, remove) |
+| 7 | 409 | `name_taken` | `"Researcher" is already a chat template in Acme` or `… an agent in Acme` |
+| 8 | 422 | `command_not_found` | `mywrapper was not found on testbox`, plus `command` and `machine` keys |
+| 8 | 502 | `machine_unreachable` | `testbox could not be reached: <text>`, plus `machine`. Only when the host's agent status is `unreachable` |
+| 9 | 403 | | `{"error":"presence was refused"}` (gate `project.agent`) |
+| 10 | 409 | `project_changed` | `Acme changed while the request was being approved; try again` |
+| 10 | 400 | `too_many_entries` | as above |
+
+Step 1 reads the body before the project is looked up, so `DELETE` skips it.
+`machine` is `this Mac` for a console project and the host's `name` for a host
+project. A rename is checked against every other entry and every chat
+template. Presence is asked after the lookup, so a refused write never
+reaches the store. The re-check in step 10 refuses when the project's host
+or kind moved, or when the entry no longer equals what step 6 read (an add
+whose name has appeared counts).
+
+The lookup is a walk over a `PATH` list, with no shell: `host_path` for a host
+project, else `local_path`, else fakerelay's own `PATH`. A bare name resolves
+to the first regular file with an execute bit in an absolute directory of that
+list. An absolute input must itself exist and be executable. The stored
+`command` is the absolute path. A hosted project's files and commands both
+live on this machine; the host name is only the label in `machine`.
+
+Events: `agent.list` carries `project_id` and `count`. `agent.add`,
+`agent.update` and `agent.remove` carry `project_id`, `name` (the entry's new
+name for an update, the removed name for a remove) and `machine` once the command lookup has
+succeeded, whether or not the entry has a command. A refusal before or at the
+lookup carries no `machine`; a presence refusal or a changed project does. A
+refusal's `reason` is `invalid` (400, 422), `not_found`, `conflict` (409),
+`upstream` (502), or `presence_refused` and `presence_timeout`. A presence
+refusal's `control_decision` row has `method: "project.agent"` and `subject`
+set to the project id, not its name.
 
 ### Chief of Staff
 
@@ -884,6 +966,22 @@ user message in its history, so `messageCount` is 1 after one turn. Success is 2
 a host project, as `{"id","name","ssh_argv",…}`; a console project has no
 `host` key.
 
+`entry` (an agent name in the project) replaces `model`: send exactly one.
+The name resolves case-insensitively in that project's agents. The session's
+`kind` is the entry's `kind` and its `model` is `SessionModel`: `claude` is
+the entry's model, `codex` is `codex/<model>`, `pi` is `pi/relay-router/<model>`,
+and `""` when the entry has none. The project checks run first, so an
+unknown project never learns agent names. An entry with a `command` gives the
+session a `launcher`, `{"command","args"}`, which `ctl state` shows on that
+session's row. The `session.launch` event carries `entry`, and `command` when
+the entry has one.
+
+Offered models: `claude` offers `haiku`, `sonnet`, `opus`; `codex` offers the
+world's `codex` provider rows without the `codex/` prefix; `pi` offers the
+world's rows that read as `chat` (provider other than `claude`, `codex` or
+`pi`, and no `pi/` or `codex/` prefix). An entry with a model that is not in
+the list is refused, and the list is cut to the project's `allowed_models`.
+
 A refusal is `{"error":"<message>"}` (Simple family, no code). Statuses and
 texts:
 
@@ -896,6 +994,12 @@ texts:
 | 403 | `model is not allowed for this project` |
 | 403 | `model "<id>" is reserved for system use and cannot host a chat session` |
 | 400 | `chat session has no model; choose a model and try again` |
+| 400 | `send model or entry, not both` (event reason `model_or_entry`) |
+| 404 | `no agent "x" in Acme; agents: a, b`, or `no agent "x" in Acme; Acme has no agents` (`entry_not_found`; names in stored order) |
+| 400 | `agent "x" is not valid: <rule message>` (`entry_invalid`: a seeded entry that fails the stored-entry rules) |
+| 400 | `model "x" is not offered for codex; models: a, b` (`model_not_offered`) |
+| 503 | `the model list for codex could not be read` (`models_unavailable`: the kind offers no model) |
+| 403 | `agent "x" has no model, and Acme allows only its listed models` (`model_not_allowed`) |
 | 400 | `unknown session kind "<kind>"` |
 | 400 | `invalid JSON: <decoder text>` |
 | 413 | `request body too large` |
@@ -1561,12 +1665,14 @@ Schema 1:
 | `schema` | `1` | required |
 | `listeners` | `{api, model}`: loopback `host:port`, or `""` for off | `api: "127.0.0.1:0"`, `model: ""` |
 | `credentials[]` | `{id, name, classes[], token, expires?}`, a bearer for socket or TCP | none |
-| `presence` | `{<op>: "approve"\|"deny"\|"timeout"}` for `project.grant`, `eve.enrolment.open`, `eve.passkey.revoke` | an absent op is deny |
+| `presence` | `{<op>: "approve"\|"deny"\|"timeout"}` for `project.grant`, `project.agent`, `eve.enrolment.open`, `eve.passkey.revoke` | an absent op is deny |
 | `faults[]` | a fault, see Faults | none |
 | `projects[]` | `id, name, path, kind, host_id, mode, files_read_only, allowed_mcp_ids, allowed_models, allowed_templates, chat_templates, permission_policy`, plus `files` and `repos` | `path ""` is `DIR/projects/<id>` |
 | `projects[].files` | `{rel: string \| null (dir) \| {"base64"} \| {"symlink": target}}`, written after `repos`, so it sets the worktree state | |
 | `projects[].repos[]` | `{dir, branch, commits: [{message, files}]}`. Real `git init`, `add` and `commit` | |
-| `host_path` | the `PATH` a host probe looks `node`, `claude` and `tmux` up on | fakerelay's own `PATH` |
+| `projects[].agents[]` | `{name, kind, model, command, args}`, a seeded agent list. A stored `command` is an absolute path. The agent rules below apply; a violation fails the load at `projects[i].agents[j]` | none |
+| `host_path` | the `PATH` a host probe looks `node`, `claude` and `tmux` up on, and an agent command on a hosted project | fakerelay's own `PATH` |
+| `local_path` | the `PATH` an agent command on a console project is looked up on | fakerelay's own `PATH` |
 | `default_project` | `{home, work}` | absent |
 | `chief_of_staff` | `{project_id, model, daily_model_calls}` | absent |
 | `hosts[]` | `id, name, target, port, identity_file, probe (with node_version and claude_version), tmux_path, terminal_templates`, plus the fake fields `root`, `agent`, `persistent_sessions` | `root ""` is `DIR/hosts/<id>`. `agent "none"` |
@@ -1732,7 +1838,8 @@ credential and is not on any TCP listener. `ctl` is the client.
 | `POST /v1/verb` `{argv, trace, body}` gives `{code, stdout, stderr}`; `body` is base64 bytes, the file of `project create\|edit` | the CLI forwarder |
 | `GET /v1/follow`: NDJSON `{file, size}` per append | inside `logs --follow` |
 
-- `ctl state` returns the live state. `--json` prints it as JSON.
+- `ctl state` returns the live state. `--json` prints it as JSON. A session
+  started by an agent entry with a command has `launcher` on its row.
 - `ctl host status` answers only after the `host_status` frame has gone to
   every `/ws/files` connection.
 - `ctl fs-event` answers `{delivered}`, the number of connections that got the
@@ -1795,7 +1902,7 @@ Named errors:
 ## Presence
 
 The world's `presence` map, or `ctl presence`, sets the outcome for each gated
-op. The ops are `project.grant`, `eve.enrolment.open` and
+op. The ops are `project.grant`, `project.agent`, `eve.enrolment.open` and
 `eve.passkey.revoke`. An absent op is `deny`.
 
 | Outcome | Result |
@@ -1809,7 +1916,9 @@ op. The ops are `project.grant`, `eve.enrolment.open` and
   that waits for a timeout waits for that event with `answer: timeout`.
 - The prompt is not shown anywhere. The outcome is the whole gate.
 - The `eve enrol` verb and `POST /api/projects` go through the gate. So does a
-  widening `PUT` (see Projects).
+  widening `PUT` (see Projects). Every agent add, update and remove goes
+  through `project.agent`.
+- `ctl presence project.agent=approve` sets it at run time like any op.
 - A change to the map takes effect on the next request.
 
 ## Launch
@@ -1939,7 +2048,11 @@ Where fakerelay differs from relay on purpose:
 - tool calls through the bridge;
 - tasks. A service that registers a manifest for them serves them, and
   fakerelay dispatches to it;
-- the tray and the presence prompt UI.
+- the tray and the presence prompt UI;
+- `config_change` audit rows, including the `agent_entry` row of an agent
+  write;
+- the login-shell lookup of an agent command (builtins, aliases and shell
+  functions): fakerelay walks a `PATH` list instead.
 
 A route not listed in the Surface section is a gap. Report it as a new issue
 with the route and the client that needs it.

@@ -270,6 +270,10 @@ type appRouter struct {
 	// one queue.
 	projectOps *ProjectOps
 
+	// agentListOps backs the `project.agents.*` admin ops: the SAME instance
+	// as the agent routes and the Settings window.
+	agentListOps *AgentListOps
+
 	// The remaining fields are the cores the operator-only admin ops reach.
 	// Each is the instance the Settings window or the HTTP routes hold. A
 	// test or partial router leaves them nil and the op refuses by name.

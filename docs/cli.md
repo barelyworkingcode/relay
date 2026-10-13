@@ -137,6 +137,10 @@ credential class and its gates.
 | `relay project rotate-token` | yes | **yes** | no |
 | `relay project token` | yes | **yes** | no |
 | `relay project regen-skill` | yes | no | yes |
+| `relay project agents list` | yes | no | yes |
+| `relay project agents add` | yes | **yes** | no |
+| `relay project agents update` | yes | **yes** | no |
+| `relay project agents remove` | yes | **yes** | no |
 | `relay mcp authenticate` | yes | **yes** | no |
 | `relay mcp reset-permissions` | yes | no | yes |
 | `relay mcp scope-fields` | yes | no | yes |
@@ -1531,6 +1535,13 @@ relay project remove --id ID [--json]
 relay project rotate-token --id ID [--json]
 relay project token --id ID [--json]
 relay project regen-skill --id ID [--json]
+relay project agents list   --id ID [--json]
+relay project agents add    --id ID --name N --kind claude|codex|pi [--model M]
+                            [--command C] [--arg A]... [--json]
+relay project agents update --id ID --name N [--new-name N2] [--kind K]
+                            [--model M | --no-model] [--command C | --no-command]
+                            [--arg A]... | [--no-args] [--json]
+relay project agents remove --id ID --name N [--json]
 ```
 
 Every `relay project` verb is operator-only and calls the cores the
@@ -1676,6 +1687,87 @@ Flags: `--id` (the project id, required) and `--json`. `--json` prints:
 | `path` | string | The skills directory, `<project>/.claude/skills`. Each MCP's `SKILL.md` is one folder down, at `relay-<slug>/SKILL.md`. |
 
 Text mode prints `regenerated the skill in PATH`. Exit codes: `0`; `1` when relay is not running or the server refuses the act (`error: bridge error (code -32603): ...`) or a required flag is missing; `2` for an unknown flag.
+
+### `project agents list`
+
+Needs service: yes. Prompts: no. Works over SSH: yes. Lists the project's agent
+list: the named agents a session can start with `relay session start --entry`.
+A project with none prints `no agents`. A remote project has none.
+
+Flags: `--id` (the project id, required) and `--json`. `--json` prints the
+`GET /api/projects/{id}/agents` body:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `projectId` | string | The project id. |
+| `projectName` | string | The project name. |
+| `entries` | array | One element per agent, in stored order. `[]` when none. |
+| `entries[].name` | string | The agent's name. |
+| `entries[].kind` | string | `claude`, `codex` or `pi`. |
+| `entries[].model` | string, optional | The model. |
+| `entries[].command` | string, optional | The absolute path of the program the agent runs. |
+| `entries[].args` | string[], optional | Arguments placed after the command. |
+
+Text mode prints a table with the columns `NAME`, `KIND`, `MODEL`, `COMMAND`
+and `ARGS`. Exit codes: `0`; `1` when relay is not running, the project is
+unknown or the id is missing; `2` for an unknown flag.
+
+### `project agents add`
+
+Needs service: yes. Prompts: yes (`project.agent`). Works over SSH: no. Adds
+an agent to the project. `--command` takes a program name or an absolute path (no `\`, `'`, `"`, `$` or backtick).
+relay looks a name up in the login shell of the project's machine (this Mac,
+or the SSH host of a host project) and stores the absolute path it finds. A
+name the shell reports only as a builtin, alias or function is not found.
+`--arg` is repeatable and keeps its order; the arguments are passed as given,
+with no expansion. The prompt names the agent, the project, the resolved path
+and the machine.
+
+Flags: `--id`, `--name` and `--kind` (required); `--model` (required for `pi`),
+`--command`, `--arg` and `--json`. `--json` prints the `POST
+/api/projects/{id}/agents` body:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `projectId` | string | The project id. |
+| `projectName` | string | The project name. |
+| `machine` | string | `this Mac`, or the host's name. |
+| `entry` | object | The stored entry: `name`, `kind`, `model`, `command`, `args`. |
+
+Text mode prints `added agent NAME in PROJECT (runs PATH on MACHINE)`; an agent
+with no command reads `runs the KIND default`. Exit codes: `0` added; `1` when
+relay is not running, when it is run where it cannot prompt (`error: refused:
+this needs your confirmation on the Mac's screen ...`), when the prompt is
+declined, when `--name` or `--kind` is missing, and when the server refuses the
+act with a coded message (`name_taken`, `command_not_found`,
+`machine_unreachable`, `too_many_entries` and the shape codes in
+[`routes.md`](routes.md#post-apiprojectsidagents)); `2` for an unknown flag.
+
+### `project agents update`
+
+Needs service: yes. Prompts: yes (`project.agent`). Works over SSH: no.
+Changes an agent. The verb lists the project's agents, merges the flags you
+give into the named entry, and sends the whole entry; a flag you leave out
+keeps the stored value. `--new-name` renames. `--model` and `--no-model`,
+`--command` and `--no-command`, and `--arg` and `--no-args` are exclusive
+pairs, and `--arg` with `--no-command` is refused. `--no-command` clears the
+args too. `--arg` replaces the whole list.
+
+Flags: `--id` and `--name` (required), `--new-name`, `--kind`, `--model`,
+`--no-model`, `--command`, `--no-command`, `--arg`, `--no-args` and `--json`.
+`--json` prints the `PUT /api/projects/{id}/agents/{name}` body, shaped as for
+`add`. Text mode prints `updated agent NAME in PROJECT (runs PATH on MACHINE)`.
+Exit codes: as for `add`; an unknown `--name` is `1`
+(`error: no agent "x" in PROJECT`).
+
+### `project agents remove`
+
+Needs service: yes. Prompts: yes (`project.agent`). Works over SSH: no. Removes
+an agent. Removal is gated like the other writes: see
+[`presence-gate.md`](presence-gate.md). `--json` prints `{"projectId","name"}`.
+
+Flags: `--id` and `--name` (required) and `--json`. Text mode prints `removed
+agent NAME`. Exit codes: as for `add`; an unknown agent is `1`.
 
 ## `relay mcp`
 
@@ -2429,7 +2521,7 @@ When the session host is down every verb exits `1` with `error: bridge error
 the verbs and exits `1`.
 
 ```
-relay session start --project ID --model M [--name N] [--directory D]
+relay session start --project ID (--model M | --entry N) [--name N] [--directory D]
                     [--settings JSON] [--system-prompt S] [--append-claude-md]
 relay session start --file F            # POST /api/sessions body
 relay session list
@@ -2449,7 +2541,8 @@ host that is down; `2` for an unknown flag.
 | Flag | Meaning |
 |---|---|
 | `--project` | Project id. Required unless `--file`. |
-| `--model` | Model id, from `relay model list`. Required unless `--file`. |
+| `--model` | Model id, from `relay model list`. Required unless `--entry` or `--file`. |
+| `--entry` | The name of an agent in the project's list (`relay project agents list`). The agent sets the kind, the model and the program. Cannot be combined with `--model`. |
 | `--name` | Session name. Default: the host chooses. |
 | `--directory` | Working directory inside the project. Default: the project folder. |
 | `--settings` | Client settings, a JSON object. Must be valid JSON. |
@@ -2458,8 +2551,11 @@ host that is down; `2` for an unknown flag.
 | `--file` | The `POST /api/sessions` body as a JSON file, or `-` for stdin, instead of the flags. Cannot be combined with them. |
 | `--json` | Print the new session as JSON. |
 
-With neither `--project` and `--model` nor `--file` it exits `1`:
-`error: pass --project and --model, or --file`. `--json` prints the session as
+With neither `--project` with `--model` or `--entry`, nor `--file`, it exits `1`:
+`error: pass --project and --model or --entry, or --file`. `--model` with `--entry` exits `1`
+with `send model or entry, not both`. An unknown agent exits `1` with
+`no agent "x" in PROJECT; agents: a, b`, and a model the agent's kind does not
+offer exits `1` with the offered models in the message. `--json` prints the session as
 the `POST /api/sessions` 201 body; the fields a script reads:
 
 | Field | JSON type | Meaning |

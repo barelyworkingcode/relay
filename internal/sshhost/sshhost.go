@@ -284,24 +284,25 @@ func probeScript() string {
 	line(sentinelArch, "uname -m 2>/dev/null")
 	line(sentinelHome, `printf '%s\n' "$HOME"`)
 	line(sentinelShell, `printf '%s\n' "$SHELL"`)
-	line(sentinelLoginNode, loginShellLookup("node"))
-	line(sentinelLoginClaude, loginShellLookup("claude"))
+	line(sentinelLoginNode, LoginShellLookup("node"))
+	line(sentinelLoginClaude, LoginShellLookup("claude"))
 	line(sentinelPlainNode, "command -v node 2>/dev/null")
 	line(sentinelPlainClaude, "command -v claude 2>/dev/null")
-	line(sentinelLoginTmux, loginShellLookup("tmux"))
+	line(sentinelLoginTmux, LoginShellLookup("tmux"))
 	line(sentinelPlainTmux, plainTmuxLookup)
 	b.WriteString("echo ")
 	b.WriteString(sentinelEnd)
 	return b.String()
 }
 
-// loginShellLookup asks $SHELL -lic where tool lives. A Windows host's
+// LoginShellLookup asks $SHELL -lic where name lives. A Windows host's
 // OpenSSH sets $SHELL to cmd.exe or powershell.exe even when the probe runs
 // under Git's sh; neither understands -lic (cmd starts an interactive session
 // and prints its banner), so any *.exe shell is skipped and the plain-PATH
-// fallback answers instead.
-func loginShellLookup(tool string) string {
-	return `case "$SHELL" in ''|*.exe|*.EXE) ;; *) "$SHELL" -lic 'command -v ` + tool + `' 2>/dev/null ;; esac`
+// fallback answers instead. name is quoted twice, once for the inner command
+// and once for the outer shell, so it can be any string.
+func LoginShellLookup(name string) string {
+	return `case "$SHELL" in ''|*.exe|*.EXE) ;; *) "$SHELL" -lic ` + shQuote("command -v "+shQuote(name)) + ` 2>/dev/null ;; esac`
 }
 
 // plainTmuxLookup is the plain-PATH tmux lookup. On a Windows host WinGet

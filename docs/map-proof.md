@@ -21,7 +21,7 @@ no listing below.
 | mcps | `internal/mcpbroker/external_mcp.go` | an MCP's tool list comes back empty, so no tool is published | 58b4af598053 | TestBridgeToolsScopedToProject | 2026-10-10 |
 | models | `internal/modelbroker/normalise.go` | the model grant check is inverted: an ungranted model is allowed | ed78c986dd6c | TestModelEndpointRoutes, TestModelKeyRequired | 2026-10-10 |
 | presence | `internal/presence/presence.go` | a live grant is read as expired, so every gated act is refused | ed78c986dd6c | TestAgentStateFrames, TestBridgeToolsScopedToProject, TestBrowserSessionsListAndSignOut, TestBug296SandboxedSessionAdminOpsRefused, TestBug319DeleteRunningTerminalIDLeavesTerminalAlone (+99 more) | 2026-10-10 |
-| projects | `internal/project/grant_widening.go` | adding an MCP to a project grant is not seen as a widening, so no approval is asked | ed78c986dd6c | TestProjectWidenApproved, TestProjectWidenDeniedCLI, TestProjectWidenDeniedHTTP | 2026-10-10 |
+| projects | `internal/project/agents.go` | two agents in one project may share a name | 2c6108abc2d7 | TestAgentNameTaken | 2026-10-12 |
 | remote | `internal/enrolment/budget.go` | the remote call budget admits one call over the cap | ed78c986dd6c | TestRemoteBudgetThrottles | 2026-10-10 |
 | sandbox | `internal/sessions/sandbox/sandbox.go` | the loopback port deny is written for the wrong network direction | ed78c986dd6c | TestSandboxDeniedLoopbackPorts | 2026-10-10 |
 | sealed | `cmd/relay/sealed_reset.go` | a sealed reset leaves settings.json in place | ed78c986dd6c | TestSealedReset | 2026-10-10 |

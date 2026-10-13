@@ -138,5 +138,12 @@
     "find": "return pathsView{Config: a.configDir, Logs: logs}",
     "replace": "return pathsView{Config: logs, Logs: logs}",
     "why": "the Overview config path shows the logs folder"
+  },
+  {
+    "area": "projects",
+    "file": "internal/project/agents.go",
+    "find": "if strings.EqualFold(e.Name, name) {\n\t\t\treturn agentRule(\"name_taken\", fmt.Sprintf(\"%q is already an agent",
+    "replace": "if false && strings.EqualFold(e.Name, name) {\n\t\t\treturn agentRule(\"name_taken\", fmt.Sprintf(\"%q is already an agent",
+    "why": "two agents in one project may share a name"
   }
 ]

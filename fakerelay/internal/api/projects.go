@@ -96,6 +96,9 @@ func (a *api) view(m *state.Model, p world.Project) map[string]any {
 	if p.FilesReadOnly {
 		v["files_read_only"] = true
 	}
+	if len(p.Agents) > 0 {
+		v["agents"] = p.Agents
+	}
 	var def []string
 	if d := m.DefaultProject; d != nil {
 		if d.Home == p.ID {
@@ -171,6 +174,13 @@ func validateProject(m *state.Model, p world.Project) error {
 	if p.HostID != "" {
 		if _, found := findHost(m, p.HostID); !found {
 			return bad(`unknown host_id "` + p.HostID + `"`)
+		}
+	}
+	if p.Kind != "remote" {
+		for _, n := range world.ChatTemplateNames(p) {
+			if _, _, clash := world.FindAgent(p, n); clash {
+				return bad(`"` + n + `" is already an agent in ` + p.Name)
+			}
 		}
 	}
 	if !emptyRaw(p.PermissionPolicy) {

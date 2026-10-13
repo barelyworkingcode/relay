@@ -29,6 +29,9 @@ type World struct {
 	// HostPath is the PATH a host probe looks node, claude and tmux up on.
 	// Empty means fakerelay's own PATH.
 	HostPath string `json:"host_path,omitempty"`
+	// LocalPath is the PATH an agent command is looked up on for a project
+	// on the console. Empty means fakerelay's own PATH.
+	LocalPath string `json:"local_path,omitempty"`
 }
 
 // Listeners are loopback host:port addresses; "" turns a listener off.
@@ -72,6 +75,7 @@ type Project struct {
 	PermissionPolicy json.RawMessage   `json:"permission_policy,omitempty"`
 	Files            map[string]File   `json:"files,omitempty"`
 	Repos            []Repo            `json:"repos,omitempty"`
+	Agents           []AgentEntry      `json:"agents,omitempty"`
 }
 
 // Repo is a real git repository seeded under the project root.

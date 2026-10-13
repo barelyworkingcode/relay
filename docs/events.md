@@ -175,6 +175,21 @@ keys are listed in the rows below.
 | `project.disabled_tools.set` | At the end of `SetDisabledTools` | Settings | `project_id`, `mcp_id`, `count` |
 | `project.describe` | At the end of `appRouter.DescribeProject` | bridge `describe_project` | `project_id` |
 
+### Project agents
+
+| Event | When written | Doors | Fields |
+|---|---|---|---|
+| `agent.list` | Before the list is returned | `GET /api/projects/{id}/agents`, `relay project agents list`, Settings | `project_id`, `count` |
+| `agent.add` | At the end of `AgentListOps.Add` | `POST /api/projects/{id}/agents`, `relay project agents add`, Settings | `project_id`, `name`, `machine` (set once the command is resolved) |
+| `agent.update` | At the end of `AgentListOps.Update` | `PUT /api/projects/{id}/agents/{name}`, `relay project agents update`, Settings | `project_id`, `name` (the new name), `machine` |
+| `agent.remove` | At the end of `AgentListOps.Remove` | `DELETE /api/projects/{id}/agents/{name}`, `relay project agents remove`, Settings | `project_id`, `name`, `machine` |
+
+A refusal's `reason` is `invalid` for a `400` or `422` answer, `not_found` for
+`404`, `conflict` for `409` (`name_taken`, `project_changed`) and `upstream`
+for `502` (`machine_unreachable`). A refused presence prompt and an
+unavailable audit log use the shared `presence_*` and `audit_unavailable`
+reasons. The agent's `args` are in the audit row only, never in an event.
+
 ### Chief of Staff
 
 | Event | When written | Doors | Fields |
@@ -379,7 +394,7 @@ keys are listed in the rows below.
 |---|---|---|---|
 | `session.list` | In `handleProxyList`, `listViaHost` | `GET /api/sessions`, `relay session list` | `count` |
 | `terminal.list` | In `handleProxyList`, `listViaHost` | `GET /api/terminals`, `relay terminal list` | `count` |
-| `session.launch` | In `launchWithEvent` | `POST /api/sessions`, `POST /api/terminals`, `relay session start`, `relay terminal start` | `session_id`, `project_id`, `kind` (on a refusal `reason` is the launch refusal code) |
+| `session.launch` | In `launchWithEvent` | `POST /api/sessions`, `POST /api/terminals`, `relay session start`, `relay terminal start` | `session_id`, `project_id`, `kind`, and when the start named an agent `entry` and `command` (the stored absolute path; absent when the entry has none). On a refusal `reason` is the launch refusal code |
 | `session.resume` | In `resumeSession` | `POST /api/sessions/{id}/resume`, `relay session resume` | `session_id`, `project_id` |
 | `session.drop_in` | In `dropIn` | `POST /api/sessions/{id}/drop-in`, bridge `drop_in_attach` (`relay drop-in`) | `session_id`, `host`, `terminal_id` |
 | `session.mode` | At the end of `adminSessionMode` | `relay session mode` | `session_id` (a `resume_required` answer from a local claude session ends the event `error` with reason `internal`) |

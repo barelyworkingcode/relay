@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,12 @@ type CodexConfig struct {
 	BridgeSocket   string
 	SandboxProfile string                    // per launch
 	Identity       *sessionsmcp.IdentitySpec // per launch
+
+	// Launcher runs in place of the codex binary, with app-server after its
+	// args. nil runs Binary.
+	Launcher *sessionstypes.Launcher
+	// DefaultModel starts a thread with no model, so codex uses its own.
+	DefaultModel bool
 }
 
 // codexNotifications is codex-cli 0.160.0's ServerNotification method list.
@@ -191,22 +198,22 @@ func resolveCodexPath(configured string) string {
 // buildCodexHostExec assembles argv to run `codex app-server` on a host:
 // relay's ssh_argv prefix, `-T` (no tty), `--`, and a RemoteCommand running
 // the host's codex path under dir. env carries only RELAY_SESSION_ID.
-func buildCodexHostExec(spec *sessionstypes.HostSpec, dir, sessionID string) (name string, argv []string, err error) {
+func buildCodexHostExec(spec *sessionstypes.HostSpec, program []string, dir, sessionID string) (name string, argv []string, err error) {
 	if len(spec.SSHArgv) == 0 {
 		return "", nil, fmt.Errorf("host %q has no ssh_argv", spec.Name)
 	}
-	if spec.CodexPath == "" {
+	if len(program) == 0 || program[0] == "" {
 		return "", nil, fmt.Errorf("host %q has no codex path: set its codex template's command", spec.Name)
 	}
 	env := map[string]string{"RELAY_SESSION_ID": sessionID}
-	remote := sshhost.RemoteCommandForOS(spec.OS, dir, []string{spec.CodexPath, "app-server"}, env)
+	remote := sshhost.RemoteCommandForOS(spec.OS, dir, append(slices.Clone(program), "app-server"), env)
 	name = spec.SSHArgv[0]
 	argv = append(append([]string{}, spec.SSHArgv[1:]...), "-T", "--", remote)
 	return name, argv, nil
 }
 
 func (p *CodexProvider) Start() (err error) {
-	if p.slug == "" {
+	if p.slug == "" && !p.cfg.DefaultModel {
 		return errors.New("codex session has no model")
 	}
 
@@ -231,7 +238,7 @@ func (p *CodexProvider) Start() (err error) {
 		if p.cfg.SandboxProfile != "" || p.cfg.Identity != nil {
 			slog.Warn("codex: sandbox/identity requested for a host session; ignoring", "session", p.session.ID)
 		}
-		name, argv, herr := buildCodexHostExec(host, p.directory, p.session.ID)
+		name, argv, herr := buildCodexHostExec(host, p.cfg.Launcher.Program(host.CodexPath), p.directory, p.session.ID)
 		if herr != nil {
 			return herr
 		}
@@ -241,7 +248,7 @@ func (p *CodexProvider) Start() (err error) {
 		if useRelayTools(p.session.Settings) {
 			warnRelayToolsUnavailable(p.session.ID, "codex", "unsupported_kind")
 		}
-		codexPath := resolveCodexPath(p.cfg.Binary)
+		program := p.cfg.Launcher.Program(resolveCodexPath(p.cfg.Binary))
 		spec := shimSpec{
 			Binary:         p.cfg.ShimBinary,
 			SessionID:      p.session.ID,
@@ -256,12 +263,12 @@ func (p *CodexProvider) Start() (err error) {
 			return ErrNoBridgeSocket
 		case spec.wanted():
 			var berr error
-			cmd, statusR, extraFiles, berr = buildShimCmd(spec, codexPath, []string{"app-server"})
+			cmd, statusR, extraFiles, berr = buildShimCmd(spec, program[0], append(program[1:], "app-server"))
 			if berr != nil {
 				return berr
 			}
 		default:
-			cmd = exec.Command(codexPath, "app-server")
+			cmd = exec.Command(program[0], append(program[1:], "app-server")...)
 		}
 		cmd.Dir = p.directory
 		add := map[string]string{"RELAY_SESSION_ID": p.session.ID}
@@ -384,9 +391,11 @@ func (p *CodexProvider) handshake() error {
 
 	params := map[string]any{
 		"cwd":            p.directory,
-		"model":          p.slug,
 		"approvalPolicy": "never",
 		"sandbox":        "danger-full-access",
+	}
+	if p.slug != "" {
+		params["model"] = p.slug
 	}
 	if p.session.SystemPrompt != "" {
 		params["developerInstructions"] = p.session.SystemPrompt

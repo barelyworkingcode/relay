@@ -70,6 +70,7 @@ var GatedOps = []string{
 	"project.rotate_token",
 	"project.reveal_token",
 	"project.grant",
+	"project.agent",
 	"remote.configure",
 	"sealed.reset",
 	"eve.enrolment.open",

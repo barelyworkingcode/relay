@@ -71,6 +71,9 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 	if err := checkLaunchOrigin(req.Origin); err != nil {
 		return terminal.CreateSpec{}, err
 	}
+	if req.Launcher != nil {
+		return terminal.CreateSpec{}, errors.New("hostapi: a launcher applies only to a claude, codex or pi session")
+	}
 	host, err := decodeHostSpec(req.Host)
 	if err != nil {
 		return terminal.CreateSpec{}, err
@@ -120,8 +123,19 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 			return session.CreateSpec{}, err
 		}
 	}
-	if !req.Resume && strings.TrimSpace(sr.Model) == "" {
+	// Deliberate: an entry start of claude or codex may carry no model, which
+	// runs the binary's own default. A raw start still needs one.
+	noModelOK := sr.Entry != "" && (req.Kind == session.KindClaude || req.Kind == session.KindCodex)
+	if !req.Resume && strings.TrimSpace(sr.Model) == "" && !noModelOK {
 		return session.CreateSpec{}, fmt.Errorf("hostapi: %s session %s has no model", req.Kind, req.SessionID)
+	}
+	if req.Launcher != nil {
+		if req.Kind == session.KindChat {
+			return session.CreateSpec{}, errors.New("hostapi: a launcher applies only to a claude, codex or pi session")
+		}
+		if !strings.HasPrefix(req.Launcher.Command, "/") {
+			return session.CreateSpec{}, errors.New("hostapi: launcher command must be an absolute path")
+		}
 	}
 	directory := sr.Directory
 	if directory == "" {
@@ -163,6 +177,8 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		ModelKey:       req.ModelKey,
 		Resume:         req.Resume,
 		Origin:         req.Origin,
+		Launcher:       req.Launcher,
+		Entry:          sr.Entry,
 	}
 	// session.CreateSpec has no validate() of its own to lean on the way
 	// terminal.CreateSpec does (buildTerminalSpec's own comment): an empty

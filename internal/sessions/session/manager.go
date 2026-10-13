@@ -248,6 +248,14 @@ type CreateSpec struct {
 	// threaded to chat's MCP tool child. "" runs it unsandboxed.
 	SandboxProfile string
 
+	// Launcher replaces the program a claude, codex or pi session runs; nil
+	// runs the kind's own binary. Relay sends it with every launch of an agent
+	// entry that names a command, resumes included.
+	Launcher *sessionstypes.Launcher
+	// Entry names the project agent entry the session was started from. A
+	// claude or codex entry with no model runs on the binary's own default.
+	Entry string
+
 	// Resume is true for relay's POST /launch resume:true (SH §3.4 driven
 	// by relay's own POST /api/sessions/{id}/resume, never by this host):
 	// reattach the persisted session (history, provider state) under a
@@ -619,17 +627,22 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 		ccfg := m.cfg.Claude
 		ccfg.Identity = spec.Identity
 		ccfg.SandboxProfile = spec.SandboxProfile
+		ccfg.Launcher = spec.Launcher
+		ccfg.DefaultModel = spec.Entry != "" && spec.Model == ""
 		return provider.NewClaudeProvider(sess, handler, ccfg, m.perms), nil
 	case KindPi:
 		picfg := m.cfg.Pi
 		picfg.ModelKey = spec.ModelKey
 		picfg.Identity = spec.Identity
 		picfg.SandboxProfile = spec.SandboxProfile
+		picfg.Launcher = spec.Launcher
 		return provider.NewPiProvider(sess, handler, picfg), nil
 	case KindCodex:
 		cxcfg := m.cfg.Codex
 		cxcfg.Identity = spec.Identity
 		cxcfg.SandboxProfile = spec.SandboxProfile
+		cxcfg.Launcher = spec.Launcher
+		cxcfg.DefaultModel = spec.Entry != "" && spec.Model == ""
 		return provider.NewCodexProvider(sess, handler, cxcfg), nil
 	case KindChat:
 		chatcfg := m.cfg.Chat

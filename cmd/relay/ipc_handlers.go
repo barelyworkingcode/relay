@@ -253,6 +253,9 @@ type IPCContext struct {
 	// project created from curl and one created from the tray share the
 	// presence gate and the audit record (ADR-017 decisions 2 and 3).
 	ProjectOps *ProjectOps
+	// AgentListOps backs the Agents section of the project form
+	// (ipc_agent_list.go); the same instance as the HTTP routes.
+	AgentListOps *AgentListOps
 	// HostOps is Ops's counterpart for the Hosts tab and RegisterHostRoutes
 	// (docs/ssh-hosts.md) — ipc_hosts.go's handlers are thin adapters over
 	// it too, so a host created from curl and one created from the tray
@@ -371,6 +374,12 @@ const (
 	MsgSetDefaultProject          = "set_default_project"
 	MsgSetChiefOfStaff            = "set_chief_of_staff"
 
+	// Project agents (ipc_agent_list.go)
+	MsgListProjectAgents  = "list_project_agents"
+	MsgAddProjectAgent    = "add_project_agent"
+	MsgUpdateProjectAgent = "update_project_agent"
+	MsgRemoveProjectAgent = "remove_project_agent"
+
 	// Tool Calls / audit log (ipc_audit.go)
 	MsgQueryAudit      = "query_audit"
 	MsgExportAudit     = "export_audit"
@@ -450,6 +459,12 @@ var ipcHandlers = map[string]ipcEntry{
 	MsgEnumerateScopeField:        {handle: ipcEnumerateScopeField},
 	MsgSetDefaultProject:          {handle: ipcSetDefaultProject},
 	MsgSetChiefOfStaff:            {handle: ipcSetChiefOfStaff},
+
+	// Project agents (ipc_agent_list.go)
+	MsgListProjectAgents:  {handle: ipcListProjectAgents},
+	MsgAddProjectAgent:    {handle: ipcAddProjectAgent, gates: []string{"project.agent"}},
+	MsgUpdateProjectAgent: {handle: ipcUpdateProjectAgent, gates: []string{"project.agent"}},
+	MsgRemoveProjectAgent: {handle: ipcRemoveProjectAgent, gates: []string{"project.agent"}},
 
 	// Tool Calls (ipc_audit.go)
 	MsgQueryAudit:      {handle: ipcQueryAudit},

@@ -81,6 +81,10 @@ func cliVerbTable() []cliVerb {
 		{Name: "project rotate-token", Run: projectRotateToken, Calls: []string{adminDoor("project.token.rotate")}},
 		{Name: "project token", Run: projectToken, Calls: []string{adminDoor("project.token.reveal")}},
 		{Name: "project regen-skill", Run: projectRegenSkill, Calls: []string{adminDoor("project.skill.regen")}},
+		{Name: "project agents list", Run: projectAgentsList, Calls: []string{adminDoor("project.agents.list")}},
+		{Name: "project agents add", Run: projectAgentsAdd, Calls: []string{adminDoor("project.agents.add")}},
+		{Name: "project agents update", Run: projectAgentsUpdate, Calls: []string{adminDoor("project.agents.list"), adminDoor("project.agents.update")}},
+		{Name: "project agents remove", Run: projectAgentsRemove, Calls: []string{adminDoor("project.agents.remove")}},
 
 		{Name: "mcp authenticate", Run: mcpAuthenticate, Calls: []string{adminDoor("mcp.authenticate")}},
 		{Name: "mcp reset-permissions", Run: mcpResetPermissions, Calls: []string{adminDoor("mcp.permissions.reset")}},

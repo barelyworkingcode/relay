@@ -162,6 +162,14 @@ type LaunchRequest struct {
 	SystemPrompt   string
 	AppendClaudeMd bool
 
+	// Entry names an agent entry of the project to start. It excludes Model and
+	// Kind on a fresh start: both come from the entry. A resume carries the
+	// session's own Kind and stored Model with the entry name.
+	Entry string
+	// offer lists the models a kind offers; the door that has the catalogue
+	// fills it. Unexported so only a door inside this package can set it.
+	offer func(kind string) ([]string, error)
+
 	ExtraArgs []string
 
 	// Origin is who asked, when it was not the person at a frontend. Only a
@@ -184,6 +192,9 @@ type LaunchRefusal struct {
 	Status  int
 	Code    string
 	Message string
+	// Choices lists the valid names or models a refusal offers, at most
+	// maxRefusalChoices.
+	Choices []string
 	// Audit is a complete, ready-to-record session_launch event: a refusal
 	// is fully decided at this layer, unlike an accepted request, whose
 	// session_launch completion depends on R-S4b's round trip to
@@ -192,6 +203,18 @@ type LaunchRefusal struct {
 }
 
 func (r *LaunchRefusal) Error() string { return r.Message }
+
+const maxRefusalChoices = 50
+
+// deniedRefusal is a refusal of an agent-entry start: always the denied row,
+// whatever the status.
+func deniedRefusal(status int, code, message string, choices []string, fields sessionLaunchAuditFields) *LaunchRefusal {
+	if len(choices) > maxRefusalChoices {
+		choices = choices[:maxRefusalChoices]
+	}
+	return &LaunchRefusal{Status: status, Code: code, Message: message, Choices: choices,
+		Audit: newSessionLaunchAuditEvent(fields, audit.AuditOutcomeDenied, message)}
+}
 
 func forbidden(code, message string, fields sessionLaunchAuditFields) *LaunchRefusal {
 	return &LaunchRefusal{Status: 403, Code: code, Message: message,
@@ -245,6 +268,8 @@ type sessionLaunchAuditFields struct {
 	Origin      string
 	PromptBytes int
 	HostID      string
+	Entry       string
+	Command     string
 
 	ReadOnlyProjects bool
 	ReadRoots        int
@@ -262,6 +287,8 @@ type sessionLaunchAuditArgs struct {
 	Origin             string `json:"origin,omitempty"`
 	PromptBytes        int    `json:"prompt_bytes,omitempty"`
 	HostID             string `json:"host_id,omitempty"`
+	Entry              string `json:"entry,omitempty"`
+	Command            string `json:"command,omitempty"`
 	ReadOnlyProjects   bool   `json:"read_only_projects,omitempty"`
 	ReadRoots          int    `json:"read_roots,omitempty"`
 }
@@ -284,6 +311,7 @@ func newSessionLaunchAuditEvent(f sessionLaunchAuditFields, outcome, errMsg stri
 		SessionID: f.SessionID, SessionKind: capAuditText(f.Kind, maxRefusalNameRunes), TemplateID: f.TemplateID,
 		Directory: directory, DirectoryTruncated: directory != f.Directory, Sandbox: f.Sandbox,
 		Origin: f.Origin, PromptBytes: f.PromptBytes, HostID: f.HostID,
+		Entry: capAuditText(f.Entry, maxRefusalNameRunes), Command: capAuditText(f.Command, maxAuditDirectoryRunes),
 		ReadOnlyProjects: f.ReadOnlyProjects, ReadRoots: f.ReadRoots,
 	})
 	return audit.AuditEvent{
@@ -364,7 +392,16 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		return nil, forbidden("caller_not_authorized", "caller does not hold execute on the frontend socket", baseFields)
 	}
 
-	if !validKind(req.Kind) {
+	// Deliberate: both fields set is refused before anything else is read, so
+	// the refusal reveals nothing about the project.
+	if !req.Resume && req.Entry != "" && req.Model != "" {
+		return nil, deniedRefusal(http.StatusBadRequest, "model_or_entry", "send model or entry, not both", nil, baseFields)
+	}
+
+	// A fresh entry start has no kind yet: the entry gives it, after the
+	// project and directory checks.
+	freshEntry := !req.Resume && req.Entry != ""
+	if !freshEntry && !validKind(req.Kind) {
 		return nil, invalidRequest("invalid_kind", fmt.Sprintf("unknown session kind %q", req.Kind), baseFields)
 	}
 
@@ -389,7 +426,11 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	// Every launch names a project: a project's allowed_templates is what
 	// says which template it may run, so a launch without one has none.
 	if req.ProjectID == "" {
-		return nil, forbidden("project_required", fmt.Sprintf("%s sessions require a project", req.Kind), baseFields)
+		label := req.Kind
+		if label == "" {
+			label = "agent"
+		}
+		return nil, forbidden("project_required", fmt.Sprintf("%s sessions require a project", label), baseFields)
 	}
 
 	var proj *config.Project
@@ -414,6 +455,15 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	}
 	baseFields.Directory = directory
 
+	var entry *config.AgentEntry
+	if req.Entry != "" {
+		e, refusal := resolveLaunchEntry(&req, proj, &baseFields)
+		if refusal != nil {
+			return nil, refusal
+		}
+		entry = e
+	}
+
 	var tmpl *config.TerminalTemplate
 	if req.Kind == KindPTY {
 		t, ok := findTemplate(settings, proj, req.TemplateID)
@@ -435,6 +485,11 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		}
 		if req.Model != "" && !modelAllowedForProject(store, req.ProjectID, req.Model) {
 			return nil, forbidden("model_not_allowed", "model is not allowed for this project", baseFields)
+		}
+		if entry != nil {
+			if refusal := checkEntryModel(req, proj, entry, baseFields); refusal != nil {
+				return nil, refusal
+			}
 		}
 	}
 
@@ -484,6 +539,9 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		IdleTimeoutSec: 86400,
 		SessionRequest: sessionRequest,
 		Origin:         req.Origin,
+	}
+	if entry != nil && entry.Command != "" {
+		spec.Launcher = &sessiontypes.Launcher{Command: entry.Command, Args: slices.Clone(entry.Args)}
 	}
 
 	if proj != nil {
@@ -582,6 +640,9 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		if grants == nil {
 			grants = templateForKind(settings, proj, req.Kind)
 		}
+		if entry != nil && entry.Command != "" && !proj.IsHosted() {
+			grants = withCommandRead(grants, req.Kind, entry.Command)
+		}
 		var readOnlyRoots []string
 		if readOnly {
 			readOnlyRoots = readOnlyProjectRoots(settings)
@@ -603,6 +664,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 			Directory:      directory,
 			Created:        time.Now().UTC(),
 			Origin:         req.Origin,
+			Entry:          baseFields.Entry,
 			State:          ledger.StateLive,
 			SessionRequest: sessionRequest,
 		}
@@ -941,6 +1003,7 @@ type eveSessionRequestBody struct {
 	Settings       json.RawMessage `json:"settings,omitempty"`
 	SystemPrompt   string          `json:"systemPrompt,omitempty"`
 	AppendClaudeMd bool            `json:"appendClaudeMd,omitempty"`
+	Entry          string          `json:"entry,omitempty"`
 }
 
 // buildSessionRequest builds the claude/pi/chat SessionRequest passthrough
@@ -968,6 +1031,7 @@ func buildSessionRequest(req LaunchRequest, proj *config.Project, directory stri
 		Settings:       merged,
 		SystemPrompt:   req.SystemPrompt,
 		AppendClaudeMd: req.AppendClaudeMd,
+		Entry:          fields.Entry,
 	}
 	out, err := json.Marshal(body)
 	if err != nil {
@@ -1069,4 +1133,121 @@ func buildHostSpec(settings *config.Settings, hostID string) (*sessiontypes.Host
 		}
 	}
 	return spec, nil
+}
+
+// resolveLaunchEntry finds req.Entry in proj, case-insensitively and in this
+// project only, and refuses an entry that is missing or no longer valid. A
+// fresh start takes its kind and model from the entry; a resume keeps the
+// session's own and refuses when the entry's kind has changed since.
+func resolveLaunchEntry(req *LaunchRequest, proj *config.Project, fields *sessionLaunchAuditFields) (*config.AgentEntry, *LaunchRefusal) {
+	fields.Entry = capAuditText(req.Entry, maxRefusalNameRunes)
+	e, _, ok := project.FindAgentEntry(proj, req.Entry)
+	if !ok {
+		return nil, deniedRefusal(http.StatusNotFound, "entry_not_found", unknownEntryMessage(proj, req.Entry), entryChoices(proj), *fields)
+	}
+	fields.Entry = e.Name
+	invalid := func(why string) *LaunchRefusal {
+		return deniedRefusal(http.StatusBadRequest, "entry_invalid", fmt.Sprintf("agent %q is not valid: %s", e.Name, why), nil, *fields)
+	}
+	if rule := project.ValidateStoredAgentEntry(e); rule != nil {
+		return nil, invalid(rule.Message)
+	}
+	if req.Resume {
+		if e.Kind != req.Kind {
+			return nil, invalid(fmt.Sprintf("its kind is now %s; start a new session", e.Kind))
+		}
+	} else {
+		req.Kind = e.Kind
+		req.Model = project.SessionModel(e)
+		fields.Kind = e.Kind
+	}
+	if e.Command != "" {
+		fields.Command = e.Command
+		if !proj.IsHosted() {
+			info, err := os.Stat(e.Command)
+			if err != nil || !info.Mode().IsRegular() {
+				return nil, invalid("its command is not a regular file on this Mac")
+			}
+		}
+	}
+	return &e, nil
+}
+
+func entryChoices(proj *config.Project) []string {
+	names := project.AgentNames(proj)
+	if len(names) > maxRefusalChoices {
+		names = names[:maxRefusalChoices]
+	}
+	return names
+}
+
+func unknownEntryMessage(proj *config.Project, name string) string {
+	name = capAuditText(name, maxRefusalNameRunes)
+	if len(proj.Agents) == 0 {
+		return fmt.Sprintf("no agent %q in %s; %s has no agents", name, proj.Name, proj.Name)
+	}
+	return fmt.Sprintf("no agent %q in %s; agents: %s", name, proj.Name, strings.Join(project.AgentNames(proj), ", "))
+}
+
+func projectAllowsModel(proj *config.Project, model string) bool {
+	if len(proj.AllowedModels) == 0 || config.IsWildcard(proj.AllowedModels) {
+		return true
+	}
+	return slices.Contains(proj.AllowedModels, model)
+}
+
+// checkEntryModel applies the rules an entry adds to a start: a no-model
+// entry needs an unrestricted project, and a fresh start's model must be one
+// the kind offers. The offer is never skipped: a list that cannot be read
+// refuses the start.
+func checkEntryModel(req LaunchRequest, proj *config.Project, e *config.AgentEntry, fields sessionLaunchAuditFields) *LaunchRefusal {
+	if e.Model == "" {
+		if len(proj.AllowedModels) > 0 && !config.IsWildcard(proj.AllowedModels) {
+			return deniedRefusal(http.StatusForbidden, "model_not_allowed",
+				fmt.Sprintf("agent %q has no model, and %s allows only its listed models", e.Name, proj.Name), nil, fields)
+		}
+		return nil
+	}
+	if req.Resume {
+		return nil
+	}
+	var offered []string
+	var err error
+	if req.offer != nil {
+		offered, err = req.offer(e.Kind)
+	}
+	if req.offer == nil || err != nil || len(offered) == 0 {
+		return deniedRefusal(http.StatusServiceUnavailable, "models_unavailable",
+			fmt.Sprintf("the model list for %s could not be read", e.Kind), nil, fields)
+	}
+	if slices.Contains(offered, e.Model) {
+		return nil
+	}
+	var choices []string
+	for _, o := range offered {
+		if projectAllowsModel(proj, project.SessionModel(config.AgentEntry{Kind: e.Kind, Model: o})) {
+			choices = append(choices, o)
+		}
+	}
+	if len(choices) > maxRefusalChoices {
+		choices = choices[:maxRefusalChoices]
+	}
+	return deniedRefusal(http.StatusBadRequest, "model_not_offered",
+		fmt.Sprintf("model %q is not offered for %s; models: %s", e.Model, e.Kind, strings.Join(choices, ", ")), choices, fields)
+}
+
+// withCommandRead returns the kind's sandbox template with exactly one more
+// grant: a read of the entry's command, which addTemplateGrants renders as a
+// literal because the command is a regular file. Deliberate: the template is
+// copied, never edited, because it belongs to the settings snapshot every
+// other launch reads.
+func withCommandRead(tmpl *config.TerminalTemplate, kind, command string) *config.TerminalTemplate {
+	var grants config.TerminalTemplate
+	if tmpl != nil {
+		grants = *tmpl
+	} else {
+		grants = config.TerminalTemplate{ID: kindTemplateIDs[kind]}
+	}
+	grants.Read = append(slices.Clone(grants.Read), command)
+	return &grants
 }
