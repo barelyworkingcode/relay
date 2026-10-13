@@ -239,6 +239,21 @@ func agHasPair(argv []string, flag, val string) bool {
 // under the instance's remote root.
 func agHost(t *testing.T, i *harness.Instance) (pid, remote string) {
 	t.Helper()
+	remote = i.RemoteRoot()
+	// The host's claude-code template exists only when the probe at host
+	// creation finds claude on the host. A machine without claude on its own
+	// PATH (CI) would leave the host without it, so the host gets one here.
+	claudeDir := filepath.Join(remote, "hostclaude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("creating %s: %v", claudeDir, err)
+	}
+	fake := filepath.Join(i.Home, ".local", "bin", "claude")
+	if err := os.WriteFile(filepath.Join(claudeDir, "claude"), []byte("#!/bin/sh\nexec "+agShQuote(fake)+" \"$@\"\n"), 0o755); err != nil {
+		t.Fatalf("writing the host claude: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, ".profile"), []byte("export PATH="+agShQuote(claudeDir)+":\"$PATH\"\n"), 0o600); err != nil {
+		t.Fatalf("writing .profile: %v", err)
+	}
 	c := i.HTTP(i.Credential("configurer"))
 	hr := c.Do("POST", "/api/hosts", map[string]any{"name": "testbox", "target": "acme@testbox"})
 	if hr.Status != http.StatusCreated {
@@ -248,7 +263,6 @@ func agHost(t *testing.T, i *harness.Instance) (pid, remote string) {
 		ID string `json:"id"`
 	}
 	hr.JSON(t, &h)
-	remote = i.RemoteRoot()
 	dir := filepath.Join(remote, "boxproj")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("creating %s: %v", dir, err)
