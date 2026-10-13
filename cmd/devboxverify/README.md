@@ -349,8 +349,8 @@ planted in the project folder 403 `SYMLINK`, and a write after
 **Owner-gate positives** (screen): `gate-credential-mint-pos`,
 `execute-credential-renewal`, `gate-mcp-register-pos`,
 `gate-project-grant-pos`, `gate-service-register-pos`,
-`gate-project-rotate-token-pos`, `gate-eve-enrolment-open-pos`,
-`gate-credential-revoke-pos`. The harness triggers the op as the owner, the
+`gate-project-agent-pos`, `gate-project-rotate-token-pos`,
+`gate-eve-enrolment-open-pos`, `gate-credential-revoke-pos`. The harness triggers the op as the owner, the
 helper answers the prompt whose text carries the request's subject (the
 nonce, except for the renewal and the eve enrolment above), and the journey
 checks the effect and a new issuance or `config_change` row carrying
@@ -410,6 +410,78 @@ store is already degraded.
   answers.
 - Lives in: `journey_sealed_reset.go`, `serve_instance.go`.
 
+**gate-project-agent-pos** (screen). Adds an entry to the Verify Grant project
+through `POST /api/projects/{id}/agents` with the run credential (kind claude,
+model haiku, command the absolute path of the harness's `testmcp`), and the
+helper answers the `project.agent` prompt, whose text names the entry. PASS when
+the add answers 201 with the stored command, `GET /api/projects/{id}/agents`
+lists the entry, and a `config_change` row with credential `agent_entry`, the
+project as subject, `presence_id` and the grants `action=add`, `entry=<name>` and
+`command=<path>` exists. The journey then removes the entry through the same gate
+(a second prompt) and checks it is gone and a row with `action=remove` and
+`presence_id` exists. The remove runs whenever the add was accepted.
+- Waits: the HTTP response after each dialog result; the audit row is written
+  before the response, so it is read once.
+- Lives in: `cmd/relay/agent_list_ops.go`, `cmd/relay/agent_list_routes.go`,
+  `internal/presence`.
+- Reached by: the frontend socket with the run credential; `relay audit --event
+  config_change --json`.
+- Traps: BLOCKED without the Verify Grant project (gate-project-grant-pos). The
+  entry name carries the run nonce, which is what the helper matches. The
+  gate-project-agent-neg journey is the no-door negative listed with the others.
+
+**project-agents-settings** (screen). The simple path: Settings > Projects > the
+Verify Grant project > Agents > Add agent. The journey types a name and the
+absolute path of `testmcp` into the form, leaves kind claude and model default,
+presses Save agent while the helper answers the `project.agent` prompt, and reads
+the row `<name> · claude · (default) · <path>` off the page. It then presses
+Remove on that row, answers the second prompt, and requires the row gone and the
+Add agent button back. PASS also needs the entry listed by the API after the add
+and absent after the remove, and both audit rows with `presence_id`. It closes
+the project form and, if it opened the window, the window; an entry left over is
+removed through the gate.
+- Waits: the presence dialog result for each save and remove. The page is
+  repainted by script after relay answers and an out-of-process Accessibility
+  reader gets no event for that, so the row text is polled every 200 ms for up
+  to 10 s; that is the only poll, and every other step is a response or a dialog
+  result.
+- Lives in: `web/src/app.js` (Agents section), `cmd/relay/ipc_agent_list.go`,
+  `cmd/relay/agent_list_ops.go`.
+- Reached by: Accessibility on the Settings window (run from a desktop Terminal),
+  the frontend socket with the run credential, `relay audit --json`.
+- Traps: it needs gate-project-grant-pos to have passed. Read the settings-ui
+  traps first: a row is a static text, never a `role=button` table row; the
+  fields are found by their order after the form title (Name, then Command),
+  and the journey reads them back before it presses Save.
+
+**project-agents-host** (screen). An entry whose command is a wrapper name
+resolves on an SSH host and a session started by the entry runs it there. The
+journey writes a wrapper script into the login shell's PATH (`~/.local/bin`,
+file `dbv-agent-<nonce>`) that appends `ran ssh=$SSH_CONNECTION` to a marker file
+under the state folder and then execs the real `claude`. It adds the host
+`loopback-<nonce>` (target `localhost`) and a project on it, as
+session-drop-in-host does, adds the entry with the bare wrapper name (prompt
+answered by the helper), starts a headless session with `entry` in the body and no
+model, sends one message and waits for the turn. PASS when the add answers 201
+with `machine` the host's name and the command stored as the wrapper's absolute
+path, the session start answers 201, a `turn_done` then idle follows the message,
+and the marker file holds `ran ssh=` with a non-empty connection string, which only
+a command that ran under ssh has. The session, project, host, wrapper and marker
+are removed whatever the outcome.
+- Waits: the host and project creates answer when done; the dialog result; a
+  `turn_done` frame then `idle` on `/ws` (60 s); then the marker file is read
+  once, since the wrapper wrote it when the host process started.
+- Lives in: `cmd/relay/agent_list_ops.go` (`newAgentLookup`),
+  `internal/cmdlookup`, `cmd/relay/session_launch.go` (launcher),
+  `internal/sessions/provider/claude.go`.
+- Reached by: the frontend socket (`POST /api/hosts`, `/api/projects`, the
+  agents route, `/api/sessions` with P4, the message route), `/ws`.
+- Traps: needs setup P11 (the host's `claude` signs in over ssh) and a `claude` on
+  this machine's login-shell PATH to wrap. A 422 `command_not_found` on the add
+  reads BLOCKED: `~/.local/bin` is not on the login shell's PATH. A run killed
+  before teardown leaves the wrapper; verify-fixtures-removed deletes
+  `~/.local/bin/dbv-agent-*`.
+
 **Owner-gate positives that never run.** `gate-enrolment-create-pos`,
 `gate-enrolment-sign-pos`, `gate-enrolment-update-pos`,
 `gate-enrolment-revoke-pos`, `gate-login-bootstrap-mint-pos`,
@@ -437,7 +509,7 @@ effect (the name, id or window is absent or unchanged).
   mirror holds a non-pending passkey that is not the last one.
 
 **Owner-gate negatives with no door** (screen): `gate-project-grant-neg`,
-`gate-project-rotate-token-neg`, `gate-remote-configure-neg`,
+`gate-project-rotate-token-neg`, `gate-project-agent-neg`, `gate-remote-configure-neg`,
 `gate-mcp-oauth-start-neg`, `gate-sealed-reset-neg`. From inside the
 session, `curl --unix-socket` to the op's HTTP route cannot connect (exit 7),
 and an `admin_op` for the op sent with `nc -U` to the bridge answers
