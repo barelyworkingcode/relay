@@ -89,9 +89,12 @@ Wire reference.
 | Projects | `GET /api/projects`, `GET /api/projects/{id}` | read |
 | Projects | `POST /api/projects`, `PUT /api/projects/{id}`, `DELETE /api/projects/{id}` | configure |
 | Projects | `PUT /api/default_project/{mode}` | configure |
+| Projects | `POST /api/projects/{id}/chat-templates` | configure |
 | Chief of Staff | `GET /api/chief-of-staff/config` | read |
 | Chief of Staff | `PUT` and `DELETE /api/chief-of-staff/config` | configure |
 | Chief of Staff | `POST /api/chief-of-staff/messages`, `POST /api/chief-of-staff/sessions` | chief_of_staff |
+| Chief of Staff | `GET /api/chief-of-staff/projects/{projectId}/agents` | chief_of_staff |
+| Chief of Staff | `POST /api/chief-of-staff/projects/{projectId}/agents/preview` | chief_of_staff |
 | Hosts | `GET /api/hosts`, `GET /api/hosts/{id}`, `GET /api/hosts/{id}/templates` | read |
 | Hosts | `POST /api/hosts`, `PUT` and `DELETE /api/hosts/{id}`, `POST /api/hosts/{id}/probe`, `POST /api/hosts/{id}/disconnect` | configure |
 | Hosts | `POST /api/hosts/{id}/templates`, `PUT` and `DELETE /api/hosts/{id}/templates/{tid}` | configure |
@@ -124,7 +127,7 @@ answers the session host's 404 (see Sessions).
 |---|---|
 | No header | class `chief_of_staff` is refused |
 | Header, caller lacks `proxy` | 403 |
-| Header, caller holds `proxy` | only `GET /api/sessions`, `GET /ws`, `POST /api/chief-of-staff/messages` and `POST /api/chief-of-staff/sessions` run |
+| Header, caller holds `proxy` | only six doors run: `GET /api/sessions`, `GET /ws`, `POST /api/chief-of-staff/messages`, `POST /api/chief-of-staff/sessions`, `GET /api/chief-of-staff/projects/{projectId}/agents` and `POST /api/chief-of-staff/projects/{projectId}/agents/preview` |
 | Header, any other route | 403 |
 | Header with an empty, repeated or other value | 403 |
 
@@ -532,6 +535,42 @@ refusal's `reason` is `invalid` (400, 422), `not_found`, `conflict` (409),
 refusal's `control_decision` row has `method: "project.agent"` and `subject`
 set to the project id, not its name.
 
+#### Chat templates
+
+`POST /api/projects/{id}/chat-templates` adds one chat template. Class
+configure, gate `project.chat_template`, socket and TCP. There is no update or
+remove door: a frontend edits the list with `PUT /api/projects/{id}`, which
+stays ungated for chat templates.
+
+- Request: `{"name","model"}`, at most 64 KiB, no unknown key, no data after the
+  value.
+- Success: 201 `{"projectId","template":{"id","name","model"}}`. `id` is a
+  fresh UUID. The template then shows in `chat_templates` of the project view
+  and in the Chief of Staff list.
+
+Errors are coded with message. Checks run in this order, and the first failure
+answers:
+
+| Order | Status | `error` | `message` |
+|---|---|---|---|
+| 1 | 400 | `invalid_body` | `request body must be JSON {"name","model"}`, for bad JSON, an unknown key, trailing data and an oversize body alike |
+| 2 | 400 | `name_invalid` | `chat name must be 1 to 60 characters with no control characters`. A name of only whitespace is refused too |
+| 2 | 400 | `model_required` | `a chat needs a model` |
+| 2 | 400 | `model_invalid` | `model must be at most 200 bytes with no whitespace or control characters` |
+| 3 | 404 | `project_not_found` | `project not found` |
+| 4 | 400 | `project_not_available` | `project is not available for chats` (a remote project) |
+| 5 | 409 | `name_taken` | `"X" is already a chat template in Acme` or `… an agent in Acme`, compared without case |
+| 6 | 403 | | `{"error":"presence was refused"}` (gate `project.chat_template`) |
+| 7 | 409 | `project_changed` | `Acme changed while the request was being approved; try again`, or `name_taken` when the name appeared during the wait |
+
+Event `chat_template.add` carries `project_id`, plus `name` once the body is
+read. A refusal's `reason` is `invalid` (400), `not_found`, `conflict` (409),
+or `presence_refused` and `presence_timeout`. A presence refusal's
+`control_decision` row has `method: "project.chat_template"` and `subject` set
+to the project id. The `config_change` row of a successful add is not faked.
+
+checked against relay at `dea45cb`.
+
 ### Chief of Staff
 
 The HTTP body keys are camelCase, unlike the world file's snake_case.
@@ -587,19 +626,76 @@ The delivered text appears on the session as a `user_message` frame with
 
 `POST /api/chief-of-staff/sessions`
 
-- Request: `{"projectId","folder"?,"prompt","model","mode"?}`, at most 64 KiB.
-  `mode` is `headless` (default) or `terminal`.
+- Request: `{"projectId","folder"?,"prompt","model"?,"entry"?,"mode"?}`, at
+  most 64 KiB. The prompt is trimmed. Exactly one of `model` and `entry` is
+  sent. `mode` is `headless` (default) or `terminal`.
 - Success: 201
   `{"sessionId","name","projectId","directory","mode","kind","origin":"chief-of-staff","at"}`.
-- Errors, coded with message: `invalid_body`, `project_id_required`,
-  `prompt_required`, `prompt_too_long` (over 8000 characters),
-  `model_required`, `mode_invalid`, `folder_invalid`, `audit_unavailable`
-  (503), `body_too_large`. A launch refusal uses the launch refusal code
-  and text (see Sessions), still in this family. `502 launch_failed`
+  `name` is the prompt's first line with whitespace collapsed, cut to 60
+  characters. An entry start adds `"entry"` (the stored spelling) and
+  `"entryType":"agent"|"chat"`.
+- Errors, coded with message, checked in this order: `invalid_body`,
+  `project_id_required`, `prompt_required`, `prompt_too_long` (over 8000
+  characters), `model_or_entry` (`send model or entry, not both`, or `send
+  model or entry`), `mode_invalid` (a mode that is neither value, or `an entry
+  start is headless only`), `folder_invalid`, `body_too_large`. A launch
+  refusal uses the launch refusal code and text (see Sessions), still in this
+  family, with `project_unavailable` and `directory_outside` renamed
+  `project_not_available` and `directory_outside_project`. `502 launch_failed`
   (`the session could not be started`) and `502 prompt_not_delivered` close
   the list.
 
-checked against relay at `59cdf9e`.
+An entry start resolves `entry` after the project and folder checks, case
+insensitively, across the project's agents and chat templates:
+
+| Matches | Answer |
+|---|---|
+| none | 404 `entry_not_found`: `No agent or chat "codx" in Acme. Choices: codex, mywrapper, Researcher` with `choices`, or `No agent or chat "codx" in Acme; Acme has none` and no `choices` |
+| an agent and a chat | 409 `entry_ambiguous`: `An agent and a chat in Acme are both named "X"; rename the chat in eve` |
+| two or more chats | 409 `entry_ambiguous`: `Two chats in Acme are named "X"; rename one in eve`, `choices` holds the first match's stored name |
+| one agent | the agent's kind, model and launcher apply as for `entry` on `POST /api/sessions`, with the same model checks (`model_not_allowed`, `models_unavailable`, `model_not_offered`) |
+| one chat | a session of the kind the chat's model names, with that model, named `<project> - <template>`. A chat with no model is 400 `entry_invalid` (`chat "X" in Acme has no model`) |
+
+`choices` holds at most 50 names, agents first, then chats, each once without
+regard to case. `model_not_offered` also carries `choices`: the models the
+kind offers that the project allows. An entry start is always headless with
+`agent` on. Every refusal that resolves or launches ends the
+`chief_of_staff.start` event as `denied` with the refusal's code as the reason
+(`error` for a status of 500 or more). The event carries `entry` (as sent until
+the entry resolves, then the stored name) and `entry_type`.
+
+`GET /api/chief-of-staff/projects/{projectId}/agents`
+
+- Class `chief_of_staff`: only a scoped request runs it. No body.
+- Success: 200 `{"projectId","projectName","machine","entries":[…]}`. Agent
+  rows come first, then chat rows, each in stored order, duplicates included.
+  An agent row is `{"type":"agent","name","kind","model"?,"command"?}`, with no
+  `args`. A chat row is `{"type":"chat","name","model"}`, with no id and no
+  system prompt. `machine` is `this Mac`, the host's `name`, or the host id
+  when the host record is missing.
+- A missing or remote project is 403 `project_not_available`
+  (`project is not available for a session launch`).
+- Event `chief_of_staff.agents.list` carries `project_id` and `count`. The 403
+  ends it as `denied` with reason `not_granted`.
+
+`POST /api/chief-of-staff/projects/{projectId}/agents/preview`
+
+- Class `chief_of_staff`. Request: `{"name","kind","model","command"}`, at most
+  64 KiB, no unknown key (`args` included) and no data after the value. It
+  writes nothing and raises no prompt.
+- Success: 200 `{"projectId","projectName","machine","entry"}`, with
+  `command` as an absolute path. The entry equals what the gated add would
+  store.
+- Errors, in order: 400 `invalid_body` (`request body must be JSON
+  {"name","kind","model","command"}`); 403 `project_not_available`; then the
+  agent family from "Agents" in the same order as an add (shape rules,
+  `kind_not_available_on_host`, `too_many_entries`, `name_taken`,
+  `command_not_found`, `machine_unreachable`), without the presence and
+  re-check steps.
+- Event `chief_of_staff.agents.preview` carries `project_id`, and `machine`
+  once the lookup has succeeded.
+
+checked against relay at `dea45cb`.
 
 ### Hosts
 
@@ -1665,7 +1761,7 @@ Schema 1:
 | `schema` | `1` | required |
 | `listeners` | `{api, model}`: loopback `host:port`, or `""` for off | `api: "127.0.0.1:0"`, `model: ""` |
 | `credentials[]` | `{id, name, classes[], token, expires?}`, a bearer for socket or TCP | none |
-| `presence` | `{<op>: "approve"\|"deny"\|"timeout"}` for `project.grant`, `project.agent`, `eve.enrolment.open`, `eve.passkey.revoke` | an absent op is deny |
+| `presence` | `{<op>: "approve"\|"deny"\|"timeout"}` for `project.grant`, `project.agent`, `project.chat_template`, `eve.enrolment.open`, `eve.passkey.revoke` | an absent op is deny |
 | `faults[]` | a fault, see Faults | none |
 | `projects[]` | `id, name, path, kind, host_id, mode, files_read_only, allowed_mcp_ids, allowed_models, allowed_templates, chat_templates, permission_policy`, plus `files` and `repos` | `path ""` is `DIR/projects/<id>` |
 | `projects[].files` | `{rel: string \| null (dir) \| {"base64"} \| {"symlink": target}}`, written after `repos`, so it sets the worktree state | |
@@ -1902,8 +1998,8 @@ Named errors:
 ## Presence
 
 The world's `presence` map, or `ctl presence`, sets the outcome for each gated
-op. The ops are `project.grant`, `project.agent`, `eve.enrolment.open` and
-`eve.passkey.revoke`. An absent op is `deny`.
+op. The ops are `project.grant`, `project.agent`, `project.chat_template`,
+`eve.enrolment.open` and `eve.passkey.revoke`. An absent op is `deny`.
 
 | Outcome | Result |
 |---|---|
@@ -1917,7 +2013,8 @@ op. The ops are `project.grant`, `project.agent`, `eve.enrolment.open` and
 - The prompt is not shown anywhere. The outcome is the whole gate.
 - The `eve enrol` verb and `POST /api/projects` go through the gate. So does a
   widening `PUT` (see Projects). Every agent add, update and remove goes
-  through `project.agent`.
+  through `project.agent`, and every chat template add through
+  `project.chat_template`.
 - `ctl presence project.agent=approve` sets it at run time like any op.
 - A change to the map takes effect on the next request.
 
@@ -2050,7 +2147,9 @@ Where fakerelay differs from relay on purpose:
   fakerelay dispatches to it;
 - the tray and the presence prompt UI;
 - `config_change` audit rows, including the `agent_entry` row of an agent
-  write;
+  write and the `chat_template` row of a chat template add;
+- `useRelayTools` and `appendClaudeMd` on a chat template start: a fake chat
+  session ignores both, as it ignores the template's system prompt;
 - the login-shell lookup of an agent command (builtins, aliases and shell
   functions): fakerelay walks a `PATH` list instead.
 

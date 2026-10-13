@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
+	"github.com/barelyworkingcode/relay/fakerelay/internal/events"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/server"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/state"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/world"
@@ -100,4 +103,142 @@ func (a *api) deleteCoS(w http.ResponseWriter, r *http.Request) {
 	_ = a.State.Write(func(m *state.Model) error { m.ChiefOfStaff = nil; return nil })
 	a.Events.Begin(r.Context(), "chief_of_staff.config.clear").End("ok", "", nil)
 	ok(w, cosView(nil))
+}
+
+func (a *api) cosAgentRoutes(r server.Registrar) {
+	r.Route(server.ClassChiefOfStaff, "GET /api/chief-of-staff/projects/{projectId}/agents", a.cosListAgents)
+	r.Route(server.ClassChiefOfStaff, "POST /api/chief-of-staff/projects/{projectId}/agents/preview", a.cosPreviewAgent)
+}
+
+const cosPreviewBodyMsg = `request body must be JSON {"name","kind","model","command"}`
+
+var errCosProject = &agentErr{status: http.StatusForbidden, code: "project_not_available", msg: "project is not available for a session launch"}
+
+// cosProject reads the project fresh; a missing or remote one is refused the
+// way a start refuses it.
+func (a *api) cosProject(id string) (world.Project, *world.Host, string, *agentErr) {
+	var p world.Project
+	var host *world.Host
+	var found bool
+	a.State.Read(func(m *state.Model) {
+		p, found = findProject(m, id)
+		if found && p.HostID != "" {
+			if h, hok := findHost(m, p.HostID); hok {
+				c := *h
+				host = &c
+			}
+		}
+	})
+	if !found || p.Kind == "remote" {
+		return p, nil, "", errCosProject
+	}
+	machine := localMachine
+	switch {
+	case host != nil:
+		machine = host.Name
+	case p.HostID != "":
+		machine = p.HostID
+	}
+	return p, host, machine, nil
+}
+
+// cosEnd ends the event as denied for the 403 and as the error's own class
+// otherwise.
+func cosEnd(ev *events.Event, e *agentErr, refused string) {
+	if e.status == http.StatusForbidden {
+		ev.End("denied", "not_granted", errors.New(refused))
+		return
+	}
+	ev.End("error", e.reason(), e)
+}
+
+func (a *api) cosListAgents(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("projectId")
+	ev := a.Events.Begin(r.Context(), "chief_of_staff.agents.list").Set("project_id", id)
+	p, _, machine, e := a.cosProject(id)
+	if e != nil {
+		cosEnd(ev, e, "chief of staff agent list refused")
+		e.write(w)
+		return
+	}
+	entries := []any{}
+	for _, ag := range p.Agents {
+		row := map[string]any{"type": "agent", "name": ag.Name, "kind": ag.Kind}
+		if ag.Model != "" {
+			row["model"] = ag.Model
+		}
+		if ag.Command != "" {
+			row["command"] = ag.Command
+		}
+		entries = append(entries, row)
+	}
+	for _, t := range world.ChatTemplatesOf(p) {
+		entries = append(entries, map[string]any{"type": "chat", "name": t.Name, "model": t.Model})
+	}
+	ev.Set("count", len(entries)).End("ok", "", nil)
+	ok(w, map[string]any{"projectId": id, "projectName": p.Name, "machine": machine, "entries": entries})
+}
+
+// cosPreviewAgent resolves a proposed entry exactly as the gated add would,
+// and writes nothing and raises no prompt.
+func (a *api) cosPreviewAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("projectId")
+	ev := a.Events.Begin(r.Context(), "chief_of_staff.agents.preview").Set("project_id", id)
+	refuse := func(e *agentErr) {
+		cosEnd(ev, e, "chief of staff agent preview refused")
+		e.write(w)
+	}
+	body, err := readBody(w, r, maxAgentBody)
+	var in world.AgentEntry
+	if err == nil {
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		var b struct {
+			Name    string `json:"name"`
+			Kind    string `json:"kind"`
+			Model   string `json:"model"`
+			Command string `json:"command"`
+		}
+		if err = dec.Decode(&b); err == nil {
+			if _, terr := dec.Token(); terr != io.EOF {
+				err = errors.New("trailing data")
+			}
+		}
+		in = world.AgentEntry{Name: b.Name, Kind: b.Kind, Model: b.Model, Command: b.Command}
+	}
+	if err != nil {
+		refuse(&agentErr{status: http.StatusBadRequest, code: "invalid_body", msg: cosPreviewBodyMsg})
+		return
+	}
+	p, host, machine, perr := a.cosProject(id)
+	if perr != nil {
+		refuse(perr)
+		return
+	}
+	if rule := world.ValidateAgentShape(in); rule != nil {
+		refuse(ruleToErr(rule))
+		return
+	}
+	switch {
+	case in.Kind == "pi" && p.HostID != "":
+		refuse(&agentErr{status: http.StatusBadRequest, code: "kind_not_available_on_host", msg: "pi is not available on a host project"})
+		return
+	case len(p.Agents) >= world.MaxAgentEntries:
+		refuse(tooMany())
+		return
+	}
+	if rule := world.AgentNameClash(p, in.Name, ""); rule != nil {
+		refuse(ruleToErr(rule))
+		return
+	}
+	if in.Command != "" {
+		abs, e := a.lookupAgentCommand(p, host, machine, in.Command)
+		if e != nil {
+			refuse(e)
+			return
+		}
+		in.Command = abs
+	}
+	ev.Set("machine", machine).End("ok", "", nil)
+	ok(w, map[string]any{"projectId": id, "projectName": p.Name, "machine": machine, "entry": in})
 }

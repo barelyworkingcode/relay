@@ -1,6 +1,7 @@
 package world
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"regexp"
@@ -9,7 +10,7 @@ import (
 )
 
 // PresenceOps are the gated operations a world may script.
-var PresenceOps = map[string]bool{"project.grant": true, "eve.enrolment.open": true, "eve.passkey.revoke": true, "project.agent": true}
+var PresenceOps = map[string]bool{"project.grant": true, "eve.enrolment.open": true, "eve.passkey.revoke": true, "project.agent": true, "project.chat_template": true}
 
 // Classes are the credential classes a world may grant.
 var Classes = map[string]bool{"read": true, "configure": true, "grant": true, "execute": true, "proxy": true}
@@ -337,4 +338,26 @@ func checkAgents(path string, pr Project) error {
 		seen.Agents = append(seen.Agents, a)
 	}
 	return nil
+}
+
+// ChatTemplate is the part of a stored chat template the Chief of Staff doors
+// read. The world keeps templates as raw records.
+type ChatTemplate struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Model        string `json:"model"`
+	SystemPrompt string `json:"system_prompt"`
+}
+
+// ChatTemplatesOf decodes a project's chat templates in stored order, dropping
+// records that are not objects or have no name.
+func ChatTemplatesOf(p Project) []ChatTemplate {
+	var out []ChatTemplate
+	for _, raw := range p.ChatTemplates {
+		var t ChatTemplate
+		if json.Unmarshal(raw, &t) == nil && t.Name != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
