@@ -164,6 +164,10 @@ let state = {
     // fields travel separately rather than as one.
     projectFormErrorField: null,
     projectSavePending: false,              // true from Create/Save click until onProjectAdded/Updated/onSettingsError
+    projectAgents: {},                      // project id -> AgentEntry[] from onProjectAgentsListed
+    agentForm: null,                        // inline Agents form: { origName, name, kind, model, command, args } or null
+    agentPending: false,                    // true from an add/update/remove send until onProjectAgentsListed/onProjectAgentError
+    agentError: '',                         // last refusal text, shown beside the Agents list or form
     projectTokenVisible: {},                // id -> bool (eye toggle)
     projectFreshToken: {},                  // id -> plaintext shown once after rotate
     projectSkillRegen: {},                  // id -> { ok, message, t } (last regen result)
@@ -2348,6 +2352,7 @@ function newProject() {
     state.projectForm = blankProjectForm();
     state.projectFormError = null;
     state.projectFormErrorField = null;
+    resetAgentForm();
     openProjModelPicker();
     render();
 }
@@ -2359,13 +2364,16 @@ function editProject(id) {
     state.projectForm = projectFormFromExisting(p);
     state.projectFormError = null;
     state.projectFormErrorField = null;
+    resetAgentForm();
     openProjModelPicker();
+    if (!isRemoteForm(state.projectForm)) requestProjectAgents(id);
     render();
 }
 
 function cancelProjectEdit() {
     state.editingProjectId = null;
     state.projectForm = null;
+    resetAgentForm();
     state.projectFormError = null;
     state.projectFormErrorField = null;
     render();
@@ -3342,6 +3350,212 @@ function isProjModelsWildcard(f) {
     return f.allowed_models.length === 1 && f.allowed_models[0] === PROJ_MCP_WILDCARD;
 }
 
+// ---- Agents section ----
+// The list is plain text per row (name · kind · model · command) so the AX
+// reader sees it; only the buttons are controls. Every write is gated by a
+// presence prompt on the Mac, so the section holds still (agentPending) from
+// the click until relay answers, and the form is repainted only through
+// repaintAgents(), never through a full render() that would redraw the
+// project form under the person.
+const AGENT_KINDS = ['claude', 'codex', 'pi'];
+const AGENT_CLAUDE_MODELS = ['haiku', 'sonnet', 'opus'];
+
+function resetAgentForm() {
+    state.agentForm = null;
+    state.agentPending = false;
+    state.agentError = '';
+}
+
+function requestProjectAgents(projectId) {
+    ipc(JSON.stringify({ type: 'list_project_agents', projectId }));
+}
+
+function repaintAgents() {
+    const box = document.getElementById('projAgents');
+    if (box && state.projectForm) box.innerHTML = renderAgentsBody(state.projectForm);
+}
+
+// agentModelChoices lists the models a kind can name. A claude entry offers
+// the three aliases; codex and pi come from the live catalogue, with the
+// provider prefix a session start adds stripped back off.
+function agentModelChoices(kind) {
+    if (kind === 'claude') return AGENT_CLAUDE_MODELS.slice();
+    const rows = (state.modelCatalog && state.modelCatalog.models) || [];
+    if (kind === 'codex') {
+        return rows.filter(m => m.provider === 'codex' && m.id.indexOf('codex/') === 0).map(m => m.id.slice('codex/'.length));
+    }
+    return rows.filter(m => m.provider === 'chat' && m.kind !== 'other' && !m.target).map(m => m.id);
+}
+
+function agentRowText(e) {
+    let text = e.name + ' · ' + e.kind + ' · ' + (e.model || '(default)') + ' · ' + (e.command || '(default)');
+    if (e.args && e.args.length > 0) text += ' · args: ' + e.args.join(' ');
+    return text;
+}
+
+function renderAgentsSection(f) {
+    let html = '<div class="proj-section">';
+    html += '<div class="proj-section-title">Agents</div>';
+    html += '<p class="proj-section-help">Named agents you can start on this project by name. Adding, changing or removing one asks for approval on this Mac. Arguments are edited with <code>relay project agents</code>.</p>';
+    if (!f.id) {
+        html += '<div class="proj-tool-empty">Save the project first, then add agents.</div>';
+    } else {
+        html += '<div id="projAgents">' + renderAgentsBody(f) + '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderAgentsBody(f) {
+    const entries = state.projectAgents[f.id] || [];
+    const pending = state.agentPending;
+    let html = '';
+    if (state.agentError && !state.agentForm) {
+        html += '<div class="proj-error" tabindex="-1">' + esc(state.agentError) + '</div>';
+    }
+    if (entries.length === 0) {
+        html += '<div class="proj-tool-empty">No agents yet.</div>';
+    }
+    for (const e of entries) {
+        html += '<div class="proj-template-card">';
+        html += '<div class="proj-template-header">';
+        html += '<span>' + esc(agentRowText(e)) + '</span>';
+        html += '<span>';
+        html += '<button type="button" class="btn btn-sm" ' + bind(editAgent, e.name) + (pending ? ' disabled' : '') + '>Edit</button> ';
+        html += '<button type="button" class="btn btn-sm" ' + bind(removeAgent, e.name) + (pending ? ' disabled' : '') + '>Remove</button>';
+        html += '</span>';
+        html += '</div>';
+        html += '</div>';
+    }
+    if (state.agentForm) {
+        html += renderAgentForm(f);
+    } else {
+        html += '<button type="button" class="btn btn-sm" ' + bind(newAgent) + (pending ? ' disabled' : '') + '>Add agent</button>';
+        if (pending) html += '<p class="proj-section-help">Waiting for approval on this Mac.</p>';
+    }
+    return html;
+}
+
+function renderAgentForm(f) {
+    const a = state.agentForm;
+    const pending = state.agentPending;
+    const dis = pending ? ' disabled' : '';
+    let html = '<div class="proj-template-card">';
+    html += '<div class="proj-section-title">' + (a.origName ? 'Edit agent' : 'Add agent') + '</div>';
+    if (state.agentError) html += '<div class="proj-error" tabindex="-1">' + esc(state.agentError) + '</div>';
+    html += '<label for="agentName">Name</label>';
+    html += '<input type="text" id="agentName" value="' + esc(a.name) + '" placeholder="mywrapper" oninput="state.agentForm.name = this.value"' + dis + ' />';
+    html += '<label for="agentKind">Kind</label>';
+    html += '<select id="agentKind" onchange="setAgentKind(this.value)"' + dis + '>';
+    for (const k of AGENT_KINDS) {
+        if (k === 'pi' && isHostedForm(f)) continue;
+        html += '<option value="' + k + '" ' + (a.kind === k ? 'selected' : '') + '>' + k + '</option>';
+    }
+    html += '</select>';
+    html += '<label for="agentModel">Model</label>';
+    html += '<select id="agentModel" onchange="state.agentForm.model = this.value"' + dis + '>';
+    if (a.kind !== 'pi') html += '<option value="" ' + (a.model === '' ? 'selected' : '') + '>(default)</option>';
+    const choices = agentModelChoices(a.kind);
+    if (a.model && !choices.includes(a.model)) choices.unshift(a.model);
+    for (const m of choices) {
+        html += '<option value="' + esc(m) + '" ' + (a.model === m ? 'selected' : '') + '>' + esc(m) + '</option>';
+    }
+    html += '</select>';
+    html += '<label for="agentCommand">Command</label>';
+    html += '<input type="text" id="agentCommand" value="' + esc(a.command) + '" placeholder="empty = the kind\'s default program" oninput="state.agentForm.command = this.value"' + dis + ' />';
+    html += '<p class="proj-section-help">A program name or an absolute path. A name is looked up where the project lives, and the path found is stored.</p>';
+    if (a.args && a.args.length > 0) {
+        html += '<p class="proj-section-help">Arguments (read-only): ' + esc(a.args.join(' ')) + '</p>';
+    }
+    if (pending) html += '<p class="proj-section-help">Waiting for approval on this Mac.</p>';
+    html += '<div class="form-actions">';
+    html += '<button type="button" class="btn btn-primary" ' + bind(saveAgentForm) + dis + '>Save agent</button> ';
+    html += '<button type="button" class="btn" ' + bind(cancelAgentForm) + dis + '>Cancel</button>';
+    html += '</div>';
+    html += '</div>';
+    return html;
+}
+
+function newAgent() {
+    state.agentForm = { origName: '', name: '', kind: 'claude', model: '', command: '', args: [] };
+    state.agentError = '';
+    repaintAgents();
+}
+
+function editAgent(name) {
+    const f = state.projectForm;
+    const e = f && (state.projectAgents[f.id] || []).find(x => x.name === name);
+    if (!e) return;
+    state.agentForm = { origName: e.name, name: e.name, kind: e.kind, model: e.model || '', command: e.command || '', args: (e.args || []).slice() };
+    state.agentError = '';
+    repaintAgents();
+}
+
+function cancelAgentForm() {
+    if (state.agentPending) return;
+    state.agentForm = null;
+    state.agentError = '';
+    repaintAgents();
+}
+
+// setAgentKind drops the model: a model belongs to one kind's catalogue.
+function setAgentKind(kind) {
+    if (!state.agentForm) return;
+    state.agentForm.kind = kind;
+    state.agentForm.model = '';
+    repaintAgents();
+}
+
+function saveAgentForm() {
+    const f = state.projectForm;
+    const a = state.agentForm;
+    if (!f || !f.id || !a || state.agentPending) return;
+    const entry = { name: a.name.trim(), kind: a.kind };
+    if (a.model) entry.model = a.model;
+    if (a.command.trim()) entry.command = a.command.trim();
+    if (a.args && a.args.length > 0) entry.args = a.args;
+    state.agentPending = true;
+    state.agentError = '';
+    repaintAgents();
+    if (a.origName) {
+        ipc(JSON.stringify({ type: 'update_project_agent', projectId: f.id, name: a.origName, entry }));
+    } else {
+        ipc(JSON.stringify({ type: 'add_project_agent', projectId: f.id, entry }));
+    }
+}
+
+function removeAgent(name) {
+    const f = state.projectForm;
+    if (!f || !f.id || state.agentPending) return;
+    state.agentPending = true;
+    state.agentError = '';
+    repaintAgents();
+    ipc(JSON.stringify({ type: 'remove_project_agent', projectId: f.id, name }));
+}
+
+window.onProjectAgentsListed = function(res) {
+    if (!res || !res.projectId) return;
+    const projectId = res.projectId;
+    state.projectAgents[projectId] = res.entries || [];
+    const f = state.projectForm;
+    if (!f || f.id !== projectId) return;
+    // A write's answer closes the form; a plain list load leaves an open one.
+    if (state.agentPending) {
+        state.agentPending = false;
+        state.agentForm = null;
+    }
+    state.agentError = '';
+    repaintAgents();
+};
+
+window.onProjectAgentError = function(res) {
+    const f = state.projectForm;
+    if (!res || !f || f.id !== res.projectId) return;
+    state.agentPending = false;
+    state.agentError = res.message || (res.error === 'refused' ? 'The Mac refused the request.' : 'The agent change failed.');
+    repaintAgents();
+};
+
 // openProjModelPicker starts the picker afresh for the form just opened. An
 // access profile carries no models, so it asks relay for nothing.
 function openProjModelPicker() {
@@ -3362,7 +3576,10 @@ function requestModelCatalog() {
 window.onModelsListed = function(view) {
     state.modelCatalog = view || null;
     state.modelCatalogPending = false;
-    if (state.page === 'projects' && state.projectForm && !isRemoteForm(state.projectForm)) repaintProjModelPicker();
+    if (state.page === 'projects' && state.projectForm && !isRemoteForm(state.projectForm)) {
+        repaintProjModelPicker();
+        repaintAgents();
+    }
 };
 
 // repaintProjModelPicker rebuilds only #projModelsPicker, never the whole
@@ -3759,6 +3976,9 @@ function renderProjectForm() {
     }
     html += '</div>';
     }
+
+    // ---- Agents (named launch entries; an access profile has none) ----
+    if (!isRemote) html += renderAgentsSection(f);
 
     // ---- Permission policy ----
     // Absent for an access profile, for the same reason the skill toggle is:
@@ -7574,6 +7794,7 @@ Object.assign(window, {
     addProjMount, removeProjMount, setProjMountAccess,
     isProjTemplatesWildcard, setProjTemplatesWildcard, toggleProjTemplate,
     renderProjDefaults, renderProjDefaultSelect, renderChiefOfStaff, setChiefOfStaffProject, setChiefOfStaffModel, setChiefOfStaffDailyCalls, renderProjModeChips, setDefaultProject, setProjMode,
+    resetAgentForm, requestProjectAgents, repaintAgents, agentModelChoices, agentRowText, renderAgentsSection, renderAgentsBody, renderAgentForm, newAgent, editAgent, cancelAgentForm, setAgentKind, saveAgentForm, removeAgent,
     openProjModelPicker, requestModelCatalog, repaintProjModelPicker, setProjModelSearch, toggleProjModel, toggleProjModelsOther, renderProjModelList, renderProjModelPicker, renderProjModelPickerBody,
     blankTemplateForm, cancelTemplateEdit, captureTemplateFormInputs, editTemplate, newTemplate, removeTemplate, renderTemplateForm, saveTemplateForm, templateFormFromExisting, templateLines,
     cancelHostTemplateEdit, captureHostTemplateFormInputs, closeHostTemplateForm, editHostTemplate, editingHostRecord, hostTemplateCommandLine, newHostTemplate, removeHostTemplate, renderHostTemplateForm, renderHostTemplates, saveHostTemplateForm,
