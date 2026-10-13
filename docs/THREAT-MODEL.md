@@ -42,10 +42,12 @@ outside it is not a relay bug, however real.
    write text aimed at the Chief of Staff and, through it, at every other
    agent. Agent output is untrusted data, and relay does not judge it. Relay
    limits and records. A request in the chief-of-staff scope reaches the
-   session list, a `/ws` it cannot write to, one send route and one start
-   route: no tool call, file read, terminal of its own choosing, permission
+   session list, a `/ws` it cannot write to, one send route, one start
+   route, a read-only agent list and a preview that resolves a command name
+   and writes nothing: no tool call, file read, terminal of its own choosing, permission
    answer, session stop or resume, and no config change. The start route
-   launches an agent in a registered project, local or on an SSH host, in
+   launches an agent, by model or by the name of an agent entry or chat
+   template of that project, in a registered project, local or on an SSH host, in
    the project root or a folder inside it (symlinks resolved for a local
    project; a hosted project's folder is checked as text, as for any hosted
    launch). A remote (mTLS) project is refused, and so is a terminal start on
@@ -67,6 +69,16 @@ outside it is not a relay bug, however real.
    mark records which door a frontend chose.
    The scope also can't change where the Chief of Staff runs: the
    `/api/chief-of-staff/config` routes are refused inside it.
+   Agent output cannot add or change a launcher. The scope writes no agent
+   entry and no chat template: every `/api/projects/*` write is class
+   `configure`, which the scope never reaches. An agent entry write needs
+   `configure` and a presence prompt that names the project, the entry and
+   the command, and every one leaves a `config_change` row. The chat-template
+   add door needs `configure` and a prompt naming the project, the template
+   and its model. A frontend's own project-editor save of chat templates
+   (`PUT /api/projects/{id}`) needs class `configure` and no prompt, and the
+   chief-of-staff scope cannot reach it, so the promise about agent output
+   holds.
 3b. **A read-only-projects session** (`settings.readOnlyProjects`, claude
    only, started by a frontend that holds execute). It reads every registered
    local project, and that read reach is new: a session otherwise reads only
@@ -156,7 +168,9 @@ scope).
   path no project, template grant or CLI need names, or a profile that
   outlives a project change, is a relay bug against asset D.
 - A request in the chief-of-staff scope that reaches anything outside its
-  four doors, a session start outside the project root or in a remote
+  six doors, a session start outside the project root or in a remote
   (mTLS) project, a message marked `chief-of-staff` that did not come through
-  the scope, or a scoped send with no intent record, is a relay bug against
+  the scope, a scoped send with no intent record, an agent entry or chat
+  template written by the scope, or an agent entry write without a presence
+  prompt or a `config_change` row, is a relay bug against
   asset A or C.

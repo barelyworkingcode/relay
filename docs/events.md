@@ -198,7 +198,20 @@ reasons. The agent's `args` are in the audit row only, never in an event.
 | `chief_of_staff.config.set` | At the end of `SetChiefOfStaff` | `PUT /api/chief-of-staff/config`, Settings | `project_id` |
 | `chief_of_staff.config.clear` | At the end of `ClearChiefOfStaff` | `DELETE /api/chief-of-staff/config`, Settings | none |
 | `chief_of_staff.send` | When a message is sent to the Chief of Staff session | `POST /api/chief-of-staff/messages` | `session_id` (`origin` (existing)) |
-| `chief_of_staff.start` | When a Chief of Staff session is started | `POST /api/chief-of-staff/sessions` | `session_id`, `project_id`, `kind` (the outcome follows the HTTP status: `403` is `denied`, `400` is `error` with reason `invalid`) |
+| `chief_of_staff.start` | When a Chief of Staff session is started | `POST /api/chief-of-staff/sessions` | `session_id`, `project_id`, `kind`, `entry` and `entry_type` (`agent` or `chat`) once an entry is named (the outcome follows the HTTP status: `403` is `denied`, `400` is `error` with reason `invalid`; an unknown or ambiguous entry is `denied` with reason `entry_not_found` or `entry_ambiguous`) |
+| `chief_of_staff.agents.list` | Before the list is returned | `GET /api/chief-of-staff/projects/{projectId}/agents` | `project_id`, `count` (`403` is `denied`) |
+| `chief_of_staff.agents.preview` | At the end of the preview | `POST /api/chief-of-staff/projects/{projectId}/agents/preview` | `project_id`, `machine` (set once the command is resolved; `403` is `denied`, `400` and `422` are `error` with reason `invalid`) |
+
+### Chat templates
+
+| Event | When written | Doors | Fields |
+|---|---|---|---|
+| `chat_template.add` | At the end of `ChatTemplateOps.Add` | `POST /api/projects/{id}/chat-templates` | `project_id`, `name` |
+
+A refusal's `reason` is `invalid` for a `400` answer, `not_found` for `404` and
+`conflict` for `409` (`name_taken`, `project_changed`). A refused presence
+prompt and an unavailable audit log use the shared `presence_*` and
+`audit_unavailable` reasons.
 
 ### Grants
 

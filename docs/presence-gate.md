@@ -127,6 +127,17 @@ what runs.** Concretely:
   remove` needs the prompt. The write still runs
   `requireIssuanceAuditor` first and records `config_change` with credential
   `agent_entry` ([`audit-log.md`](audit-log.md)). Listing is not gated.
+- **Adding a project's chat template** (`project.chat_template`) — a chat
+  template is a name a start can use (`entry`) that runs a chosen model, so an
+  add changes what a named start does, as an agent entry does. The digest
+  binds `project_id`, `action` (always `add`), `name` and `model`, and the
+  prompt reads `Add chat "Researcher" to Acme: model local/chat`. The write
+  runs `requireIssuanceAuditor` first and records `config_change` with
+  credential `chat_template`. Only this door is gated. A frontend's own
+  project-editor save (`PUT /api/projects/{id}`) still writes chat templates
+  with class `configure` alone: it is a person's edit at the frontend, and
+  the chief-of-staff scope cannot reach it, so agent output cannot add or
+  change a launcher either way.
 - **Widening a project's grant shape** (`project.grant`) — see below.
 - **Changing relay's remote-listener configuration** (`remote.configure`,
   `PUT /api/remote` / IPC `update_remote_config`, both onto

@@ -80,10 +80,12 @@ The response does not echo the header.
 `X-Relay-Scope: chief-of-staff` narrows a request to the Chief of Staff scope.
 It needs a credential holding `proxy`. Inside the scope only these doors
 answer: `POST /api/chief-of-staff/messages`, `POST /api/chief-of-staff/sessions`,
+`GET /api/chief-of-staff/projects/{projectId}/agents`,
+`POST /api/chief-of-staff/projects/{projectId}/agents/preview`,
 `GET /api/sessions` and `GET /ws`. Any other door answers `403`. Any other
-value of the header answers `403`. Without the header the two
-`/api/chief-of-staff/messages|sessions` routes answer `403` for every
-credential.
+value of the header answers `403`. Without the header the
+`/api/chief-of-staff/messages|sessions|projects/...` routes answer `403` for
+every credential.
 
 ## Error bodies
 
@@ -111,7 +113,7 @@ depends on the route family:
 
 | Family | Refusal status |
 |---|---|
-| Project routes (`project.grant`, `project.rotate_token`, `project.agent`) | `403` |
+| Project routes (`project.grant`, `project.rotate_token`, `project.agent`, `project.chat_template`) | `403` |
 | Service, MCP, enrolment and remote-config routes | `500` |
 
 The `500` is what the code answers today; the event line still reads `denied`.
@@ -458,21 +460,65 @@ Starts a headless agent or a Claude terminal on the Chief of Staff's behalf.
   | `projectId` | string | Registered local project (required) |
   | `folder` | string | Relative folder inside the project; no `..`, not absolute |
   | `prompt` | string | First prompt (required, at most 8000 characters) |
-  | `model` | string | Model ID (required) |
-  | `mode` | string | `"headless"` (default) or `"terminal"` (a Claude model only) |
+  | `model` | string | Model ID. Send exactly one of `model` and `entry` |
+  | `entry` | string | The name of an agent entry or chat template of the project, matched without regard to case. An agent runs its kind, model and command; a chat runs its model. Headless only |
+  | `mode` | string | `"headless"` (default) or `"terminal"` (a Claude model only; refused with `entry`) |
 
 - **Response `201`:** `sessionId`, `name`, `projectId`, `directory`, `mode`,
-  `kind`, `origin` (`"chief-of-staff"`), `at`.
-- **Errors** (`{"error": "<code>", "message": "<text>"}`): `400`
+  `kind`, `origin` (`"chief-of-staff"`), `at`, and for an entry start `entry`
+  (the stored spelling) and `entryType` (`"agent"` or `"chat"`). A chat is
+  named `<project> - <chat>`; its `mode` and voice settings are ignored.
+- **Errors** (`{"error": "<code>", "message": "<text>"}`, plus `choices`, the
+  names the caller could have used, when there are any): `400`
   `invalid_body`, `project_id_required`, `prompt_required`, `prompt_too_long`,
-  `model_required`, `mode_invalid`, `folder_invalid`, `folder_not_found`,
-  `terminal_on_host`, `terminal_needs_claude`; `403` `project_not_available`
+  `model_or_entry`, `mode_invalid`, `folder_invalid`, `folder_not_found`,
+  `terminal_on_host`, `terminal_needs_claude`, `entry_invalid` (a chat with
+  no model, or an agent entry the launch refuses); `403` `project_not_available`
   (unknown or remote project), `model_not_allowed`, `directory_outside_project`;
+  `404` `entry_not_found` (the message lists the project's choices); `409`
+  `entry_ambiguous` (two chats, or an agent and a chat, share the name);
   `413` `body_too_large`; `502` `launch_failed`, `prompt_not_delivered`;
-  `503` `audit_unavailable`.
-- **Event:** `chief_of_staff.start` (`session_id`, `project_id`, `kind`).
+  `503` `audit_unavailable`. Launch refusals pass through unchanged, among
+  them `model_not_offered` (with `choices`) and `models_unavailable`.
+- **Event:** `chief_of_staff.start` (`session_id`, `project_id`, `kind`,
+  and `entry`, `entry_type` for an entry start).
 - **Audit row:** `session_launch` with `origin: chief-of-staff`; a refusal
   after the audit check also writes one with `outcome: denied`.
+
+### GET /api/chief-of-staff/projects/{projectId}/agents
+
+Lists what a start in the project can name.
+
+- **Listeners:** socket. **Credential:** `chief_of_staff` (needs
+  `X-Relay-Scope: chief-of-staff` and a credential holding `proxy`).
+  **Gate:** none.
+- **Response `200`:** `{"projectId","projectName","machine","entries":[...]}`.
+  Agent rows come first, then chat rows, each in stored order:
+  `{"type":"agent","name","kind","model"?,"command"?}` and
+  `{"type":"chat","name","model"}`. A row carries no `args`, system prompt or
+  template id. `machine` is `this Mac` or the host's name.
+- **Errors:** `403` `project_not_available` (unknown or remote project).
+- **Event:** `chief_of_staff.agents.list` (`project_id`, `count`).
+
+### POST /api/chief-of-staff/projects/{projectId}/agents/preview
+
+Checks a proposed agent entry and resolves its command. It writes nothing,
+raises no prompt and writes no audit row.
+
+- **Listeners:** socket. **Credential:** `chief_of_staff`. **Gate:** none.
+- **Request:** `{"name","kind","model","command"}`, at most 64 KiB, unknown
+  keys (`args` included) and trailing data refused with `400` `invalid_body`.
+- **Response `200`:** `{"projectId","projectName","machine","entry"}`, the
+  shape `POST /api/projects/{id}/agents` answers, with `entry.command` as the
+  absolute path found on the project's machine.
+- **Errors:** `403` `project_not_available`; otherwise the coded family of
+  `POST /api/projects/{id}/agents`: `400` `name_invalid`, `kind_invalid`,
+  `model_invalid`, `model_required`, `command_invalid`,
+  `kind_not_available_on_host`, `too_many_entries`; `409` `name_taken`; `422`
+  `command_not_found`; `502` `machine_unreachable`. A command holding a shell
+  quoting character is `command_invalid` before any lookup runs.
+- **Event:** `chief_of_staff.agents.preview` (`project_id`, `machine` once
+  resolved).
 
 ### GET /api/chief-of-staff/config
 
@@ -731,6 +777,28 @@ the stored value.
 key `agents` is not read, and a save through them leaves the list as stored.
 A chat template save that reuses an agent's name is refused on those routes
 with `400` and `"Researcher" is already an agent in Acme`.
+
+### POST /api/projects/{id}/chat-templates
+
+Adds one chat template: a name and a model.
+
+- **Listeners:** socket, tcp. **Credential:** `configure`.
+  **Gate:** `project.chat_template`.
+- **Request:** `{"name","model"}`, at most 64 KiB, unknown keys refused.
+  `name` is 1 to 60 characters with no control characters; `model` is at most
+  200 bytes with no spaces or control characters. Whether the model exists is
+  checked at start, not here.
+- **Response `201`:** `{"projectId","template":{"id","name","model"}}`.
+- **Errors:** `400` `invalid_body`, `name_invalid`, `model_required`,
+  `model_invalid`, `project_not_available` (a remote project); `404`
+  `project_not_found`; `409` `name_taken` (an agent or a chat has the name)
+  and `project_changed`; `403` the prompt was refused or the write could not
+  be recorded (the Simple family `{"error"}`).
+- **Event:** `chat_template.add` (`project_id`, `name`). Presence refusals
+  write the event with `status: denied`.
+- **Audit row:** `config_change` (credential `chat_template`, subject the
+  project ID) with the owner's `presence_id`.
+- No CLI or IPC equivalent.
 
 ## 2.3 MCP servers and tools (G3)
 

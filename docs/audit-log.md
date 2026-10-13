@@ -889,7 +889,7 @@ relay audit --event session_message                # every Chief of Staff send; 
 `POST /api/chief-of-staff/sessions` writes a `session_launch` row for every
 start that passes the body checks, allowed or refused, and a headless start
 also writes the `session_message` pair above for its prompt. The launch row's
-args gain three fields, all `omitempty`:
+args gain these fields, all `omitempty`:
 
 - `args.origin`: `chief-of-staff` for a start through this route.
 - `args.prompt_bytes`: the size of the trimmed prompt. The prompt text is
@@ -898,8 +898,12 @@ args gain three fields, all `omitempty`:
   resume carries it, not only a Chief of Staff start, and so does a refusal
   of a hosted start by the route or by `AuthorizeLaunch`. A system-only-model
   refusal is decided before the project is read, so its row has no `host_id`.
+- `args.entry`: for an agent entry start, the entry's stored name, and the
+  row's command is the one the entry runs. A chat start carries no `entry`;
+  the `chief_of_staff.start` event carries the chat's name instead.
 
-A refusal after the audit-ready check (unknown or remote project, a terminal start in
+A refusal after the audit-ready check (unknown or remote project, an entry that is
+not found or is ambiguous, a terminal start in
 a project on a host, folder outside the project, a terminal start without a Claude model, a
 model the project does not allow, a system-only model, or a policy refusal from
 `AuthorizeLaunch`) is a `denied` row carrying the same fields. An
@@ -1016,6 +1020,17 @@ update and remove writes one, and each carries a `presence_id`:
 - A remove carries `action`, `entry` and the `command` the entry ran.
 - `command=` is the absolute path the lookup resolved, never the name the
   caller typed.
+
+A chat template added to a project lands here as credential `chat_template`,
+with the project id as `subject`, the project name as `subject_name` and a
+`presence_id`. Only an add exists:
+
+```json
+{"id":"…","ts":"…","event":"config_change","actor":{"kind":"control","auth":"token","cred_id":"5e2a…"},
+ "credential":"chat_template","subject":"p_acme","subject_name":"Acme",
+ "grants":["action=add","template=Researcher","model=local/chat"],
+ "via":"http","presence_id":"p_9a2…","outcome":"ok"}
+```
 
 ```
 relay audit --grep cli_admin        # every toggle and every remote narrowing

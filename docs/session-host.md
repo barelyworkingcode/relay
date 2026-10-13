@@ -189,7 +189,14 @@ the ledger record, never from the caller, so a resumed session keeps it.
 `GET /api/sessions` and `GET /api/terminals` rows include `"origin"` when set.
 
 The start route is `POST /api/chief-of-staff/sessions`, body
-`{projectId, folder?, prompt, model, mode?}`, 64 KiB at most. `mode` is
+`{projectId, folder?, prompt, model?, entry?, mode?}`, 64 KiB at most. Exactly
+one of `model` and `entry` is sent. `entry` names an agent entry or a chat
+template of the project, without regard to case: an agent starts through
+`AuthorizeLaunch` with its kind, model and launcher, and a chat starts as a
+headless session on the chat's model, named `<project> - <chat>`, with
+`useRelayTools` and the append-CLAUDE.md option on for a kind other than
+claude. An entry start is headless only; a chat's `mode` and voice are
+ignored. `mode` is
 `headless` (the default: a `claude`, `pi`, `codex` or `chat` session chosen by
 the model, with relay-built settings `{"headless":true,"agent":true}` so it
 shows in the session list and on the board) or `terminal` (a `pty` session on
@@ -206,7 +213,8 @@ route; if delivery fails the session is terminated with reason
 `chief_of_staff_start_failed` and the route answers 502 `prompt_not_delivered`.
 A terminal start appears in `GET /api/terminals` with its origin and does not
 join the Chief of Staff roster, which tracks agent sessions only. Success is
-201 `{sessionId, name, projectId, directory, mode, kind, origin, at}`.
+201 `{sessionId, name, projectId, directory, mode, kind, origin, at}`, plus
+`entry` and `entryType` for an entry start.
 
 ### `POST /launch`
 
