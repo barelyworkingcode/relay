@@ -25,3 +25,14 @@ promoted to an issue the day it does.
   files as it reads them, then runs a probe bounded at 3 s. If that probe runs
   past the bound, the drained reports are lost and the state waits for the
   next 15 s probe, still inside the 60 s bound.
+- **Outside sessions: a failed host path resolution drops symlinked rows.**
+  Host project paths are resolved in a second SSH call per probe. If only that
+  call fails, rows under a symlinked project path are removed until the next
+  good probe, instead of being kept 60 s as for an unreachable machine.
+- **Outside sessions: resolved paths are matched by line position.** Stdout
+  from a host's shell startup files, or a resolved path containing a newline,
+  would shift the lines; a row could lose or take a neighbour's `projectId`,
+  never one outside the union of the host's projects.
+- **Outside sessions: console path resolution has no deadline.** Resolving a
+  console project on a hung network mount would block that console probe
+  past its 10 s bound.

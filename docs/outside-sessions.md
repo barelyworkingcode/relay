@@ -27,8 +27,8 @@ States are `running`, `asking` and `idle`; sources are `probe` and `hook`.
 to a tmux session and the machine is the console or a host with
 `show_all_tmux_sessions` on. Otherwise `viewReason` is `not_in_tmux` (no pane
 ties it) or `outside_view_disabled` (the host has not opted in). A row on an
-unreachable machine keeps its last probe's values until it expires; the
-viewer route (`POST /api/tmux/views`) repeats every check, so a stale
+unreachable machine reads `idle` and keeps its last probe's `viewable` until
+it expires; the viewer route (`POST /api/tmux/views`) repeats every check, so a stale
 `viewable` opens nothing.
 Machine entries contain nullable `hostId`, `machine`, `status` (`reachable`,
 `unreachable` or `unsupported`), `lastProbeAt` and a safe `error` string. Raw PIDs, process
@@ -58,7 +58,9 @@ Remote scripts use the existing SSH path.
 A registry must correlate its PID, creation lifetime, session identity and cwd
 with a live Claude process. Older clients require an unambiguous live cwd and
 matching transcript metadata from that lifetime. Ambiguous evidence is omitted.
-Hosted rows must lie in a registered project subtree. Managed sessions are
+Hosted rows must lie in a registered project subtree. A project path is
+matched both as stored and as resolved on its own machine, because the probe
+reports a process's resolved cwd. Managed sessions are
 excluded using the selected `RELAY_SESSION_ID`, process ancestry and the Claude
 identities session-host returns from its internal `GET /managed-identities`
 (`{claude_session_ids:[string]}`, beside `/launch`, off the manifest); Relay IDs are never treated as Claude UUIDs.
