@@ -31,6 +31,13 @@ main.go                  Entry + command dispatch (relay / mcp / mcpExec / servi
 trayapp.go               App lifecycle, menu, settings IPC, ToolRouter wiring
 project_routes.go        HTTP project routes; shares Settings mutators with ipc_projects.go
 project_dto.go           projectView DTO — strips the token from every response except rotate and reveal
+agent_list_ops.go        AgentListOps: the one core under the project agent list (HTTP, IPC and CLI doors); validates, resolves the command, gates with `project.agent`, records `config_change`
+agent_list_routes.go     `/api/projects/{id}/agents` routes, registered with the session routes
+ipc_agent_list.go        Settings IPC adapters over AgentListOps (`list_project_agents` and the three writes)
+agent_list_verbs.go      `relay project agents` verbs and their `project.agents.*` ops
+agent_models.go          ModelOffer: the models a kind offers, read from the model catalog, for a start by entry
+internal/project/agents.go   Agent entry rules shared by every door: name, kind, model, command and args grammar, name clash with chat templates
+internal/cmdlookup/      Command lookup in the login shell of this Mac or an SSH host
 host_routes.go           HTTP host routes (docs/ssh-hosts.md) — GET/POST/PUT/DELETE /api/hosts[/{id}], probe, disconnect
 host_ops.go              HostOps: the ungated core host_routes.go and ipc_hosts.go share; runs sshhost.Probe and writes the host.probe audit event
 router.go                Bridge auth (project tokens, launch identity by capability, directory auth), Hello, tool filtering, access mode, scope presence, _meta injection (project_id, args_sha256, trace_id)
@@ -419,6 +426,54 @@ store untouched. Relay checks shape only, not that the project's mode includes
 the preset's mode. Like mode and defaults it is a label, not a grant: nothing
 that decides access, launch or routing reads it.
 
+### Agent list
+
+A project may hold a list of named agents, `projects[].agents` in
+`settings.json`. An entry is `name`, `kind` (`claude`, `codex` or `pi`), an
+optional `model`, and an optional `command` with `args`. A person says the name
+(`relay session start --project Acme --entry mywrapper`); relay supplies the
+kind, the model and the program. The field is omitted when empty, so a project
+with no list is stored and behaves exactly as before.
+
+- **One core.** `AgentListOps` is the only writer. The HTTP routes, the
+  Settings IPC messages and the `project.agents.*` admin ops all call it. The
+  project create and update paths never write `agents`.
+- **Shared rules.** `internal/project/agents.go` holds the grammar every door
+  uses. A name is unique, without regard to case, across the project's agents
+  and its chat templates: `AgentNameClash` guards the agent writes and
+  `ValidateShape` refuses the reverse, a chat template that takes an agent's
+  name. A project holds at most 32 entries. `pi` is refused on a host project.
+- **The command is stored resolved.** A write takes a program name or an
+  absolute path and stores the absolute path `internal/cmdlookup` returns. The
+  lookup runs the login shell's `command -v` (so a `PATH` set in a shell rc
+  file counts), then plain `command -v`, on the project's machine: locally for
+  a local project, over SSH for a host project
+  ([`docs/ssh-hosts.md`](ssh-hosts.md#entry-commands-on-a-host)). A result that
+  is not an absolute path (a builtin, alias or function) is not found. The
+  lookup never decides which machine; the core picks it from the project.
+- **Every write is gated.** Add, update and remove each need `project.agent`
+  ([`docs/presence-gate.md`](presence-gate.md)), because a command is a
+  program relay will run. The digest binds the whole entry, the write
+  re-reads the live record inside the queued commit and refuses
+  `project_changed` if it moved, and the audit record is written before the
+  list changes: a failed record declines the write.
+- **Start by entry.** A start with `entry` and no `model` resolves the name
+  inside the launch authorization, after the project and directory checks, so
+  only a caller already allowed to launch in that project sees the names.
+  `project.SessionModel` turns the entry into the model the existing checks
+  already understand (`codex/<model>`, `pi/relay-router/<model>`), so
+  `allowed_models` and the kind's template apply unchanged. The kind must
+  offer the model (`ModelOffer`); a catalog that cannot be read refuses the
+  start. A command becomes a launcher passed to the session host, which runs
+  it in place of the kind's own binary
+  ([`docs/session-host.md`](session-host.md#launcher-an-agent-entrys-program)).
+  Resume re-reads the entry by name, so an edited command takes effect at the
+  next resume and a removed entry refuses it.
+- **Doors.** Simple: Settings > Projects > a project > Agents. Power:
+  `relay project agents`, `relay session start --entry`, and
+  `settings.json` `projects[].agents`. A hand-edited entry is validated again
+  at start (`entry_invalid`), so the file is not a way around the rules.
+
 ### Chief of Staff setting
 
 `chief_of_staff` in `settings.json` says where eve's Chief of Staff runs:
@@ -791,6 +846,10 @@ internal/sessions/
   ledger/      the claude/pi/chat session record relay itself persists
 ```
 
+An agent entry's command reaches the host as a launcher on the launch
+request, a program and arguments that replace the kind's own binary; see
+[`docs/session-host.md`](session-host.md#launcher-an-agent-entrys-program).
+
 Full design, the internal API's mutual peer verification (including the
 single-trust-domain property that mount runs under — any frontend-capable
 caller reaches every session on the host, not just their own), the shim's
@@ -966,6 +1025,15 @@ follows the same rules. Both settings are cosmetic, so reordering
 (`update_service_menu_hidden`, `PUT /api/services/{id}/menu`) sit in the
 `configure` class with no presence prompt, no `presence.GatedOps` entry and no
 issuance record, and neither starts, stops or restarts a process.
+
+The project form's Agents section (local projects only) lists a project's
+agents and adds, edits and removes them through the `list_project_agents`,
+`add_project_agent`, `update_project_agent` and `remove_project_agent` IPC
+messages (`ipc_agent_list.go`), not through `update_project`. Each row shows
+the name, kind, model and the resolved command; the form takes a command as a
+name. A write raises the `project.agent` prompt, and the section shows the
+core's message inline. `onProjectAgentsListed` carries the list and
+`onProjectAgentError` carries a refusal.
 
 The Remote Clients tab (`ipc_enrolments.go`) lists every enrolment beside the
 grants it reaches — by project *name*, with the certificate fingerprint in full
