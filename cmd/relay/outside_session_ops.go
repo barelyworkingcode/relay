@@ -19,8 +19,7 @@ import (
 	"time"
 )
 
-func outsideQuote(s string) string   { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
-func outsidePSQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+func outsideQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 func outsideRun(ctx context.Context, h *config.Host, script string) ([]byte, error) {
 	if h != nil {
 		return sshhost.RunOutside(ctx, *h, script)
@@ -66,23 +65,18 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 		hostID = &h.ID
 	}
 	m := outsidesessions.Machine{Key: key, Name: name, HostID: hostID}
-	m.Probe = func(ctx context.Context) ([]outsidesessions.Observation, error) {
-		h, windows, err := freshOutsideHost(store, h)
+	m.Probe = func(ctx context.Context) (outsidesessions.ProbeResult, error) {
+		h, err := freshOutsideHost(store, h)
 		if err != nil {
-			return nil, err
+			return outsidesessions.ProbeResult{}, err
 		}
-
-		script := outsidesessions.UnixProbeScript
-		if windows {
-			script = outsidesessions.WindowsProbeScript
-		}
-		data, err := outsideRun(ctx, h, script)
+		data, err := outsideRun(ctx, h, outsidesessions.UnixProbeScript)
 		if err != nil {
-			return nil, err
+			return outsidesessions.ProbeResult{}, err
 		}
 		native, err := outsidesessions.ParseNative(data)
 		if err != nil {
-			return nil, err
+			return outsidesessions.ProbeResult{}, err
 		}
 		root := 0
 		managed := map[string]bool{}
@@ -90,7 +84,11 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			if _, process, e := deps.host().resolve(); e == nil && h == nil {
 				root = int(process.PID)
 			}
-			managed, _ = deps.host().ManagedClaudeIdentities(ctx)
+			// Fail closed: without the managed list a relay session could
+			// appear as an outside one.
+			if managed, err = deps.host().ManagedClaudeIdentities(ctx); err != nil {
+				return outsidesessions.ProbeResult{}, err
+			}
 		}
 		if h == nil && runtime.GOOS == "darwin" {
 			for pid, proc := range native.Processes {
@@ -111,7 +109,7 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			var project *config.Project
 			for j := range settings.Projects {
 				p := &settings.Projects[j]
-				if p.HostID == hostKey(h) && outsidesessions.Contains(p.Path, o.Session.Directory, windows) && (project == nil || len(p.Path) > len(project.Path)) {
+				if p.HostID == hostKey(h) && outsidesessions.Contains(p.Path, o.Session.Directory) && (project == nil || len(p.Path) > len(project.Path)) {
 					project = p
 				}
 			}
@@ -141,35 +139,26 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			}
 			out = append(out, o)
 		}
-		return out, nil
+		return outsidesessions.ProbeResult{Observations: out, SawSpool: native.SawSpool}, nil
 	}
 	m.Read = func(ctx context.Context, o outsidesessions.Observation) ([]byte, error) {
-		h, windows, err := freshOutsideHost(store, h)
+		h, err := freshOutsideHost(store, h)
 		if err != nil {
 			return nil, err
 		}
-
 		if o.Transcript == "" {
 			return nil, outsidesessions.ErrUnavailable
-		}
-		if windows {
-			return outsideRun(ctx, h, windowsRead(o.Transcript))
 		}
 		p := outsideQuote(o.Transcript)
 		script := "p=" + p + `; for d in "$p" "$(dirname "$p")" "$(dirname "$(dirname "$p")")" "$(dirname "$(dirname "$(dirname "$p")")")"; do [ ! -L "$d" ] || exit 1; done; [ -f "$p" ] || exit 1; tail -c 1048576 "$p"`
 		return outsideRun(ctx, h, script)
 	}
 	m.Reports = func(ctx context.Context) ([]outsidesessions.Report, error) {
-		h, windows, err := freshOutsideHost(store, h)
+		h, err := freshOutsideHost(store, h)
 		if err != nil {
 			return nil, err
 		}
-
-		script := unixReports
-		if windows {
-			script = windowsReports
-		}
-		data, err := outsideRun(ctx, h, script)
+		data, err := outsideRun(ctx, h, unixReports)
 		if err != nil {
 			return nil, err
 		}
@@ -199,23 +188,21 @@ func hostKey(h *config.Host) string {
 	}
 	return h.ID
 }
-func windowsRead(path string) string {
-	return `$ErrorActionPreference='Stop'; $p=` + outsidePSQuote(strings.ReplaceAll(path, "/", "\\")) + `; $d=$p; for($j=0;$j -lt 4;$j++){if((Get-Item -LiteralPath $d).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'symlink refused'};$d=Split-Path $d}; $s=[IO.File]::Open($p,'Open','Read','ReadWrite'); try{$n=[Math]::Min(1048576,$s.Length);[void]$s.Seek(-$n,'End');$b=New-Object byte[] $n;[void]$s.Read($b,0,$n);[Console]::OpenStandardOutput().Write($b,0,$n)}finally{$s.Dispose()}`
-}
 
 const unixReports = `dir="$HOME/.claude/relay-outside-reports"; [ -d "$dir" ] || exit 0; [ ! -L "$dir" ] && [ ! -L "$HOME/.claude" ] || exit 1; [ "$(find "$dir" -maxdepth 0 -user "$(id -u)" -perm 0700 2>/dev/null)" = "$dir" ] || exit 1; n=0; for f in "$dir"/*.json; do [ -f "$f" ] && [ ! -L "$f" ] || continue; [ "$n" -lt 256 ] || break; [ -n "$(find "$f" -maxdepth 0 -user "$(id -u)" -perm 0600 2>/dev/null)" ] || continue; [ "$(wc -c < "$f")" -le 65536 ] || continue; at=$(stat -f %Fm "$f" 2>/dev/null || stat -c %y "$f"); printf '%s\t' "$at"; cat "$f" | base64 | tr -d '\r\n'; printf '\n'; rm -f "$f"; n=$((n+1)); done`
-const windowsReports = `$ErrorActionPreference='Stop'; $dir=Join-Path $env:USERPROFILE '.claude/relay-outside-reports';if(!(Test-Path $dir)){exit 0};$me=[Security.Principal.WindowsIdentity]::GetCurrent().User;function OwnerOnly($p){$item=Get-Item -LiteralPath $p;if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){return $false};$acl=Get-Acl -LiteralPath $p;if($acl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $me){return $false};foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){if($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference -ne $me){return $false}};return $true};if(!(OwnerOnly $dir) -or ((Get-Item (Split-Path $dir)).Attributes -band [IO.FileAttributes]::ReparsePoint)){exit 1};foreach($f in @(Get-ChildItem $dir -Filter '*.json' | Sort-Object LastWriteTimeUtc | Select-Object -First 256)){if($f.Length -gt 65536 -or !(OwnerOnly $f.FullName)){continue};$at=$f.LastWriteTimeUtc.ToString('o');$raw=[IO.File]::ReadAllBytes($f.FullName);"$at"+([char]9)+[Convert]::ToBase64String($raw);Remove-Item -LiteralPath $f.FullName}`
 
-func freshOutsideHost(store config.SettingsStore, old *config.Host) (*config.Host, bool, error) {
+func freshOutsideHost(store config.SettingsStore, old *config.Host) (*config.Host, error) {
 	if old == nil {
-		return nil, false, nil
+		return nil, nil
 	}
 	current, _ := config.FindHostByID(config.FreshSettings(store), old.ID)
 	if current == nil {
-		return nil, false, outsidesessions.ErrUnavailable
+		return nil, outsidesessions.ErrUnavailable
 	}
-	windows := current.Probe != nil && (sshhost.IsWindowsOS(current.Probe.OS) || current.Probe.OS == "Windows")
-	return current, windows, nil
+	if current.Probe != nil && (sshhost.IsWindowsOS(current.Probe.OS) || current.Probe.OS == "Windows") {
+		return nil, outsidesessions.ErrUnsupported
+	}
+	return current, nil
 }
 
 func outsideReportTime(value string) (time.Time, bool) {

@@ -23,8 +23,8 @@ Rows contain `id`, `name`, nullable `projectId` and `hostId`, `machine`,
 `directory`, `branch`, `state`, `since`, `updatedAt`, `source`, `outside:true`,
 `readOnly:true`, nullable `tmuxSession`, `viewable` and `viewReason`.
 States are `running`, `asking` and `idle`; sources are `probe` and `hook`.
-Machine entries contain nullable `hostId`, `machine`, `status` (`reachable`
-or `unreachable`), `lastProbeAt` and a safe `error` string. Raw PIDs, process
+Machine entries contain nullable `hostId`, `machine`, `status` (`reachable`,
+`unreachable` or `unsupported`), `lastProbeAt` and a safe `error` string. Raw PIDs, process
 arguments, environments and full transcripts never appear in responses.
 
 Detail returns `{session,lastTurn:{text,at,complete},lastExcerpt}`. It checks
@@ -39,18 +39,22 @@ live observation or transcript reads answer 502 `outside_status_unavailable`.
 ## Discovery and lifetime
 
 The baseline interval is 15 seconds. Machines run independently. Native Unix
-process identity/cwd discovery uses ps plus procfs or lsof; Windows uses
-PowerShell and same-user read access to native process parameters. Neither
-needs a host-side installation or Claude hooks. Reads are bounded: 512 registry
-records of at most 64 KiB, 128 transcript prefixes and tails of 8 KiB each, and a
-1 MiB transcript tail for detail. Remote scripts use the existing SSH path.
+process identity/cwd discovery uses ps plus procfs or lsof and needs no
+host-side installation or Claude hooks. A host whose launcher is Windows
+reports status `unsupported` and no rows. Reads are bounded: at most 32 live
+Claude processes per machine, and for each one only its own transcript (the
+registry `sessionId` for that pid, else the newest transcript in its project
+folder), as a 16 KiB tail plus the first line when no registry entry exists;
+512 registry records of at most 64 KiB; and a 1 MiB transcript tail for detail.
+Remote scripts use the existing SSH path.
 
 A registry must correlate its PID, creation lifetime, session identity and cwd
 with a live Claude process. Older clients require an unambiguous live cwd and
 matching transcript metadata from that lifetime. Ambiguous evidence is omitted.
 Hosted rows must lie in a registered project subtree. Managed sessions are
-excluded using the selected `RELAY_SESSION_ID`, process ancestry and known
-provider Claude identities; Relay IDs are never treated as Claude UUIDs.
+excluded using the selected `RELAY_SESSION_ID`, process ancestry and the Claude
+identities session-host returns from its internal `GET /managed-identities`
+(`{claude_session_ids:[string]}`, beside `/launch`, off the manifest); Relay IDs are never treated as Claude UUIDs.
 
 A successful probe replaces membership. A confirmed exit disappears on the
 next baseline. Failed probes mark the machine unreachable, clear active state
@@ -67,11 +71,10 @@ a reported `transcript_path` never chooses a file to read.
 
 On each originating machine, configure Claude Code command hooks explicitly.
 Relay never edits existing hook settings. Run `scripts/outside-session-report.sh`
-on Unix, or `powershell.exe -NoProfile -NonInteractive -File
-scripts/outside-session-report.ps1` on Windows, with native Claude hook JSON on
-stdin. Install the helper at an operator-chosen path and use that path in each
-hook command. Both helpers write at most 64 KiB atomically into the owner-only
-`~/.claude/relay-outside-reports/` spool and call no Relay action API.
+with native Claude hook JSON on stdin. Install the helper at an
+operator-chosen path and use that path in each hook command. It writes at most
+64 KiB atomically into the owner-only `~/.claude/relay-outside-reports/` spool
+and calls no Relay action API.
 
 | Claude event | State |
 |---|---|
@@ -85,7 +88,9 @@ hook command. Both helpers write at most 64 KiB atomically into the owner-only
 
 Native stdin includes `hook_event_name`, `session_id`, `cwd`,
 `transcript_path`, and optionally `notification_type`. Reports are drained
-at a two-second cadence independently of baseline probes. Each state update
+every two seconds, independently of baseline probes, but only for a machine
+whose last good probe saw the spool and which has a live outside row; an
+unreachable machine is never drained. Each state update
 requires a fresh live process/session/cwd match; forged, stale or mismatched
 reports do not seed identities. Healthy report completion to snapshot delivery
 must fit five seconds. Hookless changes use the next completed 15-second probe.

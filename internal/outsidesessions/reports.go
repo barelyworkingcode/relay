@@ -39,7 +39,7 @@ func reportState(r Report) string {
 	return ""
 }
 func (i *Inventory) drain(ctx context.Context, m Machine) {
-	if m.Reports == nil {
+	if m.Reports == nil || !i.shouldDrain(m) {
 		return
 	}
 	bounded, cancel := context.WithTimeout(ctx, 3*time.Second)

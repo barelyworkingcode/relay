@@ -6,13 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/barelyworkingcode/relay/internal/bridge"
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -328,42 +324,24 @@ func (c *sessionHostClient) DialWS(ctx context.Context) (*websocket.Conn, error)
 	return conn, nil
 }
 
-// ManagedClaudeIdentities reads provider identities from the host's existing
-// persisted state; the public session summary deliberately omits them.
+// ManagedClaudeIdentities asks the host for the Claude conversation ids it
+// owns; the public session summary deliberately omits them.
 func (c *sessionHostClient) ManagedClaudeIdentities(ctx context.Context) (map[string]bool, error) {
-	ids := map[string]bool{}
-	dir := filepath.Join(bridge.ConfigDir(), "sessions", "sessions")
-	files, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return ids, nil
-	}
+	httpResp, err := c.do(ctx, http.MethodGet, "/managed-identities", nil)
 	if err != nil {
 		return nil, err
 	}
-	for _, f := range files {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if !strings.HasSuffix(f.Name(), ".json") || !f.Type().IsRegular() {
-			continue
-		}
-		path := filepath.Join(dir, f.Name())
-		info, err := os.Lstat(path)
-		if err != nil || !info.Mode().IsRegular() || info.Size() > maxSessionHostResponseBytes {
-			continue
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var state struct {
-			ProviderState struct {
-				ClaudeSessionID string `json:"claudeSessionId"`
-			} `json:"providerState"`
-		}
-		if json.Unmarshal(data, &state) == nil && state.ProviderState.ClaudeSessionID != "" {
-			ids[state.ProviderState.ClaudeSessionID] = true
-		}
+	defer func() { _ = httpResp.Body.Close() }()
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: /managed-identities returned %d", errSessionHostUnavailable, httpResp.StatusCode)
+	}
+	var body hostapi.ManagedIdentitiesResponse
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("session host: decode /managed-identities: %w", err)
+	}
+	ids := make(map[string]bool, len(body.ClaudeSessionIDs))
+	for _, id := range body.ClaudeSessionIDs {
+		ids[id] = true
 	}
 	return ids, nil
 }

@@ -1329,3 +1329,26 @@ func (m *Manager) List() []Summary {
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
+
+// ClaudeSessionIDs returns the Claude conversation id of every session this
+// host owns, live or persisted. Relay uses it to keep managed sessions out of
+// the outside-session list.
+func (m *Manager) ClaudeSessionIDs() []string {
+	seen := map[string]bool{}
+	ids := []string{}
+	add := func(sess *sessionstypes.Session) {
+		if id := claudeConversationID(sess); id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for _, sess := range m.liveSessions() {
+		add(sess)
+	}
+	if persisted, err := m.store.LoadAll(); err == nil {
+		for _, sess := range persisted {
+			add(sess)
+		}
+	}
+	return ids
+}

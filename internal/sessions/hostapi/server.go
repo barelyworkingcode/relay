@@ -359,6 +359,7 @@ func (s *Server) ListenInternal() error {
 	mux.HandleFunc("/send", s.handleSend)
 	mux.HandleFunc("/handoff", s.handleHandoff)
 	mux.HandleFunc("/handback", s.handleHandback)
+	mux.HandleFunc("/managed-identities", s.handleManagedIdentities)
 
 	// The eve-facing manifest surface (internal/config's
 	// RelaySessionsManifestRoutes: /api/terminals/, /api/sessions/,
@@ -888,6 +889,21 @@ func (s *Server) handleHandback(w http.ResponseWriter, r *http.Request) {
 		s.sessions.HandBack(req.SessionID)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleManagedIdentities answers the Claude conversation ids this host owns.
+// It sits beside /launch, off the manifest, so only relay reads it.
+func (s *Server) handleManagedIdentities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.checkInternalPeer(r) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ManagedIdentitiesResponse{ClaudeSessionIDs: s.sessions.ClaudeSessionIDs()})
 }
 
 // maxPermissionBodyBytes bounds a /permission body. A real tool_input is

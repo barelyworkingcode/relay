@@ -13,6 +13,10 @@ const ReportInterval = 2 * time.Second
 var ErrNotFound = errors.New("outside session not found")
 var ErrUnavailable = errors.New("outside status unavailable")
 
+// ErrUnsupported marks a machine that cannot be observed at all, such as a
+// Windows launcher host. It is a stable status, not a failed probe.
+var ErrUnsupported = errors.New("outside observation unsupported")
+
 type Clock interface {
 	Now() time.Time
 	After(time.Duration) <-chan time.Time
@@ -69,11 +73,18 @@ type Observation struct {
 	Transcript string
 	StatusAt   time.Time
 }
+
+// ProbeResult is one completed probe. SawSpool is true when the machine has a
+// report spool directory, which is the only reason to drain it.
+type ProbeResult struct {
+	Observations []Observation
+	SawSpool     bool
+}
 type Machine struct {
 	Key     string
 	Name    string
 	HostID  *string
-	Probe   func(context.Context) ([]Observation, error)
+	Probe   func(context.Context) (ProbeResult, error)
 	Reports func(context.Context) ([]Report, error)
 	Read    func(context.Context, Observation) ([]byte, error)
 }
