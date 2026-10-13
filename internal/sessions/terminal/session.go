@@ -252,6 +252,10 @@ func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode i
 	go s.readLoop()
 	go s.waitForExit()
 	if spec.View != nil {
+		// A viewer nobody joins would hold its client on the owner's session
+		// forever; the first join cancels this, the last leave closes it.
+		s.idleTimeout = viewJoinWait
+		s.StartIdleTimer()
 		go s.followViewSize(*spec.View, spec.Host)
 	}
 

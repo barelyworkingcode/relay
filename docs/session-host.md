@@ -1940,7 +1940,7 @@ name, is used because tmux matches a name by prefix.
 The flags survive `CreatedBody`, terminal summaries and `terminal_joined` as
 `readOnly` and `outside`. `Session.Write` and `Session.Resize` refuse a
 read-only viewer, reconnect resize included. The last viewer leaving closes
-the viewer at once. Close ends only the attach client (or its ssh); the
+the viewer at once, and a viewer nobody joins within 30 s closes itself. Close ends only the attach client (or its ssh); the
 outside pane and the tmux server live on.
 
 The PTY starts at the target window's size plus its status lines. tmux tells

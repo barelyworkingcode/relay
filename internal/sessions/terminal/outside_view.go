@@ -15,6 +15,9 @@ import (
 // size. tmux sends an ignore-size client no event when the owner resizes.
 const viewPollInterval = 3 * time.Second
 
+// viewJoinWait is how long an outside viewer waits for its first viewer.
+const viewJoinWait = 30 * time.Second
+
 // viewQueryTimeout bounds one size read; over ssh it includes the connect.
 const viewQueryTimeout = 15 * time.Second
 

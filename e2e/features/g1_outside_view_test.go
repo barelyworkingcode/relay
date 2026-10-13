@@ -104,7 +104,12 @@ func (r *outsideRig) run(args ...string) string {
 // until accept holds for the lines whose flags column is not the owner's.
 func (r *outsideRig) untilClients(what string, accept func(lines []string) bool) []string {
 	r.t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	return r.untilClientsWithin(15*time.Second, what, accept)
+}
+
+func (r *outsideRig) untilClientsWithin(bound time.Duration, what string, accept func(lines []string) bool) []string {
+	r.t.Helper()
+	deadline := time.Now().Add(bound)
 	for {
 		var lines []string
 		for _, l := range strings.Split(r.run("list-clients", "-F", "#{client_flags}|#{client_width}|#{client_height}|#{session_name}|#{client_control_mode}"), "\n") {
@@ -362,6 +367,16 @@ func TestOutsideTmuxView(t *testing.T) {
 				t.Fatalf("unsupported tmux still launched: %s", line)
 			}
 		}
+	})
+
+	t.Run("AC5 a viewer nobody joins detaches on its own", func(t *testing.T) {
+		t.Parallel()
+		r := outsideStart(t)
+		r.open(false)
+		r.viewers(1)
+		// The session host's join wait is 30 s; no event marks its end.
+		r.untilClientsWithin(45*time.Second, "unjoined viewer detaches", func(l []string) bool { return len(l) == 0 })
+		r.sessionLives()
 	})
 
 	t.Run("AC5 close and last disconnect only detach", func(t *testing.T) {

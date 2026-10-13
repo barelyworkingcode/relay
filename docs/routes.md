@@ -394,7 +394,8 @@ request, response, errors and event.
   built by the session host from the confirmed target. Every 3 s the viewer
   rereads the window size and resizes only its own PTY.
   Input and resize, including reconnect dimensions, cannot reach the pane.
-  Terminal close and last disconnect collect only this viewer client.
+  Terminal close, last disconnect and no join within 30 s collect only this
+  viewer client.
   No session start, send, resume, drop-in, take-control or tmux kill is granted.
 
 ### POST /api/terminals/{$}
