@@ -468,6 +468,7 @@ var noDoorSpecs = []noDoorSpec{
 	{"project.grant", http.MethodPost, "/api/projects"},
 	{"project.rotate_token", http.MethodPost, "/api/projects/verify-neg/rotate_token"},
 	{"project.agent", http.MethodPost, "/api/projects/verify-neg/agents"},
+	{"project.chat_template", http.MethodPost, "/api/projects/verify-neg/chat-templates"},
 	{"remote.configure", http.MethodPut, "/api/remote"},
 	{"mcp.oauth.start", "", ""},
 	{"sealed.reset", "", ""},

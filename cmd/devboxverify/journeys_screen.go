@@ -51,6 +51,7 @@ var screenJourneys = []journey{
 	{filePlaneID, []string{"files"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runFilePlane},
 	{cosID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runChiefOfStaffSend},
 	{cosStartID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runCosStart},
+	{cosEntryID, []string{"sessions", "projects", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, 300 * time.Second, runCosStartEntry},
 	{cosOutsideID, []string{"sessions", "audit", "credentials"}, []string{"project:acme"}, phaseScreen, gateTimeout, runCosStartOutsideRoot},
 	{cosHostID, []string{"sessions", "audit", "credentials"}, nil, phaseScreen, 300 * time.Second, runCosStartHost},
 	{disabledID, []string{"mcps", "grants"}, nil, phaseScreen, 45 * time.Second, runDisabledTool},
