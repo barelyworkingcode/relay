@@ -16,14 +16,15 @@ import (
 // Model is the mutable copy of the world. Project paths and host roots are
 // resolved: an empty path or root has become a folder under the config dir.
 type Model struct {
-	Projects       []world.Project
-	Hosts          []world.Host
-	MCPs           []world.MCP
-	Models         []world.Model
-	Templates      []world.Template
-	DefaultProject *world.DefaultProject
-	ChiefOfStaff   *world.ChiefOfStaff
-	Eve            world.Eve
+	OutsideSessions []world.OutsideFixture
+	Projects        []world.Project
+	Hosts           []world.Host
+	MCPs            []world.MCP
+	Models          []world.Model
+	Templates       []world.Template
+	DefaultProject  *world.DefaultProject
+	ChiefOfStaff    *world.ChiefOfStaff
+	Eve             world.Eve
 }
 
 // Store guards the model. Read and Write callbacks must not call back into the
@@ -38,14 +39,15 @@ type Store struct {
 // and git repos.
 func New(w *world.World, dir string) (*Store, error) {
 	m := &Model{
-		Projects:       append([]world.Project(nil), w.Projects...),
-		Hosts:          append([]world.Host(nil), w.Hosts...),
-		MCPs:           append([]world.MCP(nil), w.MCPs...),
-		Models:         append([]world.Model(nil), w.Models...),
-		Templates:      append([]world.Template(nil), w.Templates...),
-		DefaultProject: w.DefaultProject,
-		ChiefOfStaff:   w.ChiefOfStaff,
-		Eve:            w.Eve,
+		OutsideSessions: append([]world.OutsideFixture{}, w.OutsideSessions...),
+		Projects:        append([]world.Project(nil), w.Projects...),
+		Hosts:           append([]world.Host(nil), w.Hosts...),
+		MCPs:            append([]world.MCP(nil), w.MCPs...),
+		Models:          append([]world.Model(nil), w.Models...),
+		Templates:       append([]world.Template(nil), w.Templates...),
+		DefaultProject:  w.DefaultProject,
+		ChiefOfStaff:    w.ChiefOfStaff,
+		Eve:             w.Eve,
 	}
 	for i := range m.Hosts {
 		if m.Hosts[i].Root == "" {

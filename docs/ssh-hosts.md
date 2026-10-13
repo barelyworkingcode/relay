@@ -791,6 +791,15 @@ host *of itself* (`admin@localhost`): a host project on it must show its
 files, open a terminal, run a chat session that edits a file, answer a
 permission prompt, and survive a relayLLM restart with its history intact.
 
+## Outside Claude discovery
+
+Registered host project subtrees are observed through existing SSH, using
+native Unix facilities (a Windows host reports `unsupported`), without hooks or a host installation.
+Discovery does not require the tmux viewer opt-in. Reports are optional
+display data and cannot authorize input or an attach target. The baseline is
+15 seconds; the optional owner-only report spool is checked every two seconds.
+See [outside sessions](outside-sessions.md) for lifetime and wire contracts.
+
 ## Outside read-only viewers
 
 `hosts[].show_all_tmux_sessions` defaults off and is editable through the

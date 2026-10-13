@@ -67,6 +67,16 @@ outside it is not a relay bug, however real.
    Relay does not promise that a frontend routes its Chief of Staff messages
    through the scope, or that it never marks a message the person typed: the
    mark records which door a frontend chose.
+   The scope also reads outside-session list/detail/snapshots. Outside Claude
+   process observations, reports and latest-turn text are untrusted display
+   data; they grant no input, start, kill or permission authority. Reports
+   cannot choose arbitrary transcript paths or invent tmux attach identities.
+   Live process lifetime/session/cwd correlation excludes managed sessions
+   and stale identities. Outside IDs remain outside the managed action store.
+   Console discovery reads every Claude process on the console, not only
+   those under a registered project, so the scope can read the latest turn of
+   any console session. That reach is intended; SSH hosts are read only
+   through their host projects.
    The scope also can't change where the Chief of Staff runs: the
    `/api/chief-of-staff/config` routes are refused inside it.
    Agent output cannot add or change a launcher. The scope writes no agent
@@ -177,7 +187,7 @@ scope).
   path no project, template grant or CLI need names, or a profile that
   outlives a project change, is a relay bug against asset D.
 - A request in the chief-of-staff scope that reaches anything outside its
-  six doors, a session start outside the project root or in a remote
+  documented doors, a session start outside the project root or in a remote
   (mTLS) project, a message marked `chief-of-staff` that did not come through
   the scope, a scoped send with no intent record, an agent entry or chat
   template written by the scope, or an agent entry write without a presence

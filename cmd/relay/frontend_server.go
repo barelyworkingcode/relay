@@ -21,6 +21,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/login"
+	"github.com/barelyworkingcode/relay/internal/outsidesessions"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -229,6 +230,7 @@ func (s *FrontendServer) ServeLoopback() error {
 // can build the TCP mux later from the same ingredients, without a second
 // copy of NewFrontendServer's parameter list.
 type frontendRouteDeps struct {
+	outside           *outsidesessions.Inventory
 	store             config.SettingsStore
 	mcps              McpSurfaceProvider
 	tools             MCPToolsProvider
@@ -297,6 +299,9 @@ type frontendRouteDeps struct {
 // registrars unconditionally on every transport is safe — the per-route
 // class, not a call site here, decides what lands on TCP.
 func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) {
+	if deps.outside != nil {
+		RegisterOutsideSessionRoutes(rr, deps.outside)
+	}
 	RegisterProjectRoutes(rr, deps.store, deps.projectOps, deps.mcps, deps.tools, deps.enum, deps.skillLister, deps.onProjectsChanged)
 	RegisterTemplateRoutes(rr, deps.store, deps.templateOps)
 	if deps.auditOps != nil {
@@ -486,6 +491,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		sessionHost:     sessionHost,
 		issuance:        issuanceAuditorOrNil(auditOps.Recorder()),
 		clock:           clock,
+		outside:         newOutsideInventory(store, clock, sessionHost),
 	}
 
 	socketMux := http.NewServeMux()

@@ -3,12 +3,15 @@ package sessions
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/barelyworkingcode/relay/fakerelay/internal/events"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/server"
@@ -54,11 +57,15 @@ type terminal struct {
 	viewers                                 map[*conn]bool
 	stopped                                 bool
 	exitCode                                int
+	readOnly, outside                       bool
 	dropIn                                  string // the session this terminal holds
 }
 
 func (t *terminal) row() map[string]any {
 	v := map[string]any{"id": t.id, "templateId": t.templateID, "name": t.name, "directory": t.directory, "state": "running"}
+	if t.readOnly {
+		v["readOnly"], v["outside"] = true, t.outside
+	}
 	if t.stopped {
 		v["state"] = "stopped"
 		if t.exitCode != 0 {
@@ -356,6 +363,11 @@ func (s *svc) terminalCommand(c *conn, f inFrame) {
 		}
 		return
 	}
+	if t.readOnly && (f.Type == "terminal_input" || f.Type == "terminal_resize") {
+		s.mu.Unlock()
+		c.send(map[string]any{"type": "error", "code": "terminal_read_only", "error": "terminal is read-only"})
+		return
+	}
 	switch f.Type {
 	case "leave_terminal":
 		delete(t.viewers, c)
@@ -398,7 +410,7 @@ func (s *svc) terminalCommand(c *conn, f inFrame) {
 		s.mu.Unlock()
 		s.closeTerminal(f.TerminalID)
 	default: // join_terminal, terminal_reconnect
-		if f.Type == "terminal_reconnect" && f.Cols > 0 && f.Rows > 0 && (f.Cols != t.cols || f.Rows != t.rows) {
+		if !t.readOnly && f.Type == "terminal_reconnect" && f.Cols > 0 && f.Rows > 0 && (f.Cols != t.cols || f.Rows != t.rows) {
 			t.cols, t.rows = f.Cols, f.Rows
 		}
 		if !t.stopped {
@@ -407,6 +419,9 @@ func (s *svc) terminalCommand(c *conn, f inFrame) {
 		frame := map[string]any{"type": "terminal_joined", "terminalId": t.id, "templateId": t.templateID, "name": t.name,
 			"directory": t.directory, "state": t.row()["state"], "cols": t.cols, "rows": t.rows,
 			"scrollback": base64.StdEncoding.EncodeToString(t.scrollback), "host": nil}
+		if t.readOnly {
+			frame["readOnly"], frame["outside"] = true, t.outside
+		}
 		if t.host != nil {
 			frame["host"] = map[string]any{"id": t.host["id"], "name": t.host["name"]}
 		}
@@ -425,4 +440,95 @@ func viewerList(t *terminal) []*conn {
 		out = append(out, c)
 	}
 	return out
+}
+
+// createOutsideView models the production viewer door using the same terminal hub.
+func (s *svc) createOutsideView(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		HostID      string `json:"hostId"`
+		SessionName string `json:"sessionName"`
+		Cols        int    `json:"cols"`
+		Rows        int    `json:"rows"`
+	}
+	refuse := func(status int, code, msg string) {
+		server.WriteJSON(w, status, map[string]string{"error": code, "message": msg})
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&b) != nil || decoder.Decode(new(any)) != io.EOF || b.SessionName == "" || strings.ContainsAny(b.SessionName, "|:") || strings.IndexFunc(b.SessionName, unicode.IsControl) >= 0 {
+		refuse(400, "invalid_request", "an unambiguous session name is required")
+		return
+	}
+	if b.Cols == 0 {
+		b.Cols = 80
+	}
+	if b.Rows == 0 {
+		b.Rows = 24
+	}
+	if b.Cols < 1 || b.Rows < 1 || b.Cols > 65535 || b.Rows > 65535 {
+		refuse(400, "invalid_request", "terminal dimensions must be between 1 and 65535")
+		return
+	}
+	var host *world.Host
+	var directory string
+	exists := false
+	s.State.Read(func(m *state.Model) {
+		for _, h := range m.Hosts {
+			if h.ID == b.HostID && b.HostID != "" {
+				copy := h
+				host = &copy
+			}
+		}
+		if host != nil {
+			for _, p := range host.PersistentSessions {
+				if p.Name == b.SessionName {
+					exists = true
+				}
+			}
+		}
+		for _, o := range m.OutsideSessions {
+			same := o.HostID == nil && b.HostID == "" || o.HostID != nil && *o.HostID == b.HostID
+			if same && o.TmuxSession != nil && *o.TmuxSession == b.SessionName && o.Viewable && o.MachineStatus != "unreachable" {
+				exists = true
+				directory = o.Directory
+			}
+		}
+	})
+	if b.HostID != "" && (host == nil || !host.ShowAllTmuxSessions) {
+		refuse(403, "outside_view_disabled", "outside viewing is disabled for this host")
+		return
+	}
+	if host != nil {
+		if status, ok := s.Hosts.HostStatuses()[host.ID]; ok && status.Status == "unreachable" {
+			refuse(502, "host_unreachable", "host connection unavailable")
+			return
+		}
+		path := host.TmuxPath
+		if path == "" && host.Probe != nil {
+			path = host.Probe.TmuxPath
+		}
+		if path == "" || host.TmuxViewSupported != nil && !*host.TmuxViewSupported {
+			refuse(409, "tmux_view_unsupported", "tmux read-only viewing is unavailable")
+			return
+		}
+	}
+	if !exists {
+		refuse(404, "tmux_session_not_found", "the exact tmux session was not found")
+		return
+	}
+	var h map[string]any
+	if host != nil {
+		h = map[string]any{"id": host.ID, "name": host.Name}
+	}
+	t := &terminal{id: newUUID(), name: b.SessionName, directory: directory, cols: b.Cols, rows: b.Rows, host: h, readOnly: true, outside: true, viewers: map[*conn]bool{}, log: &termLog{}}
+	s.mu.Lock()
+	s.terms[t.id] = t
+	s.logs[t.id] = t.log
+	s.mu.Unlock()
+	var hostView any
+	if host != nil {
+		hostView = map[string]any{"id": host.ID, "name": host.Name}
+	}
+	server.WriteJSON(w, 201, map[string]any{"terminalId": t.id, "templateId": "", "name": t.name, "directory": t.directory, "host": hostView, "readOnly": true, "outside": true})
 }

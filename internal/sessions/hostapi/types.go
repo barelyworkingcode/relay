@@ -187,6 +187,11 @@ type HandbackRequest struct {
 	SessionID string `json:"session_id"`
 }
 
+// ManagedIdentitiesResponse is GET /managed-identities' 200 body.
+type ManagedIdentitiesResponse struct {
+	ClaudeSessionIDs []string `json:"claude_session_ids"`
+}
+
 // TerminateRequest is C5's POST /terminate body.
 type TerminateRequest struct {
 	SessionID string `json:"session_id"`

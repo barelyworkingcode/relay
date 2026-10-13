@@ -41,6 +41,7 @@ func Register(r server.Registrar, d server.Deps) error {
 		hosts: fakes.WorldModelHost{List: d.World.Models, Log: calls},
 		conns: map[*conn]struct{}{}, sessions: map[string]*session{}, terms: map[string]*terminal{}, perms: map[string]string{}, logs: map[string]*termLog{}}
 	s.seed()
+	r.Route(server.ClassRead, "POST /api/tmux/views", s.createOutsideView)
 	r.Route(server.ClassProxy, "GET /api/models", s.listModels)
 	r.Route(server.ClassProxy, "GET /api/sessions", s.listSessions)
 	r.Route(server.ClassExecute, "POST /api/sessions", s.createSession)

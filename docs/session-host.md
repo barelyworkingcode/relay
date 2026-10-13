@@ -69,7 +69,8 @@ check entirely rather than refusing every launch.
 
 - **the internal socket** (`RelaySessionsInternalSocketPath(configDir)`,
   `<configDir>/relaysessions-internal.sock`) — dialed only by relay itself,
-  carrying `POST /launch`, `POST /terminate`, `POST /handoff`, `POST /handback`
+  carrying `POST /launch`, `POST /terminate`, `POST /handoff`, `POST /handback`,
+  `GET /managed-identities`
   (see [Drop-in](#drop-in)), and (mounted alongside them,
   on the same mux — see [What is not built yet](#what-is-not-built-yet) gap
   2) the eve-facing session/terminal/model HTTP+WS surface relay's
@@ -1036,6 +1037,10 @@ On success the manager sets the hold under its lock, marks the id terminating (r
 ### `POST /handback`
 
 Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears the hold and signals `HandedBack`, so the session reads `idle`. A later message needs a resume, as for any session whose process is gone.
+
+### `GET /managed-identities`
+
+Answers `200 {"claude_session_ids":[string]}`: the Claude conversation id of every session this host owns, live or persisted. Relay reads it to keep managed sessions out of the outside-session list. It is internal-socket only, behind the same peer check as `/handback`.
 
 ### The terminal
 

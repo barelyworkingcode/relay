@@ -323,3 +323,25 @@ func (c *sessionHostClient) DialWS(ctx context.Context) (*websocket.Conn, error)
 	}
 	return conn, nil
 }
+
+// ManagedClaudeIdentities asks the host for the Claude conversation ids it
+// owns; the public session summary deliberately omits them.
+func (c *sessionHostClient) ManagedClaudeIdentities(ctx context.Context) (map[string]bool, error) {
+	httpResp, err := c.do(ctx, http.MethodGet, "/managed-identities", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: /managed-identities returned %d", errSessionHostUnavailable, httpResp.StatusCode)
+	}
+	var body hostapi.ManagedIdentitiesResponse
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("session host: decode /managed-identities: %w", err)
+	}
+	ids := make(map[string]bool, len(body.ClaudeSessionIDs))
+	for _, id := range body.ClaudeSessionIDs {
+		ids[id] = true
+	}
+	return ids, nil
+}

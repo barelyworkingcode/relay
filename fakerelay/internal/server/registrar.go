@@ -60,7 +60,10 @@ func (s *Server) knownRoute(route string) bool {
 
 // cosRoutes are the only routes the chief-of-staff scope reaches.
 var cosRoutes = map[string]bool{
-	"GET /api/sessions": true, "GET /ws": true,
+	"GET /api/chief-of-staff/outside-sessions":      true,
+	"GET /api/chief-of-staff/outside-sessions/{id}": true,
+	"GET /ws/outside-sessions":                      true,
+	"GET /api/sessions":                             true, "GET /ws": true,
 	"POST /api/chief-of-staff/messages": true, "POST /api/chief-of-staff/sessions": true,
 	"GET /api/chief-of-staff/projects/{projectId}/agents":          true,
 	"POST /api/chief-of-staff/projects/{projectId}/agents/preview": true,

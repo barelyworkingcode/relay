@@ -94,7 +94,7 @@ Wire reference.
 | Chief of Staff | `PUT` and `DELETE /api/chief-of-staff/config` | configure |
 | Chief of Staff | `POST /api/chief-of-staff/messages`, `POST /api/chief-of-staff/sessions` | chief_of_staff |
 | Chief of Staff | `GET /api/chief-of-staff/projects/{projectId}/agents` | chief_of_staff |
-| Chief of Staff | `POST /api/chief-of-staff/projects/{projectId}/agents/preview` | chief_of_staff |
+| Chief of Staff | `POST /api/chief-of-staff/projects/{projectId}/agents/preview`, `GET /api/chief-of-staff/outside-sessions`, `GET /api/chief-of-staff/outside-sessions/{id}` and `GET /ws/outside-sessions` | chief_of_staff |
 | Hosts | `GET /api/hosts`, `GET /api/hosts/{id}`, `GET /api/hosts/{id}/templates` | read |
 | Hosts | `POST /api/hosts`, `PUT` and `DELETE /api/hosts/{id}`, `POST /api/hosts/{id}/probe`, `POST /api/hosts/{id}/disconnect` | configure |
 | Hosts | `POST /api/hosts/{id}/templates`, `PUT` and `DELETE /api/hosts/{id}/templates/{tid}` | configure |
@@ -127,7 +127,7 @@ answers the session host's 404 (see Sessions).
 |---|---|
 | No header | class `chief_of_staff` is refused |
 | Header, caller lacks `proxy` | 403 |
-| Header, caller holds `proxy` | only six doors run: `GET /api/sessions`, `GET /ws`, `POST /api/chief-of-staff/messages`, `POST /api/chief-of-staff/sessions`, `GET /api/chief-of-staff/projects/{projectId}/agents` and `POST /api/chief-of-staff/projects/{projectId}/agents/preview` |
+| Header, caller holds `proxy` | only the managed and outside read doors run: `GET /api/sessions`, `GET /ws`, `POST /api/chief-of-staff/messages`, `POST /api/chief-of-staff/sessions`, `GET /api/chief-of-staff/projects/{projectId}/agents` and `POST /api/chief-of-staff/projects/{projectId}/agents/preview`, `GET /api/chief-of-staff/outside-sessions`, `GET /api/chief-of-staff/outside-sessions/{id}` and `GET /ws/outside-sessions` |
 | Header, any other route | 403 |
 | Header with an empty, repeated or other value | 403 |
 
@@ -2199,3 +2199,27 @@ Shapes agreed with the e2e fakes:
 6. The fakes stay buildable with `go build -C e2e ./fakes/<name>`, because
    `go install @sha` cannot fetch the e2e module. Reuse is by running the
    binaries, never by import.
+
+## Outside fixture sessions
+
+World `outside_sessions` is separate from managed `sessions`. Each row uses
+snake_case counterparts of the [outside session](outside-sessions.md) fields,
+plus `latest_turn:{text,at,complete}` and optional `machine_status`. IDs use
+`outside:`; states are `running`, `asking`, `idle`; sources are `probe`, `hook`.
+The product list/detail/scoped WebSocket contracts match Relay, including
+8192-character latest text and 500-character excerpts. Unreachable detail
+answers 502. Control-only `PUT /v1/outside-sessions` replaces fixture rows and
+emits a replacement snapshot. It is not a product mutation door.
+
+The snapshot's `machines` lists the console always and each world host that
+has a project, sorted by name, as relay probes them. A host whose `probe.os`
+is a Windows shell (`MINGW*`, `MSYS*`, `CYGWIN*` or `Windows`) reports
+`unsupported` and shows no rows. A fixture row may name a machine the world
+does not declare; that machine is listed too, and `machine_status` sets its
+status (or the console's, or a host's).
+
+Class-read `POST /api/tmux/views` uses the existing terminal hub and requires
+exact inventory, host opt-in and supported read-only capability. Viewer list,
+join and reconnect metadata carries `readOnly:true,outside:true`. Input and
+resize answer `terminal_read_only`; close detaches only the fixture viewer.
+The Chief of Staff scope cannot create a viewer.
