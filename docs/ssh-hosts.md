@@ -795,7 +795,7 @@ permission prompt, and survive a relayLLM restart with its history intact.
 
 `hosts[].show_all_tmux_sessions` defaults off and is editable through the
 existing host PUT patch or configuration file. The public host DTO echoes
-its boolean. Each `POST /api/tmux/views` reads fresh host settings, checks
+it when true; absent means false. Each `POST /api/tmux/views` reads fresh host settings, checks
 that opt-in, verifies the selected binary's tmux version (3.2 or later,
 which has attach `-f`), then enumerates the actual server. Console viewing uses
 the local tmux binary without a host opt-in. psmux is unsupported here.
