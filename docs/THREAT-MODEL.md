@@ -73,6 +73,10 @@ outside it is not a relay bug, however real.
    cannot choose arbitrary transcript paths or invent tmux attach identities.
    Live process lifetime/session/cwd correlation excludes managed sessions
    and stale identities. Outside IDs remain outside the managed action store.
+   Console discovery reads every Claude process on the console, not only
+   those under a registered project, so the scope can read the latest turn of
+   any console session. That reach is intended; SSH hosts are read only
+   through their host projects.
    The scope also can't change where the Chief of Staff runs: the
    `/api/chief-of-staff/config` routes are refused inside it.
    Agent output cannot add or change a launcher. The scope writes no agent
