@@ -595,3 +595,52 @@ func TestOutsideRowViewability(t *testing.T) {
 		}
 	}
 }
+
+// Contract: the optional native report spool is bounded and owner-only.
+func TestOutsideReportSpoolIsBounded(t *testing.T) {
+	t.Parallel()
+	script, err := filepath.Abs("../../scripts/outside-session-report.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	run := func(payload string) error {
+		hook := exec.Command("sh", script)
+		hook.Env = append(os.Environ(), "HOME="+home)
+		hook.Stdin = strings.NewReader(payload)
+		return hook.Run()
+	}
+	reports := func() []string {
+		names, _ := filepath.Glob(filepath.Join(home, ".claude", "relay-outside-reports", "report.*.json"))
+		return names
+	}
+	const total = 300
+	last := fmt.Sprintf("acme-session-%d", total-1)
+	for n := 0; n < total; n++ {
+		event, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "session_id": fmt.Sprintf("acme-session-%d", n), "cwd": "/acme"})
+		if err := run(string(event)); err != nil {
+			t.Fatalf("report %d failed: %v", n, err)
+		}
+	}
+	files := reports()
+	if len(files) > 256 {
+		t.Fatalf("spool holds %d report files after %d events, want at most 256", len(files), total)
+	}
+	found := false
+	for _, f := range files {
+		if b, _ := os.ReadFile(f); strings.Contains(string(b), `"`+last+`"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("newest event %s is not among the %d kept reports", last, len(files))
+	}
+	before := len(files)
+	big, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "session_id": "acme-big", "cwd": "/acme", "pad": strings.Repeat("x", 64*1024+1)})
+	if err := run(string(big)); err != nil {
+		t.Fatalf("an event over 64 KiB must exit 0, got %v", err)
+	}
+	if after := len(reports()); after != before {
+		t.Fatalf("an event over 64 KiB changed the spool from %d to %d files", before, after)
+	}
+}

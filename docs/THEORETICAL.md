@@ -36,3 +36,21 @@ promoted to an issue the day it does.
 - **Outside sessions: console path resolution has no deadline.** Resolving a
   console project on a hung network mount would block that console probe
   past its 10 s bound.
+- **Outside sessions: an unreachable machine's rows once read 60.05 s.** A
+  superseded test measured the removal after a debug-clock round trip. The
+  code removes them 58 s after the last good probe, checked every 2 s.
+- **Outside view: a new pane's folder and the owner's layout.** A superseded
+  test could not pin a new pane's working folder, and its layout-corruption
+  injection never produced a marker. Neither showed a defect.
+- **Outside sessions: a probe can outlive its machine's removal.** A probe
+  that passes its context check just before the host is removed writes the
+  host's rows back, and nothing expires them.
+- **Outside sessions: a host clock more than 1 s ahead.** Report times are
+  the host's file mtimes, so every hook report is dropped and rows update at
+  the 15 s probe instead.
+- **Outside sessions: two probes can finish out of order.** A drain's probe
+  and the baseline probe may overlap, and an exited row can return for one
+  interval.
+- **Outside sessions: npm Claude started with no arguments.** `node .../claude`
+  with nothing after it does not match the probe's pattern; the native binary
+  does.
