@@ -529,10 +529,13 @@ func TestOutsideRowViewability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("real tmux is required: %v", err)
 	}
-	// The console probe reaches the default tmux server, so its pane has a unique
-	// name that cleanup kills. The stub host runs tmux with its own TMUX_TMPDIR.
-	// The console finds tmux in the instance's ~/.local/bin, not on the test's PATH.
-	osWrite(t, filepath.Join(r.i.Home, ".local", "bin", "tmux"), []byte("#!/bin/sh\nexec "+tmux+" \"$@\"\n"))
+	// A private socket is deliberate: the default tmux server is shared with
+	// everything else on the machine, and its environment is not this test's.
+	// The console finds tmux in the instance's ~/.local/bin; the stub host runs
+	// tmux with its own TMUX_TMPDIR.
+	socket := filepath.Join(t.TempDir(), "tmux.sock")
+	t.Cleanup(func() { _ = exec.Command(tmux, "-S", socket, "kill-server").Run() })
+	osWrite(t, filepath.Join(r.i.Home, ".local", "bin", "tmux"), []byte("#!/bin/sh\nexec "+tmux+" -S "+socket+" \"$@\"\n"))
 	if err := os.Chmod(filepath.Join(r.i.Home, ".local", "bin", "tmux"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -542,6 +545,9 @@ func TestOutsideRowViewability(t *testing.T) {
 		<-p.exit
 		session := fmt.Sprintf("acme-%s-%d", name, os.Getpid())
 		run := func(args ...string) ([]byte, error) {
+			if tmuxDir == "" {
+				args = append([]string{"-S", socket}, args...)
+			}
 			cmd := exec.Command(tmux, args...)
 			cmd.Env = append(os.Environ(), "TMUX=")
 			if tmuxDir != "" {
@@ -585,7 +591,7 @@ func TestOutsideRowViewability(t *testing.T) {
 	}{{c, true, true, ""}, {h, true, false, "outside_view_disabled"}, {n, false, false, "not_in_tmux"}} {
 		row := s.at(w.p.dir)
 		if row == nil || (row.TmuxSession != nil) != w.tmux || row.Viewable != w.viewOK || row.ViewReason != w.reason {
-			t.Fatalf("row for %s = %+v, want tmuxSession set %v, viewable %v, viewReason %q", w.p.dir, row, w.tmux, w.viewOK, w.reason)
+			t.Fatalf("row for %s = %+v, want tmuxSession set %v, viewable %v, viewReason %q; snapshot %+v", w.p.dir, row, w.tmux, w.viewOK, w.reason, s)
 		}
 	}
 }
