@@ -43,11 +43,12 @@ type hostFields struct {
 // hostPatchFields is the transport-agnostic patch body: nil means "not in
 // the request", matching project.UpdateFields' discipline.
 type hostPatchFields struct {
-	Name         *string `json:"name,omitempty"`
-	Target       *string `json:"target,omitempty"`
-	Port         *int    `json:"port,omitempty"`
-	IdentityFile *string `json:"identity_file,omitempty"`
-	TmuxPath     *string `json:"tmux_path,omitempty"`
+	Name                *string `json:"name,omitempty"`
+	Target              *string `json:"target,omitempty"`
+	Port                *int    `json:"port,omitempty"`
+	IdentityFile        *string `json:"identity_file,omitempty"`
+	TmuxPath            *string `json:"tmux_path,omitempty"`
+	ShowAllTmuxSessions *bool   `json:"show_all_tmux_sessions,omitempty"`
 }
 
 func (f hostPatchFields) touchesConnection(before config.Host) bool {
@@ -178,7 +179,7 @@ func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (upd
 	var updateErr error
 	if err := o.runQueued(ctx, func() error {
 		if err := o.Store.With(func(s *config.Settings) {
-			updated, found, connectionChanged, updateErr = s.UpdateHostAndReserveProbe(id, config.HostPatch{Name: f.Name, Target: f.Target, Port: f.Port, IdentityFile: f.IdentityFile, TmuxPath: f.TmuxPath})
+			updated, found, connectionChanged, updateErr = s.UpdateHostAndReserveProbe(id, config.HostPatch{Name: f.Name, Target: f.Target, Port: f.Port, IdentityFile: f.IdentityFile, TmuxPath: f.TmuxPath, ShowAllTmuxSessions: f.ShowAllTmuxSessions})
 		}); err != nil {
 			return fmt.Errorf("save host: %w", err)
 		}

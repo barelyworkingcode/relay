@@ -50,6 +50,8 @@ import (
 // opaque JSON so a later unit can add real handling without this package
 // needing to change its wire contract.
 type LaunchRequest struct {
+	ReadOnly       bool              `json:"read_only,omitempty"`
+	Outside        bool              `json:"outside,omitempty"`
 	V              int               `json:"v"`
 	SessionID      string            `json:"session_id"`
 	Kind           string            `json:"kind"`
@@ -88,6 +90,15 @@ type LaunchRequest struct {
 	// omitted when the agent entry names no command; the host refuses one on a
 	// pty or chat launch.
 	Launcher *sessionstypes.Launcher `json:"launcher,omitempty"`
+	// ViewTarget names the tmux session an outside viewer attaches to. The
+	// host builds the attach argv from it; an outside launch carries no argv.
+	ViewTarget *ViewTarget `json:"view_target,omitempty"`
+}
+
+// ViewTarget is an outside viewer's tmux binary and exact session ID ($N).
+type ViewTarget struct {
+	TmuxPath  string `json:"tmux_path"`
+	SessionID string `json:"session_id"`
 }
 
 // PTYSpec is C5's non-null "pty" object.

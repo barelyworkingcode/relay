@@ -30,6 +30,8 @@ func (c Config) clockOrDefault() clock.Clock {
 // Summary is the slim per-row shape a list surface (Service Inspector,
 // GET /api/terminals) renders.
 type Summary struct {
+	ReadOnly   bool              `json:"readOnly,omitempty"`
+	Outside    bool              `json:"outside,omitempty"`
 	ID         string            `json:"id"`
 	TemplateID string            `json:"templateId"`
 	Name       string            `json:"name"`
@@ -226,6 +228,8 @@ func (m *Manager) ListSummary() []Summary {
 		state, exitCode := s.Snapshot()
 		out = append(out, Summary{
 			ID:         s.ID,
+			ReadOnly:   s.ReadOnly,
+			Outside:    s.Outside,
 			TemplateID: s.TemplateID,
 			Name:       s.Name,
 			Directory:  s.Directory,
@@ -290,7 +294,9 @@ func (m *Manager) NotifyViewerChange(id string, viewers int) {
 	if !ok {
 		return
 	}
-	if viewers == 0 {
+	if viewers == 0 && s.Outside {
+		m.Close(id)
+	} else if viewers == 0 {
 		s.StartIdleTimer()
 	} else {
 		s.CancelIdleTimer()

@@ -411,6 +411,7 @@ prompt and an unavailable audit log use the shared `presence_*` and
 | `session.resume` | In `resumeSession` | `POST /api/sessions/{id}/resume`, `relay session resume` | `session_id`, `project_id` |
 | `session.drop_in` | In `dropIn` | `POST /api/sessions/{id}/drop-in`, bridge `drop_in_attach` (`relay drop-in`) | `session_id`, `host`, `terminal_id` |
 | `session.mode` | At the end of `adminSessionMode` | `relay session mode` | `session_id` (a `resume_required` answer from a local claude session ends the event `error` with reason `internal`) |
+| `session.outside.view` | After exact confirmation and viewer launch, or refusal | `POST /api/tmux/views` | none; transcript and session name are not logged |
 | `session.persistent.list` | Before the list is returned | `GET /api/projects/{id}/persistent-sessions`, `relay terminal persistent-list` | `project_id` |
 | `session.persistent.kill` | At the end of `PersistentSessionOps.Kill` | `DELETE /api/projects/{id}/persistent-sessions/{name}`, `relay terminal persistent-kill` | `project_id` |
 | `session.exited` | At the end of `appRouter.SessionExited` | bridge `session_exited` | `session_id` |

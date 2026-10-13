@@ -1930,3 +1930,26 @@ what works.
 | built-in service record, helper path resolution | `internal/service/builtin_sessions.go` |
 | cdhash pinning | `internal/service/codesign_darwin.go`, `internal/service/helper_verify.go` |
 | the reserved internal routes' reservation | `internal/bridge/manifest.go`, `internal/config/models.go` (`RelaySessionsManifestRoutes`) |
+
+## Outside tmux viewer terminals
+
+Relay owns `POST /api/tmux/views` authorization and exact tmux confirmation.
+Its internal `LaunchRequest` carries `read_only`, `outside` and
+`view_target: {tmux_path, session_id}`. The three come together or the host
+refuses the launch with 400 `invalid_spec`. An outside launch is a plain pty:
+it carries no argv, identity, sandbox, model key, template, origin, resume or
+drop-in. The host builds the only argv it runs from the target:
+`<tmux_path> attach -f read-only,ignore-size -t <$N>`. A session ID, not a
+name, is used because tmux matches a name by prefix.
+
+The flags survive `CreatedBody`, terminal summaries and `terminal_joined` as
+`readOnly` and `outside`. `Session.Write` and `Session.Resize` refuse a
+read-only viewer, reconnect resize included. The last viewer leaving closes
+the viewer at once, and a viewer nobody joins within 30 s closes itself. Close ends only the attach client (or its ssh); the
+outside pane and the tmux server live on.
+
+The PTY starts at the target window's size plus its status lines. tmux tells
+an `ignore-size` client nothing when the owner resizes, so every 3 s (session
+clock) the viewer runs `display-message -p` for the window's size and resizes
+only its own PTY when it differs. It sets no option, resizes no window and
+sends no refresh-client.

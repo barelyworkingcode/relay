@@ -220,6 +220,7 @@ application/json`; the entry gives the field table.
 | `target` | string | SSH destination |
 | `port` | number | SSH port; absent means 22 |
 | `identity_file`, `tmux_path` | string | Optional overrides |
+| `show_all_tmux_sessions` | boolean | Host outside-view opt-in; absent means false; host PUT accepts this field |
 | `created_at` | string | RFC 3339 |
 | `probe` | object | Last probe: `at`, `ok`, `os`, `arch`, `home`, `shell`, `node_path`, `node_version`, `claude_path`, `claude_version`, `tmux_path`, `error` |
 | `status` | string | `unknown`, `unreachable`, `idle` or `connected` |
@@ -368,6 +369,34 @@ request, response, errors and event.
 - **Errors:** as `POST /api/sessions`; an unavailable template is `403`.
 - **Event:** `session.launch` (`kind` is `pty`). **Audit row:** `session_launch`.
 - **CLI equivalent:** `relay terminal start`.
+
+### POST /api/tmux/views
+
+- Class: `read`; the Chief of Staff scope refuses this door.
+- Strict JSON body: `{hostId?: string, sessionName: string, cols?: integer, rows?: integer}`.
+  Empty or absent `hostId` means console. Omitted or zero dimensions normalize
+  to 80 by 24; explicit nonzero dimensions must be 1–65535. They size
+  nothing: the viewer takes the target window's size plus its status lines.
+  Unknown fields and multiple JSON values answer 400.
+- The full session name must match fresh tmux inventory exactly. Control
+  characters, colon and pipe are refused as ambiguous. The working directory
+  and session ID come from tmux, never the caller or discovery reports.
+- Host viewers require fresh `hosts[].show_all_tmux_sessions: true`. Console
+  viewers need no host setting. tmux 3.2 or later is required; psmux and
+  older versions refuse without fallback.
+- Success 201: `{terminalId, templateId: "", name, directory, host, readOnly: true, outside: true}`.
+  `host` is `{id,name}` for SSH or null for console. Terminal lists and
+  `terminal_joined` preserve `readOnly` and `outside`.
+- Errors `{error,message}`: 400 `invalid_request`; 403 `outside_view_disabled`;
+  404 `tmux_session_not_found`; 409 `tmux_view_unsupported`; 502
+  `host_unreachable` or `session_host_unavailable`.
+- The sole launch is `attach -f read-only,ignore-size -t <confirmed-session-id>`,
+  built by the session host from the confirmed target. Every 3 s the viewer
+  rereads the window size and resizes only its own PTY.
+  Input and resize, including reconnect dimensions, cannot reach the pane.
+  Terminal close, last disconnect and no join within 30 s collect only this
+  viewer client.
+  No session start, send, resume, drop-in, take-control or tmux kill is granted.
 
 ### POST /api/terminals/{$}
 

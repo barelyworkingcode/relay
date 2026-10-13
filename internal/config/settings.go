@@ -618,11 +618,12 @@ func (s *Settings) AddHost(h Host) (Host, error) {
 // HostPatch is the set-fields patch for UpdateHost; a nil pointer means "not
 // in the request", matching UpdateFields' discipline for projects.
 type HostPatch struct {
-	Name         *string
-	Target       *string
-	Port         *int
-	IdentityFile *string
-	TmuxPath     *string
+	Name                *string
+	Target              *string
+	Port                *int
+	IdentityFile        *string
+	TmuxPath            *string
+	ShowAllTmuxSessions *bool
 }
 
 // UpdateHost patches name/target/port/identity_file, validated against the
@@ -650,6 +651,9 @@ func (s *Settings) UpdateHost(id string, patch HostPatch) (Host, bool, error) {
 	}
 	if patch.TmuxPath != nil {
 		candidate.TmuxPath = *patch.TmuxPath
+	}
+	if patch.ShowAllTmuxSessions != nil {
+		candidate.ShowAllTmuxSessions = *patch.ShowAllTmuxSessions
 	}
 	if err := ValidateHost(&candidate, s.Hosts, id); err != nil {
 		return Host{}, true, err
@@ -680,6 +684,9 @@ func (s *Settings) UpdateHostAndReserveProbe(id string, patch HostPatch) (Host, 
 	}
 	if patch.TmuxPath != nil {
 		candidate.TmuxPath = *patch.TmuxPath
+	}
+	if patch.ShowAllTmuxSessions != nil {
+		candidate.ShowAllTmuxSessions = *patch.ShowAllTmuxSessions
 	}
 	if err := ValidateHost(&candidate, s.Hosts, id); err != nil {
 		return Host{}, true, false, err
