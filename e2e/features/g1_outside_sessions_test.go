@@ -94,7 +94,8 @@ func osStart(t *testing.T, host bool) *osRig {
 }
 
 // hostProject registers the stub host with one project under the remote root,
-// by its resolved path: the probe reports a process's resolved working folder.
+// by its unresolved path: the probe reports a process's resolved working
+// folder, and the temp root is itself reached through a symlink.
 func (r *osRig) hostProject() string {
 	t := r.t
 	t.Helper()
@@ -102,7 +103,7 @@ func (r *osRig) hostProject() string {
 	if err != nil {
 		t.Fatalf("resolving the remote root: %v", err)
 	}
-	dir := filepath.Join(root, "boxproj")
+	dir := filepath.Join(r.i.RemoteRoot(), "boxproj")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("creating %s: %v", dir, err)
 	}

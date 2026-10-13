@@ -11,6 +11,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -104,12 +105,21 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 		observed := native.Observations(root, managed)
 		out := []outsidesessions.Observation{}
 		settings := config.FreshSettings(store)
+		resolved := resolveOutsideProjectPaths(ctx, h, settings.Projects)
 		for _, o := range observed {
 			var project *config.Project
+			best := 0
 			for j := range settings.Projects {
 				p := &settings.Projects[j]
-				if !p.IsRemote() && p.HostID == hostKey(h) && outsidesessions.Contains(p.Path, o.Session.Directory) && (project == nil || len(p.Path) > len(project.Path)) {
-					project = p
+				if p.IsRemote() || p.HostID != hostKey(h) {
+					continue
+				}
+				// The probe reports a resolved working folder, so a project
+				// registered through a symlink matches by its resolved path too.
+				for _, root := range []string{p.Path, resolved[j]} {
+					if outsidesessions.Contains(root, o.Session.Directory) && (project == nil || len(root) > best) {
+						project, best = p, len(root)
+					}
 				}
 			}
 			if h != nil && project == nil {
@@ -172,6 +182,46 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 	}
 	return m
 }
+
+// resolveOutsideProjectPaths returns each project's path resolved on the
+// machine it lives on, index-aligned with projects; "" where it cannot be
+// resolved. A host costs one extra round, not one per project.
+func resolveOutsideProjectPaths(ctx context.Context, h *config.Host, projects []config.Project) []string {
+	out := make([]string, len(projects))
+	var idx []int
+	for j, p := range projects {
+		if p.IsRemote() || p.HostID != hostKey(h) || p.Path == "" {
+			continue
+		}
+		if h == nil {
+			if r, err := filepath.EvalSymlinks(p.Path); err == nil {
+				out[j] = r
+			}
+			continue
+		}
+		idx = append(idx, j)
+	}
+	if h == nil || len(idx) == 0 {
+		return out
+	}
+	var quoted []string
+	for _, j := range idx {
+		quoted = append(quoted, outsideQuote(projects[j].Path))
+	}
+	script := `for p in ` + strings.Join(quoted, " ") + `; do cd -P -- "$p" 2>/dev/null && pwd -P || echo; done`
+	data, err := outsideRun(ctx, h, script)
+	if err != nil {
+		return out
+	}
+	lines := strings.Split(string(data), "\n")
+	for k, j := range idx {
+		if k < len(lines) {
+			out[j] = strings.TrimRight(lines[k], "\r")
+		}
+	}
+	return out
+}
+
 func hostKey(h *config.Host) string {
 	if h == nil {
 		return ""
