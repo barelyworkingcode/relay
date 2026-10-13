@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/membership"
@@ -121,21 +120,12 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 				o.Session.ProjectID = &id
 			}
 			if o.Session.TmuxSession != nil {
-				viewReason := ""
-				if h != nil {
-					raw, _ := json.Marshal(h)
-					var flags struct {
-						Enabled bool `json:"show_all_tmux_sessions"`
-					}
-					_ = json.Unmarshal(raw, &flags)
-					if !flags.Enabled {
-						viewReason = "outside_view_disabled"
-					}
+				if h == nil || h.ShowAllTmuxSessions {
+					o.Session.Viewable = true
+					o.Session.ViewReason = ""
+				} else {
+					o.Session.ViewReason = "outside_view_disabled"
 				}
-				if viewReason == "" {
-					viewReason = "tmux_view_unsupported"
-				}
-				o.Session.ViewReason = viewReason
 			}
 			out = append(out, o)
 		}

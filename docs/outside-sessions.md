@@ -23,6 +23,13 @@ Rows contain `id`, `name`, nullable `projectId` and `hostId`, `machine`,
 `directory`, `branch`, `state`, `since`, `updatedAt`, `source`, `outside:true`,
 `readOnly:true`, nullable `tmuxSession`, `viewable` and `viewReason`.
 States are `running`, `asking` and `idle`; sources are `probe` and `hook`.
+`viewable` is true when a tmux pane's process ancestry ties the Claude process
+to a tmux session and the machine is the console or a host with
+`show_all_tmux_sessions` on. Otherwise `viewReason` is `not_in_tmux` (no pane
+ties it) or `outside_view_disabled` (the host has not opted in). A row on an
+unreachable machine keeps its last probe's values until it expires; the
+viewer route (`POST /api/tmux/views`) repeats every check, so a stale
+`viewable` opens nothing.
 Machine entries contain nullable `hostId`, `machine`, `status` (`reachable`,
 `unreachable` or `unsupported`), `lastProbeAt` and a safe `error` string. Raw PIDs, process
 arguments, environments and full transcripts never appear in responses.

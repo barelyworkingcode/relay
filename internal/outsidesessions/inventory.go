@@ -186,8 +186,6 @@ func (i *Inventory) Probe(ctx context.Context, m Machine) bool {
 				} else {
 					e.observation.Session.State = "idle"
 					e.hookAt = time.Time{}
-					e.observation.Session.Viewable = false
-					e.observation.Session.ViewReason = "host_unreachable"
 					i.entries[id] = e
 				}
 			}
