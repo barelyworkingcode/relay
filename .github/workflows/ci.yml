@@ -7,6 +7,10 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
+  # A nightly run of main on a clean checkout: the independent check that main still builds
+  # and passes with no state carried from any PR. Scheduled runs use the default branch.
+  schedule:
+    - cron: '17 10 * * *'
 
 permissions:
   contents: read
