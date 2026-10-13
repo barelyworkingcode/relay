@@ -98,7 +98,7 @@ outside it is not a relay bug, however real.
    attach. The viewer cannot send input, resize, kill, resume or take control
    of the outside session. Cleanup ends only the viewer client. The viewer
    reads the window size to follow it and sets nothing on the owner's
-   session. Inventory and hooks confer no managed-session authority.
+   session. Being listed by tmux confers no managed-session authority.
 4. **A peer on the network or in the browser** (a machine that can reach a
    relay listener, or a web page open on this Mac reaching relay's localhost
    ports). It gets nothing without a credential: no tool call, no config

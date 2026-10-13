@@ -369,6 +369,19 @@ func TestOutsideTmuxView(t *testing.T) {
 		}
 	})
 
+	t.Run("AC5 losing SSH only detaches", func(t *testing.T) {
+		t.Parallel()
+		r := outsideStart(t)
+		r.patchHost(true)
+		d := r.open(true)
+		ws := r.join(d)
+		r.viewers(1)
+		r.i.SSHDown("acme@127.0.0.1")
+		outsideFrame(t, ws, "terminal_exit", d.ID)
+		r.viewers(0)
+		r.sessionLives()
+	})
+
 	t.Run("AC5 a viewer nobody joins detaches on its own", func(t *testing.T) {
 		t.Parallel()
 		r := outsideStart(t)

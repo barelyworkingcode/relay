@@ -803,7 +803,7 @@ the local tmux binary without a host opt-in. psmux is unsupported here.
 The complete name must match exactly; control characters, colon and pipe
 are refused. The launch targets the enumerated session ID and uses the
 server-derived pane working directory. It executes only
-`attach -f read-only,ignore-size`, with no new-session or writable retry. Reports and hooks never authorize an attach.
+`attach -f read-only,ignore-size`, with no new-session or writable retry.
 
 The viewer is an ordinary relay-sessions PTY with `readOnly` and `outside`
 metadata. Session methods refuse input and resize for every caller. Closing

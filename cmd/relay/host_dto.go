@@ -66,7 +66,7 @@ type hostView struct {
 	Port                int               `json:"port,omitempty"`
 	IdentityFile        string            `json:"identity_file,omitempty"`
 	TmuxPath            string            `json:"tmux_path,omitempty"`
-	ShowAllTmuxSessions bool              `json:"show_all_tmux_sessions"`
+	ShowAllTmuxSessions bool              `json:"show_all_tmux_sessions,omitempty"`
 	CreatedAt           string            `json:"created_at"`
 	Probe               *config.HostProbe `json:"probe,omitempty"`
 	Status              string            `json:"status"`

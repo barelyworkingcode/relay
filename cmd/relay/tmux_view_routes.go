@@ -23,25 +23,25 @@ func RegisterTmuxViewRoutes(rr *control.RouteRegistrar, ops *TmuxViewOps) {
 			}
 		}
 		if err != nil {
-			err = viewError(http.StatusBadRequest, "invalid_request", "invalid viewer request")
-			endEvent(ev, err)
-			writeTmuxViewError(w, err)
+			writeTmuxViewError(w, ev, viewError(http.StatusBadRequest, "invalid_request", "invalid viewer request"))
 			return
 		}
 		body, err := ops.Create(r.Context(), req)
-		endEvent(ev, err)
 		if err != nil {
-			writeTmuxViewError(w, err)
+			writeTmuxViewError(w, ev, err)
 			return
 		}
+		endEvent(ev, nil)
 		writeCreatedBody(w, body)
 	})
 }
 
-func writeTmuxViewError(w http.ResponseWriter, err error) {
+func writeTmuxViewError(w http.ResponseWriter, ev *logging.Event, err error) {
 	e, ok := err.(*tmuxViewError)
 	if !ok {
 		e = &tmuxViewError{http.StatusBadGateway, "session_host_unavailable", "viewer unavailable"}
 	}
+	outcome, reason := refusalOutcome(e.status, e.code)
+	ev.End(outcome, reason, e)
 	writeJSON(w, e.status, map[string]string{"error": e.code, "message": e.message})
 }
