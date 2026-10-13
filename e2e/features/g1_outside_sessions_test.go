@@ -596,7 +596,7 @@ func TestOutsideRowViewability(t *testing.T) {
 	}
 }
 
-// Contract: the optional native report spool is bounded and owner-only.
+// Contract: the optional native report spool is bounded and drops events over 64 KiB.
 func TestOutsideReportSpoolIsBounded(t *testing.T) {
 	t.Parallel()
 	script, err := filepath.Abs("../../scripts/outside-session-report.sh")
@@ -642,5 +642,14 @@ func TestOutsideReportSpoolIsBounded(t *testing.T) {
 	}
 	if after := len(reports()); after != before {
 		t.Fatalf("an event over 64 KiB changed the spool from %d to %d files", before, after)
+	}
+	for _, f := range reports() {
+		b, _ := os.ReadFile(f)
+		if strings.Contains(string(b), `"acme-big"`) {
+			t.Fatalf("report %s holds the oversized event acme-big", f)
+		}
+		if len(b) > 65536 {
+			t.Fatalf("report %s is %d bytes, want at most 65536", f, len(b))
+		}
 	}
 }
