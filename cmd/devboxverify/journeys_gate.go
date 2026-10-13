@@ -32,6 +32,7 @@ const (
 	fixturesID     = "verify-fixtures-removed"
 	revokePosID    = "gate-credential-revoke-pos"
 	agentPosID     = "gate-project-agent-pos"
+	chatPosID      = "gate-project-chat-template-pos"
 
 	p4Name          = "devbox-verify"
 	probePrefix     = "devboxverify-probe-"
@@ -61,6 +62,7 @@ var gateSetupJourneys = slices.Concat(
 		{servicePosID, []string{"services", "presence", "audit"}, nil, phaseScreen, gateTimeout, runServicePos},
 		// After the Verify Grant project exists: the entry is added to and removed from it.
 		{agentPosID, []string{"projects", "presence", "audit"}, nil, phaseScreen, 2 * gateTimeout, runAgentPos},
+		{chatPosID, []string{"projects", "presence", "audit"}, nil, phaseScreen, gateTimeout, runChatTemplatePos},
 		{agentsSettingsID, []string{"projects", "settings-ui", "presence", "audit"}, nil, phaseScreen, 120 * time.Second, runProjectAgentsSettings},
 		{agentsHostID, []string{"projects", "hosts", "sessions"}, nil, phaseScreen, 300 * time.Second, runProjectAgentsHost},
 		{readOnlyProfileID, []string{"sessions", "sandbox", "projects"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runReadOnlyProfile},
@@ -782,6 +784,130 @@ func agentRowFailure(id, action string, row *audit.AuditEvent, rowErr error, wan
 		return result{id, stateFail, fmt.Sprintf("agent_entry %s row grants %v do not name command=%s", action, row.Grants, wantCmd)}, true
 	}
 	return result{}, false
+}
+
+type chatTemplateView struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Model string `json:"model"`
+}
+
+type chatPosRun struct {
+	Name      string
+	Add       frontendResponse
+	AddDialog dialogResult
+	Created   chatTemplateView
+	Listed    bool
+	ReadErr   string
+	Row       *audit.AuditEvent
+	RowErr    error
+	Restore   frontendResponse
+	GoneAfter bool
+}
+
+// readChatTemplates reads the project's chat templates, raw so a restore puts
+// back exactly what was there.
+func readChatTemplates(ctx context.Context, e env, token, projectID string) ([]json.RawMessage, error) {
+	resp := frontendDo(ctx, e, token, http.MethodGet, "/api/projects/"+projectID, nil)
+	if resp.Status != http.StatusOK {
+		return nil, fmt.Errorf("GET /api/projects/{id} answered %d: %s", resp.Status, resp.Error)
+	}
+	var v struct {
+		ChatTemplates []json.RawMessage `json:"chat_templates"`
+	}
+	if err := json.Unmarshal(resp.Body, &v); err != nil {
+		return nil, errors.New("GET /api/projects/{id} answered unreadable JSON")
+	}
+	return v.ChatTemplates, nil
+}
+
+func hasChatTemplate(raw []json.RawMessage, name string) bool {
+	return slices.ContainsFunc(raw, func(m json.RawMessage) bool {
+		var t chatTemplateView
+		return json.Unmarshal(m, &t) == nil && t.Name == name
+	})
+}
+
+// runChatTemplatePos adds a chat template to the Verify Grant project through
+// the gated HTTP door, reads it back with its audit row, then puts the
+// previous list back through the ungated project update. The restore runs
+// whenever the add was accepted.
+func runChatTemplatePos(ctx context.Context, e env) result {
+	token, res, ok := runCredential(e, chatPosID)
+	if !ok {
+		return res
+	}
+	pid := e.Run.GrantProjectID
+	if pid == "" {
+		return blocked(chatPosID, "no grant project: "+grantPosID+" did not pass")
+	}
+	before, err := readChatTemplates(ctx, e, token, pid)
+	if err != nil {
+		return blocked(chatPosID, err.Error())
+	}
+	if before == nil {
+		before = []json.RawMessage{}
+	}
+	r := chatPosRun{Name: "verify-" + e.Nonce + "-chat"}
+	body := jsonBody(map[string]string{"name": r.Name, "model": agentModel})
+	r.Add, r.AddDialog = gatedFrontend(ctx, e, token, http.MethodPost, "/api/projects/"+pid+"/chat-templates", body, fmt.Sprintf("%q", r.Name))
+	if r.Add.Status == http.StatusCreated {
+		var v struct {
+			Template chatTemplateView `json:"template"`
+		}
+		_ = json.Unmarshal(r.Add.Body, &v)
+		r.Created = v.Template
+		now, readErr := readChatTemplates(ctx, e, token, pid)
+		if readErr != nil {
+			r.ReadErr = readErr.Error()
+		}
+		r.Listed = hasChatTemplate(now, r.Name)
+		if rows, rowsErr := issuanceRows(ctx, e, audit.AuditEventConfigChange, r.Name); rowsErr != nil {
+			r.RowErr = rowsErr
+		} else {
+			for i := len(rows) - 1; i >= 0 && r.Row == nil; i-- {
+				if rows[i].Credential == "chat_template" && rows[i].Subject == pid && slices.Contains(rows[i].Grants, "template="+r.Name) {
+					r.Row = &rows[i]
+				}
+			}
+		}
+		r.Restore = frontendDo(context.WithoutCancel(ctx), e, token, http.MethodPut, "/api/projects/"+pid, jsonBody(map[string]any{"chat_templates": before}))
+		after, _ := readChatTemplates(context.WithoutCancel(ctx), e, token, pid)
+		r.GoneAfter = !hasChatTemplate(after, r.Name)
+	}
+	return classifyChatTemplatePos(r)
+}
+
+func classifyChatTemplatePos(r chatPosRun) result {
+	const id = chatPosID
+	fail := func(d string) result { return result{id, stateFail, d} }
+	if res, refused := positiveRefusal(id, r.Add.Error, r.AddDialog); refused {
+		return res
+	}
+	switch {
+	case r.Add.Status == 0:
+		return blocked(id, "frontend socket unreachable")
+	case r.Add.Status == http.StatusUnauthorized:
+		return blocked(id, "run credential refused (401)")
+	case r.Add.Status != http.StatusCreated:
+		return fail(fmt.Sprintf("POST /api/projects/{id}/chat-templates status %d: %s", r.Add.Status, r.Add.Error))
+	case r.Created.Name != r.Name || r.Created.ID == "":
+		return fail(fmt.Sprintf("201 answered template %q with id %q, want %q with an id", r.Created.Name, r.Created.ID, r.Name))
+	case r.ReadErr != "":
+		return blocked(id, r.ReadErr)
+	case !r.Listed:
+		return fail("the new template is not in GET /api/projects/{id}")
+	}
+	if res, bad := rowFailure(id, "chat_template config_change", r.Row, r.RowErr); bad {
+		return res
+	}
+	switch {
+	case r.Restore.Status != http.StatusOK:
+		return fail(fmt.Sprintf("restoring the template list status %d: %s; the template may remain", r.Restore.Status, r.Restore.Error))
+	case !r.GoneAfter:
+		return fail("the template is still listed after the project update that restored the list")
+	}
+	return result{id, statePass, "chat template added after the prompt was answered; listed; config change recorded with presence and the template name; the previous list put back"}
 }
 
 type rotatePosRun struct {

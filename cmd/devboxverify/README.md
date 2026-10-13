@@ -43,9 +43,9 @@ A journey FAIL after a green preflight is the product.
 
 ### Provider rate limit
 
-Seven journeys run a Claude turn: session-agent-state, session-drop-in,
+Eight journeys run a Claude turn: session-agent-state, session-drop-in,
 session-drop-in-host, session-drop-in-tool-refused, chief-of-staff-send,
-cos-start and cos-start-host. When the provider's usage limit ends that turn
+cos-start, cos-start-host and cos-start-entry. When the provider's usage limit ends that turn
 and the journey sees the limit frame, it reads `BLOCKED` with the detail `provider rate limit (resets <time>)`,
 not FAIL, because the product did nothing wrong. A BLOCKED journey still exits
 1 and never posts `success`: the run is not green until the limit lifts and a
@@ -349,7 +349,7 @@ planted in the project folder 403 `SYMLINK`, and a write after
 **Owner-gate positives** (screen): `gate-credential-mint-pos`,
 `execute-credential-renewal`, `gate-mcp-register-pos`,
 `gate-project-grant-pos`, `gate-service-register-pos`,
-`gate-project-agent-pos`, `gate-project-rotate-token-pos`,
+`gate-project-agent-pos`, `gate-project-chat-template-pos`, `gate-project-rotate-token-pos`,
 `gate-eve-enrolment-open-pos`, `gate-credential-revoke-pos`. The harness triggers the op as the owner, the
 helper answers the prompt whose text carries the request's subject (the
 nonce, except for the renewal and the eve enrolment above), and the journey
@@ -430,6 +430,25 @@ project as subject, `presence_id` and the grants `action=add`, `entry=<name>` an
   entry name carries the run nonce, which is what the helper matches. The
   gate-project-agent-neg journey is the no-door negative listed with the others.
 
+**gate-project-chat-template-pos** (screen). Adds a chat template to the Verify
+Grant project through `POST /api/projects/{id}/chat-templates` with the run
+credential (model haiku), and the helper answers the `project.chat_template`
+prompt, whose text names the template. PASS when the add answers 201 with the
+template and an id, `GET /api/projects/{id}` lists it, and a `config_change` row
+with credential `chat_template`, the project as subject, `presence_id` and the
+grant `template=<name>` exists. The journey then puts the project's previous
+chat template list back through the ungated `PUT /api/projects/{id}` and checks
+the template is gone. The restore runs whenever the add was accepted.
+- Waits: the HTTP response after the dialog result; the audit row is written
+  before the response, so it is read once.
+- Lives in: `cmd/relay/chat_template_ops.go`, `cmd/relay/chat_template_routes.go`,
+  `internal/presence`.
+- Reached by: the frontend socket with the run credential; `relay audit --event
+  config_change --json`.
+- Traps: BLOCKED without the Verify Grant project (gate-project-grant-pos). The
+  template name carries the run nonce, which is what the helper matches. The
+  gate-project-chat-template-neg journey is the no-door negative listed with the others.
+
 **project-agents-settings** (screen). The simple path: Settings > Projects > the
 Verify Grant project > Agents > Add agent. The journey types a name and the
 absolute path of `testmcp` into the form, leaves kind claude and model default,
@@ -509,7 +528,7 @@ effect (the name, id or window is absent or unchanged).
   mirror holds a non-pending passkey that is not the last one.
 
 **Owner-gate negatives with no door** (screen): `gate-project-grant-neg`,
-`gate-project-rotate-token-neg`, `gate-project-agent-neg`, `gate-remote-configure-neg`,
+`gate-project-rotate-token-neg`, `gate-project-agent-neg`, `gate-project-chat-template-neg`, `gate-remote-configure-neg`,
 `gate-mcp-oauth-start-neg`, `gate-sealed-reset-neg`. From inside the
 session, `curl --unix-socket` to the op's HTTP route cannot connect (exit 7),
 and an `admin_op` for the op sent with `nc -U` to the bridge answers
@@ -777,6 +796,30 @@ answers.
   a `turn_done` frame; the process list is read once, after the first turn. The
   audit rows are read right after the 202, before the second turn is awaited,
   so a delivery failure reads FAIL even when the provider limit ends that turn.
+
+**cos-start-entry** (screen). The Chief of Staff starts a project's agent by
+name. The run credential adds the entry `verify-<nonce>-entry` (claude, haiku, no
+command) to Acme through `POST /api/projects/{id}/agents`, and the helper answers
+the `project.agent` prompt. A caller minted with classes proxy and execute sends
+`POST /api/chief-of-staff/sessions` with the scope header, the entry's name in
+upper case and "Reply with exactly: verify-<nonce>-entry-turn". PASS when the
+start answers 201 with `entry` the stored name and `entryType` `agent`; a
+`turn_done` frame holds the marker; the audit has an ok `session_launch` row with
+origin `chief-of-staff` and the entry, and one intent and one completion
+`session_message` row; and a second start naming an unknown entry answers 404
+`entry_not_found` with the entry in `choices`. The session is deleted, the entry
+removed through the same gate (a second prompt) and the credential revoked
+whatever the outcome. BLOCKED when Acme or a credential is missing or refused,
+or the audit is unreadable.
+- Waits: each dialog result, then its HTTP response; the 201, then
+  `session_joined`, then `turn_done` carrying the marker; then one read each of
+  the `session_message` and `session_launch` rows.
+- Lives in: `cmd/relay/session_chief_of_staff_start.go`,
+  `cmd/relay/chief_of_staff_agents.go`, `cmd/relay/agent_list_ops.go`.
+- Reached by: the minted credential for the start and the session delete; the run
+  credential for the entry; `/ws`; `relay audit --json`.
+- Traps: a provider rate limit ends the turn as BLOCKED, as for cos-start. The
+  entry name carries the run nonce, which is what the helper matches.
 
 **disabled-tool-refused** (screen). In a live session in Verify Grant,
 `testmcp_ping` answers; a `PUT /api/projects/{id}` with `disabled_tools`

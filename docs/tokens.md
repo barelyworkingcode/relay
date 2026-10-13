@@ -258,7 +258,7 @@ so entering it raises no presence prompt.
 |---|---|
 | no `X-Relay-Scope` | as before; class `chief_of_staff` is refused, `class not granted` |
 | scope, caller lacks `proxy` | 403 `class not granted` |
-| scope, caller holds `proxy` | `GET /api/sessions`, `GET /ws`, `POST /api/chief-of-staff/messages` and `POST /api/chief-of-staff/sessions` only; every other route is 403 `outside chief-of-staff scope` |
+| scope, caller holds `proxy` | `GET /api/sessions`, `GET /ws`, `POST /api/chief-of-staff/messages`, `POST /api/chief-of-staff/sessions`, `GET /api/chief-of-staff/projects/{projectId}/agents` and `POST /api/chief-of-staff/projects/{projectId}/agents/preview` only; every other route is 403 `outside chief-of-staff scope` |
 | any other, empty or repeated value | 403 `unknown scope` |
 
 - `chief_of_staff` is a class only the scope reaches. It is socket-only, like
@@ -276,6 +276,14 @@ so entering it raises no presence prompt.
   with 403 `caller_not_authorized`; the scope never gives `proxy` a launch it
   could not make otherwise. A frontend service holds both classes. See
   `docs/session-host.md`.
+- A start may name `entry`, an agent entry or chat template of the project,
+  instead of `model`. Relay resolves the name; the project's policy and
+  `AuthorizeLaunch` still decide.
+- The agent list returns rows with a name, a kind, a model and a command, and
+  never `args` or a system prompt. The preview writes nothing and raises no
+  prompt: it checks the shape of a proposed entry and resolves its command.
+- Every `/api/projects/*` write is class `configure`, `execute` or `grant`, none of
+  which the scope reaches, so the scope writes no agent entry and no chat template.
 
 ### The login credential
 

@@ -62,6 +62,8 @@ func (s *Server) knownRoute(route string) bool {
 var cosRoutes = map[string]bool{
 	"GET /api/sessions": true, "GET /ws": true,
 	"POST /api/chief-of-staff/messages": true, "POST /api/chief-of-staff/sessions": true,
+	"GET /api/chief-of-staff/projects/{projectId}/agents":          true,
+	"POST /api/chief-of-staff/projects/{projectId}/agents/preview": true,
 }
 
 func (s *Server) guard(class Class, pattern, transport string, h http.HandlerFunc) http.Handler {

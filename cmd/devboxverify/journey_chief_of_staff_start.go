@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ const (
 	cosStartID   = "cos-start"
 	cosOutsideID = "cos-start-outside-root"
 	cosHostID    = "cos-start-host"
+	cosEntryID   = "cos-start-entry"
 	cosStartPath = "/api/chief-of-staff/sessions"
 	cosListWait  = 10 * time.Second
 )
@@ -664,6 +666,213 @@ func cosHostAudit(r cosHostRun) string {
 		}
 		if sent != 1 {
 			return fmt.Sprintf("%d %s session_message rows carry the second text %q, want 1", sent, phase, want)
+		}
+	}
+	return ""
+}
+
+// cosEntryRun is what the cos-start-entry journey observed, in order.
+type cosEntryRun struct {
+	Project, Entry, Marker string
+	Setup                  result // set when a step before the start could not run
+
+	Add       frontendResponse
+	AddDialog dialogResult
+
+	DialStatus int
+	DialErr    string
+
+	Create      frontendResponse
+	Started     cosEntryStart
+	SessionID   string
+	JoinSeen    bool
+	TurnWaitErr bool
+	Frames      []cosFrame
+	LaunchRows  []audit.AuditEvent
+	MsgRows     []audit.AuditEvent
+	RowsErr     string
+
+	Unknown frontendResponse
+
+	Delete    frontendResponse
+	Remove    frontendResponse
+	RemDialog dialogResult
+}
+
+type cosEntryStart struct {
+	SessionID string `json:"sessionId"`
+	Entry     string `json:"entry"`
+	EntryType string `json:"entryType"`
+	Origin    string `json:"origin"`
+}
+
+type cosEntryLaunchArgs struct {
+	SessionID string `json:"session_id"`
+	Origin    string `json:"origin"`
+	Entry     string `json:"entry"`
+}
+
+// runCosStartEntry adds an agent entry through the gate, starts it by name as
+// the Chief of Staff, and refuses an unknown name. Everything it adds is
+// removed whatever the outcome.
+func runCosStartEntry(ctx context.Context, e env) (out result) {
+	const id = cosEntryID
+	acme, acmeID, err := grantedAcme(ctx, e)
+	if err != nil {
+		return blocked(id, err.Error())
+	}
+	_, run, res, ok := screenCreds(e, id)
+	if !ok {
+		return res
+	}
+	r := cosEntryRun{Project: acme.Name, Entry: "verify-" + e.Nonce + "-entry", Marker: "verify-" + e.Nonce + "-entry-turn"}
+
+	// Step 1: the entry, through the gate. The response follows the dialog result.
+	r.Add, r.AddDialog = gatedFrontend(ctx, e, run, http.MethodPost, agentsPath(acmeID),
+		jsonBody(agentEntry{Name: r.Entry, Kind: "claude", Model: agentModel}), fmt.Sprintf("%q", r.Entry))
+	if r.Add.Status != http.StatusCreated {
+		return classifyCosEntry(r)
+	}
+	// Registered first so it runs last: the session goes first, then the
+	// entry, then the credential the session delete used.
+	var revoke func() string
+	defer func() {
+		bg := context.WithoutCancel(ctx)
+		r.Remove, r.RemDialog = gatedFrontend(bg, e, run, http.MethodDelete, agentsPath(acmeID)+"/"+r.Entry, nil, fmt.Sprintf("%q", r.Entry))
+		out = classifyCosEntry(r)
+		if revoke != nil {
+			if d := revoke(); d != "" && out.State == statePass {
+				out = result{id, stateFail, d}
+			}
+		}
+	}()
+
+	// Step 2: the caller the start needs.
+	cosTok, revokeCred, res, ok := mintCosStartCred(ctx, e)
+	if !ok {
+		r.Setup = res
+		return
+	}
+	revoke = revokeCred
+	obs, status, err := dialCos(ctx, e, cosTok, false)
+	r.DialStatus = status
+	if err != nil {
+		r.DialErr = err.Error()
+		return
+	}
+	defer func() { _ = obs.conn.Close() }()
+	defer func() {
+		if r.SessionID != "" {
+			r.Delete = frontendDo(context.WithoutCancel(ctx), e, cosTok, http.MethodDelete, "/api/sessions/"+r.SessionID, nil)
+		}
+	}()
+
+	// Step 3: the start by name, then the turn that carries the marker.
+	r.Create = cosRequest(ctx, e, cosTok, true, http.MethodPost, cosStartPath,
+		jsonBody(map[string]string{"projectId": acmeID, "prompt": cosSendText(r.Marker), "entry": strings.ToUpper(r.Entry)}), 30*time.Second)
+	_ = json.Unmarshal(r.Create.Body, &r.Started)
+	if r.SessionID = r.Started.SessionID; r.Create.Status == http.StatusCreated && r.SessionID != "" {
+		_ = obs.send(map[string]string{"type": "join_session", "sessionId": r.SessionID})
+		if r.JoinSeen = obs.waitFor(ctx, cosWait, cosJoined(r.SessionID, 1)); r.JoinSeen {
+			r.TurnWaitErr = !obs.waitFor(ctx, cosTurnWait, cosTurnFinished(r.SessionID, r.Marker))
+		}
+		r.Frames = obs.snapshot()
+		// Step 4: one read of each row set, as cos-start does.
+		r.MsgRows, r.RowsErr = sessionMessageRows(ctx, e, r.SessionID, 1)
+		if r.RowsErr == "" {
+			var rowsErr error
+			if r.LaunchRows, rowsErr = auditJSONRows(ctx, e, "--event", string(audit.AuditEventSessionLaunch), "--grep", r.SessionID, "--json", "--tail", "20"); rowsErr != nil {
+				r.RowsErr = rowsErr.Error()
+			}
+		}
+	}
+	r.Unknown = cosRequest(ctx, e, cosTok, true, http.MethodPost, cosStartPath,
+		jsonBody(map[string]string{"projectId": acmeID, "prompt": "must not start", "entry": r.Entry + "-nope"}), frontendRequestTimeout)
+	return
+}
+
+func classifyCosEntry(r cosEntryRun) result {
+	const id = cosEntryID
+	fail := func(f string, a ...any) result { return result{id, stateFail, fmt.Sprintf(f, a...)} }
+	if res, refused := positiveRefusal(id, r.Add.Error, r.AddDialog); refused {
+		return res
+	}
+	switch {
+	case r.Add.Status == 0:
+		return blocked(id, "frontend socket unreachable")
+	case r.Add.Status == http.StatusUnauthorized:
+		return blocked(id, "run credential refused (401)")
+	case r.Add.Status != http.StatusCreated:
+		return fail("POST %s status %d: %s", agentsPath("{id}"), r.Add.Status, r.Add.Error)
+	case r.Setup.ID != "":
+		return r.Setup
+	case r.DialStatus == http.StatusUnauthorized:
+		return blocked(id, "minted credential refused (401) on /ws")
+	case r.DialErr != "" && r.DialStatus == 0:
+		return blocked(id, "frontend socket unreachable: "+r.DialErr)
+	case r.DialErr != "":
+		return fail("GET /ws status %d: %s", r.DialStatus, r.DialErr)
+	case r.Create.Status == http.StatusUnauthorized:
+		return blocked(id, "minted credential refused (401) on the start route")
+	case r.Create.Status != http.StatusCreated || r.SessionID == "":
+		return fail("start by entry status %d, want 201: %s", r.Create.Status, r.Create.Error)
+	case r.Started.Entry != r.Entry || r.Started.EntryType != "agent":
+		return fail("start answered entry %q type %q, want %q agent", r.Started.Entry, r.Started.EntryType, r.Entry)
+	case !r.JoinSeen:
+		return fail("no session_joined frame after join_session")
+	case r.TurnWaitErr:
+		return sessionLimit(r.Frames, r.SessionID).turnFail(id, "no turn_done carrying the marker after the start by entry")
+	case r.RowsErr != "":
+		return blocked(id, r.RowsErr)
+	}
+	if d := cosEntryAudit(r); d != "" {
+		return fail("%s", d)
+	}
+	var refusal struct {
+		Error   string   `json:"error"`
+		Choices []string `json:"choices"`
+	}
+	_ = json.Unmarshal(r.Unknown.Body, &refusal)
+	switch {
+	case r.Unknown.Status != http.StatusNotFound || refusal.Error != "entry_not_found":
+		return fail("start of an unknown entry answered %d %q, want 404 entry_not_found", r.Unknown.Status, refusal.Error)
+	case !slices.Contains(refusal.Choices, r.Entry):
+		return fail("entry_not_found choices %v do not hold %s", refusal.Choices, r.Entry)
+	case r.Delete.Status/100 != 2:
+		return fail("DELETE of the session status %d: it may still be running", r.Delete.Status)
+	}
+	if res, refused := positiveRefusal(id, r.Remove.Error, r.RemDialog); refused {
+		res.Detail = "remove: " + res.Detail
+		return res
+	}
+	if r.Remove.Status != http.StatusOK {
+		return fail("DELETE entry status %d: %s; the entry may remain", r.Remove.Status, r.Remove.Error)
+	}
+	return result{id, statePass, fmt.Sprintf("Chief of Staff started the entry %s in %s by name: 201 with entryType agent, the turn carried its marker, the launch row names the entry with origin %s, the prompt was recorded once, an unknown name was refused 404 with the entry in choices, and the entry was removed through the gate",
+		r.Entry, r.Project, cosOrigin)}
+}
+
+// cosEntryAudit checks the launch row names the entry and the origin, and
+// that the start left one intent and one completion message row.
+func cosEntryAudit(r cosEntryRun) string {
+	launched := false
+	for _, row := range r.LaunchRows {
+		var a cosEntryLaunchArgs
+		_ = json.Unmarshal(row.Args, &a)
+		if row.Event != string(audit.AuditEventSessionLaunch) || a.SessionID != r.SessionID {
+			continue
+		}
+		launched = true
+		if row.Outcome != audit.AuditOutcomeOK || a.Origin != cosOrigin || a.Entry != r.Entry {
+			return fmt.Sprintf("session_launch row outcome %q origin %q entry %q, want ok, %q and %q", row.Outcome, a.Origin, a.Entry, cosOrigin, r.Entry)
+		}
+	}
+	if !launched {
+		return "no session_launch row for the started session"
+	}
+	for _, phase := range []string{audit.AuditPhaseIntent, audit.AuditPhaseCompletion} {
+		if rows := messageRowsFor(r.MsgRows, r.SessionID, phase); len(rows) != 1 {
+			return fmt.Sprintf("%d %s session_message rows for the started session, want 1", len(rows), phase)
 		}
 	}
 	return ""

@@ -3,15 +3,19 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/barelyworkingcode/relay/fakerelay/internal/events"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/server"
@@ -56,6 +60,7 @@ func (a *api) projectRoutes(r server.Registrar) {
 	r.Route(server.ClassConfigure, "POST /api/projects", a.createProject)
 	r.Route(server.ClassConfigure, "PUT /api/projects/{id}", a.updateProject)
 	r.Route(server.ClassConfigure, "DELETE /api/projects/{id}", a.deleteProject)
+	r.Route(server.ClassConfigure, "POST /api/projects/{id}/chat-templates", a.addChatTemplate)
 	r.Route(server.ClassConfigure, "PUT /api/default_project/{mode}", a.setDefaultProject)
 }
 
@@ -593,4 +598,108 @@ func (a *api) projectEditVerb(ctx context.Context, args []string) server.VerbRes
 	}
 	view, msg := a.runCore(ctx, a.updateProject, http.MethodPut, *id, server.VerbBody(ctx))
 	return a.projectVerbResult("updated", view, msg, *asJSON)
+}
+
+const chatTemplateBodyMsg = `request body must be JSON {"name","model"}`
+
+func newTemplateID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	b[6], b[8] = b[6]&0x0f|0x40, b[8]&0x3f|0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// chatTemplateShape validates a new chat template's name and model.
+func chatTemplateShape(name, model string) *agentErr {
+	badName := utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > 60 || strings.TrimSpace(name) == "" ||
+		strings.IndexFunc(name, unicode.IsControl) >= 0
+	switch {
+	case badName:
+		return &agentErr{status: http.StatusBadRequest, code: "name_invalid", msg: "chat name must be 1 to 60 characters with no control characters"}
+	case model == "":
+		return &agentErr{status: http.StatusBadRequest, code: "model_required", msg: "a chat needs a model"}
+	case len(model) > 200 || strings.IndexFunc(model, func(r rune) bool { return unicode.IsControl(r) || unicode.IsSpace(r) }) >= 0:
+		return &agentErr{status: http.StatusBadRequest, code: "model_invalid", msg: "model must be at most 200 bytes with no whitespace or control characters"}
+	}
+	return nil
+}
+
+func (a *api) addChatTemplate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var in struct {
+		Name  string `json:"name"`
+		Model string `json:"model"`
+	}
+	body, err := readBody(w, r, maxAgentBody)
+	if err == nil {
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err = dec.Decode(&in); err == nil {
+			if _, terr := dec.Token(); terr != io.EOF {
+				err = errors.New("trailing data")
+			}
+		}
+	}
+	if err != nil {
+		(&agentErr{status: http.StatusBadRequest, code: "invalid_body", msg: chatTemplateBodyMsg}).write(w)
+		return
+	}
+	ev := a.Events.Begin(r.Context(), "chat_template.add").Set("project_id", id)
+	refuse := func(e *agentErr) {
+		ev.End("error", e.reason(), e)
+		e.write(w)
+	}
+	ev.Set("name", in.Name)
+	if e := chatTemplateShape(in.Name, in.Model); e != nil {
+		refuse(e)
+		return
+	}
+	var snap world.Project
+	var found bool
+	a.State.Read(func(m *state.Model) { snap, found = findProject(m, id) })
+	switch {
+	case !found:
+		refuse(&agentErr{status: http.StatusNotFound, code: "project_not_found", msg: "project not found"})
+		return
+	case snap.Kind == "remote":
+		refuse(&agentErr{status: http.StatusBadRequest, code: "project_not_available", msg: "project is not available for chats"})
+		return
+	}
+	if rule := world.AgentNameClash(snap, in.Name, ""); rule != nil {
+		refuse(ruleToErr(rule))
+		return
+	}
+	if !a.gate(server.WithSubject(r.Context(), id), w, ev, "project.chat_template") {
+		return
+	}
+	tpl := map[string]string{"id": newTemplateID(), "name": in.Name, "model": in.Model}
+	raw, _ := json.Marshal(tpl)
+	werr := a.State.Write(func(m *state.Model) error {
+		for i := range m.Projects {
+			if m.Projects[i].ID != id {
+				continue
+			}
+			cur := &m.Projects[i]
+			if cur.HostID != snap.HostID || cur.Kind != snap.Kind {
+				return changedErr(snap.Name)
+			}
+			if rule := world.AgentNameClash(*cur, in.Name, ""); rule != nil {
+				return ruleToErr(rule)
+			}
+			cur.ChatTemplates = append(append([]json.RawMessage(nil), cur.ChatTemplates...), raw)
+			return nil
+		}
+		return changedErr(snap.Name)
+	})
+	if werr != nil {
+		var ae *agentErr
+		if errors.As(werr, &ae) {
+			refuse(ae)
+		} else {
+			refuse(&agentErr{status: http.StatusInternalServerError, code: "internal", msg: werr.Error()})
+		}
+		return
+	}
+	ev.End("ok", "", nil)
+	server.WriteJSON(w, http.StatusCreated, map[string]any{"projectId": id, "template": map[string]string{"id": tpl["id"], "name": in.Name, "model": in.Model}})
 }

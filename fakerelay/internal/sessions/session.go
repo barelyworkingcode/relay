@@ -236,7 +236,7 @@ func (s *svc) createByEntry(w http.ResponseWriter, ev *events.Event, b launchBod
 	}
 	model := world.SessionModel(entry)
 	if ref := s.checkEntryModel(t.project, entry, model); ref != nil {
-		refuse(ref)
+		refuse(&ref.refusal)
 		return
 	}
 	b.Model = model
@@ -267,21 +267,31 @@ func (s *svc) resolveEntry(p world.Project, name string) (world.AgentEntry, *ref
 	return entry, nil
 }
 
+// maxChoices caps the names a refusal offers.
+const maxChoices = 50
+
+// choiceRefusal is a refusal that offers the caller the names it could have
+// sent. refusal has positional literals elsewhere, so the list rides here.
+type choiceRefusal struct {
+	refusal
+	choices []string
+}
+
 // checkEntryModel applies the project's model allowlist and the kind's offered
 // models to the model an entry asks for.
-func (s *svc) checkEntryModel(p world.Project, e world.AgentEntry, model string) *refusal {
+func (s *svc) checkEntryModel(p world.Project, e world.AgentEntry, model string) *choiceRefusal {
 	if model == "" {
 		if allowed(p.AllowedModels, "") {
 			return nil
 		}
-		return &refusal{http.StatusForbidden, "model_not_allowed", `agent "` + e.Name + `" has no model, and ` + p.Name + ` allows only its listed models`}
+		return &choiceRefusal{refusal: refusal{http.StatusForbidden, "model_not_allowed", `agent "` + e.Name + `" has no model, and ` + p.Name + ` allows only its listed models`}}
 	}
 	if !allowed(p.AllowedModels, model) {
-		return &refusal{http.StatusForbidden, "model_not_allowed", "model is not allowed for this project"}
+		return &choiceRefusal{refusal: refusal{http.StatusForbidden, "model_not_allowed", "model is not allowed for this project"}}
 	}
 	offered := s.offeredModels(e.Kind)
 	if len(offered) == 0 {
-		return &refusal{http.StatusServiceUnavailable, "models_unavailable", "the model list for " + e.Kind + " could not be read"}
+		return &choiceRefusal{refusal: refusal{http.StatusServiceUnavailable, "models_unavailable", "the model list for " + e.Kind + " could not be read"}}
 	}
 	var choices []string
 	for _, o := range offered {
@@ -292,7 +302,10 @@ func (s *svc) checkEntryModel(p world.Project, e world.AgentEntry, model string)
 			return nil
 		}
 	}
-	return &refusal{http.StatusBadRequest, "model_not_offered", `model "` + e.Model + `" is not offered for ` + e.Kind + "; models: " + strings.Join(choices, ", ")}
+	if len(choices) > maxChoices {
+		choices = choices[:maxChoices]
+	}
+	return &choiceRefusal{refusal: refusal{http.StatusBadRequest, "model_not_offered", `model "` + e.Model + `" is not offered for ` + e.Kind + "; models: " + strings.Join(choices, ", ")}, choices: choices}
 }
 
 // offeredModels is what a kind offers: claude's fixed rows, the world's codex
