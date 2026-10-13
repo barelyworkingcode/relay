@@ -132,6 +132,9 @@ func TranscriptPath(home, cwd, id string) string {
 	return strings.TrimRight(home, "/") + "/.claude/projects/" + folder + "/" + id + ".jsonl"
 }
 func Contains(root, cwd string) bool {
+	if root == "" {
+		return false
+	}
 	root = strings.TrimRight(root, "/")
 	return cwd == root || strings.HasPrefix(cwd, root+"/")
 }

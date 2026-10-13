@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -38,6 +39,10 @@ type osRow struct {
 	Source    string  `json:"source"`
 	Outside   bool    `json:"outside"`
 	ReadOnly  bool    `json:"readOnly"`
+
+	TmuxSession *string `json:"tmuxSession"`
+	Viewable    bool    `json:"viewable"`
+	ViewReason  string  `json:"viewReason"`
 }
 
 type osSnap struct {
@@ -502,5 +507,75 @@ func TestOutsideExcludesManagedSessions(t *testing.T) {
 	}
 	if row := s.at(dir); row != nil {
 		t.Fatalf("the managed session is listed as outside: %+v", row)
+	}
+}
+
+// Viewability: a claude in a tmux pane is viewable on the console, not on a
+// host without show_all_tmux_sessions, and a claude outside tmux says so.
+func TestOutsideRowViewability(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, true)
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatalf("real tmux is required: %v", err)
+	}
+	// The console probe reaches the default tmux server, so its pane has a unique
+	// name that cleanup kills. The stub host runs tmux with its own TMUX_TMPDIR.
+	// The console finds tmux in the instance's ~/.local/bin, not on the test's PATH.
+	osWrite(t, filepath.Join(r.i.Home, ".local", "bin", "tmux"), []byte("#!/bin/sh\nexec "+tmux+" \"$@\"\n"))
+	if err := os.Chmod(filepath.Join(r.i.Home, ".local", "bin", "tmux"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inTmux := func(home, root, name, tmuxDir string) *osProc {
+		p := r.spawn(home, root, name)
+		_ = exec.Command("kill", fmt.Sprint(p.pid)).Run() // spawn's process is outside tmux; the pane gets its own
+		<-p.exit
+		session := fmt.Sprintf("acme-%s-%d", name, os.Getpid())
+		run := func(args ...string) ([]byte, error) {
+			cmd := exec.Command(tmux, args...)
+			cmd.Env = append(os.Environ(), "TMUX=")
+			if tmuxDir != "" {
+				cmd.Env = append(cmd.Env, "TMUX_TMPDIR="+tmuxDir)
+			}
+			return cmd.CombinedOutput()
+		}
+		t.Cleanup(func() { _, _ = run("kill-session", "-t", "="+session) })
+		out, err := run("-f", "/dev/null", "new-session", "-d", "-P", "-F", "#{pane_pid}", "-s", session, "-c", p.dir, "exec "+r.bin+" 600")
+		if err != nil {
+			t.Fatalf("tmux new-session: %v\n%s", err, out)
+		}
+		p.pid, _ = strconv.Atoi(strings.TrimSpace(string(out)))
+		reg, _ := json.Marshal(map[string]any{"pid": p.pid, "sessionId": p.sid, "cwd": p.dir, "startedAt": time.Now().UnixMilli(), "name": "Acme " + name})
+		osWrite(t, filepath.Join(home, ".claude", "sessions", fmt.Sprintf("%d.json", p.pid)), reg)
+		return p
+	}
+	c := inTmux(r.i.Home, t.TempDir(), "console", "")
+	h := inTmux(r.remote, filepath.Join(r.remote, "boxproj"), "host", filepath.Join(r.remote, "tmux"))
+	// Orphaned from the test run, which may itself sit inside a tmux pane.
+	n := r.spawn(r.i.Home, t.TempDir(), "plain")
+	_ = exec.Command("kill", fmt.Sprint(n.pid)).Run()
+	<-n.exit
+	cmd := exec.Command("sh", "-c", `"$0" 600 >/dev/null 2>&1 & echo $!`, r.bin)
+	cmd.Dir = n.dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.pid, _ = strconv.Atoi(strings.TrimSpace(string(out)))
+	t.Cleanup(func() { _ = syscall.Kill(n.pid, syscall.SIGKILL) })
+	reg, _ := json.Marshal(map[string]any{"pid": n.pid, "sessionId": n.sid, "cwd": n.dir, "startedAt": time.Now().UnixMilli(), "name": "Acme plain"})
+	osWrite(t, filepath.Join(r.i.Home, ".claude", "sessions", fmt.Sprintf("%d.json", n.pid)), reg)
+
+	s := r.probe()
+	for _, w := range []struct {
+		p      *osProc
+		tmux   bool
+		viewOK bool
+		reason string
+	}{{c, true, true, ""}, {h, true, false, "outside_view_disabled"}, {n, false, false, "not_in_tmux"}} {
+		row := s.at(w.p.dir)
+		if row == nil || (row.TmuxSession != nil) != w.tmux || row.Viewable != w.viewOK || row.ViewReason != w.reason {
+			t.Fatalf("row for %s = %+v, want tmuxSession set %v, viewable %v, viewReason %q", w.p.dir, row, w.tmux, w.viewOK, w.reason)
+		}
 	}
 }

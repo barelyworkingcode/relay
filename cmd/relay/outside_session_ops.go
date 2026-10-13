@@ -108,7 +108,7 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			var project *config.Project
 			for j := range settings.Projects {
 				p := &settings.Projects[j]
-				if p.HostID == hostKey(h) && outsidesessions.Contains(p.Path, o.Session.Directory) && (project == nil || len(p.Path) > len(project.Path)) {
+				if !p.IsRemote() && p.HostID == hostKey(h) && outsidesessions.Contains(p.Path, o.Session.Directory) && (project == nil || len(p.Path) > len(project.Path)) {
 					project = p
 				}
 			}
