@@ -82,8 +82,8 @@ On each originating machine, configure Claude Code command hooks explicitly.
 Relay never edits existing hook settings. Run `scripts/outside-session-report.sh`
 with native Claude hook JSON on stdin. Install the helper at an
 operator-chosen path and use that path in each hook command. It writes at most
-64 KiB atomically into the owner-only `~/.claude/relay-outside-reports/` spool
-and calls no Relay action API.
+64 KiB atomically into the owner-only `~/.claude/relay-outside-reports/` spool,
+drops larger events, keeps at most 256 reports there, and calls no Relay action API.
 
 | Claude event | State |
 |---|---|
