@@ -13,6 +13,8 @@ import (
 
 // UnixProbeScript needs only the host's existing shell, ps and base64. Linux
 // uses procfs; macOS uses lsof. Raw argv/environment never leave the subprocess.
+// The 32-session cap is applied to sessions with a registry entry first, newest
+// pid first, so a busy machine drops its oldest unregistered processes.
 const UnixProbeScript = `
 b64() { base64 | tr -d '\r\n'; }
 printf 'H\t'; printf '%s' "$HOME" | b64; printf '\n'
@@ -20,7 +22,9 @@ unset $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p')
 unset TMUX
 [ -d "$HOME/.claude/relay-outside-reports" ] && printf 'S\t1\n'
 ps -axo pid=,ppid= | awk '{printf "A\t%s\t%s\n",$1,$2}'
-TZ=UTC LC_ALL=C ps -axo pid=,ppid=,lstart=,comm= | {
+candidates=$(TZ=UTC LC_ALL=C ps -axo pid=,ppid=,lstart=,comm= | awk '{n=$NF; sub(/.*\//,"",n)} n=="claude"||n=="claude.exe"||n=="node"||n=="node.exe"' | sort -rn)
+{ printf '%s\n' "$candidates" | while read -r pid rest; do [ ! -f "$HOME/.claude/sessions/$pid.json" ] || printf '%s %s\n' "$pid" "$rest"; done
+  printf '%s\n' "$candidates" | while read -r pid rest; do [ -f "$HOME/.claude/sessions/$pid.json" ] || printf '%s %s\n' "$pid" "$rest"; done; } | {
 live=0
 while read -r pid ppid day mon dom clock year command; do
  base=${command##*/}; case "$base" in claude|claude.exe) ;; node|node.exe) args=$(ps -p "$pid" -o args=); case "$args" in *'/claude '*|*'/claude.js '*|*'/cli.js '*) ;; *) continue;; esac ;; *) continue;; esac
