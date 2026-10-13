@@ -19,6 +19,10 @@ import (
 const (
 	maxAgentBody = 64 << 10
 	localMachine = "this Mac"
+
+	// agentBodyMsg answers every unreadable body: bad JSON, an unknown key,
+	// trailing data and an oversize body alike.
+	agentBodyMsg = "request body must be one JSON agent entry"
 )
 
 // agentErr is the coded error family: {"error":code,"message":text}, plus
@@ -97,18 +101,15 @@ func decodeAgent(w http.ResponseWriter, r *http.Request) (world.AgentEntry, *age
 	}
 	body, err := readBody(w, r, maxAgentBody)
 	if err != nil {
-		if errors.Is(err, errTooLarge) {
-			return in, bad("request body too large")
-		}
-		return in, bad("invalid JSON: " + err.Error())
+		return in, bad(agentBodyMsg)
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
-		return in, bad("invalid JSON: " + err.Error())
+		return in, bad(agentBodyMsg)
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return in, bad("invalid JSON: unexpected data after the value")
+		return in, bad(agentBodyMsg)
 	}
 	return in, nil
 }
@@ -141,7 +142,7 @@ func (a *api) removeAgent(w http.ResponseWriter, r *http.Request) {
 func (a *api) writeAgent(w http.ResponseWriter, r *http.Request, op, id, target string, in world.AgentEntry) {
 	remove := op == "agent.remove"
 	name := in.Name
-	if target != "" {
+	if remove {
 		name = target
 	}
 	ev := a.Events.Begin(r.Context(), op).Set("project_id", id).Set("name", name)
@@ -201,9 +202,6 @@ func (a *api) writeAgent(w http.ResponseWriter, r *http.Request, op, id, target 
 	if host != nil {
 		machine = host.Name
 	}
-	if remove && old.Command != "" || !remove && in.Command != "" {
-		ev.Set("machine", machine)
-	}
 	if !remove && in.Command != "" {
 		abs, e := a.lookupAgentCommand(snap, host, machine, in.Command)
 		if e != nil {
@@ -212,7 +210,10 @@ func (a *api) writeAgent(w http.ResponseWriter, r *http.Request, op, id, target 
 		}
 		in.Command = abs
 	}
-	if !a.gate(server.WithSubject(r.Context(), snap.Name), w, ev, "project.agent") {
+	// The machine is named once the lookup has succeeded, with or without a
+	// command, so a later refusal carries it and a lookup refusal does not.
+	ev.Set("machine", machine)
+	if !a.gate(server.WithSubject(r.Context(), id), w, ev, "project.agent") {
 		return
 	}
 	err := a.State.Write(func(m *state.Model) error {

@@ -486,7 +486,7 @@ the first failure answers:
 
 | Order | Status | `error` | `message` |
 |---|---|---|---|
-| 1 | 400 | `invalid_body` | `invalid JSON: <decoder text>` or `request body too large`. No event |
+| 1 | 400 | `invalid_body` | `request body must be one JSON agent entry`, for bad JSON, an unknown key, trailing data and an oversize body alike. No event |
 | 2 | 400 | `name_invalid` | `agent name must be 1 to 40 letters, digits, dots, dashes or underscores, starting with a letter or digit` |
 | 2 | 400 | `kind_invalid` | `kind must be claude, codex or pi` |
 | 2 | 400 | `model_invalid` | `model must be at most 200 bytes with no spaces or control characters` |
@@ -522,10 +522,14 @@ list. An absolute input must itself exist and be executable. The stored
 live on this machine; the host name is only the label in `machine`.
 
 Events: `agent.list` carries `project_id` and `count`. `agent.add`,
-`agent.update` and `agent.remove` carry `project_id`, `name` (the target name
-for an update or remove) and `machine` when the write has a command. A
+`agent.update` and `agent.remove` carry `project_id`, `name` (the entry's new
+name for an update, the removed name for a remove) and `machine` once the command lookup has
+succeeded, whether or not the entry has a command. A refusal before or at the
+lookup carries no `machine`; a presence refusal or a changed project does. A
 refusal's `reason` is `invalid` (400, 422), `not_found`, `conflict` (409),
-`upstream` (502), or `presence_refused` and `presence_timeout`.
+`upstream` (502), or `presence_refused` and `presence_timeout`. A presence
+refusal's `control_decision` row has `method: "project.agent"` and `subject`
+set to the project id, not its name.
 
 ### Chief of Staff
 

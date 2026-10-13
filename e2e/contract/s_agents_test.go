@@ -30,7 +30,10 @@ func TestAgentsCRUD(t *testing.T) {
 			tr := harness.NewTrace(r.T)
 			r.HTTP("ops", "GET", base, nil, harness.ReqOpts{Trace: tr})
 			agentEvent(r, "agent.list", tr, nil)
-			r.HTTP("ops", "POST", base, map[string]any{"name": "Researcher", "kind": "claude", "model": "sonnet"})
+			// An entry with no command still names the machine in its event.
+			tr = harness.NewTrace(r.T)
+			r.HTTP("ops", "POST", base, map[string]any{"name": "Researcher", "kind": "claude", "model": "sonnet"}, harness.ReqOpts{Trace: tr})
+			agentEvent(r, "agent.add", tr, map[string]any{"status": "ok", "machine": "this Mac"})
 			// An absolute path goes through the lookup and is stored as found.
 			// The events are read on entries with a command, which both targets
 			// write with the machine.
@@ -41,7 +44,9 @@ func TestAgentsCRUD(t *testing.T) {
 			r.HTTP("ops", "GET", base, nil)
 			r.HTTP("ops", "GET", "/api/projects/p_acme", nil)
 
-			r.HTTP("ops", "PUT", base+"/researcher", map[string]any{"name": "Analyst", "kind": "claude", "model": "haiku"})
+			tr = harness.NewTrace(r.T)
+			r.HTTP("ops", "PUT", base+"/researcher", map[string]any{"name": "Analyst", "kind": "claude", "model": "haiku"}, harness.ReqOpts{Trace: tr})
+			agentEvent(r, "agent.update", tr, map[string]any{"status": "ok", "machine": "this Mac"})
 			tr = harness.NewTrace(r.T)
 			r.HTTP("ops", "PUT", base+"/wrapped", map[string]any{"name": "wrapped", "kind": "claude", "model": "opus", "command": "/bin/ls"}, harness.ReqOpts{Trace: tr})
 			agentEvent(r, "agent.update", tr, map[string]any{"status": "ok"})
@@ -52,6 +57,9 @@ func TestAgentsCRUD(t *testing.T) {
 			agentEvent(r, "agent.remove", tr, map[string]any{"status": "ok"})
 			r.HTTP("ops", "GET", base, nil)
 
+			tr = harness.NewTrace(r.T)
+			r.HTTP("ops", "DELETE", base+"/analyst", nil, harness.ReqOpts{Trace: tr})
+			agentEvent(r, "agent.remove", tr, map[string]any{"status": "ok", "machine": "this Mac"})
 		},
 	})
 }
@@ -69,6 +77,8 @@ func TestAgentsRefusals(t *testing.T) {
 			tr := harness.NewTrace(r.T)
 			r.HTTP("ops", "POST", base, map[string]any{"name": "scout", "kind": "gemini"}, harness.ReqOpts{Trace: tr})
 			agentEvent(r, "agent.add", tr, map[string]any{"status": "error", "reason": "invalid"})
+			r.HTTP("ops", "POST", base, map[string]any{"name": "scout", "kind": "claude", "colour": "red"})
+			r.HTTP("ops", "POST", base, "not an entry")
 			post(map[string]any{"name": "bad name", "kind": "claude"})
 			post(map[string]any{"name": "scout", "kind": "pi"})
 			post(map[string]any{"name": "scout", "kind": "claude", "args": []string{"x"}})
@@ -100,6 +110,8 @@ func TestAgentsRefusals(t *testing.T) {
 			r.HTTP("ops", "POST", base, map[string]any{"name": "scout", "kind": "claude", "command": "/bin/ls"}, harness.ReqOpts{Trace: tr})
 			agentEvent(r, "agent.add", tr, map[string]any{"status": "denied", "reason": "presence_refused"})
 			r.HTTP("ops", "GET", base, nil)
+			// The refusal row names the project by id.
+			r.Audit(harness.AuditQuery{Event: "control_decision", Outcome: "denied"})
 		},
 	})
 }

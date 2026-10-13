@@ -62,7 +62,7 @@ func TestAgentList(t *testing.T) {
 
 	in.api(t, "PUT", "/api/projects/p_acme/agents/mine", J{"name": "renamed", "kind": "claude", "model": "haiku", "command": "mywrapper"}).is(t, 200)
 	evs := in.events(t, "", "agent.update")
-	eq(t, [2]any{evs[0]["reason"], evs[1]["name"]}, [2]any{"not_found", "mine"}, "update events")
+	eq(t, [2]any{evs[0]["reason"], evs[1]["name"]}, [2]any{"not_found", "renamed"}, "update events")
 
 	s := in.api(t, "POST", "/api/sessions", J{"projectId": "p_acme", "entry": "renamed"}).is(t, 201).obj(t)
 	eq(t, [2]any{s["model"], s["providerType"]}, [2]any{"haiku", "claude"}, "session by entry")
