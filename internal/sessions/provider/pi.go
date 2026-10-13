@@ -35,6 +35,10 @@ type PiConfig struct {
 	DataDir   string // relay-sessions data dir; pi session JSONLs live under {DataDir}/pi-sessions
 	ExtraArgs []string
 
+	// Launcher runs in place of the pi binary, with the kind's own arguments
+	// after its args. nil runs Binary.
+	Launcher *sessionstypes.Launcher
+
 	BridgeSocket string // C5 env table: RELAY_BRIDGE_SOCKET
 	ModelSocket  string // C5 env table: RELAY_MODEL_SOCKET — also the source startModelProxy bridges for pi's overlay baseUrl
 
@@ -278,7 +282,7 @@ func (p *PiProvider) Start() (err error) {
 
 	args := p.buildPiArgs(sessionDir, p.resolveSkillDir(), sysPromptPath)
 
-	piPath := resolvePiPath(p.cfg.Binary)
+	program := p.cfg.Launcher.Program(resolvePiPath(p.cfg.Binary))
 
 	spec := shimSpec{
 		Binary:         p.cfg.ShimBinary,
@@ -297,12 +301,12 @@ func (p *PiProvider) Start() (err error) {
 		return ErrNoBridgeSocket
 	case spec.wanted():
 		var berr error
-		cmd, statusR, extraFiles, berr = buildShimCmd(spec, piPath, args)
+		cmd, statusR, extraFiles, berr = buildShimCmd(spec, program[0], append(program[1:], args...))
 		if berr != nil {
 			return berr
 		}
 	default:
-		cmd = exec.Command(piPath, args...) // unchanged direct spawn
+		cmd = exec.Command(program[0], append(program[1:], args...)...) // unchanged direct spawn
 	}
 	fds := &spawnFDs{statusR: statusR, extraFiles: extraFiles}
 	defer fds.closeUnlessStarted()

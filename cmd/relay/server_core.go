@@ -634,6 +634,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 		accounting:  sessionAccounts,
 		resumeGuard: newResumeGuard(),
 		systemModel: app.modelEndpoint.IsSystemModel,
+		modelOffer:  newModelOffer(app.ipcCtx.ModelCatalog),
 	}
 
 	router.sessionDeps = sessionDeps

@@ -187,6 +187,10 @@ type sessionRouteDeps struct {
 	// means no check.
 	systemModel func(ctx context.Context, id string) (bool, error)
 
+	// modelOffer lists the models a kind offers, for an agent entry start. nil
+	// refuses every entry start that names a model.
+	modelOffer ModelOffer
+
 	// agentLists is the agent-list core; nil registers no agent route.
 	agentLists *AgentListOps
 }
@@ -359,16 +363,23 @@ func (d sessionRouteDeps) handleCreateSession(w http.ResponseWriter, r *http.Req
 // sessionLaunchRequest maps a POST /api/sessions body to the launch the core
 // authorizes. The HTTP route and the CLI door both build their request here.
 func sessionLaunchRequest(body eveSessionRequestBody, caller LaunchCaller) LaunchRequest {
+	kind := deriveSessionKind(body.Model)
+	if body.Entry != "" && body.Model == "" {
+		// The entry names the kind; AuthorizeLaunch reads it once the project
+		// is known.
+		kind = ""
+	}
 	return LaunchRequest{
 		Caller:         caller,
 		ProjectID:      body.ProjectID,
-		Kind:           deriveSessionKind(body.Model),
+		Kind:           kind,
 		Directory:      body.Directory,
 		Name:           body.Name,
 		Model:          body.Model,
 		ClientSettings: body.Settings,
 		SystemPrompt:   body.SystemPrompt,
 		AppendClaudeMd: body.AppendClaudeMd,
+		Entry:          body.Entry,
 	}
 }
 
@@ -438,16 +449,42 @@ func resolveLaunchCaller(r *http.Request, store config.SettingsStore) LaunchCall
 // refusal mapping do not depend on which door asked.
 func (d sessionRouteDeps) launchWithEvent(ctx context.Context, req LaunchRequest) (*LaunchResult, *hostapi.LaunchResponse, *LaunchRefusal, error) {
 	ev := logging.BeginEvent(ctx, "session.launch").Set("project_id", req.ProjectID).Set("kind", req.Kind)
+	if req.Entry != "" {
+		ev.Set("entry", req.Entry)
+	}
 	result, resp, refusal, err := d.launch(ctx, req)
 	switch {
 	case refusal != nil:
+		setEntryEventFields(ev, refusal.Audit)
 		endEvent(ev, refusal)
 	case err != nil:
 		endEvent(ev, upstreamErr(err))
 	default:
+		if result.AuditFields.Entry != "" {
+			ev.Set("kind", result.AuditFields.Kind).Set("entry", result.AuditFields.Entry)
+			if result.AuditFields.Command != "" {
+				ev.Set("command", result.AuditFields.Command)
+			}
+		}
 		ev.Set("session_id", result.SessionID).End(logging.OutcomeOK, "", nil)
 	}
 	return result, resp, refusal, err
+}
+
+// setEntryEventFields copies what a refusal learned about the entry (its
+// resolved kind and command) from the audit row onto the launch event.
+func setEntryEventFields(ev *logging.Event, row audit.AuditEvent) {
+	var args sessionLaunchAuditArgs
+	if json.Unmarshal(row.Args, &args) != nil || args.Entry == "" {
+		return
+	}
+	ev.Set("entry", args.Entry)
+	if args.SessionKind != "" {
+		ev.Set("kind", args.SessionKind)
+	}
+	if args.Command != "" {
+		ev.Set("command", args.Command)
+	}
 }
 
 // launchAndRespond runs launchWithEvent and answers eve -- the shared tail of
@@ -481,6 +518,7 @@ func (d sessionRouteDeps) launch(ctx context.Context, req LaunchRequest) (*Launc
 			return nil, nil, refusal, nil
 		}
 	}
+	req.offer = d.offerFor(ctx)
 	result, refusal := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, req)
 	if refusal != nil {
 		d.auditor.Record(refusal.Audit)
@@ -500,6 +538,14 @@ func (d sessionRouteDeps) launch(ctx context.Context, req LaunchRequest) (*Launc
 	}
 	d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, ""))
 	return result, resp, nil, nil
+}
+
+// offerFor binds the model offer to ctx for AuthorizeLaunch, which takes none.
+func (d sessionRouteDeps) offerFor(ctx context.Context) func(kind string) ([]string, error) {
+	if d.modelOffer == nil {
+		return nil
+	}
+	return func(kind string) ([]string, error) { return d.modelOffer(ctx, kind) }
 }
 
 // resumeResponseBody is C5's resume 200 body.
@@ -582,6 +628,7 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 		ProjectID: rec.ProjectID, Kind: rec.Kind, Directory: rec.Directory,
 		Name: sessionReq.Name, Model: sessionReq.Model, ClientSettings: sessionReq.Settings,
 		SystemPrompt: sessionReq.SystemPrompt, AppendClaudeMd: sessionReq.AppendClaudeMd,
+		Entry: rec.Entry, offer: d.offerFor(ctx),
 	}
 	result, refusal := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, req)
 	if refusal != nil {

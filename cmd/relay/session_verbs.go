@@ -504,6 +504,7 @@ func sessionStart(args []string) {
 	fs := flag.NewFlagSet("session start", flag.ExitOnError)
 	project := fs.String("project", "", "project id")
 	model := fs.String("model", "", "model id")
+	entry := fs.String("entry", "", "agent entry of the project, instead of --model")
 	name := fs.String("name", "", "session name")
 	directory := fs.String("directory", "", "working directory inside the project")
 	settings := fs.String("settings", "", "client settings as a JSON object")
@@ -515,14 +516,14 @@ func sessionStart(args []string) {
 
 	var body any
 	switch {
-	case *file != "" && (*project != "" || *model != "" || *name != "" || *directory != "" || *settings != "" || *systemPrompt != "" || *appendClaudeMd):
+	case *file != "" && (*project != "" || *model != "" || *entry != "" || *name != "" || *directory != "" || *settings != "" || *systemPrompt != "" || *appendClaudeMd):
 		exitError("--file cannot be combined with the other flags")
 	case *file != "":
 		body = json.RawMessage(readBodyArg(*file))
-	case *project == "" || *model == "":
-		exitError("pass --project and --model, or --file")
+	case *project == "" || (*model == "" && *entry == ""):
+		exitError("pass --project and --model or --entry, or --file")
 	default:
-		b := eveSessionRequestBody{ProjectID: *project, Model: *model, Name: *name, Directory: *directory, SystemPrompt: *systemPrompt, AppendClaudeMd: *appendClaudeMd}
+		b := eveSessionRequestBody{ProjectID: *project, Model: *model, Entry: *entry, Name: *name, Directory: *directory, SystemPrompt: *systemPrompt, AppendClaudeMd: *appendClaudeMd}
 		if *settings != "" {
 			if !json.Valid([]byte(*settings)) {
 				exitError("--settings is not valid JSON")

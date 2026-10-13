@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,6 +76,12 @@ type ClaudeConfig struct {
 	// shim to relay's bridge socket — never by the CLI child itself, and never
 	// in argv. nil for a launch with no identity to mint (SSH-hosted).
 	Identity *sessionsmcp.IdentitySpec
+
+	// Launcher runs in place of the claude binary, with the kind's own
+	// arguments after its args. nil runs Binary.
+	Launcher *sessionstypes.Launcher
+	// DefaultModel leaves out --model, so the binary uses its own default.
+	DefaultModel bool
 }
 
 // ClaudeProvider manages a persistent Claude CLI process and translates its
@@ -302,7 +309,9 @@ func (p *ClaudeProvider) buildClaudeArgs(mcpConfigPath, sysPromptPath string) []
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
-		"--model", p.model,
+	}
+	if !p.cfg.DefaultModel {
+		args = append(args, "--model", p.model)
 	}
 
 	if p.claudeSessionID != "" {
@@ -377,12 +386,12 @@ func (p *ClaudeProvider) buildClaudeEnv(base []string) []string {
 // RemoteCommand wrapping `claude_path <args>` under dir. env carries only
 // RELAY_SESSION_ID (decision 6: never the hook socket or any relay token on
 // a host — there is nothing on the far end that could use either safely).
-func buildHostExec(spec *sessionstypes.HostSpec, dir string, args []string, sessionID string) (name string, argv []string, err error) {
+func buildHostExec(spec *sessionstypes.HostSpec, program []string, dir string, args []string, sessionID string) (name string, argv []string, err error) {
 	if len(spec.SSHArgv) == 0 {
 		return "", nil, fmt.Errorf("host %q has no ssh_argv", spec.Name)
 	}
 	env := map[string]string{"RELAY_SESSION_ID": sessionID}
-	remote := sshhost.RemoteCommandForOS(spec.OS, dir, append([]string{spec.ClaudePath}, args...), env)
+	remote := sshhost.RemoteCommandForOS(spec.OS, dir, append(slices.Clone(program), args...), env)
 	name = spec.SSHArgv[0]
 	argv = append(append([]string{}, spec.SSHArgv[1:]...), "-T", "--", remote)
 	return name, argv, nil
@@ -417,7 +426,7 @@ func (p *ClaudeProvider) Start() error {
 			// to already be empty.
 			slog.Warn("claude: sandbox/identity requested for a host session; ignoring", "session", p.session.ID)
 		}
-		if host.ClaudePath == "" {
+		if host.ClaudePath == "" && p.cfg.Launcher == nil {
 			return fmt.Errorf("host %q has no claude: run a probe", host.Name)
 		}
 		args := p.buildClaudeArgs("", "")
@@ -429,7 +438,7 @@ func (p *ClaudeProvider) Start() error {
 			// executes locally).
 			args = append(args, "--append-system-prompt", p.session.SystemPrompt)
 		}
-		name, argv, err := buildHostExec(host, p.directory, args, p.session.ID)
+		name, argv, err := buildHostExec(host, p.cfg.Launcher.Program(host.ClaudePath), p.directory, args, p.session.ID)
 		if err != nil {
 			return err
 		}
@@ -466,7 +475,7 @@ func (p *ClaudeProvider) Start() error {
 		}
 
 		args := p.buildClaudeArgs(mcpConfigPath, sysPromptPath)
-		claudePath := resolveClaudePath(p.cfg.Binary)
+		program := p.cfg.Launcher.Program(resolveClaudePath(p.cfg.Binary))
 
 		spec := shimSpec{
 			Binary:         p.cfg.ShimBinary,
@@ -482,12 +491,12 @@ func (p *ClaudeProvider) Start() error {
 			return ErrNoBridgeSocket
 		case spec.wanted():
 			var berr error
-			cmd, statusR, extraFiles, berr = buildShimCmd(spec, claudePath, args)
+			cmd, statusR, extraFiles, berr = buildShimCmd(spec, program[0], append(program[1:], args...))
 			if berr != nil {
 				return berr
 			}
 		default:
-			cmd = exec.Command(claudePath, args...) // unchanged direct spawn
+			cmd = exec.Command(program[0], append(program[1:], args...)...) // unchanged direct spawn
 		}
 		cmd.Dir = p.directory
 		cmd.Env = p.buildClaudeEnv(ensurePath(childBaseEnv()))
