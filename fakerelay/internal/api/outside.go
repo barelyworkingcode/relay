@@ -71,7 +71,11 @@ func (a *api) outsideSnapshot() map[string]any {
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].name < list[j].name })
 	for _, mc := range list {
-		machines = append(machines, map[string]any{"hostId": mc.hostID, "machine": mc.name, "status": mc.status, "lastProbeAt": rfc3339(a.now()), "error": ""})
+		row := map[string]any{"hostId": mc.hostID, "machine": mc.name, "status": mc.status, "lastProbeAt": rfc3339(a.now())}
+		if mc.status == "unreachable" {
+			row["error"] = "outside probe unavailable"
+		}
+		machines = append(machines, row)
 	}
 	return map[string]any{"type": "outside_sessions", "revision": a.outsideRevision, "probeIntervalMs": 15000, "sessions": rows, "machines": machines}
 }

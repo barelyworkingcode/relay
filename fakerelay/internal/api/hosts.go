@@ -63,7 +63,10 @@ func (a *api) hostView(h world.Host) map[string]any {
 		at = a.started
 	}
 	v := map[string]any{"id": h.ID, "name": h.Name, "target": h.Target, "created_at": rfc3339(a.started),
-		"show_all_tmux_sessions": h.ShowAllTmuxSessions, "status": status, "ssh_argv": h.SSHArgv(filepath.Join(a.Dir, "run", "ssh")), "terminal_templates": tpl}
+		"status": status, "ssh_argv": h.SSHArgv(filepath.Join(a.Dir, "run", "ssh")), "terminal_templates": tpl}
+	if h.ShowAllTmuxSessions {
+		v["show_all_tmux_sessions"] = true
+	}
 	if len(created) > 0 {
 		v["created_at"] = strings.Trim(string(created), `"`)
 	}

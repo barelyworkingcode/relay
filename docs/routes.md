@@ -2034,9 +2034,26 @@ only, and a test never drives one.
 
 ## Outside sessions (Chief of Staff scope)
 
-`GET /api/chief-of-staff/outside-sessions`, `GET
-/api/chief-of-staff/outside-sessions/{id}` and `GET /ws/outside-sessions` are
-class `chief_of_staff`, socket only. They expose display-only snapshots and
-fresh latest-turn detail; no outside action door exists. Client WebSocket data
-frames close with 1008. Schemas, bounds, errors and timing are in
+Display-only views of Claude sessions relay did not start. No outside action
+door exists. Schemas, bounds, errors and timing are in
 [outside sessions](outside-sessions.md).
+
+### GET /api/chief-of-staff/outside-sessions
+
+The current snapshot: `sessions` and per-machine `machines` status.
+
+- **Listeners:** socket. **Credential:** `chief_of_staff`. **Gate:** none.
+
+### GET /api/chief-of-staff/outside-sessions/{id}
+
+One outside session with a freshly read latest turn. An unknown or ended id
+is `404`; an unreadable machine is `502`.
+
+- **Listeners:** socket. **Credential:** `chief_of_staff`. **Gate:** none.
+
+### GET /ws/outside-sessions
+
+A WebSocket that sends a snapshot on connect and on each change. A client data
+frame closes the socket with `1008`.
+
+- **Listeners:** socket. **Credential:** `chief_of_staff`. **Gate:** none.

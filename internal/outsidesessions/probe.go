@@ -201,7 +201,7 @@ func (p NativeProbe) managed(proc Process, root int) bool {
 	return false
 }
 func (p NativeProbe) observe(proc Process, r Registry) Observation {
-	s := Session{Directory: r.Cwd, Branch: proc.Branch, State: "idle", Source: "probe", Since: stamp(time.UnixMilli(r.StartedAt)), ViewReason: "not_in_tmux"}
+	s := Session{Directory: r.Cwd, Branch: proc.Branch, State: "idle", Source: "probe", Since: stamp(sinceTime(proc.Lifetime, r.StartedAt)), ViewReason: "not_in_tmux"}
 	s.Name = r.Name
 	if s.Name == "" {
 		s.Name = "Claude — " + filepath.Base(r.Cwd)
@@ -234,20 +234,34 @@ func (p NativeProbe) observe(proc Process, r Registry) Observation {
 	return Observation{Session: s, PID: proc.PID, Lifetime: proc.Lifetime, ClaudeID: r.SessionID, Transcript: transcript, StatusAt: statusAt}
 }
 
+// sinceTime prefers the registry start; a session with no registry file falls
+// back to the process start so its row never reads 1970.
+func sinceTime(lifetime string, started int64) time.Time {
+	if started > 0 {
+		return time.UnixMilli(started)
+	}
+	if t, ok := lifetimeTime(lifetime); ok {
+		return t
+	}
+	return time.Time{}
+}
+func lifetimeTime(lifetime string) (time.Time, bool) {
+	if strings.Contains(lifetime, ".") {
+		sec, err := strconv.ParseFloat(lifetime, 64)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return time.UnixMilli(int64(sec * 1000)), true
+	}
+	t, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", lifetime, time.UTC)
+	return t, err == nil
+}
 func registryLifetimeMatches(lifetime string, started int64) bool {
 	if started <= 0 {
 		return false
 	}
-	var observed time.Time
-	if strings.Contains(lifetime, ".") {
-		sec, err := strconv.ParseFloat(lifetime, 64)
-		if err != nil {
-			return false
-		}
-		observed = time.UnixMilli(int64(sec * 1000))
-	} else if t, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", lifetime, time.UTC); err == nil {
-		observed = t
-	} else {
+	observed, ok := lifetimeTime(lifetime)
+	if !ok {
 		return false
 	}
 	delta := time.UnixMilli(started).Sub(observed)

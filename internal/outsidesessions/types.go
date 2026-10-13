@@ -44,7 +44,7 @@ type MachineStatus struct {
 	Machine     string  `json:"machine"`
 	Status      string  `json:"status"`
 	LastProbeAt string  `json:"lastProbeAt"`
-	Error       string  `json:"error"`
+	Error       string  `json:"error,omitempty"`
 }
 type Snapshot struct {
 	Type            string          `json:"type"`

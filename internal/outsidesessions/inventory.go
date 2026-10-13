@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -32,6 +33,12 @@ func New(opts Options) *Inventory {
 		opts.Clock = realClock{}
 	}
 	return &Inventory{opts: opts, entries: map[string]entry{}, machines: map[string]MachineStatus{}, spool: map[string]bool{}, subs: map[chan Snapshot]bool{}}
+}
+func hostIDValue(id *string) string {
+	if id == nil {
+		return ""
+	}
+	return *id
 }
 func identity(m Machine, o Observation) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%s", m.Key, o.ClaudeID, o.PID, o.Lifetime)))
@@ -209,6 +216,14 @@ func (i *Inventory) Probe(ctx context.Context, m Machine) bool {
 				delete(i.entries, id)
 			}
 		}
+	}
+	if previous, known := i.machines[m.Key]; !known || previous.Status != status.Status {
+		// Only a change is logged: the probe repeats every few seconds.
+		level := slog.LevelInfo
+		if status.Status == "unreachable" {
+			level = slog.LevelWarn
+		}
+		slog.Log(ctx, level, "outside machine status changed", "machine", m.Name, "host_id", hostIDValue(m.HostID), "machine_status", status.Status)
 	}
 	i.machines[m.Key] = status
 	i.publishLocked()
