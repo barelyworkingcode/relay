@@ -3612,7 +3612,29 @@ window.__RELAY_INIT__ = {
   }
   function repaintAgents() {
     const box = document.getElementById("projAgents");
-    if (box && state.projectForm) box.innerHTML = renderAgentsBody(state.projectForm);
+    if (!box || !state.projectForm) return;
+    const active = document.activeElement;
+    const focusId = active && active.id && box.contains(active) ? active.id : "";
+    let selStart = null;
+    let selEnd = null;
+    if (focusId) {
+      try {
+        selStart = active.selectionStart;
+        selEnd = active.selectionEnd;
+      } catch (e) {
+      }
+    }
+    box.innerHTML = renderAgentsBody(state.projectForm);
+    if (!focusId) return;
+    const again = document.getElementById(focusId);
+    if (!again) return;
+    again.focus();
+    if (selStart !== null && selEnd !== null) {
+      try {
+        again.setSelectionRange(selStart, selEnd);
+      } catch (e) {
+      }
+    }
   }
   function agentModelChoices(kind) {
     if (kind === "claude") return AGENT_CLAUDE_MODELS.slice();

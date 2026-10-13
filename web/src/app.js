@@ -3372,7 +3372,28 @@ function requestProjectAgents(projectId) {
 
 function repaintAgents() {
     const box = document.getElementById('projAgents');
-    if (box && state.projectForm) box.innerHTML = renderAgentsBody(state.projectForm);
+    if (!box || !state.projectForm) return;
+    // A late list_project_agents or list_models answer repaints while the
+    // person is typing in the add form; the swap recreates the focused input,
+    // so remember it and put focus and caret back.
+    const active = document.activeElement;
+    const focusId = active && active.id && box.contains(active) ? active.id : '';
+    let selStart = null;
+    let selEnd = null;
+    if (focusId) {
+        try {
+            selStart = active.selectionStart;
+            selEnd = active.selectionEnd;
+        } catch (e) { /* input types without a selection */ }
+    }
+    box.innerHTML = renderAgentsBody(state.projectForm);
+    if (!focusId) return;
+    const again = document.getElementById(focusId);
+    if (!again) return;
+    again.focus();
+    if (selStart !== null && selEnd !== null) {
+        try { again.setSelectionRange(selStart, selEnd); } catch (e) { /* no selection */ }
+    }
 }
 
 // agentModelChoices lists the models a kind can name. A claude entry offers
