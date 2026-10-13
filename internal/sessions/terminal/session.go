@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
@@ -540,7 +541,24 @@ func (s *Session) setSize(cols, rows uint16) error {
 	s.cols = cols
 	s.rows = rows
 	s.mu.Unlock()
-	return pty.Setsize(f, &pty.Winsize{Rows: rows, Cols: cols})
+	return setWinsize(f, cols, rows)
+}
+
+// setWinsize goes through SyscallConn rather than pty.Setsize: Setsize calls
+// f.Fd(), which switches the fd to blocking mode underneath readLoop's
+// concurrent Read and races it.
+func setWinsize(f *os.File, cols, rows uint16) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var ioctlErr error
+	if err := rc.Control(func(fd uintptr) {
+		ioctlErr = unix.IoctlSetWinsize(int(fd), unix.TIOCSWINSZ, &unix.Winsize{Row: rows, Col: cols})
+	}); err != nil {
+		return err
+	}
+	return ioctlErr
 }
 
 // Size returns the current PTY dimensions.
