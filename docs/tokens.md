@@ -282,8 +282,8 @@ so entering it raises no presence prompt.
 - The agent list returns rows with a name, a kind, a model and a command, and
   never `args` or a system prompt. The preview writes nothing and raises no
   prompt: it checks the shape of a proposed entry and resolves its command.
-- Every `/api/projects/*` write is class `configure`, which the scope never
-  reaches, so the scope writes no agent entry and no chat template.
+- Every `/api/projects/*` write is class `configure`, `execute` or `grant`, none of
+  which the scope reaches, so the scope writes no agent entry and no chat template.
 
 ### The login credential
 

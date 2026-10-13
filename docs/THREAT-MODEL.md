@@ -71,11 +71,11 @@ outside it is not a relay bug, however real.
    `/api/chief-of-staff/config` routes are refused inside it.
    Agent output cannot add or change a launcher. The scope writes no agent
    entry and no chat template: every `/api/projects/*` write is class
-   `configure`, which the scope never reaches. An agent entry write needs
+   `configure`, `execute` or `grant`, none of which the scope reaches. An agent entry write needs
    `configure` and a presence prompt that names the project, the entry and
    the command, and every one leaves a `config_change` row. The chat-template
    add door needs `configure` and a prompt naming the project, the template
-   and its model. A frontend's own project-editor save of chat templates
+   and its model, and every add leaves a `config_change` row. A frontend's own project-editor save of chat templates
    (`PUT /api/projects/{id}`) needs class `configure` and no prompt, and the
    chief-of-staff scope cannot reach it, so the promise about agent output
    holds.

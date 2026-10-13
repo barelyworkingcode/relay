@@ -73,7 +73,6 @@ func cosAgentsSpec() Spec {
 	}
 }
 
-// putChats stores chat templates the way a frontend's project editor does.
 // cosTraced is the Chief of Staff scope plus a trace id.
 func cosTraced(tr string) harness.ReqOpts {
 	o := cosScope()
@@ -81,6 +80,7 @@ func cosTraced(tr string) harness.ReqOpts {
 	return o
 }
 
+// putChats stores chat templates the way a frontend's project editor does.
 func putChats(r *Run, templates ...map[string]any) {
 	r.T.Helper()
 	r.HTTP("ops", "PUT", "/api/projects/p_acme", map[string]any{"chat_templates": templates})

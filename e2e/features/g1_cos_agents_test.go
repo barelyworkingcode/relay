@@ -14,7 +14,7 @@ import (
 )
 
 var cosCreds = []harness.CredentialSpec{
-	{Name: "cos", Classes: []string{"proxy", "execute", "read"}},
+	{Name: "cos", Classes: []string{"proxy", "execute", "read", "configure"}},
 	{Name: "reader", Classes: []string{"read"}},
 	{Name: "configurer", Classes: []string{"configure"}},
 }
@@ -98,7 +98,7 @@ func cosKeys(m map[string]any) []string {
 	return ks
 }
 
-// cosProjectView reads a project through the configure-class read door.
+// cosProjectView reads a project through the read credential.
 func cosProjectView(t *testing.T, i *harness.Instance, pid string) map[string]json.RawMessage {
 	t.Helper()
 	resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/projects/"+pid, nil)

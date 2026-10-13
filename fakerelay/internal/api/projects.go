@@ -626,11 +626,6 @@ func chatTemplateShape(name, model string) *agentErr {
 
 func (a *api) addChatTemplate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	ev := a.Events.Begin(r.Context(), "chat_template.add").Set("project_id", id)
-	refuse := func(e *agentErr) {
-		ev.End("error", e.reason(), e)
-		e.write(w)
-	}
 	var in struct {
 		Name  string `json:"name"`
 		Model string `json:"model"`
@@ -646,8 +641,13 @@ func (a *api) addChatTemplate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		refuse(&agentErr{status: http.StatusBadRequest, code: "invalid_body", msg: chatTemplateBodyMsg})
+		(&agentErr{status: http.StatusBadRequest, code: "invalid_body", msg: chatTemplateBodyMsg}).write(w)
 		return
+	}
+	ev := a.Events.Begin(r.Context(), "chat_template.add").Set("project_id", id)
+	refuse := func(e *agentErr) {
+		ev.End("error", e.reason(), e)
+		e.write(w)
 	}
 	ev.Set("name", in.Name)
 	if e := chatTemplateShape(in.Name, in.Model); e != nil {

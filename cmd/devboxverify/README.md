@@ -816,8 +816,8 @@ or the audit is unreadable.
   the `session_message` and `session_launch` rows.
 - Lives in: `cmd/relay/session_chief_of_staff_start.go`,
   `cmd/relay/chief_of_staff_agents.go`, `cmd/relay/agent_list_ops.go`.
-- Reached by: the minted credential for the start; the run credential for the
-  entry and the delete; `/ws`; `relay audit --json`.
+- Reached by: the minted credential for the start and the session delete; the run
+  credential for the entry; `/ws`; `relay audit --json`.
 - Traps: a provider rate limit ends the turn as BLOCKED, as for cos-start. The
   entry name carries the run nonce, which is what the helper matches.
 
