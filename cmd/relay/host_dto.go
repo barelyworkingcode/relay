@@ -60,16 +60,17 @@ func invalidateHostStatusCache(id string) {
 // projectView there is no secret to strip -- a host record carries no
 // token, ssh authenticates with the operator's own identity.
 type hostView struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	Target       string            `json:"target"`
-	Port         int               `json:"port,omitempty"`
-	IdentityFile string            `json:"identity_file,omitempty"`
-	TmuxPath     string            `json:"tmux_path,omitempty"`
-	CreatedAt    string            `json:"created_at"`
-	Probe        *config.HostProbe `json:"probe,omitempty"`
-	Status       string            `json:"status"`
-	SSHArgv      []string          `json:"ssh_argv"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	Target              string            `json:"target"`
+	Port                int               `json:"port,omitempty"`
+	IdentityFile        string            `json:"identity_file,omitempty"`
+	TmuxPath            string            `json:"tmux_path,omitempty"`
+	ShowAllTmuxSessions bool              `json:"show_all_tmux_sessions"`
+	CreatedAt           string            `json:"created_at"`
+	Probe               *config.HostProbe `json:"probe,omitempty"`
+	Status              string            `json:"status"`
+	SSHArgv             []string          `json:"ssh_argv"`
 	// TerminalTemplates is always an array, never null, so a client can
 	// iterate it without a nil check.
 	TerminalTemplates []config.TerminalTemplate `json:"terminal_templates"`
@@ -102,16 +103,17 @@ func hostToView(h config.Host) hostView {
 		templates = []config.TerminalTemplate{}
 	}
 	return hostView{
-		ID:           h.ID,
-		Name:         h.Name,
-		Target:       h.Target,
-		Port:         h.Port,
-		IdentityFile: h.IdentityFile,
-		TmuxPath:     h.TmuxPath,
-		CreatedAt:    h.CreatedAt,
-		Probe:        h.Probe,
-		Status:       hostStatus(h),
-		SSHArgv:      sshhost.SSHArgv(h, controlDir),
+		ID:                  h.ID,
+		Name:                h.Name,
+		Target:              h.Target,
+		Port:                h.Port,
+		IdentityFile:        h.IdentityFile,
+		TmuxPath:            h.TmuxPath,
+		ShowAllTmuxSessions: h.ShowAllTmuxSessions,
+		CreatedAt:           h.CreatedAt,
+		Probe:               h.Probe,
+		Status:              hostStatus(h),
+		SSHArgv:             sshhost.SSHArgv(h, controlDir),
 
 		TerminalTemplates: templates,
 	}

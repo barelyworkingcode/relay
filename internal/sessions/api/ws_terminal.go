@@ -231,6 +231,8 @@ func (th *TerminalHandlers) join(c *Conn, sess *terminal.Session) {
 	c.Write(mustJSON(map[string]any{
 		"type":       events.WSMsgTerminalJoined,
 		"terminalId": tid,
+		"readOnly":   sess.ReadOnly,
+		"outside":    sess.Outside,
 		"templateId": sess.TemplateID,
 		"name":       sess.Name,
 		"directory":  sess.Directory,

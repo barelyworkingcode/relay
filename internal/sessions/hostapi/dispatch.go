@@ -79,6 +79,8 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 		return terminal.CreateSpec{}, err
 	}
 	spec := terminal.CreateSpec{
+		ReadOnly:    req.ReadOnly,
+		Outside:     req.Outside,
 		SessionID:   req.SessionID,
 		TemplateID:  req.TemplateID,
 		Name:        req.Name,
@@ -88,6 +90,9 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 		IdleTimeout: time.Duration(req.IdleTimeoutSec) * time.Second,
 		Host:        host,
 		Origin:      req.Origin,
+	}
+	if req.ViewTarget != nil {
+		spec.View = &terminal.ViewTarget{TmuxPath: req.ViewTarget.TmuxPath, SessionID: req.ViewTarget.SessionID}
 	}
 	if req.PTY != nil {
 		spec.Cols = uint16(req.PTY.Cols)

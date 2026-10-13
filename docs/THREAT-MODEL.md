@@ -90,6 +90,15 @@ outside it is not a relay bug, however real.
    already registered. The set of readable projects is fixed when the
    profile is written, and a project change ends the live sessions that hold
    one.
+3c. **A caller viewing an outside tmux session.** A credential holding read
+   can view a console
+   tmux session or an opted-in SSH host session through `POST /api/tmux/views`.
+   The opt-in defaults off and is checked against fresh settings. Exact
+   session inventory and tmux 3.2+ read-only/ignore-size flags constrain the
+   attach. The viewer cannot send input, resize, kill, resume or take control
+   of the outside session. Cleanup ends only the viewer client. The viewer
+   reads the window size to follow it and sets nothing on the owner's
+   session. Inventory and hooks confer no managed-session authority.
 4. **A peer on the network or in the browser** (a machine that can reach a
    relay listener, or a web page open on this Mac reaching relay's localhost
    ports). It gets nothing without a credential: no tool call, no config
