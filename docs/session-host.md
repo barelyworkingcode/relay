@@ -264,7 +264,8 @@ disk.
   it is a regular file, and refuses `entry_invalid` otherwise.
 - **Ledger and resume.** The ledger record gains `entry`. A resume re-reads the
   entry by name and sends its current launcher with the stored model; a
-  removed entry refuses the resume `entry_not_found`.
+  removed entry refuses the resume `entry_not_found`, and an entry whose kind
+  has changed refuses it `entry_invalid`.
 
 ### Read-only projects (`settings.readOnlyProjects`)
 

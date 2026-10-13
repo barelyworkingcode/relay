@@ -468,7 +468,8 @@ with no list is stored and behaves exactly as before.
   it in place of the kind's own binary
   ([`docs/session-host.md`](session-host.md#launcher-an-agent-entrys-program)).
   Resume re-reads the entry by name, so an edited command takes effect at the
-  next resume and a removed entry refuses it.
+  next resume and a removed entry refuses it `entry_not_found`, and an entry whose kind
+  has changed refuses it `entry_invalid`.
 - **Doors.** Simple: Settings > Projects > a project > Agents. Power:
   `relay project agents`, `relay session start --entry`, and
   `settings.json` `projects[].agents`. A hand-edited entry is validated again

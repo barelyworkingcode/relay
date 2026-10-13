@@ -1143,7 +1143,7 @@ func resolveLaunchEntry(req *LaunchRequest, proj *config.Project, fields *sessio
 	fields.Entry = capAuditText(req.Entry, maxRefusalNameRunes)
 	e, _, ok := project.FindAgentEntry(proj, req.Entry)
 	if !ok {
-		return nil, deniedRefusal(http.StatusNotFound, "entry_not_found", unknownEntryMessage(proj, req.Entry), nil, *fields)
+		return nil, deniedRefusal(http.StatusNotFound, "entry_not_found", unknownEntryMessage(proj, req.Entry), entryChoices(proj), *fields)
 	}
 	fields.Entry = e.Name
 	invalid := func(why string) *LaunchRefusal {
@@ -1171,6 +1171,14 @@ func resolveLaunchEntry(req *LaunchRequest, proj *config.Project, fields *sessio
 		}
 	}
 	return &e, nil
+}
+
+func entryChoices(proj *config.Project) []string {
+	names := project.AgentNames(proj)
+	if len(names) > maxRefusalChoices {
+		names = names[:maxRefusalChoices]
+	}
+	return names
 }
 
 func unknownEntryMessage(proj *config.Project, name string) string {

@@ -95,6 +95,9 @@ func Local(ctx context.Context, name string) (string, error) {
 		cmd.Env = append(cmd.Env, "SHELL=/bin/sh")
 	}
 	cmd.Stdin = nil // exec reads /dev/null
+	// The login shell is a grandchild that can hold the stdout pipe after sh
+	// is killed; without a bound, Run would wait past the timeout.
+	cmd.WaitDelay = 2 * time.Second
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -124,6 +127,9 @@ func OnHost(ctx context.Context, h config.Host, name string) (string, error) {
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdin = nil
+	// ssh's ControlPersist master can hold inherited pipes after the client
+	// exits; without a bound, Run would wait past the timeout.
+	cmd.WaitDelay = 2 * time.Second
 	var out, errOut bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
