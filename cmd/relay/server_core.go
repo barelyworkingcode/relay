@@ -692,6 +692,16 @@ func startServerCore(opts serverOptions) (*App, error) {
 	}
 	app.ipcCtx.ProjectOps = projectOps
 	router.projectOps = projectOps
+	agentListOps := &AgentListOps{
+		Store:    store,
+		Queue:    serviceQueue,
+		Gate:     presenceGate,
+		Issuance: issuanceAuditorOrNil(rec),
+		Lookup:   newAgentLookup(store),
+	}
+	app.ipcCtx.AgentListOps = agentListOps
+	router.agentListOps = agentListOps
+	sessionDeps.agentLists = agentListOps
 	// hostOps is the one core behind both the Hosts tab (via
 	// app.ipcCtx.HostOps) and RegisterHostRoutes on the frontend server
 	// (docs/ssh-hosts.md) — a host created from curl and one created from

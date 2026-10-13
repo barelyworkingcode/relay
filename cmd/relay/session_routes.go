@@ -186,6 +186,9 @@ type sessionRouteDeps struct {
 	// systemModel reports whether a model id is reserved for system use; nil
 	// means no check.
 	systemModel func(ctx context.Context, id string) (bool, error)
+
+	// agentLists is the agent-list core; nil registers no agent route.
+	agentLists *AgentListOps
 }
 
 // ready reports whether every field a route handler needs, other than the
@@ -250,6 +253,12 @@ func RegisterSessionRoutes(rr *control.RouteRegistrar, deps sessionRouteDeps) {
 	rr.Handle(classFor("GET", "/api/sessions"), "GET /api/sessions", deps.handleProxyList)
 	rr.Handle(control.ClassChiefOfStaff, "POST /api/chief-of-staff/messages", deps.handleChiefOfStaffMessage)
 	rr.Handle(control.ClassChiefOfStaff, "POST /api/chief-of-staff/sessions", deps.handleChiefOfStaffStart)
+	// Deliberate: the agent-list routes register here, not in
+	// registerFrontendRoutes, so they appear exactly when the session routes
+	// do: an entry is only useful where a session can start from it.
+	if deps.agentLists != nil {
+		RegisterAgentListRoutes(rr, deps.agentLists)
+	}
 }
 
 // maxSessionCreateBodyBytes bounds a create/resume request body -- generous

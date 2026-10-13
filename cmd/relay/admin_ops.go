@@ -87,6 +87,11 @@ var adminOps = map[string]adminOpEntry{
 	"project.token.reveal": {handle: adminProjectTokenReveal, caller: adminCallerOperator, gates: []string{"project.reveal_token"}},
 	"project.skill.regen":  {handle: adminProjectSkillRegen, caller: adminCallerOperator},
 
+	"project.agents.list":   {handle: adminProjectAgentsList, caller: adminCallerOperator},
+	"project.agents.add":    {handle: adminProjectAgentsAdd, caller: adminCallerOperator, gates: []string{"project.agent"}},
+	"project.agents.update": {handle: adminProjectAgentsUpdate, caller: adminCallerOperator, gates: []string{"project.agent"}},
+	"project.agents.remove": {handle: adminProjectAgentsRemove, caller: adminCallerOperator, gates: []string{"project.agent"}},
+
 	"mcp.authenticate":      {handle: adminMcpAuthenticate, caller: adminCallerOperator, gates: []string{"mcp.oauth.start"}},
 	"mcp.permissions.reset": {handle: adminMcpResetPermissions, caller: adminCallerOperator},
 	"mcp.scope_fields":      {handle: adminMcpScopeFields, caller: adminCallerOperator},
