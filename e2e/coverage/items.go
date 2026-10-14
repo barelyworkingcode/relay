@@ -13,7 +13,7 @@ var (
 	snakeRe        = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	eventKeyRe     = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$`)
 	gateRe         = regexp.MustCompile(`^[a-z][a-z0-9_.]*$`)
-	promiseIDRe    = regexp.MustCompile(`^TM(1|2|3|3a|3b|3c|4|5|T)\.[0-9]+$`)
+	promiseIDRe    = regexp.MustCompile(`^TM(1|2|3|3a|3b|3c|3d|4|5|T)\.[0-9]+$`)
 	pathRe         = regexp.MustCompile(`^\.(\.?[A-Za-z_][A-Za-z0-9_]*(\[\])?)*$`)
 	pendingRe      = regexp.MustCompile(`^pending:#([0-9]+)$`)
 	catKinds       = map[string]bool{"http": true, "ipc": true, "bridge": true, "cli": true}
