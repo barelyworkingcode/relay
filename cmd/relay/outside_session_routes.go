@@ -6,6 +6,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
 	"github.com/gorilla/websocket"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"time"
@@ -24,7 +25,11 @@ func handleOutsideTranscript(i *outsidesessions.Inventory) http.HandlerFunc {
 			writeChiefOfStaffError(w, http.StatusBadRequest, "invalid_request", "this request takes no body")
 			return
 		}
-		query := r.URL.Query()
+		query, perr := url.ParseQuery(r.URL.RawQuery)
+		if perr != nil {
+			writeChiefOfStaffError(w, http.StatusBadRequest, "invalid_request", "the query string is malformed")
+			return
+		}
 		for key, values := range query {
 			if (key != "before" && key != "limit") || len(values) != 1 {
 				writeChiefOfStaffError(w, http.StatusBadRequest, "invalid_request", "only one before and one limit are accepted")

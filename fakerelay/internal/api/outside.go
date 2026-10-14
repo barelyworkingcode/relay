@@ -6,6 +6,7 @@ import (
 	"github.com/barelyworkingcode/relay/fakerelay/internal/world"
 	"github.com/gorilla/websocket"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -26,7 +27,11 @@ func (a *api) outsideTranscript(w http.ResponseWriter, r *http.Request) {
 		cosError(w, 400, "invalid_request", "this request takes no body")
 		return
 	}
-	query := r.URL.Query()
+	query, perr := url.ParseQuery(r.URL.RawQuery)
+	if perr != nil {
+		cosError(w, 400, "invalid_request", "the query string is malformed")
+		return
+	}
 	for key, values := range query {
 		if (key != "before" && key != "limit") || len(values) != 1 {
 			cosError(w, 400, "invalid_request", "only one before and one limit are accepted")

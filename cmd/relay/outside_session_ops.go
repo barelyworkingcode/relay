@@ -284,8 +284,8 @@ func outsideReportTime(value string) (time.Time, bool) {
 func outsideRangeScript(path string, end, max int64) string {
 	return "p=" + outsideQuote(path) + "; e=" + strconv.FormatInt(end, 10) + "; m=" + strconv.FormatInt(max, 10) + `; ` +
 		`for d in "$p" "$(dirname "$p")" "$(dirname "$(dirname "$p")")" "$(dirname "$(dirname "$(dirname "$p")")")"; do [ ! -L "$d" ] || exit 1; done; ` +
-		`[ -e "$p" ] || { echo "0 0"; exit 0; }; [ -f "$p" ] || exit 1; ` +
-		`s=$(wc -c < "$p" | tr -d ' '); [ "$e" -ge 0 ] || e=$s; [ "$e" -le "$s" ] || exit 4; ` +
+		`[ -e "$p" ] || { [ "$e" -gt 0 ] && exit 4; echo "0 0"; exit 0; }; [ -f "$p" ] || exit 1; ` +
+		`s=$(wc -c < "$p") || exit 1; s=$(printf %s "$s" | tr -d ' '); case $s in ''|*[!0-9]*) exit 1;; esac; [ "$e" -ge 0 ] || e=$s; [ "$e" -le "$s" ] || exit 4; ` +
 		`st=$((e-m)); [ "$st" -gt 0 ] || st=0; echo "$s $st"; [ "$e" -gt "$st" ] || exit 0; tail -c +$((st+1)) "$p" | head -c $((e-st))`
 }
 

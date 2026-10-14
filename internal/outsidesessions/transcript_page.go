@@ -98,7 +98,6 @@ func ParseTranscriptPage(window []byte, start int64, limit int) TranscriptPage {
 		}
 		if entries := recordEntries(lines[k].offset, lines[k].data); len(entries) > 0 {
 			groups = append(groups, entries)
-			cursor = lines[k].offset
 		}
 	}
 	entries := []TranscriptEntry{}
