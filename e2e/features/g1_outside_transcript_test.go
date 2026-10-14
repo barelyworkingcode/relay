@@ -466,7 +466,7 @@ func TestOutsideTranscriptUnsafeOrMissingFile(t *testing.T) {
 		}
 		t.Cleanup(func() { os.Chmod(otFile(p), 0o600) })
 		if _, err := os.ReadFile(otFile(p)); err == nil {
-			t.Skip("file stays readable (running as a user that ignores modes)")
+			t.Fatal("transcript stays readable at mode 0: this test needs an account that honours file modes, not root")
 		}
 		unavailable(row, "")
 		unavailable(row, "before=100")
