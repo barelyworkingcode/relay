@@ -87,6 +87,10 @@ type Machine struct {
 	Probe   func(context.Context) (ProbeResult, error)
 	Reports func(context.Context) ([]Report, error)
 	Read    func(context.Context, Observation) ([]byte, error)
+	// ReadRange returns the file bytes [start, end) of the observation's
+	// transcript, at most max of them. end < 0 means the file's size. A missing
+	// file answers an empty window.
+	ReadRange func(ctx context.Context, o Observation, end, max int64) (window []byte, start int64, err error)
 }
 type Options struct {
 	Clock    Clock

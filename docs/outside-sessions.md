@@ -32,7 +32,7 @@ it expires; the viewer route (`POST /api/tmux/views`) repeats every check, so a 
 `viewable` opens nothing.
 Machine entries contain nullable `hostId`, `machine`, `status` (`reachable`,
 `unreachable` or `unsupported`), `lastProbeAt` and a safe `error` string. Raw PIDs, process
-arguments, environments and full transcripts never appear in responses.
+arguments and environments never appear in responses; only the execute-class transcript route returns transcript pages.
 
 Detail returns `{session,lastTurn:{text,at,complete},lastExcerpt}`. It checks
 the live identity again and reads the server-derived transcript at request
@@ -42,6 +42,39 @@ The excerpt is the last 500 characters of that same text. Partial output is
 available; missing latest text is empty, never a cached previous answer.
 Unknown or exited identities answer 404 `outside_session_not_found`; failed
 live observation or transcript reads answer 502 `outside_status_unavailable`.
+
+### Transcript page
+
+`GET /api/outside-sessions/{id}/transcript?before=<cursor>&limit=<n>` is class
+`execute` (socket only, held by the signed-in frontend) and is not reachable
+from the Chief of Staff scope, which reads only the latest turn. It takes no
+body and writes nothing. `{id}` is looked up in the live inventory map; the
+file is the path the last probe derived, so no request field names a path. An
+ended session leaves the map at the next probe (15 seconds) and answers 404.
+
+The window is bytes `[start, end)` of the file: `end` is `before`, or the
+size; `start` is `max(0, end - 262144)`. A first partial line is dropped when
+`start` is above zero. A page holds the newest `limit` records (default 50, at
+most 200) that yield entries; a record is never split. The same script runs on
+the console (`sh -c`) and on a host (the probe's ssh shell read). It refuses a
+symlink on the file or its three parent folders, prints `0 0` for a missing
+file, exits 4 when `end` is past the size (400 `invalid_cursor`), and prints
+`<size> <start>` then the window. Go refuses a longer body (502).
+
+One JSONL record maps to entries by block, `id` being
+`<record byte offset>.<block index>`:
+
+| Record | Entry |
+|---|---|
+| `user`, string content or a `text` block | `user` |
+| `user`, a `tool_result` block | `tool`: string content, or its `text` blocks joined by a newline, other blocks as `[type]`; `is_error` prefixes `Error: ` |
+| `assistant`, a `text` block | `assistant` |
+| `assistant`, a `tool_use` block | `tool`: `<name> <compact input JSON>` |
+| thinking blocks, `isSidechain`, `isMeta`, other record types, invalid JSON, blank text | skipped |
+
+Text over 8192 characters keeps its first 8191 and ends with `…`, so an entry is never longer than 8192. A window
+without a complete record answers `entries: []` with `cursor` at its start, so
+a caller steps past it. A missing file answers an empty page with a null cursor.
 
 ## Discovery and lifetime
 

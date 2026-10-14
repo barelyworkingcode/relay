@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // PresenceOps are the gated operations a world may script.
@@ -384,6 +385,17 @@ func ValidateOutside(rows []OutsideFixture) error {
 		}
 		if o.MachineStatus != "" && o.MachineStatus != "reachable" && o.MachineStatus != "unreachable" {
 			return bad(path+".machine_status", "invalid status")
+		}
+		if len(o.Transcript) > 5000 {
+			return bad(path+".transcript", "at most 5000 entries")
+		}
+		for j, t := range o.Transcript {
+			if t.Role != "user" && t.Role != "assistant" && t.Role != "tool" {
+				return bad(fmt.Sprintf("%s.transcript[%d].role", path, j), "invalid role")
+			}
+			if utf8.RuneCountInString(t.Text) > 8192 {
+				return bad(fmt.Sprintf("%s.transcript[%d].text", path, j), "at most 8192 characters")
+			}
 		}
 	}
 	return nil

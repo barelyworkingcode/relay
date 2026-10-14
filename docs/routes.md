@@ -2080,6 +2080,25 @@ is `404`; an unreadable machine is `502`.
 
 - **Listeners:** socket. **Credential:** `chief_of_staff`. **Gate:** none.
 
+### GET /api/outside-sessions/{id}/transcript
+
+One read-only page of an outside session's conversation, newest page first.
+Query `before` (an opaque cursor from the previous page) and `limit` (1 to 200,
+default 50). Takes no body and writes nothing. Answer 200
+`{entries:[{id,role,text,at}],cursor,hasMore}`: `role` is `user`, `assistant`
+or `tool`, entries run oldest first within a page, `text` is at most 8192
+characters, and `cursor` is `null` exactly when `hasMore` is false. relay reads
+at most 262144 bytes of the file per request, over the host shell for a host
+session. The `{id}` is only a key into the live inventory; no request field
+names a path. Errors `{error,message}`: `400` `invalid_request` (a body, an
+unknown or repeated query key), `invalid_limit`, `invalid_cursor` (malformed,
+or past the file's size); `404` `outside_session_not_found` (unknown or
+ended); `502` `outside_status_unavailable`. Records and paging rules:
+[outside sessions](outside-sessions.md).
+
+- **Listeners:** socket. **Credential:** `execute`; the Chief of Staff scope
+  answers `403`. **Gate:** none.
+
 ### GET /ws/outside-sessions
 
 A WebSocket that sends a snapshot on connect and on each change. A client data
