@@ -322,6 +322,15 @@ type OutsideFixture struct {
 	ViewReason    string      `json:"view_reason"`
 	LatestTurn    OutsideTurn `json:"latest_turn"`
 	MachineStatus string      `json:"machine_status,omitempty"`
+	// Transcript is the conversation the transcript route pages, oldest first.
+	Transcript []OutsideTranscriptEntry `json:"transcript"`
+}
+
+// OutsideTranscriptEntry is one conversation line of an outside fixture.
+type OutsideTranscriptEntry struct {
+	Role string `json:"role"`
+	Text string `json:"text"`
+	At   string `json:"at"`
 }
 type OutsideTurn struct {
 	Text     string `json:"text"`
