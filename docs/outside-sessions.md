@@ -72,7 +72,7 @@ One JSONL record maps to entries by block, `id` being
 | `assistant`, a `tool_use` block | `tool`: `<name> <compact input JSON>` |
 | thinking blocks, `isSidechain`, `isMeta`, other record types, invalid JSON, blank text | skipped |
 
-Text over 8192 characters keeps its first 8192 and ends with `…`. A window
+Text over 8192 characters keeps its first 8191 and ends with `…`, so an entry is never longer than 8192. A window
 without a complete record answers `entries: []` with `cursor` at its start, so
 a caller steps past it. A missing file answers an empty page with a null cursor.
 

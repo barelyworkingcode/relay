@@ -203,5 +203,5 @@ func capEntryText(s string) string {
 	if len(r) <= TranscriptEntryChars {
 		return s
 	}
-	return string(r[:TranscriptEntryChars]) + "…"
+	return string(r[:TranscriptEntryChars-1]) + "…"
 }
