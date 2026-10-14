@@ -291,6 +291,36 @@ func (i *Inventory) Detail(ctx context.Context, id string) (Detail, error) {
 	return Detail{Session: s, LastTurn: turn, LastExcerpt: tailCharacters(turn.Text, 500)}, nil
 }
 
+// Transcript serves one page of an outside session's transcript. The id is
+// only a key into the live inventory; the file is the path the last probe
+// derived, so no request field names a path. before 0 means the newest page.
+func (i *Inventory) Transcript(ctx context.Context, id string, before int64, limit int) (TranscriptPage, error) {
+	i.mu.Lock()
+	e, ok := i.entries[id]
+	unreachable := i.machines[e.machine.Key].Status == "unreachable"
+	i.mu.Unlock()
+	if !ok {
+		return TranscriptPage{}, ErrNotFound
+	}
+	if unreachable || e.machine.ReadRange == nil || e.observation.Transcript == "" {
+		return TranscriptPage{}, ErrUnavailable
+	}
+	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	end := int64(-1)
+	if before > 0 {
+		end = before
+	}
+	window, start, err := e.machine.ReadRange(bounded, e.observation, end, TranscriptPageBytes)
+	if errors.Is(err, ErrBadCursor) {
+		return TranscriptPage{}, ErrBadCursor
+	}
+	if err != nil || start < 0 || int64(len(window)) > TranscriptPageBytes {
+		return TranscriptPage{}, ErrUnavailable
+	}
+	return ParseTranscriptPage(window, start, limit), nil
+}
+
 func (i *Inventory) expireUnreachable() {
 	i.mu.Lock()
 	defer i.mu.Unlock()

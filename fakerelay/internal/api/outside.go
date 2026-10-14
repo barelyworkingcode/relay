@@ -6,11 +6,97 @@ import (
 	"github.com/barelyworkingcode/relay/fakerelay/internal/world"
 	"github.com/gorilla/websocket"
 	"net/http"
+	"net/url"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
+var (
+	outsideLimitPattern  = regexp.MustCompile(`^[1-9][0-9]{0,2}$`)
+	outsideCursorPattern = regexp.MustCompile(`^[1-9][0-9]{0,14}$`)
+)
+
+// outsideTranscript mirrors relay's transcript route: the same checks in the
+// same order, the same codes and the same 200 shape. It pages by entry, with
+// ids e<index> and the oldest returned index as cursor.
+func (a *api) outsideTranscript(w http.ResponseWriter, r *http.Request) {
+	if r.ContentLength != 0 || len(r.TransferEncoding) > 0 || r.Header.Get("Transfer-Encoding") != "" {
+		cosError(w, 400, "invalid_request", "this request takes no body")
+		return
+	}
+	query, perr := url.ParseQuery(r.URL.RawQuery)
+	if perr != nil {
+		cosError(w, 400, "invalid_request", "the query string is malformed")
+		return
+	}
+	for key, values := range query {
+		if (key != "before" && key != "limit") || len(values) != 1 {
+			cosError(w, 400, "invalid_request", "only one before and one limit are accepted")
+			return
+		}
+	}
+	limit := 50
+	if values, ok := query["limit"]; ok {
+		n, err := strconv.Atoi(values[0])
+		if !outsideLimitPattern.MatchString(values[0]) || err != nil || n > 200 {
+			cosError(w, 400, "invalid_limit", "limit must be 1 to 200")
+			return
+		}
+		limit = n
+	}
+	before := -1
+	if values, ok := query["before"]; ok {
+		n, err := strconv.ParseInt(values[0], 10, 64)
+		if !outsideCursorPattern.MatchString(values[0]) || err != nil {
+			cosError(w, 400, "invalid_cursor", "before is not a cursor")
+			return
+		}
+		before = int(n)
+	}
+	var found *world.OutsideFixture
+	a.State.Read(func(m *state.Model) {
+		for _, s := range m.OutsideSessions {
+			if s.ID == r.PathValue("id") {
+				copy := s
+				found = &copy
+				break
+			}
+		}
+	})
+	if found == nil {
+		cosError(w, 404, "outside_session_not_found", "outside session not found")
+		return
+	}
+	if found.MachineStatus == "unreachable" {
+		cosError(w, 502, "outside_status_unavailable", "outside transcript could not be read")
+		return
+	}
+	end := len(found.Transcript)
+	if before > end {
+		cosError(w, 400, "invalid_cursor", "before is past the end of the transcript")
+		return
+	}
+	if before > 0 {
+		end = before
+	}
+	first := end - limit
+	if first < 0 {
+		first = 0
+	}
+	entries := []map[string]any{}
+	for k := first; k < end; k++ {
+		t := found.Transcript[k]
+		entries = append(entries, map[string]any{"id": "e" + strconv.Itoa(k), "role": t.Role, "text": t.Text, "at": t.At})
+	}
+	var cursor any
+	if first > 0 {
+		cursor = strconv.Itoa(first)
+	}
+	ok(w, map[string]any{"entries": entries, "cursor": cursor, "hasMore": first > 0})
+}
 func outsideRow(s world.OutsideFixture) map[string]any {
 	return map[string]any{"id": s.ID, "name": s.Name, "projectId": s.ProjectID, "hostId": s.HostID, "machine": s.Machine, "directory": s.Directory, "branch": s.Branch, "state": s.State, "since": s.Since, "updatedAt": s.UpdatedAt, "source": s.Source, "outside": true, "readOnly": true, "tmuxSession": s.TmuxSession, "viewable": s.Viewable, "viewReason": s.ViewReason}
 }
@@ -116,6 +202,7 @@ func (a *api) outsideRoutes(r server.Registrar) {
 		}
 		ok(w, map[string]any{"session": outsideRow(*found), "lastTurn": turn, "lastExcerpt": string(excerpt)})
 	})
+	r.Route(server.ClassExecute, "GET /api/outside-sessions/{id}/transcript", a.outsideTranscript)
 	r.Route(server.ClassChiefOfStaff, "GET /ws/outside-sessions", a.outsideWS)
 	r.Control("PUT /v1/outside-sessions", func(w http.ResponseWriter, r *http.Request) {
 		var rows []world.OutsideFixture

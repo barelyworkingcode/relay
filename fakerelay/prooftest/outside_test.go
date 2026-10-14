@@ -1,6 +1,7 @@
 package prooftest
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -81,4 +82,63 @@ func TestOutsideFixtureValidationAndScope(t *testing.T) {
 		outsideScoped(in, t, "POST", path, J{"sessionName": "acme", "text": "input"}).is(t, http.StatusForbidden)
 	}
 	in.apiAs(t, roTok, "GET", outsideAPI, nil).is(t, 403)
+}
+
+// Regression: the fixture transcript route pages from the wrong end, repeats or drops an entry,
+// leaks past the scope or the read class, or accepts a transcript the contract bounds.
+func TestOutsideFixtureTranscriptPages(t *testing.T) {
+	row := outsideFixture("")
+	var entries []J
+	for n := 0; n < 120; n++ {
+		entries = append(entries, J{"role": []string{"user", "assistant", "tool"}[n%3], "text": fmt.Sprintf("acme %03d", n), "at": ""})
+	}
+	row["transcript"] = entries
+	in := outsideFake(t, []J{row}, nil)
+	path := "/api/outside-sessions/outside:acme/transcript"
+
+	var got []string
+	query, pages := "", 0
+	for {
+		page := in.api(t, "GET", path+query, nil).is(t, 200).obj(t)
+		pages++
+		es := page["entries"].([]any)
+		var texts []string
+		for _, e := range es {
+			texts = append(texts, e.(map[string]any)["text"].(string))
+		}
+		got = append(texts, got...)
+		if page["cursor"] == nil {
+			eq[any](t, page["hasMore"], false, "last page hasMore")
+			break
+		}
+		eq[any](t, page["hasMore"], true, "hasMore with a cursor")
+		query = "?before=" + page["cursor"].(string)
+		if pages > 5 {
+			t.Fatalf("still paging after %d pages", pages)
+		}
+	}
+	eq(t, pages, 3, "pages of 50 over 120 entries")
+	eq(t, len(got), 120, "entries over all pages")
+	for n, text := range got {
+		eq(t, text, fmt.Sprintf("acme %03d", n), "entry order")
+	}
+
+	row["machine_status"] = "unreachable"
+	in.ctl(t, "PUT", "/v1/outside-sessions", []J{row}).is(t, 200)
+	eq[any](t, in.api(t, "GET", path, nil).is(t, 502).obj(t)["error"], "outside_status_unavailable", "unreachable machine")
+	outsideScoped(in, t, "GET", path, nil).is(t, http.StatusForbidden)
+	for _, q := range []string{"?limit=%zz", "?before=5;x=1"} {
+		eq[any](t, in.api(t, "GET", path+q, nil).is(t, 400).obj(t)["error"], "invalid_request", "malformed query "+q)
+	}
+
+	for name, bad := range map[string]J{
+		"unknown role":  {"role": "system", "text": "x", "at": ""},
+		"text too long": {"role": "user", "text": strings.Repeat("界", 8193), "at": ""},
+	} {
+		r := outsideFixture("")
+		r["transcript"] = []J{bad}
+		if got := in.ctl(t, "PUT", "/v1/outside-sessions", []J{r}); got.Status != 400 {
+			t.Fatalf("%s: fixture replace answered %d, want 400: %s", name, got.Status, got.Body)
+		}
+	}
 }

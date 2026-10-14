@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/membership"
@@ -153,6 +154,25 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 		script := "p=" + p + `; for d in "$p" "$(dirname "$p")" "$(dirname "$(dirname "$p")")" "$(dirname "$(dirname "$(dirname "$p")")")"; do [ ! -L "$d" ] || exit 1; done; [ -f "$p" ] || exit 1; tail -c 1048576 "$p"`
 		return outsideRun(ctx, h, script)
 	}
+	m.ReadRange = func(ctx context.Context, o outsidesessions.Observation, end, max int64) ([]byte, int64, error) {
+		h, err := freshOutsideHost(store, h)
+		if err != nil {
+			return nil, 0, err
+		}
+		if o.Transcript == "" {
+			return nil, 0, outsidesessions.ErrUnavailable
+		}
+		// end and max reach the script as integers, never as request text.
+		out, err := outsideRun(ctx, h, outsideRangeScript(o.Transcript, end, max))
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 4 {
+			return nil, 0, outsidesessions.ErrBadCursor
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		return parseOutsideRange(out, end, max)
+	}
 	m.Reports = func(ctx context.Context) ([]outsidesessions.Report, error) {
 		h, err := freshOutsideHost(store, h)
 		if err != nil {
@@ -255,4 +275,42 @@ func outsideReportTime(value string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// outsideRangeScript prints "<size> <start>", a newline, then bytes
+// [start, end) of the file. It refuses a symlink on the file or its three
+// parent folders, answers "0 0" for a missing file and exits 4 when end is
+// past the size. It writes nothing.
+func outsideRangeScript(path string, end, max int64) string {
+	return "p=" + outsideQuote(path) + "; e=" + strconv.FormatInt(end, 10) + "; m=" + strconv.FormatInt(max, 10) + `; ` +
+		`for d in "$p" "$(dirname "$p")" "$(dirname "$(dirname "$p")")" "$(dirname "$(dirname "$(dirname "$p")")")"; do [ ! -L "$d" ] || exit 1; done; ` +
+		`[ -e "$p" ] || { [ "$e" -gt 0 ] && exit 4; echo "0 0"; exit 0; }; [ -f "$p" ] || exit 1; ` +
+		`s=$(wc -c < "$p") || exit 1; s=$(printf %s "$s" | tr -d ' '); case $s in ''|*[!0-9]*) exit 1;; esac; [ "$e" -ge 0 ] || e=$s; [ "$e" -le "$s" ] || exit 4; ` +
+		`st=$((e-m)); [ "$st" -gt 0 ] || st=0; echo "$s $st"; [ "$e" -gt "$st" ] || exit 0; tail -c +$((st+1)) "$p" | head -c $((e-st))`
+}
+
+// parseOutsideRange reads the script's header line and checks the body
+// against the window the request asked for.
+func parseOutsideRange(out []byte, end, max int64) ([]byte, int64, error) {
+	nl := bytes.IndexByte(out, '\n')
+	if nl < 0 {
+		return nil, 0, outsidesessions.ErrUnavailable
+	}
+	fields := strings.Fields(string(out[:nl]))
+	if len(fields) != 2 {
+		return nil, 0, outsidesessions.ErrUnavailable
+	}
+	size, e1 := strconv.ParseInt(fields[0], 10, 64)
+	start, e2 := strconv.ParseInt(fields[1], 10, 64)
+	body := out[nl+1:]
+	if e1 != nil || e2 != nil || size < 0 || start < 0 || start > size {
+		return nil, 0, outsidesessions.ErrUnavailable
+	}
+	if end < 0 {
+		end = size
+	}
+	if start > end || int64(len(body)) > end-start || int64(len(body)) > max {
+		return nil, 0, outsidesessions.ErrUnavailable
+	}
+	return body, start, nil
 }
