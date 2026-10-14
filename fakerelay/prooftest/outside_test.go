@@ -127,6 +127,9 @@ func TestOutsideFixtureTranscriptPages(t *testing.T) {
 	in.ctl(t, "PUT", "/v1/outside-sessions", []J{row}).is(t, 200)
 	eq[any](t, in.api(t, "GET", path, nil).is(t, 502).obj(t)["error"], "outside_status_unavailable", "unreachable machine")
 	outsideScoped(in, t, "GET", path, nil).is(t, http.StatusForbidden)
+	for _, q := range []string{"?limit=%zz", "?before=5;x=1"} {
+		eq[any](t, in.api(t, "GET", path+q, nil).is(t, 400).obj(t)["error"], "invalid_request", "malformed query "+q)
+	}
 
 	for name, bad := range map[string]J{
 		"unknown role":  {"role": "system", "text": "x", "at": ""},

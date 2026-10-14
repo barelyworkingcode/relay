@@ -431,3 +431,113 @@ func TestOutsideTranscriptTakesNoBodyWritesNothing(t *testing.T) {
 		}
 	}
 }
+
+// Regression: a skipped record on the first line makes a whole short file report older pages.
+func TestOutsideTranscriptSkippedFirstLineHasNoOlderPage(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false)
+	for _, first := range []string{
+		otRaw("summary", "", "acme summary", nil),
+		`{"type":"queue-operation","operation":"enqueue","content":"acme queued"}`,
+	} {
+		_, row := otSession(t, r, fmt.Sprintf("skipfirst%d", len(first)), first, osPrompt("acme one"), osAnswer("acme two"))
+		page := r.transcriptPage(row.ID, "")
+		if got, want := otTexts(page.Entries), []string{"acme one", "acme two"}; !slices.Equal(got, want) {
+			t.Fatalf("entries = %q, want %q", got, want)
+		}
+		if page.Cursor != nil || page.HasMore {
+			t.Fatalf("answered cursor %v hasMore %v after a skipped first line, want null and false", page.Cursor, page.HasMore)
+		}
+	}
+}
+
+// Regression: an unreadable, symlinked or missing transcript answers a wrong status or leaks the target.
+func TestOutsideTranscriptUnsafeOrMissingFile(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false)
+	unavailable := func(row osRow, query string) {
+		t.Helper()
+		otRefusal(t, r.transcriptGet(row.ID, query), 502, "outside_status_unavailable")
+	}
+	t.Run("unreadable", func(t *testing.T) {
+		p, row := otSession(t, r, "unreadable", otConversation(10, "")...)
+		if err := os.Chmod(otFile(p), 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(otFile(p), 0o600) })
+		if _, err := os.ReadFile(otFile(p)); err == nil {
+			t.Skip("file stays readable (running as a user that ignores modes)")
+		}
+		unavailable(row, "")
+		unavailable(row, "before=100")
+	})
+	t.Run("symlinked file", func(t *testing.T) {
+		p, row := otSession(t, r, "linkfile", otConversation(10, "")...)
+		target := filepath.Join(t.TempDir(), "elsewhere.jsonl")
+		osWrite(t, target, []byte(osPrompt("acme secret")+"\n"))
+		if err := os.Remove(otFile(p)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, otFile(p)); err != nil {
+			t.Fatal(err)
+		}
+		unavailable(row, "")
+	})
+	t.Run("symlinked folder", func(t *testing.T) {
+		p, row := otSession(t, r, "linkdir", otConversation(10, "")...)
+		moved := filepath.Join(t.TempDir(), "moved")
+		if err := os.Rename(filepath.Dir(otFile(p)), moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(moved, filepath.Dir(otFile(p))); err != nil {
+			t.Fatal(err)
+		}
+		unavailable(row, "")
+	})
+	t.Run("not written yet", func(t *testing.T) {
+		p, row := otSession(t, r, "missing", osPrompt("acme one"))
+		if err := os.Remove(otFile(p)); err != nil {
+			t.Fatal(err)
+		}
+		page := r.transcriptPage(row.ID, "")
+		if len(page.Entries) != 0 || page.Cursor != nil || page.HasMore {
+			t.Fatalf("missing file answered %+v, want no entries, null cursor, hasMore false", page)
+		}
+		otRefusal(t, r.transcriptGet(row.ID, "before=10"), 400, "invalid_cursor")
+	})
+}
+
+// Regression: a window holding no complete record ends the walk or drops the older records.
+func TestOutsideTranscriptOversizedNewestRecord(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false)
+	lines := append(otConversation(6, ""), osAnswer(strings.Repeat("y", 300000)))
+	_, row := otSession(t, r, "oversized", lines...)
+	page := r.transcriptPage(row.ID, "")
+	if len(page.Entries) != 0 || page.Cursor == nil || !page.HasMore {
+		t.Fatalf("page = %d entries cursor %v hasMore %v, want none, a cursor and hasMore true", len(page.Entries), page.Cursor, page.HasMore)
+	}
+	var got []string
+	for pages := 0; page.Cursor != nil; pages++ {
+		if pages > 10 {
+			t.Fatalf("still paging after %d pages", pages)
+		}
+		page = r.transcriptPage(row.ID, "before="+*page.Cursor)
+		got = append(otTexts(page.Entries), got...)
+	}
+	for k := 0; k < 6; k++ {
+		if !slices.Contains(got, fmt.Sprintf("acme %04d ", k)) {
+			t.Fatalf("following the cursor never reached record %d: %q", k, got)
+		}
+	}
+}
+
+// Regression: a malformed query string reaches the handler as a valid request.
+func TestOutsideTranscriptMalformedQueryIsInvalidRequest(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false)
+	_, row := otSession(t, r, "badquery", otConversation(4, "")...)
+	for _, q := range []string{"limit=%zz", "before=5;x=1"} {
+		otRefusal(t, r.transcriptGet(row.ID, q), 400, "invalid_request")
+	}
+}
