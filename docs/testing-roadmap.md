@@ -109,3 +109,5 @@ Tracked but unbuilt: byte-equality goldens for the bridge wire format and a
 goroutine-leak check. None exist today; add if a drift or leak incident
 warrants it.
 
+<!-- rehearsal 2 main move -->
+
