@@ -11,6 +11,9 @@ on:
   # and passes with no state carried from any PR. Scheduled runs use the default branch.
   schedule:
     - cron: '17 10 * * *'
+  # A manual run on any ref: an epic's close step dispatches this on the epic head so every job
+  # runs before the epic merges, as eve's does.
+  workflow_dispatch:
 
 permissions:
   contents: read
