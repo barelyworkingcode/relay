@@ -123,18 +123,18 @@ that here the HTTP door is *eve's*, so it carries status/consume rather than
 open. Opening is deliberately reachable only from a surface with a human at
 it.
 
-- **Tray menu** — `Allow Eve Passkey Enrolment…` beneath `Show Login Code...`.
+- **Tray menu** — `Allow Home|Work Passkey Enrolment…` beneath `Show Login Code...`.
   Runs `Open` in a tracked goroutine (never on the Cocoa main thread — see
-  `showLoginCode`'s comment) and posts a notification: *Eve passkey enrolment
+  `showLoginCode`'s comment) and posts a notification: *Home|Work passkey enrolment
   open for 5 minutes*. While the window is open, the menu shows a disabled
-  line `Eve enrolment open — 4m 12s left`, refreshed by the existing 2-second
+  line `Home|Work enrolment open — 4m 12s left`, refreshed by the existing 2-second
   poll; it disappears when the slot is consumed or expires.
 - **CLI** — `relay eve enrol`, brokered over `admin_op` (`eve.enrolment.open`)
   like `relay login enrol`, because this process holds no gate. Prints the
   expiry and one line saying what to do next:
   ```
-  eve passkey enrolment open until 10:15:00 (5m0s, single use)
-    on the new browser, open Eve, and tap "Add this browser"
+  Home|Work passkey enrolment open until 10:15:00 (5m0s, single use)
+    on the new browser, open Home|Work, and tap "Add this browser"
   ```
 - **HTTP (frontend socket, for eve)**
 
@@ -149,7 +149,7 @@ it.
   says otherwise, and they reserve their paths ahead of the manifest
   dispatcher like every other relay-served route.
 
-On consume, relay posts a notification — *Eve: a new browser registered a
+On consume, relay posts a notification — *Home|Work: a new browser registered a
 passkey (from 10.0.1.7)* — so the operator sees the slot go, whether or not
 it was them.
 
@@ -218,8 +218,8 @@ buttons when the window is open: *Enrolment is open for a few minutes.*
 
 ## Operator flow
 
-1. Open Eve on the new device. It shows *Sign In* (no passkey here yet).
-2. At the console: tray → **Allow Eve Passkey Enrolment…**, answer the
+1. Open Home|Work on the new device. It shows *Sign In* (no passkey here yet).
+2. At the console: tray → **Allow Home|Work Passkey Enrolment…**, answer the
    presence prompt. (Or `relay eve enrol` over SSH — refused, like every
    gated op, when no prompt can be shown.)
 3. Within three seconds the device shows **Add this browser**. Tap it, do
@@ -348,13 +348,20 @@ Presence prompt reason for `eve.passkey.revoke`: `revoke the Eve passkey %s`
 where `%s` is the abbreviated credential id (`abbreviatePasskeyID`). Add it
 to `docs/presence-gate.md` and the prompt table in `docs/cli.md`.
 
-Refusal text for the last credential: `the last Eve passkey cannot be revoked
-from relay; enrol another browser first, or delete eve's auth.json on the
+Refusal text for the last credential: `the last Home|Work passkey cannot be revoked
+from relay; enrol another browser first, or delete Home|Work's auth.json on the
 console to start over`.
 
 ### Doors
 
-- **Passkeys tab** — a second section, *Eve passkeys*, under relay's own:
+- **Passkeys tab** — a second section, *Home|Work sign-in*, under relay's own
+  *Relay sign-in*. Its intro is one sentence: the browsers that can sign in
+  to Home|Work, whose passkeys Home|Work owns and reports to relay. The
+  rest of the detail is here: revoking a row does not
+  touch Home|Work directly; Home|Work applies the revocation on its own next
+  poll, or at once if that browser tries to sign in, and signs out every
+  session it minted. A Home|Work that has reported nothing shows *Home|Work
+  has not reported any passkeys yet.* Each row has
   label, short id, created, last used, and a *Revoke* button per row. A row
   with a pending revocation shows *revocation pending* in place of the
   button until eve's next report removes it. First paint carries the list
@@ -379,7 +386,7 @@ console to start over`.
   `eve_passkey_revocations` to a connection whose caller holds `read`
   (decision 10; frame in [`routes.md`](routes.md)).
 
-Relay notifies the console on `Revoke` — *Eve passkey revoked: it stops
+Relay notifies the console on `Revoke` — *Home|Work passkey revoked: it stops
 working on its next use* — and again when a report confirms it is gone.
 
 ## Eve: applying revocations
@@ -425,7 +432,7 @@ verify as today and mint the session with its `credentialId`.
 
 ## Operator flow
 
-1. Settings → Passkeys → *Eve passkeys*, or `relay eve list`. Every browser
+1. Settings → Passkeys → *Home|Work sign-in*, or `relay eve list`. Every browser
    that can sign in to eve, with when it last did.
 2. *Revoke* on a row, answer the presence prompt. The row says *revocation
    pending*.

@@ -1401,7 +1401,7 @@ Needs service: yes. Prompts: yes. Works over SSH: no.
 browser session it already minted are separate objects with separate
 lifetimes — a browser that logged in earlier keeps working, up to twelve
 hours, until its own control-plane credential expires or is revoked with
-`relay credential revoke` (or Settings → Passkeys → Signed-in Browsers →
+`relay credential revoke` (or Settings → Passkeys → Signed-in browsers →
 Sign out).
 
 No JSON form. Output starts `revoked passkey "NAME"` and `  id: SHORT-ID`, then
@@ -1455,10 +1455,10 @@ unknown flag.
 
 ## `relay eve`
 
-Host-side anchor for a second browser to register an eve passkey
+Host-side anchor for a second browser to register a Home|Work passkey
 ([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md)). Eve's first
 visitor enrols directly; every later browser needs an operator to open a
-five-minute, single-use window first — from the tray's **Allow Eve Passkey
+five-minute, single-use window first — from the tray's **Allow Home|Work Passkey
 Enrolment…** item or this command.
 
 ```
@@ -1476,18 +1476,18 @@ real password prompt:
 
 ```
 $ relay eve enrol
-eve passkey enrolment open until 10:15:00 (5m0s, single use)
-  on the new browser, open Eve, and tap "Add this browser"
+Home|Work passkey enrolment open until 10:15:00 (5m0s, single use)
+  on the new browser, open Home|Work, and tap "Add this browser"
 ```
 
-The tray's own **Allow Eve Passkey Enrolment…** menu item reaches the
+The tray's own **Allow Home|Work Passkey Enrolment…** menu item reaches the
 identical gated core method — this command is not a weaker second door, it
 is the same door, useful over a terminal in the desktop session when no one
 is at the keyboard to click the tray. Relay notifies the console when the
 window opens and again when it is consumed, naming the source address that
 took it.
 
-No JSON form. A script reads the first line, `eve passkey enrolment open until
+No JSON form. A script reads the first line, `Home|Work passkey enrolment open until
 HH:MM:SS (5m0s, single use)`. Exit codes: `0` opened; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag.
 
 ### `eve list`
@@ -1505,7 +1505,7 @@ Mozilla/5.0 (iPhone...)  xNtuo_H_0XSA…  2026-09-07T10:12:31Z  2026-09-07T18:02
 Needs service: yes (`eve.list`). Prompts: no. Works over SSH: yes.
 
 No JSON form. Columns: `LABEL  CREDENTIAL ID  CREATED  LAST USED  STATUS`. With
-none it prints `no eve passkeys reported`. Exit codes: `0`; `1` when relay is not
+none it prints `no Home|Work passkeys reported`. Exit codes: `0`; `1` when relay is not
 running.
 
 ### `eve revoke`
@@ -1514,7 +1514,7 @@ running.
 $ relay eve revoke -h
 Usage of eve revoke:
   -id string
-    	credential id of the eve passkey to revoke (required)
+    	credential id of the Home|Work passkey to revoke (required)
 ```
 
 Needs service: yes. Prompts: yes. Works over SSH: no. Relay records the
@@ -1522,7 +1522,7 @@ revocation as pending and never touches eve directly -- eve applies it on
 its own next 30-second poll, or immediately if that browser tries to sign in
 first, and signs out every session that passkey minted.
 
-No JSON form. Output starts `eve passkey SHORT-ID: revocation pending`. Exit
+No JSON form. Output starts `Home|Work passkey SHORT-ID: revocation pending`. Exit
 codes: `0` recorded; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing `--id` is `1`.
 
 ## `relay project`
