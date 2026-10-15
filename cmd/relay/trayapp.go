@@ -587,7 +587,7 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 		menuItem{Title: "-", ID: 0},
 		menuItem{Title: "Settings...", ID: menuIDSettings, Enabled: true, Key: ","},
 		menuItem{Title: "Show Login Code...", ID: menuIDLoginCode, Enabled: true},
-		menuItem{Title: "Allow Eve Passkey Enrolment…", ID: menuIDEveEnrolment, Enabled: true},
+		menuItem{Title: "Allow Home|Work Passkey Enrolment…", ID: menuIDEveEnrolment, Enabled: true},
 	)
 
 	// The disabled countdown line (docs/eve-passkey-enrolment.md): shown
@@ -599,7 +599,7 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 	// risk a second, later Get() disagreeing with it under a concurrent
 	// Open/Consume.
 	if remaining, open := eveEnrolmentRemaining(s.EveEnrolment, clockNow(a.clock)); open {
-		items = append(items, menuItem{Title: "Eve enrolment open — " + remaining, ID: 0})
+		items = append(items, menuItem{Title: "Home|Work enrolment open — " + remaining, ID: 0})
 	}
 
 	items = append(items,

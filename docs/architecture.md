@@ -1054,6 +1054,27 @@ to a credential it already issued; a tab showing only the first would let
 the delete, so the WebView can never revoke an operator's own long-lived
 credential — that stays `relay credential revoke`.
 
+The tab is three titled lists, so a person can tell which sign-in each one
+governs: **Relay sign-in** (the passkeys above), **Home|Work sign-in** (the
+mirror of Home|Work's own passkeys, `docs/eve-passkey-enrolment.md`
+decisions 7-13) and **Signed-in browsers** (the sessions). Each section opens
+with one sentence; the rest is here. A passkey is
+how a browser signs in to relay: there is no password, `/relay/login` accepts
+a passkey assertion and nothing else, and registering one is a host-side act
+that needs a single-use code minted on this machine, so a page in a browser
+cannot register itself — it can only be minted by something already running
+as the operator, never by a page that reached the port. The empty state for
+relay's own list says *No relay passkeys yet.* and names the two ways to add
+one, the tray's **Show Login Code...** item and `relay login enrol`. Each
+login mints its own short-lived control-plane credential, held in the
+browser's memory and nowhere else (not `localStorage`, not a cookie), so a
+reload runs the ceremony again; it reaches `read` and `configure` only, with
+no project-token rotation, terminal or session. A session disappears when it
+expires, twelve hours at most. Signing one out revokes that one credential and
+touches no other browser. The same records are in `relay credential list`,
+and `relay credential revoke --id ID` ends one from a terminal; the tab's
+button refuses anything that is not a login session.
+
 The tray's **Show Login Code...** item is the second presentation ADR-016
 decision 2 allows for the bootstrap anchor. It mints through the same gated
 core method `relay login enrol` uses (`LoginOps.MintBootstrap`, ADR-017

@@ -24,7 +24,7 @@ const eveEnrolmentTTL = 5 * time.Minute
 // either way (docs/eve-passkey-enrolment.md), and the console learns which
 // one happened from the notification and `relay audit`, not from this
 // error.
-var errEveEnrolmentClosed = errors.New("eve passkey enrolment is not open")
+var errEveEnrolmentClosed = errors.New("Home|Work passkey enrolment is not open")
 
 // eveEnrolmentOpen reports whether w is a live window: a record exists and
 // its expiry both parses and has not passed. An Expires relay cannot parse
@@ -108,7 +108,7 @@ func (o *EveEnrolmentOps) auditor() IssuanceAuditor {
 	return issuanceAuditorOrNil(o.Audit)
 }
 
-var errEveEnrolmentOpsUnavailable = errors.New("eve enrolment management is unavailable in this relay process")
+var errEveEnrolmentOpsUnavailable = errors.New("Home|Work enrolment management is unavailable in this relay process")
 
 func (o *EveEnrolmentOps) notifyConsole(title, body string) {
 	if o != nil && o.Notify != nil {
@@ -150,13 +150,13 @@ func (o *EveEnrolmentOps) Open(ctx context.Context, via string) (_ eveEnrolmentS
 			return fmt.Errorf("save settings: %w", err)
 		}
 		if err := recordEveEnrolmentIssued(o.auditor(), expires, via, grant.ID()); err != nil {
-			return fmt.Errorf("an eve passkey enrolment window was opened but could not be recorded in the audit log, so it was not shown: %w", err)
+			return fmt.Errorf("a Home|Work passkey enrolment window was opened but could not be recorded in the audit log, so it was not shown: %w", err)
 		}
 		return nil
 	}); err != nil {
 		return eveEnrolmentStatusView{}, err
 	}
-	o.notifyConsole("Relay", "Eve passkey enrolment open for 5 minutes")
+	o.notifyConsole("Relay", "Home|Work passkey enrolment open for 5 minutes")
 	return eveEnrolmentStatusView{Open: true, Expires: expires}, nil
 }
 
@@ -214,7 +214,7 @@ func (o *EveEnrolmentOps) Consume(ctx context.Context, claim eveEnrolmentClaim) 
 	}); err != nil {
 		return eveEnrolmentConsumedView{}, err
 	}
-	o.notifyConsole("Relay", fmt.Sprintf("Eve: a new browser registered a passkey (from %s)", claim.IP))
+	o.notifyConsole("Relay", fmt.Sprintf("Home|Work: a new browser registered a passkey (from %s)", claim.IP))
 	return eveEnrolmentConsumedView{Expires: expires}, nil
 }
 

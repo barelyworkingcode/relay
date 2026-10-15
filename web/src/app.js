@@ -522,7 +522,7 @@ function renderOverviewTiles() {
         { label: 'Hosts', value: hosts.connected + ' connected · ' + hosts.unreachable + ' unreachable', cls: '', tab: 'hosts' },
         { label: 'Remote listener', value: remoteTileValue(), cls: '', tab: 'remote' },
         { label: 'Audit', value: audit.text, cls: audit.cls, tab: 'audit' },
-        { label: 'Passkeys', value: pluralize(passkeysCount, 'passkey') + ' · ' + sessionsCount + ' browser' + (sessionsCount === 1 ? '' : 's') + ' signed in' + ' · ' + pluralize(evePasskeysCount, 'eve passkey'), cls: '', tab: 'passkeys' },
+        { label: 'Passkeys', value: pluralize(passkeysCount, 'passkey') + ' · ' + sessionsCount + ' browser' + (sessionsCount === 1 ? '' : 's') + ' signed in' + ' · ' + pluralize(evePasskeysCount, 'Home|Work passkey'), cls: '', tab: 'passkeys' },
     ];
 
     let html = '<div class="ov-grid">';
@@ -2158,7 +2158,7 @@ function renderChiefOfStaff() {
     const storedId = stored ? stored.projectId : '';
     let html = '<div class="proj-defaults" id="cosPanel">';
     html += '<div class="proj-section-title">Chief of Staff</div>';
-    html += '<p class="proj-section-help">Where eve\'s Chief of Staff runs. This overrides eve\'s settings file.</p>';
+    html += '<p class="proj-section-help">Where Home|Work\'s Chief of Staff runs. This overrides Home|Work\'s settings file.</p>';
     html += '<div class="cos-row">';
     html += '<label for="cosProject">Project</label>';
     html += '<select id="cosProject" aria-label="Chief of Staff project" onchange="setChiefOfStaffProject(this.value)">';
@@ -2397,7 +2397,7 @@ function removeProject(id, name) {
 }
 
 function rotateProjectToken(id, name) {
-    if (!confirm('Rotate the bearer token for "' + name + '"?\n\nAny active Eve / relayLLM / CLI session using the old token will get auth errors and must re-authenticate.\n\nThe new token will be shown ONCE — copy it before navigating away.')) return;
+    if (!confirm('Rotate the bearer token for "' + name + '"?\n\nAny active Home|Work / relayLLM / CLI session using the old token will get auth errors and must re-authenticate.\n\nThe new token will be shown ONCE — copy it before navigating away.')) return;
     state.rotatingProjectId = id;
     ipc(JSON.stringify({ type: 'rotate_project_token', id }));
 }
@@ -3983,7 +3983,7 @@ function renderProjectForm() {
     html += '<div class="proj-section-title">Chat Templates</div>';
     html += '<p class="proj-section-help">' + (isRemote
         ? 'An access profile has no chat sessions, so relay refuses chat templates on one. These are stored from before that rule; <strong>saving this profile removes them.</strong>'
-        : 'Project-scoped chat presets stored with the project. Create and edit them in Eve\'s project dialog, which offers live model selection.') + '</p>';
+        : 'Project-scoped chat presets stored with the project. Create and edit them in Home|Work\'s project dialog, which offers live model selection.') + '</p>';
     if (f.chat_templates.length === 0) {
         html += '<div class="proj-tool-empty">No templates yet.</div>';
     }
@@ -4062,7 +4062,7 @@ function renderProjectForm() {
         const display = visible ? f.token : (f.token ? '•'.repeat(Math.min(40, f.token.length)) : '');
         html += '<div class="proj-section">';
         html += '<div class="proj-section-title">Bearer Token</div>';
-        html += '<p class="proj-section-help">Project-scoped token presented by Eve, relayLLM, and <code>relay mcp --token</code>. Tokens are inline; rotating invalidates the prior token immediately.</p>';
+        html += '<p class="proj-section-help">Project-scoped token presented by Home|Work, relayLLM, and <code>relay mcp --token</code>. Tokens are inline; rotating invalidates the prior token immediately.</p>';
         html += '<div class="proj-token-field">';
         html += '<input type="text" readonly value="' + esc(display) + '" />';
         html += '<button class="btn btn-sm" ' + bind(toggleProjectTokenVisible, f.id) + '>' + (visible ? 'Hide' : 'Show') + '</button>';
@@ -6091,7 +6091,7 @@ function renderLoginCodeBanner(c) {
 function renderPasskeys() {
     let html = '<div class="page-header"><h2>Passkeys</h2>';
     html += '<button class="btn" onclick="refreshPasskeys()">Refresh</button></div>';
-    html += '<p class="page-intro">A passkey is how you sign in to relay from a browser. There is no password: the login page at <code>/relay/login</code> accepts a passkey assertion and nothing else. Registering one is a host-side act — it needs a single-use code minted on this machine, so a page in your browser cannot register itself.</p>';
+    html += '<p class="page-intro">Three lists: the passkeys that sign a browser in to relay, the ones that sign it in to Home|Work, and the browsers signed in now.</p>';
 
     if (state.loginCode) html += renderLoginCodeBanner(state.loginCode);
     if (state.passkeyError) html += '<div class="proj-error">' + esc(state.passkeyError) + '</div>';
@@ -6102,11 +6102,13 @@ function renderPasskeys() {
         html += '<div class="audit-note">Signed out <strong>' + esc(state.loginSignedOut) + '</strong>. Its token stops authenticating on the next request; that browser must run the ceremony again.</div>';
     }
 
+    html += '<div class="proj-section" style="margin-top:24px">';
+    html += '<div class="proj-section-title">Relay sign-in</div>';
+    html += '<p class="proj-section-help">Passkeys that sign a browser in to relay at <code>/relay/login</code>; there is no password.</p>';
     const list = state.passkeys || [];
     if (!list.length) {
-        html += '<div class="empty-state">No passkeys are registered, so nothing can sign in to relay from a browser yet.<br><br>'
-            + 'To register one, choose <strong>' + esc(LOGIN_CODE_MENU_ITEM) + '</strong> in the Relay tray menu, or run <code>relay login enrol</code> in a terminal. Either mints a single-use code that lasts two minutes; open the login page, enter it, and your authenticator registers a passkey.<br><br>'
-            + 'The code exists so registration cannot be self-service: it can only be minted by something already running as you on this machine, never by a page that reached the port.</div>';
+        html += '<div class="empty-state">No relay passkeys yet.<br>'
+            + 'To add one, choose <strong>' + esc(LOGIN_CODE_MENU_ITEM) + '</strong> in the Relay tray menu or run <code>relay login enrol</code>.</div>';
     }
     for (const p of list) {
         html += '<div class="pk-card">';
@@ -6119,6 +6121,7 @@ function renderPasskeys() {
         html += '<div class="pk-meta"><span>Registered: <strong>' + esc(p.created || '—') + '</strong></span></div>';
         html += '</div>';
     }
+    html += '</div>';
 
     html += renderEvePasskeys();
     html += renderLoginSessions();
@@ -6133,11 +6136,11 @@ function renderPasskeys() {
 function renderEvePasskeys() {
     const list = state.evePasskeys || [];
     let html = '<div class="proj-section" style="margin-top:24px">';
-    html += '<div class="proj-section-title">Eve passkeys</div>';
-    html += '<p class="proj-section-help">Browsers that can sign in to Eve. Eve owns these credentials and reports this list to relay; revoking one here does not touch Eve directly — Eve applies it on its own next poll, or immediately if that browser tries to sign in, and signs out every session it minted.</p>';
+    html += '<div class="proj-section-title">Home|Work sign-in</div>';
+    html += '<p class="proj-section-help">Browsers that can sign in to Home|Work; Home|Work owns these passkeys and reports the list here.</p>';
 
     if (!list.length) {
-        html += '<div class="empty-state">Eve has not reported any passkeys yet.</div>';
+        html += '<div class="empty-state">Home|Work has not reported any passkeys yet.</div>';
         html += '</div>';
         return html;
     }
@@ -6166,11 +6169,11 @@ function renderEvePasskeys() {
 function renderLoginSessions() {
     const sessions = state.loginSessions || [];
     let html = '<div class="proj-section" style="margin-top:24px">';
-    html += '<div class="proj-section-title">Signed-in Browsers</div>';
-    html += '<p class="proj-section-help">Each completed login mints its own short-lived control-plane credential, held in the browser\'s memory and nowhere else — not <code>localStorage</code>, not a cookie — so a reload runs the ceremony again. It reaches <code>read</code> and <code>configure</code> and nothing else: no project-token rotation, no terminal, no session. Signing out revokes that one credential; every other browser and every credential relay injects into a service is untouched.</p>';
+    html += '<div class="proj-section-title">Signed-in browsers</div>';
+    html += '<p class="proj-section-help">Browsers that completed a relay login; signing one out ends only that browser.</p>';
 
     if (!sessions.length) {
-        html += '<div class="empty-state">No browser is signed in. A session appears here the moment one completes the ceremony at the login page, and disappears when it expires — twelve hours at most.</div>';
+        html += '<div class="empty-state">No browser is signed in to relay right now.</div>';
         html += '</div>';
         return html;
     }
@@ -6186,7 +6189,7 @@ function renderLoginSessions() {
     // Named so the CLI is not a hidden second path: the same records are in
     // `relay credential list`, and this tab is the door onto them that is
     // where the person at the machine already is.
-    html += '<p class="proj-section-help">These are ordinary control-plane credentials, so <code>relay credential list</code> shows them too and <code>relay credential revoke --id ID</code> ends one from a terminal. This button refuses anything that is not a login session — a credential you minted for a script is not sign-out-able from a browser view.</p>';
+    html += '<p class="proj-section-help">The same records show in <code>relay credential list</code>.</p>';
     html += '</div>';
     return html;
 }
@@ -6238,8 +6241,8 @@ function signOutLogin(id) {
 function revokeEvePasskey(id) {
     const p = (state.evePasskeys || []).find(x => x.id === id);
     if (!p) return;
-    const msg = 'Revoke the Eve passkey "' + (p.label || p.short) + '"?\n\n'
-        + 'It stops working on its next use. Eve signs out every browser session it minted with this passkey when it applies the revocation.';
+    const msg = 'Revoke the Home|Work passkey "' + (p.label || p.short) + '"?\n\n'
+        + 'It stops working on its next use. Home|Work signs out every browser session it minted with this passkey when it applies the revocation.';
     if (!confirm(msg)) return;
     state.passkeyError = null;
     ipc(JSON.stringify({ type: 'revoke_eve_passkey', id: id }));

@@ -28,8 +28,8 @@ func eveEnrol() {
 	if at, perr := time.Parse(time.RFC3339, view.Expires); perr == nil {
 		local = at.Local().Format("15:04:05")
 	}
-	fmt.Printf("eve passkey enrolment open until %s (%s, single use)\n", local, eveEnrolmentTTL)
-	fmt.Println("  on the new browser, open Eve, and tap \"Add this browser\"")
+	fmt.Printf("Home|Work passkey enrolment open until %s (%s, single use)\n", local, eveEnrolmentTTL)
+	fmt.Println("  on the new browser, open Home|Work, and tap \"Add this browser\"")
 }
 
 // eveList shows relay's eve-passkey mirror as the running tray holds it,
@@ -37,7 +37,7 @@ func eveEnrol() {
 func eveList() {
 	views := adminRead[eveListResult]("relay eve list", "eve.list", nil).Passkeys
 	if len(views) == 0 {
-		fmt.Println("no eve passkeys reported")
+		fmt.Println("no Home|Work passkeys reported")
 		return
 	}
 
@@ -58,7 +58,7 @@ func eveList() {
 // it at every login (docs/eve-passkey-enrolment.md decision 10).
 func eveRevoke(args []string) {
 	fs := flag.NewFlagSet("eve revoke", flag.ExitOnError)
-	id := fs.String("id", "", "credential id of the eve passkey to revoke (required)")
+	id := fs.String("id", "", "credential id of the Home|Work passkey to revoke (required)")
 	fs.Parse(args)
 
 	client := requireService("relay eve revoke")
@@ -75,7 +75,7 @@ func eveRevoke(args []string) {
 		exitError("parse response: %v", err)
 	}
 
-	fmt.Printf("eve passkey %s: revocation pending\n", abbreviatePasskeyID(rec.ID))
+	fmt.Printf("Home|Work passkey %s: revocation pending\n", abbreviatePasskeyID(rec.ID))
 	fmt.Println("  it will stop working on its next use")
-	fmt.Println("  eve signs out every session that passkey minted when it applies the revocation")
+	fmt.Println("  Home|Work signs out every session that passkey minted when it applies the revocation")
 }

@@ -16,7 +16,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
-var errEvePasskeyOpsUnavailable = errors.New("eve passkey management is unavailable in this relay process")
+var errEvePasskeyOpsUnavailable = errors.New("Home|Work passkey management is unavailable in this relay process")
 
 // errEvePasskeyUnknown, errEvePasskeyAlreadyPending and errEvePasskeyLast are
 // Revoke's three pre-gate refusals (docs/eve-passkey-enrolment.md decision
@@ -24,9 +24,9 @@ var errEvePasskeyOpsUnavailable = errors.New("eve passkey management is unavaila
 // self-service ceremony an oracle could help here), each is told apart
 // because an operator staring at the tab needs to know which is true.
 var (
-	errEvePasskeyUnknown        = errors.New("no eve passkey found")
-	errEvePasskeyAlreadyPending = errors.New("that eve passkey's revocation is already pending")
-	errEvePasskeyLast           = errors.New("the last Eve passkey cannot be revoked from relay; enrol another browser first, or delete eve's auth.json on the console to start over")
+	errEvePasskeyUnknown        = errors.New("no Home|Work passkey found")
+	errEvePasskeyAlreadyPending = errors.New("that Home|Work passkey's revocation is already pending")
+	errEvePasskeyLast           = errors.New("the last Home|Work passkey cannot be revoked from relay; enrol another browser first, or delete Home|Work's auth.json on the console to start over")
 )
 
 // evePasskeyReportEntry is one credential eve reports about itself, matching
@@ -338,7 +338,7 @@ func (o *EvePasskeyOps) Revoke(ctx context.Context, id, via string) (_ config.Ev
 		return config.EvePasskeyRevocation{}, err
 	}
 	o.publishRevocations()
-	o.notifyConsole("Relay", "Eve passkey revoked: it stops working on its next use")
+	o.notifyConsole("Relay", "Home|Work passkey revoked: it stops working on its next use")
 	return rec, nil
 }
 
