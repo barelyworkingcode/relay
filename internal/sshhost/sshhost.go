@@ -6,7 +6,6 @@ package sshhost
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -208,19 +207,29 @@ func RemoteCommand(cwd string, argv []string, env map[string]string) string {
 // form eve's ssh-command.js produces.
 var plainNodePath = regexp.MustCompile(`^[A-Za-z0-9_./:+@%,=-]+$`)
 
-// NodeLauncher is the remote command that runs a Node script given as source:
-// the same form eve's nodeLauncher builds, with the probe's node path in place
-// of a bare "node". The source is gzipped then base64'd, so the login shell
-// only ever parses [A-Za-z0-9+/=] inside the double-quoted -e argument, and a
-// Windows host's cmd.exe line limit is not hit by the plain base64 form.
-// gzip output is not byte-identical across zlib and Go's compress/gzip; the
-// decoded script is.
-func NodeLauncher(nodePath, src string) string {
-	var buf bytes.Buffer
-	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression) // level is valid
-	_, _ = zw.Write([]byte(src))
-	_ = zw.Close()
-	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+// nodeLoader is the whole of what travels on the remote command line for a
+// Node script; the script itself follows on stdin (NodePreamble). It is
+// deliberate that it avoids " $ ` \ ! % ^ & | < > and newline: sh, bash, zsh,
+// fish and cmd.exe then pass it to node unchanged inside double quotes, and
+// the command line stays far below cmd.exe's 8,191-character limit whatever
+// the script's size. For the same reason it has no arrow functions, no
+// comparison operators and no escapes. It reads only through fs.readSync on fd
+// 0, never process.stdin, so the bytes after the script stay unread for the
+// script's own stdin stream.
+const nodeLoader = `var f=require('fs'),b=Buffer.alloc(1),h='',o,k,n,s;` +
+	`function G(u,l){for(o=0,k=1;k*(l-o);)try{k=f.readSync(0,u,o,l-o);o+=k}catch(x){if(x.code=='EAGAIN')Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5);else throw x}}` +
+	`try{for(;h.length-8;){G(b,1);if(b[0]==10)break;h+=b}n=~~h;` +
+	`if(Math.max(1,Math.min(n,1048576))+''==h){s=Buffer.alloc(n);G(s,n);if(o-n)throw Error('source ended after '+o+' of '+n+' bytes');eval(s.toString())}else throw Error('bad length header')}` +
+	`catch(e){f.writeSync(2,'relay file agent: '+e.message+String.fromCharCode(10));process.exit(1)}`
+
+// MaxNodeSourceBytes caps the source NodePreamble frames; the loader refuses a larger header.
+const MaxNodeSourceBytes = 1 << 20
+
+// NodeLauncher returns the remote command that starts Node with a fixed
+// loader. Its length does not depend on any source: the source goes down stdin
+// as NodePreamble's bytes. A node path that is not a plain word is shQuote'd;
+// "" is node.
+func NodeLauncher(nodePath string) string {
 	node := nodePath
 	switch {
 	case node == "":
@@ -228,7 +237,23 @@ func NodeLauncher(nodePath, src string) string {
 	case !plainNodePath.MatchString(node):
 		node = shQuote(node)
 	}
-	return node + ` -e "eval(require('zlib').gunzipSync(Buffer.from('` + b64 + `','base64')).toString())"`
+	return node + ` -e "` + nodeLoader + `"`
+}
+
+// NodePreamble returns the bytes written to the process's stdin before the
+// first protocol frame: the source's UTF-8 byte length in decimal, a newline,
+// then the source. It refuses an empty source or one over MaxNodeSourceBytes.
+func NodePreamble(src string) ([]byte, error) {
+	if len(src) == 0 {
+		return nil, fmt.Errorf("node source is empty")
+	}
+	if len(src) > MaxNodeSourceBytes {
+		return nil, fmt.Errorf("node source is %d bytes, over the %d limit", len(src), MaxNodeSourceBytes)
+	}
+	out := make([]byte, 0, len(src)+9)
+	out = strconv.AppendInt(out, int64(len(src)), 10)
+	out = append(out, '\n')
+	return append(out, src...), nil
 }
 
 // runner execs name with args and returns combined-separated stdout/stderr.
