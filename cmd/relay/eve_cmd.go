@@ -12,7 +12,7 @@ import (
 // eveEnrol brokers eve.enrolment.open over admin_op, exactly as loginEnrol
 // brokers login.bootstrap.mint: this process holds no gate, so it dials the
 // running tray and lets EveEnrolmentOps -- the same core the tray's own
-// "Allow Eve Passkey Enrolment…" item calls -- do the work.
+// "Allow Home|Work Passkey Enrolment…" item calls -- do the work.
 func eveEnrol() {
 	client := requireService("relay eve enrol")
 	raw, err := client.AdminOp("eve.enrolment.open", nil)

@@ -1071,7 +1071,7 @@ browser's memory and nowhere else (not `localStorage`, not a cookie), so a
 reload runs the ceremony again; it reaches `read` and `configure` only, with
 no project-token rotation, terminal or session. A session disappears when it
 expires, twelve hours at most. Signing one out revokes that one credential and
-touches no other browser. The same records are in `relay credential list`,
+touches no other browser and no credential relay injects into a service. The same records are in `relay credential list`,
 and `relay credential revoke --id ID` ends one from a terminal; the tab's
 button refuses anything that is not a login session.
 

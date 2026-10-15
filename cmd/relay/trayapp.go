@@ -85,7 +85,7 @@ type App struct {
 	// the same core `relay login` runs through.
 	loginOps *LoginOps
 
-	// eveEnrolmentOps backs the tray's "Allow Eve Passkey Enrolment…" item
+	// eveEnrolmentOps backs the tray's "Allow Home|Work Passkey Enrolment…" item
 	// and its countdown line; it is the same core `relay eve enrol` runs
 	// through (docs/eve-passkey-enrolment.md).
 	eveEnrolmentOps *EveEnrolmentOps

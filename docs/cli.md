@@ -1401,7 +1401,7 @@ Needs service: yes. Prompts: yes. Works over SSH: no.
 browser session it already minted are separate objects with separate
 lifetimes — a browser that logged in earlier keeps working, up to twelve
 hours, until its own control-plane credential expires or is revoked with
-`relay credential revoke` (or Settings → Passkeys → Signed-in Browsers →
+`relay credential revoke` (or Settings → Passkeys → Signed-in browsers →
 Sign out).
 
 No JSON form. Output starts `revoked passkey "NAME"` and `  id: SHORT-ID`, then
