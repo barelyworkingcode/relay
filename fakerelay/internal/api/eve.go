@@ -12,7 +12,7 @@ import (
 
 const eveWindow = 5 * time.Minute
 
-var errEveClosed = errors.New("eve passkey enrolment is not open")
+var errEveClosed = errors.New("Home|Work passkey enrolment is not open")
 
 func (a *api) eveRoutes(r server.Registrar) {
 	r.Route(server.ClassRead, "GET /api/eve/passkey-enrolment", a.eveStatus)
