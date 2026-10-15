@@ -118,3 +118,18 @@ func (i *Instance) SSHUp(target string) {
 		t.Fatalf("removing %s: %v", marker, err)
 	}
 }
+
+// SSHCommandLineCap makes target refuse any remote command longer than max
+// characters, as cmd.exe does past 8,191. Needs Options.SSHStub.
+func (i *Instance) SSHCommandLineCap(target string, max int) {
+	t := i.t
+	t.Helper()
+	i.requireSSHStub()
+	path := filepath.Join(i.fakeSSHState(), "cmdmax", sshStateName(target))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("creating %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(strconv.Itoa(max)), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+}

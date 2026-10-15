@@ -6,6 +6,9 @@
 //	down/<dest>    destination refuses every call
 //	master/<dest>  a live ControlMaster, made by any command, ended by -O exit
 //	pids/<pid>     one file per running command, so a test can drop the link
+//	cmdmax/<dest>  a decimal limit: a remote command longer than it is refused
+//	               ("The command line is too long.", exit 1) without running,
+//	               as cmd.exe refuses past 8,191 characters
 //
 // A command runs as /bin/sh -c <remote> in root with a scrubbed environment.
 package main
@@ -90,7 +93,25 @@ func run(args []string) int {
 		}
 		return 0
 	}
+	if max, ok := commandMax(filepath.Join(st, "cmdmax", name)); ok && len(c.Remote) > max {
+		// The connection itself succeeded; only the command line is refused.
+		if err := touch(master); err != nil {
+			return fail(err)
+		}
+		fmt.Fprintln(os.Stderr, "The command line is too long.")
+		return 1
+	}
 	return runCommand(cfg, c, st, master)
+}
+
+// commandMax reads a cmdmax file. A missing or unparseable file means no cap.
+func commandMax(path string) (int, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	return n, err == nil
 }
 
 func runCommand(cfg config, c call, st, master string) int {
