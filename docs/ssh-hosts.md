@@ -90,11 +90,10 @@ command is therefore the fixed form
 where `<BASE64>` is a POSIX-sh script built with single-quote escaping. The
 only characters the login shell ever parses are `[A-Za-z0-9+/=]` inside a
 single-quoted string, which every shell treats identically. The file
-agent launches differently, as `<node_path> -e "<loader>"`
-(`sshhost.NodeLauncher`), and its source does not travel on the command line
-at all. The loader is a fixed one-line script with none of `"` `$` `` ` `` `\`
-`!` `%` `^` `&` `|` `<` `>` or a newline, so sh, bash, zsh, fish and `cmd.exe`
-pass it to node unchanged inside double quotes. Relay writes
+agent's command is built the same way (`sshhost.NodeLauncher` calls
+`RemoteCommandForOS`: this base64 form, or the Windows form on a Windows host)
+around a fixed `<node_path> -e <loader>`, and its source does not travel on the
+command line at all. The loader is a short fixed one-line script. Relay writes
 `<byte length>\n<source>` (`sshhost.NodePreamble`: decimal UTF-8 byte length,
 a newline, the source) to the process's stdin before the first protocol frame.
 The loader reads the header a byte at a time and then exactly that many bytes
@@ -106,7 +105,8 @@ that ends early or a source that throws makes the loader write one line,
 host's unreachable reason. The reason for this shape is `cmd.exe`, which
 refuses a command line over 8,191 characters: the launcher's length is
 independent of the agent's size, and nothing is written on the host. A `node_path`
-that is not a plain word is single-quoted; a host with no `node_path` is
+with a space, such as `/c/Program Files/nodejs/node`, needs no special case: the
+launcher carries it inside the encoded script. A host with no `node_path` is
 `HOST_UNREACHABLE` until a probe finds node.
 
 **9. The probe finds absolute tool paths once.** Non-interactive `ssh` often
@@ -627,7 +627,7 @@ served from the console's disk; v2).
 holds one agent per host id, created on a host's first file request, and serves
 the host's projects through the same routes as console projects. The pool:
 
-- spawns `ssh_argv + ["-T", "--", NodeLauncher(node_path)]` and writes
+- spawns `ssh_argv + ["-T", "--", NodeLauncher(os, node_path)]` and writes
   `NodePreamble(agent source)` to its stdin before the `hello` frame;
 - is ready when the agent's `hello` reply (protocol version 2) arrives;
 - times every request out at 30 s (`504 TIMEOUT`), and answers `503

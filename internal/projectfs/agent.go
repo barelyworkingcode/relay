@@ -242,7 +242,7 @@ func (a *hostAgent) runOnce() (reason string, connected bool) {
 	if err != nil {
 		return "spawn failed: " + err.Error(), false
 	}
-	argv, err := a.pool.argv(h, sshhost.NodeLauncher(h.Probe.NodePath))
+	argv, err := a.pool.argv(h, sshhost.NodeLauncher(h.Probe.OS, h.Probe.NodePath))
 	if err != nil {
 		return "spawn failed: " + err.Error(), false
 	}

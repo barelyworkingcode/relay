@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -202,20 +201,14 @@ func RemoteCommand(cwd string, argv []string, env map[string]string) string {
 	return launcherFor(buildScript(cwd, argv, env))
 }
 
-// plainNodePath matches a node path a POSIX or Windows login shell parses as
-// one word, so it can stay unquoted and a bare "node" launcher keeps the exact
-// form eve's ssh-command.js produces.
-var plainNodePath = regexp.MustCompile(`^[A-Za-z0-9_./:+@%,=-]+$`)
-
-// nodeLoader is the whole of what travels on the remote command line for a
-// Node script; the script itself follows on stdin (NodePreamble). It is
-// deliberate that it avoids " $ ` \ ! % ^ & | < > and newline: sh, bash, zsh,
-// fish and cmd.exe then pass it to node unchanged inside double quotes, and
-// the command line stays far below cmd.exe's 8,191-character limit whatever
-// the script's size. For the same reason it has no arrow functions, no < or
-// > and no escapes. It reads only through fs.readSync on fd
-// 0, never process.stdin, so the bytes after the script stay unread for the
-// script's own stdin stream.
+// nodeLoader is the fixed script that follows `node -e` on the remote command
+// line; the Node script itself follows on stdin (NodePreamble), so the
+// command line's length does not depend on the source. The loader is short and
+// fixed. It deliberately avoids " $ ` \ ! % ^ & | < > and newline, and has no
+// arrow functions, no < or > and no escapes, so it needs no quoting beyond
+// what RemoteCommandForOS applies to every argument. It reads only through
+// fs.readSync on fd 0, never process.stdin, so the bytes after the script stay
+// unread for the script's own stdin stream.
 const nodeLoader = `var f=require('fs'),b=Buffer.alloc(1),h='',o,k,n,s;` +
 	`function G(u,l){for(o=0,k=1;k*(l-o);)try{k=f.readSync(0,u,o,l-o);o+=k}catch(x){if(x.code=='EAGAIN')Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5);else throw x}}` +
 	`try{for(;h.length-8;){G(b,1);if(b[0]==10)break;h+=b}n=~~h;` +
@@ -225,19 +218,15 @@ const nodeLoader = `var f=require('fs'),b=Buffer.alloc(1),h='',o,k,n,s;` +
 // MaxNodeSourceBytes caps the source NodePreamble frames; the loader refuses a larger header.
 const MaxNodeSourceBytes = 1 << 20
 
-// NodeLauncher returns the remote command that starts Node with a fixed
-// loader. Its length does not depend on any source: the source goes down stdin
-// as NodePreamble's bytes. A node path that is not a plain word is shQuote'd;
-// "" is node.
-func NodeLauncher(nodePath string) string {
+// NodeLauncher returns the remote command that starts Node with the fixed
+// loader, built like every other remote command (RemoteCommandForOS) for the
+// host's probed OS. "" nodePath is node.
+func NodeLauncher(hostOS, nodePath string) string {
 	node := nodePath
-	switch {
-	case node == "":
+	if node == "" {
 		node = "node"
-	case !plainNodePath.MatchString(node):
-		node = shQuote(node)
 	}
-	return node + ` -e "` + nodeLoader + `"`
+	return RemoteCommandForOS(hostOS, "", []string{node, "-e", nodeLoader}, nil)
 }
 
 // NodePreamble returns the bytes written to the process's stdin before the
