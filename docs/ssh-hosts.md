@@ -89,13 +89,25 @@ command is therefore the fixed form
 
 where `<BASE64>` is a POSIX-sh script built with single-quote escaping. The
 only characters the login shell ever parses are `[A-Za-z0-9+/=]` inside a
-single-quoted string, which every shell treats identically. the file
-agent launches the same way, as
-`<node_path> -e "eval(require('zlib').gunzipSync(Buffer.from('<BASE64>','base64')).toString())"`
-(`sshhost.NodeLauncher`). The source is gzipped first: a Windows host's `cmd.exe`
-refuses a command line over 8,191 characters. A `node_path` that is not a plain
-word is single-quoted; a host with no `node_path` is `HOST_UNREACHABLE` until a
-probe finds node.
+single-quoted string, which every shell treats identically. The file
+agent launches the same way, as `<node_path> -e "<loader>"`
+(`sshhost.NodeLauncher`), and its source does not travel on the command line
+at all. The loader is a fixed one-line script with none of `"` `$` `` ` `` `\`
+`!` `%` `^` `&` `|` `<` `>` or a newline, so sh, bash, zsh, fish and `cmd.exe`
+pass it to node unchanged inside double quotes. Relay writes
+`<byte length>\n<source>` (`sshhost.NodePreamble`: decimal UTF-8 byte length,
+a newline, the source) to the process's stdin before the first protocol frame.
+The loader reads the header a byte at a time and then exactly that many bytes
+with synchronous reads on fd 0, so it never touches `process.stdin`, and
+evaluates them; everything after is the agent's own protocol stream. A bad
+header (more than 7 digits, a non-digit, a leading `0`, over 1 MiB), a source
+that ends early or a source that throws makes the loader write one line,
+`relay file agent: <reason>`, to stderr and exit 1; relay reads that line as the
+host's unreachable reason. The reason for this shape is `cmd.exe`, which
+refuses a command line over 8,191 characters: the launcher's length no longer
+depends on the agent's size, and nothing is written on the host. A `node_path`
+that is not a plain word is single-quoted; a host with no `node_path` is
+`HOST_UNREACHABLE` until a probe finds node.
 
 **9. The probe finds absolute tool paths once.** Non-interactive `ssh` often
 has a poorer PATH than the user's terminal (nvm, Homebrew on Linux, `~/.local/bin`).
@@ -615,7 +627,8 @@ served from the console's disk; v2).
 holds one agent per host id, created on a host's first file request, and serves
 the host's projects through the same routes as console projects. The pool:
 
-- spawns `ssh_argv + ["-T", "--", NodeLauncher(node_path, agent source)]`;
+- spawns `ssh_argv + ["-T", "--", NodeLauncher(node_path)]` and writes
+  `NodePreamble(agent source)` to its stdin before the `hello` frame;
 - is ready when the agent's `hello` reply (protocol version 2) arrives;
 - times every request out at 30 s (`504 TIMEOUT`), and answers `503
   HOST_UNREACHABLE` while the agent is down;
@@ -748,6 +761,10 @@ release build has no such switch: its `sshCommand()` is the constant `"ssh"`.
   host.
 - **Success.** `serve` logs a `slog.Warn` line and writes the event
   `debug.ssh.stub` with the field `command` ([events.md](events.md#test-build-only)).
+- **Command-line cap.** `fakessh` refuses a remote command longer than the
+  decimal limit in `<root>/.fakessh/cmdmax/<dest>` with `The command line is
+  too long.` and exit 1, as `cmd.exe` does past 8,191; the harness sets it with
+  `SSHCommandLineCap`.
 - **Reach.** The stub replaces argv[0] in `SSHArgv`, so every consumer of
   `ssh_argv` uses it: probe, check, disconnect, tmux, the file-agent pool,
   `hostView` and relay-sessions' `-tt` launches. relay-sessions is a child of
