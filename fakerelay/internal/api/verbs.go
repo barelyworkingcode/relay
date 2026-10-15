@@ -164,7 +164,7 @@ func (a *api) eveEnrolVerb(ctx context.Context, args []string) server.VerbResult
 	exp := a.now().Add(eveWindow)
 	_ = a.State.Write(func(m *state.Model) error { m.Eve.WindowExpires = rfc3339(exp); m.Eve.EnrolmentOpen = true; return nil })
 	ev.End("ok", "", nil)
-	return out("eve passkey enrolment open until %s (%s, single use)\n  on the new browser, open Eve, and tap \"Add this browser\"\n",
+	return out("Home|Work passkey enrolment open until %s (%s, single use)\n  on the new browser, open Home|Work, and tap \"Add this browser\"\n",
 		exp.Local().Format("15:04:05"), eveWindow)
 }
 
@@ -177,7 +177,7 @@ func (a *api) eveListVerb(ctx context.Context, args []string) server.VerbResult 
 	a.State.Read(func(m *state.Model) { keys, pending = passkeys(m), revocations(m) })
 	a.Events.Begin(ctx, "eve.list").Set("count", len(keys)).End("ok", "", nil)
 	if len(keys) == 0 {
-		return out("no eve passkeys reported\n")
+		return out("no Home|Work passkeys reported\n")
 	}
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
@@ -232,11 +232,11 @@ func (a *api) eveRevokeVerb(ctx context.Context, args []string) server.VerbResul
 	})
 	switch {
 	case !known:
-		return refuse("not_found", fmt.Sprintf("no Eve passkey with id %q", *id))
+		return refuse("not_found", fmt.Sprintf("no Home|Work passkey found with id %q", *id))
 	case already:
-		return refuse("conflict", "a revocation for that passkey is already pending")
+		return refuse("conflict", "that Home|Work passkey's revocation is already pending")
 	case live <= 1:
-		return refuse("conflict", "the last Eve passkey cannot be revoked from relay; enrol another browser first, or delete eve's auth.json on the console to start over")
+		return refuse("conflict", "the last Home|Work passkey cannot be revoked from relay; enrol another browser first, or delete Home|Work's auth.json on the console to start over")
 	}
 	if err := a.Presence.Require(server.WithSubject(ctx, *id), "eve.passkey.revoke"); err != nil {
 		ev.End("denied", server.PresenceReason(err), err)
@@ -252,7 +252,7 @@ func (a *api) eveRevokeVerb(ctx context.Context, args []string) server.VerbResul
 		p.PushRevocations()
 	}
 	ev.End("ok", "", nil)
-	return out("eve passkey %s: revocation pending\n  it will stop working on its next use\n  eve signs out every session that passkey minted when it applies the revocation\n", abbrev(*id))
+	return out("Home|Work passkey %s: revocation pending\n  it will stop working on its next use\n  Home|Work signs out every session that passkey minted when it applies the revocation\n", abbrev(*id))
 }
 
 func (a *api) mcpListVerb(ctx context.Context, args []string) server.VerbResult {

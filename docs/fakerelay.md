@@ -1556,8 +1556,8 @@ checked against relay at `59cdf9e` (G4).
 - A message id in an `llm_event` is `msg_` and 16 random hex digits, as relay's
   agents give. The `stats` of a finished turn also carry `timeToFirstToken` and
   `tokensPerSecond`, fixed non-zero values here where relay measures them.
-- `eve list` with no passkeys prints `no eve passkeys reported`. `eve revoke`
-  prints `eve passkey ID: revocation pending` and two indented lines. Its
+- `eve list` with no passkeys prints `no Home|Work passkeys reported`. `eve revoke`
+  prints `Home|Work passkey ID: revocation pending` and two indented lines. Its
   refusals read `error: bridge error (code -32603): <message>`.
 - Claude's rows `haiku`, `sonnet` and `opus` are fixed in relay. A world
   models list adds to them.
@@ -1599,7 +1599,7 @@ All four are described in `eve-passkey-enrolment.md`. The bodies:
 | Route | Request | Success | Errors |
 |---|---|---|---|
 | `GET /api/eve/passkey-enrolment` | none | 200 `{"open":true,"expires":"2026-10-09T10:05:00Z"}` or `{"open":false}` | |
-| `POST /api/eve/passkey-enrolment/consume` | `{"ip":"203.0.113.9","label":"Phone"}` | 200 `{"expires":"…"}` | 409 `{"error":"eve passkey enrolment is not open"}`, 400 |
+| `POST /api/eve/passkey-enrolment/consume` | `{"ip":"203.0.113.9","label":"Phone"}` | 200 `{"expires":"…"}` | 409 `{"error":"Home|Work passkey enrolment is not open"}`, 400 |
 | `PUT /api/eve/passkeys` | `{"passkeys":[{"id","label","created","last_used"}]}` | 200 `{"revocations":["id1"]}` | 400, 500 |
 | `GET /api/eve/passkeys/revocations` | none | 200 `{"revocations":["id1"]}` | |
 
