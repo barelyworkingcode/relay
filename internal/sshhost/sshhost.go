@@ -212,8 +212,8 @@ var plainNodePath = regexp.MustCompile(`^[A-Za-z0-9_./:+@%,=-]+$`)
 // deliberate that it avoids " $ ` \ ! % ^ & | < > and newline: sh, bash, zsh,
 // fish and cmd.exe then pass it to node unchanged inside double quotes, and
 // the command line stays far below cmd.exe's 8,191-character limit whatever
-// the script's size. For the same reason it has no arrow functions, no
-// comparison operators and no escapes. It reads only through fs.readSync on fd
+// the script's size. For the same reason it has no arrow functions, no < or
+// > and no escapes. It reads only through fs.readSync on fd
 // 0, never process.stdin, so the bytes after the script stay unread for the
 // script's own stdin stream.
 const nodeLoader = `var f=require('fs'),b=Buffer.alloc(1),h='',o,k,n,s;` +

@@ -90,7 +90,7 @@ command is therefore the fixed form
 where `<BASE64>` is a POSIX-sh script built with single-quote escaping. The
 only characters the login shell ever parses are `[A-Za-z0-9+/=]` inside a
 single-quoted string, which every shell treats identically. The file
-agent launches the same way, as `<node_path> -e "<loader>"`
+agent launches differently, as `<node_path> -e "<loader>"`
 (`sshhost.NodeLauncher`), and its source does not travel on the command line
 at all. The loader is a fixed one-line script with none of `"` `$` `` ` `` `\`
 `!` `%` `^` `&` `|` `<` `>` or a newline, so sh, bash, zsh, fish and `cmd.exe`
@@ -104,8 +104,8 @@ header (more than 7 digits, a non-digit, a leading `0`, over 1 MiB), a source
 that ends early or a source that throws makes the loader write one line,
 `relay file agent: <reason>`, to stderr and exit 1; relay reads that line as the
 host's unreachable reason. The reason for this shape is `cmd.exe`, which
-refuses a command line over 8,191 characters: the launcher's length no longer
-depends on the agent's size, and nothing is written on the host. A `node_path`
+refuses a command line over 8,191 characters: the launcher's length is
+independent of the agent's size, and nothing is written on the host. A `node_path`
 that is not a plain word is single-quoted; a host with no `node_path` is
 `HOST_UNREACHABLE` until a probe finds node.
 
