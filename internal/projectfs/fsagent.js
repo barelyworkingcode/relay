@@ -2,9 +2,10 @@
 
 // Relay's file-plane agent for an SSH host. Relay starts a fixed loader on
 // the host (`node -e <loader>`, inside the host's remote-command wrapper) and
-// sends this source down stdin behind a length header, so it runs as a source string, not a module: one self-contained
-// file, Node core only, Node 18+. It speaks newline-delimited JSON on
-// stdin/stdout (protocol version 2); stderr is not part of the protocol.
+// sends this source down stdin behind a length header, so it runs as a source
+// string, not a module: one self-contained file, Node core only, Node 18+. It
+// speaks newline-delimited JSON on stdin/stdout (protocol version 2); stderr
+// is not part of the protocol.
 //
 // Containment: every path is root-relative. A ".." segment is TRAVERSAL. Each
 // component under the root is checked with lstat and a symbolic link is

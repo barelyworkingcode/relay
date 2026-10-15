@@ -203,10 +203,9 @@ func RemoteCommand(cwd string, argv []string, env map[string]string) string {
 
 // nodeLoader is the fixed script that follows `node -e` on the remote command
 // line; the Node script itself follows on stdin (NodePreamble), so the
-// command line's length does not depend on the source. The loader is short and
-// fixed. It deliberately avoids " $ ` \ ! % ^ & | < > and newline, and has no
-// arrow functions, no < or > and no escapes, so it needs no quoting beyond
-// what RemoteCommandForOS applies to every argument. It reads only through
+// command line's length does not depend on the source. RemoteCommandForOS
+// carries it inside base64, so any character survives; avoiding
+// " $ ` \ ! % ^ & | < > and escapes is margin only. It reads only through
 // fs.readSync on fd 0, never process.stdin, so the bytes after the script stay
 // unread for the script's own stdin stream.
 const nodeLoader = `var f=require('fs'),b=Buffer.alloc(1),h='',o,k,n,s;` +
