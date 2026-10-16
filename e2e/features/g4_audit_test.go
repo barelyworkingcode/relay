@@ -37,7 +37,7 @@ var g4Approve = map[string]harness.Outcome{
 	"enrolment.revoke":     harness.OutcomeApprove,
 }
 
-const g4Remote = `{"enabled":true,"listen":"127.0.0.1:0","enrolment_requests":true,"enrolment_listen":"127.0.0.1:0"}`
+const g4Remote = `{"enabled":true,"listen":"127.0.0.1:0","enrolment_listen":"127.0.0.1:0"}`
 
 // g4Row is one audit record as `relay audit --json` prints it.
 type g4Row map[string]any

@@ -14,9 +14,9 @@ const mcpUpDeadline = 60 * time.Second
 
 var configurer = []harness.CredentialSpec{{Name: "configurer", Classes: []string{"configure"}}}
 
-// remoteBlock turns on the remote listener and the enrolment-request listener
-// on loopback ports the kernel picks.
-const remoteBlock = `{"enabled":true,"listen":"127.0.0.1:0","enrolment_requests":true,"enrolment_listen":"127.0.0.1:0"}`
+// remoteBlock turns on the remote listener on a loopback port the kernel picks
+// and names the address an enrolment window binds.
+const remoteBlock = `{"enabled":true,"listen":"127.0.0.1:0","enrolment_listen":"127.0.0.1:0"}`
 
 func acmeStdioMCP() []harness.FakeMCPSpec {
 	return []harness.FakeMCPSpec{{ID: "acme-stdio", Transport: "stdio", Catalogue: echoCatalogue()}}
@@ -92,19 +92,14 @@ func TestBridgeAdminFrameNeedsSecret(t *testing.T) {
 
 func TestEnrolClientLodgesRequest(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{
-		Settings: map[string]json.RawMessage{"remote": json.RawMessage(remoteBlock)},
-	})
-	id := harness.NewRemoteIdentity(t, "acme-laptop")
+	r := g10Start(t, nil)
+	i := r.i
 
-	replies := i.EnrolSend(map[string]any{"type": "EnrolmentRequest", "csr_pem": string(id.CSRPEM()), "label": "acme-laptop"})
-	if len(replies) != 1 || replies[0]["type"] != "Result" {
-		t.Fatalf("EnrolmentRequest answered %v, want one Result", replies)
-	}
-	result, _ := replies[0]["result"].(map[string]any)
-	requestID, _ := result["request_id"].(string)
-	if requestID == "" {
-		t.Fatalf("the Result has no request_id: %v", replies[0])
+	l := g10OpenAndLodge(t, r, "acme-laptop")
+	for _, k := range []string{"request_id", "spki_sha256", "poll_after_seconds", "expires_in_seconds", "sas_nonce"} {
+		if l.result[k] == nil {
+			t.Fatalf("the lodge Result has no %s: %v", k, l.result)
+		}
 	}
 
 	res := i.MustCLI("enrol", "requests", "--json")
@@ -114,12 +109,12 @@ func TestEnrolClientLodgesRequest(t *testing.T) {
 	res.JSON(t, &pending)
 	found := false
 	for _, p := range pending {
-		found = found || p.RequestID == requestID
+		found = found || p.RequestID == l.requestID
 	}
 	if !found {
-		t.Fatalf("enrol requests lists %d requests and not %s", len(pending), requestID)
+		t.Fatalf("enrol requests lists %d requests and not %s", len(pending), l.requestID)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "enrolment.request.lodge", Fields: map[string]any{"status": "ok", "request_id": requestID}})
+	requireEvent(t, i, harness.EventQuery{Key: "enrolment.request.lodge", Fields: map[string]any{"status": "ok", "request_id": l.requestID, "profile_id": r.profile}})
 }
 
 func TestRemoteClientListsProfileTools(t *testing.T) {
