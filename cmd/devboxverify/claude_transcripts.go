@@ -61,12 +61,12 @@ func claudeSessionForPID(pid int) (string, error) {
 	return rec.SessionID, nil
 }
 
-// removeTranscript waits until gone holds, then deletes each
+// removeTranscript waits until gone answers "", then deletes each
 // ~/.claude/projects/*/<id>.jsonl that holds token, here or, with onHost, on
 // dropInHostTarget. Deliberate: it writes one stderr line and returns nothing,
 // so the cleanup can never change a journey's result. A file is removed only
 // when its name is the learned id and its content holds the run's token.
-func removeTranscript(journey, id, token string, onHost bool, gone func(context.Context) bool) {
+func removeTranscript(journey, id, token string, onHost bool, gone func(context.Context) string) {
 	line := func(rest string) { fmt.Fprintf(os.Stderr, "transcript %s: %s\n", journey, rest) }
 	if !validUUID(id) {
 		line("id unknown: not a conversation id")
@@ -77,8 +77,16 @@ func removeTranscript(journey, id, token string, onHost bool, gone func(context.
 		return
 	}
 	ctx := context.Background()
-	if gone == nil || !pollUntil(ctx, transcriptWait, func() bool { return gone(ctx) }) {
+	if gone == nil {
 		line(id + " kept: process still running")
+		return
+	}
+	why := "process still running"
+	if !pollUntil(ctx, transcriptWait, func() bool {
+		why = gone(ctx)
+		return why == ""
+	}) {
+		line(id + " kept: " + why)
 		return
 	}
 	if onHost {
@@ -97,7 +105,6 @@ func removeLocalTranscript(id, token string) string {
 	if err != nil {
 		return "kept: bad pattern"
 	}
-	deleted := 0
 	for _, f := range matches {
 		raw, err := os.ReadFile(f)
 		if err != nil {
@@ -106,8 +113,11 @@ func removeLocalTranscript(id, token string) string {
 		if !bytes.Contains(raw, []byte(token)) {
 			return "kept: no run token"
 		}
+	}
+	deleted := 0
+	for _, f := range matches {
 		if err := os.Remove(f); err != nil {
-			return "kept: " + errnoName(err)
+			return keptAfter(deleted, errnoName(err))
 		}
 		deleted++
 	}
@@ -117,13 +127,23 @@ func removeLocalTranscript(id, token string) string {
 	return fmt.Sprintf("deleted %d", deleted)
 }
 
+// keptAfter words a failed delete without hiding files already removed.
+func keptAfter(deleted int, why string) string {
+	if deleted == 0 {
+		return "kept: " + why
+	}
+	return fmt.Sprintf("deleted %d, kept the rest: %s", deleted, why)
+}
+
 // removeHostTranscript runs the same guard on the loopback host. The script
 // runs under sh so the login shell's handling of an unmatched glob cannot
 // abort it; id and token are validated, and the script holds no single quote.
 func removeHostTranscript(ctx context.Context, id, token string) string {
-	script := `n=0; for f in "$HOME"/.claude/projects/*/` + id + `.jsonl; do [ -f "$f" ] || continue; ` +
-		`if grep -q -F -- "` + token + `" "$f"; then rm -- "$f" 2>/dev/null || { echo kept: rm failed; exit 0; }; n=$((n+1)); ` +
-		`else echo kept: no run token; exit 0; fi; done; if [ $n -gt 0 ]; then echo deleted $n; else echo absent; fi`
+	script := `for f in "$HOME"/.claude/projects/*/` + id + `.jsonl; do [ -f "$f" ] || continue; ` +
+		`grep -q -F -- "` + token + `" "$f" || { echo kept: no run token; exit 0; }; done; n=0; ` +
+		`for f in "$HOME"/.claude/projects/*/` + id + `.jsonl; do [ -f "$f" ] || continue; ` +
+		`if rm -- "$f" 2>/dev/null; then n=$((n+1)); elif [ $n -gt 0 ]; then echo deleted $n, kept the rest: rm failed; exit 0; ` +
+		`else echo kept: rm failed; exit 0; fi; done; if [ $n -gt 0 ]; then echo deleted $n; else echo absent; fi`
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", dropInHostTarget, "sh -c '"+script+"'").Output()
@@ -161,7 +181,11 @@ func errnoName(err error) string {
 	return "errno " + strconv.Itoa(int(en))
 }
 
-// pidGone holds when no process has pid.
-func pidGone(pid int) func(context.Context) bool {
-	return func(context.Context) bool { return syscall.Kill(pid, 0) == syscall.ESRCH }
+func pidGone(pid int) func(context.Context) string {
+	return func(context.Context) string {
+		if syscall.Kill(pid, 0) == syscall.ESRCH {
+			return ""
+		}
+		return "process still running"
+	}
 }

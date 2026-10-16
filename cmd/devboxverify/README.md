@@ -772,7 +772,7 @@ session deletes and on every path, and the cleanup never changes a result. The
 id is the one the journey learned: the drop-in's `claudeSessionId`, or for the
 cos-start terminal the `sessionId` in `~/.claude/sessions/<pid>.json` of the
 `claude` process whose argv holds `--model haiku -- verify-<nonce>-term`. The
-journey waits up to 15 s for that process to exit, then deletes
+journey waits up to 15 s for that process to exit (on the host door each process-table read can take up to 10 s and the remove 15 s more), then deletes
 `~/.claude/projects/*/<id>.jsonl` (on the loopback host over ssh for
 session-drop-in-host) only if the id is a UUID and the file holds
 `verify-<nonce>-`. Headless legs that are never resumed are not listed and stay.

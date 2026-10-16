@@ -164,6 +164,7 @@ func runCosStart(ctx context.Context, e env) (out result) {
 
 	r.TermCreate = cosRequest(ctx, e, run, true, http.MethodPost, cosStartPath,
 		cosStartBody(acmeID, "", r.TermPrompt, "terminal"), 30*time.Second)
+	termWhy = fmt.Sprintf("terminal start answered %d", r.TermCreate.Status)
 	if r.TermID = parseCosStart(r.TermCreate).SessionID; r.TermCreate.Status == http.StatusCreated && r.TermID != "" {
 		// The row appearing is the signal; the process list is read once after it.
 		for deadline := time.Now().Add(cosListWait); ; {
@@ -179,7 +180,12 @@ func runCosStart(ctx context.Context, e env) (out result) {
 			r.PSErr = err.Error()
 		}
 		termWhy = "no claude process for the terminal"
-		if table, err := exec.CommandContext(ctx, "ps", "-axwwo", "pid=,command=").Output(); err == nil {
+		if table, err := exec.CommandContext(ctx, "ps", "-axwwo", "pid=,command=").Output(); err != nil {
+			termWhy = "process table unreadable"
+			if ctx.Err() != nil {
+				termWhy = "cancelled before the process table was read"
+			}
+		} else {
 			if termPID = claudePIDForArgv(string(table), "--model "+agentModel+" -- "+r.TermPrompt); termPID != 0 {
 				pollUntil(ctx, cosListWait, func() bool {
 					var idErr error
