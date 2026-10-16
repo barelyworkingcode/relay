@@ -835,6 +835,13 @@ func (m *Manager) EndSession(id string) {
 // Claude's JSONL history) and removes the persisted session file.
 func (m *Manager) DeleteSession(id string) {
 	sess := m.stopSlot(id)
+	if sess == nil {
+		// A dormant session has no provider, but a detached host agent may
+		// still run; it must end with the session.
+		if stored, err := m.store.Load(id); err == nil {
+			provider.DeleteDetachedRun(id, stored.GetHost())
+		}
+	}
 	if sess != nil {
 		sess.MarkDeleted()
 		m.signal(sess, attention.SessionEnded)
@@ -879,7 +886,13 @@ func (m *Manager) StopAll() {
 	for _, sess := range live {
 		m.signal(sess, attention.SessionEnded)
 		if p := sess.Provider(); p != nil {
-			p.Kill()
+			// Deliberate: a detached host agent outlives relay, so shutdown
+			// releases it instead of ending it.
+			if r, ok := p.(interface{ Release() }); ok {
+				r.Release()
+			} else {
+				p.Kill()
+			}
 		}
 		m.persist(sess)
 	}
