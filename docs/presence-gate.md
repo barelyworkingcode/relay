@@ -60,7 +60,8 @@ what runs.** Concretely:
   the **same** digest, not a new `enrolment.approve` entry: a second op here
   would be exactly the second door into issuance the ADR forbids.
 - **Opening an enrolment window for an access profile**
-  (`enrolment.window.open`, `relay enrol open`) — opens the enrolment port, the
+  (`enrolment.window.open`, `relay enrol open`, the tray sheet's access-profile
+  choice) — opens the enrolment port, the
   one network door a stranger's certificate request can reach, for five
   minutes and one request. The digest binds the profile id, and the prompt
   reads `open a five-minute window for one remote machine to request
@@ -72,10 +73,16 @@ what runs.** Concretely:
   `enrolment.sign`; there is no `enrolment.approve` op.
 - **Minting a login bootstrap code, or revoking a passkey**
   (`login.bootstrap.mint`, `login.passkey.revoke`) — issues or destroys a
-  login identity.
+  login identity. The sign-in code is minted from the tray's **Allow
+  Enrolment…** sheet (Relay sign-in) or `relay login enrol`; withdrawing an
+  unused code (`Cancel Enrolment`, `relay enrol close`) is not gated, because it
+  narrows.
 - **Opening an eve passkey enrolment window** (`eve.enrolment.open`) — issues
   a second browser's window onto eve's own passkey registration
-  ([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md)). Consuming it
+  ([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md)). The prompt
+  reads `open a five-minute window for one new browser to register a Home|Work
+  passkey`; the tray sheet's Home|Work browser choice and `relay eve enrol` ask
+  it. Closing the window is not gated. Consuming it
   is not gated: the operator already answered this prompt to open the
   window, and a browser spending the slot narrows what it reaches rather
   than widening anything, the same footing "What is not gated, and why

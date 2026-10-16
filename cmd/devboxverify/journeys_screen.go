@@ -59,6 +59,7 @@ var screenJourneys = []journey{
 	{svcStartID, []string{"services"}, nil, phaseScreen, 30 * time.Second, runServiceStartStop},
 	{svcCrashID, []string{"services"}, nil, phaseScreen, 30 * time.Second, runServiceRestart},
 	{settingsWindowID, []string{"services", "tray", "settings-ui"}, nil, phaseScreen, 60 * time.Second, runSettingsWindow},
+	{allowEnrolmentID, []string{"login", "presence", "tray", "settings-ui"}, nil, phaseScreen, 120 * time.Second, runAllowEnrolment},
 	{cosSettingsID, []string{"projects", "settings-ui"}, []string{"project:acme"}, phaseScreen, 60 * time.Second, runCosSettings},
 	{auditViewID, []string{"audit", "settings-ui"}, nil, phaseScreen, 60 * time.Second, runAuditViewFilter},
 	{slowRouteID, []string{"credentials", "sessions", "hosts"}, nil, phaseScreen, gateTimeout, runSlowRouteKeepalive},

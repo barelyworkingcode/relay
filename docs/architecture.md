@@ -542,7 +542,8 @@ instead of an operator carrying it by hand, through a third listener
 (`enrolment_requests.go`, `enrolment_request_server.go`; ADR-018 decision
 8) that exists only while the operator has an **enrolment window** open.
 `relay enrol open --profile ID` (or the tray) is gated by presence
-(`enrolment.window.open`, the one gated op this path adds), records an
+(`enrolment.window.open`, the one gated op this path adds; the tray's Allow
+Enrolment… sheet reaches it too), records an
 `enrolment_window` issuance row, and only then binds the listener for one
 access profile for five minutes (`enrolment_window_ops.go`; the state is in
 memory, so a restart closes it). The first accepted lodge consumes the window
@@ -1091,7 +1092,7 @@ that needs a single-use code minted on this machine, so a page in a browser
 cannot register itself — it can only be minted by something already running
 as the operator, never by a page that reached the port. The empty state for
 relay's own list says *No relay passkeys yet.* and names the two ways to add
-one, the tray's **Show Login Code...** item and `relay login enrol`. Each
+one, the tray's **Allow Enrolment…** item (Relay sign-in) and `relay login enrol`. Each
 login mints its own short-lived control-plane credential, held in the
 browser's memory and nowhere else (not `localStorage`, not a cookie), so a
 reload runs the ceremony again; it reaches `read` and `configure` only, with
@@ -1101,15 +1102,22 @@ touches no other browser and no credential relay injects into a service. The sam
 and `relay credential revoke --id ID` ends one from a terminal; the tab's
 button refuses anything that is not a login session.
 
-The tray's **Show Login Code...** item is the second presentation ADR-016
-decision 2 allows for the bootstrap anchor. It mints through the same gated
-core method `relay login enrol` uses (`LoginOps.MintBootstrap`, ADR-017
-decision 3 — a presence prompt either way) and shows the code in the Settings
-window, because relay is `LSUIElement` and that window is the only surface
-the tray has. A window that is not open yet gets the code seeded into its
-first paint (`renderSettingsDocument`); one already open gets an emit — Cocoa
-drops a script evaluated against a WebView that does not exist yet, and never
-reloads a window that does. Minting replaces rather than accumulates, so the
+The tray's **Allow Enrolment…** item opens one sheet in Settings for the three
+ways in: a Home|Work browser, a relay sign-in code and an access profile.
+Choosing **Relay sign-in** is the second presentation ADR-016 decision 2
+allows for the bootstrap anchor. The sheet's `open_enrolment_window` message
+mints through the same gated core method `relay login enrol` uses
+(`LoginOps.MintBootstrap`, ADR-017 decision 3 — a presence prompt either way)
+and shows the code on the sheet, because relay is `LSUIElement` and Settings
+is the only surface the tray has. The click itself asks for nothing. A window
+that is not open yet gets the sheet through its first paint
+(`pendingSettingsPage`, `settingsPageAllowEnrolment`); one already open gets an
+emit — Cocoa drops a script evaluated against a WebView that does not exist
+yet, and never reloads a window that does. While any target is open the tray
+lists it as `Enrolment open: <target> · m:ss left` and offers `Cancel
+Enrolment`, which closes all of them through `EnrolmentWindowOps.Close`; a
+Home|Work window or sign-in code that runs out unused raises *Enrolment closed;
+nothing enrolled.* Minting replaces rather than accumulates, so the
 panel says out loud that showing another code kills this one. The item is
 never the *only* source: the menu is unreachable without a person at the screen,
 which is why `relay login enrol` stays as a second door — though both now

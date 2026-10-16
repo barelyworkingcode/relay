@@ -221,7 +221,7 @@ func ipcCreateEnrolment(ctx *IPCContext, raw json.RawMessage) {
 	// §6.4 of the ADR-017 implementation spec), and Gate.Require blocks on
 	// LocalAuthentication's async completion handler, which needs the
 	// Cocoa run loop pumped to be delivered — the same deadlock
-	// showLoginCode's doc comment in trayapp.go describes.
+	// openAllowEnrolmentSheet's doc comment in trayapp.go describes.
 	ctx.GoFunc(func() {
 		// EnrolmentOps.Create now records the issuance itself (and undoes
 		// the create if that recording fails) so it can attach the

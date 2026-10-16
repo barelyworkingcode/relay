@@ -303,6 +303,38 @@ func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (_ loginCodeVi
 	}, nil
 }
 
+// bootstrapCodeLive reports whether b is a code consumeBootstrapCode would still
+// accept on time alone. An Expires relay cannot parse reads as expired, the
+// rule consumeBootstrapCode states.
+func bootstrapCodeLive(b *config.LoginBootstrap, now time.Time) bool {
+	if b == nil {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, b.Expires)
+	return err == nil && now.Before(at)
+}
+
+// CancelBootstrap withdraws an unused sign-in code and reports whether a live
+// one was withdrawn. Ungated: it narrows. After it, registering a passkey with
+// that code is refused like any other wrong code.
+func (o *LoginOps) CancelBootstrap(ctx context.Context) (cancelled bool, err error) {
+	if o == nil || o.Store == nil {
+		return false, errLoginOpsUnavailable
+	}
+	if err := o.runCommitted(ctx, func() error {
+		return o.Store.With(func(s *config.Settings) {
+			cancelled = bootstrapCodeLive(s.LoginBootstrap, clockNow(o.Clock))
+			s.LoginBootstrap = nil
+		})
+	}); err != nil {
+		return false, fmt.Errorf("save settings: %w", err)
+	}
+	if cancelled {
+		recordEnrolmentWindowCancelled(ctx, enrolmentWindowTargetRelayLogin)
+	}
+	return cancelled, nil
+}
+
 // passkeyViews and loginSessionViews are free functions over *Settings so the
 // first paint (renderSettingsDocument) and the IPC door share one definition
 // of what leaves relay, rather than each projecting the records themselves.
