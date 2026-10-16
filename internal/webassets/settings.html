@@ -247,9 +247,6 @@ textarea:focus {
 .learn-more summary { cursor: pointer; color: var(--accent); font-size: 12px; }
 .learn-more p { margin: 8px 0 0; }
 
-.ca-fingerprint-row { display: flex; align-items: center; gap: 10px; margin: 4px 0 16px; flex-wrap: wrap; }
-.ca-fingerprint-label { font-size: 12px; color: var(--text-2); }
-.ca-fingerprint-value { font-family: var(--mono); font-size: 11px; background: var(--bg-control); padding: 3px 8px; border-radius: 4px; word-break: break-all; }
 
 /* Overview tab */
 .ov-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
@@ -1175,7 +1172,6 @@ window.__RELAY_INIT__ = {
   var PASSKEYS_INIT = window.__RELAY_INIT__.passkeys || [];
   var LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
   var EVE_PASSKEYS_INIT = window.__RELAY_INIT__.evePasskeys || [];
-  var LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
   var INITIAL_PAGE = window.__RELAY_INIT__.initialPage || null;
   var MCP_HEALTH_INIT = window.__RELAY_INIT__.mcpHealth || {};
   var SERVICE_RUNTIME_INIT = window.__RELAY_INIT__.serviceRuntime || {};
@@ -1366,7 +1362,13 @@ window.__RELAY_INIT__ = {
     // credential you cannot see is one you will not revoke.
     passkeys: PASSKEYS_INIT,
     loginSessions: LOGIN_SESSIONS_INIT,
-    loginCode: LOGIN_CODE_INIT,
+    // A sign-in code minted from the sheet: never persisted, valid two minutes,
+    // not recoverable once dismissed.
+    loginCode: null,
+    // The Allow Enrolment sheet: null when closed, else {target, profileId,
+    // busy, error, opened}. It is an overlay with its own container, so a page
+    // repaint never wipes it.
+    allowEnrol: null,
     passkeyError: null,
     passkeyRevoked: null,
     // {name, short} shown after a revoke
@@ -5065,20 +5067,13 @@ window.__RELAY_INIT__ = {
     b = b || {};
     return (b.max_calls || 0) + " calls / " + enrolBytes(b.max_result_bytes) + " per " + (b.window_seconds || 0) + "s";
   }
-  function renderCAFingerprintLine() {
-    const fp = state.remote && state.remote.ca_fingerprint;
-    if (!fp) {
-      return `<p class="proj-section-help">Relay's CA fingerprint is not available yet \u2014 create or sign one enrolment to generate the CA, then it will show here.</p>`;
-    }
-    return '<div class="ca-fingerprint-row"><span class="ca-fingerprint-label">CA fingerprint</span><code class="ca-fingerprint-value">' + esc(fp) + '</code><button type="button" class="btn btn-sm" ' + bind(copyToClipboard, fp) + ">Copy</button></div>";
-  }
   function renderPendingEnrolmentRequests() {
     const list = state.pendingEnrolmentRequests || [];
     let html = '<div class="proj-section" style="margin-top:0">';
     html += '<div class="proj-section-title">Pending requests' + (list.length ? ' <span class="remote-state on">' + list.length + "</span>" : "") + "</div>";
-    html += '<p class="proj-section-help">A machine that can reach the enrolment-request listener can add a row here and nothing else \u2014 see "How enrolment works" above.</p>';
+    html += '<p class="proj-section-help">While an enrolment window is open, a machine that can reach its port can add one row here and nothing else \u2014 see "How enrolment works" above.</p>';
     if (!list.length) {
-      html += '<div class="empty-state">No pending enrolment requests.</div>';
+      html += '<div class="empty-state">No pending enrolment requests. Open a window with <strong>Allow Enrolment\u2026</strong> in the tray, or <code>relay enrol open --profile ID</code>.</div>';
     }
     for (const r of list) {
       html += '<div class="enrol-card">';
@@ -5105,13 +5100,9 @@ window.__RELAY_INIT__ = {
     return html;
   }
   function enrolRequestApprovable(r) {
-    if (r.is_legacy_request) return true;
     return !!r.sas_ready && !r.sas_failed;
   }
   function renderRequestComparison(r) {
-    if (r.is_legacy_request) {
-      return '<div class="enrol-sas legacy"><div class="enrol-sas-state">carried-pin request (<code>relayremote request</code>)</div><div class="enrol-sas-help">There is no comparison code on this path. The control here is the CA fingerprint the operator carried to that machine, shown in the tab header.</div></div>';
-    }
     if (r.sas_failed) {
       return '<div class="enrol-sas failed"><div class="enrol-sas-state">Comparison failed</div><div class="enrol-sas-help">That machine failed its comparison handshake; this request cannot be approved. Refuse it and register again \u2014 if it fails a second time, something is on the network path.</div></div>';
     }
@@ -5125,11 +5116,9 @@ window.__RELAY_INIT__ = {
     html += '<div class="enrol-meta">';
     html += "<span>label: <strong>" + (r.label ? esc(r.label) : "(none)") + "</strong> <em>(supplied by the requesting machine)</em></span>";
     html += "</div>";
-    if (r.requested_profile) {
-      html += '<div class="enrol-meta">';
-      html += "<span>asked for: <strong>" + esc(r.requested_profile) + "</strong> <em>(a request from that machine, not a grant)</em></span>";
-      html += "</div>";
-    }
+    html += '<div class="enrol-meta">';
+    html += "<span>access profile: <strong>" + esc(r.profile_name || r.profile_id || "(none)") + "</strong> <em>(set by the window you opened)</em></span>";
+    html += "</div>";
     html += '<div class="enrol-meta">';
     html += "<span>from: <strong>" + esc(r.remote_addr) + "</strong></span>";
     html += "<span>arrived: <strong>" + esc(r.arrived_at) + "</strong></span>";
@@ -5144,10 +5133,9 @@ window.__RELAY_INIT__ = {
     html += '<p class="page-intro">An enrolment binds one client certificate to the access profiles it may use.</p>';
     html += '<details class="learn-more"><summary>How enrolment works</summary>';
     html += "<p>The certificate <em>is</em> the identity \u2014 there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>";
-    html += "<p>Relay's CA fingerprint is what a client pins (<code>relayremote request --ca-fingerprint ...</code>) \u2014 see the value below.</p>";
-    html += "<p>A machine that can reach the enrolment-request listener can add a row to Pending requests below and nothing else. Lodging never raises a prompt; approving does, and it is the same <code>enrolment.sign</code> prompt <code>relay enrol sign</code> already uses. The request carries no grant and no budget: those are chosen at approval.</p>";
+    html += "<p>Adding a machine starts with a timed window for one access profile: <strong>Allow Enrolment\u2026</strong> in the tray, or <code>relay enrol open --profile ID</code>. The port exists only while the window is open, and the first request closes it. The machine shows a six-character code; compare it with the one on its row below.</p>";
+    html += "<p>A machine that reaches the port can add one row to Pending requests and nothing else. Lodging never raises a prompt; approving does, and it is the same <code>enrolment.sign</code> prompt <code>relay enrol sign</code> already uses. The request names no profile and no budget: the profile is the window's, and the budget is chosen at approval.</p>";
     html += "</details>";
-    html += renderCAFingerprintLine();
     if (state.enrolBundle) html += renderEnrolBundleBanner(state.enrolBundle);
     if (state.enrolRevoked) {
       html += '<div class="audit-note">Revoked <strong>' + esc(state.enrolRevoked.client_id) + "</strong>. Its calls remain in the Tool Calls log under fingerprint <code>" + esc(state.enrolRevoked.fingerprint) + "</code> \u2014 now the only thing that names them.</div>";
@@ -5213,7 +5201,6 @@ window.__RELAY_INIT__ = {
       html += renderRequestComparison(f.pendingRequest);
       html += renderPendingRequestFields(f.pendingRequest);
       html += '<p class="proj-section-help">Approving raises the same presence prompt <code>relay enrol sign</code> already uses \u2014 there is no second door into issuance. The certificate is issued over exactly the public key above; nothing chosen below can redirect it to a different key.</p>';
-      html += renderCAFingerprintLine();
       html += "</div>";
     }
     html += '<div class="proj-section">';
@@ -5226,31 +5213,42 @@ window.__RELAY_INIT__ = {
       html += '<p class="proj-section-help">Relay suggests this; it is yours to change. It names the enrolment in <code>relay enrol list</code> and in every audit record.</p>';
     }
     html += "</div>";
-    html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Granted Access Profiles</div>';
-    html += `<p class="proj-section-help">Only <strong>access profiles</strong> can be granted. A remote client granted a local project would inherit that project's host-directory scope, so the grant is refused outright \u2014 this list offers nothing that would be refused.</p>`;
-    const grantable = remoteGrantableProjects();
-    if (!grantable.length) {
-      html += '<div class="proj-tool-empty">No access profiles exist yet. Create one in the <strong>Projects</strong> tab (Kind \u2192 Access profile) first.</div>';
+    if (approving) {
+      const pr = f.pendingRequest || {};
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Access Profile</div>';
+      html += '<p class="proj-section-help">This machine enrols into <strong>' + esc(pr.profile_name || pr.profile_id || "(none)") + "</strong>, the profile the enrolment window was opened for. An approval cannot change it.</p>";
+      html += "</div>";
+    } else {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Access Profile</div>';
+      html += `<p class="proj-section-help">An enrolment reaches <strong>one</strong> access profile; enrol again for another. Only <strong>access profiles</strong> can be granted. A remote client granted a local project would inherit that project's host-directory scope, so the grant is refused outright \u2014 this list offers nothing that would be refused.</p>`;
+      const grantable = remoteGrantableProjects();
+      if (!grantable.length) {
+        html += '<div class="proj-tool-empty">No access profiles exist yet. Create one in the <strong>Projects</strong> tab (Kind \u2192 Access profile) first.</div>';
+      }
+      if (grantable.length) {
+        html += '<label class="proj-tool-row">';
+        html += '<input type="radio" name="enrolProfile" ' + (f.project_ids.length === 0 ? "checked" : "") + ` onchange="toggleEnrolGrant('', true)" />`;
+        html += '<div><div>None</div><div class="desc">enrol without an access profile</div></div>';
+        html += "</label>";
+      }
+      for (const p of grantable) {
+        const checked = f.project_ids.indexOf(p.id) >= 0;
+        html += '<label class="proj-tool-row">';
+        html += '<input type="radio" name="enrolProfile" ' + (checked ? "checked" : "") + ` onchange="toggleEnrolGrant('` + esc(p.id) + `', this.checked)" />`;
+        html += "<div><div>" + esc(p.name) + '</div><div class="desc">' + esc(p.id) + "</div></div>";
+        html += "</label>";
+      }
+      if (f.project_ids.length === 0) {
+        html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no access profile until one is added.</p>';
+        html += '<label class="proj-tool-row">';
+        html += '<input type="checkbox" ' + (f.no_grant ? "checked" : "") + ' onchange="toggleEnrolNoGrant(this.checked)" />';
+        html += "<div><div>Enrol with no access for now (nothing will work until I grant a profile)</div></div>";
+        html += "</label>";
+      }
+      html += "</div>";
     }
-    for (const p of grantable) {
-      const checked = f.project_ids.indexOf(p.id) >= 0;
-      html += '<label class="proj-tool-row">';
-      html += '<input type="checkbox" ' + (checked ? "checked" : "") + ` onchange="toggleEnrolGrant('` + esc(p.id) + `', this.checked)" />`;
-      html += "<div><div>" + esc(p.name) + '</div><div class="desc">' + esc(p.id) + "</div></div>";
-      html += "</label>";
-    }
-    if (approving && f.pendingRequest && f.pendingRequest.requested_profile) {
-      html += '<p class="proj-section-help">This machine asked for <code>' + esc(f.pendingRequest.requested_profile) + "</code> \u2014 a request from that machine, not a grant. Nothing is ticked for you; tick it above only if you mean to.</p>";
-    }
-    if (f.project_ids.length === 0) {
-      html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no access profile until one is added.</p>';
-      html += '<label class="proj-tool-row">';
-      html += '<input type="checkbox" ' + (f.no_grant ? "checked" : "") + ' onchange="toggleEnrolNoGrant(this.checked)" />';
-      html += "<div><div>Enrol with no access for now (nothing will work until I grant a profile)</div></div>";
-      html += "</label>";
-    }
-    html += "</div>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Budget</div>';
     html += '<p class="proj-section-help">The enrolment is the unit of compromise, so it is the unit that carries the cap. Rate and volume are capped together because they fail differently \u2014 a call limit alone does not stop a slow drain. Leave a field blank for the conservative default; <strong>zero is never unlimited</strong>, there is no way to switch a budget off.</p>';
@@ -5262,7 +5260,7 @@ window.__RELAY_INIT__ = {
     html += '<input type="number" id="enrolMaxBytes" value="' + esc(f.max_result_bytes) + '" placeholder="' + esc(d.max_result_bytes || "") + '" />';
     html += "</div>";
     html += '<div class="proj-form-actions">';
-    const grantChosen = f.project_ids.length > 0 || !!f.no_grant;
+    const grantChosen = approving || f.project_ids.length > 0 || !!f.no_grant;
     html += '<button class="btn btn-primary"' + (grantChosen ? "" : " disabled") + ' onclick="saveEnrolment()">' + (approving ? "Approve &amp; issue certificate" : "Create &amp; issue certificate") + "</button>";
     html += '<button class="btn btn-danger" onclick="cancelEnrolment()">Cancel</button>';
     html += "</div>";
@@ -5317,9 +5315,7 @@ window.__RELAY_INIT__ = {
   function toggleEnrolGrant(projectID, checked) {
     const f = state.enrolForm;
     if (!f) return;
-    const i = f.project_ids.indexOf(projectID);
-    if (checked && i < 0) f.project_ids.push(projectID);
-    if (!checked && i >= 0) f.project_ids.splice(i, 1);
+    f.project_ids = checked && projectID ? [projectID] : [];
     if (f.project_ids.length > 0) f.no_grant = false;
     render();
   }
@@ -5351,8 +5347,8 @@ window.__RELAY_INIT__ = {
       return;
     }
     f.client_id = clientID;
-    if (f.project_ids.length === 0 && !f.no_grant) {
-      state.enrolmentError = 'choose at least one access profile, or tick "Enrol with no access for now"';
+    if (!f.request_id && f.project_ids.length === 0 && !f.no_grant) {
+      state.enrolmentError = 'choose an access profile, or tick "Enrol with no access for now"';
       render();
       return;
     }
@@ -5372,7 +5368,6 @@ window.__RELAY_INIT__ = {
         type: "approve_enrolment_request",
         request_id: f.request_id,
         client_id: clientID,
-        project_ids: f.project_ids,
         budget
       }));
       return;
@@ -5401,7 +5396,6 @@ window.__RELAY_INIT__ = {
       state.remoteDraft = {
         enabled: !!r.enabled,
         listen: r.listen || "",
-        enrolmentRequests: !!r.enrolment_requests,
         enrolmentListen: r.enrolment_listen || ""
       };
     }
@@ -5411,7 +5405,7 @@ window.__RELAY_INIT__ = {
     const d = remoteDraft();
     d[key] = value;
     state.remoteDirty = true;
-    if (key === "enabled" || key === "enrolmentRequests") render();
+    if (key === "enabled") render();
   }
   function remoteListenIsLoopback(addr) {
     addr = String(addr || "");
@@ -5456,19 +5450,24 @@ window.__RELAY_INIT__ = {
     if (effective && !remoteListenIsLoopback(effective)) {
       html += '<div class="remote-note warn">' + esc(effective) + " binds beyond loopback: every machine that can reach that address can attempt a TLS handshake. Only a certificate relay signed gets past it, and an unenrolled one is closed before a single request is read \u2014 but the default binds loopback precisely so that reaching relay from another machine is a deliberate act. A tunnel is a network path, never an identity: never forward the bridge socket in its place.</div>";
     }
-    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
-    html += "<span>Accept enrolment requests on a separate listener</span>";
-    html += '<label class="switch"><input type="checkbox" aria-label="Accept enrolment requests on a separate listener" ' + (d.enrolmentRequests ? "checked" : "") + ` onchange="remoteDraftSet('enrolmentRequests', this.checked)" /><span class="slider"></span></label>`;
+    const w = r.enrolment_window || { open: false };
+    html += '<div class="proj-section-title" style="margin-top:16px">Enrolment window';
+    html += w.open ? ' <span class="remote-state on">Open</span>' : ' <span class="remote-state off">Closed</span>';
     html += "</div>";
+    if (w.open) {
+      html += '<p class="proj-section-help">Open for access profile <strong>' + esc(w.profile_name || w.profile_id) + "</strong> until " + esc(w.expires) + ", listening on <code>" + esc(w.listen) + "</code>. The first request closes it.</p>";
+    } else {
+      html += '<p class="proj-section-help">No enrolment port is open. Open a five-minute window for one access profile with <strong>Allow Enrolment\u2026</strong> in the tray, or <code>relay enrol open --profile ID</code>.</p>';
+    }
     html += '<label for="remoteEnrolmentListen">Enrolment listen address</label>';
     html += '<input type="text" id="remoteEnrolmentListen" value="' + esc(d.enrolmentListen) + '" placeholder="' + esc(r.enrolment_effective || "") + `" oninput="remoteDraftSet('enrolmentListen', this.value)" />`;
-    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.enrolment_effective || "127.0.0.1:9911") + "</code>. This listener takes no client certificate \u2014 see the Pending requests panel above for what it can reach.</p>";
-    if (d.enrolmentRequests && !d.enabled) {
-      html += '<div class="remote-note warn">Enrolment requests will not be served until the mTLS listener above is also on: the enrolment-request channel is a companion to it, never a replacement \u2014 see the panel above for the exact refusal.</div>';
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.enrolment_effective || "127.0.0.1:9911") + "</code>. A window binds this address and takes no client certificate \u2014 see the Pending requests panel above for what it can reach.</p>";
+    if (!d.enabled) {
+      html += '<div class="remote-note warn">An enrolment window cannot open until the mTLS listener above is also on: enrolment is a companion to it, never a replacement.</div>';
     }
     const enrolEffective = (d.enrolmentListen || "").trim() || r.enrolment_effective || "";
-    if (d.enrolmentRequests && enrolEffective && !remoteListenIsLoopback(enrolEffective)) {
-      html += '<div class="remote-note warn">' + esc(enrolEffective) + " binds beyond loopback: any machine that can reach it can lodge an enrolment request. Lodging alone never raises a prompt and reaches nothing but a bounded table \u2014 but the default binds loopback so that widening it is a deliberate act.</div>";
+    if (enrolEffective && !remoteListenIsLoopback(enrolEffective)) {
+      html += '<div class="remote-note warn">' + esc(enrolEffective) + " binds beyond loopback: while a window is open, any machine that can reach it can lodge one enrolment request. Lodging alone never raises a prompt and reaches nothing but a bounded table \u2014 but the default binds loopback so that widening it is a deliberate act.</div>";
     }
     html += '<div class="proj-form-actions">';
     html += '<button class="btn btn-primary" onclick="saveRemoteConfig()" ' + (state.remoteConfigSavePending ? "disabled" : "") + ">" + (state.remoteConfigSavePending ? "Saving\u2026" : "Save") + "</button>";
@@ -5487,7 +5486,6 @@ window.__RELAY_INIT__ = {
       type: "update_remote_config",
       enabled: !!d.enabled,
       listen: String(d.listen || "").trim(),
-      enrolment_requests: !!d.enrolmentRequests,
       enrolment_listen: String(d.enrolmentListen || "").trim()
     }));
     render();
@@ -5535,7 +5533,7 @@ window.__RELAY_INIT__ = {
     state.pendingEnrolmentRequests = list || [];
     if (state.page === "remote") render("push");
   };
-  var LOGIN_CODE_MENU_ITEM = "Show Login Code...";
+  var ALLOW_ENROLMENT_MENU_ITEM = "Allow Enrolment\u2026";
   function pkSignCountText(p) {
     if (!p.counter_supported) return "This authenticator does not count signatures \u2014 the ordinary case for a synced passkey, and not a fault.";
     return "Signature counter at last accepted assertion: " + (p.sign_count || 0) + ".";
@@ -5545,7 +5543,7 @@ window.__RELAY_INIT__ = {
     if (c.error) {
       html += "<strong>Could not mint a login code.</strong>";
       html += '<div class="pk-code-line">' + esc(c.error) + "</div>";
-      html += '<div class="pk-code-line">Nothing was changed. Try the tray item again, or run <code>relay login enrol</code> in a terminal \u2014 it writes through the same store and will report the same failure with more detail.</div>';
+      html += '<div class="pk-code-line">Nothing was changed. Try ' + esc(ALLOW_ENROLMENT_MENU_ITEM) + " again, or run <code>relay login enrol</code> in a terminal \u2014 it writes through the same store and will report the same failure with more detail.</div>";
       html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="dismissLoginCode()">Done</button></div>';
       html += "</div>";
       return html;
@@ -5569,7 +5567,6 @@ window.__RELAY_INIT__ = {
     let html = '<div class="page-header"><h2>Passkeys</h2>';
     html += '<button class="btn" onclick="refreshPasskeys()">Refresh</button></div>';
     html += '<p class="page-intro">Three lists: the passkeys that sign a browser in to relay, the ones that sign it in to Home|Work, and the browsers signed in now.</p>';
-    if (state.loginCode) html += renderLoginCodeBanner(state.loginCode);
     if (state.passkeyError) html += '<div class="proj-error">' + esc(state.passkeyError) + "</div>";
     if (state.passkeyRevoked) {
       html += '<div class="audit-note">Revoked passkey <strong>' + esc(state.passkeyRevoked.name || state.passkeyRevoked.short) + "</strong>. It can no longer complete a login. Any browser it already signed in keeps its session below until you end it or it expires.</div>";
@@ -5582,7 +5579,7 @@ window.__RELAY_INIT__ = {
     html += '<p class="proj-section-help">Passkeys that sign a browser in to relay at <code>/relay/login</code>; there is no password.</p>';
     const list = state.passkeys || [];
     if (!list.length) {
-      html += '<div class="empty-state">No relay passkeys yet.<br>To add one, choose <strong>' + esc(LOGIN_CODE_MENU_ITEM) + "</strong> in the Relay tray menu or run <code>relay login enrol</code>.</div>";
+      html += '<div class="empty-state">No relay passkeys yet.<br>To add one, choose <strong>' + esc(ALLOW_ENROLMENT_MENU_ITEM) + "</strong> &gt; <strong>Relay sign-in</strong> in the Relay tray menu or run <code>relay login enrol</code>.</div>";
     }
     for (const p of list) {
       html += '<div class="pk-card">';
@@ -5659,7 +5656,115 @@ window.__RELAY_INIT__ = {
   }
   function dismissLoginCode() {
     state.loginCode = null;
-    render();
+    closeAllowEnrolmentSheet();
+  }
+  function allowEnrolProfiles() {
+    return (state.projects || []).filter(isRemoteProject);
+  }
+  function allowEnrolProfileBlock() {
+    if (!allowEnrolProfiles().length) return "Create an access profile first";
+    if (!(state.remote && state.remote.enabled)) return "Turn on the remote listener first";
+    return "";
+  }
+  function openAllowEnrolmentSheet() {
+    if (!state.allowEnrol) {
+      state.allowEnrol = { target: "home_work", profileId: "", busy: false, error: null, opened: null };
+    }
+    renderAllowEnrolmentSheet();
+  }
+  function closeAllowEnrolmentSheet() {
+    state.allowEnrol = null;
+    renderAllowEnrolmentSheet();
+  }
+  function setAllowEnrolTarget(target) {
+    if (!state.allowEnrol) return;
+    state.allowEnrol.target = target;
+    state.allowEnrol.error = null;
+    renderAllowEnrolmentSheet();
+  }
+  function setAllowEnrolProfile(id) {
+    if (state.allowEnrol) state.allowEnrol.profileId = id;
+  }
+  function submitAllowEnrolment() {
+    const a = state.allowEnrol;
+    if (!a || a.busy) return;
+    const msg = { type: "open_enrolment_window", target: a.target };
+    if (a.target === "profile") {
+      const sel = document.getElementById("allowEnrolProfile");
+      a.profileId = sel ? sel.value : a.profileId;
+      if (!a.profileId) {
+        a.error = "Choose an access profile.";
+        renderAllowEnrolmentSheet();
+        return;
+      }
+      msg.profile_id = a.profileId;
+    }
+    a.busy = true;
+    a.error = null;
+    renderAllowEnrolmentSheet();
+    ipc(JSON.stringify(msg));
+  }
+  function allowEnrolOpenedText(v) {
+    let until = v.expires || "";
+    const at = new Date(v.expires);
+    if (!isNaN(at.getTime())) until = at.toLocaleTimeString();
+    if (v.target === "profile") {
+      return "Enrolment is open for the access profile <strong>" + esc(v.profile_name || v.profile_id || "") + "</strong> until " + esc(until) + ". One request is taken. On the remote machine run <code>relayremote register NAME --host &lt;this Mac's address&gt;</code>.";
+    }
+    return "Enrolment is open for a Home|Work browser until " + esc(until) + ". One browser can register a passkey.";
+  }
+  function renderAllowEnrolmentSheet() {
+    let el = document.getElementById("allowEnrolmentSheet");
+    const a = state.allowEnrol;
+    if (!a) {
+      if (el) el.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "allowEnrolmentSheet";
+      document.body.appendChild(el);
+    }
+    const block = allowEnrolProfileBlock();
+    const profiles = allowEnrolProfiles();
+    let html = '<div role="dialog" aria-modal="true" aria-label="Allow Enrolment" style="position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.35)">';
+    html += '<div style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:20px;width:460px;max-width:92%;max-height:90%;overflow:auto">';
+    html += '<h2 style="margin-bottom:6px">Allow Enrolment</h2>';
+    if (state.loginCode && !a.opened) {
+      html += renderLoginCodeBanner(state.loginCode);
+      html += "</div></div>";
+      el.innerHTML = html;
+      return;
+    }
+    if (a.opened) {
+      html += '<p class="proj-section-help">' + allowEnrolOpenedText(a.opened) + "</p>";
+      html += '<p class="proj-section-help">Choose <strong>Cancel Enrolment</strong> in the Relay tray menu to close it early.</p>';
+      html += '<div style="margin-top:12px"><button class="btn btn-primary" onclick="closeAllowEnrolmentSheet()">Done</button></div>';
+      html += "</div></div>";
+      el.innerHTML = html;
+      return;
+    }
+    html += '<p class="proj-section-help">Let one new browser or machine in. You confirm with your password or Touch ID first.</p>';
+    if (a.error) html += '<div class="proj-error">' + esc(a.error) + "</div>";
+    const row = function(value, label, help, disabled) {
+      return '<div style="margin:10px 0"><label style="display:flex;gap:8px;align-items:flex-start"><input type="radio" name="allowEnrolTarget" value="' + value + '"' + (a.target === value ? " checked" : "") + (disabled ? " disabled" : "") + ' onchange="setAllowEnrolTarget(this.value)" style="margin-top:3px"><span><strong>' + esc(label) + '</strong><br><span class="proj-section-help">' + help + "</span></span></label></div>";
+    };
+    html += row("home_work", "Home|Work browser", "Opens a five-minute window for one browser to register a Home|Work passkey.", false);
+    html += row("relay_login", "Relay sign-in", "Shows a one-time code, valid for two minutes, that registers a passkey with relay.", false);
+    html += row("profile", "Access profile", block ? esc(block) : "Opens a five-minute window for one remote machine to ask to enrol into a profile.", !!block);
+    if (!block && a.target === "profile") {
+      html += '<div style="margin:0 0 10px 24px"><select id="allowEnrolProfile" aria-label="Access profile" onchange="setAllowEnrolProfile(this.value)">';
+      html += '<option value="">Choose an access profile</option>';
+      for (const p of profiles) {
+        html += '<option value="' + esc(p.id) + '"' + (a.profileId === p.id ? " selected" : "") + ">" + esc(p.name || p.id) + "</option>";
+      }
+      html += "</select></div>";
+    }
+    html += '<div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">';
+    html += '<button class="btn" onclick="closeAllowEnrolmentSheet()">Close</button>';
+    html += '<button class="btn btn-primary" onclick="submitAllowEnrolment()"' + (a.busy ? " disabled" : "") + ">Open</button>";
+    html += "</div></div></div>";
+    el.innerHTML = html;
   }
   function revokePasskey(id) {
     const p = (state.passkeys || []).find((x) => x.id === id);
@@ -5725,7 +5830,27 @@ That browser's credential stops authenticating on its next request and it has to
   window.onLoginCodeMinted = function(code) {
     state.loginCode = code || null;
     state.passkeyError = null;
-    showPage("passkeys");
+    if (!state.allowEnrol) state.allowEnrol = { target: "relay_login", profileId: "", busy: false, error: null, opened: null };
+    state.allowEnrol.busy = false;
+    state.allowEnrol.opened = null;
+    renderAllowEnrolmentSheet();
+  };
+  window.onEnrolmentWindowOpened = function(view) {
+    if (!state.allowEnrol) return;
+    state.allowEnrol.busy = false;
+    state.allowEnrol.opened = view || null;
+    renderAllowEnrolmentSheet();
+  };
+  window.onEnrolmentWindowError = function(e) {
+    if (!state.allowEnrol) return;
+    state.allowEnrol.busy = false;
+    state.allowEnrol.error = e && e.error || "The enrolment window could not be opened.";
+    renderAllowEnrolmentSheet();
+  };
+  window.onEnrolmentWindowsClosed = function(r) {
+    if ((r && r.closed || []).indexOf("relay_login") >= 0) state.loginCode = null;
+    if (state.allowEnrol) state.allowEnrol.opened = null;
+    renderAllowEnrolmentSheet();
   };
   function renderServiceInspector() {
     state._cfgBind = [];
@@ -6924,8 +7049,12 @@ That browser's credential stops authenticating on its next request and it has to
     }
     if (state.page === "inspector") updateServiceStatusDOM(result.serviceId, state.serviceStatuses[result.serviceId]);
   };
-  if (LOGIN_CODE_INIT) showPage("passkeys");
-  else showPage(INITIAL_PAGE || "overview");
+  if (INITIAL_PAGE === "allow-enrolment") {
+    showPage("overview");
+    openAllowEnrolmentSheet();
+  } else {
+    showPage(INITIAL_PAGE || "overview");
+  }
   var sidebarVersionEl = document.getElementById("sidebarVersion");
   if (sidebarVersionEl) sidebarVersionEl.textContent = "relay " + VERSION_INIT;
   Object.assign(window, {
@@ -6966,6 +7095,12 @@ That browser's credential stops authenticating on its next request and it has to
     toggleAuditFollow,
     toggleAuditShowAllowedControl,
     toggleAuditRow,
+    openAllowEnrolmentSheet,
+    closeAllowEnrolmentSheet,
+    renderAllowEnrolmentSheet,
+    setAllowEnrolTarget,
+    setAllowEnrolProfile,
+    submitAllowEnrolment,
     copyLoginCode,
     dismissLoginCode,
     pkSignCountText,
@@ -6992,7 +7127,6 @@ That browser's credential stops authenticating on its next request and it has to
     remoteGrantableProjects,
     remoteListenIsLoopback,
     removeRemoteConfig,
-    renderCAFingerprintLine,
     renderEnrolBundleBanner,
     renderEnrolmentForm,
     renderEnrolments,

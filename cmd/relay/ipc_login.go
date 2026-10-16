@@ -49,7 +49,7 @@ func ipcRevokePasskey(ctx *IPCContext, raw json.RawMessage) {
 	// §6.4 of the ADR-017 implementation spec), and Gate.Require blocks on
 	// LocalAuthentication's async completion handler, which needs the
 	// Cocoa run loop pumped to be delivered — the same deadlock
-	// showLoginCode's doc comment in trayapp.go describes.
+	// openAllowEnrolmentSheet's doc comment in trayapp.go describes.
 	ctx.GoFunc(func() {
 		removed, err := ctx.LoginOps.RevokePasskey(ctx.Ctx, msg.ID)
 		if err != nil {

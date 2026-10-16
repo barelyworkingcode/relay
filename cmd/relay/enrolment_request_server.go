@@ -1,7 +1,10 @@
 package main
 
 // The enrolment-request listener (spec §1): a THIRD listener beside
-// BridgeServer and RemoteServer, never a mode of either. It is plain TCP —
+// BridgeServer and RemoteServer, never a mode of either. It exists only while
+// an enrolment window is open (enrolment_window_ops.go): the first lodge
+// closes the listening socket and the lodging connection stays, carrying the
+// polls until the answer is collected. It is plain TCP —
 // no TLS, no client certificate — because P2 (spec §0) makes that the
 // conservative choice: nothing on this wire is a secret in either
 // direction, so TLS here would be decoration that reads as a security
@@ -31,12 +34,13 @@ const (
 	// so the listener never blocks accept() waiting for a slot to free.
 	maxEnrolConns = 16
 
-	// maxFramesPerEnrolConn bounds how many requests one connection may
-	// send before the server closes it and makes the client redial: about
-	// two minutes of 2-second polling. This is not a security boundary —
-	// nothing on this listener is more reachable through one connection
-	// than through many — it exists so a client that reuses a connection
-	// forever cannot hold a goroutine and an fd open indefinitely.
+	// maxFramesPerEnrolConn bounds how many requests a connection that has
+	// not lodged may send before the server closes it. This is not a
+	// security boundary — nothing on this listener is more reachable through
+	// one connection than through many — it exists so a peer that never
+	// lodges cannot hold a goroutine and an fd open indefinitely. The
+	// connection that lodged has no such cap: it carries the polls until its
+	// request is answered or expires.
 	maxFramesPerEnrolConn = 64
 
 	// maxEnrolFrameBytes bounds one wire frame. This is deliberately
@@ -52,6 +56,10 @@ const (
 	// rate) nor CodeInternalError (nothing failed on relay's side) fits a
 	// deliberate refusal a client should back off and retry.
 	codeEnrolmentThrottled = -32000
+
+	// codeEnrolmentNotOpen is the same range's answer to a lodge that
+	// arrives when no window is open, or after the window took a request.
+	codeEnrolmentNotOpen = -32001
 )
 
 var (
@@ -78,8 +86,9 @@ var (
 // is the only implementation; the interface exists so this file's own
 // struct can be checked by reflection (AC-4) rather than merely reviewed.
 type EnrolmentRequestSink interface {
-	Lodge(csrPEM []byte, label, requestedProfile, sasCommit, remoteAddr string) (lodged, error)
+	Lodge(csrPEM []byte, label, sasCommit, remoteAddr string) (lodged, error)
 	Poll(requestID, sasOpen string) (pollResult, error)
+	Abandon(requestID string) bool
 }
 
 var _ EnrolmentRequestSink = (*enrolmentRequestTable)(nil)
@@ -98,6 +107,12 @@ type EnrolmentRequestServer struct {
 	cfg      resolvedRemoteConfig
 	listener net.Listener
 
+	// windowConsumed is told, before the lodge reply is written, that a lodge
+	// took the window of this generation. The supervisor closes the
+	// listening socket and records the close in it. Set before Serve starts.
+	windowConsumed func(gen uint64)
+	stopOnce       sync.Once
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -110,7 +125,17 @@ type EnrolmentRequestServer struct {
 // its own wire decoding, since the two request types on this listener have
 // genuinely different payloads (a CSR+label vs. a request id), unlike
 // RemoteRequest's one shared struct.
-type enrolmentRequestHandler func(sink EnrolmentRequestSink, line []byte, remoteAddr string) bridge.BridgeResponse
+type enrolmentRequestHandler func(sink EnrolmentRequestSink, c *enrolConn, line []byte, remoteAddr string) bridge.BridgeResponse
+
+// enrolConn is one connection's state. Frames on a connection are handled one
+// at a time on its goroutine, so it needs no lock. Its requestID is the only
+// request this connection may poll for: a poll for any other id answers
+// unknown without reaching the table.
+type enrolConn struct {
+	requestID      string
+	windowConsumed func(gen uint64)
+	closeAfter     bool
+}
 
 // enrolmentRequestHandlers has exactly two entries. No request type outside
 // this map reaches anything at all, and neither entry can reach a tool, a
@@ -190,7 +215,7 @@ type enrolmentRateLimitResult struct {
 	RetryAfterSeconds int `json:"retry_after_seconds"`
 }
 
-func handleEnrolmentLodge(sink EnrolmentRequestSink, line []byte, remoteAddr string) bridge.BridgeResponse {
+func handleEnrolmentLodge(sink EnrolmentRequestSink, c *enrolConn, line []byte, remoteAddr string) bridge.BridgeResponse {
 	req, err := bridge.DecodeEnrolmentRequest(line)
 	if err != nil {
 		// Strict decoding: an unrecognised field lands here loudly.
@@ -198,26 +223,52 @@ func handleEnrolmentLodge(sink EnrolmentRequestSink, line []byte, remoteAddr str
 	}
 	// This listener has no caller-supplied trace; each request mints its own.
 	ev := logging.BeginEvent(logging.ContextWithTrace(context.Background(), logging.NewTraceID()), "enrolment.request.lodge")
-	res, err := sink.Lodge([]byte(req.CSRPEM), req.Label, req.RequestedProfile, req.SASCommit, remoteAddr)
+	// One request per connection: a second lodge here would let one peer
+	// hold two rows, and the window it could draw from is already gone.
+	if c.requestID != "" {
+		endLodgeEvent(ev, errEnrolmentNotOpen)
+		return enrolmentErrorResponse(errEnrolmentNotOpen)
+	}
+	res, err := sink.Lodge([]byte(req.CSRPEM), req.Label, req.SASCommit, remoteAddr)
 	if err != nil {
 		endLodgeEvent(ev, err)
 		return enrolmentErrorResponse(err)
 	}
-	ev.Set("request_id", res.RequestID).End(logging.OutcomeOK, "", nil)
-	data, merr := json.Marshal(enrolmentRequestLodgeResult(res))
+	c.requestID = res.RequestID
+	// Before the reply is written, so a client that has its reply can rely on
+	// the port already being closed.
+	if c.windowConsumed != nil {
+		c.windowConsumed(res.WindowGen)
+	}
+	ev.Set("request_id", res.RequestID).Set("profile_id", res.ProfileID).End(logging.OutcomeOK, "", nil)
+	data, merr := json.Marshal(enrolmentRequestLodgeResult{
+		RequestID:        res.RequestID,
+		SPKISHA256:       res.SPKISHA256,
+		PollAfterSeconds: res.PollAfterSeconds,
+		ExpiresInSeconds: res.ExpiresInSeconds,
+		CAPEM:            res.CAPEM,
+		SASNonce:         res.SASNonce,
+	})
 	if merr != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "enrolment request: "+merr.Error())
 	}
 	return bridge.BridgeResponse{Type: bridge.RespResult, Result: data}
 }
 
-func handleEnrolmentPoll(sink EnrolmentRequestSink, line []byte, _ string) bridge.BridgeResponse {
+func handleEnrolmentPoll(sink EnrolmentRequestSink, c *enrolConn, line []byte, _ string) bridge.BridgeResponse {
 	req, err := bridge.DecodeEnrolmentRequestPoll(line)
 	if err != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, "enrolment poll: "+err.Error())
 	}
 	ev := logging.BeginEvent(logging.ContextWithTrace(context.Background(), logging.NewTraceID()), "enrolment.request.poll").
 		Quiet().Set("request_id", req.RequestID)
+	if c.requestID == "" || req.RequestID != c.requestID {
+		// Not this connection's request. The same answer an expired id gets,
+		// so a peer learns nothing about ids it did not lodge.
+		ev.End(logging.OutcomeOK, "", nil)
+		c.closeAfter = true
+		return unknownPollResponse()
+	}
 	res, err := sink.Poll(req.RequestID, req.SASOpen)
 	if err != nil {
 		if errors.Is(err, errEnrolmentSASRefused) {
@@ -235,6 +286,10 @@ func handleEnrolmentPoll(sink EnrolmentRequestSink, line []byte, _ string) bridg
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "enrolment poll: "+err.Error())
 	}
 	ev.End(logging.OutcomeOK, "", nil)
+	// A terminal answer ends the connection: there is nothing left to poll.
+	if res.Status != "pending" {
+		c.closeAfter = true
+	}
 	data, merr := json.Marshal(enrolmentRequestPollResult{
 		Status:           res.Status,
 		PollAfterSeconds: res.PollAfterSeconds,
@@ -249,6 +304,11 @@ func handleEnrolmentPoll(sink EnrolmentRequestSink, line []byte, _ string) bridg
 	if merr != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "enrolment poll: "+merr.Error())
 	}
+	return bridge.BridgeResponse{Type: bridge.RespResult, Result: data}
+}
+
+func unknownPollResponse() bridge.BridgeResponse {
+	data, _ := json.Marshal(enrolmentRequestPollResult{Status: "unknown"})
 	return bridge.BridgeResponse{Type: bridge.RespResult, Result: data}
 }
 
@@ -281,6 +341,9 @@ func enrolmentErrorResponse(err error) bridge.BridgeResponse {
 	if errors.As(err, &source) {
 		return enrolmentThrottledResponse(err, source.RetryAfter)
 	}
+	if errors.Is(err, errEnrolmentNotOpen) {
+		return bridge.ErrorResponse(codeEnrolmentNotOpen, err.Error())
+	}
 	if errors.Is(err, errEnrolmentTableFull) {
 		// No retry_after_seconds: a full table empties when rows expire or
 		// an operator acts, not on a clock this listener can quote.
@@ -303,6 +366,8 @@ func endLodgeEvent(ev *logging.Event, err error) {
 	switch {
 	case errors.As(err, &limited), errors.As(err, &source), errors.Is(err, errEnrolmentTableFull):
 		ev.End(logging.OutcomeDenied, "throttled", err)
+	case errors.Is(err, errEnrolmentNotOpen):
+		ev.End(logging.OutcomeDenied, "not_open", err)
 	case errors.Is(err, errEnrolmentNoCA):
 		ev.End(logging.OutcomeError, "unavailable", err)
 	default:
@@ -328,16 +393,15 @@ func retryAfterSeconds(d time.Duration) int {
 	return secs
 }
 
-// NewEnrolmentRequestServer binds the listener. Two refusals, mirroring
-// NewRemoteServer's own shape: an absent/disabled config opens nothing (not
-// an error — the listener simply was not asked for), and disabled auditing
-// IS an error, identically to the tool-plane listener's own hard
-// dependency. Unlike NewRemoteServer, this checks only audit.Enabled() —
-// the recorder's own, fixed-at-launch flag — never live settings, because
-// this type holds no store to re-read one from; RemoteSupervisor.Reconcile
-// is what re-evaluates the LIVE remote.enabled / audit.enabled combination
-// on every tick and tears this listener down the moment auditing stops
-// being live, exactly as it already does for RemoteServer.
+// NewEnrolmentRequestServer binds the listener for one enrolment window. Two
+// refusals, mirroring NewRemoteServer's own shape: an absent/disabled config
+// opens nothing (not an error), and disabled auditing IS an error,
+// identically to the tool-plane listener's own hard dependency. Unlike
+// NewRemoteServer, this checks only audit.Enabled() — the recorder's own,
+// fixed-at-launch flag — never live settings, because this type holds no
+// store to re-read one from; RemoteSupervisor.Reconcile is what
+// re-evaluates the LIVE remote.enabled / audit.enabled combination on every
+// tick and closes an open window the moment auditing stops being live.
 func NewEnrolmentRequestServer(ctx context.Context, sink EnrolmentRequestSink, audit *audit.AuditRecorder, cfg resolvedRemoteConfig) (*EnrolmentRequestServer, error) {
 	if !cfg.Enabled {
 		slog.Debug("enrolment-request listener not enabled; no socket opened")
@@ -346,7 +410,7 @@ func NewEnrolmentRequestServer(ctx context.Context, sink EnrolmentRequestSink, a
 	if !audit.Enabled() {
 		return nil, fmt.Errorf("enrolment-request listener refuses to start while the tool-call audit log is disabled: " +
 			"a network door onto the enrolment path is not opened unrecorded, identically to the remote tool-plane " +
-			"listener — set audit.enabled to true, or turn off remote.enrolment_requests")
+			"listener — set audit.enabled to true")
 	}
 
 	ln, err := net.Listen("tcp", cfg.Listen)
@@ -388,20 +452,36 @@ func (s *EnrolmentRequestServer) Serve() error {
 	}
 }
 
+// StopAccepting closes the listening socket and leaves live connections
+// alone: the lodging connection must outlive the window it came in on.
 func (s *EnrolmentRequestServer) StopAccepting() {
 	if s == nil {
 		return
 	}
-	s.cancel()
-	_ = s.listener.Close()
+	s.stopOnce.Do(func() { _ = s.listener.Close() })
 }
 
+// Close stops accepting and ends every connection.
 func (s *EnrolmentRequestServer) Close() {
 	if s == nil {
 		return
 	}
 	s.StopAccepting()
+	s.cancel()
 	s.wg.Wait()
+}
+
+// CloseWhenIdle stops accepting and returns once every connection has ended
+// on its own; a connection ends at a terminal answer, a drop or the idle
+// timeout. The server's context, which the owner cancels at shutdown, bounds
+// the wait.
+func (s *EnrolmentRequestServer) CloseWhenIdle() {
+	if s == nil {
+		return
+	}
+	s.StopAccepting()
+	s.wg.Wait()
+	s.cancel()
 }
 
 // admit enforces maxEnrolConns: the 17th (and every subsequent) concurrent
@@ -456,15 +536,27 @@ func (s *EnrolmentRequestServer) handleConn(conn net.Conn) {
 	// it back out to enrolIdleTimeout once a frame actually arrives.
 	_ = conn.SetDeadline(time.Now().Add(enrolHandshakeTimeout))
 
+	state := &enrolConn{windowConsumed: s.windowConsumed}
+	// A request whose connection ends before approval is dropped: its machine
+	// cannot dial back on a closed port, so an approval would issue a
+	// certificate nobody can collect.
+	defer func() {
+		if state.requestID == "" || !s.sink.Abandon(state.requestID) {
+			return
+		}
+		logging.BeginEvent(logging.ContextWithTrace(context.Background(), logging.NewTraceID()), "enrolment.request.abandon").
+			Set("request_id", state.requestID).End(logging.OutcomeOK, "", nil)
+	}()
+
 	frames := 0
 	fc.Serve(connCtx, func(_ context.Context, line string) bridge.BridgeResponse {
 		frames++
-		resp := s.handleRequest(line, remoteAddr)
-		if frames >= maxFramesPerEnrolConn {
-			// Closed shortly after, not synchronously: this response is
-			// still in flight back to WriteFrame's caller (FrameConn.Serve
-			// writes it immediately after this closure returns), and
-			// closing here would race that write.
+		resp := s.handleRequest(state, line, remoteAddr)
+		// Closed shortly after, not synchronously: this response is still in
+		// flight back to WriteFrame's caller (FrameConn.Serve writes it
+		// immediately after this closure returns), and closing here would
+		// race that write.
+		if state.closeAfter || (state.requestID == "" && frames >= maxFramesPerEnrolConn) {
 			closeConnSoon(conn)
 		}
 		return resp
@@ -478,7 +570,7 @@ func closeConnSoon(conn net.Conn) {
 	time.AfterFunc(50*time.Millisecond, func() { _ = conn.Close() })
 }
 
-func (s *EnrolmentRequestServer) handleRequest(line, remoteAddr string) bridge.BridgeResponse {
+func (s *EnrolmentRequestServer) handleRequest(c *enrolConn, line, remoteAddr string) bridge.BridgeResponse {
 	var envelope struct {
 		Type string `json:"type"`
 	}
@@ -492,5 +584,5 @@ func (s *EnrolmentRequestServer) handleRequest(line, remoteAddr string) bridge.B
 		return bridge.ErrorResponse(jsonrpc.CodeMethodNotFound,
 			"request type is not available on the enrolment-request listener: "+envelope.Type)
 	}
-	return h(s.sink, []byte(line), remoteAddr)
+	return h(s.sink, c, []byte(line), remoteAddr)
 }

@@ -432,7 +432,7 @@ browser register one. See
 and `relay eve enrol` in [`docs/cli.md`](cli.md#relay-eve) for the door.
 
 **A second presentation of the code, not a second anchor.** The tray's
-**Show Login Code...** item and `relay login enrol` both reach the same gated
+**Allow Enrolment…** sheet (Relay sign-in) and `relay login enrol` both reach the same gated
 core method, `LoginOps.MintBootstrap`, and show the result in the Settings
 window — relay is `LSUIElement`, so that window is the only surface the tray
 has. ADR-016 decision 2 accepts the menu item as a presentation and refuses it
@@ -473,7 +473,7 @@ identity, and nobody redeems it for anything by presenting it.
   reach by lodging a fresh request.
 - **It cannot be presented in place of a certificate.** The remote listener
   and the tool-plane listener take a certificate at the TLS handshake, never
-  a request id on the wire, and the enrolment-request listener itself holds
+  a request id on the wire, and the enrolment listener (open only inside a window) itself holds
   no method that accepts one as authority for anything — it can only be
   polled. A request id proves nothing about the machine that holds it, which
   is the opposite property a credential needs.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -62,6 +63,8 @@ var adminOps = map[string]adminOpEntry{
 	"enrolment.request.list":    {handle: adminEnrolmentRequestList, caller: adminCallerSocket},
 	"enrolment.request.approve": {handle: adminEnrolmentRequestApprove, caller: adminCallerSocket, gates: []string{"enrolment.sign"}},
 	"enrolment.request.refuse":  {handle: adminEnrolmentRequestRefuse, caller: adminCallerOperator},
+	"enrolment.window.open":     {handle: adminEnrolmentWindowOpen, caller: adminCallerSocket, gates: []string{"enrolment.window.open"}},
+	"enrolment.window.close":    {handle: adminEnrolmentWindowClose, caller: adminCallerOperator},
 	"login.bootstrap.mint":      {handle: adminLoginBootstrapMint, caller: adminCallerSocket, gates: []string{"login.bootstrap.mint"}},
 	"login.passkey.revoke":      {handle: adminLoginPasskeyRevoke, caller: adminCallerSocket, gates: []string{"login.passkey.revoke"}},
 	"eve.enrolment.open":        {handle: adminEveEnrolmentOpen, caller: adminCallerSocket, gates: []string{"eve.enrolment.open"}},
@@ -144,6 +147,20 @@ func decodeAdminArgs[T any](op string, args json.RawMessage) (T, error) {
 	if err := json.Unmarshal(args, &v); err != nil {
 		var zero T
 		return zero, fmt.Errorf("%s: invalid request: %w", op, err)
+	}
+	return v, nil
+}
+
+// decodeAdminArgsStrict is decodeAdminArgs for a body whose every field is a
+// decision: an unknown field is refused, so a caller that still sends a field
+// the op no longer has (an approval naming a profile) learns it was not read.
+func decodeAdminArgsStrict[T any](op string, args json.RawMessage) (T, error) {
+	var v T
+	dec := json.NewDecoder(bytes.NewReader(args))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&v); err != nil {
+		var zero T
+		return zero, markInvalid(fmt.Errorf("%s: invalid request: %w", op, err))
 	}
 	return v, nil
 }
@@ -305,6 +322,10 @@ type enrolmentSignResult struct {
 	// own field rather than folded into RequestExpired -- the two rows
 	// differ in every fact enrolApprove's note is built from (issue #93).
 	RequestRefused bool `json:"request_refused,omitempty"`
+	// RequestAbandoned is set when the requesting machine closed its
+	// connection while this approval's prompt was open: the enrolment
+	// committed, and nobody is left to collect it.
+	RequestAbandoned bool `json:"request_abandoned,omitempty"`
 }
 
 func adminEnrolmentSign(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
@@ -399,13 +420,14 @@ type enrolmentRequestListItem struct {
 
 	// The comparison code and its states, so `relay enrol requests` renders
 	// the same three answers the Settings panel does — see
-	// enrolRequestSASColumn. IsLegacyRequest marks a `relayremote request`
-	// row, which has no comparison and never gains one.
-	SAS              string `json:"sas,omitempty"`
-	SASReady         bool   `json:"sas_ready"`
-	SASFailed        bool   `json:"sas_failed"`
-	IsLegacyRequest  bool   `json:"is_legacy_request"`
-	RequestedProfile string `json:"requested_profile,omitempty"`
+	// enrolRequestSASColumn.
+	SAS       string `json:"sas,omitempty"`
+	SASReady  bool   `json:"sas_ready"`
+	SASFailed bool   `json:"sas_failed"`
+
+	// The access profile of the window the request arrived in.
+	ProfileID   string `json:"profile_id"`
+	ProfileName string `json:"profile_name"`
 }
 
 type enrolmentRequestListResult struct {
@@ -420,6 +442,7 @@ func adminEnrolmentRequestList(ctx context.Context, r *appRouter, _ json.RawMess
 		return nil, err
 	}
 	views := ops.PendingRequests()
+	settings := config.DisplaySettings(ops.Store)
 	items := make([]enrolmentRequestListItem, 0, len(views))
 	for _, v := range views {
 		items = append(items, enrolmentRequestListItem{
@@ -434,8 +457,8 @@ func adminEnrolmentRequestList(ctx context.Context, r *appRouter, _ json.RawMess
 			SAS:              v.SAS,
 			SASReady:         v.SASReady,
 			SASFailed:        v.SASFailed,
-			IsLegacyRequest:  v.IsLegacyRequest,
-			RequestedProfile: v.RequestedProfile,
+			ProfileID:        v.ProfileID,
+			ProfileName:      profileDisplayName(settings, v.ProfileID),
 		})
 	}
 	ev.Set("count", len(items))
@@ -451,12 +474,13 @@ func adminEnrolmentRequestApprove(ctx context.Context, r *appRouter, args json.R
 	if err != nil {
 		return nil, err
 	}
-	req, err := decodeAdminArgs[approveFields]("enrolment.request.approve", args)
+	req, err := decodeAdminArgsStrict[approveFields]("enrolment.request.approve", args)
 	if err != nil {
 		return nil, err
 	}
 	created, err := ops.Approve(ctx, req, auditViaCLI, "")
-	if err != nil && !errors.Is(err, enrolment.ErrBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
+	if err != nil && !errors.Is(err, enrolment.ErrBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) &&
+		!errors.Is(err, errEnrolmentRequestAbandonedInFlight) {
 		return nil, err
 	}
 	result := enrolmentSignResult{Enrolment: created.Enrolment, Dir: created.Dir, CertPEM: created.CertPEM, CAPEM: created.CAPEM}
@@ -469,7 +493,62 @@ func adminEnrolmentRequestApprove(ctx context.Context, r *appRouter, args json.R
 	if errors.Is(err, errEnrolmentRequestRefused) {
 		result.RequestRefused = true
 	}
+	if errors.Is(err, errEnrolmentRequestAbandonedInFlight) {
+		result.RequestAbandoned = true
+	}
 	return marshalAdminResult(result)
+}
+
+type enrolmentWindowOpenRequest struct {
+	ProfileID string `json:"profile_id"`
+}
+
+type enrolmentWindowCloseResult struct {
+	Closed []string `json:"closed"`
+}
+
+// requireEnrolmentWindowOps finds the window core, which rides on EnrolmentOps
+// so both are wired by the one assignment that builds them.
+func requireEnrolmentWindowOps(r *appRouter) (*EnrolmentWindowOps, error) {
+	ops, err := requireEnrolmentOps(r)
+	if err != nil {
+		return nil, err
+	}
+	if ops.Window == nil {
+		return nil, errEnrolmentWindowOpsUnavailable
+	}
+	return ops.Window, nil
+}
+
+func adminEnrolmentWindowOpen(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEnrolmentWindowOps(r)
+	if err != nil {
+		return nil, err
+	}
+	req, err := decodeAdminArgsStrict[enrolmentWindowOpenRequest]("enrolment.window.open", args)
+	if err != nil {
+		return nil, err
+	}
+	view, err := ops.Open(ctx, req.ProfileID, auditViaCLI)
+	if err != nil {
+		return nil, err
+	}
+	return marshalAdminResult(view)
+}
+
+func adminEnrolmentWindowClose(ctx context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEnrolmentWindowOps(r)
+	if err != nil {
+		return nil, err
+	}
+	closed, err := ops.Close(ctx, auditViaCLI)
+	if err != nil {
+		return nil, err
+	}
+	if closed == nil {
+		closed = []string{}
+	}
+	return marshalAdminResult(enrolmentWindowCloseResult{Closed: closed})
 }
 
 type enrolmentRequestRefuseRequest struct {

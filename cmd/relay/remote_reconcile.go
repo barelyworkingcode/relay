@@ -7,6 +7,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"log/slog"
 	"sync"
@@ -20,13 +21,11 @@ import (
 // A nil *RemoteSupervisor is a valid "this process has no listener to
 // manage" value and every method tolerates it, exactly as RemoteServer does.
 //
-// This supervisor owns TWO listeners — the tool-plane RemoteServer and the
-// enrolment-request EnrolmentRequestServer (spec §1) — and converges both on
-// one tick. They are reconciled independently (reconcileToolListenerLocked /
-// reconcileEnrolmentListenerLocked), each against its own "did anything
-// change" comparison: a single combined check would repeat §11.8's bug,
-// where a change to only the enrolment address matched an unrelated
-// comparison and was silently ignored.
+// This supervisor owns TWO listeners — the tool-plane RemoteServer, which
+// Reconcile converges on every tick, and the enrolment-request
+// EnrolmentRequestServer (spec §1), which exists only for an enrolment window
+// (OpenEnrolmentWindow) and which Reconcile never binds. Reconcile only closes
+// an open window when the tool-plane listener or auditing turns off.
 type RemoteSupervisor struct {
 	ctx    context.Context
 	store  config.SettingsStore
@@ -45,25 +44,50 @@ type RemoteSupervisor struct {
 	clock serverClock
 
 	// enrolTable is the pending enrolment-request table. Built once, here,
-	// and reused across every EnrolmentRequestServer this supervisor binds
-	// — including a rebind onto a new enrolment_listen address — because
-	// the pending requests it holds are real state that must survive a
-	// listener move exactly as an enrolment survives a tool-listener move.
+	// and reused across every window: a request lodged in one window outlives
+	// that window (it can be approved until it expires), so the table cannot
+	// belong to a listener.
 	enrolTable *enrolmentRequestTable
 
 	mu     sync.Mutex
 	server *RemoteServer
-	// enrolServer mirrors server for the enrolment-request listener.
-	enrolServer *EnrolmentRequestServer
+	// enrolWindow is the open enrolment window, or nil. It lives in memory
+	// only: a restart closes it, and nothing reopens a port by itself.
+	enrolWindow *enrolmentWindow
+	windowGen   uint64
+	// lodging holds the servers of consumed windows while a lodging
+	// connection is still alive. Remote or auditing turning off closes them:
+	// a machine mid-poll must not collect a certificate with no recording.
+	lodging map[*EnrolmentRequestServer]struct{}
+	// onWindowClosed is told why each window closed. The window core uses it
+	// to notify the operator of an expiry.
+	onWindowClosed func(reason string)
 	// closed latches at shutdown so a reconcile racing cleanup cannot bind
 	// a fresh socket behind it.
 	closed bool
-	// lastReport / lastEnrolReport debounce logging per listener: a steady
-	// failure on one is loud once, then repeats at debug, independently of
-	// the other listener's own report state.
-	lastReport      string
-	lastEnrolReport string
+	// lastReport debounces logging: a steady failure is loud once, then
+	// repeats at debug.
+	lastReport string
 }
+
+// enrolmentWindow is one open window: its profile, its socket and the channel
+// that stops its expiry timer.
+type enrolmentWindow struct {
+	gen       uint64
+	profileID string
+	expires   time.Time
+	server    *EnrolmentRequestServer
+	done      chan struct{}
+}
+
+// Window close reasons, the enrolment.window.close event's reason values.
+const (
+	windowClosedLodged      = "lodged"
+	windowClosedExpired     = "expired"
+	windowClosedCancelled   = "cancelled"
+	windowClosedReplaced    = "replaced"
+	windowClosedListenerOff = "listener_off"
+)
 
 func NewRemoteSupervisor(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *audit.AuditRecorder, configurer RemoteConfigurer, surfaces func() project.McpSurfaces, goFunc func(func()), clock serverClock) *RemoteSupervisor {
 	table := newEnrolmentRequestTable()
@@ -107,14 +131,17 @@ func (sup *RemoteSupervisor) EnrolTable() EnrolmentRequestApprovalSink {
 	return sup.enrolTable
 }
 
-// EnrolAddr mirrors Addr for the enrolment-request listener.
+// EnrolAddr is the address of the open window's socket, or "" with no window.
 func (sup *RemoteSupervisor) EnrolAddr() string {
 	if sup == nil {
 		return ""
 	}
 	sup.mu.Lock()
 	defer sup.mu.Unlock()
-	return sup.enrolServer.Addr()
+	if sup.enrolWindow == nil {
+		return ""
+	}
+	return sup.enrolWindow.server.Addr()
 }
 
 func (sup *RemoteSupervisor) Reconcile() error {
@@ -130,10 +157,10 @@ func (sup *RemoteSupervisor) Reconcile() error {
 	settings := config.FreshSettings(sup.store)
 
 	toolErr := sup.reconcileToolListenerLocked(settings)
-	enrolErr := sup.reconcileEnrolmentListenerLocked(settings)
+	sup.reconcileEnrolmentWindowLocked(settings)
 	// Nil-safe: a nil or not-yet-started server is a valid steady state.
 	sup.server.revalidateMounts()
-	return errors.Join(toolErr, enrolErr)
+	return toolErr
 }
 
 // reconcileToolListenerLocked is the tool-plane RemoteServer's own
@@ -204,81 +231,188 @@ func (sup *RemoteSupervisor) reconcileToolListenerLocked(settings *config.Settin
 	return nil
 }
 
-// reconcileEnrolmentListenerLocked is reconcileToolListenerLocked's twin for
-// the enrolment-request listener. It has no revocation hook to move (this
-// listener holds no per-connection identity to revoke) and its own desired
-// config can itself be an error (resolveEnrolment refuses
-// enrolment_requests:true with enabled:false), which is reported and
-// returned exactly like a failed bind.
-func (sup *RemoteSupervisor) reconcileEnrolmentListenerLocked(settings *config.Settings) error {
-	desired, cfgErr := resolveRemoteEnrolment(settings.Remote)
-	if cfgErr != nil {
-		sup.stopEnrolLocked("enrolment-request configuration is invalid")
-		sup.reportEnrolLocked("", cfgErr)
-		return cfgErr
+// reconcileEnrolmentWindowLocked never binds the enrolment socket. It keeps
+// the comparison code's CA current and closes an open window the moment the
+// tool-plane listener or auditing is no longer live: a door onto enrolment is
+// not left open unrecorded.
+func (sup *RemoteSupervisor) reconcileEnrolmentWindowLocked(settings *config.Settings) {
+	if !resolveRemoteConfig(settings.Remote).Enabled || !remoteAuditingLive(settings, sup.audit) {
+		sup.closeWindowLocked(windowClosedListenerOff)
+		sup.closeLodgingLocked()
+		return
 	}
+	sup.refreshEnrolCALocked()
+}
 
-	if !desired.Enabled {
-		sup.stopEnrolLocked("settings no longer enable the enrolment-request listener")
-		sup.reportEnrolLocked("", nil)
-		return nil
-	}
-
-	if !remoteAuditingLive(settings, sup.audit) {
-		err := errors.New("enrolment-request listener not serving: the tool-call audit log is not recording — " +
-			"set audit.enabled to true and relaunch relay so the recorder starts (it is built once, at launch), " +
-			"or turn off remote.enrolment_requests")
-		sup.stopEnrolLocked("auditing is no longer active")
-		sup.reportEnrolLocked(desired.Listen, err)
-		return err
-	}
-
-	// On every tick, not only at bind, so a break-glass CA regeneration
-	// reaches the table that derives the comparison code — and so a CA
-	// that vanished makes a commitment-bearing lodge refuse rather than
-	// answer with a code over a certificate that is no longer on disk.
-	// Bytes, never the *enrolment.RelayCA: see setCACert.
-	//
-	// Ordering is safe. resolveEnrolment already refuses
-	// enrolment_requests:true with enabled:false, so the tool-plane
-	// listener converges first in this same tick and NewRemoteServer's
-	// enrolment.LoadOrCreateCA has already written ca.crt.
+// refreshEnrolCALocked hands the table the CA's public bytes, so a break-glass
+// CA regeneration reaches the code comparison, and a CA that vanished makes a
+// lodge refuse rather than answer with a code over a certificate no longer
+// on disk. Bytes, never the *enrolment.RelayCA: see setCACert.
+func (sup *RemoteSupervisor) refreshEnrolCALocked() {
 	if certPEM, spki, err := enrolment.CAMaterialFromDisk(); err == nil {
 		sup.enrolTable.setCACert(certPEM, spki)
 	} else {
 		sup.enrolTable.setCACert(nil, nil)
 	}
+}
 
-	if sup.enrolServer != nil && sup.enrolServer.cfg.Listen == desired.Listen {
-		sup.reportEnrolLocked(desired.Listen, nil)
-		return nil
+// OnEnrolmentWindowClosed registers the hook told why each window closed.
+func (sup *RemoteSupervisor) OnEnrolmentWindowClosed(fn func(reason string)) {
+	if sup == nil {
+		return
 	}
+	sup.mu.Lock()
+	defer sup.mu.Unlock()
+	sup.onWindowClosed = fn
+}
+
+// OpenEnrolmentWindow binds the enrolment socket for one access profile and
+// starts the expiry timer, replacing a window already open. The caller has
+// already been through the presence gate and recorded the issuance; this only
+// binds. It refuses when the tool-plane listener or auditing is off.
+func (sup *RemoteSupervisor) OpenEnrolmentWindow(profileID string, expires time.Time) (addr string, err error) {
+	if sup == nil {
+		return "", errors.New("enrolment windows are not available in this relay process")
+	}
+	sup.mu.Lock()
+	defer sup.mu.Unlock()
+	if sup.closed || sup.ctx.Err() != nil {
+		return "", errors.New("relay is shutting down")
+	}
+	settings := config.FreshSettings(sup.store)
+	desired := resolveRemoteEnrolment(settings.Remote)
+	if !desired.Enabled {
+		return "", errors.New("turn the remote listener on first: Settings > Remote Clients, or relay remote set")
+	}
+	if !remoteAuditingLive(settings, sup.audit) {
+		return "", errors.New("enrolment is not opened while the tool-call audit log is not recording: " +
+			"set audit.enabled to true and relaunch relay so the recorder starts")
+	}
+
+	// The old socket is closed first: a replacement binds the same address.
+	sup.closeWindowLocked(windowClosedReplaced)
+	sup.refreshEnrolCALocked()
 
 	ns, err := NewEnrolmentRequestServer(sup.ctx, sup.enrolTable, sup.audit, desired)
 	if err != nil {
-		err = fmt.Errorf("enrolment-request listener could not bind %s: %w", desired.Listen, err)
-		sup.reportEnrolLocked(desired.Listen, err)
-		return err
+		return "", fmt.Errorf("enrolment listener could not bind %s: %w", desired.Listen, err)
 	}
 	if ns == nil {
-		sup.stopEnrolLocked("settings disabled the enrolment-request listener mid-reconcile")
-		sup.reportEnrolLocked("", nil)
-		return nil
+		return "", errors.New("turn the remote listener on first: Settings > Remote Clients, or relay remote set")
 	}
 
-	old := sup.enrolServer
-	sup.enrolServer = ns
+	sup.windowGen++
+	w := &enrolmentWindow{gen: sup.windowGen, profileID: profileID, expires: expires, server: ns, done: make(chan struct{})}
+	sup.enrolWindow = w
+	sup.enrolTable.openWindow(w.gen, profileID)
+	ns.windowConsumed = func(gen uint64) { sup.windowConsumed(gen) }
 	sup.run(func() { _ = ns.Serve() })
 
-	if old != nil {
-		old.StopAccepting()
-		sup.run(old.Close)
-		slog.Warn("enrolment-request listener moved; connections on the old address were closed",
-			"from", old.cfg.Listen, "to", ns.Addr())
+	// Registered here, before this returns, so a test clock that advances
+	// right after the open finds the waiter.
+	var expiry <-chan time.Time
+	if sup.clock != nil {
+		expiry = sup.clock.After(expires.Sub(sup.clock.Now()))
+	} else {
+		expiry = time.After(time.Until(expires))
 	}
+	sup.run(func() {
+		select {
+		case <-expiry:
+			sup.closeWindowGen(w.gen, windowClosedExpired)
+		case <-w.done:
+		case <-sup.ctx.Done():
+		}
+	})
+	return ns.Addr(), nil
+}
 
-	sup.reportEnrolLocked(desired.Listen, nil)
-	return nil
+// CloseEnrolmentWindow closes the open window and reports whether one was open.
+func (sup *RemoteSupervisor) CloseEnrolmentWindow(reason string) bool {
+	if sup == nil {
+		return false
+	}
+	sup.mu.Lock()
+	defer sup.mu.Unlock()
+	return sup.closeWindowLocked(reason)
+}
+
+// EnrolmentWindow reports the open window.
+func (sup *RemoteSupervisor) EnrolmentWindow() (profileID string, expires time.Time, addr string, open bool) {
+	if sup == nil {
+		return "", time.Time{}, "", false
+	}
+	sup.mu.Lock()
+	defer sup.mu.Unlock()
+	w := sup.enrolWindow
+	if w == nil {
+		return "", time.Time{}, "", false
+	}
+	return w.profileID, w.expires, w.server.Addr(), true
+}
+
+// windowConsumed runs on the lodging connection, before its reply is written.
+func (sup *RemoteSupervisor) windowConsumed(gen uint64) {
+	sup.closeWindowGen(gen, windowClosedLodged)
+}
+
+func (sup *RemoteSupervisor) closeWindowGen(gen uint64, reason string) {
+	sup.mu.Lock()
+	defer sup.mu.Unlock()
+	if sup.enrolWindow == nil || sup.enrolWindow.gen != gen {
+		return
+	}
+	sup.closeWindowLocked(reason)
+}
+
+// closeWindowLocked ends the window. The socket stops accepting before the
+// event is written, so a reader of the event can rely on the port being
+// closed. The reason rides as close_reason: a line's own reason key is
+// reserved for the failures of a status that is not ok. A lodged window keeps the one connection that lodged; every other
+// reason ends all of them.
+func (sup *RemoteSupervisor) closeWindowLocked(reason string) bool {
+	w := sup.enrolWindow
+	if w == nil {
+		return false
+	}
+	sup.enrolWindow = nil
+	close(w.done)
+	// This is subtle: a window the table no longer holds was already
+	// consumed by a lodge whose windowConsumed has not run yet. Whatever
+	// raced it here, the close is the lodge's, and the lodging connection
+	// must survive it.
+	if !sup.enrolTable.closeWindow(w.gen) {
+		reason = windowClosedLodged
+	}
+	w.server.StopAccepting()
+	if reason == windowClosedLodged {
+		if sup.lodging == nil {
+			sup.lodging = map[*EnrolmentRequestServer]struct{}{}
+		}
+		sup.lodging[w.server] = struct{}{}
+		sup.run(func() {
+			w.server.CloseWhenIdle()
+			sup.mu.Lock()
+			delete(sup.lodging, w.server)
+			sup.mu.Unlock()
+		})
+	} else {
+		sup.run(w.server.Close)
+	}
+	logging.BeginEvent(logging.ContextWithTrace(context.Background(), logging.NewTraceID()), "enrolment.window.close").
+		Set("target", "profile").Set("profile_id", w.profileID).Set("close_reason", reason).End(logging.OutcomeOK, "", nil)
+	if sup.onWindowClosed != nil {
+		sup.onWindowClosed(reason)
+	}
+	return true
+}
+
+// closeLodgingLocked ends every lodging connection still alive; each request
+// is then abandoned as with any dropped connection.
+func (sup *RemoteSupervisor) closeLodgingLocked() {
+	for srv := range sup.lodging {
+		sup.run(srv.Close)
+	}
 }
 
 func (sup *RemoteSupervisor) StopAccepting() {
@@ -289,7 +423,9 @@ func (sup *RemoteSupervisor) StopAccepting() {
 	defer sup.mu.Unlock()
 	sup.closed = true
 	sup.server.StopAccepting()
-	sup.enrolServer.StopAccepting()
+	if sup.enrolWindow != nil {
+		sup.enrolWindow.server.StopAccepting()
+	}
 }
 
 func (sup *RemoteSupervisor) Close() {
@@ -300,11 +436,20 @@ func (sup *RemoteSupervisor) Close() {
 	sup.closed = true
 	s := sup.server
 	sup.server = nil
-	es := sup.enrolServer
-	sup.enrolServer = nil
+	var es *EnrolmentRequestServer
+	if sup.enrolWindow != nil {
+		es = sup.enrolWindow.server
+		close(sup.enrolWindow.done)
+		sup.enrolWindow = nil
+	}
+	lodging := sup.lodging
+	sup.lodging = nil
 	sup.mu.Unlock()
 	s.Close()
 	es.Close()
+	for srv := range lodging {
+		srv.Close()
+	}
 }
 
 func (sup *RemoteSupervisor) stopLocked(why string) {
@@ -319,20 +464,6 @@ func (sup *RemoteSupervisor) stopLocked(why string) {
 	enrolment.ClearRevocationHookFor(old)
 	sup.run(old.Close)
 	slog.Warn("remote listener stopped", "addr", old.cfg.Listen, "reason", why)
-}
-
-// stopEnrolLocked mirrors stopLocked for the enrolment-request listener.
-// No revocation hook to clear: this listener resolves no identity, so there
-// is nothing for a revocation to close early.
-func (sup *RemoteSupervisor) stopEnrolLocked(why string) {
-	if sup.enrolServer == nil {
-		return
-	}
-	old := sup.enrolServer
-	sup.enrolServer = nil
-	old.StopAccepting()
-	sup.run(old.Close)
-	slog.Warn("enrolment-request listener stopped", "addr", old.cfg.Listen, "reason", why)
 }
 
 func (sup *RemoteSupervisor) reportLocked(addr string, err error) {
@@ -350,26 +481,6 @@ func (sup *RemoteSupervisor) reportLocked(addr string, err error) {
 		return
 	}
 	slog.Error("remote listener not available", "listen", addr, "error", err)
-}
-
-// reportEnrolLocked mirrors reportLocked with its own debounce state
-// (lastEnrolReport), so a steady failure on one listener does not silence —
-// or get silenced by — a steady failure on the other.
-func (sup *RemoteSupervisor) reportEnrolLocked(addr string, err error) {
-	key := addr
-	if err != nil {
-		key += "\x00" + err.Error()
-	}
-	repeat := key == sup.lastEnrolReport
-	sup.lastEnrolReport = key
-	if err == nil {
-		return
-	}
-	if repeat {
-		slog.Debug("enrolment-request listener still not available", "listen", addr, "error", err)
-		return
-	}
-	slog.Error("enrolment-request listener not available", "listen", addr, "error", err)
 }
 
 func (sup *RemoteSupervisor) run(fn func()) {

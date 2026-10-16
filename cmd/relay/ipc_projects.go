@@ -68,7 +68,7 @@ func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 	// of the ADR-017 implementation spec) whenever the request sets a
 	// grant-widening field, and Gate.Require blocks on LocalAuthentication's
 	// async completion handler, which needs the Cocoa run loop pumped to be
-	// delivered — the same deadlock showLoginCode's doc comment in
+	// delivered — the same deadlock openAllowEnrolmentSheet's doc comment in
 	// trayapp.go describes.
 	ctx.GoFunc(func() {
 		created, createErr := ctx.ProjectOps.Create(ctx.Ctx, *msg, surfaces, auditViaIPC, "")
@@ -134,7 +134,7 @@ func ipcRemoveProject(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	found, err := ctx.ProjectOps.Remove(ctx.Ctx, msg.ID)
+	found, err := ctx.ProjectOps.RemoveVia(ctx.Ctx, msg.ID, auditViaIPC, "")
 	if err != nil {
 		ctx.UI.EmitEvent("onProjectError", err.Error())
 		return

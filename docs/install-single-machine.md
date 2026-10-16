@@ -101,8 +101,8 @@ error: relay is not running; `relay mcp register` requires the service.
   relay is the sole broker of its own credentials: the secrets are sealed and
   only the tray holds the key (ADR-017 decision 2), and it is the only reader of
   the configuration for `list`, `grant` and every other command that shows it.
-  Start Relay and retry. `relay audit` and `relay enrol ca-fingerprint` read
-  their own files and still work with relay stopped.
+  Start Relay and retry. `relay audit` reads its own file and still works
+  with relay stopped.
 ```
 
 ---

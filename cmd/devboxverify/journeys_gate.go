@@ -28,6 +28,7 @@ const (
 	servicePosID   = "gate-service-register-pos"
 	rotatePosID    = "gate-project-rotate-token-pos"
 	eveOpenPosID   = "gate-eve-enrolment-open-pos"
+	windowPosID    = "gate-enrolment-window-open-pos"
 	eveRevokePosID = "gate-eve-passkey-revoke-pos"
 	fixturesID     = "verify-fixtures-removed"
 	revokePosID    = "gate-credential-revoke-pos"
@@ -72,6 +73,7 @@ var gateSetupJourneys = slices.Concat(
 var gateTeardownJourneys = []journey{
 	{rotatePosID, []string{"projects", "presence", "audit"}, nil, phaseScreen, gateTimeout, runRotatePos},
 	{eveOpenPosID, []string{"login", "presence", "audit"}, nil, phaseScreen, gateTimeout, runEveOpenPos},
+	{windowPosID, []string{"remote", "presence", "audit"}, nil, phaseScreen, gateTimeout, runWindowOpenPos},
 	{eveRevokePosID, []string{"login", "presence"}, nil, phaseScreen, 5 * time.Second, func(context.Context, env) result {
 		return result{eveRevokePosID, stateNotRun, "relay keeps one global eve passkey mirror, replaced by each eve's report, so no verify passkey can be revoked through relay today"}
 	}},
@@ -1023,6 +1025,11 @@ type eveOpenRun struct {
 	ClosedAtEnd   bool
 }
 
+// eveOpenReason is relay's whole reason for opening the Home|Work window as the
+// dialog shows it. The word "Eve" is deliberately absent: the operator reads
+// Home|Work.
+const eveOpenReason = "open a five-minute window for one new browser to register a Home|Work passkey"
+
 func runEveOpenPos(ctx context.Context, e env) result {
 	token, res, ok := runCredential(e, eveOpenPosID)
 	if !ok {
@@ -1042,7 +1049,7 @@ func runEveOpenPos(ctx context.Context, e env) result {
 	if b := newestIssuance(rows, "eve_enrolment", ""); b != nil {
 		baseline = b.ID
 	}
-	r.CLI, r.Dialog = gatedCLI(ctx, e, "open a five-minute window", "eve", "enrol")
+	r.CLI, r.Dialog = gatedCLI(ctx, e, eveOpenReason, "eve", "enrol")
 	r.OpenAfter, r.AfterErr = eveWindowOpen(ctx, e, token)
 	if r.CLI.Exit == 0 {
 		rows, err := issuanceRows(ctx, e, audit.AuditEventCredentialIssued, "eve_enrolment")
@@ -1090,6 +1097,147 @@ func classifyEveOpenPos(r eveOpenRun) result {
 		return fail(fmt.Sprintf("consume status %d, want 200", r.ConsumeStatus))
 	}
 	return result{id, statePass, "opened after the prompt was answered; issuance recorded with presence; consumed and closed"}
+}
+
+// windowView is the part of `relay remote show --json` the window journeys read.
+type windowView struct {
+	Enabled bool `json:"enabled"`
+	Window  struct {
+		Open      bool   `json:"open"`
+		ProfileID string `json:"profile_id"`
+	} `json:"enrolment_window"`
+}
+
+func remoteWindow(ctx context.Context, e env) (windowView, error) {
+	return adminRead[windowView](ctx, e, "remote.view")
+}
+
+// firstRemoteProfile is the first access profile (kind remote) in relay's
+// project list, or "" when there is none.
+func firstRemoteProfile(ctx context.Context, e env, token string) (string, error) {
+	resp := frontendDo(ctx, e, token, http.MethodGet, "/api/projects", nil)
+	if resp.Status != http.StatusOK {
+		return "", fmt.Errorf("GET /api/projects answered %d: %s", resp.Status, resp.Error)
+	}
+	var projects []struct {
+		ID   string `json:"id"`
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(resp.Body, &projects); err != nil {
+		return "", errors.New("GET /api/projects answered unreadable JSON")
+	}
+	for _, p := range projects {
+		if p.Kind == "remote" {
+			return p.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// windowOpenSetup is the shared precondition of both window journeys: an
+// access profile to open for, the remote listener on, and no window open yet.
+// Anything else leaves nothing to judge, so it is BLOCKED with the reason.
+func windowOpenSetup(ctx context.Context, e env, id, token string) (profile string, res result, ok bool) {
+	profile, err := firstRemoteProfile(ctx, e, token)
+	switch {
+	case err != nil:
+		return "", blocked(id, err.Error()), false
+	case profile == "":
+		return "", blocked(id, "no access profile (kind remote) exists to open an enrolment window for"), false
+	}
+	v, err := remoteWindow(ctx, e)
+	switch {
+	case err != nil:
+		return "", blocked(id, "remote.view: "+err.Error()), false
+	case !v.Enabled:
+		return "", blocked(id, "the remote listener is off, so relay refuses to open an enrolment window; turn it on in Settings > Remote Clients"), false
+	case v.Window.Open:
+		return "", blocked(id, "an enrolment window was already open"), false
+	}
+	return profile, result{}, true
+}
+
+type windowOpenRun struct {
+	PreErr, AfterErr, RowErr error
+	Blocked                  *result
+	CLI                      cliResult
+	Dialog                   dialogResult
+	Profile                  string
+	After                    windowView
+	Row                      *audit.AuditEvent
+	CloseErr                 error
+	ClosedAtEnd              bool
+}
+
+func runWindowOpenPos(ctx context.Context, e env) result {
+	token, res, ok := runCredential(e, windowPosID)
+	if !ok {
+		return res
+	}
+	var r windowOpenRun
+	profile, res, ok := windowOpenSetup(ctx, e, windowPosID, token)
+	if !ok {
+		r.Blocked = &res
+		return classifyWindowOpenPos(r)
+	}
+	r.Profile = profile
+	baseline := ""
+	rows, err := issuanceRows(ctx, e, audit.AuditEventCredentialIssued, "enrolment_window")
+	if err != nil {
+		r.PreErr = err
+		return classifyWindowOpenPos(r)
+	}
+	if b := newestIssuance(rows, "enrolment_window", profile); b != nil {
+		baseline = b.ID
+	}
+	r.CLI, r.Dialog = gatedCLI(ctx, e, "open a five-minute window for one remote machine", "enrol", "open", "--profile", profile)
+	r.After, r.AfterErr = remoteWindow(ctx, e)
+	if r.CLI.Exit == 0 {
+		rows, err := issuanceRows(ctx, e, audit.AuditEventCredentialIssued, "enrolment_window")
+		r.RowErr = err
+		if row := newestIssuance(rows, "enrolment_window", profile); row != nil && row.ID != baseline {
+			r.Row = row
+		}
+	}
+	// The window must never outlive the journey, whatever else happened.
+	endCtx := context.WithoutCancel(ctx)
+	r.CloseErr = relayCmd(endCtx, e, "enrol", "close")
+	v, err := remoteWindow(endCtx, e)
+	r.ClosedAtEnd = err == nil && !v.Window.Open
+	return classifyWindowOpenPos(r)
+}
+
+func classifyWindowOpenPos(r windowOpenRun) result {
+	const id = windowPosID
+	fail := func(d string) result { return result{id, stateFail, d} }
+	if r.Blocked != nil {
+		return *r.Blocked
+	}
+	if r.PreErr != nil {
+		return blocked(id, r.PreErr.Error())
+	}
+	res, refused := positiveRefusal(id, r.CLI.Stderr, r.Dialog)
+	switch {
+	case !r.ClosedAtEnd:
+		return fail("the enrolment window is not confirmed closed; run `relay enrol close`")
+	case refused:
+		return res
+	case r.CLI.Exit != 0:
+		return cliExitFail(id, "enrol open", r.CLI)
+	case r.AfterErr != nil:
+		return blocked(id, r.AfterErr.Error())
+	case !r.After.Window.Open:
+		return fail("enrol open exited 0 but the window reads closed")
+	case r.After.Window.ProfileID != r.Profile:
+		return fail(fmt.Sprintf("the window names profile %q, want %q", r.After.Window.ProfileID, r.Profile))
+	}
+	if res, bad := rowFailure(id, "enrolment_window issuance", r.Row, r.RowErr); bad {
+		return res
+	}
+	if r.CloseErr != nil {
+		return fail("enrol close: " + r.CloseErr.Error())
+	}
+	return result{id, statePass, "opened after the prompt was answered; issuance recorded with presence; closed with relay enrol close"}
 }
 
 type fixturesRun struct {

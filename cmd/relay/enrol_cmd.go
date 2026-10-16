@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
@@ -18,7 +19,9 @@ import (
 // enrolGrantBudgetFlags is the --grant/--window-seconds/--max-calls/
 // --max-result-bytes/--mount-max-ops/--mount-max-read-bytes/--mount-max-write-bytes
 // flag set `enrol create` and `enrol sign` share:
-// identical flags, identical defaults, identical help text.
+// identical flags, identical defaults, identical help text. `enrol approve`
+// takes the budget flags alone (addEnrolBudgetFlags): its profile is the
+// window's.
 type enrolGrantBudgetFlags struct {
 	grants             stringSlice
 	windowSeconds      *int
@@ -30,8 +33,13 @@ type enrolGrantBudgetFlags struct {
 }
 
 func addEnrolGrantBudgetFlags(fs *flag.FlagSet) *enrolGrantBudgetFlags {
+	f := addEnrolBudgetFlags(fs)
+	fs.Var(&f.grants, "grant", "access profile id this certificate may use (one only: an enrolment reaches one profile); a grant must name an access profile (a remote-kind record), never a local project")
+	return f
+}
+
+func addEnrolBudgetFlags(fs *flag.FlagSet) *enrolGrantBudgetFlags {
 	f := &enrolGrantBudgetFlags{}
-	fs.Var(&f.grants, "grant", "access profile id this certificate may use (repeatable); a grant must name an access profile (a remote-kind record), never a local project")
 	f.windowSeconds = fs.Int("window-seconds", enrolment.DefaultWindowSeconds, "budget window in seconds")
 	f.maxCalls = fs.Int("max-calls", enrolment.DefaultMaxCalls, "max tool calls per window")
 	f.maxResultBytes = fs.Int64("max-result-bytes", enrolment.DefaultMaxResultBytes, "max cumulative result bytes per window")
@@ -254,20 +262,29 @@ func enrolList() {
 	}
 
 	w := newTabWriter()
-	fmt.Fprintln(w, "CLIENT ID\tPROFILES\tCLI-ADMIN\tCALLS/WINDOW\tBYTES/WINDOW\tMOUNT-OPS/WINDOW\tMOUNT-READ/WINDOW\tMOUNT-WRITE/WINDOW\tCREATED\tFINGERPRINT")
+	fmt.Fprintln(w, "CLIENT ID\tPROFILES\tSTATUS\tCLI-ADMIN\tCALLS/WINDOW\tBYTES/WINDOW\tMOUNT-OPS/WINDOW\tMOUNT-READ/WINDOW\tMOUNT-WRITE/WINDOW\tCREATED\tFINGERPRINT")
 	for _, e := range enrolments {
 		// Printed in full, and last, so all 64 hex characters cost nothing
 		// in readability: a revoked client's audit history stays legible
 		// after its enrolment is gone, and a listing that shortened it
 		// would be the obvious place for someone to copy the short form
 		// from.
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%ds\t%d\t%d\t%d\t%d\t%s\t%s\n",
-			e.ClientID, formatGrants(e.ProjectIDs), formatCLIAdmin(e.CLIAdmin),
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d/%ds\t%d\t%d\t%d\t%d\t%s\t%s\n",
+			e.ClientID, formatGrants(e.ProjectIDs), formatEnrolmentStatus(e.ProjectIDs), formatCLIAdmin(e.CLIAdmin),
 			e.Budget.MaxCalls, e.Budget.WindowSeconds, e.Budget.MaxResultBytes,
 			e.Budget.MountMaxOps, e.Budget.MountMaxReadBytes, e.Budget.MountMaxWriteBytes,
 			e.CreatedAt, e.Fingerprint)
 	}
 	w.Flush()
+}
+
+// formatEnrolmentStatus marks a record on disk that names several profiles: it
+// loads, and every remote call from it is refused until it is narrowed.
+func formatEnrolmentStatus(profileIDs []string) string {
+	if len(profileIDs) > 1 {
+		return fmt.Sprintf("refused: names %d profiles", len(profileIDs))
+	}
+	return "-"
 }
 
 func formatCLIAdmin(on bool) string {
@@ -301,7 +318,7 @@ func parseEnrolUpdateFlags(args []string) enrolment.UpdateRequest {
 	mountMaxReadBytes := fs.Int64("mount-max-read-bytes", 0, "new max mount-plane bytes read per window (0 resets to the default; omit to leave unchanged)")
 	mountMaxWriteBytes := fs.Int64("mount-max-write-bytes", 0, "new max mount-plane bytes written per window (0 resets to the default; omit to leave unchanged)")
 	var grants stringSlice
-	fs.Var(&grants, "grant", "access profile id this certificate may use (repeatable); passing --grant at all REPLACES the whole grant list, same as create")
+	fs.Var(&grants, "grant", "the one access profile id this certificate may use; passing --grant at all REPLACES the grant list, same as create")
 	clearGrants := fs.Bool("clear-grants", false, "remove every access profile grant, leaving the certificate enrolled but able to reach nothing; mutually exclusive with --grant")
 	cliAdmin := fs.Bool("cli-admin", false, "let this certificate adjust its OWN access profiles over the remote listener (narrowing only); --cli-admin=false withdraws it. Effective on the client's next request.")
 	fs.Parse(args)
@@ -466,7 +483,7 @@ func enrolRequests(args []string) {
 		return
 	}
 	w := newTabWriter()
-	fmt.Fprintln(w, "REQUEST ID\tSAS\tKEY\tLABEL\tFROM\tARRIVED\tEXPIRES\tSTATUS")
+	fmt.Fprintln(w, "REQUEST ID\tPROFILE\tSAS\tKEY\tLABEL\tFROM\tARRIVED\tEXPIRES\tSTATUS")
 	for _, req := range result.Requests {
 		label := req.Label
 		if label == "" {
@@ -479,21 +496,17 @@ func enrolRequests(args []string) {
 		// The full 64 hex characters, never truncated — enrolment.FingerprintDER's
 		// stated reason applies identically to a request's own key: a
 		// prefix answers "probably that key" where the point is "that key".
-		fmt.Fprintf(w, "%s\t%s\tsha256:%s\t%s\t%s\t%s\t%s\t%s\n",
-			req.RequestID, enrolRequestSASColumn(req), req.SPKISHA256, label, req.RemoteAddr, req.ArrivedAt, req.ExpiresAt, status)
+		fmt.Fprintf(w, "%s\t%s\t%s\tsha256:%s\t%s\t%s\t%s\t%s\t%s\n",
+			req.RequestID, formatRequestProfile(req), enrolRequestSASColumn(req), req.SPKISHA256, label, req.RemoteAddr, req.ArrivedAt, req.ExpiresAt, status)
 	}
 	w.Flush()
 }
 
-// enrolRequestSASColumn renders the comparison code's three non-code states
-// as words rather than a blank cell, because a blank one reads as "nothing to
-// compare" for all three and only one of them means that. A legacy
-// `relayremote request` row shows "-": it carries no comparison and never
-// will, and the control there is the CA fingerprint the operator carried.
+// enrolRequestSASColumn renders the comparison code's non-code states as
+// words rather than a blank cell, because a blank one reads as "nothing to
+// compare" for all of them and none of them means that.
 func enrolRequestSASColumn(req enrolmentRequestListItem) string {
 	switch {
-	case req.IsLegacyRequest:
-		return "-"
 	case req.SASFailed:
 		return "FAILED"
 	case req.SASReady && req.SAS != "":
@@ -503,29 +516,30 @@ func enrolRequestSASColumn(req enrolmentRequestListItem) string {
 	}
 }
 
+// formatRequestProfile is the PROFILE column: the name the operator gave the
+// profile, with its id when the two differ.
+func formatRequestProfile(req enrolmentRequestListItem) string {
+	switch {
+	case req.ProfileID == "":
+		return "-"
+	case req.ProfileName == "" || req.ProfileName == req.ProfileID:
+		return req.ProfileID
+	default:
+		return fmt.Sprintf("%s (%s)", req.ProfileName, req.ProfileID)
+	}
+}
+
 // parseEnrolApproveFlags builds the approve request from argv alone, no
 // store and no dial — matching parseEnrolSignFlags' own rationale. There is
 // no --csr flag: the CSR is the pending request's stored bytes, never
 // something this command could name (spec §3, approveFields' own doc
-// comment).
-// enrolApproveNoGrantMessage is what `relay enrol approve` says when no
-// --grant was named (ADR-019 §7: never the silent default). An enrolment
-// holding nothing connects successfully and lists zero tools, which reads on
-// the client machine as a broken install rather than an incomplete one — so
-// the operator says which they meant. The fix is one flag, either way.
-const enrolApproveNoGrantMessage = "--grant is required: approving with no access profile issues a certificate that can reach nothing,\n" +
-	"  which reads on the client machine as a broken install rather than a deliberate one.\n" +
-	"  Name the profile it should reach:  relay enrol approve --id ID --client-id NAME --grant PROFILE_ID\n" +
-	"  Or enrol it with no access on purpose, and grant later with `relay enrol update`:\n" +
-	"    relay enrol approve --id ID --client-id NAME --no-grant\n" +
-	"  See the profiles you can name with: relay grant"
-
+// comment). There is no --grant either: the request's profile is the one the
+// window named, so a flag that named another is a flag error (exit 2).
 func parseEnrolApproveFlags(args []string) approveFields {
 	fs := flag.NewFlagSet("enrol approve", flag.ExitOnError)
 	requestID := fs.String("id", "", "pending request id to approve (required)")
 	clientID := fs.String("client-id", "", "human-readable id for this enrolment (required, unique); this, not the request's label, names the enrolment")
-	noGrant := fs.Bool("no-grant", false, "enrol this machine with no access at all (nothing will work until `relay enrol update --grant` adds one); mutually exclusive with --grant")
-	shared := addEnrolGrantBudgetFlags(fs)
+	budget := addEnrolBudgetFlags(fs)
 	fs.Parse(args)
 
 	if *requestID == "" {
@@ -534,17 +548,10 @@ func parseEnrolApproveFlags(args []string) approveFields {
 	if *clientID == "" {
 		exitError("--client-id is required")
 	}
-	if len(shared.grants) > 0 && *noGrant {
-		exitError("--grant and --no-grant are mutually exclusive")
-	}
-	if len(shared.grants) == 0 && !*noGrant {
-		exitError("%s", enrolApproveNoGrantMessage)
-	}
 	return approveFields{
-		RequestID:  *requestID,
-		ClientID:   *clientID,
-		ProjectIDs: []string(shared.grants),
-		Budget:     shared.budget(),
+		RequestID: *requestID,
+		ClientID:  *clientID,
+		Budget:    budget.budget(),
 	}
 }
 
@@ -628,6 +635,12 @@ func enrolApprove(args []string) {
 	// above already committed by the time that refusal landed, so it must
 	// be named as what it is — the operator's own decision, not a TTL —
 	// or `relay enrol revoke` reads as fixing an expiry nobody caused.
+	if result.RequestAbandoned {
+		fmt.Println("  note: the requesting machine disconnected while this approval's presence prompt was open, so")
+		fmt.Println("  it cannot collect its certificate. The enrolment is real and already recorded; see it in")
+		fmt.Println("  `relay enrol list`. Run `relay enrol revoke --client-id " + result.Enrolment.ClientID + "` to undo it")
+		return
+	}
 	if result.RequestRefused {
 		fmt.Println("  note: you refused this exact request from the pending list while this approval's presence")
 		fmt.Println("  prompt was still open — the certificate was signed and committed anyway, for the CSR that")
@@ -657,16 +670,89 @@ func enrolRefuse(args []string) {
 	fmt.Printf("refused enrolment request %q\n", *requestID)
 }
 
-// enrolCAFingerprint reads ca.crt straight off disk — no store, no dial, no
-// sealer, the same "works with the tray stopped" shape `relay audit` has, since the certificate is public and the
-// key it corresponds to is not needed to fingerprint it. It is not a read of
-// configuration, so it is the one enrol subcommand that needs no tray.
-func enrolCAFingerprint() {
-	fp, err := enrolment.CAFingerprintFromDisk()
-	if err != nil {
-		exitError("%v", err)
+// enrolOpen opens a timed enrolment window for one access profile. The prompt
+// and the bind happen inside the running tray, so this process only asks.
+func enrolOpen(args []string) {
+	fs := flag.NewFlagSet("enrol open", flag.ExitOnError)
+	profile := fs.String("profile", "", "access profile id to open enrolment for (required)")
+	asJSON := fs.Bool("json", false, "print the window as JSON")
+	fs.Parse(args)
+	if *profile == "" {
+		exitError("--profile is required")
 	}
-	fmt.Println(fp)
+
+	raw := adminCall("relay enrol open", "enrolment.window.open", enrolmentWindowOpenRequest{ProfileID: *profile})
+	if *asJSON {
+		printJSONLine(raw)
+		return
+	}
+	var view enrolmentWindowView
+	decodeCLIResult(raw, &view)
+	until := view.Expires
+	if at, err := time.Parse(time.RFC3339, view.Expires); err == nil {
+		until = at.Local().Format("15:04:05")
+	}
+	name := view.ProfileName
+	if name == "" {
+		name = view.ProfileID
+	}
+	fmt.Printf("enrolment open for access profile %q until %s (%s, one request)\n", name, until, enrolmentWindowTTL)
+	fmt.Printf("  listening on %s\n", view.Listen)
+	fmt.Println("  on the remote machine: relayremote register NAME --host <this Mac's address>")
+}
+
+// enrolClose closes every open enrolment window: the access-profile window, the
+// Home|Work window and an unused relay sign-in code. Nothing open is not an
+// error.
+func enrolClose(args []string) {
+	fs := flag.NewFlagSet("enrol close", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "print the result as JSON")
+	fs.Parse(args)
+
+	// The name is read first: the close result names only the target, and
+	// once the window is gone so is its profile.
+	var name string
+	if !*asJSON {
+		view := adminRead[remoteConfigView]("relay enrol close", "remote.view", nil)
+		name = view.EnrolmentWindow.ProfileName
+		if name == "" {
+			name = view.EnrolmentWindow.ProfileID
+		}
+	}
+	raw := adminCall("relay enrol close", "enrolment.window.close", nil)
+	if *asJSON {
+		printJSONLine(raw)
+		return
+	}
+	var result enrolmentWindowCloseResult
+	decodeCLIResult(raw, &result)
+	if len(result.Closed) == 0 {
+		fmt.Println("no enrolment window was open")
+		return
+	}
+	names := make([]string, 0, len(result.Closed))
+	for _, target := range result.Closed {
+		names = append(names, enrolmentTargetLabel(target, name))
+	}
+	fmt.Printf("closed: %s\n", strings.Join(names, ", "))
+}
+
+// enrolmentTargetLabel is how the operator reads a window target. It never
+// carries the word "Eve": the browser path is Home|Work to the person at the
+// keyboard.
+func enrolmentTargetLabel(target, profileName string) string {
+	switch target {
+	case enrolmentWindowTargetHomeWork:
+		return "Home|Work browser"
+	case enrolmentWindowTargetRelayLogin:
+		return "Relay sign-in"
+	case enrolmentWindowTargetProfile:
+		if profileName != "" {
+			return fmt.Sprintf("access profile %q", profileName)
+		}
+		return "access profile"
+	}
+	return target
 }
 
 func formatGrants(ids []string) string {

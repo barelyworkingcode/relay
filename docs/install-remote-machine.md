@@ -1,43 +1,31 @@
 # Registering a new remote machine
 
-A second machine — a VM, a Linux box, another laptop — reaching relay's tools
-over the network. The client generates its own private key, asks to be
-enrolled, you approve at the Mac, and the client collects its certificate.
+A second machine (a VM, a Linux box, another laptop) reaching relay's tools
+over the network. The client generates its own private key and asks to be
+enrolled. You approve at the Mac, and the client collects its certificate.
 
-Start from [install-single-machine.md](install-single-machine.md): this guide
+Start from [install-single-machine.md](install-single-machine.md). This guide
 assumes relay is running, at least one MCP is registered, and you know what a
 presence prompt is.
 
-Output shown here is captured from a real run unless a block says otherwise.
-A block that was reconstructed from the command's own print format says so,
-and a block whose values were substituted (a host, a path, a comparison code)
-says that too. The reconstructed ones are all in Path C and in the rarer
-`relay enrol approve` notes: everything on Path A, including the approval
-behind the presence prompt, is a real run on a loopback host.
+There is one way to enrol a machine that can reach the Mac over the network:
+**Allow Enrolment on the Mac, then `relayremote register` on the machine.**
+The same window has a command-line form for scripts and SSH sessions. A
+machine with no network path to the Mac has one fallback, where you carry the
+signing request and the certificate by hand.
 
-There are three ways to get a client enrolled. All are first-class:
-
-- **[Path A](#path-a--register-one-command-one-comparison) —
-  `relayremote register`.** One command on the client. It prints a
-  six-character code, you compare that code against the one this Mac shows,
-  and you approve. Nothing is carried by hand. **This is the normal path.**
-- **[Path B](#path-b--relayremote-request-the-carried-pin-sibling) —
-  `relayremote request`.** The same network exchange, but the client
-  authenticates relay with a CA fingerprint you carried here out of band
-  instead of with a code you compare. It writes into a `--bundle` directory
-  rather than a named registration. Reach for it when you already have a
-  bundle wired up, or when the relay host predates `register`.
-- **[Path C](#path-c--operator-carried) — operator-carried.** You copy the
-  signing request to the Mac and the certificate back. Needs no listener, no
-  network path between the machines, and nothing to compare. **This is the
-  one that always works**; reach for it whenever the network path is down,
-  untrusted, or not worth opening for one enrolment.
+- **[The path](#the-path-allow-enrolment-then-register).** Tray > Allow
+  Enrolment… > an access profile, then `relayremote register` on the machine.
+  Compare one six-character code and approve.
+- **[The power doors](#the-power-doors).** `relay enrol open --profile`,
+  `relay enrol requests`, `relay enrol approve`, `relay enrol close`.
+- **[The operator-carried fallback](#the-operator-carried-fallback).**
+  `relayremote enrol`, `relay enrol sign --grant`, `relayremote install`. Only
+  for a machine with no network path to the Mac.
 
 ---
 
 ## Which machine runs what
-
-This is the single biggest source of confusion here, so it comes first.
 
 | Binary | Runs on | What it is |
 |---|---|---|
@@ -49,16 +37,15 @@ word**:
 
 | Command | Machine | Does |
 |---|---|---|
-| `relayremote register` | client | the whole of Path A: key, request, code, collection, into a **named registration**. |
+| `relayremote register` | client | the whole of the path: key, request, code, collection, into a **named registration**. |
 | `relayremote registrations` / `use` / `unregister` | client | the local registration store. `unregister` **revokes nothing.** |
-| `relayremote enrol` | client | generates `client.key` + `client.csr`. Never touches the network. |
-| `relayremote request` | client | lodges a signing request with relay over the network and waits. Pin carried by hand. |
-| `relayremote install` | client | files a certificate an operator carried here. Never touches the network. |
-| `relay enrol sign` | host | signs a signing request you carried to the Mac. Prompts. |
-| `relay enrol requests` | host | lists what a remote has lodged over the network, with the comparison code. |
-| `relay enrol approve` | host | signs a lodged request. Prompts. Requires a grant. |
+| `relayremote enrol` | client | fallback: generates `client.key` and `client.csr`. Never touches the network. |
+| `relayremote install` | client | fallback: files a certificate an operator carried here. Never touches the network. |
+| `relay enrol open` / `close` | host | opens or closes the enrolment window for one access profile. |
+| `relay enrol requests` | host | lists the request a remote has lodged, with its comparison code. |
+| `relay enrol approve` | host | signs a lodged request into the window's profile. Prompts. |
 | `relay enrol refuse` | host | declines one. Does **not** prompt. |
-| `relay enrol ca-fingerprint` | host | prints the CA hash a Path B client pins. |
+| `relay enrol sign` | host | fallback: signs a signing request you carried to the Mac. Prompts. |
 | `relay enrol list` / `revoke` / `update` | host | the enrolment records themselves. |
 
 Every command block below says which machine it runs on.
@@ -69,17 +56,17 @@ Every command block below says which machine it runs on.
 
 **On the Mac:**
 
-1. Relay running, and you at its keyboard. `relay enrol sign` and
-   `relay enrol approve` raise a login-password prompt and refuse outright
-   from a session that cannot show one.
+1. Relay running, and you at its keyboard. `relay enrol open`,
+   `relay enrol approve` and `relay enrol sign` raise a login-password prompt
+   and refuse outright from a session that cannot show one.
 2. **An access profile** the client will be granted. A profile is not a
-   project: it has no directory, no shell, no models — just a capability
-   grant. Create it in Settings → **Projects → + New → Access profile**;
+   project: it has no directory, no shell, no models, just a capability
+   grant. Create it in Settings > **Projects > + New > Access profile**;
    [`access-profiles.md`](access-profiles.md#creating-a-confined-client) is
    the reference for what each field does and why an empty field means "none"
    rather than "all". You need its id, which `relay grant` prints.
 3. **Auditing on.** The remote listener refuses to start while
-   `audit.enabled` is false — a remote grant is justified by the calls it
+   `audit.enabled` is false. A remote grant is justified by the calls it
    records, so serving remote traffic unrecorded is not a degraded mode. It is
    on by default.
 
@@ -90,10 +77,10 @@ linux and windows are in relayRemote's `dist/`, or build from source with
 ### Turn the tool-plane listener on
 
 **On the Mac.** No `remote` block in `settings.json` means **no socket at
-all** — not a closed one, not one that refuses. An install that never enrolled
-a client has no network surface, deliberately.
+all**, not a closed one and not one that refuses. An install that never
+enrolled a client has no network surface, deliberately.
 
-Settings → **Remote Clients** → *Accept remote clients on an mTLS listener* →
+Settings > **Remote Clients** > *Accept remote clients on an mTLS listener* >
 Save. Confirm:
 
 ```
@@ -107,50 +94,28 @@ wrong for a real VM. Set the listen address to something the client can reach
 before you expect this to work from another host. Settings warns when you bind
 beyond loopback, and it is worth reading: every machine that can reach that
 address can attempt a TLS handshake. Only a certificate relay signed gets past
-it — an unenrolled one is closed before a single request is read — but a
-tunnel is a network path, never an identity.
+it. An unenrolled one is closed before a single request is read. A tunnel is
+a network path, never an identity.
+
+That listener is the only setting you turn on. The **enrolment port** has no
+switch. It does not exist until you open a window, and it is gone when the
+window closes.
 
 ---
 
-## Path A — `register`: one command, one comparison
+## The path: Allow Enrolment, then register
 
-### A1. Turn the enrolment channel on
+### 1. Open a window, on the Mac
 
-**On the Mac.** The enrolment-request channel is a *third* listener, separate
-from the tool plane, and it is off unless you say otherwise — same rule as
-`remote.enabled`, for the same reason.
+Tray > **Allow Enrolment…** > pick the access profile this machine will get.
+Relay asks for your login password, then opens a five-minute window for that
+one profile. The tray shows the window while it is open, and **Cancel
+Enrolment** closes it early.
 
-Settings → **Remote Clients** → *Accept enrolment requests on a separate
-listener* → Save. It sits directly beneath the mTLS toggle you turned on
-above, with its own **Enrolment listen address** field; leave that blank for
-the default, `127.0.0.1:9911`.
+You choose the profile here, and only here. The machine cannot ask for a
+profile, and it cannot change the one you chose.
 
-It is a **companion** to the tool-plane listener, never a substitute. Turn the
-mTLS listener on first; the form warns before you save the other combination,
-and relay refuses it outright when it tries to bind:
-
-```
-remote.enrolment_requests is true but remote.enabled is false: the enrolment-request
-channel is a companion to the remote tool-plane listener, not a replacement for it —
-set remote.enabled to true as well, or turn enrolment_requests off
-```
-
-The two toggles write four fields into the `remote` block:
-
-```json
-"remote": {
-  "enabled": true,
-  "listen": "127.0.0.1:9910",
-  "enrolment_requests": true,
-  "enrolment_listen": "127.0.0.1:9911"
-}
-```
-
-Editing that by hand works too, and relay picks it up without a restart — it
-watches the file's modification time and reconverges both listeners on its
-next poll.
-
-Confirm the socket exists:
+Confirm the socket exists, and only now:
 
 ```
 $ lsof -nP -iTCP:9911 -sTCP:LISTEN
@@ -158,67 +123,57 @@ COMMAND   PID  USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
 relay   36793 admin   13u  IPv4 0xfc385445e9cfd53a      0t0  TCP 127.0.0.1:9911 (LISTEN)
 ```
 
-**Remove block** removes all four fields together and leaves no listener of
-either kind. Enrolments are not touched by it.
+The default address is `127.0.0.1:9911`. To change it, set
+`remote.enrolment_listen` in `settings.json`. The window binds nothing when
+the remote listener is off or auditing is off.
 
-Three facts about this listener, because they decide how much you should worry
-about opening it:
+What a window is, and is not:
 
+- **It takes one request.** The first request a peer lodges closes the
+  window. The timer and **Cancel Enrolment** close it too. A restart of
+  relay closes it, because the window lives in memory only.
 - **It is plain TCP, with no TLS, on purpose.** Nothing on this wire is a
   secret in either direction: inbound is a signing request (public by
   construction), outbound is a certificate and a CA certificate (both
-  public). TLS here would be decoration reading as a security property it
-  cannot provide — the client has no CA to verify a handshake against yet.
-  The real control is the comparison in A3, which plain TCP forces to be
-  visible and mandatory.
-- **Lodging raises no *prompt*, ever.** A peer that can reach this port can
-  add a row to a table capped at 8 entries and nothing else. A full table
-  refuses the next lodge with `-32000`, and a second lodge from the same source
-  within 10 seconds is refused with `-32000` and `retry_after_seconds` set to the time left in that interval, rounded up (1 to 10). No code path
-  from an unauthenticated lodge reaches the presence gate, so nobody on the
-  network can make your Mac ask you for a password. You initiate every
-  approval, and *that* is what prompts.
-- **Lodging may raise a *notification*.** Where this listener is on, a new
-  request can draw one dismissible tray banner: at most one a minute and six
-  in a rolling hour, one regardless of how many are pending, none once the
-  table is full, none while the Settings window is open, and carrying a count
-  and nothing the requesting machine supplied. **A banner is not a sign that
-  anything has gone wrong** — it means a machine asked, and nothing is
-  granted until you approve.
+  public). TLS here would read as a security property it cannot provide,
+  because the client has no CA to verify a handshake against yet. The real
+  control is the code comparison in step 3.
+- **Lodging raises no *prompt*, ever.** No code path from an unauthenticated
+  lodge reaches the presence gate, so nobody on the network can make your Mac
+  ask you for a password. You initiate every approval, and *that* is what
+  prompts.
+- **A peer can lodge first.** While the window is open, any machine that can
+  reach the port may lodge before yours does. That closes the window and
+  costs you a retry. It does not enrol the peer: you compare the code, and
+  the code will not match. Refuse its request, open a window again, and
+  register again.
+- **Lodging may raise a *notification*.** A new request can draw one
+  dismissible tray banner: at most one a minute and six in a rolling hour,
+  carrying a count and nothing the requesting machine supplied. A banner is
+  not a sign that anything has gone wrong. It means a machine asked, and
+  nothing is granted until you approve. Do not build a habit on it arriving:
+  macOS can suppress it. The tray's `Pending enrolment requests: N` line and
+  `relay enrol requests` are the surfaces that are always there.
 
-  **Do not build a habit on the banner arriving.** macOS notifications can be
-  turned off in System Settings, suppressed by Focus, and are unavailable to
-  a relay running without its app bundle, and there is no way to force one.
-  The tray menu's `Pending enrolment requests: N` line is the surface that is
-  always there while something is waiting, and `relay enrol requests` reads
-  the same table from a terminal.
+### 2. Register, on the client
 
-  macOS can also refuse Relay notification authorization outright, with no
-  prompt and nothing for you to have clicked — an unsigned or non-notarised
-  build is refused as a matter of course. Relay logs that once, so it is not
-  a silent nothing:
-
-  ```
-  grep "user notifications are disabled" ~/Library/Application\ Support/relay/logs/relay.log
-  ```
-
-  If that line is there, `System Settings → Notifications → Relay → Allow
-  notifications` is off. It is a per-user setting, so turn it on in the
-  account that runs the tray. Nothing else changes either way: the requests
-  are in the table regardless.
-
-### A2. Register, from the client
-
-**On the client** — one command:
+**On the client** (one command, run from a terminal):
 
 ```
 relayremote register "Hermes Mail" --host 10.0.0.2
 ```
 
-It generates a P-256 key that never leaves this machine, lodges the signing
-request together with a commitment to a random value of its own, receives
-relay's CA certificate and a random value of relay's, and prints a
-six-character comparison code straight away:
+It generates a P-256 key that never leaves this machine, then waits for the
+window. Start it before or after you open the window. While the port is
+closed it prints one line and retries every two seconds, up to `--wait`:
+
+```
+Waiting for relay at 10.0.0.2 to open enrolment… (On the Mac: tray → Allow Enrolment → this machine's access profile)
+```
+
+When the port opens, it lodges the signing request together with a commitment
+to a random value of its own, receives relay's CA certificate and a random
+value of relay's, and prints a six-character comparison code:
 
 ```
   code: FF9GTV · waiting for approval…
@@ -228,196 +183,72 @@ The same six characters must be shown beside this request. If they differ, Refus
 something is on the network path between the two machines.
 ```
 
-then waits, reprinting the code with each heartbeat:
-
-```
-waiting… code FF9GTV (elapsed 30s, expires in 14m29s)
-waiting… code FF9GTV (elapsed 1m0s, expires in 13m59s)
-```
-
 - **`--host` takes a bare host and nothing else.** Ports are `--port` (tool
-  plane, 9910) and `--enrol-port` (enrolment requests, 9911). Passing an
-  address with a port is refused rather than guessed at:
+  plane, 9910) and `--enrol-port` (enrolment, 9911). There is no discovery
+  of any kind, and there will not be: a machine that announced itself is a
+  machine an attacker can announce.
+- **The positional argument is a display name.** It becomes the
+  registration's local name (`"Hermes Mail"` becomes `hermes-mail`), which is
+  what `--as` takes later.
+- **The client never names a profile.** The window already did.
+- **`--wait DURATION`** is how long to wait for the window, and then how long
+  to wait for approval. The default is 10 minutes each.
+- **One connection.** The lodge and every poll after it use the one connection
+  the dial returned. If it drops before approval, the request goes with it:
+  open a window again and run `register` again. If another machine's request
+  took the window first, `register` says so and exits 8.
 
-  ```
-  $ relayremote register "X" --host 127.0.0.1:9911
-  error: --host "127.0.0.1:9911" looks like an address with a port or a path: pass the bare host, and name the ports with --port (tool plane, default 9910) and --enrol-port (enrolment requests, default 9911)
-  ```
+If the port never opens, `register` says which of two things happened and
+exits 8: the host answered and nothing listened (the window is not open, or
+the host or port is wrong), or the last attempt timed out (check the address
+and any firewall).
 
-  There is no discovery of any kind, and there will not be: a machine that
-  announced itself is a machine an attacker can announce.
-- **The positional argument is a display name.** It is slugified into the
-  registration's local name (`"Hermes Mail"` → `hermes-mail`) and that slug is
-  what goes on the wire as the label — so the only free text an unauthenticated
-  peer can put in front of you is a string that already satisfies relay's
-  existing label rule. Omit it and the machine's hostname is used.
-- **`--profile ID` is a request, never a grant.** It is shown to you at
-  approval, marked as a request, and never pre-selects anything.
-- **Re-running the identical command resumes.** The in-flight state is written
-  before the lodge frame goes out, so a killed `register` re-run reprints the
-  *same* code and keeps polling the *same* request rather than lodging a
-  second one — a second row in front of you, with a second code, is exactly
-  the confusion one comparison exists to remove. `--fresh` deletes an
-  in-progress registration and starts over.
-- **`--wait` defaults to 10 minutes.** Relay's own request TTL is 15.
+### 3. Compare the code, then approve, on the Mac
 
-### A3. Compare the code on the Mac, then approve
+The tray carries `Pending enrolment requests: N` while a request is waiting,
+and it opens Settings > Remote Clients > **Pending requests**. Read the six
+characters off the client's screen, read them off the Mac's, and approve only
+if they are identical. Choose **Approve…**. There is no profile to pick: the
+window named one. Relay asks for your login password. It is the same presence
+gate `relay enrol sign` uses, and the digest binds the request's own key.
 
-**On the Mac.** The tray menu carries `Pending enrolment requests: N` while
-any are waiting, and clicking it opens Settings → Remote Clients. From a
-terminal:
+The code is not a hash of two public keys an attacker could grind against. It
+is a commitment exchange: neither side can compute it while it still has
+freedom to choose an input. It binds relay's CA and the requesting key, so a
+machine in the middle changes it whichever it substitutes. A mismatch is the
+signal this exchange exists to produce. **Refuse** and treat the network path
+as suspect.
 
-```
-$ relay enrol requests
-REQUEST ID                            SAS     KEY                                                                      LABEL        FROM             ARRIVED               EXPIRES               STATUS
-req_b2bde2c8de5abc2a8eec7a653b64c1ba  FF9GTV  sha256:72393466846801fc3cf664adaa64bb639d1bb489a1e7333f9ef2ab3fc95430c7  hermes-mail  127.0.0.1:65253  2026-08-31T13:56:19Z  2026-08-31T14:11:19Z  pending
-req_b2cdbac96570e0c97a3d033c333c635b  -       sha256:3c086d09e813831e03cf55462330f1eb693ae1a88e79cc62f01ed3b7091632dc  vm-carried   127.0.0.1:65255  2026-08-31T13:57:07Z  2026-08-31T14:12:07Z  pending
-```
+### 4. The client confirms, and reports what it got
 
-**The `SAS` column is the whole of your job at this step.** Read the six
-characters off the requesting machine's screen, read them off this one, and
-approve only if they are identical. The second row above is a Path B request:
-it carries no code, shows `-`, and is authenticated by the fingerprint its
-operator carried instead.
-
-The column has two other values, and they are not the same as `-`:
-
-| value | means |
-|---|---|
-| `FF9GTV` | the code. Compare it. |
-| `(waiting)` | that machine has not completed its half of the exchange yet. **Approve is disabled.** |
-| `FAILED` | it completed it wrongly. Relay refuses to sign this row from every door. |
-| `-` | a carried-pin `relayremote request` row. No code, and there never will be one. |
-
-Then approve, choosing the grant yourself:
+The waiting `register` collects the certificate, checks that the CA it was
+handed is the one the code was computed over, and asks you the one question
+the ceremony exists for:
 
 ```
-relay enrol approve \
-  --id req_b2bde2c8de5abc2a8eec7a653b64c1ba \
-  --client-id hermes-mail \
-  --grant 477d9a17-da03-45eb-a433-764f93fe96fc
-```
-
-**`--grant` is required.** With none, this refuses and names `--no-grant` as
-the deliberate way to enrol a machine that reaches nothing:
-
-```
-error: --grant is required: approving with no access profile issues a certificate that can reach nothing,
-  which reads on the client machine as a broken install rather than a deliberate one.
-  Name the profile it should reach:  relay enrol approve --id ID --client-id NAME --grant PROFILE_ID
-  Or enrol it with no access on purpose, and grant later with `relay enrol update`:
-    relay enrol approve --id ID --client-id NAME --no-grant
-  See the profiles you can name with: relay grant
-```
-
-**The request names no grants and no budget.** A request that could ask for
-its own authority would put an attacker-supplied claim on your screen, which
-is the shape phishing takes. You choose, at approval, every time.
-
-`--client-id` names the enrolment and must be unique. It, not the request's
-label and not the signing request's own subject, is what appears in
-`relay enrol list` and in every audit row this client ever writes.
-
-This prompts, and the dialog names the network origin:
-
-> **Relay** — "Relay is trying to approve an enrolment request from
-> 127.0.0.1:65253 and sign a certificate for client "hermes-mail" with access
-> to 477d9a17-da03-45eb-a433-764f93fe96fc. Enter the password for the user
-> "…" to allow this."
-
-It is the *same* presence gate `relay enrol sign` uses — same operation, same
-digest, over the request's stored signing-request bytes. There is deliberately
-no separate "approve" gate, because a second door into certificate issuance is
-exactly what this design spends its effort closing on the first one. The
-digest binds the stored public key, so an approval answered for one key can
-never be redeemed for another.
-
-On success:
-
-```
-approved enrolment request "req_b2bde2c8de5abc2a8eec7a653b64c1ba" as "hermes-mail"
-  fingerprint: sha256:9d1f529024017d974df5f1e71a94040b39a81f22f0711437d2dd647c83021f34
-  profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
-  the certificate is delivered to the client on its next poll; nothing further to do on this host
-```
-
-If the presence prompt sits open long enough to cross the request's own
-15-minute TTL, this reports differently — see [When it does not
-work](#when-it-does-not-work).
-
-**Or do it from the window.** Settings → Remote Clients → **Pending
-requests** shows the code in the largest type on the row, the key hash in
-full, the label marked *(supplied by the requesting machine)*, any requested
-profile marked *a request, not a grant*, origin address, arrival and expiry —
-with **Approve…** and **Refuse** buttons. Approve opens the create-enrolment
-form, where choosing a profile is a required step and "enrol with no access
-for now" is a checkbox you have to tick on purpose. Same gate either way.
-
-### A4. The client confirms, and reports what it got
-
-The waiting `register` collects the certificate on its next poll, checks that
-the CA it was handed is byte-identical to the one the code was computed over,
-checks the chain and the key pairing, and then asks you the one question the
-whole ceremony exists for:
-
-```
-the Mac showed N2Y7F5. Did it match? [y/N] y
+the Mac showed FF9GTV. Did it match? [y/N] y
 registered "Hermes Mail" as hermes-mail
-  relay:        127.0.0.1:9910
+  relay:        10.0.0.2:9910
   certificate:  sha256:2cc63f1c222d095ecbcbc2ada28faf259adb44d9011a80548c6072587db21b40
-  code matched: N2Y7F5
+  code matched: FF9GTV
 
-  access:       477d9a17-da03-45eb-a433-764f93fe96fc
+  access:       Hermes Mail Inbox  (477d9a17-da03-45eb-a433-764f93fe96fc)
                 5 tools — mail_get_email, mail_get_emails, mail_list_accounts, mail_list_mailboxes, mail_search
 
   use it with:  relayremote call --tool NAME --args '{"…":"…"}'
                 (this is the only registration, so --as is not needed)
 ```
 
-(That block is a real run on a loopback host, so its code and `relay:` line
-differ from the `10.0.0.2` / `FF9GTV` this walkthrough otherwise uses. The
-`relay:` address is derived from the `--host` you passed.)
+(Values substituted: the host, the code and the profile.) **Anything but a
+typed `y` writes nothing** and leaves the key where it is. There is no flag,
+environment variable or `--yes` that creates another answer. `register` with
+a stdin that is not a terminal refuses before it generates a key. A machine
+with no terminal uses [the fallback](#the-operator-carried-fallback).
 
-**Anything but a typed `y` writes nothing** and leaves the key where it is:
+### 5. The registration store on the client
 
-```
-error: the codes did not match, so nothing was written. Refuse the request on the Mac:
-something is on the network path between this machine and 10.0.0.2. The key in
-~/.config/relayremote/registrations/hermes-mail is untouched
-```
-
-(Real output, with the host and the registration path substituted for the
-loopback ones it was captured with.)
-
-Two things about that question, because they are the point of Path A:
-
-- **The address `register` reports comes from your `--host`, never from the
-  wire.** Relay reports its own `remote.listen`, which is usually
-  `127.0.0.1:9910` and meaningless on another machine; following a host
-  supplied over an unauthenticated channel would be a redirection primitive
-  even after the comparison has closed. Only the *port* is ever taken from
-  the wire, and only when you did not type `--port` yourself. A `relay_addr`
-  naming some other host is printed as a note and not followed.
-- **A headless client passes `--ca-fingerprint sha256:…` instead** — read it
-  on the Mac with `relay enrol ca-fingerprint`. That is the same check done by
-  machine rather than by eye, and it is *stronger*, not a way to skip one:
-  prompting a human to eyeball a code a machine has already proven equal is
-  how you train people to answer `y` without looking. With stdin not a
-  terminal and no pin, `register` refuses before it generates a key:
-
-  ```
-  error: stdin is not a terminal, so nobody can be asked to compare the code — pass
-  --ca-fingerprint sha256:<64 hex characters> instead. Read it on the relay host with
-  `relay enrol ca-fingerprint`, or from the header in Settings → Remote Clients.
-  There is no flag that completes a registration without one of the two.
-  ```
-
-  `--tofu` does not exist on `register` and is refused by name.
-
-### A5. The registration store on the client
-
-`register` files everything into a **named registration**, so the client no
-longer needs `--bundle` and `--addr` on every call:
+`register` files everything into a **named registration**, so the client does
+not need `--bundle` and `--addr` on every call:
 
 ```
 $ relayremote registrations
@@ -429,10 +260,9 @@ Separate registrations mean separate audit trails and separate revocation on the
 They are NOT isolation: anything running as this user can read every client.key above.
 ```
 
-Register again with a different name and you get a second keypair, a second
-certificate and a second enrolment on the host — which is the shape relay
-already expects: several agents on one VM, each granted, audited and revoked
-independently. Then:
+Register again with a different name for a second keypair, certificate and
+enrolment. Each enrolment reaches one access profile, so a machine that needs
+two surfaces holds two registrations.
 
 ```
 relayremote --as hermes-cal list      # act as one, for one call
@@ -440,172 +270,81 @@ relayremote use hermes-cal            # move the * to it
 relayremote unregister hermes-cal     # delete it HERE. This revokes nothing.
 ```
 
-**With several registrations and no selector, `relayremote` refuses rather
-than guessing** — these identities differ precisely in what they may reach,
-and a wrong guess is silent because relay answers the wrong identity
-perfectly well:
-
-```
-error: 2 registrations on this machine and no way to tell which one you mean:
-  hermes-cal
-  hermes-mail
-  choose one for this call:      relayremote --as NAME ...
-  or make one the default:       relayremote use NAME
-refusing to pick: these identities differ in what they are allowed to reach
-```
-
-**`unregister` is local only, and says so at length**, because a client-side
-delete that read as a revocation would be the worst possible lie in this
-system:
-
-```
-$ relayremote unregister hermes-cal --yes
-Removed the LOCAL registration "hermes-cal" from this machine.
-
-THIS DID NOT REVOKE ANYTHING. The enrolment "hermes-cal" still exists on
-127.0.0.1, still counts against its budget, and still appears in the audit
-log. To actually cut its access, run on the Mac:
-
-    relay enrol revoke --client-id hermes-cal
-
-It was the default registration; that pointer is now cleared. Name one with `relayremote use NAME`.
-```
-
-The full precedence order, the store's on-disk layout and what `--as` does
-*not* buy you are in
+With several registrations and no selector, `relayremote` refuses rather than
+guessing. `unregister` is local only: to cut access, run
+`relay enrol revoke --client-id hermes-cal` on the Mac. The full precedence
+order and the store's layout are in
 [relayRemote's `README.md`](../../relayRemote/README.md#registrations-naming-an-identity-on-this-machine).
-`--bundle` and `RELAY_REMOTE_BUNDLE` keep working exactly as before and
-bypass the store entirely.
 
 ---
 
-## Path B — `relayremote request`: the carried-pin sibling
+## The power doors
 
-Same listener, same approval, same presence prompt. The difference is what
-the client trusts: a fingerprint you carried here by hand, instead of a code
-you compare. Use it when a bundle directory is already wired up, or against a
-relay that predates `register`.
+The tray item is one door onto a window. The same window opens from a
+terminal on the Mac's own console, which is how a script or a test drives it.
 
-Turn the channel on exactly as in [A1](#a1-turn-the-enrolment-channel-on)
-first.
-
-### B1. Read the CA fingerprint on the Mac
-
-**On the Mac:**
+**On the Mac**, open a window for one access profile:
 
 ```
-$ relay enrol ca-fingerprint
-sha256:42d03e331c5be0a449ea8bb2e1d6562d818969fea8df395772066398064c1f78
+relay enrol open --profile 477d9a17-da03-45eb-a433-764f93fe96fc
 ```
 
-Settings → Remote Clients shows the same value in its header. This reads
-`ca.crt` off disk and works with the tray stopped.
+This prompts (*"open a five-minute window for one remote machine to request
+enrolment into the access profile …"*) and refuses over SSH. It refuses
+before the prompt for an id that is not an access profile, with the remote
+listener off, and with auditing off. `--json` prints the window with its
+profile and expiry. Opening another window replaces the first.
 
-**Why the client demands this.** The client has no way to tell a real relay
-from an impostor at connection time — that is what "no TLS" means. An attacker
-on the network path can pass the client's real signing request straight through
-to the real relay, so the key hash you compare in B3 matches and you approve in
-good faith. The attacker then returns its **own** CA certificate to the
-waiting client. Every check the client runs on what it receives — that the
-certificate chains, that it pairs with the local key — passes, because the
-certificate really is valid, just for the wrong CA. From then on every tool
-call, arguments included, goes to whoever answered instead of to your Mac.
-
-Comparing this fingerprint is the only thing that closes that on this path. So
-`relayremote request` refuses to run without either `--ca-fingerprint` or
-`--tofu`; neither has a default. (Path A closes the same gap with the
-comparison code, which is why `register` needs no carried value.)
-
-Carry the string to the client however you like. It never needs to cross the
-network between the two machines, and it is not a secret — it just has to
-arrive unaltered.
-
-### B2. Lodge the request from the client
-
-**On the client:**
+Then, once the client has lodged:
 
 ```
-relayremote request \
-  --addr 10.0.0.2:9911 \
-  --bundle ~/relay-bundles/vm-agent \
-  --ca-fingerprint sha256:42d03e331c5be0a449ea8bb2e1d6562d818969fea8df395772066398064c1f78 \
-  --label vm-agent
+relay enrol requests
+relay enrol approve --id REQ_ID --client-id hermes-mail
+relay enrol refuse --id REQ_ID
+relay enrol close
 ```
 
-It generates a P-256 key in `--bundle` if there is not one already, writes a
-signing request, lodges it, and polls:
+- `relay enrol requests` lists the pending request with its `SAS` column
+  (the code to compare), its `PROFILE` and its key hash. `(waiting)` means the
+  machine has not finished its half of the exchange, and approve is refused.
+  `FAILED` means it finished it wrongly, and relay refuses to sign it from
+  every door.
+- `relay enrol approve` takes **no profile**. The certificate is issued for
+  the window's profile, which the pending request carries. `--client-id` names
+  the enrolment, must be unique, and is what appears in `relay enrol list` and
+  in every audit row this client writes. The budget flags (`--window-seconds`,
+  `--max-calls` and the others) are in [`cli.md`](cli.md#enrol-approve).
+  Approve prompts, and refuses over SSH: use the Mac's screen.
+- `relay enrol refuse` declines without a prompt.
+- `relay enrol close` closes the window. It is ungated, because closing
+  narrows what is reachable. A request already lodged stays in the table
+  until it is approved, refused or expires (15 minutes).
+
+On success:
 
 ```
-lodged enrolment request req_b2cdbac96570e0c97a3d033c333c635b with relay at 127.0.0.1:9911
-  this machine's public key: sha256:3c086d09e813831e03cf55462330f1eb693ae1a88e79cc62f01ed3b7091632dc      ← compare this on the host
-  relay's CA fingerprint will be checked against: sha256:42d03e331c5be0a449ea8bb2e1d6562d818969fea8df395772066398064c1f78
-approve it on the relay host: Settings → Remote Clients → Pending requests,
-  or:  relay enrol approve --id req_b2cdbac96570e0c97a3d033c333c635b --client-id ID --grant PROFILE_ID
-waiting… (expires in 15m0s)
+approved enrolment request "req_b2bde2c8de5abc2a8eec7a653b64c1b" as "hermes-mail"
+  fingerprint: sha256:9d1f529024017d974df5f1e71a94040b39a81f22f0711437d2dd647c83021f34
+  profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
+  the certificate is delivered to the client on its next poll; nothing further to do on this host
 ```
-
-All of that is on stderr; stdout stays clean for `--json`. A heartbeat line
-follows every 30 seconds.
-
-- `--addr` here is the **enrolment** listener, port 9911 by default. It is a
-  different flag from the `--addr` that `list` and `call` use, and a different
-  environment variable (`RELAY_REMOTE_ENROL_ADDR`, not
-  `RELAY_REMOTE_ADDR`). They name two listeners; conflating them makes
-  "connection refused" ambiguous.
-- `--label` is at most 64 bytes of letters, digits, `.`, `_` and `-`. It is
-  shown to you at approval, clearly marked as supplied by the requesting
-  machine — it is never relay's own assertion about who this is.
-- `--wait` defaults to 10 minutes. Relay's own request TTL is 15.
-- `--tofu` is the alternative to `--ca-fingerprint`: it prints the CA
-  fingerprint at collection time and asks you to confirm it interactively. It
-  requires a terminal and refuses on a non-interactive stdin, and there is no
-  flag that skips the confirmation. Use it only from a terminal you are
-  actually watching. A headless VM wants `--ca-fingerprint` — or Path A.
-
-### B3. Compare the key hash, then approve
-
-**On the Mac.** `relay enrol requests` lists it beside anything else pending —
-it is the `vm-carried` row in [A3's capture](#a3-compare-the-code-on-the-mac-then-approve),
-and it shows `-` in the `SAS` column because this path carries no comparison
-code and never will.
-
-**Compare that KEY against the hash the client printed in B2.** It is the
-whole 64 hex characters, never truncated, on both screens on purpose — a
-prefix answers "probably that key" where the point is "that key". If they do
-not match, refuse.
-
-Then approve exactly as in [A3](#a3-compare-the-code-on-the-mac-then-approve)
-— same command, same required `--grant`, same presence prompt, same output.
-
-### B4. The client collects
-
-Within a couple of seconds the waiting `relayremote request` verifies what
-arrived — CA fingerprint against the pin, then chain, key pairing, and public
-key equality, all before a byte reaches disk — writes `client.crt` and
-`ca.crt` beside the key, and prints (reconstructed, downstream of the prompt):
-
-```
-enrolled as "vm-agent"
-  fingerprint: sha256:…
-  relay:       10.0.0.2:9910
-  projects:    477d9a17-da03-45eb-a433-764f93fe96fc
-
-use it with:
-  relayremote list --bundle ~/relay-bundles/vm-agent --addr 10.0.0.2:9910
-```
-
-Note the address it gives you is the **tool plane**, 9910 — not the enrolment
-listener you have been talking to. No registration is created on this path;
-the bundle directory is the identity, exactly as it was.
 
 ---
 
-## Path C — operator-carried
+## The operator-carried fallback
 
-No listener, no network path between the machines, nothing to compare. Three
-commands.
+**Use this only for a machine with no network path to the Mac**, or a client
+with no terminal to compare a code in. It needs no window, no listener and
+nothing to compare. You carry the signing request to the Mac and the
+certificate back, and copying `ca.crt` here by hand **is** the trust
+decision.
 
-**1. On the client** — generate the key and the signing request. This never
+The private key is generated **on this machine** and never leaves it. What
+crosses to the Mac is a certificate signing request (public material only),
+and what comes back is a certificate over it. Three commands, two run on the
+client and one on the Mac.
+
+**1. On the client:** generate the key and the signing request. This never
 touches the network:
 
 ```
@@ -620,38 +359,22 @@ then, back on this machine:
   relayremote install --bundle /home/you/relay-bundles/vm-agent --from ./signed
 ```
 
-Copy `client.csr` to the Mac — USB stick, `scp`, paste, anything. It is public
+Copy `client.csr` to the Mac (USB stick, `scp`, paste, anything). It is public
 by construction and proves possession of a key that never leaves the client.
-`client.key` stays where it is.
 
-**2. On the Mac** — sign it, at the Mac's own screen:
+**2. On the Mac,** at its own screen, sign it for one profile:
 
 ```
 relay enrol sign --client-id vm-agent --csr client.csr \
   --grant 477d9a17-da03-45eb-a433-764f93fe96fc --out ./signed
 ```
 
-This prompts: *"sign a certificate for client "vm-agent" with access to
-477d9a17-…"*. A signing request's natural habitat is an SSH session or a USB
-stick, so expect to run this one at the console even when the file itself
-arrived over the network.
+This prompts (*"sign a certificate for client "vm-agent" with access to
+477d9a17-…"*). `--grant` takes one profile: two `--grant` flags issue
+nothing, and an enrolment reaches one profile. Nothing in `./signed` is a
+secret, only `client.crt` and `ca.crt`.
 
-Reconstructed — this one is behind the prompt:
-
-```
-signed enrolment "vm-agent"
-  fingerprint: sha256:…
-  profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
-  certificate: /Users/you/Library/Application Support/relay/enrolments/vm-agent
-  copy client.crt and ca.crt to the client machine, beside the client.key it generated;
-  no private key was written on this host
-  copies also written to: ./signed
-```
-
-Nothing in that directory is a secret — `client.crt` and `ca.crt` only. Relay
-never held a private key for this enrolment and has none to lose.
-
-**3. On the client** — file what came back:
+**3. On the client:** file what came back:
 
 ```
 $ relayremote install --bundle ~/relay-bundles/vm-agent --from ./signed
@@ -659,27 +382,23 @@ installed certificate for "vm-agent"
   fingerprint: sha256:…
 ```
 
-(Reconstructed, since step 2 is gated. If the bundle already held a
-certificate, a `previous:` line names the fingerprint this replaced.)
-
 `install` verifies before it writes anything: the certificate pairs with the
-key already in the bundle, it chains to the supplied CA for client
-authentication, and its public key hashes to the same value the local key
-does. A refusal leaves the bundle exactly as it was.
+key already in the bundle, it chains to the supplied CA, and its public key
+hashes to the same value the local key does. A refusal leaves the bundle as
+it was.
 
-There is no CA fingerprint to pin on this path — you carried `ca.crt` by hand,
-and copying it *is* the trust decision.
+The relay host also needs the tool-plane listener, as above.
 
-> `relay enrol create` is a third, older path that generates the client's key
-> **on the Mac** and hands you a bundle containing it. It still works and says
-> so in its own output, but prefer `sign`: a key that never crosses a wire is
-> a key that cannot be intercepted on one.
+> `relay enrol create` is an older command that generates the client's key
+> **on the Mac** and hands you a bundle containing it. It is deprecated in
+> its own output. Prefer `sign`: a key that never crosses a wire cannot be
+> intercepted on one.
 
 ---
 
 ## Check that it worked
 
-**On the client.** A machine from Path A needs no flags at all — the
+**On the client.** A machine enrolled with `register` needs no flags at all — the
 registration carries the address and the profile:
 
 ```
@@ -695,7 +414,7 @@ MAIL (5)
 ```
 
 With more than one registration, name it: `relayremote --as hermes-mail list`.
-From Path B or C, name the directory instead:
+From the fallback, name the directory instead:
 `relayremote list --bundle ~/relay-bundles/vm-agent --addr 10.0.0.2:9910`.
 
 Then call one:
@@ -718,8 +437,8 @@ TIME      OUTCOME  PROJECT      MCP     TOOL                MS   CALLER       DE
 07:09:33  ok       Hermes Mail  macmcp  mail_list_accounts  149  hermes-mail  {}
 ```
 
-(The three blocks above were captured on a loopback host against the
-registration made in Path A. CALLER carries the enrolment's `--client-id`,
+(The blocks above were captured on a loopback host against the
+registration made with `register`. CALLER carries the enrolment's `--client-id`,
 resolved from the peer certificate — never from anything the client sent, and
 never from the registration's local name, which may differ.)
 
@@ -740,10 +459,10 @@ relayremote list
 is consulted *before* `RELAY_REMOTE_BUNDLE` — it is the more specific
 variable, and someone who sets it means it.
 
-If the enrolment holds more than one grant, add `--project ID` (or
-`RELAY_REMOTE_PROJECT`) to say which one you are acting as. With exactly one,
-it is optional; a registration records the default it was granted, so it is
-optional there too.
+An enrolment reaches one access profile, so `--project ID` (or
+`RELAY_REMOTE_PROJECT`) is optional, and a registration records the profile it
+was granted. A legacy record that names several profiles is refused on every
+call until `relay enrol update --grant` narrows it to one.
 
 ---
 
@@ -816,8 +535,7 @@ There is no bearer token anywhere on this path and no password over it —
 possession of that file is the whole credential. Anyone who can read it can
 call every tool the enrolment grants, as this client, in your audit log.
 
-It is generated on the client by `relayremote register`, `relayremote enrol`
-or `relayremote request`, written `0600`, and never sent anywhere: relay only
+It is generated on the client by `relayremote register` or `relayremote enrol`, written `0600`, and never sent anywhere: relay only
 ever sees the public half, inside the signing request. A registration keeps it
 at `~/.config/relayremote/registrations/<name>/client.key` (the directory
 `0700`, honouring `XDG_CONFIG_HOME`); a bundle keeps it wherever you pointed
@@ -849,202 +567,83 @@ one leaves every other client — including others on the same VM — untouched.
 
 ### `error: the codes did not match, so nothing was written.`
 
-**Path A, and the one message here you should not work around.** The client
-asked whether the code on the Mac matched and you said no (or the answer was
-not a typed `y`). Nothing was written and `client.key` is untouched, exit code
-2. Refuse the request on the Mac and treat the network path between the two
-machines as suspect until you know why the two values differed — a mismatch is
-the signal this exchange exists to produce, not a glitch to retry past. Two
-innocent causes worth eliminating first: you compared against the wrong row
-(there can be several pending), or relay's CA was regenerated between the
+The client asked whether the code on the Mac matched and the answer was not a
+typed `y`. Nothing was written and `client.key` is untouched, exit code 2.
+Refuse the request on the Mac and treat the network path as suspect until you
+know why the two values differed. Two innocent causes to eliminate first: you
+compared against the wrong request, or relay's CA was regenerated between the
 lodge and the approval.
 
 ### `error: stdin is not a terminal, so nobody can be asked to compare the code`
 
-`register` from a script, a CI job or a pipe. Pass `--ca-fingerprint
-sha256:…`, read on the Mac with `relay enrol ca-fingerprint` — the same check
-done by machine instead of by eye, and a stronger one. Refused at flag parse,
-exit code 2: no key was generated and nothing was dialled.
+`register` from a script, a CI job or a pipe. Run it from a terminal, or use
+[the fallback](#the-operator-carried-fallback). Refused at flag parse, exit
+code 2: no key was generated and nothing was dialled.
 
-### `invalid boolean flag tofu: --tofu does not exist on `register``
+### Relay at 10.0.0.2:9911 never accepted a connection
 
-It never did. The comparison code replaced it, and it is a stronger control
-than trusting whatever CA answered. `--tofu` still exists on `relayremote
-request`, where there is no code to compare.
+Exit code 8. The window is not open, or it closed (a request, the timer or a
+restart closes it), or the host or port is wrong. Open a window on the Mac and
+run `register` again. A window that closed because another peer lodged first
+looks the same from here: open a fresh one.
 
 ### `error: 2 registrations on this machine and no way to tell which one you mean`
 
 Exit code 2, and deliberate: `relayremote` does not pick between identities
-that differ in what they may reach, because a wrong guess is silent — relay
-answers the wrong identity perfectly well. Name one with `--as NAME` for this
-call, or `relayremote use NAME` to move the default. The message lists every
-name it knows.
+that differ in what they may reach. Name one with `--as NAME`, or move the
+default with `relayremote use NAME`.
 
 ### `error: pass --bundle or --as, not both`
 
-They name two different identities: a directory, and a registration in the
-store. Exit code 2, nothing dialled.
+They name two different identities. Exit code 2, nothing dialled.
 
-### Exit code 12 — registered, but relay's tool plane could not be reached
+### Exit code 12: registered, but relay's tool plane could not be reached
 
-**The registration succeeded.** The certificate is signed, filed and listed by
-`relayremote registrations`; what failed is the first `list` against port
-9910. The two usual causes are named in the message: `remote.listen` on the
-Mac is loopback and you are on another host, or relay's server certificate
-carries only the names in `remote.listen` and you arrived under a different
-one — pass `--server-name`. Fix either and use the registration as it stands;
-do not re-register.
+**The registration succeeded.** What failed is the first `list` against port
+9910. Either `remote.listen` on the Mac is loopback and you are on another
+host, or relay's server certificate carries only the names in `remote.listen`
+and you arrived under a different one: pass `--server-name`. Fix either and
+use the registration as it stands. Do not register again.
 
-### `error: this relay does not support register`
+### `error: could not reach relay's enrolment listener`
 
-The host predates ADR-019 and its enrolment listener rejects the extra field
-`register` sends. Use Path B (`relayremote request --ca-fingerprint …`), or
-update relay. Exit code 2.
-
-### `error: pass either --ca-fingerprint sha256:<64 hex characters> or --tofu — one of the two is mandatory, because this channel is plain TCP and authenticates nothing about the server on its own.`
-
-**Path B only.** Neither has a default and neither can be omitted. Read the fingerprint on the
-Mac with `relay enrol ca-fingerprint`, or use `--tofu` from a terminal you are
-watching. Exit code 2 — nothing was sent.
-
-### `error: could not reach relay's enrolment-request listener at 127.0.0.1:9911: … connection refused`
-
-The message continues with `Check that the relay host has
-remote.enrolment_requests: true set and is reachable at that address`, and
-then always prints the operator-carried fallback. Usual causes, in order: the
-enrolment-request toggle is off (see [A1](#a1-turn-the-enrolment-channel-on));
-it is on but the mTLS listener beside it is not, so relay refuses to serve
-either; `enrolment_listen` is loopback and you are on another host; the
-address is firewalled. Exit code 8.
-
-### `error: relay unreachable: cannot reach relay at 10.0.0.2:9910: … connection refused`
-
-This is the **tool plane**, not the enrolment channel — a different port and a
-different cause. Relay's `remote.enabled` is false, or the listener is bound
-to loopback and you are elsewhere. The message says so:
-
-```
-Check that the host is up, that its settings.json has a `remote` block with
-`enabled: true`, and that the listen address is reachable from here (it
-defaults to 127.0.0.1, which is not)
-```
+Exit code 8. Usual causes, in order: no window is open; the remote listener
+is off or auditing is off, so relay binds nothing; `remote.enrolment_listen`
+is loopback and you are on another host; the address is firewalled.
 
 ### `still pending after 10m0s; giving up for now.`
 
-Nobody approved it yet. This is not a refusal; the request lives 15 minutes on
-relay's side. Exit code 11, and the message names the resume command:
+Nobody approved it in time. Exit code 11. The request ended with its
+connection, and the lodge closed the window, so there is nothing to pick up.
+Open a window on the Mac and run `register` again.
 
-```
-resume later with:
-  relayremote request --resume req_3e4501d2… --bundle ~/relay-bundles/vm-agent
-```
+### `relay no longer has a record of this request`
 
-`--resume` polls only and lodges nothing.
-
-For `register` there is no `--resume` flag and none is needed: **re-running
-the identical command resumes**, reprinting the *same* code and polling the
-*same* request. It lodges again only if relay has swept the row, and says so
-when it does. Exit code 11 either way.
-
-### `relay no longer has a record of this request (expired, already collected, or an unrecognised id).`
-
-Exit code 10. The row is genuinely gone: it expired 15 minutes after arrival
-(or, if it had already been approved, 15 minutes after that without being
-collected), it was already collected, or the `--resume` id was never a real
-one. `client.key` is untouched; re-run without `--resume` to lodge a fresh
-request. If you expected it to have been collected already, check `relay
-enrol list` on the Mac.
-
-### `the operator refused this request. client.key was not touched; re-run relayremote request to lodge a fresh one.`
-
-Also exit code 10, but a distinct message from the one above: refusing an
-enrolment request keeps its row until the row's own TTL rather than deleting
-it, specifically so the client's next poll can say "refused" rather than
-falling through to "no record of this request" and reading as an expiry or a
-typo'd id. `client.key` is untouched; re-run without `--resume` to lodge a
-fresh request.
+Exit code 10. The request expired, was already collected, or the operator
+refused it. `client.key` is untouched. Open a window and register again.
 
 ### `error: bridge error (code -32603): enrolment request not found: req_…`
 
 **On the Mac.** The request id does not exist. Requests expire 15 minutes
-after arrival, and `relay enrol requests` only ever shows live ones. The table
-lives in the running tray's memory and is never persisted, so restarting relay
-empties it.
+after arrival and `relay enrol requests` shows only live ones. The table lives
+in the running tray's memory, so restarting relay empties it.
 
-### `note: the pending request row expired before this approval finished …`
+### `error: the requesting machine disconnected; ask it to register again`
 
-Rare, and not an error — it is part of `relay enrol approve`'s own success
-output, printed when the presence prompt sat open long enough (past the
-request's 15-minute TTL) to cross paths with some other table activity that
-swept the row while the prompt was still open. By the time it prints, the
-enrolment has **already committed**: it is real, signed, and in `relay enrol
-list`. What is gone is only the row the client would have collected it
-through — its next poll now sees "unknown", not "approved", because there is
-no row left to answer either way. The output names both facts and the two
-ways to recover:
-
-```
-approved enrolment request "req_3e4501d2142dc76a99399399b16c727b" as "vm-agent"
-  fingerprint: sha256:…
-  profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
-  note: the pending request row expired before this approval finished (the presence prompt
-  was open long enough to cross its TTL) — the client's poll will now see "unknown", not "approved"
-  the enrolment itself is real and already recorded; see it in `relay enrol list`
-  the client cannot collect it through this request anymore: deliver the certificate via the
-  operator-carried path (`relay enrol sign` + `relayremote install --from`), or run
-  `relay enrol revoke --client-id vm-agent` to undo it
-```
-
-Recover with one of the two named paths: hand the client its certificate the
-operator-carried way (Path C, above), or `relay enrol revoke --client-id
-vm-agent` to undo the enrolment and let the client lodge a fresh request.
-
-### `note: you refused this exact request from the pending list while this approval's presence prompt was still open …`
-
-Also part of `relay enrol approve`'s own success output, and easy to confuse
-with the expiry note above — read it carefully, because the fix is different.
-This one prints when the pending row is found **refused**, not swept: someone
-at this Mac declined this exact request by name (`relay enrol refuse`, or
-Settings → Remote Clients → Pending requests) while *this* `relay enrol
-approve` run's own presence prompt was still open, waiting on a fingerprint or
-password. By the time it prints, the certificate has already been signed and
-committed — real, and in `relay enrol list` — for the CSR the refusal named.
-The row is not gone, either: the client's poll answers "refused", exactly as
-it would have without the race. The output names the refusal plainly and the
-one way to undo it:
-
-```
-approved enrolment request "req_3e4501d2142dc76a99399399b16c727b" as "vm-agent"
-  fingerprint: sha256:…
-  profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
-  note: you refused this exact request from the pending list while this approval's presence
-  prompt was still open — the certificate was signed and committed anyway, for the CSR that
-  refusal named. It is real and already recorded; see it in `relay enrol list`. If your refusal
-  still stands, run `relay enrol revoke --client-id vm-agent` to undo it
-```
-
-If the refusal still stands, `relay enrol revoke --client-id vm-agent` is the
-recovery — there is no operator-carried delivery path to offer here, unlike
-the expiry case: nothing about this certificate needs a different transport,
-it needs to not exist.
+**On the Mac.** The machine's connection closed, and a request does not
+outlive it. Open a window and have the machine register again.
 
 ### `refused: approving needs your confirmation on the Mac's screen, ...`
 
-`relay enrol approve` run from a session that cannot show a prompt:
+Printed by `relay enrol approve` run from a session that cannot show a
+prompt, such as SSH. Run it at the Mac, or approve from Settings > Remote
+Clients > Pending requests. A lodged request does not expire because the
+command refused.
 
-```
-refused: approving needs your confirmation on the Mac's screen, and the session this
-  command is running in cannot show a prompt (for example, you are over SSH).
-  The request is still waiting — it does not expire because this command refused.
-  Approve it from the Mac's own screen instead: open the Relay tray ->
-  Settings -> Remote Clients -> Pending requests.
-  Read commands never prompt: relay audit, relay grant, and every `list` (all
-  but audit need Relay running).
-```
-
-Unlike every other gated command, this one *does* have something queued —
-which is why it names the working door instead of the usual "there is no
-queue".
+`relay enrol open` from such a session prints the generic refusal instead:
+`error: refused: this needs your confirmation on the Mac's screen, and the
+session this command is running in cannot show a prompt (for example, you are
+over SSH).` No window opens. Run it at the Mac's console or use the tray.
 
 ### `error: bridge error (code -32603): presence was refused`
 
@@ -1054,57 +653,38 @@ signed and no record was written.
 ### `error: … client.key already exists: refusing to overwrite it.`
 
 `relayremote enrol` never overwrites a key. If you are genuinely re-enrolling,
-remove it deliberately — and understand that the certificate you currently
-hold for that bundle stops working the moment you do. (`relayremote request`
-in a bundle that has a key and no certificate **reuses** that key and its
-signing request instead of failing — that is the intended
-resume-after-failure path.)
+remove it deliberately, and understand that the certificate you hold for that
+bundle stops working the moment you do.
 
 ### `error: this certificate was not signed over this machine's key — it belongs to a different enrolment`
 
 `relayremote install --from` pointed at a certificate signed for some other
-client's key. Two enrolments' `signed` directories look identical; check which
-one you copied.
-
-### `error: relay's CA fingerprint does not match --ca-fingerprint:`
-
-```
-  expected sha256:…
-  received sha256:…
-refusing to write anything — this is exactly the mismatch pinning exists to catch
-```
-
-Either you mistyped the fingerprint, or you are not talking to the relay you
-think you are. Re-read it on the Mac with `relay enrol ca-fingerprint` before
-assuming the first. Nothing was written.
+client's key. Check which `signed` directory you copied.
 
 ### `error: enrolment bundle …: has client.key and no client.crt: the signing request has not been signed yet.`
 
 The bundle is half-built: you generated a key but never installed a
-certificate. Finish Path A, B or C.
+certificate. Finish the fallback.
 
 ### `error: access denied: no tool named 'fs_write' is available to this grant (granted: macmcp)`
 
-Exit code 3. The certificate is fine; the grant is not. Do not retry — check
+Exit code 3. The certificate is fine; the grant is not. Do not retry. Check
 `relay grant --project <profile-id>` on the Mac and widen the profile if you
-meant to. The most common cause is an access profile's fail-closed defaults:
-an unset tool list means **no tools**, and an unset scope field denies every
-tool it governs.
+meant to. An unset tool list means **no tools**, and an unset scope field
+denies every tool it governs.
 
 ### `throttled`
 
 Exit code 4, and the only code here that means "wait and try again". Each
-enrolment carries a rolling call-rate and result-volume budget — 120 calls and
+enrolment carries a rolling call-rate and result-volume budget: 120 calls and
 64 MiB per hour by default. Adjust with
 `relay enrol update --client-id vm-agent --max-calls N --window-seconds N`.
 
-### Exit code 9 — the wait ended mid-call
+### Exit code 9: the wait ended mid-call
 
 The request was sent and the answer never arrived. **Whether the tool ran is
-unknown** — relay records and budgets a call before invoking it, so it may
-well have. Do not blindly retry anything with side effects; check the Mac's
-audit log first. Deliberately distinct from exit code 8, which means nothing
-happened.
+unknown**, because relay records and budgets a call before invoking it. Do not
+blindly retry anything with side effects. Check the Mac's audit log first.
 
 ### An enrolment made on the CLI does not show up in an open Settings window
 

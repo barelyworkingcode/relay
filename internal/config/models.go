@@ -936,8 +936,10 @@ type RemoteConfig struct {
 	Enabled *bool  `json:"enabled,omitempty"`
 	Listen  string `json:"listen,omitempty"`
 
-	EnrolmentRequests *bool  `json:"enrolment_requests,omitempty"`
-	EnrolmentListen   string `json:"enrolment_listen,omitempty"`
+	// EnrolmentListen is the address an enrolment window binds. The retired
+	// always-on toggle is not a field: a settings file that still holds it
+	// loads, and the key is dropped on the next save.
+	EnrolmentListen string `json:"enrolment_listen,omitempty"`
 }
 
 // ModelEndpointConfig configures the model endpoint's loopback TCP listener

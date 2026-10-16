@@ -59,7 +59,8 @@ func cliVerbTable() []cliVerb {
 		{Name: "enrol requests", Run: enrolRequests, Calls: []string{adminDoor("enrolment.request.list")}},
 		{Name: "enrol approve", Run: enrolApprove, Calls: []string{adminDoor("enrolment.request.approve")}},
 		{Name: "enrol refuse", Run: enrolRefuse, Calls: []string{adminDoor("enrolment.request.refuse")}},
-		{Name: "enrol ca-fingerprint", Run: func(_ []string) { enrolCAFingerprint() }},
+		{Name: "enrol open", Run: enrolOpen, Calls: []string{adminDoor("enrolment.window.open")}},
+		{Name: "enrol close", Run: enrolClose, Calls: []string{adminDoor("enrolment.window.close")}},
 
 		{Name: "credential mint", Run: credentialMint, Calls: []string{adminDoor("credential.mint")}},
 		{Name: "credential list", Run: credentialList, Calls: []string{adminDoor("credential.list")}},

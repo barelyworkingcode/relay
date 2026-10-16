@@ -43,7 +43,7 @@ func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 	// §6.4 of the ADR-017 implementation spec), and Gate.Require blocks on
 	// LocalAuthentication's async completion handler, which needs the
 	// Cocoa run loop pumped to be delivered — the same deadlock
-	// showLoginCode's doc comment in trayapp.go describes. ipcUpdateService
+	// openAllowEnrolmentSheet's doc comment in trayapp.go describes. ipcUpdateService
 	// just below already runs off-thread for an unrelated reason; this
 	// keeps the two consistent.
 	ctx.GoFunc(func() {

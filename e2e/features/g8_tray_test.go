@@ -206,9 +206,8 @@ func TestServiceStateInStatus(t *testing.T) {
 
 func TestPendingEnrolmentCount(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{
-		Settings: map[string]json.RawMessage{"remote": json.RawMessage(remoteBlock)},
-	})
+	rig := g10Start(t, nil)
+	i := rig.i
 
 	type lodged struct{ requestID, label, spki string }
 	var want []lodged
@@ -217,18 +216,8 @@ func TestPendingEnrolmentCount(t *testing.T) {
 			// One lodge per source in any ten seconds.
 			i.ClockAdvance(11 * time.Second)
 		}
-		id := harness.NewRemoteIdentity(t, label)
-		replies := i.EnrolSend(map[string]any{"type": "EnrolmentRequest", "csr_pem": string(id.CSRPEM()), "label": label})
-		if len(replies) != 1 || replies[0]["type"] != "Result" {
-			t.Fatalf("lodging %s answered %v, want one Result", label, replies)
-		}
-		result, _ := replies[0]["result"].(map[string]any)
-		reqID, _ := result["request_id"].(string)
-		spki, _ := result["spki_sha256"].(string)
-		if reqID == "" || spki == "" {
-			t.Fatalf("the Result for %s lacks request_id or spki_sha256: %v", label, result)
-		}
-		want = append(want, lodged{reqID, label, spki})
+		l := g10OpenAndLodge(t, rig, label)
+		want = append(want, lodged{l.requestID, label, l.spki})
 	}
 
 	r := i.MustCLI("enrol", "requests", "--json")

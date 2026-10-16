@@ -59,12 +59,30 @@ what runs.** Concretely:
   enrolment request (ADR-018 decision 8) — deliberately the **same** op with
   the **same** digest, not a new `enrolment.approve` entry: a second op here
   would be exactly the second door into issuance the ADR forbids.
+- **Opening an enrolment window for an access profile**
+  (`enrolment.window.open`, `relay enrol open`, the tray sheet's access-profile
+  choice) — opens the enrolment port, the
+  one network door a stranger's certificate request can reach, for five
+  minutes and one request. The digest binds the profile id, and the prompt
+  reads `open a five-minute window for one remote machine to request
+  enrolment into the access profile "<name>"`. Opening is recorded as a
+  `credential_issued` row with `credential` `enrolment_window` before the port
+  binds, and refused if the row cannot be written. Closing (`relay enrol
+  close`, the first lodged request, the timer) is not gated: it narrows what is
+  reachable. A request lodged in the window is still approved through
+  `enrolment.sign`; there is no `enrolment.approve` op.
 - **Minting a login bootstrap code, or revoking a passkey**
   (`login.bootstrap.mint`, `login.passkey.revoke`) — issues or destroys a
-  login identity.
+  login identity. The sign-in code is minted from the tray's **Allow
+  Enrolment…** sheet (Relay sign-in) or `relay login enrol`; withdrawing an
+  unused code (`Cancel Enrolment`, `relay enrol close`) is not gated, because it
+  narrows.
 - **Opening an eve passkey enrolment window** (`eve.enrolment.open`) — issues
   a second browser's window onto eve's own passkey registration
-  ([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md)). Consuming it
+  ([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md)). The prompt
+  reads `open a five-minute window for one new browser to register a Home|Work
+  passkey`; the tray sheet's Home|Work browser choice and `relay eve enrol` ask
+  it. Closing the window is not gated. Consuming it
   is not gated: the operator already answered this prompt to open the
   window, and a browser spending the slot narrows what it reaches rather
   than widening anything, the same footing "What is not gated, and why
@@ -151,7 +169,7 @@ what runs.** Concretely:
   `enrolment_listen` gate on any actual change in either direction — there
   is no generic rule for when one bind address is "narrower" than another
   (`remoteConfigChangedFields`, `cmd/relay/enrolment_ops.go`). `enabled` and
-  `enrolment_requests`, and `Remove` (clearing the block entirely), now gate
+  `Remove` (clearing the block entirely), now gate
   on ANY change, turning off and removing included — an earlier revision
   read "off only closes a listener that was already reachable" and "Remove
   is strictly narrower than any state it could replace" as never needing a

@@ -952,8 +952,11 @@ argument rests on.
 
 - **`credential`** is what was issued or revoked: `api_credential` (a
   control-plane credential, whether minted by `relay credential mint` or by a
-  completed login ceremony), `enrolment`, `passkey`, `bootstrap_code`, or
-  `project_token`.
+  completed login ceremony), `enrolment`, `passkey`, `bootstrap_code`,
+  `project_token`, or `enrolment_window`. An `enrolment_window` row is written
+  when an approved `relay enrol open` is about to bind the enrolment port, with
+  the access profile's id as `subject` and in `grants`, and the `presence_id`
+  of the prompt; if it cannot be written the port is not bound.
 - **`subject`** is its identifier. A `bootstrap_code` has none — only its
   SHA-256 is stored — so its `subject` is the anchor's **expiry**, which is the
   only non-secret fact that tells one anchor from the next and is what matches
@@ -964,6 +967,13 @@ argument rests on.
 - **`grants`** is the ADR-015 class set for an `api_credential` and the granted
   access-profile ids for an `enrolment`. Absent for the kinds that have
   neither.
+- **`cause`** says why a revocation happened when the operator did not ask
+  for that credential directly. Only one value exists: `profile_deleted`, on
+  the `credential_revoked` row of each enrolment removed because the access
+  profile it named was deleted (one row per enrolment, `via` the delete's
+  door, no `presence_id`: the delete narrows and is not gated). Absent
+  otherwise. A failed write of that row is logged and never undoes the
+  revocation.
 - **`via`** is how the act was initiated: `cli`, `ipc` (the Settings window),
   `tray` (the menu item), or `http`.
 - **`actor.kind`** is `operator` for every door authorized by ownership of the

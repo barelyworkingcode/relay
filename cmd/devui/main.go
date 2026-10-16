@@ -126,7 +126,7 @@ const fixtureEnrolments = `[
   {"client_id":"hermes-mail","fingerprint":"sha256:9f2a4c1d6b8e0f37a5c9d2e4b6081f3a7c5e9d1b3f5a7c9e1d3b5f7a9c1e3d5b","project_ids":["proj-mail"],"budget":{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608},"created_at":"2026-08-20T09:14:00Z"}
 ]`
 
-const fixtureRemote = `{"configured":true,"enabled":true,"listen":"127.0.0.1:9910","effective":"127.0.0.1:9910","audit_enabled":true,"ca_fingerprint":"sha256:1a2b3c4d5e6f70819203a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f","enrolment_requests":false,"enrolment_listen":"","enrolment_effective":"127.0.0.1:9911"}`
+const fixtureRemote = `{"configured":true,"enabled":true,"listen":"127.0.0.1:9910","effective":"127.0.0.1:9910","audit_enabled":true,"ca_fingerprint":"sha256:1a2b3c4d5e6f70819203a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f","enrolment_listen":"","enrolment_effective":"127.0.0.1:9911","enrolment_window":{"open":false}}`
 
 const fixtureEnrolmentBudgetDefaults = `{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608}`
 
@@ -143,8 +143,7 @@ const fixtureLoginSessions = `[
 
 const fixtureEvePasskeys = `[]`
 
-// Null, which is the state on every ordinary open: a code is present only in
-// the paint the tray's "Show Login Code..." item triggered.
+// Null: no paint is seeded with a code; the sheet shows one when it mints it.
 const fixtureLoginCode = `null`
 
 const fixtureMcpScopeFields = `{
@@ -247,14 +246,14 @@ var mockBridgeScript = `<script>
       case 'update_remote_config':
         if (msg.remove) {
           window.onRemoteConfigUpdated({ configured: false, enabled: false, listen: '', effective: '127.0.0.1:9910', audit_enabled: true,
-                                         ca_fingerprint: FIXTURE_REMOTE.ca_fingerprint, enrolment_requests: false, enrolment_listen: '', enrolment_effective: '127.0.0.1:9911' });
+                                         ca_fingerprint: FIXTURE_REMOTE.ca_fingerprint, enrolment_listen: '', enrolment_effective: '127.0.0.1:9911', enrolment_window: { open: false } });
           break;
         }
         window.onRemoteConfigUpdated({ configured: true, enabled: !!msg.enabled, listen: msg.listen || '',
                                        effective: msg.listen || '127.0.0.1:9910', audit_enabled: true,
                                        ca_fingerprint: FIXTURE_REMOTE.ca_fingerprint,
-                                       enrolment_requests: !!msg.enrolment_requests, enrolment_listen: msg.enrolment_listen || '',
-                                       enrolment_effective: msg.enrolment_listen || '127.0.0.1:9911' });
+                                       enrolment_listen: msg.enrolment_listen || '',
+                                       enrolment_effective: msg.enrolment_listen || '127.0.0.1:9911', enrolment_window: { open: false } });
         break;
       // add/update/remove/start/stop etc. are no-ops here; already logged above
     }

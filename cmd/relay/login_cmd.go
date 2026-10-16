@@ -12,7 +12,7 @@ import (
 // config dir. `enrol` and `revoke` are brokered (ADR-017 decision 2): this
 // process holds no sealer (§5.4), so it dials the running tray over
 // admin_op and lets LoginOps — the same core the Passkeys tab and the
-// tray's own "Show Login Code..." item share — do the work. `list` is a
+// tray's Allow Enrolment… sheet share — do the work. `list` is a
 // tray read too: the running tray is the only reader of the configuration.
 func loginEnrol() {
 	client := requireService("relay login enrol")

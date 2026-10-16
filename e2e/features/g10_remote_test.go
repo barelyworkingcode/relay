@@ -1,10 +1,7 @@
 package features
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,7 +26,7 @@ func g10Catalogue() harness.Catalogue {
 	return harness.Catalogue{Tools: []json.RawMessage{tool("acme_ok"), tool("acme_note"), tool("acme_hidden")}}
 }
 
-// g10Rig is an instance with the remote listeners on, one fake MCP and one
+// g10Rig is an instance with the remote listener on and enrolment windows approvable, one fake MCP and one
 // access profile that allows acme_ok and acme_note but not acme_hidden.
 type g10Rig struct {
 	i       *harness.Instance
@@ -38,7 +35,7 @@ type g10Rig struct {
 
 func g10Start(t *testing.T, presence map[string]harness.Outcome, mut ...func(*harness.Options)) *g10Rig {
 	t.Helper()
-	p := map[string]harness.Outcome{"project.grant": harness.OutcomeApprove}
+	p := map[string]harness.Outcome{"project.grant": harness.OutcomeApprove, "enrolment.window.open": harness.OutcomeApprove}
 	for k, v := range presence {
 		p[k] = v
 	}
@@ -155,40 +152,87 @@ func g10GetEnrolment(t *testing.T, i *harness.Instance, clientID string) (g10Enr
 	return e, resp
 }
 
-// g10Lodge lodges a request on the enrolment listener, with no comparison code
-// (the carried-pin form), and returns its id and key hash.
-func g10Lodge(t *testing.T, i *harness.Instance, label string) (id *harness.RemoteIdentity, requestID, spki string) {
-	t.Helper()
-	id = harness.NewRemoteIdentity(t, label)
-	replies := i.EnrolSend(map[string]any{"type": "EnrolmentRequest", "csr_pem": string(id.CSRPEM()), "label": label})
-	if len(replies) != 1 || replies[0]["type"] != "Result" {
-		t.Fatalf("lodging %s answered %v, want one Result", label, replies)
-	}
-	result, _ := replies[0]["result"].(map[string]any)
-	requestID, _ = result["request_id"].(string)
-	spki, _ = result["spki_sha256"].(string)
-	if requestID == "" || spki == "" {
-		t.Fatalf("the Result for %s lacks request_id or spki_sha256: %v", label, result)
-	}
-	return id, requestID, spki
+// g10Lodged is one request lodged on its own connection: the connection also
+// carries the polls, and relay drops the request when it closes.
+type g10Lodged struct {
+	conn      *harness.EnrolConn
+	id        *harness.RemoteIdentity
+	sas       *harness.SASClient
+	requestID string
+	spki      string
+	result    map[string]any
+	opened    bool
 }
 
-func g10Poll(t *testing.T, i *harness.Instance, requestID string) map[string]any {
+// g10LodgeOn lodges a request with a comparison commitment on conn and returns it.
+func g10LodgeOn(t *testing.T, conn *harness.EnrolConn, label string) *g10Lodged {
 	t.Helper()
-	replies := i.EnrolSend(map[string]any{"type": "EnrolmentRequestPoll", "request_id": requestID})
-	if len(replies) != 1 || replies[0]["type"] != "Result" {
-		t.Fatalf("polling %s answered %v, want one Result", requestID, replies)
+	l := &g10Lodged{conn: conn, id: harness.NewRemoteIdentity(t, label), sas: harness.NewSASClient(t)}
+	reply, ok := conn.Send(harness.Lodge(l.id, label, l.sas))
+	if !ok || reply["type"] != "Result" {
+		t.Fatalf("lodging %s answered ok=%v %v, want a Result", label, ok, reply)
 	}
-	result, _ := replies[0]["result"].(map[string]any)
+	l.result, _ = reply["result"].(map[string]any)
+	l.requestID, _ = l.result["request_id"].(string)
+	l.spki, _ = l.result["spki_sha256"].(string)
+	if l.requestID == "" || l.spki == "" {
+		t.Fatalf("the Result for %s lacks request_id or spki_sha256: %v", label, l.result)
+	}
+	return l
+}
+
+// g10OpenAndLodge opens a window on the rig's profile, dials its address and lodges one request.
+func g10OpenAndLodge(t *testing.T, r *g10Rig, label string) *g10Lodged {
+	t.Helper()
+	addr := r.i.EnrolOpen(r.profile)
+	return g10LodgeOn(t, r.i.EnrolDial(addr), label)
+}
+
+// poll asks about the request on the connection it was lodged on, without
+// opening the comparison commitment.
+func (l *g10Lodged) poll(t *testing.T) map[string]any {
+	t.Helper()
+	return l.pollWith(t, false)
+}
+
+// pollOpen is poll with the opening of the comparison commitment, which an
+// approval needs. Only the first poll carries it.
+func (l *g10Lodged) pollOpen(t *testing.T) map[string]any {
+	t.Helper()
+	return l.pollWith(t, true)
+}
+
+func (l *g10Lodged) pollWith(t *testing.T, open bool) map[string]any {
+	t.Helper()
+	frame := map[string]any{"type": "EnrolmentRequestPoll", "request_id": l.requestID}
+	if open && !l.opened {
+		frame["sas_open"] = l.sas.Open()
+		l.opened = true
+	}
+	reply, ok := l.conn.Send(frame)
+	if !ok || reply["type"] != "Result" {
+		t.Fatalf("polling %s answered ok=%v %v, want a Result", l.requestID, ok, reply)
+	}
+	result, _ := reply["result"].(map[string]any)
 	return result
 }
 
+type g10WindowView struct {
+	Open        bool   `json:"open"`
+	Target      string `json:"target"`
+	ProfileID   string `json:"profile_id"`
+	ProfileName string `json:"profile_name"`
+	Expires     string `json:"expires"`
+	Listen      string `json:"listen"`
+}
+
 type g10RemoteView struct {
-	Enabled            bool   `json:"enabled"`
-	Listen             string `json:"listen"`
-	Effective          string `json:"effective"`
-	EnrolmentRequests  bool   `json:"enrolment_requests"`
-	EnrolmentEffective string `json:"enrolment_effective"`
+	Enabled            bool          `json:"enabled"`
+	Listen             string        `json:"listen"`
+	Effective          string        `json:"effective"`
+	EnrolmentListen    string        `json:"enrolment_listen"`
+	EnrolmentEffective string        `json:"enrolment_effective"`
+	EnrolmentWindow    g10WindowView `json:"enrolment_window"`
 }
 
 func g10RemoteShow(t *testing.T, i *harness.Instance) g10RemoteView {
@@ -211,6 +255,17 @@ func TestRemoteShow(t *testing.T) {
 	if !cli.Enabled || cli.Listen != "127.0.0.1:0" || cli.Effective == "" {
 		t.Fatalf("remote show reports %+v, want enabled, the configured listen address and an effective one", cli)
 	}
+	if cli.EnrolmentWindow.Open {
+		t.Fatalf("remote show reports an open enrolment window on a fresh instance: %+v", cli.EnrolmentWindow)
+	}
+	var raw map[string]json.RawMessage
+	res.JSON(t, &raw)
+	if _, has := raw["enrolment_requests"]; has {
+		t.Fatalf("remote show --json still carries enrolment_requests: %s", res.Stdout)
+	}
+	if _, has := raw["enrolment_window"]; !has {
+		t.Fatalf("remote show --json has no enrolment_window: %s", res.Stdout)
+	}
 	requireEvent(t, i, harness.EventQuery{Key: "remote.config.get", Trace: res.Trace, Fields: map[string]any{"status": "ok"}})
 
 	resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/remote", nil)
@@ -222,17 +277,41 @@ func TestRemoteShow(t *testing.T) {
 	if web != cli {
 		t.Fatalf("GET /api/remote reports %+v, remote show reports %+v", web, cli)
 	}
+	var webRaw map[string]json.RawMessage
+	resp.JSON(t, &webRaw)
+	if _, has := webRaw["enrolment_requests"]; has {
+		t.Fatalf("GET /api/remote still carries enrolment_requests: %s", resp.Body)
+	}
 	requireEvent(t, i, harness.EventQuery{Key: "remote.config.get", Trace: resp.Trace, Fields: map[string]any{"status": "ok"}})
 }
 
-// g10WidenBody turns the enrolment-request listener on, which widens what a
-// remote machine reaches.
-const g10WidenBody = `{"enabled":true,"listen":"127.0.0.1:0","enrolment_requests":true,"enrolment_listen":"127.0.0.1:0"}`
+func TestRemoteShowReportsWindow(t *testing.T) {
+	t.Parallel()
+	r := g10Start(t, nil)
+	i := r.i
+	addr := i.EnrolOpen(r.profile)
 
-func g10RemoteOffEnrolment(t *testing.T, presence map[string]harness.Outcome) *harness.Instance {
+	v := g10RemoteShow(t, i)
+	w := v.EnrolmentWindow
+	if !w.Open || w.Target != "profile" || w.ProfileID != r.profile || w.ProfileName != "acme-profile" || w.Listen != addr || w.Expires == "" {
+		t.Fatalf("remote show reports the window %+v, want it open for %s at %s", w, r.profile, addr)
+	}
+	resp := i.HTTP(i.Credential("reader")).Do("GET", "/api/remote", nil)
+	var web g10RemoteView
+	resp.JSON(t, &web)
+	if web != v {
+		t.Fatalf("GET /api/remote reports %+v while remote show reports %+v", web, v)
+	}
+}
+
+// g10WidenBody turns the remote listener on, which widens what a remote
+// machine reaches.
+const g10WidenBody = `{"enabled":true,"listen":"127.0.0.1:0"}`
+
+func g10RemoteOffStart(t *testing.T, presence map[string]harness.Outcome) *harness.Instance {
 	t.Helper()
 	return harness.Start(t, harness.Options{
-		Settings:    map[string]json.RawMessage{"remote": json.RawMessage(`{"enabled":true,"listen":"127.0.0.1:0"}`)},
+		Settings:    map[string]json.RawMessage{"remote": json.RawMessage(`{"enabled":false,"listen":"127.0.0.1:0"}`)},
 		Credentials: g10Creds,
 		Presence:    presence,
 	})
@@ -240,9 +319,9 @@ func g10RemoteOffEnrolment(t *testing.T, presence map[string]harness.Outcome) *h
 
 func TestRemoteSet(t *testing.T) {
 	t.Parallel()
-	i := g10RemoteOffEnrolment(t, map[string]harness.Outcome{"remote.configure": harness.OutcomeApprove})
-	if g10RemoteShow(t, i).EnrolmentRequests {
-		t.Fatalf("the instance starts with the enrolment listener on")
+	i := g10RemoteOffStart(t, map[string]harness.Outcome{"remote.configure": harness.OutcomeApprove})
+	if g10RemoteShow(t, i).Enabled {
+		t.Fatalf("the instance starts with the remote listener on")
 	}
 
 	res := i.CLIWith(harness.CLIOpts{Stdin: []byte(g10WidenBody)}, "remote", "set", "--file", "-", "--json")
@@ -250,14 +329,44 @@ func TestRemoteSet(t *testing.T) {
 		t.Fatalf("an approved remote set exited %d\nstderr: %s", res.Code, res.Stderr)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "remote.configure", Trace: res.Trace, Fields: map[string]any{"status": "ok", "enabled": true}})
-	if !g10RemoteShow(t, i).EnrolmentRequests {
-		t.Fatalf("remote show still reports the enrolment listener off after an approved set")
+	if !g10RemoteShow(t, i).Enabled {
+		t.Fatalf("remote show still reports the remote listener off after an approved set")
+	}
+}
+
+func TestRemoteSetRefusesEnrolmentRequests(t *testing.T) {
+	t.Parallel()
+	i := harness.Start(t, harness.Options{
+		Settings:    map[string]json.RawMessage{"remote": json.RawMessage(`{"enabled":true,"listen":"127.0.0.1:0"}`)},
+		Credentials: g10Creds,
+		Presence:    map[string]harness.Outcome{"remote.configure": harness.OutcomeApprove},
+	})
+	before := g10RemoteShow(t, i)
+	body := []byte(`{"enabled":true,"listen":"127.0.0.1:0","enrolment_requests":true}`)
+
+	res := i.CLIWith(harness.CLIOpts{Stdin: body}, "remote", "set", "--file", "-", "--json")
+	if res.Code != 1 {
+		t.Fatalf("remote set with enrolment_requests exited %d, want 1\nstderr: %s", res.Code, res.Stderr)
+	}
+	if after := g10RemoteShow(t, i); after != before {
+		t.Fatalf("a refused remote set changed the settings from %+v to %+v", before, after)
+	}
+
+	resp := i.SocketHTTP(i.Credential("executer")).Do("PUT", "/api/remote", body)
+	if resp.Status != 400 {
+		t.Fatalf("PUT /api/remote with enrolment_requests answered %d, want 400\n%s", resp.Status, resp.Body)
+	}
+	if after := g10RemoteShow(t, i); after != before {
+		t.Fatalf("a refused PUT /api/remote changed the settings from %+v to %+v", before, after)
+	}
+	if got := i.Events(harness.EventQuery{Key: "remote.configure", Fields: map[string]any{"status": "ok"}}); len(got) != 0 {
+		t.Fatalf("a refused body still wrote %d ok remote.configure events", len(got))
 	}
 }
 
 func TestRemoteSetDeniedCLI(t *testing.T) {
 	t.Parallel()
-	i := g10RemoteOffEnrolment(t, map[string]harness.Outcome{"remote.configure": harness.OutcomeDeny})
+	i := g10RemoteOffStart(t, map[string]harness.Outcome{"remote.configure": harness.OutcomeDeny})
 	before := g10RemoteShow(t, i)
 
 	res := i.CLIWith(harness.CLIOpts{Stdin: []byte(g10WidenBody)}, "remote", "set", "--file", "-", "--json")
@@ -269,7 +378,7 @@ func TestRemoteSetDeniedCLI(t *testing.T) {
 
 func TestRemoteSetDeniedHTTP(t *testing.T) {
 	t.Parallel()
-	i := g10RemoteOffEnrolment(t, map[string]harness.Outcome{"remote.configure": harness.OutcomeDeny})
+	i := g10RemoteOffStart(t, map[string]harness.Outcome{"remote.configure": harness.OutcomeDeny})
 	before := g10RemoteShow(t, i)
 
 	resp := i.SocketHTTP(i.Credential("executer")).Do("PUT", "/api/remote", []byte(g10WidenBody))
@@ -284,39 +393,40 @@ func TestRemoteSetDeniedHTTP(t *testing.T) {
 
 func TestEnrolmentLodgeAndThrottle(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{
-		Settings: map[string]json.RawMessage{"remote": json.RawMessage(remoteBlock)},
-	})
+	r := g10Start(t, nil)
+	i := r.i
 
-	_, first, _ := g10Lodge(t, i, "acme-lodge-1")
-	if st, _ := g10Poll(t, i, first)["status"].(string); st != "pending" {
+	first := g10OpenAndLodge(t, r, "acme-lodge-1")
+	if st, _ := first.poll(t)["status"].(string); st != "pending" {
 		t.Fatalf("a poll of a lodged request answered status %q, want pending", st)
 	}
-	requireEvent(t, i, harness.EventQuery{Key: "enrolment.request.lodge", Fields: map[string]any{"status": "ok", "request_id": first}})
+	requireEvent(t, i, harness.EventQuery{Key: "enrolment.request.lodge", Fields: map[string]any{"status": "ok", "request_id": first.requestID}})
 
 	// A second lodge from the same source inside ten seconds is throttled.
 	quick := harness.NewRemoteIdentity(t, "acme-lodge-quick")
-	replies := i.EnrolSend(map[string]any{"type": "EnrolmentRequest", "csr_pem": string(quick.CSRPEM()), "label": "acme-lodge-quick"})
-	if len(replies) != 1 || replies[0]["type"] != "Error" || g10Code(replies[0]) != -32000 {
-		t.Fatalf("a second lodge inside ten seconds answered %v, want Error -32000", replies)
+	conn := i.EnrolDial(i.EnrolOpen(r.profile))
+	reply, ok := conn.Send(harness.Lodge(quick, "acme-lodge-quick", harness.NewSASClient(t)))
+	if !ok || reply["type"] != "Error" || g10Code(reply) != -32000 {
+		t.Fatalf("a second lodge inside ten seconds answered ok=%v %v, want Error -32000", ok, reply)
 	}
-	if res, _ := replies[0]["result"].(map[string]any); res == nil || res["retry_after_seconds"] == nil {
-		t.Fatalf("the per-source throttle carries no retry_after_seconds: %v", replies[0])
+	if res, _ := reply["result"].(map[string]any); res == nil || res["retry_after_seconds"] == nil {
+		t.Fatalf("the per-source throttle carries no retry_after_seconds: %v", reply)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "enrolment.request.lodge", Fields: map[string]any{"status": "denied", "reason": "throttled"}})
 
 	// Fill the table to its eight rows, moving the clock past the per-source interval each time.
 	for n := 2; n <= 8; n++ {
 		i.ClockAdvance(11 * time.Second)
-		g10Lodge(t, i, "acme-lodge-"+string(rune('0'+n)))
+		g10OpenAndLodge(t, r, "acme-lodge-"+string(rune('0'+n)))
 	}
 	i.ClockAdvance(11 * time.Second)
 	ninth := harness.NewRemoteIdentity(t, "acme-lodge-9")
-	replies = i.EnrolSend(map[string]any{"type": "EnrolmentRequest", "csr_pem": string(ninth.CSRPEM()), "label": "acme-lodge-9"})
-	if len(replies) != 1 || replies[0]["type"] != "Error" || g10Code(replies[0]) != -32000 {
-		t.Fatalf("the ninth lodge answered %v, want Error -32000", replies)
+	conn = i.EnrolDial(i.EnrolOpen(r.profile))
+	reply, ok = conn.Send(harness.Lodge(ninth, "acme-lodge-9", harness.NewSASClient(t)))
+	if !ok || reply["type"] != "Error" || g10Code(reply) != -32000 {
+		t.Fatalf("the ninth lodge answered ok=%v %v, want Error -32000", ok, reply)
 	}
-	if res := replies[0]["result"]; res != nil {
+	if res := reply["result"]; res != nil {
 		t.Fatalf("a lodge into a full table carries a result: %v", res)
 	}
 	var pending []struct {
@@ -328,49 +438,62 @@ func TestEnrolmentLodgeAndThrottle(t *testing.T) {
 	}
 
 	// The listener has no approve door.
-	replies = i.EnrolSend(map[string]any{"type": "EnrolmentApprove", "request_id": first})
-	if len(replies) != 1 || replies[0]["type"] != "Error" || g10Code(replies[0]) != -32601 {
-		t.Fatalf("an EnrolmentApprove frame answered %v, want Error -32601", replies)
+	reply, ok = first.conn.Send(map[string]any{"type": "EnrolmentApprove", "request_id": first.requestID})
+	if !ok || reply["type"] != "Error" || g10Code(reply) != -32601 {
+		t.Fatalf("an EnrolmentApprove frame answered ok=%v %v, want Error -32601", ok, reply)
 	}
-	if st, _ := g10Poll(t, i, first)["status"].(string); st != "pending" {
+	if st, _ := first.poll(t)["status"].(string); st != "pending" {
 		t.Fatalf("the request reads %q after an approve frame, want pending", st)
 	}
 }
 
 func TestEnrolmentRequestsList(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{
-		Settings: map[string]json.RawMessage{"remote": json.RawMessage(remoteBlock)},
-	})
-	_, requestID, spki := g10Lodge(t, i, "acme-laptop")
+	r := g10Start(t, nil)
+	i := r.i
+	l := g10OpenAndLodge(t, r, "acme-laptop")
 
 	res := i.MustCLI("enrol", "requests", "--json")
 	var pending []struct {
-		RequestID string `json:"request_id"`
-		Label     string `json:"label"`
-		SPKI      string `json:"spki_sha256"`
+		RequestID   string `json:"request_id"`
+		Label       string `json:"label"`
+		SPKI        string `json:"spki_sha256"`
+		ProfileID   string `json:"profile_id"`
+		ProfileName string `json:"profile_name"`
 	}
 	res.JSON(t, &pending)
-	if len(pending) != 1 || pending[0].RequestID != requestID || pending[0].Label != "acme-laptop" || pending[0].SPKI != spki {
-		t.Fatalf("enrol requests lists %+v, want the one request %s labelled acme-laptop with key %s", pending, requestID, spki)
+	if len(pending) != 1 || pending[0].RequestID != l.requestID || pending[0].Label != "acme-laptop" || pending[0].SPKI != l.spki {
+		t.Fatalf("enrol requests lists %+v, want the one request %s labelled acme-laptop with key %s", pending, l.requestID, l.spki)
+	}
+	if pending[0].ProfileID != r.profile || pending[0].ProfileName != "acme-profile" {
+		t.Fatalf("enrol requests names the profile %q (%q), want %s (acme-profile)", pending[0].ProfileID, pending[0].ProfileName, r.profile)
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(pending[0].SPKI) {
 		t.Fatalf("spki_sha256 %q is not 64 hex characters", pending[0].SPKI)
+	}
+	var raw []map[string]json.RawMessage
+	res.JSON(t, &raw)
+	for _, k := range []string{"requested_profile", "is_legacy_request"} {
+		if _, has := raw[0][k]; has {
+			t.Fatalf("enrol requests --json still carries %s: %s", k, res.Stdout)
+		}
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "enrolment.request.list", Trace: res.Trace, Fields: map[string]any{"status": "ok", "count": 1}})
 }
 
 func TestEnrolmentRefuse(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{
-		Settings: map[string]json.RawMessage{"remote": json.RawMessage(remoteBlock)},
-	})
-	_, requestID, _ := g10Lodge(t, i, "acme-laptop")
+	r := g10Start(t, nil)
+	i := r.i
+	l := g10OpenAndLodge(t, r, "acme-laptop")
 
-	res := i.MustCLI("enrol", "refuse", "--id", requestID)
-	requireEvent(t, i, harness.EventQuery{Key: "enrolment.request.refuse", Trace: res.Trace, Fields: map[string]any{"status": "ok", "request_id": requestID}})
-	if st, _ := g10Poll(t, i, requestID)["status"].(string); st != "refused" {
+	res := i.MustCLI("enrol", "refuse", "--id", l.requestID)
+	requireEvent(t, i, harness.EventQuery{Key: "enrolment.request.refuse", Trace: res.Trace, Fields: map[string]any{"status": "ok", "request_id": l.requestID}})
+	if st, _ := l.poll(t)["status"].(string); st != "refused" {
 		t.Fatalf("a poll of a refused request answered %q, want refused", st)
+	}
+	if !l.conn.Closed(closeDeadline) {
+		t.Fatalf("relay left the lodging connection open after a refused answer")
 	}
 	var pending []json.RawMessage
 	i.MustCLI("enrol", "requests", "--json").JSON(t, &pending)
@@ -382,25 +505,38 @@ func TestEnrolmentRefuse(t *testing.T) {
 	}
 }
 
+func g10Approve(i *harness.Instance, requestID, clientID string) harness.Result {
+	return i.CLI("enrol", "approve", "--id", requestID, "--client-id", clientID)
+}
+
 func TestEnrolmentApprove(t *testing.T) {
 	t.Parallel()
 	r := g10Start(t, map[string]harness.Outcome{"enrolment.sign": harness.OutcomeApprove})
 	i := r.i
-	id, requestID, _ := g10Lodge(t, i, "acme-laptop")
+	l := g10OpenAndLodge(t, r, "acme-laptop")
+	if st, _ := l.pollOpen(t)["status"].(string); st != "pending" {
+		t.Fatalf("a poll before the approval answered %q, want pending", st)
+	}
 
-	res := i.MustCLI("enrol", "approve", "--id", requestID, "--client-id", "acme-approved", "--grant", r.profile)
+	res := g10Approve(i, l.requestID, "acme-approved")
+	if res.Code != 0 {
+		t.Fatalf("an approved enrol approve exited %d\nstderr: %s", res.Code, res.Stderr)
+	}
 	requireEvent(t, i, harness.EventQuery{Key: "enrolment.request.approve", Trace: res.Trace, Fields: map[string]any{"status": "ok", "client_id": "acme-approved"}})
 
-	poll := g10Poll(t, i, requestID)
+	poll := l.poll(t)
 	if poll["status"] != "approved" || poll["client_id"] != "acme-approved" {
 		t.Fatalf("a poll after the approval answered %v, want approved for acme-approved", poll)
+	}
+	if !l.conn.Closed(closeDeadline) {
+		t.Fatalf("relay left the lodging connection open after an approved answer")
 	}
 	cert, _ := poll["cert_pem"].(string)
 	ca, _ := poll["ca_pem"].(string)
 	if cert == "" || ca == "" {
 		t.Fatalf("the approved poll lacks cert_pem or ca_pem: %v", poll)
 	}
-	conn := i.RemoteDial(id, []byte(cert), []byte(ca))
+	conn := i.RemoteDial(l.id, []byte(cert), []byte(ca))
 	names, ok := g10ListTools(t, conn, r.profile)
 	if !ok || strings.Join(names, ",") != "acme_note,acme_ok" {
 		t.Fatalf("the approved certificate lists tools %v (ok=%v), want acme_note and acme_ok", names, ok)
@@ -411,11 +547,12 @@ func TestEnrolmentApproveDenied(t *testing.T) {
 	t.Parallel()
 	r := g10Start(t, map[string]harness.Outcome{"enrolment.sign": harness.OutcomeDeny})
 	i := r.i
-	_, requestID, _ := g10Lodge(t, i, "acme-laptop")
+	l := g10OpenAndLodge(t, r, "acme-laptop")
+	l.pollOpen(t)
 
-	res := i.CLI("enrol", "approve", "--id", requestID, "--client-id", "acme-refused", "--grant", r.profile)
+	res := g10Approve(i, l.requestID, "acme-refused")
 	g10RequireRefusedCLI(t, i, res, "enrolment.request.approve", "enrolment.sign")
-	poll := g10Poll(t, i, requestID)
+	poll := l.poll(t)
 	if poll["status"] != "pending" || poll["cert_pem"] != nil {
 		t.Fatalf("a poll after a refused approval answered %v, want pending and no certificate", poll)
 	}
@@ -648,36 +785,6 @@ func TestEnrolmentListAndGet(t *testing.T) {
 		t.Fatalf("GET of an unknown enrolment answered %d, want 404", missing.Status)
 	}
 	requireEvent(t, i, harness.EventQuery{Key: "enrolment.get", Trace: missing.Trace, Fields: map[string]any{"status": "error", "reason": "not_found"}})
-}
-
-func TestCAFingerprint(t *testing.T) {
-	t.Parallel()
-	i := harness.Start(t, harness.Options{Presence: map[string]harness.Outcome{"enrolment.sign": harness.OutcomeApprove}})
-
-	none := i.CLI("enrol", "ca-fingerprint")
-	if none.Code != 1 || len(none.Stdout) != 0 {
-		t.Fatalf("ca-fingerprint before any CA exited %d with %d stdout bytes, want exit 1 and none", none.Code, len(none.Stdout))
-	}
-
-	id := harness.NewRemoteIdentity(t, "acme-ca")
-	out := filepath.Join(i.Dir, "signed-out")
-	if res := i.CLIWith(harness.CLIOpts{Stdin: id.CSRPEM()}, "enrol", "sign", "--client-id", "acme-ca", "--csr", "-", "--out", out); res.Code != 0 {
-		t.Fatalf("enrol sign exited %d\nstderr: %s", res.Code, res.Stderr)
-	}
-
-	res := i.MustCLI("enrol", "ca-fingerprint")
-	line := strings.TrimSuffix(string(res.Stdout), "\n")
-	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(line) {
-		t.Fatalf("ca-fingerprint printed %q, want sha256: and 64 hex characters on one line", res.Stdout)
-	}
-	block, _ := pem.Decode(mustRead(t, filepath.Join(out, "ca.crt")))
-	if block == nil {
-		t.Fatalf("ca.crt holds no PEM block")
-	}
-	sum := sha256.Sum256(block.Bytes)
-	if want := "sha256:" + hex.EncodeToString(sum[:]); line != want {
-		t.Fatalf("ca-fingerprint printed %s, the hash of ca.crt is %s", line, want)
-	}
 }
 
 func TestRemoteCallsScopedAndAudited(t *testing.T) {

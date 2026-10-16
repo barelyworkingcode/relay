@@ -176,7 +176,7 @@ var dialogNegSpecs = []negSpec{
 			}
 			return negState{Token: token}, result{}, true
 		},
-		expect: func(env, negState) string { return "open a five-minute window" },
+		expect: func(env, negState) string { return eveOpenReason },
 		line:   func(e env, _ negState) string { return relayLine(e, "eve", "enrol") },
 		effect: func(ctx context.Context, e env, st negState) (string, error) {
 			open, err := eveWindowOpen(ctx, e, st.Token)
@@ -185,6 +185,32 @@ var dialogNegSpecs = []negSpec{
 			}
 			consumeEveWindow(ctx, e, st.Token)
 			return "the eve enrolment window opened after Cancel (consumed)", nil
+		},
+	},
+	{
+		op: "enrolment.window.open",
+		pre: func(ctx context.Context, e env, id string) (negState, result, bool) {
+			token, res, ok := runCredential(e, id)
+			if !ok {
+				return negState{}, res, false
+			}
+			profile, res, ok := windowOpenSetup(ctx, e, id, token)
+			if !ok {
+				return negState{}, res, false
+			}
+			return negState{Subject: profile}, result{}, true
+		},
+		expect: func(env, negState) string { return "open a five-minute window for one remote machine" },
+		line: func(e env, st negState) string {
+			return relayLine(e, "enrol", "open", "--profile", st.Subject)
+		},
+		effect: func(ctx context.Context, e env, _ negState) (string, error) {
+			v, err := remoteWindow(ctx, e)
+			if err != nil || !v.Window.Open {
+				return "", err
+			}
+			uerr := relayCmd(ctx, e, "enrol", "close")
+			return "the enrolment window opened after Cancel" + undoNote(uerr), nil
 		},
 	},
 	{

@@ -78,30 +78,16 @@ func resolveRemoteConfig(c *config.RemoteConfig) resolvedRemoteConfig {
 	return out
 }
 
-// resolveRemoteEnrolment derives the enrolment-request listener's config from
-// the same block resolveRemoteConfig reads for the tool-plane listener.
-// Unlike resolveRemoteConfig, this can fail: enrolment_requests:true with
-// enabled:false names a configuration mistake rather than something to
-// silently take at face value — the enrolment channel is a companion to the
-// tool-plane listener, not a substitute for enabling it, and letting it
-// start on its own would mean "no remote access" in settings.json no longer
-// implied "no network door open."
-func resolveRemoteEnrolment(c *config.RemoteConfig) (resolvedRemoteConfig, error) {
-	wantEnrolment := c != nil && boolOr(c.EnrolmentRequests, false)
-	if !wantEnrolment {
-		return resolvedRemoteConfig{Enabled: false, Listen: defaultEnrolmentListen}, nil
+// resolveRemoteEnrolment names the address an enrolment window binds. The
+// enrolment channel is a companion to the tool-plane listener, so it is only
+// available while that one is enabled; there is no setting that keeps the port
+// open between windows.
+func resolveRemoteEnrolment(c *config.RemoteConfig) resolvedRemoteConfig {
+	listen := defaultEnrolmentListen
+	if c != nil && c.EnrolmentListen != "" {
+		listen = c.EnrolmentListen
 	}
-	if !resolveRemoteConfig(c).Enabled {
-		return resolvedRemoteConfig{}, fmt.Errorf(
-			"remote.enrolment_requests is true but remote.enabled is false: the enrolment-request channel " +
-				"is a companion to the remote tool-plane listener, not a replacement for it — set remote.enabled " +
-				"to true as well, or turn enrolment_requests off")
-	}
-	listen := c.EnrolmentListen
-	if listen == "" {
-		listen = defaultEnrolmentListen
-	}
-	return resolvedRemoteConfig{Enabled: true, Listen: listen}, nil
+	return resolvedRemoteConfig{Enabled: resolveRemoteConfig(c).Enabled, Listen: listen}
 }
 
 // RemoteToolRouter is a separate, two-method interface so the narrowing is
@@ -564,6 +550,9 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 
 	settings, enr, proj, err := s.resolveCaller(fingerprint, req.ProjectID)
 	if err != nil {
+		if req.Type == bridge.ReqCallTool && bridge.ErrorCode(err) == jsonrpc.CodeUnauthorized {
+			s.recordCallRefusal(ctx, req.Name, err)
+		}
 		return bridge.ErrorResponse(bridge.ErrorCode(err), err.Error())
 	}
 
@@ -650,6 +639,31 @@ func logRemoteRequest(ctx context.Context, reqType, name string, resp *bridge.Br
 	slog.LogAttrs(ctx, level, "remote request", attrs...)
 }
 
+// recordCallRefusal writes the denied call_tool row for a tool call refused
+// before it reached the router (the enrolment did not resolve, or names more
+// than one profile). The router writes the same row for a refusal of its own;
+// without this a remote call could be refused with no trace that it was tried.
+// Arguments are never recorded here: the call was not authorized to be read.
+func (s *RemoteServer) recordCallRefusal(ctx context.Context, tool string, cause error) {
+	if !s.audit.Enabled() {
+		return
+	}
+	ev := audit.AuditEvent{
+		ID:      audit.NewAuditID(),
+		TS:      time.Now().UTC(),
+		Event:   audit.AuditEventCallTool,
+		Actor:   audit.AuditActor{Kind: audit.AuditActorUnknown, Auth: audit.AuditAuthNone},
+		Tool:    logging.Truncate(tool),
+		Outcome: audit.AuditOutcomeDenied,
+		Error:   cause.Error(),
+		TraceID: logging.TraceFromContext(ctx),
+	}
+	if rc, ok := bridge.RemoteCallerFromContext(ctx); ok {
+		ev.Actor = remoteAuditActor(rc)
+	}
+	s.audit.Record(ev)
+}
+
 // recordConfigRefusal is the control_decision half of refusing a config
 // request for want of cli-admin: the request named a real operation on a
 // real table, so — unlike an unregistered request type — this IS an
@@ -695,6 +709,15 @@ func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*config.Set
 			fmt.Errorf("this certificate is no longer enrolled"))
 	}
 
+	// A record on disk may name several profiles. It loads, and is refused
+	// here on every request type until the operator narrows it; picking one
+	// grant for the caller would guess.
+	if len(enr.ProjectIDs) > 1 {
+		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+			fmt.Errorf("enrolment %q names %d access profiles, and one enrolment reaches one; on the Mac run: relay enrol update --client-id %s --grant <one profile id>",
+				enr.ClientID, len(enr.ProjectIDs), enr.ClientID))
+	}
+
 	if projectID == "" {
 		switch len(enr.ProjectIDs) {
 		case 0:
@@ -702,9 +725,6 @@ func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*config.Set
 				fmt.Errorf("enrolment %q holds no grants", enr.ClientID))
 		case 1:
 			projectID = enr.ProjectIDs[0]
-		default:
-			return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams,
-				fmt.Errorf("project_id is required: enrolment %q holds %d grants", enr.ClientID, len(enr.ProjectIDs)))
 		}
 	}
 

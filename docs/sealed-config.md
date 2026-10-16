@@ -434,8 +434,8 @@ now requires relay running, and says so by its own name rather than failing
 with a generic bridge or settings error. So does every command that shows
 configuration — `relay grant` and every `list` subcommand — because the
 running tray is the only reader of it; those need nothing unsealed and send
-no secret. Only `relay audit` and `relay enrol ca-fingerprint`, which read
-their own files, work with the tray stopped.
+no secret. Only `relay audit`, which reads
+its own file, works with the tray stopped.
 
 ## Three degraded states, and why relay starts anyway
 
