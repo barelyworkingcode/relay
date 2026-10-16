@@ -55,7 +55,13 @@ func TestPermissionResolvedOnExpiry(t *testing.T) {
 			t.Errorf("turn_done came before permission_resolved: %v", frames)
 		}
 	}
-	g1aNext(t, viewer, g1tFrameDeadline, g1aIs("turn_done", sid))
+	// An answer that arrives after the request left the pending set gets no reply.
+	viewer.Send(map[string]any{"type": "permission_response", "permissionId": req["permissionId"], "approved": true})
+	for _, f := range g1aNext(t, viewer, g1tFrameDeadline, g1aIs("turn_done", sid)) {
+		if f["type"] == "error" || f["type"] == "permission_resolved" {
+			t.Errorf("a late answer got a reply: %v", f)
+		}
+	}
 }
 
 // A joined connection's answer tells the viewer the request was answered.

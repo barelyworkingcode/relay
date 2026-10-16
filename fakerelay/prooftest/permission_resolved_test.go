@@ -9,6 +9,27 @@ import (
 // permWindowMs is the 60 s a request waits, in clock milliseconds.
 const permWindowMs = int64(60_000)
 
+// permMarginMs is how far short of the window the first clock step stops.
+const permMarginMs = int64(1_000)
+
+// Relay's expiry reason with a connection joined, as its docs state it.
+const reasonExpired = "No approval: the request was not answered within 60 seconds."
+
+// denyContent returns the content of the tool_result the session's turn got for
+// its denied permission request.
+func denyContent(t *testing.T, fr []J, sid string) string {
+	t.Helper()
+	for _, f := range fr {
+		ev, _ := f["event"].(J)
+		if f["type"] == "llm_event" && f["sessionId"] == sid && ev["subtype"] == "tool_result" {
+			s, _ := ev["content"].(string)
+			return s
+		}
+	}
+	t.Fatalf("no tool_result in %v", fr)
+	return ""
+}
+
 // raisePermission starts a turn that waits on a permission, as a joined viewer,
 // and returns the viewer, the session id and the permission_request frame.
 func raisePermission(t *testing.T, in *instance) (*websocket.Conn, string, J) {
@@ -53,17 +74,20 @@ func TestPermissionExpiresOnClock(t *testing.T) {
 	in := startInstance(t, replayWorld)
 	c, sid, req := raisePermission(t, in)
 
-	advanceClock(t, in, permWindowMs-1)
+	// The instance clock is real time plus an offset, so the margin must outlast
+	// the real time a loaded run spends between the two steps.
+	advanceClock(t, in, permWindowMs-permMarginMs)
 	if fr := barrier(t, c, sid, "short"); hasType(fr, "permission_resolved") {
-		t.Errorf("a request expired 1 ms early: %v", fr)
+		t.Errorf("a request expired before its 60 s: %v", fr)
 	}
 
-	advanceClock(t, in, 1)
+	advanceClock(t, in, permMarginMs)
 	fr := until(t, c, isType("permission_resolved", "sessionId", sid))
 	got := fr[len(fr)-1]
 	eq(t, got["permissionId"], req["permissionId"], "permissionId")
 	eq(t, got["outcome"], any("expired"), "outcome")
-	until(t, c, isType("message_complete", "sessionId", sid))
+	rest := until(t, c, isType("message_complete", "sessionId", sid))
+	eq(t, denyContent(t, append(fr, rest...), sid), reasonExpired, "deny reason with a viewer joined")
 
 	must(t, c.WriteJSON(J{"type": "permission_response", "permissionId": req["permissionId"], "approved": true}), "late answer")
 	for _, f := range barrier(t, c, sid, "late") {
