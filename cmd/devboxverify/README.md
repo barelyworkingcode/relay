@@ -211,8 +211,10 @@ that appeared after its own trigger and whose text carries that request's
 subject: the run nonce, or the id it acts on. Two prompts carry no nonce.
 `execute-credential-renewal` mints the fixed name `devbox-verify`, so it
 expects relay's whole reason for that mint, closing period included.
-`gate-eve-enrolment-open-pos` expects relay's fixed reason, which names no
-subject. `gate-enrolment-window-open-pos` and `-neg` expect the window reason's
+`gate-eve-enrolment-open-pos`, `gate-eve-enrolment-open-neg` and
+`tray-allow-enrolment` expect relay's whole fixed reason, `open a
+five-minute window for one new browser to register a Home|Work passkey`, which
+names no subject. `gate-enrolment-window-open-pos` and `-neg` expect the window reason's
 fixed part, `open a five-minute window for one remote machine`; the profile
 name after it is the run's own. Relay has no API, flag or environment variable that skips the gate. Its CLI,
 exit codes and safety checks are in [its README](../devboxpresence/README.md).
@@ -911,6 +913,30 @@ any other error keeps its result.
 - Traps: BLOCKED under the LaunchAgent recipe, where the process leading the
   job holds no Accessibility grant. A Services Edit form left open hides the
   cards.
+
+**tray-allow-enrolment** (screen). The tray has one `Allow Enrolment…` item
+and neither `Show Login Code...` nor `Allow Home|Work Passkey Enrolment…`. The
+harness presses it; Settings opens on the Allow Enrolment sheet, which must
+offer the `Home|Work browser`, `Relay sign-in` and `Access profile` choices.
+The journey chooses Home|Work browser and presses Open, and the presence helper
+answers the prompt, which must carry the full reason. Within 10 s relay must
+log an `eve.enrolment.open` event with status `ok` and `GET
+/api/eve/passkey-enrolment` must read open. The tray menu must then show
+`Enrolment open: Home|Work browser · m:ss left`, and the journey presses
+`Cancel Enrolment`. The status must read closed within 10 s and a consume must
+answer 409. The window is consumed at the end whatever happened, and the
+Settings window is closed if the journey opened it.
+- Lives in: `cmd/relay/trayapp.go` (the menu, `openAllowEnrolmentSheet`,
+  `cancelEnrolment`), `cmd/relay/ipc_enrolment_window.go`
+  (`open_enrolment_window`), `cmd/relay/enrolment_window_ops.go` (`Close`),
+  `web/src/app.js` (the sheet).
+- Reached by: Accessibility from the harness for the tray and the sheet; the
+  presence helper for the prompt; the run credential for the status and
+  consume routes.
+- Traps: BLOCKED without Accessibility trust or the run credential. The tray
+  menu has no hook, so the countdown line is read after the event, within its
+  own timeout. Pick controls by role and label, case-insensitively: CSS-styled
+  text reads differently to AX.
 
 **cos-settings** (screen). The Chief of Staff panel in Settings > Projects
 saves what the person picks. The journey reads `GET /api/chief-of-staff/config`

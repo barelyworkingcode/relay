@@ -176,7 +176,7 @@ var dialogNegSpecs = []negSpec{
 			}
 			return negState{Token: token}, result{}, true
 		},
-		expect: func(env, negState) string { return "open a five-minute window" },
+		expect: func(env, negState) string { return eveOpenReason },
 		line:   func(e env, _ negState) string { return relayLine(e, "eve", "enrol") },
 		effect: func(ctx context.Context, e env, st negState) (string, error) {
 			open, err := eveWindowOpen(ctx, e, st.Token)

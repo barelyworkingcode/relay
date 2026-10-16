@@ -174,6 +174,31 @@ func (o *EveEnrolmentOps) Status() eveEnrolmentStatusView {
 	return eveEnrolmentStatusView{Open: true, Expires: w.Expires}
 }
 
+// Close ends an open window and reports whether one was live. Ungated: it
+// narrows, and the window is the operator's own to withdraw. After it, eve's
+// consume answers 409.
+//
+// This is deliberate: the record is cleared whether or not it is still live,
+// so an expired leftover does not outlast the operator's cancel, but only a
+// live window counts as closed and is written to the event log.
+func (o *EveEnrolmentOps) Close(ctx context.Context) (closed bool, err error) {
+	if o == nil || o.Store == nil {
+		return false, errEveEnrolmentOpsUnavailable
+	}
+	if err := o.runQueued(ctx, func() error {
+		return o.Store.With(func(s *config.Settings) {
+			closed = eveEnrolmentOpen(s.EveEnrolment, clockNow(o.Clock))
+			s.EveEnrolment = nil
+		})
+	}); err != nil {
+		return false, fmt.Errorf("save settings: %w", err)
+	}
+	if closed {
+		recordEnrolmentWindowCancelled(ctx, enrolmentWindowTargetHomeWork)
+	}
+	return closed, nil
+}
+
 // Consume spends an open window atomically: reads and clears
 // s.EveEnrolment inside one store.With, matching consumeBootstrapCode's own
 // reasoning — resolving and deleting in two separate calls would race a
@@ -216,17 +241,4 @@ func (o *EveEnrolmentOps) Consume(ctx context.Context, claim eveEnrolmentClaim) 
 	}
 	o.notifyConsole("Relay", fmt.Sprintf("Home|Work: a new browser registered a passkey (from %s)", claim.IP))
 	return eveEnrolmentConsumedView{Expires: expires}, nil
-}
-
-// eveEnrolmentRemaining formats the time left in an open window as the
-// tray's disabled menu line shows it ("4m 12s left"), or reports open=false
-// once the window has closed — eveEnrolmentOpen's own rule, so the menu line
-// and Status() can never disagree.
-func eveEnrolmentRemaining(w *config.EveEnrolmentWindow, now time.Time) (remaining string, open bool) {
-	if !eveEnrolmentOpen(w, now) {
-		return "", false
-	}
-	at, _ := time.Parse(time.RFC3339, w.Expires)
-	d := at.Sub(now).Round(time.Second)
-	return fmt.Sprintf("%dm %02ds left", int(d.Minutes()), int(d.Seconds())%60), true
 }

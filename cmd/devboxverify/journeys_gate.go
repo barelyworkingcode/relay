@@ -1025,6 +1025,11 @@ type eveOpenRun struct {
 	ClosedAtEnd   bool
 }
 
+// eveOpenReason is relay's whole reason for opening the Home|Work window as the
+// dialog shows it. The word "Eve" is deliberately absent: the operator reads
+// Home|Work.
+const eveOpenReason = "open a five-minute window for one new browser to register a Home|Work passkey"
+
 func runEveOpenPos(ctx context.Context, e env) result {
 	token, res, ok := runCredential(e, eveOpenPosID)
 	if !ok {
@@ -1044,7 +1049,7 @@ func runEveOpenPos(ctx context.Context, e env) result {
 	if b := newestIssuance(rows, "eve_enrolment", ""); b != nil {
 		baseline = b.ID
 	}
-	r.CLI, r.Dialog = gatedCLI(ctx, e, "open a five-minute window", "eve", "enrol")
+	r.CLI, r.Dialog = gatedCLI(ctx, e, eveOpenReason, "eve", "enrol")
 	r.OpenAfter, r.AfterErr = eveWindowOpen(ctx, e, token)
 	if r.CLI.Exit == 0 {
 		rows, err := issuanceRows(ctx, e, audit.AuditEventCredentialIssued, "eve_enrolment")
