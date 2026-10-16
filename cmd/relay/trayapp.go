@@ -241,11 +241,11 @@ func openSessionLedger(configDir string, store config.SettingsStore) *ledger.Led
 const detachedRunnerProbeTimeout = 15 * time.Second
 
 // detachedRunnerAlive asks the host of a detached claude record whether its
-// agent's runner is alive and returns the generation it found. A host that
+// agent's runner is alive and reports whether it is. A host that
 // cannot answer, or an unknown or Windows host, reads as not alive.
-func detachedRunnerAlive(settings *config.Settings, rec ledger.Record) (string, bool) {
+func detachedRunnerAlive(settings *config.Settings, rec ledger.Record) bool {
 	if settings == nil || rec.Detached == nil || rec.Kind != KindClaude {
-		return "", false
+		return false
 	}
 	var host *config.Host
 	for i := range settings.Hosts {
@@ -255,23 +255,22 @@ func detachedRunnerAlive(settings *config.Settings, rec ledger.Record) (string, 
 		}
 	}
 	if host == nil || host.Probe == nil || sshhost.IsWindowsOS(host.Probe.OS) {
-		return "", false
+		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), detachedRunnerProbeTimeout)
 	defer cancel()
 	st, err := sshhost.AgentRunStatus(ctx, *host, host.Probe.OS, rec.SessionID)
 	if err != nil {
 		slog.Warn("session ledger: could not ask a host whether a detached agent runs", "session", rec.SessionID, "host", host.ID, "error", err)
-		return "", false
+		return false
 	}
-	return st.Generation, st.Phase == sshhost.RunAlive
+	return st.Phase == sshhost.RunAlive
 }
 
 // detachedRunnersAnswering asks the host of every live detached claude record
 // whether its agent's runner is alive, one ssh question per record and all at
 // once, and returns the ids that answered "alive". The runner check compares
-// the process start time with run.json, so a recycled pid reads as gone. It
-// records the generation it found on each ledger record.
+// the process start time with run.json, so a recycled pid reads as gone.
 func detachedRunnersAnswering(l *ledger.Ledger, store config.SettingsStore) map[string]bool {
 	var settings *config.Settings
 	if store != nil {
@@ -287,16 +286,12 @@ func detachedRunnersAnswering(l *ledger.Ledger, store config.SettingsStore) map[
 		wg.Add(1)
 		go func(rec ledger.Record) {
 			defer wg.Done()
-			gen, alive := detachedRunnerAlive(settings, rec)
-			if !alive {
+			if !detachedRunnerAlive(settings, rec) {
 				return
 			}
 			mu.Lock()
 			running[rec.SessionID] = true
 			mu.Unlock()
-			if _, err := l.SetDetachedGeneration(rec.SessionID, gen); err != nil {
-				slog.Warn("session ledger: could not record a detached run's generation", "session", rec.SessionID, "error", err)
-			}
 		}(rec)
 	}
 	wg.Wait()

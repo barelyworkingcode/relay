@@ -104,6 +104,5 @@ func (r *appRouter) detachedAgentStillRuns(rec ledger.Record) bool {
 	if rec.Detached == nil || r.sessionDeps.store == nil {
 		return false
 	}
-	_, alive := detachedRunnerAlive(r.sessionDeps.store.Get(), rec)
-	return alive
+	return detachedRunnerAlive(r.sessionDeps.store.Get(), rec)
 }

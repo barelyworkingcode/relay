@@ -804,22 +804,30 @@ that cannot be reached at stop time leaves the agent running; relay logs it.
 **A relay restart.** A detached agent outlives relay and relay-sessions. When
 either shuts down, each detached provider drops its local reader and leaves the
 agent running, and relay-sessions saves the cursor of the last line it read
-with the session's state. A save also happens at the end of every turn, so a
-crash loses at most the lines since the last turn.
+with the session's state. A save also happens at the end of every turn, and
+it records the cursor after the turn's result line, so after a crash an attach
+replays only the lines since the last turn ended.
 
 When relay-sessions starts it asks each persisted detached session's host
 whether the agent's runner is alive, and attaches to every one that is (the
 session reads live; no resume is needed). Attaching reads what the agent wrote
 while nobody was reading, from the saved cursor, before it follows the output.
 A session with no saved cursor, one from another generation, or one past the
-end of the output starts at the end of the output. A permission prompt the
-agent is still waiting on is raised again; one whose `control_response` is
-already in `in.jsonl` is not. A `message` or a drop-in that meets a detached
+end of the output starts at the end of the output. A turn is read as open when the host holds more
+user messages than results. A permission prompt the agent is still waiting on
+is raised again, once the session is published: the session reads `asking` and
+a joined viewer gets the `permission_request`. A shutdown does not deny a
+waiting prompt, so it survives the restart; one whose `control_response` is
+already in `in.jsonl` is not raised. A `message` or a drop-in that meets a detached
 session with no provider attaches it first. At startup relay asks the same
 question for each live ledger record and keeps live the ones whose agent runs
 (the record's `detached.host_id` names the host); it ages the rest to dormant,
 as it does every other session. A host that does not answer in 15 s reads as
-not running, and a resume asks again.
+not running, and a resume asks again. relay-sessions can therefore attach a
+session whose ledger record reads dormant (the host was down at relay's
+startup, or relay-sessions restarted alone); the record stays dormant until
+the next resume. `relay project remove` ends the agent of every detached
+record of the project, whatever its state.
 
 A relay-sessions restart on its own leaves detached agents running in the same
 way.
@@ -836,7 +844,8 @@ resume with `host_unavailable`.
 **Drop-in.** `relay drop-in` on a detached session attaches its agent first if
 relay-sessions has none attached, waits for the turn to end, then ends the
 agent's process group and opens the conversation in the terminal with its full
-history. The agent and the terminal never run on the conversation together.
+history. A session whose host does not answer is refused (`host_unavailable`,
+`409`) and nothing is stopped, because the agent might still run. The agent and the terminal never run on the conversation together.
 
 **Not covered.** Windows hosts: a detached start there is refused with an error
 that names the host. A host whose login manager kills a user's processes when

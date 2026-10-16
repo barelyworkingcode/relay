@@ -122,6 +122,10 @@ type ClaudeProvider struct {
 	// restoredRun is the detached run and cursor the saved state named; Start
 	// attaches from it when that run is still alive.
 	restoredRun *detachedCursor
+	// attachedRequests and attachedTurnOpen are what an attach found and left
+	// for TakeAttach; guarded by mu.
+	attachedRequests []json.RawMessage
+	attachedTurnOpen bool
 
 	// root is published atomically because ProcessRoot is called from
 	// other goroutines while p.mu is held across blocking stdin writes.
@@ -197,6 +201,10 @@ type claudeSpawnState struct {
 	// sawStdout flips on this spawn's first non-empty stdout line; stderr
 	// before it logs at Warn (logProviderStderr).
 	sawStdout atomic.Bool
+	// countResultsFrom, when positive, makes a detached read count the result
+	// lines it delivers from that byte offset on; an attach sets it.
+	countResultsFrom int64
+	resultsSeen      atomic.Int32
 }
 
 // NewClaudeProvider constructs a provider for session. perms may be nil for
@@ -734,7 +742,7 @@ func (p *ClaudeProvider) processLine(raw json.RawMessage, spawn *claudeSpawnStat
 	case events.EvtResult:
 		p.translateResult(raw)
 	case "control_request":
-		if det := p.det; det != nil && !det.claimRequest(raw) {
+		if det := p.det; det != nil && (!det.claimRequest(raw) || det.deferRaise(raw)) {
 			return
 		}
 		p.handleControlRequest(raw)

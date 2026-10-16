@@ -855,7 +855,10 @@ func (d sessionRouteDeps) cleanupProject(projectID string) {
 	defer cancel()
 
 	for _, rec := range d.sessions.All() {
-		if rec.ProjectID != projectID || rec.State != ledger.StateLive {
+		// Deliberate: a detached record is ended whatever its state. Its agent
+		// outlives relay, and relay-sessions can attach it while this ledger
+		// reads dormant.
+		if rec.ProjectID != projectID || (rec.State != ledger.StateLive && rec.Detached == nil) {
 			continue
 		}
 		if err := d.host().Terminate(ctx, rec.SessionID, "project_deleted"); err != nil {

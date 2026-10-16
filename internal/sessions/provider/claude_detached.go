@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/logging"
-	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
@@ -72,6 +71,11 @@ type detachedRun struct {
 	// an attach that replays old output raises none twice.
 	reqMu    sync.Mutex
 	requests map[string]struct{}
+	// deferring holds new control requests in deferred instead of raising
+	// them; an attach sets it, because nothing can show a prompt until the
+	// manager has published the session.
+	deferring bool
+	deferred  []json.RawMessage
 
 	stopOnce sync.Once
 	// stopped closes when the host stop has returned; the final process_exited
@@ -132,6 +136,27 @@ func (d *detachedRun) claimRequestID(id string) bool {
 	}
 	d.requests[id] = struct{}{}
 	return true
+}
+
+// deferRaise holds raw for a later raise and reports whether it did.
+func (d *detachedRun) deferRaise(raw json.RawMessage) bool {
+	d.reqMu.Lock()
+	defer d.reqMu.Unlock()
+	if !d.deferring {
+		return false
+	}
+	d.deferred = append(d.deferred, raw)
+	return true
+}
+
+// endDeferring stops holding requests and returns the ones held.
+func (d *detachedRun) endDeferring() []json.RawMessage {
+	d.reqMu.Lock()
+	defer d.reqMu.Unlock()
+	d.deferring = false
+	held := d.deferred
+	d.deferred = nil
+	return held
 }
 
 // controlRequestID is the request id of a control_request or control_response
@@ -481,12 +506,18 @@ func (p *ClaudeProvider) consumeLines(ctx context.Context, det *detachedRun, spa
 		if err != nil {
 			break
 		}
+		// Deliberate: the offset moves before the line is handled, so a state
+		// save that the line triggers (a result saves one) records the cursor
+		// after that line.
+		start := det.offset.Add(int64(len(line))) - int64(len(line))
 		body := bytes.TrimRight(line, "\r\n")
+		if spawn.countResultsFrom > 0 && start >= spawn.countResultsFrom && bytes.Contains(body, []byte(`"type":"result"`)) {
+			spawn.resultsSeen.Add(1)
+		}
 		if len(body) > 0 {
 			spawn.sawStdout.Store(true)
 			p.processLine(json.RawMessage(body), spawn)
 		}
-		det.offset.Add(int64(len(line)))
 		select {
 		case det.lineSig <- struct{}{}:
 		default:
@@ -628,11 +659,10 @@ func sendOutcomeUnknown(err error) bool {
 // sent to the host. A relay or relay-sessions shutdown uses it, because a
 // detached agent outlives relay. Kill, by contrast, ends the agent.
 func (p *ClaudeProvider) Release() {
-	if p.perms != nil {
-		p.perms.DenyAllForSession(p.session.ID, "session stopped")
-	}
 	p.root.Store(nil)
 	if det := p.det; det != nil {
+		// Deliberate: no denial of waiting permission prompts. The agent is
+		// still blocked on each, and the next attach raises it again.
 		p.killDetached(det, false)
 		return
 	}
@@ -677,6 +707,14 @@ func stopDetachedRunner(session string, spec *sessionstypes.HostSpec, dir sshhos
 		time.Sleep(time.Second)
 	}
 	slog.Warn("claude: detached agent could not be stopped; it may still run on the host", "session", session, "host", spec.ID, "error", msg)
+}
+
+// StopDetachedRun ends the latest agent of a detached session without
+// deleting its run directories. It needs no live provider.
+func StopDetachedRun(session string, host *sessionstypes.HostSpec) {
+	if DetachedHost(host) {
+		stopDetachedRunner(session, host, sshhost.RunDir{Session: session})
+	}
 }
 
 // removeDetachedRun ends the agent and deletes its run directories, which
@@ -759,6 +797,24 @@ func (p *ClaudeProvider) Events(ctx context.Context, after string, max int) (lin
 	return lines, d.Generation + ":" + strconv.FormatInt(offset, 10), nil
 }
 
+// TakeAttach returns, once, whether the attach found a turn in progress and
+// a func that raises the permission requests nobody answered. The manager
+// calls it after it publishes the session: the attention board and the
+// viewers can show a prompt only then. It returns nil for a provider that did
+// not attach.
+func (p *ClaudeProvider) TakeAttach() (turnOpen bool, raise func()) {
+	p.mu.Lock()
+	reqs := p.attachedRequests
+	turnOpen = p.attachedTurnOpen
+	p.attachedRequests, p.attachedTurnOpen = nil, false
+	p.mu.Unlock()
+	return turnOpen, func() {
+		for _, raw := range reqs {
+			p.handleControlRequest(raw)
+		}
+	}
+}
+
 // DetachedHost reports whether a session on host runs its agent detached.
 func DetachedHost(host *sessionstypes.HostSpec) bool {
 	return host != nil && host.Detach && len(host.SSHArgv) > 0 && !sshhost.IsWindowsOS(host.OS)
@@ -776,9 +832,9 @@ func DetachedRunState(ctx context.Context, host *sessionstypes.HostSpec, session
 
 // attachProbeScript takes $1 session and $2 generation and prints what an
 // attach needs in one round trip, one tagged line each: "S <n>", the end of
-// the last complete line of out.jsonl; "T <line>", its last line; "O <line>",
-// every control_request line; "I <line>", every control_response line of
-// in.jsonl. Deliberate: a file that ends in a half-written line puts S at
+// the last complete line of out.jsonl; "U <n>", the user messages in
+// in.jsonl; "R <n>", the result lines in out.jsonl; "O <line>", every
+// control_request line; "I <line>", every control_response line of in.jsonl. Deliberate: a file that ends in a half-written line puts S at
 // that line's start, because a cursor must sit on a line start.
 const attachProbeScript = `case "$1" in ''|*[!A-Za-z0-9_-]*) echo "relay: invalid session id" >&2; exit 2;; esac
 case "$2" in ''|*[!A-Za-z0-9_-]*) echo "relay: invalid generation" >&2; exit 2;; esac
@@ -791,7 +847,8 @@ if [ "$n" -gt 0 ] && [ "$(tail -c 1 "$f" | od -An -tx1 | tr -d ' \n')" != 0a ]; 
   n=$((n - $(tail -n 1 "$f" | wc -c | tr -d ' ')))
 fi
 echo "S $n"
-echo "T $(tail -n 1 "$f")"
+echo "U $( [ -f "$d/in.jsonl" ] && grep -a -c '"type":"user"' "$d/in.jsonl" || echo 0)"
+echo "R $(grep -a -c '"type":"result"' "$f")"
 grep -a '"control_request"' "$f" | sed 's/^/O /'
 if [ -f "$d/in.jsonl" ]; then grep -a '"control_response"' "$d/in.jsonl" | sed 's/^/I /'; fi
 exit 0
@@ -799,7 +856,8 @@ exit 0
 
 type attachProbe struct {
 	size     int64
-	last     string
+	users    int
+	results  int
 	requests []json.RawMessage
 	answered []string
 }
@@ -822,8 +880,10 @@ func probeAttach(ctx context.Context, host *sessionstypes.HostSpec, dir sshhost.
 			if n, perr := strconv.ParseInt(strings.TrimSpace(body), 10, 64); perr == nil && n >= 0 {
 				pr.size, sawSize = n, true
 			}
-		case 'T':
-			pr.last = body
+		case 'U':
+			pr.users, _ = strconv.Atoi(strings.TrimSpace(body))
+		case 'R':
+			pr.results, _ = strconv.Atoi(strings.TrimSpace(body))
 		case 'O':
 			if lineType(body) == "control_request" {
 				pr.requests = append(pr.requests, json.RawMessage(body))
@@ -857,17 +917,6 @@ func firstLineOf(s string) string {
 	return line
 }
 
-// turnOpen reports whether the agent's last output line says a turn is in
-// progress: it is mid-answer, running a tool or waiting on a permission. A
-// result or system line, or none, is an idle agent.
-func turnOpen(lastLine string) bool {
-	switch lineType(lastLine) {
-	case events.EvtAssistant, "user", "control_request":
-		return true
-	}
-	return false
-}
-
 // attachDetached follows the agent already running in generation gen. It
 // reads, before it returns, what the agent wrote since the saved cursor, so a
 // message sent next meets only its own reply, and it raises the permission
@@ -896,15 +945,22 @@ func (p *ClaudeProvider) attachDetached(host *sessionstypes.HostSpec, gen string
 	for _, id := range probe.answered {
 		det.claimRequestID(id)
 	}
-	if turnOpen(probe.last) {
-		p.session.SetProcessing(true)
-	}
+	det.deferring = true
+	spawn.countResultsFrom = probe.size
 	for _, raw := range probe.requests {
 		if det.claimRequest(raw) {
-			p.handleControlRequest(raw)
+			det.deferred = append(det.deferred, raw)
 		}
 	}
 	p.consumeLines(ctx, det, spawn, hostExec(ctx, host, sshhost.RunnerReadOnce(host.OS, dir, offset)))
+	// Results the read delivered from past the probe end a turn the probe
+	// counted as open; older ones it replayed from the cursor do not count.
+	turnOpen := probe.users > probe.results+int(spawn.resultsSeen.Load())
+	p.session.SetProcessing(turnOpen)
+	p.mu.Lock()
+	p.attachedTurnOpen = turnOpen
+	p.attachedRequests = det.endDeferring()
+	p.mu.Unlock()
 	p.runDetached(det, spawn, spawnGen)
 
 	slog.Info("claude detached agent attached", "session", p.session.ID, "host", host.ID, "generation", gen, "cursor", offset)

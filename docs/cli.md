@@ -2712,8 +2712,10 @@ unknown id exits `1` (`404`). Text form: `resumed session ID` or
 A detached host session ([ssh-hosts.md](ssh-hosts.md)) whose agent still
 runs on the host is attached and no second agent starts. A host that cannot
 answer whether its agent runs is refused with `host_unavailable`. After a relay
-restart a detached session whose agent runs is already live, so `resume` prints
-`session ID is already live`.
+restart a detached session whose agent runs is usually already live, so `resume`
+prints `session ID is already live`. relay-sessions can attach a session whose
+record reads dormant (the host was down when relay started); `resume` then
+finds the agent running and attaches it.
 
 ### `session mode`
 

@@ -994,7 +994,7 @@ runs at relay-sessions startup: for each persisted detached claude session it
 asks the host for the run's status and, for a live runner, calls `Create` with
 `AttachOnly`, so the provider attaches (`attachDetached`) and never starts an
 agent. The attach reads the lines after the cursor before it returns and
-raises each `control_request` that has no `control_response` in `in.jsonl`;
+holds each `control_request` that has no `control_response` in `in.jsonl`; `Create` raises them (`TakeAttach`) once the slot is published, so the board reads `asking` and viewers get the prompt, and `Release` does not deny a waiting prompt;
 `SendMessage`, `SendMessageSync` and `Handoff` call the same attach for a
 detached session with no live provider. A plain resume (`ClaudeConfig.Resume`)
 asks for a running agent first and attaches to it too. `relay session stop`

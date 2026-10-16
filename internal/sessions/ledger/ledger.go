@@ -61,13 +61,11 @@ type Record struct {
 	Detached *DetachedRef `json:"detached,omitempty"`
 }
 
-// DetachedRef names the host run a detached session's agent lives in.
-// Generation is the run relay last saw alive at a startup; it is empty until
-// then. The event cursor is not kept here: only relay-sessions reads the
-// agent's output, so it saves the cursor with the conversation's state.
+// DetachedRef names the host a detached session's agent runs on. The event
+// cursor is not kept here: only relay-sessions reads the agent's output, so it
+// saves the cursor with the conversation's state.
 type DetachedRef struct {
-	HostID     string `json:"host_id"`
-	Generation string `json:"generation,omitempty"`
+	HostID string `json:"host_id"`
 }
 
 const fileName = "sessions-ledger.json"
@@ -161,22 +159,6 @@ func (l *Ledger) MarkLiveDormant(keep func(Record) bool) (int, error) {
 		return 0, nil
 	}
 	return changed, l.saveLocked()
-}
-
-// SetDetachedGeneration records the run generation of a detached session's
-// agent. A no-op, reporting false, for an id that is not a detached record.
-func (l *Ledger) SetDetachedGeneration(id, generation string) (bool, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	r, ok := l.records[id]
-	if !ok || r.Detached == nil {
-		return false, nil
-	}
-	ref := *r.Detached
-	ref.Generation = generation
-	r.Detached = &ref
-	l.records[id] = r
-	return true, l.saveLocked()
 }
 
 // Remove deletes the record named id and saves. A no-op for an id the

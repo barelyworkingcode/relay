@@ -398,7 +398,26 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 	}
 	m.signal(sess, attention.Launched)
 	close(slot.done)
+	m.announceAttach(sess)
 	return sess, nil
+}
+
+// announceAttach tells the attention board and the viewers what an attach to
+// a detached agent found: a turn in progress and permission prompts nobody
+// answered. It runs once the session is published, because a prompt raised
+// earlier reaches no board and no viewer.
+func (m *Manager) announceAttach(sess *sessionstypes.Session) {
+	a, ok := sess.Provider().(interface {
+		TakeAttach() (bool, func())
+	})
+	if !ok {
+		return
+	}
+	turnOpen, raise := a.TakeAttach()
+	if turnOpen {
+		m.signal(sess, attention.TurnStarted)
+	}
+	raise()
 }
 
 func (m *Manager) resolveSessionForCreate(spec CreateSpec, reused *sessionstypes.Session) (*sessionstypes.Session, error) {
@@ -847,8 +866,16 @@ func (m *Manager) EndSession(id string) {
 		return
 	}
 	m.signal(sess, attention.SessionEnded)
-	if p := sess.Provider(); p != nil {
+	p := sess.Provider()
+	// Deliberate: a detached session with no live provider may still have an
+	// agent on its host, which relay or this host left running; ending the
+	// session ends it.
+	orphan := detachedClaude(sess) && (p == nil || !p.Alive())
+	if p != nil {
 		p.Kill()
+	}
+	if orphan {
+		provider.StopDetachedRun(sess.ID, sess.GetHost())
 	}
 	m.persist(sess)
 }
@@ -910,7 +937,7 @@ func (m *Manager) ReattachDetached() {
 		go func(id string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			m.reattachDetached(id)
+			_ = m.reattachDetached(id)
 		}(sess.ID)
 	}
 	wg.Wait()
@@ -922,24 +949,25 @@ func detachedClaude(sess *sessionstypes.Session) bool {
 
 // reattachIfDetached attaches id's agent when id is a detached host session
 // with no live provider. Every caller that would otherwise find the session
-// dormant calls it first.
-func (m *Manager) reattachIfDetached(id string) {
+// dormant calls it first. The error is non-nil only when the host could not
+// say whether the agent runs, or the agent runs and could not be attached.
+func (m *Manager) reattachIfDetached(id string) error {
 	sess, ok := m.Get(id)
 	if !ok || !detachedClaude(sess) {
-		return
+		return nil
 	}
 	if p := sess.Provider(); p != nil && p.Alive() {
-		return
+		return nil
 	}
-	m.reattachDetached(id)
+	return m.reattachDetached(id)
 }
 
 // reattachDetached asks the host whether id's agent runs and, when it does,
 // attaches a provider to it. It never starts an agent: AttachOnly makes the
 // provider fail when the run is gone, and the status question first keeps a
-// dormant session from reading as launching. It reports whether the session
-// is attached afterwards.
-func (m *Manager) reattachDetached(id string) bool {
+// dormant session from reading as launching. An agent that does not run is
+// not an error.
+func (m *Manager) reattachDetached(id string) error {
 	m.reattachMu.Lock()
 	if m.reattaching == nil {
 		m.reattaching = map[string]*sync.Mutex{}
@@ -955,10 +983,10 @@ func (m *Manager) reattachDetached(id string) bool {
 
 	sess, ok := m.Get(id)
 	if !ok || !detachedClaude(sess) || m.Held(id) {
-		return false
+		return nil
 	}
 	if p := sess.Provider(); p != nil && p.Alive() {
-		return true
+		return nil
 	}
 	host := sess.GetHost()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -966,10 +994,19 @@ func (m *Manager) reattachDetached(id string) bool {
 	cancel()
 	if err != nil {
 		slog.Warn("session: reattach: the host did not say whether the agent runs", "session", id, "host", host.ID, "error", err)
-		return false
+		return fmt.Errorf("host %q did not say whether the agent runs: %w", host.Name, err)
 	}
 	if st.Phase != sshhost.RunAlive {
-		return false
+		return nil
+	}
+	// Deliberate: a delete that ran during the status question ended the agent
+	// and dropped the slot, and attaching now would find nothing to attach.
+	m.mu.Lock()
+	slot := m.slots[id]
+	gone := slot == nil || slot.sess != sess
+	m.mu.Unlock()
+	if gone {
+		return nil
 	}
 	_, err = m.Create(CreateSpec{
 		SessionID: id, ProjectID: sess.ProjectID, Kind: KindClaude, Directory: sess.Directory,
@@ -978,9 +1015,9 @@ func (m *Manager) reattachDetached(id string) bool {
 	})
 	if err != nil {
 		slog.Warn("session: reattach failed", "session", id, "host", host.ID, "error", err)
-		return false
+		return fmt.Errorf("attach to the agent on host %q: %w", host.Name, err)
 	}
-	return true
+	return nil
 }
 
 // StopAll tears down every live and in-flight session. Every provider Kill
@@ -1046,7 +1083,7 @@ func (m *Manager) SendMessageAs(id, text string, files []sessionstypes.FileAttac
 // session waits up to linkWait for a lost host link, and a ctx that ends
 // first abandons the send with nothing written.
 func (m *Manager) SendMessageWith(ctx context.Context, id, text string, files []sessionstypes.FileAttachment, origin string, linkWait time.Duration) error {
-	m.reattachIfDetached(id)
+	_ = m.reattachIfDetached(id)
 	sess, ok := m.Get(id)
 	if !ok {
 		return ErrSessionNotFound
@@ -1157,7 +1194,7 @@ func (m *Manager) SendMessageSync(id, text string, files []sessionstypes.FileAtt
 func (m *Manager) SendMessageSyncWith(ctx context.Context, id, text string, files []sessionstypes.FileAttachment, linkWait time.Duration) (string, sessionstypes.SessionStats, error) {
 	// Deliberate: before the collector exists, so the output an attach reads
 	// from the time relay was away cannot complete this send's reply.
-	m.reattachIfDetached(id)
+	_ = m.reattachIfDetached(id)
 	if _, ok := m.Get(id); !ok {
 		return "", sessionstypes.SessionStats{}, ErrSessionNotFound
 	}
