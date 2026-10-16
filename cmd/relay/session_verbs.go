@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +52,30 @@ type sessionMessageRequest struct {
 	ID    string          `json:"id"`
 	Text  string          `json:"text"`
 	Files json.RawMessage `json:"files,omitempty"`
+	// TimeoutMS bounds the wait for a lost host link; zero leaves the host's
+	// default.
+	TimeoutMS int64 `json:"timeout_ms,omitempty"`
+}
+
+type sessionWaitRequest struct {
+	ID        string `json:"id"`
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
+}
+
+type sessionEventsRequest struct {
+	ID    string `json:"id"`
+	After string `json:"after,omitempty"`
+}
+
+// sessionWaitResult is the wait answer the CLI reads back.
+type sessionWaitResult struct {
+	SessionID string `json:"session_id"`
+	State     string `json:"state"`
+	Excerpt   string `json:"excerpt"`
+	Exit      *struct {
+		Code   int      `json:"code"`
+		Stderr []string `json:"stderr"`
+	} `json:"exit"`
 }
 
 type sessionModeRequest struct {
@@ -156,6 +182,9 @@ func hostError(status int, body []byte) error {
 		msg := e.Message
 		if msg == "" {
 			msg = e.Error
+		} else if e.Code == "" {
+			// {"error": CODE, "message": TEXT} is the host's coded shape.
+			e.Code = e.Error
 		}
 		if msg != "" {
 			if e.Code != "" {
@@ -171,12 +200,22 @@ func hostError(status int, body []byte) error {
 // stop and log op shares. The row matches the one the HTTP door's registrar
 // writes: the proxied call's method and path.
 func (r *appRouter) proxyOperatorCall(ctx context.Context, method, path string, body []byte) ([]byte, error) {
+	return r.proxyOperatorCallQuery(ctx, method, path, "", body)
+}
+
+// proxyOperatorCallQuery is proxyOperatorCall with a query string; the
+// decision row names the path alone, as the route table does.
+func (r *appRouter) proxyOperatorCallQuery(ctx context.Context, method, path, query string, body []byte) ([]byte, error) {
 	d, err := requireSessionDeps(r)
 	if err != nil {
 		return nil, err
 	}
 	r.recordOperatorDecision(method, path)
-	status, respBody, err := d.proxySessionHost(ctx, method, path, body)
+	target := path
+	if query != "" {
+		target += "?" + query
+	}
+	status, respBody, err := d.proxySessionHost(ctx, method, target, body)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +327,62 @@ func adminSessionMessage(ctx context.Context, r *appRouter, args json.RawMessage
 	if err != nil {
 		return nil, err
 	}
-	return r.proxyOperatorCall(ctx, http.MethodPost, "/api/sessions/"+url.PathEscape(req.ID)+"/message", body)
+	query := ""
+	if req.TimeoutMS > 0 {
+		query = "link_wait_ms=" + strconv.FormatInt(req.TimeoutMS, 10)
+	}
+	return r.proxyOperatorCallQuery(ctx, http.MethodPost, "/api/sessions/"+url.PathEscape(req.ID)+"/message", query, body)
+}
+
+// adminSessionSend writes one message and answers once it is written, before
+// the turn ends. Like session.message it waits for a lost host link, within
+// the caller's timeout.
+func adminSessionSend(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	req, err := decodeAdminArgs[sessionMessageRequest]("session.send", args)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireID(req.ID, "session.send"); err != nil {
+		return nil, err
+	}
+	if req.Text == "" && len(req.Files) == 0 {
+		return nil, errors.New("session.send: text is required")
+	}
+	return proxyVerb(ctx, r, "/session-send", req)
+}
+
+// adminSessionWait answers when the session's current turn needs the caller;
+// the state says why.
+func adminSessionWait(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	req, err := decodeAdminArgs[sessionWaitRequest]("session.wait", args)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireID(req.ID, "session.wait"); err != nil {
+		return nil, err
+	}
+	return proxyVerb(ctx, r, "/session-wait", req)
+}
+
+// adminSessionEvents reads a detached session's events after a cursor.
+func adminSessionEvents(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	req, err := decodeAdminArgs[sessionEventsRequest]("session.events", args)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireID(req.ID, "session.events"); err != nil {
+		return nil, err
+	}
+	return proxyVerb(ctx, r, "/session-events", req)
+}
+
+// proxyVerb sends an operator verb's request to its relay-sessions route.
+func proxyVerb(ctx context.Context, r *appRouter, path string, req any) (json.RawMessage, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	return r.proxyOperatorCall(ctx, http.MethodPost, path, body)
 }
 
 func adminSessionStop(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
@@ -604,24 +698,15 @@ func sessionMessage(args []string) {
 	id := fs.String("id", "", "session id (required)")
 	text := fs.String("text", "", "message text")
 	file := fs.String("file", "", `{"text","files"} as a JSON file, or - for stdin (instead of --text)`)
+	timeout := fs.Duration("timeout", 0, "longest to wait for a lost host link to return (default 30s)")
 	asJSON := fs.Bool("json", false, `print {"text","stats"} as JSON`)
 	fs.Parse(args)
 	if *id == "" {
 		exitError("--id is required")
 	}
-	req := sessionMessageRequest{ID: *id, Text: *text}
-	switch {
-	case *file != "" && *text != "":
-		exitError("--file cannot be combined with --text")
-	case *file != "":
-		if err := json.Unmarshal(readBodyArg(*file), &req); err != nil {
-			exitError("--file: %v", err)
-		}
-		req.ID = *id
-	case *text == "":
-		exitError("pass --text or --file")
-	}
-	raw := adminCall("relay session message", "session.message", req)
+	req := messageRequest(*id, *text, *file)
+	req.TimeoutMS = timeout.Milliseconds()
+	raw := sessionAdminCall("relay session message", "session.message", req, *asJSON)
 	if *asJSON {
 		printJSONLine(raw)
 		return
@@ -631,6 +716,142 @@ func sessionMessage(args []string) {
 	}
 	decodeCLIResult(raw, &res)
 	fmt.Println(res.Text)
+}
+
+var hostCodedError = regexp.MustCompile(`session host: ([a-z][a-z_]*): (.*)$`)
+
+// sessionAdminCall is adminCall for the verbs whose host refusals carry a
+// code. Under --json a coded refusal is one line on stderr,
+// {"code","message"}, and the exit is 1; otherwise the text is as adminCall's.
+func sessionAdminCall(command, op string, args any, asJSON bool) json.RawMessage {
+	client := requireService(command)
+	raw, err := client.AdminOp(op, marshalCLIArgs(args))
+	if err == nil {
+		return raw
+	}
+	if m := hostCodedError.FindStringSubmatch(err.Error()); asJSON && m != nil {
+		line, _ := json.Marshal(struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}{m[1], m[2]})
+		fmt.Fprintln(os.Stderr, string(line))
+		os.Exit(1)
+	}
+	exitError("%s", adminOpErrorText(err))
+	return nil
+}
+
+// messageRequest builds the request from --text or --file the way session message does.
+func messageRequest(id, text, file string) sessionMessageRequest {
+	req := sessionMessageRequest{ID: id, Text: text}
+	switch {
+	case file != "" && text != "":
+		exitError("--file cannot be combined with --text")
+	case file != "":
+		if err := json.Unmarshal(readBodyArg(file), &req); err != nil {
+			exitError("--file: %v", err)
+		}
+		req.ID = id
+	case text == "":
+		exitError("pass --text or --file")
+	}
+	return req
+}
+
+func sessionSend(args []string) {
+	fs := flag.NewFlagSet("session send", flag.ExitOnError)
+	id := fs.String("id", "", "session id (required)")
+	text := fs.String("text", "", "message text")
+	file := fs.String("file", "", `{"text","files"} as a JSON file, or - for stdin (instead of --text)`)
+	timeout := fs.Duration("timeout", 0, "longest to wait for a lost host link to return (default 30s)")
+	asJSON := fs.Bool("json", false, `print {"session_id","at"} as JSON`)
+	fs.Parse(args)
+	if *id == "" {
+		exitError("--id is required")
+	}
+	req := messageRequest(*id, *text, *file)
+	req.TimeoutMS = timeout.Milliseconds()
+	raw := sessionAdminCall("relay session send", "session.send", req, *asJSON)
+	if *asJSON {
+		printJSONLine(raw)
+		return
+	}
+	var res struct {
+		SessionID string `json:"session_id"`
+		At        string `json:"at"`
+	}
+	decodeCLIResult(raw, &res)
+	fmt.Printf("sent to session %s at %s\n", res.SessionID, res.At)
+}
+
+func sessionWait(args []string) {
+	fs := flag.NewFlagSet("session wait", flag.ExitOnError)
+	id := fs.String("id", "", "session id (required)")
+	timeout := fs.Duration("timeout", 0, "stop waiting after this long; the turn keeps running (default and longest 9m)")
+	asJSON := fs.Bool("json", false, `print {"session_id","state","excerpt"?,"exit"?} as JSON`)
+	fs.Parse(args)
+	if *id == "" {
+		exitError("--id is required")
+	}
+	raw := sessionAdminCall("relay session wait", "session.wait", sessionWaitRequest{ID: *id, TimeoutMS: timeout.Milliseconds()}, *asJSON)
+	var res sessionWaitResult
+	decodeCLIResult(raw, &res)
+	if *asJSON {
+		printJSONLine(raw)
+	} else {
+		printWaitResult(res)
+	}
+	if res.State != "idle" {
+		os.Exit(1)
+	}
+}
+
+// printWaitResult writes the reply on stdout when the turn ended, and the
+// reason on stderr when it did not.
+func printWaitResult(res sessionWaitResult) {
+	switch res.State {
+	case "idle":
+		fmt.Println(res.Excerpt)
+	case "asking":
+		fmt.Fprintf(os.Stderr, "session %s is asking: the turn waits on a permission\n", res.SessionID)
+	case "timeout":
+		fmt.Fprintf(os.Stderr, "session %s: timeout: the turn is still running\n", res.SessionID)
+	case "ended":
+		fmt.Fprintf(os.Stderr, "session %s has ended\n", res.SessionID)
+	default:
+		fmt.Fprintf(os.Stderr, "session %s is %s\n", res.SessionID, res.State)
+		if res.Exit != nil {
+			fmt.Fprintf(os.Stderr, "exit code %d\n", res.Exit.Code)
+			for _, l := range res.Exit.Stderr {
+				fmt.Fprintln(os.Stderr, l)
+			}
+		}
+	}
+}
+
+func sessionEvents(args []string) {
+	fs := flag.NewFlagSet("session events", flag.ExitOnError)
+	id := fs.String("id", "", "session id (required)")
+	after := fs.String("after", "", "cursor from the last call; empty starts at the beginning of the run")
+	asJSON := fs.Bool("json", false, `print {"session_id","events","next"} as JSON`)
+	fs.Parse(args)
+	if *id == "" {
+		exitError("--id is required")
+	}
+	raw := sessionAdminCall("relay session events", "session.events", sessionEventsRequest{ID: *id, After: *after}, *asJSON)
+	if *asJSON {
+		printJSONLine(raw)
+		return
+	}
+	var res struct {
+		Events []json.RawMessage `json:"events"`
+		Next   string            `json:"next"`
+	}
+	decodeCLIResult(raw, &res)
+	for _, e := range res.Events {
+		printJSONLine(e)
+	}
+	fmt.Printf("next %s\n", res.Next)
 }
 
 // idVerb runs a verb whose only input is --id and whose answer is {"id"}.

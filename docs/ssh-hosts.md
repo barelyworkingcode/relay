@@ -195,6 +195,7 @@ it describes anything running on this machine.
         "error": ""                 // non-empty iff ok == false
       },
       "tmux_path": "",              // optional operator override of probe.tmux_path
+      "detach_sessions": false,     // true: Claude sessions on this host outlive the ssh link
       "terminal_templates": [       // host-scoped; see Terminals on a host
         { "id": "shell", "name": "Shell" },
         { "id": "claude-code", "name": "Claude Code", "command": "/opt/homebrew/bin/claude" }
@@ -522,8 +523,8 @@ stays the console's cwd (irrelevant). `resolveClaudePath` is not consulted.
 3. On `permission_response`, write to stdin:
    - allow: `{"type":"control_response","response":{"request_id":R,"subtype":"success","response":{"behavior":"allow","updatedInput":<input>}}}`
    - deny: `{"type":"control_response","response":{"request_id":R,"subtype":"success","response":{"behavior":"deny","message":<reason or "Denied by user">}}}`
-4. A request unanswered after 60 s is denied with `"No response"`, matching
-   the hook's timeout; a stop/kill denies every pending request.
+4. A request unanswered after 60 s is denied with `"No approval: the request was not answered within 60 seconds."`,
+   matching the hook's timeout; a stop/kill denies every pending request.
 
 Any other `control_request` subtype is answered
 `{"subtype":"error","error":"unsupported"}` so the CLI never blocks on us.
@@ -718,6 +719,146 @@ relayScheduler creates sessions through relayLLM by `projectId` and
 for an interactive session. A task on a host project therefore runs on the
 host with no scheduler change. The cron stays on the console, which is what
 "cron running local, remote execution" asks for.
+
+## Detached sessions
+
+A Claude session on a Unix host with `detach_sessions: true` keeps its agent
+when relay's link to the host drops. An everyday user sets nothing: eve shows
+the session as it does any other. A power user sets `hosts[].detach_sessions`
+in `settings.json`. The field is read when a session starts, so it applies to
+sessions started or resumed after the change.
+
+**On the host.** Relay starts the agent under
+`~/.relay/agents/<session id>/<generation>/` (mode `0700`; the generation is
+created with a plain `mkdir`, so one that exists is refused):
+
+| File | Holds |
+|---|---|
+| `in.jsonl` | The agent's input. Relay appends one complete line per user message or `control_response`. |
+| `out.jsonl` | The agent's stdout, appended. |
+| `stderr.log` | The agent's stderr. |
+| `run.json` | `{"pid":N,"pgid":N,"started":"<process start time>","generation":"g1"}`, written by the runner once it leads its own process group. |
+| `exit` | `{"code":N,"at":"RFC3339"}`, written by the runner when the agent ends. |
+
+Each spawn gets a new generation: `g1`, `g2`, and so on, one past the highest
+that exists. A start whose run directory cannot be created fails and names the
+directory. `relay session start` returns only after `run.json` exists.
+
+The runner is a POSIX `sh` script (`internal/sshhost/agentrun.go`) that
+`setsid(1)` or `set -m` puts in its own process group, with every file
+descriptor redirected and `HUP` ignored. It feeds the agent's stdin from
+`tail -n +1 -f in.jsonl` and kills that `tail` when the agent exits. It needs
+no perl or python. A host with neither `setsid` nor a `sh` that honours
+`set -m` without a terminal (dash, without util-linux) refuses the start with
+"agent runner did not start"; it never runs the agent in the ssh session's own
+group. Every command goes through `RemoteCommandForOS`, so decision 8's
+launcher carries it.
+
+**The cursor.** Events are read from `out.jsonl` by byte offset. A cursor is
+the opaque string `<generation>:<byte offset of a line start>`. Relay consumes
+only complete lines and moves the cursor by the bytes it consumed, so after a
+reconnect each event arrives once and in order. A reader prints event bytes
+on stdout and a heartbeat dot on stderr every few seconds: a reader orphaned
+by a dropped link dies when that write fails, and a heartbeat on stdout could
+land inside a half-written line.
+
+**A drop.** When a reader ends while the runner has not exited, relay writes
+`session.host_link` with `link=lost`, once per outage, however soon after the
+read opened. It retries with a backoff from one to ten seconds that grows
+across reads that deliver nothing and resets after a read that delivered
+lines, and reopens the read at its cursor. The reopened read writes
+`link=restored` once it has delivered a line or stayed open for two seconds,
+and a runner found to have exited during the outage writes it before the last
+read; a read that keeps failing at once writes one `lost` and nothing more.
+The agent keeps running throughout, and the session never reads `errored`
+because of the drop. When
+the runner has exited, relay delivers the remaining lines and ends the
+session as any process exit does, with the exit code.
+
+**A send during a drop.** `relay session send` and `relay session message`
+wait for `session.host_link` `restored` within the command's `--timeout`
+(default 30 s; at most 9 minutes for `send` and 4 minutes for `message`, whose reply wait follows; a longer value is clamped), then write once. A command that is killed or interrupted while it waits writes nothing. Past the cap the command exits `1` with
+`host_link_down` and a message to retry when the host is reachable; nothing was
+written, and the session returns to the state it had before the send. The wait
+holds the session's one in-flight send, so a second send meanwhile answers
+`already_processing`. An ssh command that was cut short by its own timeout or killed
+reports `send_unknown` like any ambiguous exit. An ssh failure that proves the connection never opened
+marks the link lost and waits again. Any other ssh failure after the command
+started may still have landed the line, so it is not retried: the command exits
+`1` with `send_unknown`, and the operator reads `relay session events` before
+sending again.
+
+**Replay.** `relay session events --after CURSOR` reads the agent's events
+from the cursor, up to 200 per call, and prints the cursor for the next call.
+Two calls chained by cursor print each event once and miss none. The empty
+cursor starts at the current generation's beginning. A session that is not
+detached, or is dormant, exits `1` with `replay_unavailable`.
+
+**Stop.** Idle stop, drop-in and `relay session stop` end the runner's process
+group, `TERM` then `KILL`, and return when it is gone. The stop checks the
+start time in `run.json` against the live pid first: a pid that is alive with
+another start time is not ours and its group is left alone. Deleting a session
+also removes `~/.relay/agents/<session id>/`, which holds tool output. A host
+that cannot be reached at stop time leaves the agent running; relay logs it.
+
+**A relay restart.** A detached agent outlives relay and relay-sessions. When
+either shuts down, each detached provider drops its local reader and leaves the
+agent running, and relay-sessions saves the cursor of the last line it read
+with the session's state. A save also happens at the end of every turn, and
+it records the cursor after the turn's result line, so after a crash an attach
+replays only the lines since the last turn ended.
+
+When relay-sessions starts it asks each persisted detached session's host
+whether the agent's runner is alive, and attaches to every one that is (the
+session reads live; no resume is needed). Attaching reads what the agent wrote
+while nobody was reading, from the saved cursor, before it follows the output.
+A session with no saved cursor, one from another generation, or one past the
+end of the output starts at the end of the output. A turn is read as open when the host holds more
+user messages than results. A permission prompt the agent is still waiting on
+is raised again, once the session is published: the session reads `asking` and
+a viewer that is joined, or that joins later, gets the `permission_request` (`join_session` sends each pending one after `session_joined`, in the order raised). A shutdown does not deny a
+waiting prompt, so it survives the restart; one whose `control_response` is
+already in `in.jsonl` is not raised. A `message`, `wait`, `events` or drop-in that meets a detached
+session with no provider attaches it first. At startup relay asks the same
+question for each live ledger record and keeps live the ones whose agent runs
+(the record's `detached.host_id` names the host); it ages the rest to dormant,
+as it does every other session. A host that does not answer in 15 s reads as
+not running, and a resume asks again. relay-sessions can therefore attach a
+session whose ledger record reads dormant (the host was down at relay's
+startup, or relay-sessions restarted alone); the record stays dormant until
+the next resume. `relay project remove` ends the agent of every detached
+record of the project, whatever its state.
+
+A relay-sessions restart on its own leaves detached agents running in the same
+way.
+
+**Resume.** A resume of a detached session first asks the host about the
+latest generation. A running agent is attached and no second agent starts, so
+the session continues in the conversation it already has. An agent that
+exited, or a runner whose pid now names another process (the start time in
+`run.json` differs, so the run counts as exited and that process is never
+signalled), starts a new generation with `--resume`, and the conversation
+continues from Claude's own history. A host that cannot answer refuses the
+resume with `host_unavailable`.
+
+**Drop-in.** `relay drop-in` on a detached session attaches its agent first if
+relay-sessions has none attached, waits for the turn to end, then ends the
+agent's process group and opens the conversation in the terminal with its full
+history. A session whose host does not answer is refused (`host_unavailable`,
+`409`) and nothing is stopped, because the agent might still run; a host that
+answers but whose running agent cannot be attached is refused with
+`attach_failed`, and nothing is stopped either. The agent and the terminal never run on the conversation together.
+
+**Not covered.** Windows hosts: a detached start there is refused with an error
+that names the host. A host whose login manager kills a user's processes when
+the last session ends (`KillUserProcesses=yes`) takes the agent with it. A
+runner killed from outside leaves its agent orphaned in the group; a stop
+leaves such an agent alone, because without a live leader relay cannot prove
+the group is still its own.
+
+**Known limit.** An eve tab's send to a detached session during a drop waits
+up to the 30 s default for the link inside that tab's connection, so a stop
+sent from the same tab waits behind it.
 
 ## What is deliberately absent (v1)
 

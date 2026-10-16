@@ -539,17 +539,34 @@ Once the ancestry walk resolves a session id, and the decoded body's own
 
 5. `Preflight` deciding without asking ends the request there: no
    `permission_request` frame, no wait.
-6. `Preflight` says ask, but no viewer has joined the session (`HasViewers`):
-   `200` deny, `no client is viewing this session to approve the tool call`.
-   No request is created — nothing is queued to replay if a viewer joins
-   later.
-7. A viewer is present: `CreateRequest` mints a permission id and
+6. `Preflight` says ask: `CreateRequest` mints a permission id and
    `NotifySession` sends every viewer of the session a `permission_request`
    frame (`sessionId`, `permissionId`, `toolName`, `toolInput`, `toolUseId`).
-8. `WaitForDecisionContext` returns the person's decision as given (an
-   empty-reason deny becomes `Denied by user`), denies with `No response`
-   after 60 seconds with no decision, and — on a hook-side disconnect —
-   cleans up the pending request and writes nothing back.
+   This holds with zero viewers: the request stays pending, the session's
+   state becomes `asking` on every connection, and a connection that later
+   sends `join_session` receives each pending request of that session, in
+   creation order, after its `session_joined`. `permission_response` still
+   needs the answering connection to have joined.
+7. `WaitForDecisionContext` returns the person's decision as given (an
+   empty-reason deny becomes `Denied by user`) and, after 60 seconds with no
+   decision, denies with `No approval: the request was not answered within 60
+   seconds.` If no connection is joined to the session at that moment the
+   reason is instead `No approval: the request waited 60 seconds and no
+   screen was open to answer it. This session is interactive; the owner was
+   away.` On a hook-side disconnect it cleans up the pending request and
+   writes nothing back.
+
+   Whichever path removes the request from the pending set also sends every
+   viewer of the session one `permission_resolved` frame (`sessionId`,
+   `permissionId`, `outcome`), through the same `NotifySession` as the
+   `permission_request`, after the request left the set and outside the
+   lock. `outcome` is `expired` (the 60 second timer), `answered` (`Resolve`,
+   from a joined connection's `permission_response`) or `ended` (the session
+   stopped or was killed, so `DenyAllForSession` ran, or the hook's request
+   context ended). A request never gets two outcomes. The reasons the model
+   sees do not change. An answer that arrives after the request left the
+   set is dropped with no reply. A connection that was not joined misses the
+   frame; its next `join_session` replays only the still-pending requests.
 
 Every path from step 2 on logs `slog.Info("permission decided", …)` with the
 session, tool and decision — never the tool's input.
@@ -753,6 +770,7 @@ A blank cell means no change. `Launching` from any state, or from none, gives `s
 | TurnEnded | | | idle | idle | idle | |
 | TurnFailed | | | errored | errored | errored | |
 | TurnStopped | | | idle | idle | idle | |
+| SendAborted | | | the state before the send | | the state before the send | |
 | ProcessExited | ended | ended | errored | errored | errored | |
 | DroppedIn | running, held | running, held | running, held | running, held | running, held | running, held |
 | HandedBack | | | idle (held entries only), released | | | |
@@ -769,7 +787,7 @@ Claude, pi and Codex share one path in `handleProviderEvent` and the manager met
 |---|---|
 | `Create` resolves a tracked session | Launching |
 | `Create` or a restart: the provider start fails, or the manager is stopping, or it succeeds | LaunchFailed, SessionEnded or Launched |
-| `SendMessage`, just before the provider call; if that call errors | TurnStarted; TurnFailed |
+| `SendMessage`, just before the provider call; if that call errors | TurnStarted; TurnFailed, or SendAborted when the host link stayed down or the caller left (a detached session), or none when the outcome is unknown |
 | `StopGeneration`, `ClearSession`, before the kill or abort | TurnStopped |
 | `ClearSession` on a project-bound session (provider left dead) | SessionEnded |
 | `EndSession`, `DeleteSession`, `StopAll`, before the kill | SessionEnded |
@@ -787,6 +805,28 @@ Claude, pi and Codex share one path in `handleProviderEvent` and the manager met
 A failed Claude turn also says so on the session's own frames. The assistant `message_start` llm_event of a turn the CLI ended with an API error carries `"error":"<code>"` (for example `authentication_failed`), plus `"apiErrorStatus":<n>` when the line has one. The `message_complete` frame carries `"isError":true`, plus `"apiErrorStatus":<n>` when the CLI's result has one. A normal turn carries none of these keys.
 
 A Claude Stop kills the process, so the state reads `idle`, then `ended` a moment later. pi and Codex have no question path yet, so `asking` is reachable only for Claude: a Codex session reports six of the seven states.
+
+### Wait and send
+
+`Manager.Wait(ctx, id, cap)` answers when the session needs its caller. It reads
+the board and sleeps on a per-session wake-up that every state change sends, so
+it needs no polling. `idle` returns at once, with the excerpt of the last turn that
+ended (empty before the first); `asking`, `errored` (with `exit`) and `ended`
+also return at once; `starting`, `running` and `stalled` keep waiting. A cap above
+zero ends the wait with state `timeout` on the manager's clock; the turn keeps
+running. A session with no agent state answers `ErrNotTracked`.
+
+A send that fails because the host link stayed down signals `SendAborted`
+(`running` or `stalled` back to the state before the send, with its exit
+detail; no `turn_done`) instead of `TurnFailed`, and removes the
+message it had added to the history. A send that ends `send_unknown` signals
+nothing: the line may have landed, so the agent's own events settle the state.
+
+The operator verbs reach the host on `POST /session-send`, `POST /session-wait`
+and `POST /session-events`, reserved against manifests and not on
+relay-sessions' manifest. Request and response bodies are the `--json` shapes in
+[cli.md](cli.md#session-send). `/session-wait` caps its wait at nine minutes, under the
+bridge's ten-minute inactivity limit.
 
 ### Frames
 
@@ -949,6 +989,39 @@ Image attachments precede the text block as `{"type":"image","source":{"type":"b
 
 Streaming forms are also read: `{"type":"assistant","index":N,"content_block":{…}}`, `{"type":"assistant","index":N,"delta":{"type":"text_delta","text":"…"}}` and `{"type":"assistant","index":N,"content_block_stop":true}`. A `user` line carrying `tool_result` blocks becomes a tool result. Any other `type` is passed on unchanged. A `control_request` line is answered on stdin; only SSH-host sessions produce one.
 
+### Detached on a host
+
+A claude session whose host spec carries `detach: true` (from
+`hosts[].detach_sessions`) runs its agent on the host under
+`~/.relay/agents/<session id>/<generation>/` instead of as the child of an
+`ssh -T` process (`docs/ssh-hosts.md`, "Detached sessions"). Argv comes from
+`buildClaudeArgs`, as for any host session; only the transport differs.
+`SendMessage` and the `control_response` writes append one line to `in.jsonl`
+through a short ssh command. `SendMessageWithin` is `SendMessage` with the
+longest a send waits for a lost link to return; a `control_response` does not
+wait. The wait ends on `restored`, the runner's exit, a kill, the caller's request ending or the cap (at most nine minutes), and
+the write happens once (`ErrHostLinkDown` past the cap, `ErrSendUnknown` after
+an ambiguous ssh exit). Stdout lines come from `out.jsonl` by byte offset
+and reach `processLine` once and in order across a link drop. `Kill` ends the
+agent's process group on the host. `Events(ctx, after, max)` returns the
+complete lines after a cursor and the cursor to pass next. A shutdown of
+relay or relay-sessions calls `Release`, which stops the local reader and
+leaves the agent running: a detached agent survives a relay restart.
+`GetState` carries the run's generation and cursor, so a state save (every
+turn end, and shutdown) records where reading stopped. `Manager.ReattachDetached`
+runs at relay-sessions startup: for each persisted detached claude session it
+asks the host for the run's status and, for a live runner, calls `Create` with
+`AttachOnly`, so the provider attaches (`attachDetached`) and never starts an
+agent. The attach reads the lines after the cursor before it returns and
+holds each `control_request` that has no `control_response` in `in.jsonl`; `Create` raises them (`TakeAttach`) once the slot is published, so the board reads `asking` and viewers get the prompt, and `Release` does not deny a waiting prompt;
+`SendMessage`, `SendMessageSync`, `Wait`, `Events` and `Handoff` call the same
+attach for a detached session with no live provider. A plain resume (`ClaudeConfig.Resume`)
+asks for a running agent first and attaches to it too. `relay session stop`
+ends the agent. Idle stop, drop-in, stop and
+delete call `Kill`, which ends the agent; deleting a dormant session does the
+same through `DeleteDetachedRun`. With `detach` unset the `ssh -T` path is
+unchanged. A Windows host refuses a detached start.
+
 ### History on join
 
 `join_session` on `/ws` answers with `session_joined`, whose `history[]` is built from one of two sources.
@@ -1031,6 +1104,8 @@ Body `{session_id}`. Internal peer only, like `/launch`. Answers `200 {session_i
 | 409 | `tool_running` | a tool call is open; the message names the earliest |
 | 409 | `turn_timeout` | the turn did not end within the wait |
 | 409 | `no_conversation` | no Claude conversation id yet |
+| 409 | `host_unavailable` | a detached session's host did not say whether its agent runs; nothing is stopped |
+| 409 | `attach_failed` | the host answered and the agent runs, but relay-sessions could not attach it; nothing is stopped |
 
 A session with no live process can be taken over; it loads from disk first. If a turn is in flight and no tool is open, the request waits for the turn to end, a tool to open, the timeout or the caller to go away. It does not poll. A tool call opens on an assistant `content_block_stop` of a `tool_use` block and closes on its `tool_result`; `message_complete`, `error`, `process_exited`, `StopGeneration` and `ClearSession` clear them all. Waiting through a tool could last without bound, and stopping mid-tool leaves a half-finished call, so a running tool refuses at once.
 
@@ -1725,11 +1800,17 @@ is `StateDormant`, and names the same project the resume request names — a
 caller cannot squat a live session id or resume one project's session under
 another project's name this way.
 
+A resume of a detached host session first runs `RunnerStatus` on the latest
+generation. A host that cannot answer refuses with `host_unavailable`. A
+running agent does not refuse the launch: the provider that relay-sessions
+builds for the resume attaches to that agent, and a second agent never starts.
+
 At startup relay ages every `live` ledger record to `dormant`
 (`ledger.MarkLiveDormant`, called from `openSessionLedger` in
-`cmd/relay/trayapp.go`). relay-sessions and every provider it hosts are
-children of this relay process, so no record from an earlier run can still be
-live; a provider that was live when relay quit never sent the `SessionExited`
+`cmd/relay/trayapp.go`), except a detached host session whose runner answers
+`RunnerStatus` as alive: its agent is not a child of this relay process, and
+relay-sessions reattaches it. Every other provider is a child of this relay
+process, so no other record from an earlier run can still be live; a provider that was live when relay quit never sent the `SessionExited`
 that would have aged it. Left `live`, that record makes relay's
 `POST /api/sessions/{id}/resume` answer "already live" (`resumed: false`)
 without launching anything, and the client's next message gets
