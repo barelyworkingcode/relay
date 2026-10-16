@@ -1202,7 +1202,7 @@ connection that joined the session or terminal.
 
 | `type` | Fields | Effect |
 |---|---|---|
-| `join_session` | `sessionId` | adds the connection as a viewer, answers `session_joined`. Unknown id: `error` frame |
+| `join_session` | `sessionId` | adds the connection as a viewer, answers `session_joined`, then sends that connection each `permission_request` of the session's running turn that is still unanswered, in the order raised (an answered or stopped one is not sent; nothing expires). Unknown id: `error` frame |
 | `leave_session` | `sessionId` | removes the viewer. No answer |
 | `send_message` | `sessionId`, `text`, `files`?, `trace_id`? | starts a turn. `trace_id` (`[A-Za-z0-9_-]{8,64}`) is the trace of the `chat.turn` event, else a new id is made |
 | `stop_generation` | `sessionId` | ends the running turn |

@@ -1231,14 +1231,7 @@ func (p *ClaudeProvider) handleControlRequest(raw json.RawMessage) {
 	}
 
 	pending, ch := p.perms.CreateRequest(p.session.ID, req.Request.ToolName, toolInput, req.Request.ToolUseID)
-	p.perms.NotifySession(p.session.ID, map[string]interface{}{
-		"type":         "permission_request",
-		"sessionId":    p.session.ID,
-		"permissionId": pending.ID,
-		"toolName":     req.Request.ToolName,
-		"toolInput":    toolInput,
-		"toolUseId":    req.Request.ToolUseID,
-	})
+	p.perms.NotifySession(p.session.ID, pending.Frame())
 
 	go func() {
 		decision := p.perms.WaitForDecision(pending.ID, ch)

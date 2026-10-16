@@ -271,6 +271,14 @@ func (sh *SessionHandlers) handleJoinSession(c *Conn, raw []byte) {
 		// concept of "joined but not live" since it respawned silently.
 		"live": p != nil && p.Alive(),
 	}))
+
+	// Replay after session_joined, to this connection only: a request raised
+	// before this join was never sent to it.
+	if sh.perms != nil {
+		for _, r := range sh.perms.PendingForSession(req.SessionID) {
+			c.Write(mustJSON(r.Frame()))
+		}
+	}
 }
 
 func (sh *SessionHandlers) handleSendMessage(c *Conn, raw []byte) {

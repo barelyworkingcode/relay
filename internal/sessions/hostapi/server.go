@@ -993,26 +993,20 @@ func (s *Server) decidePermission(ctx context.Context, body permissionRequestBod
 	if d, decided := permission.Preflight(in); decided {
 		return d, true
 	}
-	if !s.sessionWS.HasViewers(body.SessionID) {
-		return permission.PermissionDecision{Decision: "deny", Reason: "no client is viewing this session to approve the tool call"}, true
-	}
-
 	toolInput := body.ToolInput
 	if toolInput == "" {
 		toolInput = "{}"
 	}
 	pending, ch := perms.CreateRequest(body.SessionID, body.ToolName, toolInput, body.ToolUseID)
-	perms.NotifySession(body.SessionID, map[string]any{
-		"type":         "permission_request",
-		"sessionId":    body.SessionID,
-		"permissionId": pending.ID,
-		"toolName":     body.ToolName,
-		"toolInput":    toolInput,
-		"toolUseId":    body.ToolUseID,
-	})
+	perms.NotifySession(body.SessionID, pending.Frame())
 	d, ok = perms.WaitForDecisionContext(ctx, pending.ID, ch)
 	if !ok {
 		return permission.PermissionDecision{}, false
+	}
+	// Viewers are checked at expiry, not at creation: the request is held for
+	// a late viewer, so "unseen" means nobody joined by the end.
+	if d.Reason == permission.ReasonExpired && !s.sessionWS.HasViewers(body.SessionID) {
+		d.Reason = permission.ReasonExpiredUnseen
 	}
 	if d.Decision == "deny" && d.Reason == "" {
 		d.Reason = "Denied by user"
