@@ -958,8 +958,14 @@ A claude session whose host spec carries `detach: true` (from
 through a short ssh command. Stdout lines come from `out.jsonl` by byte offset
 and reach `processLine` once and in order across a link drop. `Kill` ends the
 agent's process group on the host. `Events(ctx, after, max)` returns the
-complete lines after a cursor and the cursor to pass next. With `detach`
-unset the `ssh -T` path is unchanged. A Windows host refuses a detached start.
+complete lines after a cursor and the cursor to pass next. A shutdown of
+relay or relay-sessions calls `Release`, which stops the local reader and
+leaves the agent running: a detached agent survives a relay restart, the
+session reads dormant, and a resume answers `runner_alive` while the agent
+runs. Relay does not reattach yet; stop ends it. Idle stop, drop-in, stop and
+delete call `Kill`, which ends the agent; deleting a dormant session does the
+same through `DeleteDetachedRun`. With `detach` unset the `ssh -T` path is
+unchanged. A Windows host refuses a detached start.
 
 ### History on join
 

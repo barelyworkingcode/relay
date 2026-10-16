@@ -344,7 +344,23 @@ func (p *ClaudeProvider) sendDetached(det *detachedRun, data []byte) error {
 	return nil
 }
 
-func (p *ClaudeProvider) killDetached(det *detachedRun) {
+// Release detaches this provider from its agent and leaves the agent running
+// on the host: the local reader stops and process_exited follows, nothing is
+// sent to the host. A relay or relay-sessions shutdown uses it, because a
+// detached agent outlives relay. Kill, by contrast, ends the agent.
+func (p *ClaudeProvider) Release() {
+	if p.perms != nil {
+		p.perms.DenyAllForSession(p.session.ID, "session stopped")
+	}
+	p.root.Store(nil)
+	if det := p.det; det != nil {
+		p.killDetached(det, false)
+		return
+	}
+	p.Kill()
+}
+
+func (p *ClaudeProvider) killDetached(det *detachedRun, stopAgent bool) {
 	det.stopOnce.Do(func() {
 		if p.killed != nil {
 			p.killed.Store(true)
@@ -354,8 +370,8 @@ func (p *ClaudeProvider) killDetached(det *detachedRun) {
 			p.stopIdleOnce.Do(func() { close(p.stopIdle) })
 		}
 		det.cancel()
-		if !det.finished.Load() {
-			p.stopRunner(det)
+		if stopAgent && !det.finished.Load() {
+			stopDetachedRunner(p.session.ID, det.spec, det.dir)
 		}
 		close(det.stopped)
 	})
@@ -369,11 +385,11 @@ func (p *ClaudeProvider) killDetached(det *detachedRun) {
 // stopRunner asks the host to end the agent's process group. A host that
 // cannot be reached leaves the agent running; that is logged, since nothing
 // else will tell the operator.
-func (p *ClaudeProvider) stopRunner(det *detachedRun) {
+func stopDetachedRunner(session string, spec *sessionstypes.HostSpec, dir sshhost.RunDir) {
 	var msg string
 	for i := 0; i < detachedStopTries; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), detachedStopTimeout)
-		_, m, err := runHost(ctx, det.spec, sshhost.RunnerStop(det.spec.OS, det.dir), nil)
+		_, m, err := runHost(ctx, spec, sshhost.RunnerStop(spec.OS, dir), nil)
 		cancel()
 		if err == nil {
 			return
@@ -381,20 +397,29 @@ func (p *ClaudeProvider) stopRunner(det *detachedRun) {
 		msg = m
 		time.Sleep(time.Second)
 	}
-	slog.Warn("claude: detached agent could not be stopped; it may still run on the host", "session", p.session.ID, "host", det.spec.ID, "error", msg)
+	slog.Warn("claude: detached agent could not be stopped; it may still run on the host", "session", session, "host", spec.ID, "error", msg)
 }
 
 // removeDetachedRun ends the agent and deletes its run directories, which
 // hold tool output.
 func (p *ClaudeProvider) removeDetachedRun(host *sessionstypes.HostSpec) {
 	p.Kill()
-	if len(host.SSHArgv) == 0 || sshhost.IsWindowsOS(host.OS) {
+	DeleteDetachedRun(p.session.ID, host)
+}
+
+// DeleteDetachedRun ends the latest agent of a detached session and deletes
+// its run directories on the host. It needs no live provider: a session that
+// is dormant after a restart still has an agent to end. A host that cannot be
+// reached leaves both in place; that is logged.
+func DeleteDetachedRun(session string, host *sessionstypes.HostSpec) {
+	if host == nil || !host.Detach || len(host.SSHArgv) == 0 || sshhost.IsWindowsOS(host.OS) {
 		return
 	}
+	stopDetachedRunner(session, host, sshhost.RunDir{Session: session})
 	ctx, cancel := context.WithTimeout(context.Background(), detachedStopTimeout)
 	defer cancel()
-	if _, msg, err := runHost(ctx, host, sshhost.RunnerRemove(host.OS, p.session.ID), nil); err != nil {
-		slog.Warn("claude: detached run directory not removed", "session", p.session.ID, "host", host.ID, "error", msg)
+	if _, msg, err := runHost(ctx, host, sshhost.RunnerRemove(host.OS, session), nil); err != nil {
+		slog.Warn("claude: detached run directory not removed", "session", session, "host", host.ID, "error", msg)
 	}
 }
 

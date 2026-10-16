@@ -1346,7 +1346,7 @@ func (p *ClaudeProvider) Kill() {
 	p.root.Store(nil)
 
 	if det := p.det; det != nil {
-		p.killDetached(det)
+		p.killDetached(det, true)
 		return
 	}
 
