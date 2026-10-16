@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/barelyworkingcode/relay/fakerelay/internal/events"
+	"github.com/barelyworkingcode/relay/fakerelay/internal/fakes"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/server"
 )
 
@@ -187,10 +189,80 @@ func (s *svc) joinSession(c *conn, id string) {
 
 // dropPerms forgets x's unanswered requests: the turn that raised them is
 // stopped, so a later join must not see them. The caller holds s.mu.
-func (s *svc) dropPerms(x *session) {
+// It returns the dropped ids in the order raised.
+func (s *svc) dropPerms(x *session) []string {
+	var ids []string
 	for id, sid := range s.perms {
 		if sid == x.id {
-			delete(s.perms, id)
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		delete(s.perms, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return s.permRaised[ids[i]].Before(s.permRaised[ids[j]]) })
+	for _, id := range ids {
+		delete(s.permRaised, id)
+	}
+	return ids
+}
+
+// resolved tells x's viewers how each request ended, once per request. The
+// caller removed the ids from s.perms and has released s.mu.
+func (s *svc) resolved(x *session, ids []string, outcome string) {
+	if x == nil {
+		return
+	}
+	for _, id := range ids {
+		s.toViewers(x, map[string]any{"type": "permission_resolved", "sessionId": x.id, "permissionId": id, "outcome": outcome})
+	}
+}
+
+// Relay's expiry reasons, as the model sees them (permission.ReasonExpired and
+// permission.ReasonExpiredUnseen; the fake is its own module and cannot import
+// them). A request waits permissionTTL on the instance clock.
+const (
+	permissionTTL       = 60 * time.Second
+	reasonExpired       = "No approval: the request was not answered within 60 seconds."
+	reasonExpiredUnseen = "No approval: the request waited 60 seconds and no screen was open to answer it. This session is interactive; the owner was away."
+)
+
+// expirePerms expires every request raised permissionTTL or more before now.
+// It runs from the clock watcher, so a clock change answers only after the
+// frames are written. Real time never expires one.
+func (s *svc) expirePerms(now time.Time) {
+	type due struct {
+		x       *session
+		id      string
+		agent   fakes.Agent
+		viewers bool
+	}
+	s.mu.Lock()
+	var dues []due
+	for id, raised := range s.permRaised {
+		if now.Sub(raised) < permissionTTL {
+			continue
+		}
+		x := s.sessions[s.perms[id]]
+		delete(s.perms, id)
+		delete(s.permRaised, id)
+		if x == nil {
+			continue
+		}
+		x.tool = ""
+		dues = append(dues, due{x, id, x.agent, len(x.viewers) > 0})
+	}
+	s.mu.Unlock()
+	sort.Slice(dues, func(i, j int) bool { return dues[i].id < dues[j].id })
+	for _, d := range dues {
+		s.resolved(d.x, []string{d.id}, "expired")
+		s.setState(d.x, "running")
+		if d.agent != nil {
+			reason := reasonExpiredUnseen
+			if d.viewers {
+				reason = reasonExpired
+			}
+			d.agent.Answer(d.id, false, reason)
 		}
 	}
 }
@@ -228,12 +300,14 @@ func (s *svc) permissionResponse(c *conn, f inFrame) {
 		return
 	}
 	delete(s.perms, f.PermissionID)
+	delete(s.permRaised, f.PermissionID)
 	x.tool = ""
 	agent := x.agent
 	s.mu.Unlock()
+	s.resolved(x, []string{f.PermissionID}, "answered")
 	s.setState(x, "running")
 	if agent != nil {
-		agent.Answer(f.PermissionID, f.Approved)
+		agent.Answer(f.PermissionID, f.Approved, "")
 	}
 }
 
@@ -263,15 +337,16 @@ func (s *svc) sessionCommand(c *conn, f inFrame) {
 	}
 	var reply map[string]any
 	var more []map[string]any
+	var ended []string
 	switch f.Type {
 	case "stop_generation":
 		if x.cancel != nil && x.processing {
 			x.cancel()
 		}
-		s.dropPerms(x)
+		ended = s.dropPerms(x)
 	case "end_session":
 		x.live, x.agent = false, nil
-		s.dropPerms(x)
+		ended = s.dropPerms(x)
 		if x.cancel != nil {
 			x.cancel()
 		}
@@ -292,6 +367,7 @@ func (s *svc) sessionCommand(c *conn, f inFrame) {
 		}
 	}
 	s.mu.Unlock()
+	s.resolved(x, ended, "ended")
 	if f.Type == "end_session" {
 		s.setState(x, "ended")
 	}

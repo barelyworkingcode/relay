@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	clk "github.com/barelyworkingcode/relay/internal/sessions/clock"
+	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	"github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
@@ -76,6 +77,29 @@ func (r PermissionRequest) Frame() map[string]any {
 		"toolName":     r.ToolName,
 		"toolInput":    r.ToolInput,
 		"toolUseId":    r.ToolUseID,
+	}
+}
+
+// How a permission request ended, as carried by the permission_resolved frame.
+const (
+	// OutcomeExpired: 60 s passed with no answer.
+	OutcomeExpired = "expired"
+	// OutcomeEnded: the asker went away before an answer (session stopped or
+	// killed, or the hook's request context ended).
+	OutcomeEnded = "ended"
+	// OutcomeAnswered: a joined connection's permission_response resolved it.
+	OutcomeAnswered = "answered"
+)
+
+// ResolvedFrame is the permission_resolved WebSocket frame telling a
+// session's viewers how r ended, so a client can close a prompt that no
+// longer waits.
+func (r PermissionRequest) ResolvedFrame(outcome string) map[string]any {
+	return map[string]any{
+		"type":         events.WSMsgPermissionResolved,
+		"sessionId":    r.SessionID,
+		"permissionId": r.ID,
+		"outcome":      outcome,
 	}
 }
 
@@ -253,6 +277,7 @@ func (m *PermissionManager) Resolve(permissionID string, decision PermissionDeci
 		return false
 	}
 
+	m.NotifySession(p.req.SessionID, p.req.ResolvedFrame(OutcomeAnswered))
 	p.ch <- decision
 	m.observe(p.req.SessionID, n)
 	return true
@@ -281,6 +306,12 @@ func (m *PermissionManager) PendingIDs() []string {
 
 // Cleanup removes a pending request (e.g., on timeout).
 func (m *PermissionManager) Cleanup(permissionID string) {
+	m.take(permissionID)
+}
+
+// take removes a pending request and reports whether this call removed it.
+// Only the path that removed a request may report how it ended.
+func (m *PermissionManager) take(permissionID string) (PermissionRequest, bool) {
 	m.mu.Lock()
 	p, ok := m.pending[permissionID]
 	delete(m.pending, permissionID)
@@ -292,6 +323,7 @@ func (m *PermissionManager) Cleanup(permissionID string) {
 	if ok {
 		m.observe(p.req.SessionID, n)
 	}
+	return p.req, ok
 }
 
 // WaitForDecision blocks until the pending request identified by id resolves
@@ -311,10 +343,24 @@ func (m *PermissionManager) WaitForDecisionContext(ctx context.Context, id strin
 	case d := <-ch:
 		return d, true
 	case <-m.clock.After(60 * time.Second):
-		m.Cleanup(id)
+		req, removed := m.take(id)
+		if !removed {
+			// An answer or a session stop took the request in the same
+			// instant; its decision is on the channel (or about to be) and
+			// it already reported its own outcome.
+			select {
+			case d := <-ch:
+				return d, true
+			case <-time.After(time.Second):
+			}
+			return PermissionDecision{Decision: "deny", Reason: ReasonExpired}, true
+		}
+		m.NotifySession(req.SessionID, req.ResolvedFrame(OutcomeExpired))
 		return PermissionDecision{Decision: "deny", Reason: ReasonExpired}, true
 	case <-ctx.Done():
-		m.Cleanup(id)
+		if req, removed := m.take(id); removed {
+			m.NotifySession(req.SessionID, req.ResolvedFrame(OutcomeEnded))
+		}
 		return PermissionDecision{}, false
 	}
 }
@@ -325,20 +371,22 @@ func (m *PermissionManager) WaitForDecisionContext(ctx context.Context, id strin
 // no reason to wait out the remaining timeout.
 func (m *PermissionManager) DenyAllForSession(sessionID, reason string) {
 	m.mu.Lock()
-	var chans []chan PermissionDecision
+	var held []pendingPermission
 	for id, p := range m.pending {
 		if p.req.SessionID == sessionID {
-			chans = append(chans, p.ch)
+			held = append(held, p)
 			delete(m.pending, id)
 		}
 	}
 	n := m.pendingFor(sessionID)
 	m.mu.Unlock()
 
-	for _, ch := range chans {
-		ch <- PermissionDecision{Decision: "deny", Reason: reason}
+	sort.Slice(held, func(i, j int) bool { return held[i].seq < held[j].seq })
+	for _, p := range held {
+		m.NotifySession(sessionID, p.req.ResolvedFrame(OutcomeEnded))
+		p.ch <- PermissionDecision{Decision: "deny", Reason: reason}
 	}
-	if len(chans) > 0 {
+	if len(held) > 0 {
 		m.observe(sessionID, n)
 	}
 }
