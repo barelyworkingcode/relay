@@ -26,7 +26,9 @@ type Agent interface {
 	// Turn emits the frames of one turn and returns when the turn ends. A
 	// *TurnError return is an API failure; ctx ending is a stop.
 	Turn(ctx context.Context, text string, emit func(Frame)) error
-	Answer(permissionID string, approved bool)
+	// Answer resolves a permission wait. A deny carries the reason the model
+	// sees as the tool_result content; empty means "Denied by user".
+	Answer(permissionID string, approved bool, reason string)
 }
 
 type AgentFactory func(model world.Model, session SessionInfo) (Agent, error)

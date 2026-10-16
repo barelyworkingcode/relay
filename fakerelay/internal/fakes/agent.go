@@ -22,8 +22,13 @@ func NewAgentFactory(log *CallLog, home string) AgentFactory {
 		if kind == "" {
 			kind = "echo"
 		}
-		return &scripted{reply: m.Reply, kind: kind, info: info, log: log, home: home, waits: map[string]chan bool{}}, nil
+		return &scripted{reply: m.Reply, kind: kind, info: info, log: log, home: home, waits: map[string]chan answer{}}, nil
 	}
+}
+
+type answer struct {
+	approved bool
+	reason   string
 }
 
 type scripted struct {
@@ -36,7 +41,7 @@ type scripted struct {
 	inited atomic.Bool
 
 	mu    sync.Mutex
-	waits map[string]chan bool
+	waits map[string]chan answer
 }
 
 func (a *scripted) name() string { return "agent-" + a.kind }
@@ -142,7 +147,7 @@ func (a *scripted) askPermission(ctx context.Context, emit func(Frame), index *i
 		tool = "Bash"
 	}
 	useID, permID := "tu"+randID(), "perm"+randID()
-	ch := make(chan bool, 1)
+	ch := make(chan answer, 1)
 	a.mu.Lock()
 	a.waits[permID] = ch
 	a.mu.Unlock()
@@ -151,16 +156,20 @@ func (a *scripted) askPermission(ctx context.Context, emit func(Frame), index *i
 	emit(llm(map[string]any{"type": "system", "subtype": "permission_request", "permission_id": permID,
 		"tool_name": tool, "tool_use_id": useID, "tool_input": map[string]any{}}))
 	emit(Frame{"type": "permission_request", "permissionId": permID, "toolName": tool, "toolInput": "{}", "toolUseId": useID})
-	var approved bool
+	var ans answer
 	select {
-	case approved = <-ch:
+	case ans = <-ch:
 	case <-ctx.Done():
 		return false, ctx.Err()
 	}
 	emit(llm(map[string]any{"type": "assistant", "index": *index, "content_block_stop": true, "content_block": use}))
+	approved := ans.approved
 	content := "ok"
 	if !approved {
-		content = "Denied by user"
+		content = ans.reason
+		if content == "" {
+			content = "Denied by user"
+		}
 	}
 	emit(llm(map[string]any{"type": "result", "subtype": "tool_result", "tool_use_id": useID, "tool_name": tool,
 		"content": content, "is_error": !approved}))
@@ -168,13 +177,17 @@ func (a *scripted) askPermission(ctx context.Context, emit func(Frame), index *i
 	return approved, nil
 }
 
-func (a *scripted) Answer(permissionID string, approved bool) {
-	a.log.Record(a.name(), "answer", map[string]any{"session_id": a.info.ID, "permission_id": permissionID, "approved": approved})
+func (a *scripted) Answer(permissionID string, approved bool, reason string) {
+	rec := map[string]any{"session_id": a.info.ID, "permission_id": permissionID, "approved": approved}
+	if reason != "" {
+		rec["reason"] = reason
+	}
+	a.log.Record(a.name(), "answer", rec)
 	a.mu.Lock()
 	ch := a.waits[permissionID]
 	delete(a.waits, permissionID)
 	a.mu.Unlock()
 	if ch != nil {
-		ch <- approved
+		ch <- answer{approved: approved, reason: reason}
 	}
 }

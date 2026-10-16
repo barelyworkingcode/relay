@@ -556,6 +556,18 @@ Once the ancestry walk resolves a session id, and the decoded body's own
    away.` On a hook-side disconnect it cleans up the pending request and
    writes nothing back.
 
+   Whichever path removes the request from the pending set also sends every
+   viewer of the session one `permission_resolved` frame (`sessionId`,
+   `permissionId`, `outcome`), through the same `NotifySession` as the
+   `permission_request`, after the request left the set and outside the
+   lock. `outcome` is `expired` (the 60 second timer), `answered` (`Resolve`,
+   from a joined connection's `permission_response`) or `ended` (the session
+   stopped or was killed, so `DenyAllForSession` ran, or the hook's request
+   context ended). A request never gets two outcomes. The reasons the model
+   sees do not change. An answer that arrives after the request left the
+   set is dropped with no reply. A connection that was not joined misses the
+   frame; its next `join_session` replays only the still-pending requests.
+
 Every path from step 2 on logs `slog.Info("permission decided", …)` with the
 session, tool and decision — never the tool's input.
 

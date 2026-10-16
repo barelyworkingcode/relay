@@ -385,10 +385,15 @@ func (s *svc) removeSession(ctx context.Context, id string) {
 	s.mu.Lock()
 	x := s.sessions[id]
 	delete(s.sessions, id)
-	if x != nil && x.cancel != nil {
-		x.cancel()
+	var ended []string
+	if x != nil {
+		ended = s.dropPerms(x)
+		if x.cancel != nil {
+			x.cancel()
+		}
 	}
 	s.mu.Unlock()
+	s.resolved(x, ended, "ended")
 	s.Events.Begin(ctx, "session.delete", events.Sessions()).Set("session_id", id).End("ok", "", nil)
 	if x != nil {
 		s.broadcast(map[string]any{"type": "session_ended", "sessionId": id})
@@ -474,6 +479,7 @@ func (s *svc) runTurn(x *session, text, origin, trace string) {
 		case "permission_request":
 			s.mu.Lock()
 			s.perms[str(f["permissionId"])] = x.id
+			s.permRaised[str(f["permissionId"])] = s.now()
 			x.tool = str(f["toolName"])
 			x.wake()
 			s.mu.Unlock()
