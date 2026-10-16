@@ -767,9 +767,10 @@ land inside a half-written line.
 read opened. It retries with a backoff from one to ten seconds that grows
 across reads that deliver nothing and resets after a read that delivered
 lines, and reopens the read at its cursor. The reopened read writes
-`link=restored` once it has delivered a line or stayed open for two seconds; a
-read that keeps failing at once writes one `lost` and nothing more. The agent keeps running throughout. A send while the link is
-down fails with an error and nothing is delivered; there is no retry, because
+`link=restored` once it has delivered a line or stayed open for two seconds,
+and a runner found to have exited during the outage writes it before the last
+read; a read that keeps failing at once writes one `lost` and nothing more.
+The agent keeps running throughout. A send while the link is down fails with an error and nothing is delivered; there is no retry, because
 an ssh failure after the command started may still have landed the line. When
 the runner has exited, relay delivers the remaining lines and ends the
 session as any process exit does, with the exit code.

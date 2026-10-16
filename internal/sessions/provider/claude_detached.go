@@ -40,8 +40,8 @@ const (
 	detachedStopTries    = 3
 	detachedEventsMax    = 200
 	detachedEventsWait   = 30 * time.Second
-	// detachedQuickFail is how long a read must run, delivering nothing, to
-	// count as a dropped link rather than a read that failed at once.
+	// detachedQuickFail is how long a reopened read must stay open, delivering
+	// nothing, before the link counts as restored.
 	detachedQuickFail = 2 * time.Second
 )
 
