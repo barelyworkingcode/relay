@@ -818,7 +818,7 @@ user messages than results. A permission prompt the agent is still waiting on
 is raised again, once the session is published: the session reads `asking` and
 a viewer that is joined, or that joins later, gets the `permission_request` (`join_session` sends each pending one after `session_joined`, in the order raised). A shutdown does not deny a
 waiting prompt, so it survives the restart; one whose `control_response` is
-already in `in.jsonl` is not raised. A `message` or a drop-in that meets a detached
+already in `in.jsonl` is not raised. A `message`, `wait`, `events` or drop-in that meets a detached
 session with no provider attaches it first. At startup relay asks the same
 question for each live ledger record and keeps live the ones whose agent runs
 (the record's `detached.host_id` names the host); it ages the rest to dormant,

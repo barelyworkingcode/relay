@@ -2657,7 +2657,10 @@ those of `session message`: `host_link_down`, `send_unknown`,
 | `--timeout` | Stop waiting after this long. The turn keeps running. Default and longest `9m`. |
 | `--json` | Print the answer as JSON. |
 
-It waits for the session's current turn to end. It exits `0` with the reply
+It waits for the session's current turn to end. On a detached host session
+with no provider (after a restart), it first attaches the running agent, which
+takes up to the ssh connect timeout on a host that is down, before `--timeout`
+starts to count. It exits `0` with the reply
 excerpt (the last 500 runes) when the turn ends, and at once when no turn is
 running. It exits `1` for every other state; `--json` prints the answer in all
 cases:

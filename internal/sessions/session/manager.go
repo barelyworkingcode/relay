@@ -965,9 +965,6 @@ var (
 	ErrAttachFailed = errors.New("session: the running agent could not be attached")
 )
 
-// ReattachIfDetached is reattachIfDetached for a caller outside this package.
-func (m *Manager) ReattachIfDetached(id string) error { return m.reattachIfDetached(id) }
-
 // reattachIfDetached attaches id's agent when id is a detached host session
 // with no live provider. Every caller that would otherwise find the session
 // dormant calls it first. The error is non-nil only when the host could not
@@ -1036,8 +1033,14 @@ func (m *Manager) reattachDetached(id string) error {
 	}
 	// One more try: the ssh question inside the attach can be cut short by
 	// a link that is still settling.
-	if _, err = m.Create(spec); err != nil {
+	if _, err = m.Create(spec); err != nil && !errors.Is(err, provider.ErrNoDetachedRun) {
 		_, err = m.Create(spec)
+	}
+	// Deliberate: an agent that exited between the status question and the
+	// attach is not a failure; the session stays dormant and resumes as any
+	// other whose agent is gone.
+	if errors.Is(err, provider.ErrNoDetachedRun) {
+		return nil
 	}
 	if err != nil {
 		slog.Warn("session: reattach failed", "session", id, "host", host.ID, "error", err)
