@@ -238,7 +238,11 @@ func (a *hostAgent) runOnce() (reason string, connected bool) {
 	a.mu.Lock()
 	h := a.host
 	a.mu.Unlock()
-	argv, err := a.pool.argv(h, sshhost.NodeLauncher(h.Probe.NodePath, fsAgentSource))
+	preamble, err := sshhost.NodePreamble(fsAgentSource)
+	if err != nil {
+		return "spawn failed: " + err.Error(), false
+	}
+	argv, err := a.pool.argv(h, sshhost.NodeLauncher(h.Probe.OS, h.Probe.NodePath))
 	if err != nil {
 		return "spawn failed: " + err.Error(), false
 	}
@@ -284,6 +288,16 @@ func (a *hostAgent) runOnce() (reason string, connected bool) {
 			return line
 		}
 		return fmt.Sprintf("host %q unreachable", a.hostName())
+	}
+
+	// The agent source goes first; the loader leaves everything after it on
+	// stdin for the agent's own protocol stream.
+	conn.writeMu.Lock()
+	_, err = conn.stdin.Write(preamble)
+	conn.writeMu.Unlock()
+	if err != nil {
+		kill()
+		return exited(), false
 	}
 
 	hello, err := a.exchange(a.ctx, conn, a.pool.clk.After(helloTimeout), "hello", map[string]any{"version": agentProtocolVersion})
