@@ -1202,7 +1202,7 @@ connection that joined the session or terminal.
 
 | `type` | Fields | Effect |
 |---|---|---|
-| `join_session` | `sessionId` | adds the connection as a viewer, answers `session_joined`. Unknown id: `error` frame |
+| `join_session` | `sessionId` | adds the connection as a viewer, answers `session_joined`, then sends that connection each `permission_request` of the session's running turn that is still unanswered, in the order raised (an answered, stopped or expired one is not sent; see [Permission expiry](#permission-expiry-on-the-clock)). Unknown id: `error` frame |
 | `leave_session` | `sessionId` | removes the viewer. No answer |
 | `send_message` | `sessionId`, `text`, `files`?, `trace_id`? | starts a turn. `trace_id` (`[A-Za-z0-9_-]{8,64}`) is the trace of the `chat.turn` event, else a new id is made |
 | `stop_generation` | `sessionId` | ends the running turn |
@@ -1225,6 +1225,26 @@ dropped silently.
   `{"type":"error","message":"permission response refused: this connection has not joined session <id>"}`.
 - `approved: true` allows. `approved: false` denies, with `reason` or
   `Denied by user`.
+- A resolved request sends its viewers `permission_resolved` with outcome
+  `answered`, before the agent's turn goes on.
+
+#### Permission expiry on the clock
+
+A request raised at clock time T expires at the first `POST /v1/clock` (set
+or advance) that makes now >= T + 60 s. Real time never expires one: there is
+no timer. `POST /v1/clock` answers only after the expiry frames are written.
+An expired request:
+
+- sends its viewers `permission_resolved` with outcome `expired`;
+- resolves the agent's wait as a deny whose `tool_result` content is relay's
+  reason: `No approval: the request was not answered within 60 seconds.` with
+  a connection joined to the session, and the `waited 60 seconds and no screen
+  was open` reason without one (the same texts as relay);
+- is not replayed on `join_session`.
+
+`stop_generation`, `end_session` and `delete_session` send `permission_resolved`
+with outcome `ended` for each request they drop. The domain learns of the clock
+through the optional `ClockWatcher` interface of the instance clock.
 
 #### Server to client, sessions
 
@@ -1256,6 +1276,7 @@ Frames sent to every viewer of a session:
 {"type":"message_complete","sessionId":"3f0c…"}
 {"type":"message_complete","sessionId":"3f0c…","isError":true,"apiErrorStatus":529}
 {"type":"permission_request","sessionId":"3f0c…","permissionId":"perm1","toolName":"Bash","toolInput":"{\"command\":\"ls\"}","toolUseId":"tu1"}
+{"type":"permission_resolved","sessionId":"3f0c…","permissionId":"perm1","outcome":"expired"}
 {"type":"session_renamed","sessionId":"3f0c…","name":"New name"}
 {"type":"process_exited","sessionId":"3f0c…"}
 {"type":"error","sessionId":"3f0c…","code":"resume_required","message":"session: provider not running; resume required"}
@@ -1266,6 +1287,8 @@ Frames sent to every viewer of a session:
   person (`"chief-of-staff"`).
 - `message_complete` has `isError` and `apiErrorStatus` only on a failed turn.
 - `permission_request.toolInput` is a string holding JSON (`{}` when empty).
+- `permission_resolved.outcome` is `expired`, `answered` or `ended`. Each
+  request gets one.
 - `llm_event.event` is the canonical event envelope. Every event has `v: 2`
   and a `type`. The events a turn uses:
 
@@ -1809,6 +1832,11 @@ Rules:
   - `text`: the answer is the fixed `text`.
   - `permission`: raises a `permission_request` for `tool`, then echoes on
     approve.
+  - `hold`: the turn starts (`session_state` `running`, turn start) and then
+    sends nothing, with no `permission_request`, until `stop_generation` or
+    `end_session` ends it as it ends a turn held on a permission. `tool`,
+    `text`, `code` and `stderr` are refused. It models a headless routine
+    run that stays running.
   - `plan`: a plan-mode turn. `text` (optional) is the plan. The agent
     writes it to `DIR/home/.claude/plans/<sessionId>.md` before any frame,
     then sends a `Write` `tool_use` with that `file_path` and its
@@ -1973,7 +2001,7 @@ credential and is not on any TCP listener. `ctl` is the client.
   `/ws/files` list is allowed, others answer 400. It is one-shot: a later
   `watch` answers `watch_ok`. It answers `{delivered}` after the frame is on
   each wire. An unknown project answers as `ctl fs-event` does.
-- The clock moves Eve window expiry and credential `expires`.
+- The clock moves Eve window expiry, credential `expires` and the 60 s expiry of a pending permission request.
 
 ## Faults
 
@@ -2184,7 +2212,7 @@ an agent, an MCP and a model host be swapped for the real fakes in `e2e/`
 package fakes
 type Agent interface { // one per session
     Turn(ctx context.Context, text string, emit func(Frame)) error // returns at turn end
-    Answer(permissionID string, approved bool)
+    Answer(permissionID string, approved bool, reason string) // reason "" = "Denied by user"
 }
 type AgentFactory func(model world.Model, session SessionInfo) (Agent, error)
 type MCPServer interface{ Tools(ctx context.Context) ([]json.RawMessage, error) }

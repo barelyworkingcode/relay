@@ -51,6 +51,9 @@ const (
 	// every signal but HandedBack and SessionEnded.
 	DroppedIn
 	HandedBack
+	// SendAborted undoes TurnStarted when the message never reached the agent
+	// and the agent is fine: no turn ran, so no turn_done follows.
+	SendAborted
 )
 
 // Next is the whole state machine. cur "" means no entry. A pair with no row
@@ -94,7 +97,7 @@ func Next(cur State, sig Signal) State {
 			return Asking
 		case StallTimeout:
 			return Stalled
-		case TurnEnded, TurnStopped:
+		case TurnEnded, TurnStopped, SendAborted:
 			return Idle
 		case TurnFailed, ProcessExited:
 			return Errored
