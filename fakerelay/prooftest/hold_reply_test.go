@@ -128,7 +128,22 @@ func TestHoldTurnStaysRunningUntilStopped(t *testing.T) {
 	must(t, p.WriteJSON(J{"type": "send_message", "sessionId": perm, "text": "run it"}), "send perm")
 	until(t, p, isType("permission_request", "sessionId", perm))
 	must(t, p.WriteJSON(J{"type": "stop_generation", "sessionId": perm}), "stop perm")
-	wantTypes := sessionTypes(until(t, p, isType("message_complete", "sessionId", perm)), perm)
+	permFrames := until(t, p, isType("message_complete", "sessionId", perm))
+	// A stopped permission turn also tells its viewers the request ended; a hold
+	// turn raised no request, so that one frame is the only difference allowed.
+	var wantTypes []string
+	resolved := 0
+	for _, f := range permFrames {
+		if f["sessionId"] == perm && f["type"] == "permission_resolved" {
+			resolved++
+			eq(t, f["outcome"], any("ended"), "outcome of the stopped permission request")
+			continue
+		}
+		if f["sessionId"] == perm && f["type"] != "session_renamed" {
+			wantTypes = append(wantTypes, f["type"].(string))
+		}
+	}
+	eq(t, resolved, 1, "permission_resolved frames after stop on the permission side")
 	wantAtt := attentionOf(t, in, perm)
 
 	must(t, c.WriteJSON(J{"type": "stop_generation", "sessionId": sid}), "stop_generation")
