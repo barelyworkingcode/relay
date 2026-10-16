@@ -295,7 +295,9 @@ The template's `deny` list and the socket and TCP rules are unchanged. A nil
 `readOnlyRoots` is every other launch, whose profile does not change. A
 template whose `read_write` names a project folder, or a parent of one such as
 `~`, still makes it writable: that is the operator's grant, so a template used
-for these sessions must not name one.
+for these sessions must not name one. The exception is a `${PROJECT_PATH}`
+`read_write` entry: it is applied as a `read` grant in a read-only-projects
+session, so the token never makes the session's project writable.
 
 `buildClaudeArgs` also passes `--tools Read,Grep,Glob` and
 `--strict-mcp-config`, so the model is offered only those built-ins and the
@@ -1393,13 +1395,24 @@ folders:
   {
     "id": "claude-code", "name": "Claude Code", "command": "claude", "sandbox": true,
     "read_write": ["~/.claude", "~/.claude.json", "~/.cache", "~/Library/Caches"],
-    "read": ["~/Library/Keychains", "~/.local/bin", "~/.local/share/claude", "~/.zshrc"]
+    "read": ["~/Library/Keychains", "~/.local/bin", "~/.local/share/claude", "/opt/homebrew"]
   },
   { "id": "shell", "name": "Shell", "sandbox": true, "read_write": ["~"] }
 ]
 ```
 
-Each entry is an absolute path or starts with `~`, and never `/`. A directory
+Each entry is an absolute path or starts with `~` or `${PROJECT_PATH}`, and
+never `/`. `${PROJECT_PATH}` is the one token a folder may use, only at its
+start, alone or followed by `/` and a path: a sandboxed launch expands it to
+the launching project's folder (`proj.Path`, else the launch directory), so
+`"read": ["${PROJECT_PATH}/../acme-shared"]` grants a sibling of the project.
+Any other `${...}` (`${HOME}/x`, `${PROJECT_ID}`, `${PROJECT_PATH}x`,
+`~/${PROJECT_PATH}`) is refused when the template is saved (`400`) and drops
+the template when settings are read. The substituted path is never rescanned
+for tokens. A launch with no project folder refuses a `${PROJECT_PATH}` entry.
+In a read-only-projects session a `${PROJECT_PATH}` `read_write` entry is
+granted read-only. For the writable-roots check below, a `${PROJECT_PATH}`
+entry counts once per local project. A directory
 grants its subtree; an existing regular file grants that file, and a
 read-write file also grants the atomic-write siblings a CLI leaves beside it
 (`.lock`, `.tmp.*`, `.backup`; SP2 row 17). A read-write entry gets those
@@ -1434,6 +1447,26 @@ A **claude, pi, codex or chat session** is not launched from a template, but it 
 its folders from the template named for its kind: `claude-code`, `pi`, `codex` and
 `chat` (`kindTemplateIDs`). A missing template is not a refusal; the session
 gets only what every session gets, and relay logs which template to add.
+
+**Agent templates are added once.** Settings version 3 adds the `claude-code`
+and `pi` templates to an install that lacks them, at the first start that reads
+an older file. The definitions are the code literal `config.DefaultAgentTemplates`:
+
+```json
+{ "id": "claude-code", "name": "Claude Code", "command": "claude", "sandbox": true,
+  "read_write": ["~/.claude", "~/.claude.json", "~/.cache", "~/Library/Caches"],
+  "read": ["~/Library/Keychains", "~/.local/bin", "~/.local/share/claude", "/opt/homebrew"] }
+{ "id": "pi", "name": "Pi", "command": "pi", "sandbox": true,
+  "read_write": ["~/.pi", "~/.cache", "~/Library/Caches"],
+  "read": ["~/.bun/bin", "~/.bun/install/global", "~/.local/bin", "/opt/homebrew"] }
+```
+
+A template already stored under either id wins, valid or not, and is not
+touched. The migration runs before `ready.json` is written and persists
+`version: 3`; that version is what makes it run once, so a template the
+operator deletes later stays deleted. A fresh install starts at version 3 and
+gets only the default shell below. Hand-editing `version` back to 2 runs the
+migration again.
 
 When `terminal_templates` is empty, relay writes one default at start: the
 shell, sandboxed, with `~` read-write. That grant includes `~/.ssh` and every
@@ -1552,7 +1585,8 @@ W is built per launch by `sandboxWritableRoots`
   without a template;
 - the `read_write` entries of every sandboxed console template, and of the
   `claude-code`, `pi` and `chat` templates whatever their `sandbox` flag, since
-  a claude, pi or chat session always sandboxes;
+  a claude, pi or chat session always sandboxes (a `${PROJECT_PATH}` entry
+  once per local project);
 - every local project path (not remote, not on a host);
 - the launch's own `read_write` entries, which `Render` adds itself.
 

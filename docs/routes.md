@@ -239,7 +239,7 @@ application/json`; the entry gives the field table.
 | `idleTimeout` | number | Minutes; `0` means the default |
 | `env_passthrough` | string[] | Host variables copied into the child |
 | `sandbox` | boolean | Absent or `true` means sandboxed |
-| `read`, `read_write`, `deny` | string[] | Sandbox folders |
+| `read`, `read_write`, `deny` | string[] | Sandbox folders: an absolute path, `~`, or a leading `${PROJECT_PATH}` (the launching project's folder); never `/`, and no other `${...}` |
 | `model_key` | boolean | Mint a model key for the session |
 | `persist` | boolean | Persistent tmux terminal (hosted projects) |
 
@@ -605,14 +605,14 @@ raises no prompt and writes no audit row.
 - **Listeners:** socket, tcp. **Credential:** `configure`. **Gate:** none.
 - **Request:** a terminal template object (`id` and `name` required).
 - **Response `201`:** the template as saved.
-- **Errors:** `400` invalid id or field; `409` the ID exists.
-- **Event:** `template.create` (`template_id`).
+- **Errors:** `400` invalid id or field; `409` the ID exists. A bad sandbox folder answers `400` with `terminal template "<id>": <field> "<entry>": <reason>`, where the reason is `sandbox folder must be an absolute path or start with ~ or ${PROJECT_PATH}, and not be /`, or for any other `${...}` `sandbox folder may use ${PROJECT_PATH}, and only at its start; no other ${...} expands`.
+- **Event:** `template.create` (`template_id`); `template.create=error/invalid` for a `400`.
 
 ### PUT /api/terminal/templates/{id}
 
 - **Listeners:** socket, tcp. **Credential:** `configure`. **Gate:** none.
 - **Request:** a terminal template object; the path `id` overrides any `id` in the body.
-- **Response `200`:** the template as saved. **Errors:** `400`, `404`.
+- **Response `200`:** the template as saved. **Errors:** `400` (the same sandbox folder texts as `POST`), `404`.
 - **Event:** `template.update` (`template_id`).
 
 ### DELETE /api/terminal/templates/{id}

@@ -286,6 +286,24 @@ func startServerCore(opts serverOptions) (*App, error) {
 	if err != nil && !errors.Is(err, errTemplatesAlreadyPresent) {
 		slog.Warn("could not persist the default terminal template", "error", err)
 	}
+	// Runs once, keyed on the persisted settings version; best-effort like the
+	// default above. Before the ready file is written, so a boot that wrote it
+	// has migrated.
+	var addedAgentTemplates []string
+	errNoAgentMigration := errors.New("agent templates already migrated")
+	err = config.WithDeclinable(store, func(s *config.Settings) error {
+		added, changed := config.MigrateAgentTemplates(s)
+		if !changed {
+			return errNoAgentMigration
+		}
+		addedAgentTemplates = added
+		return nil
+	})
+	if err != nil && !errors.Is(err, errNoAgentMigration) {
+		slog.Warn("could not persist the agent template migration", "error", err)
+	} else if err == nil {
+		slog.Info("terminal templates migrated", "added", addedAgentTemplates)
+	}
 	var sealStatus string
 	if reason := store.SealStatus(); reason != nil {
 		// §5.6: the read half works in full from here on — relay grant,

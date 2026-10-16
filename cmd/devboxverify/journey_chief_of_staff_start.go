@@ -121,6 +121,10 @@ func runCosStart(ctx context.Context, e env) (out result) {
 	}
 	defer func() { _ = obs.conn.Close() }()
 
+	// Learned from the terminal's Claude, for the transcript cleanup only; no classifier reads them.
+	var termPID int
+	var termClaudeID, termWhy string
+
 	// Deferred so a failed leg still removes what it started; the deletes ignore cancellation.
 	defer func() {
 		bg := context.WithoutCancel(ctx)
@@ -129,6 +133,11 @@ func runCosStart(ctx context.Context, e env) (out result) {
 		}
 		if r.TermID != "" {
 			r.TermDelete = frontendDo(bg, e, run, http.MethodDelete, "/api/terminals/"+r.TermID, nil)
+			if termClaudeID == "" {
+				fmt.Fprintf(os.Stderr, "transcript %s: id unknown: %s\n", cosStartID, termWhy)
+			} else {
+				removeTranscript(cosStartID, termClaudeID, "verify-"+e.Nonce+"-", false, pidGone(termPID))
+			}
 		}
 		out = classifyCosStart(r)
 	}()
@@ -155,6 +164,7 @@ func runCosStart(ctx context.Context, e env) (out result) {
 
 	r.TermCreate = cosRequest(ctx, e, run, true, http.MethodPost, cosStartPath,
 		cosStartBody(acmeID, "", r.TermPrompt, "terminal"), 30*time.Second)
+	termWhy = fmt.Sprintf("terminal start answered %d", r.TermCreate.Status)
 	if r.TermID = parseCosStart(r.TermCreate).SessionID; r.TermCreate.Status == http.StatusCreated && r.TermID != "" {
 		// The row appearing is the signal; the process list is read once after it.
 		for deadline := time.Now().Add(cosListWait); ; {
@@ -168,6 +178,24 @@ func runCosStart(ctx context.Context, e env) (out result) {
 		r.PS = string(psOut)
 		if err != nil {
 			r.PSErr = err.Error()
+		}
+		termWhy = "no claude process for the terminal"
+		if table, err := exec.CommandContext(ctx, "ps", "-axwwo", "pid=,command=").Output(); err != nil {
+			termWhy = "process table unreadable"
+			if ctx.Err() != nil {
+				termWhy = "cancelled before the process table was read"
+			}
+		} else {
+			if termPID = claudePIDForArgv(string(table), "--model "+agentModel+" -- "+r.TermPrompt); termPID != 0 {
+				pollUntil(ctx, cosListWait, func() bool {
+					var idErr error
+					termClaudeID, idErr = claudeSessionForPID(termPID)
+					if idErr != nil {
+						termWhy = idErr.Error()
+					}
+					return idErr == nil
+				})
+			}
 		}
 	}
 	return result{}
