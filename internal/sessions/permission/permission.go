@@ -66,16 +66,35 @@ type PermissionRequest struct {
 	ToolUseID string `json:"toolUseId"`
 }
 
+// Frame is the permission_request WebSocket frame for r. Live notification
+// and the replay to a joining connection must send the same shape.
+func (r PermissionRequest) Frame() map[string]any {
+	return map[string]any{
+		"type":         "permission_request",
+		"sessionId":    r.SessionID,
+		"permissionId": r.ID,
+		"toolName":     r.ToolName,
+		"toolInput":    r.ToolInput,
+		"toolUseId":    r.ToolUseID,
+	}
+}
+
+// Expiry reasons returned to the model when no one answers in time.
+const (
+	ReasonExpired = "No approval: the request was not answered within 60 seconds."
+	// ReasonExpiredUnseen is for a request that expired while no connection
+	// was joined to its session.
+	ReasonExpiredUnseen = "No approval: the request waited 60 seconds and no screen was open to answer it. This session is interactive; the owner was away."
+)
+
 // pendingPermission pairs a decision channel with the session it belongs to,
 // so a session-wide event (stop, kill) can resolve every request that
-// session owns without the caller having to track ids itself.
+// session owns without the caller having to track ids itself. seq orders
+// requests by creation for replay.
 type pendingPermission struct {
-	sessionID string
-	ch        chan PermissionDecision
-	// req is what a viewer that joins later is shown; seq orders it among the
-	// requests of its session.
 	req PermissionRequest
 	seq uint64
+	ch  chan PermissionDecision
 }
 
 // PermissionManager tracks pending permission requests. Both the hook binary
@@ -120,7 +139,7 @@ func (m *PermissionManager) SetPendingObserver(fn func(sessionID string, pending
 func (m *PermissionManager) pendingFor(sessionID string) int {
 	n := 0
 	for _, p := range m.pending {
-		if p.sessionID == sessionID {
+		if p.req.SessionID == sessionID {
 			n++
 		}
 	}
@@ -177,7 +196,7 @@ func (m *PermissionManager) CreateRequest(sessionID, toolName, toolInput, toolUs
 		ToolUseID: toolUseID,
 	}
 	m.nextSeq++
-	m.pending[id] = pendingPermission{sessionID: sessionID, ch: ch, req: req, seq: m.nextSeq}
+	m.pending[id] = pendingPermission{req: req, seq: m.nextSeq, ch: ch}
 	n := m.pendingFor(sessionID)
 	m.mu.Unlock()
 	m.observe(sessionID, n)
@@ -185,17 +204,16 @@ func (m *PermissionManager) CreateRequest(sessionID, toolName, toolInput, toolUs
 	return req, ch
 }
 
-// PendingRequests returns the requests of sessionID still waiting for a
-// decision in the order they were raised, so a viewer that joins after a request was raised can be shown it.
-func (m *PermissionManager) PendingRequests(sessionID string) []PermissionRequest {
+// PendingForSession returns sessionID's pending requests in creation order.
+func (m *PermissionManager) PendingForSession(sessionID string) []PermissionRequest {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	var held []pendingPermission
 	for _, p := range m.pending {
-		if p.sessionID == sessionID {
+		if p.req.SessionID == sessionID {
 			held = append(held, p)
 		}
 	}
+	m.mu.Unlock()
 	sort.Slice(held, func(i, j int) bool { return held[i].seq < held[j].seq })
 	out := make([]PermissionRequest, len(held))
 	for i, p := range held {
@@ -217,7 +235,7 @@ func (m *PermissionManager) PendingSessionID(permissionID string) (string, bool)
 	if !ok {
 		return "", false
 	}
-	return p.sessionID, true
+	return p.req.SessionID, true
 }
 
 // Resolve resolves a pending permission request with the given decision.
@@ -227,7 +245,7 @@ func (m *PermissionManager) Resolve(permissionID string, decision PermissionDeci
 	n := 0
 	if ok {
 		delete(m.pending, permissionID)
-		n = m.pendingFor(p.sessionID)
+		n = m.pendingFor(p.req.SessionID)
 	}
 	m.mu.Unlock()
 
@@ -236,7 +254,7 @@ func (m *PermissionManager) Resolve(permissionID string, decision PermissionDeci
 	}
 
 	p.ch <- decision
-	m.observe(p.sessionID, n)
+	m.observe(p.req.SessionID, n)
 	return true
 }
 
@@ -268,17 +286,17 @@ func (m *PermissionManager) Cleanup(permissionID string) {
 	delete(m.pending, permissionID)
 	n := 0
 	if ok {
-		n = m.pendingFor(p.sessionID)
+		n = m.pendingFor(p.req.SessionID)
 	}
 	m.mu.Unlock()
 	if ok {
-		m.observe(p.sessionID, n)
+		m.observe(p.req.SessionID, n)
 	}
 }
 
 // WaitForDecision blocks until the pending request identified by id resolves
 // or 60s elapses, in which case it is cleaned up and denied with reason
-// "No response".
+// ReasonExpired.
 func (m *PermissionManager) WaitForDecision(id string, ch chan PermissionDecision) PermissionDecision {
 	d, _ := m.WaitForDecisionContext(context.Background(), id, ch)
 	return d
@@ -294,7 +312,7 @@ func (m *PermissionManager) WaitForDecisionContext(ctx context.Context, id strin
 		return d, true
 	case <-m.clock.After(60 * time.Second):
 		m.Cleanup(id)
-		return PermissionDecision{Decision: "deny", Reason: "No response"}, true
+		return PermissionDecision{Decision: "deny", Reason: ReasonExpired}, true
 	case <-ctx.Done():
 		m.Cleanup(id)
 		return PermissionDecision{}, false
@@ -309,7 +327,7 @@ func (m *PermissionManager) DenyAllForSession(sessionID, reason string) {
 	m.mu.Lock()
 	var chans []chan PermissionDecision
 	for id, p := range m.pending {
-		if p.sessionID == sessionID {
+		if p.req.SessionID == sessionID {
 			chans = append(chans, p.ch)
 			delete(m.pending, id)
 		}
