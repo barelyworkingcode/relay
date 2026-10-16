@@ -320,6 +320,8 @@ below).
   enrolment requests: N` line and `relay enrol requests` are the surfaces to
   rely on.
 
+### Approving a request from the machine itself
+
 **The code, not the key hash, closes the man-in-the-middle.** An attacker on
 the path can forward the real signing request, so the key hash you see matches,
 and then hand the waiting machine its own CA instead of relay's. The six
@@ -647,10 +649,10 @@ Each of `--window-seconds`, `--max-calls` and `--max-result-bytes` is
 independent: naming one changes only that field, and any left out keep
 whatever they were set to before (not the default — an unset flag never means
 "reset this"). `relay enrol update` also accepts `--grant`, which replaces the
-whole grant list exactly as `create` does (so drop a profile by naming the
-ones you want to keep, or `--clear-grants` to withdraw every profile at once);
-it runs the same check `create` does, so a grant naming a local project or an
-unknown profile id is refused. Every changed field prints as `before -> after`
+enrolment's one profile (a record that still names several is narrowed to the
+one you name, and a second `--grant` is refused), or `--clear-grants` to
+withdraw it; it runs the same check `create` does, so a grant naming a local
+project or an unknown profile id is refused. Every changed field prints as `before -> after`
 so you see the actual effect.
 
 Before this verb, changing a budget meant `revoke` + `create` — which
@@ -746,7 +748,7 @@ Three files reach the client machine, and they answer different questions.
 **`client.key` + `client.crt`, together, are the credential.** Presenting
 them over the remote listener authenticates as the enrolment that was
 signed — every call runs *as that client*, in the audit log, reaching
-exactly the access profiles that enrolment names and nothing wider. There is
+exactly the one access profile that enrolment names and nothing wider. There is
 no narrower identity underneath: two agents on the same VM are separated
 only by which key each one holds (see *Co-located agents are only as
 separate as the client machine makes them*, below).

@@ -32,7 +32,7 @@ outside it is not a relay bug, however real.
    Revocation ends it, live connections included. One enrolment reaches one
    access profile; an enrolment that names more than one is refused on every
    call. Deleting a profile revokes every enrolment naming it, live
-   connections included, and the audit trail records each revocation.
+   connections included, and the audit trail records each revocation unless the audit log cannot be written, which is logged.
 3. **A prompt-injected agent acting within its grants** (any of the above,
    steered by content it read). Relay does not stop it using what it was
    granted. Relay's job is to **limit and record**: grants default narrow,

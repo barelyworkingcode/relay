@@ -459,10 +459,10 @@ relayremote list
 is consulted *before* `RELAY_REMOTE_BUNDLE` — it is the more specific
 variable, and someone who sets it means it.
 
-If the enrolment holds more than one grant, add `--project ID` (or
-`RELAY_REMOTE_PROJECT`) to say which one you are acting as. With exactly one,
-it is optional; a registration records the default it was granted, so it is
-optional there too.
+An enrolment reaches one access profile, so `--project ID` (or
+`RELAY_REMOTE_PROJECT`) is optional, and a registration records the profile it
+was granted. A legacy record that names several profiles is refused on every
+call until `relay enrol update --grant` narrows it to one.
 
 ---
 
@@ -613,9 +613,9 @@ is loopback and you are on another host; the address is firewalled.
 
 ### `still pending after 10m0s; giving up for now.`
 
-Nobody approved it in time. The request lives 15 minutes on relay's side.
-Exit code 11. Re-running the identical command picks the same request up
-again, reprinting the same code, if relay still holds it.
+Nobody approved it in time. Exit code 11. The request ended with its
+connection, and the lodge closed the window, so there is nothing to pick up.
+Open a window on the Mac and run `register` again.
 
 ### `relay no longer has a record of this request`
 
@@ -635,10 +635,15 @@ outlive it. Open a window and have the machine register again.
 
 ### `refused: approving needs your confirmation on the Mac's screen, ...`
 
-`relay enrol approve` or `relay enrol open` run from a session that cannot
-show a prompt, such as SSH. Run it at the Mac, or approve from Settings >
-Remote Clients > Pending requests. A lodged request does not expire because
-the command refused.
+Printed by `relay enrol approve` run from a session that cannot show a
+prompt, such as SSH. Run it at the Mac, or approve from Settings > Remote
+Clients > Pending requests. A lodged request does not expire because the
+command refused.
+
+`relay enrol open` from such a session prints the generic refusal instead:
+`error: refused: this needs your confirmation on the Mac's screen, and the
+session this command is running in cannot show a prompt (for example, you are
+over SSH).` No window opens. Run it at the Mac's console or use the tray.
 
 ### `error: bridge error (code -32603): presence was refused`
 
