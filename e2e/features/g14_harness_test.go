@@ -128,24 +128,34 @@ func TestVerbReachesOnlyItsInstance(t *testing.T) {
 
 func TestListenerAddressesFromSettings(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{Settings: map[string]json.RawMessage{
-		"remote": json.RawMessage(`{"enabled":true,"listen":"127.0.0.1:0","enrolment_requests":true,"enrolment_listen":"127.0.0.1:0"}`),
-	}})
-	var out struct {
-		Listeners map[string]string `json:"listeners"`
+	r := g10Start(t, nil)
+	i := r.i
+	readListeners := func() map[string]string {
+		var out struct {
+			Listeners map[string]string `json:"listeners"`
+		}
+		data, err := os.ReadFile(filepath.Join(i.ConfigDir, "ready.json"))
+		if err != nil {
+			t.Fatalf("reading ready.json: %v", err)
+		}
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("decoding ready.json: %v", err)
+		}
+		return out.Listeners
 	}
-	data, err := os.ReadFile(filepath.Join(i.ConfigDir, "ready.json"))
-	if err != nil {
-		t.Fatalf("reading ready.json: %v", err)
+
+	// No window: the enrolment port is not bound, so ready.json has no key for it.
+	if addr := readListeners()["enrolment"]; addr != "" {
+		t.Fatalf("ready.json has listeners.enrolment %q with no window open", addr)
 	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("decoding ready.json: %v", err)
-	}
+	windowAddr := i.EnrolOpen(r.profile)
+
+	listeners := readListeners()
 	seen := map[string]string{}
-	for _, k := range []string{"api", "model", "remote", "enrolment"} {
-		addr := out.Listeners[k]
+	for _, k := range []string{"api", "model", "remote"} {
+		addr := listeners[k]
 		if addr == "" {
-			t.Fatalf("ready.json has no listeners.%s: %v", k, out.Listeners)
+			t.Fatalf("ready.json has no listeners.%s: %v", k, listeners)
 		}
 		host, port, err := splitHostPort(addr)
 		if err != nil || host != "127.0.0.1" || port == 0 {
@@ -156,14 +166,22 @@ func TestListenerAddressesFromSettings(t *testing.T) {
 		}
 		seen[addr] = k
 	}
-	var show struct {
-		Enabled            bool   `json:"enabled"`
-		Listen             string `json:"listen"`
-		EnrolmentRequests  bool   `json:"enrolment_requests"`
-		EnrolmentEffective string `json:"enrolment_effective"`
+	if got := listeners["enrolment"]; got != "" {
+		t.Fatalf("ready.json lists an enrolment listener %q while a window is open, want none", got)
 	}
-	i.MustCLI("remote", "show", "--json").JSON(t, &show)
-	if !show.Enabled || show.Listen != "127.0.0.1:0" || !show.EnrolmentRequests {
+	w := g10RemoteShow(t, i).EnrolmentWindow
+	if !w.Open || w.Listen != windowAddr {
+		t.Fatalf("remote show reports the window %+v, want it open at %s", w, windowAddr)
+	}
+	host, port, err := splitHostPort(w.Listen)
+	if err != nil || host != "127.0.0.1" || port == 0 {
+		t.Fatalf("the window listens on %q, want 127.0.0.1 and a bound port", w.Listen)
+	}
+	if other, dup := seen[w.Listen]; dup {
+		t.Fatalf("the window and listeners.%s share %s", other, w.Listen)
+	}
+	show := g10RemoteShow(t, i)
+	if !show.Enabled || show.Listen != "127.0.0.1:0" || show.EnrolmentListen != "127.0.0.1:0" {
 		t.Fatalf("remote show reports %+v, want the configured remote block", show)
 	}
 }

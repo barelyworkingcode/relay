@@ -473,7 +473,7 @@ identity, and nobody redeems it for anything by presenting it.
   reach by lodging a fresh request.
 - **It cannot be presented in place of a certificate.** The remote listener
   and the tool-plane listener take a certificate at the TLS handshake, never
-  a request id on the wire, and the enrolment-request listener itself holds
+  a request id on the wire, and the enrolment listener (open only inside a window) itself holds
   no method that accepts one as authority for anything — it can only be
   polled. A request id proves nothing about the machine that holds it, which
   is the opposite property a credential needs.

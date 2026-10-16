@@ -7,6 +7,11 @@ package main
 // tool, a grant, the CA, the sealer or settings — see EnrolmentRequestSink's
 // doc comment in enrolment_request_server.go for the proof.
 //
+// The table also holds the one open enrolment window (profile id and a
+// generation): a lodge consumes it inside the table lock and stamps the row
+// with the window's profile, so the profile never comes from the wire and a
+// second lodge can never share a window.
+//
 // P1 (lodging raises no prompt, ever) holds structurally: no function in
 // this file imports "github.com/barelyworkingcode/relay/internal/presence" or calls anything shaped like
 // Gate.Require. P2 (nothing on this channel is a secret) holds because the
@@ -89,13 +94,20 @@ var (
 	// reused verbatim in shape from the WebAuthn login ceremony.
 	errEnrolmentRateLimited = errors.New("too many enrolment requests")
 
-	// errEnrolmentNoCA refuses a lodge that carried a commitment when
-	// there is no CA certificate on disk to compute the comparison code
-	// over. Never answered with an empty ca_pem: a client handed no CA
-	// would either abort anyway or, worse, fall back to something weaker.
-	// A lodge WITHOUT a commitment is unaffected — `relayremote request`
-	// needs no CA at lodge time.
+	// errEnrolmentNoCA refuses a lodge when there is no CA certificate on
+	// disk to compute the comparison code over. Never answered with an
+	// empty ca_pem: a client handed no CA would either abort anyway or,
+	// worse, fall back to something weaker.
 	errEnrolmentNoCA = errors.New("this relay has no CA certificate yet, so it cannot answer a registration with a comparison code: run `relay enrol create` once on the Mac")
+
+	// errEnrolmentNotOpen answers a lodge when no window is open or the
+	// window was already taken by an earlier lodge.
+	errEnrolmentNotOpen = errors.New("enrolment is not open on this relay")
+
+	// errEnrolmentRequestAbandoned means the machine that lodged a request
+	// closed its connection before approval. Its port is closed, so it cannot
+	// come back to collect a certificate.
+	errEnrolmentRequestAbandoned = errors.New("the requesting machine disconnected; ask it to register again")
 
 	// errEnrolmentSASRefused marks every refusal on the commitment-open
 	// path, so the listener can answer them as invalid params rather than
@@ -161,17 +173,23 @@ type enrolmentRequestRecord struct {
 	approvedCertPEM   string
 	approvedCAPEM     string
 
-	// The comparison-code material (spec §3). sasCommit, sasNonce and
-	// requestedProfile are set at Lodge and never written again; sasOpen
-	// and sasFailed are set at most once by Poll, and Poll is the ONLY
-	// thing in this file that writes either. A record with an empty
-	// sasCommit is a legacy `relayremote request` row and carries no
-	// comparison at all.
-	sasCommit        string
-	sasNonce         string
-	sasOpen          string
-	sasFailed        bool
-	requestedProfile string
+	// The comparison-code material (spec §3). sasCommit and sasNonce are
+	// set at Lodge and never written again; sasOpen and sasFailed are set
+	// at most once by Poll, and Poll is the ONLY thing in this file that
+	// writes either.
+	sasCommit string
+	sasNonce  string
+	sasOpen   string
+	sasFailed bool
+
+	// profileID is the access profile of the window this request consumed.
+	// Set once at Lodge from the window, never from the wire.
+	profileID string
+
+	// abandoned is set once, by Abandon, when the lodging connection closed
+	// before approval. The row stays until its TTL so an approval attempt can
+	// say why it failed.
+	abandoned bool
 
 	// refused is set exactly once, by Refuse, on the operator's explicit
 	// decline. It does NOT remove the row: the requester's next poll must
@@ -198,14 +216,13 @@ type enrolmentRequestView struct {
 	// SAS is the six-character comparison code, derived at projection time
 	// and empty until the commitment has been opened. SASReady says the
 	// row has a code to show; SASFailed says its opening did not verify
-	// and it is permanently unapprovable; IsLegacyRequest says it was
-	// lodged by `relayremote request`, which carries no comparison and is
-	// approvable exactly as it always was.
-	SAS              string
-	SASReady         bool
-	SASFailed        bool
-	RequestedProfile string
-	IsLegacyRequest  bool
+	// and it is permanently unapprovable.
+	SAS       string
+	SASReady  bool
+	SASFailed bool
+
+	// ProfileID is the access profile of the window the request arrived in.
+	ProfileID string
 }
 
 // pendingRecordView is what EnrolmentOps.Approve needs to read under the
@@ -225,6 +242,11 @@ type pendingRecordView struct {
 	SASCommit string
 	SASOpen   string
 	SASFailed bool
+
+	// ProfileID is the window's profile, the only profile an approval can
+	// name. Abandoned says the requesting connection closed before approval.
+	ProfileID string
+	Abandoned bool
 }
 
 // markApprovedOutcome is MarkApproved's return shape: a plain bool cannot
@@ -237,9 +259,10 @@ type pendingRecordView struct {
 type markApprovedOutcome int
 
 const (
-	markApprovedOK         markApprovedOutcome = iota
-	markApprovedRowGone                        // never lodged, or swept past its TTL
-	markApprovedRowRefused                     // the operator declined this exact request mid-gate
+	markApprovedOK           markApprovedOutcome = iota
+	markApprovedRowGone                          // never lodged, or swept past its TTL
+	markApprovedRowRefused                       // the operator declined this exact request mid-gate
+	markApprovedRowAbandoned                     // the requesting connection closed mid-gate
 )
 
 // EnrolmentRequestApprovalSink is what EnrolmentOps.Approve, Refuse and
@@ -255,7 +278,16 @@ type EnrolmentRequestApprovalSink interface {
 	Refuse(audit *audit.AuditRecorder, requestID string) bool
 }
 
+// enrolmentWindowGate is how the supervisor opens and closes the one window
+// the table consumes. It is a separate interface from the sink the listener
+// holds: the lodge path can consume a window and nothing else about it.
+type enrolmentWindowGate interface {
+	openWindow(gen uint64, profileID string)
+	closeWindow(gen uint64) bool
+}
+
 var _ EnrolmentRequestApprovalSink = (*enrolmentRequestTable)(nil)
+var _ enrolmentWindowGate = (*enrolmentRequestTable)(nil)
 
 // lodged is Lodge's success value.
 type lodged struct {
@@ -272,6 +304,14 @@ type lodged struct {
 	// stops an attacker choosing the value the host will display.
 	CAPEM    string
 	SASNonce string
+
+	// ProfileID is the window's access profile, for the lodge event.
+	ProfileID string
+
+	// WindowGen is the generation of the window this lodge consumed, so the
+	// listener can close exactly that window's socket. Always non-zero for a
+	// successful lodge.
+	WindowGen uint64
 }
 
 // approvedProject is one granted access profile as the approved poll reports
@@ -350,6 +390,10 @@ type enrolmentRequestTable struct {
 	mu      sync.Mutex
 	pending map[string]*enrolmentRequestRecord
 
+	// window is the open enrolment window, or nil. A lodge sets it to nil in
+	// the same critical section that inserts the row.
+	window *enrolmentWindowState
+
 	// caCertPEM and caSPKI are PLAIN BYTES, pushed in by
 	// remote_reconcile.go on every tick — never a *enrolment.RelayCA and never a
 	// closure over one. The table's whole structural claim is that it
@@ -369,6 +413,11 @@ type enrolmentRequestTable struct {
 
 	now  func() time.Time
 	rand func([]byte) (int, error)
+}
+
+type enrolmentWindowState struct {
+	gen       uint64
+	profileID string
 }
 
 func newEnrolmentRequestTable() *enrolmentRequestTable {
@@ -441,8 +490,31 @@ func invalidEnrolmentLabelMessage() string {
 	return fmt.Sprintf("label must be 1-%d bytes of letters, digits, '.', '_' or '-'", maxEnrolmentLabelBytes)
 }
 
-func invalidRequestedProfileMessage() string {
-	return fmt.Sprintf("requested_profile must be 1-%d bytes of letters, digits, '.', '_' or '-'", maxEnrolmentLabelBytes)
+// openWindow makes profileID the profile of the next lodge, replacing any
+// window already open. gen identifies this window to closeWindow.
+func (t *enrolmentRequestTable) openWindow(gen uint64, profileID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.window = &enrolmentWindowState{gen: gen, profileID: profileID}
+}
+
+// closeWindow clears the window if gen still names it, and says whether it
+// was still open. A lodge that already consumed it makes this a no-op, which
+// is how an expiry racing a lodge resolves.
+func (t *enrolmentRequestTable) closeWindow(gen uint64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.window == nil || t.window.gen != gen {
+		return false
+	}
+	t.window = nil
+	return true
+}
+
+func (t *enrolmentRequestTable) windowOpen() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.window != nil
 }
 
 // newRequestID mints "req_" + 32 hex characters (16 random bytes). Request
@@ -466,7 +538,16 @@ func (t *enrolmentRequestTable) newRequestID() string {
 // settings.json — P1 and the "lodging is never audited, no settings
 // mutation" half of §2 both hold because there is nothing here capable of
 // either.
-func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sasCommit, remoteAddr string) (out lodged, err error) {
+//
+// A lodge needs an open window and consumes it: the row is stamped with the
+// window's profile and the window is gone before the lock is released, so no
+// second lodge can ride the same window.
+func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, sasCommit, remoteAddr string) (out lodged, err error) {
+	// Refused before the limiter, so a connection that outlived its window
+	// cannot spend the limiter's budget or learn anything but "closed".
+	if !t.windowOpen() {
+		return lodged{}, errEnrolmentNotOpen
+	}
 	if retry, ok := t.limiter.Allow(); !ok {
 		return lodged{}, &enrolmentRateLimitedError{RetryAfter: retry}
 	}
@@ -475,16 +556,10 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sa
 	// structural refusal (table full, per-source throttle) counts as a
 	// failure exactly as a malformed CSR does, because both are the shape
 	// an attacker grinding for a slot produces.
-	//
-	// This is deliberate: a nil error alone is NOT "record success" — the
-	// idempotent re-lodge below also returns nil and must stay neutral.
-	// Rewarding it would let an attacker re-lodge the CSR it already has a
-	// slot for, for free, forever, and the escalation this limiter exists
-	// to build (2s -> 30s) would never hold: every "attempt" would zero
-	// failures/nextAllowed right back out.
 	var inserted bool
 	defer func() {
 		switch {
+		case errors.Is(err, errEnrolmentNotOpen):
 		case err != nil:
 			t.limiter.RecordFailure()
 		case inserted:
@@ -496,17 +571,10 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sa
 		err = fmt.Errorf("%s", invalidEnrolmentLabelMessage())
 		return lodged{}, err
 	}
-	// requested_profile is a hint shown to the operator as a request and
-	// never honoured automatically. It is exactly as hostile as the label
-	// and is rendered on the same screen, so it gets the identical guard.
-	if !validEnrolmentLabel(requestedProfile) {
-		err = fmt.Errorf("%s", invalidRequestedProfileMessage())
-		return lodged{}, err
-	}
 	// Re-checked here as well as at decode: this method is the table's own
 	// door, and a caller reaching it another way must not be able to store
 	// a commitment that can never be opened.
-	if sasCommit != "" && !enrolment.ValidSASHex(sasCommit, sha256.Size) {
+	if sasCommit == "" || !enrolment.ValidSASHex(sasCommit, sha256.Size) {
 		err = errors.New("sas_commit must be 64 lowercase hex characters")
 		return lodged{}, err
 	}
@@ -528,57 +596,18 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sa
 	now := t.now()
 	t.sweepLocked(now)
 
-	// A commitment relay cannot answer with a CA is refused outright
-	// rather than answered with an empty ca_pem — see errEnrolmentNoCA.
-	if sasCommit != "" && (len(t.caCertPEM) == 0 || len(t.caSPKI) == 0) {
-		err = errEnrolmentNoCA
+	// Checked again under the lock that consumes it: the window may have
+	// closed while the CSR was being parsed.
+	if t.window == nil {
+		err = errEnrolmentNotOpen
 		return lodged{}, err
 	}
 
-	// Idempotent re-lodge: a retry over an already-pending key is free,
-	// consumes no second slot, and does not extend the original expiry —
-	// so "flood the table with one key" is impossible; a distinct slot
-	// needs a distinct keypair. A REFUSED row is skipped here on purpose:
-	// it is a decided record, not a live one, so re-lodging the same key
-	// after a refusal gets a genuinely fresh request rather than being
-	// folded back into the old, dying, refused answer.
-	for _, r := range t.pending {
-		if r.refused {
-			continue
-		}
-		if r.spkiSHA256 != spki {
-			continue
-		}
-		switch {
-		case r.sasCommit == sasCommit:
-			// The resume path, and the only one that answers: same row,
-			// same nonce, therefore the same code on both screens. Two
-			// codes for one registration is the confusion this whole
-			// ceremony exists to remove.
-		case r.sasCommit == "":
-			err = errors.New("this key already has a pending request lodged without a comparison commitment: refuse that one on the Mac, or wait for it to expire, before registering with one")
-			return lodged{}, err
-		case sasCommit == "":
-			err = errors.New("this key already has a pending request lodged with a comparison commitment: refuse that one on the Mac, or wait for it to expire, before lodging without one")
-			return lodged{}, err
-		default:
-			// A key gets ONE live comparison. A second commitment on the
-			// same key would hand an attacker a second free guess at the
-			// six characters, which is the whole of the margin.
-			err = errors.New("this key already has a pending request bound to a different comparison commitment: refuse that one on the Mac, or wait for it to expire")
-			return lodged{}, err
-		}
-		out = lodged{
-			RequestID:        r.id,
-			SPKISHA256:       spki,
-			PollAfterSeconds: enrolPollAfterSeconds,
-			ExpiresInSeconds: secondsUntil(r.expiresAt, now),
-		}
-		if r.sasCommit != "" {
-			out.CAPEM = string(t.caCertPEM)
-			out.SASNonce = r.sasNonce
-		}
-		return out, nil
+	// A commitment relay cannot answer with a CA is refused outright
+	// rather than answered with an empty ca_pem — see errEnrolmentNoCA.
+	if len(t.caCertPEM) == 0 || len(t.caSPKI) == 0 {
+		err = errEnrolmentNoCA
+		return lodged{}, err
 	}
 
 	sourceHost := addrHost(remoteAddr)
@@ -593,10 +622,10 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sa
 	}
 
 	// The cap counts LIVE rows only — pending, and approved-but-uncollected
-	// — never refused ones. A refused row holds no slot: it is a decided
-	// record kept only so a poll can answer truthfully, and counting it
-	// against the cap would let a burst of refusals starve genuine lodges
-	// for the refused rows' own remaining TTL on top of the flood itself.
+	// — never refused or abandoned ones. A decided or dropped row holds no
+	// slot: it is kept only so a poll or an approval can answer truthfully,
+	// and counting it against the cap would let a burst of refusals starve
+	// genuine lodges for the rows' own remaining TTL on top of the flood.
 	live := t.liveCountLocked()
 	if live >= maxPendingEnrolmentRequests {
 		t.warnTableFullLocked(now)
@@ -608,28 +637,27 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sa
 	// before this call returns, and assigned to the record exactly once:
 	// an attacker that could choose or re-choose this value after learning
 	// the client's nonce could grind the code the host will display.
-	var sasNonce string
-	if sasCommit != "" {
-		sasNonce, err = enrolment.NewSASNonce()
-		if err != nil {
-			err = fmt.Errorf("could not mint a comparison nonce: %w", err)
-			return lodged{}, err
-		}
+	sasNonce, nerr := enrolment.NewSASNonce()
+	if nerr != nil {
+		err = fmt.Errorf("could not mint a comparison nonce: %w", nerr)
+		return lodged{}, err
 	}
 
 	id := t.newRequestID()
 	rec := &enrolmentRequestRecord{
-		id:               id,
-		csrPEM:           append([]byte(nil), csrPEM...),
-		spkiSHA256:       spki,
-		label:            label,
-		remoteAddr:       remoteAddr,
-		arrivedAt:        now,
-		expiresAt:        now.Add(enrolmentRequestTTL),
-		sasCommit:        sasCommit,
-		sasNonce:         sasNonce,
-		requestedProfile: requestedProfile,
+		id:         id,
+		csrPEM:     append([]byte(nil), csrPEM...),
+		spkiSHA256: spki,
+		label:      label,
+		remoteAddr: remoteAddr,
+		arrivedAt:  now,
+		expiresAt:  now.Add(enrolmentRequestTTL),
+		sasCommit:  sasCommit,
+		sasNonce:   sasNonce,
+		profileID:  t.window.profileID,
 	}
+	gen := t.window.gen
+	t.window = nil
 	t.pending[id] = rec
 	inserted = true
 	// Only an actual insert moves the generation — see LodgeGeneration.
@@ -638,17 +666,31 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sa
 		t.lastLodgeBySource[sourceHost] = now
 	}
 
-	out = lodged{
+	return lodged{
 		RequestID:        id,
 		SPKISHA256:       spki,
 		PollAfterSeconds: enrolPollAfterSeconds,
 		ExpiresInSeconds: int(enrolmentRequestTTL.Seconds()),
+		CAPEM:            string(t.caCertPEM),
+		SASNonce:         sasNonce,
+		ProfileID:        rec.profileID,
+		WindowGen:        gen,
+	}, nil
+}
+
+// Abandon drops a request whose connection closed before approval and
+// reports whether it did. An approved or refused row is left alone: the
+// connection closes after a terminal answer, and the enrolment of an approved
+// row stands whether or not it was collected.
+func (t *enrolmentRequestTable) Abandon(requestID string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r, ok := t.pending[requestID]
+	if !ok || r.approved || r.refused || r.abandoned {
+		return false
 	}
-	if sasCommit != "" {
-		out.CAPEM = string(t.caCertPEM)
-		out.SASNonce = sasNonce
-	}
-	return out, nil
+	r.abandoned = true
+	return true
 }
 
 // Poll answers a request id with the ONE thing this listener knows about
@@ -676,7 +718,7 @@ func (t *enrolmentRequestTable) Poll(requestID, sasOpen string) (pollResult, err
 	t.sweepLocked(now)
 
 	r, ok := t.pending[requestID]
-	if !ok {
+	if !ok || r.abandoned {
 		return pollResult{Status: "unknown"}, nil
 	}
 	if sasOpen != "" {
@@ -713,9 +755,6 @@ func (t *enrolmentRequestTable) Poll(requestID, sasOpen string) (pollResult, err
 func openCommitmentLocked(r *enrolmentRequestRecord, sasOpen string) error {
 	if !enrolment.ValidSASHex(sasOpen, enrolment.SASNonceBytes) {
 		return fmt.Errorf("%w: sas_open must be 32 lowercase hex characters", errEnrolmentSASRefused)
-	}
-	if r.sasCommit == "" {
-		return fmt.Errorf("%w: this request was not lodged with a comparison commitment", errEnrolmentSASRefused)
 	}
 	if r.sasFailed {
 		return fmt.Errorf("%w: this request's commitment already failed to open, and it cannot be approved", errEnrolmentSASRefused)
@@ -786,6 +825,8 @@ func (t *enrolmentRequestTable) Get(requestID string) (pendingRecordView, bool) 
 		SASCommit:  r.sasCommit,
 		SASOpen:    r.sasOpen,
 		SASFailed:  r.sasFailed,
+		ProfileID:  r.profileID,
+		Abandoned:  r.abandoned,
 	}, true
 }
 
@@ -820,6 +861,9 @@ func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, project
 	if r.refused {
 		return markApprovedRowRefused
 	}
+	// The row is still marked approved so the enrolment the sign already
+	// committed is visible to the operator; nobody is left to collect it.
+	abandoned := r.abandoned
 	r.approved = true
 	r.approvedClientID = clientID
 	r.approvedProjects = append([]approvedProject(nil), projects...)
@@ -827,6 +871,9 @@ func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, project
 	r.approvedCertPEM = certPEM
 	r.approvedCAPEM = caPEM
 	r.expiresAt = t.now().Add(enrolmentCollectTTL)
+	if abandoned {
+		return markApprovedRowAbandoned
+	}
 	return markApprovedOK
 }
 
@@ -844,7 +891,7 @@ func (t *enrolmentRequestTable) List() []enrolmentRequestView {
 
 	out := make([]enrolmentRequestView, 0, len(t.pending))
 	for _, r := range t.pending {
-		if r.refused {
+		if r.refused || (r.abandoned && !r.approved) {
 			continue
 		}
 		v := enrolmentRequestView{
@@ -856,10 +903,9 @@ func (t *enrolmentRequestTable) List() []enrolmentRequestView {
 			ExpiresAt:        r.expiresAt,
 			Approved:         r.approved,
 			ApprovedClientID: r.approvedClientID,
-			RequestedProfile: r.requestedProfile,
-			IsLegacyRequest:  r.sasCommit == "",
+			ProfileID:        r.profileID,
 			SASFailed:        r.sasFailed,
-			SASReady:         r.sasCommit != "" && r.sasOpen != "" && !r.sasFailed,
+			SASReady:         r.sasOpen != "" && !r.sasFailed,
 		}
 		if v.SASReady {
 			v.SAS = t.sasForLocked(r)
@@ -918,7 +964,7 @@ func csrSPKIFromPEM(csrPEM []byte) ([]byte, bool) {
 func (t *enrolmentRequestTable) liveCountLocked() int {
 	n := 0
 	for _, r := range t.pending {
-		if !r.refused {
+		if !r.refused && !r.abandoned {
 			n++
 		}
 	}
@@ -953,7 +999,7 @@ func (t *enrolmentRequestTable) liveCountLocked() int {
 func (t *enrolmentRequestTable) Refuse(audit *audit.AuditRecorder, requestID string) bool {
 	t.mu.Lock()
 	r, found := t.pending[requestID]
-	actionable := found && !r.approved && !r.refused
+	actionable := found && !r.approved && !r.refused && !r.abandoned
 	if actionable {
 		r.refused = true
 	}

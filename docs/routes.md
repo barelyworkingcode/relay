@@ -1087,7 +1087,7 @@ Creates a client certificate bundle on this Mac.
   | `effective` | string | Address that would be bound |
   | `audit_enabled` | boolean | Auditing is on |
   | `ca_fingerprint` | string | CA certificate SHA-256; absent until a CA exists |
-  | `enrolment_requests` | boolean | Enrolment-request listener on |
+  | `enrolment_window` | object | `{"open": false}`, or `open`, `target` (`profile`), `profile_id`, `profile_name`, `expires`, `listen` while a window is open |
   | `enrolment_listen` | string | Configured address |
   | `enrolment_effective` | string | Address that would be bound |
 
@@ -1098,10 +1098,11 @@ Creates a client certificate bundle on this Mac.
 - **Listeners:** socket. **Credential:** `execute`. **Gate:** `remote.configure`,
   on any change of a listener switch or address, and on `remove`.
 - **Request:** `{"remove": boolean, "enabled": boolean, "listen": string,
-  "enrolment_requests": boolean, "enrolment_listen": string}`. The body is the
+  "enrolment_listen": string}`. The body is the
   full record: an omitted field reads as `false` or `""`. `remove: true` deletes
-  the block. Addresses must be loopback. `enrolment_requests: true` needs
-  `enabled: true`.
+  the block. Addresses must be loopback. A body with `enrolment_requests` is
+  refused `400`: `enrolment_requests was removed: open enrolment with Allow
+  Enrolment… in the tray, or relay enrol open`.
 - **Response `200`:** the view of `GET /api/remote`.
 - **Errors:** `400` invalid; `409` the block changed while the prompt was open;
   refusal `500`.
@@ -1824,11 +1825,15 @@ Passthrough prefix `/openai/`; same contract as `model:/api/{path}`.
 
 ## 7. Enrolment listener
 
-The enrolment-request listener lets a remote machine ask the operator for a
-client certificate. It is plain TCP carrying newline-delimited JSON frames,
-with no certificate and no credential. It exists only when `remote.enrolment_requests`
-is `true` (and the remote listener is enabled and auditing is on); its address
-is `listeners.enrolment` in `ready.json`.
+The enrolment listener lets a remote machine ask the operator for a client
+certificate. It is plain TCP carrying newline-delimited JSON frames, with no
+certificate and no credential. It exists only while an enrolment window is open
+(`relay enrol open`, five minutes, one access profile; the remote listener must
+be enabled and auditing on). With no window there is no socket. The first
+accepted lodge closes the listener; the lodging connection stays open, and the
+machine polls on it. `ready.json` lists no enrolment listener; the address is
+`listen` from `relay enrol open --json` and from `relay remote show --json`
+(`enrolment_window`) while a window is open.
 
 Limits: 16 concurrent connections; 64 frames per connection, then the server
 closes it; 64 KiB per frame; 10 seconds to the first frame and 30 seconds idle;
@@ -1839,7 +1844,8 @@ strict. The server answers each frame with one JSON line:
 "message": "<text>"}`.
 
 Codes: `-32602` invalid params, `-32601` unknown request type, `-32603` internal,
-`-32000` throttled. A second lodge from the same source within 10 seconds
+`-32000` throttled, `-32001` `enrolment is not open on this relay` (no window,
+or the window already took its request). A second lodge from the same source within 10 seconds
 answers `-32000` with `{"retry_after_seconds": N}` in `result`, where N is the time left in the 10 second
 per-source interval, rounded up (1 to 10); a lodge into a
 full table of 8 answers `-32000` with no `result`, because the table empties
@@ -1858,26 +1864,34 @@ Wire type `EnrolmentRequest`. Lodges a request.
   | `type` | string | `"EnrolmentRequest"` |
   | `csr_pem` | string | A certificate signing request (required) |
   | `label` | string | Untrusted display label. Optional; when present 1 to 64 bytes of `A-Za-z0-9._-`, else `-32602` |
-  | `requested_profile` | string | A hint, 1 to 64 of `A-Za-z0-9._-` |
-  | `sas_commit` | string | 64 lowercase hex: commitment to a comparison nonce |
+  | `sas_commit` | string | 64 lowercase hex: commitment to a comparison nonce (required). `sas_commit = hex(sha256("relay.sas.commit.v1\0" \|\| sha256(CSR SubjectPublicKeyInfo DER) \|\| rc))`, where `rc` is the 16 raw bytes whose hex is the later `sas_open` |
+
+  The wire names no profile: the window does. Any other field, including
+  `requested_profile`, is `-32602`.
 
 - **Result:** `request_id`, `spki_sha256`, `poll_after_seconds`,
-  `expires_in_seconds`, and when the CA exists `ca_pem`; with `sas_commit` also
-  `sas_nonce`.
-- **Errors:** `-32602` bad request or invalid CSR; `-32000` throttled (per
-  source within 10 seconds, per request rate, or a full table of 8); `-32603` no CA yet.
+  `expires_in_seconds`, `sas_nonce`, and when the CA exists `ca_pem`.
+- **Errors:** `-32602` bad request or invalid CSR; `-32001` no window open;
+  `-32000` throttled (per request rate, or a full table of 8); `-32603` no CA yet.
 - **Event:** `enrolment.request.lodge` (`request_id`). A throttle is `denied`,
   reason `throttled`.
 
 ### enrol:poll
 
-Wire type `EnrolmentRequestPoll`. Asks about a lodged request.
+Wire type `EnrolmentRequestPoll`. Asks about a lodged request. Only the
+connection that lodged the request may poll it; any other request id answers
+`{"status":"unknown"}`. The connection has no frame cap, stays open through 30
+seconds idle, and closes after `approved`, `refused` or `unknown`. A connection
+that closes before approval drops its request (event `enrolment.request.abandon`), and approving it then
+fails with `the requesting machine disconnected; ask it to register again`.
+Turning the remote listener or auditing off closes a lodging connection the
+same way.
 
 - **Request:** `{"type": "EnrolmentRequestPoll", "request_id": string (required),
   "sas_open": string}`. `sas_open` is 32 lowercase hex, sent on the first poll.
 - **Result:** `status` is `pending`, `approved`, `refused` or `unknown`.
   `pending` adds `poll_after_seconds` and `expires_in_seconds`. `approved` adds
-  `client_id`, `project_ids`, `relay_addr`, `cert_pem`, `ca_pem` and `projects`
+  `client_id`, `relay_addr`, `cert_pem`, `ca_pem` and `projects`
   (`[{"id", "name"}]`).
 - **Errors:** `-32602` a malformed poll or a refused comparison code.
 - **Event:** `enrolment.request.poll`, on failure only.
@@ -2026,6 +2040,10 @@ operations through `admin_op` instead.
 reaches an operation through its CLI command or HTTP route; the `bridge:admin_op:`
 refs in [`FEATURES.md`](FEATURES.md) name the operations. Reply: `Result`, or an
 `Error`.
+
+The enrolment window operations are `enrolment.window.open` (gated;
+`{"profile_id": string}`) and `enrolment.window.close` (ungated; answers
+`{"closed": ["profile"]}`, or `[]`).
 
 ### bridge:ListTools and bridge:CallTool
 

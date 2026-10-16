@@ -200,8 +200,8 @@ func (e *env) notRunning(verb string) int {
 		"  relay is the sole broker of its own credentials: the secrets are sealed and\n"+
 		"  only the tray holds the key (ADR-017 decision 2), and it is the only reader of\n"+
 		"  the configuration for `list`, `grant` and every other command that shows it.\n"+
-		"  Start Relay and retry. `relay audit` and `relay enrol ca-fingerprint` read\n"+
-		"  their own files and still work with relay stopped.", e.g.ConfigDir, verb)
+		"  Start Relay and retry. `relay audit` reads its own file and still works\n"+
+		"  with relay stopped.", e.g.ConfigDir, verb)
 }
 
 // forward sends a verb to the running instance and prints its answer.

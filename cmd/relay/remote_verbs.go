@@ -48,11 +48,15 @@ func printRemoteLine(raw json.RawMessage) {
 	if v.Enabled {
 		state = "on"
 	}
-	enrol := "off"
-	if v.EnrolmentRequests {
-		enrol = "on"
+	window := "closed"
+	if v.EnrolmentWindow.Open {
+		name := v.EnrolmentWindow.ProfileName
+		if name == "" {
+			name = v.EnrolmentWindow.ProfileID
+		}
+		window = fmt.Sprintf("open for %q until %s at %s", name, v.EnrolmentWindow.Expires, v.EnrolmentWindow.Listen)
 	}
-	fmt.Printf("remote listener %s at %s; enrolment requests %s at %s\n", state, v.Effective, enrol, v.EnrolmentEffective)
+	fmt.Printf("remote listener %s at %s; enrolment window %s\n", state, v.Effective, window)
 }
 
 func remoteShow(args []string) {

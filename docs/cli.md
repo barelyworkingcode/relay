@@ -23,8 +23,8 @@ file. Reads never prompt for presence, and the answer is a purpose-built view
 per command: token hashes, sealed values, environment values and public-key
 coordinates have no field to travel in. With the tray stopped they refuse by
 name, exactly like the mutating commands. The exceptions are the commands
-that read their own files: `relay audit` (the audit log) and
-`relay enrol ca-fingerprint` (the public `ca.crt`) work with the tray stopped.
+that read their own files: `relay audit` (the audit log) works with the tray
+stopped.
 
 **Every mutating command asks the running tray**, the same way, and refuses
 by name if the tray is not running. Nothing in this program writes
@@ -40,8 +40,8 @@ error: relay is not running; `relay credential mint` requires the service.
   relay is the sole broker of its own credentials: the secrets are sealed and
   only the tray holds the key (ADR-017 decision 2), and it is the only reader of
   the configuration for `list`, `grant` and every other command that shows it.
-  Start Relay and retry. `relay audit` and `relay enrol ca-fingerprint` read
-  their own files and still work with relay stopped.
+  Start Relay and retry. `relay audit` reads its own file and still works
+  with relay stopped.
 ```
 
 **A subset of the mutating commands also demand presence** — a real
@@ -103,10 +103,11 @@ credential class and its gates.
 | `relay enrol sign` | yes | **yes** | no |
 | `relay enrol update` | yes | **yes** | no |
 | `relay enrol revoke` | yes | **yes** | no |
+| `relay enrol open` | yes | **yes** | no |
+| `relay enrol close` | yes | no | yes |
 | `relay enrol requests` | yes | no | yes |
 | `relay enrol approve` | yes | **yes** | no |
 | `relay enrol refuse` | yes | no | yes |
-| `relay enrol ca-fingerprint` | no | no | yes |
 | `relay login list` | yes | no | yes |
 | `relay login enrol` | yes | **yes** | no |
 | `relay login revoke` | yes | **yes** | no |
@@ -253,7 +254,7 @@ clean shutdown. The tray writes it too. It holds no credential.
 ```json
 {"schema":1,"pid":41234,"version":"dev","config_dir":"/tmp/rr.Ab12/a",
  "sockets":{"bridge":"/tmp/rr.Ab12/a/relay.sock","frontend":"/tmp/rr.Ab12/a/relay-frontend-41234.sock","model":"/tmp/rr.Ab12/a/model.sock"},
- "listeners":{"api":"127.0.0.1:53001","model":"127.0.0.1:53002","remote":"127.0.0.1:53003","enrolment":"127.0.0.1:53004"}}
+ "listeners":{"api":"127.0.0.1:53001","model":"127.0.0.1:53002","remote":"127.0.0.1:53003"}}
 ```
 
 `listeners` is always present; a listener that is not bound has no key, and
@@ -270,7 +271,7 @@ Every TCP listener takes its address from `settings.json` and accepts port `0`:
 | Control-plane API | `api.listen` | `RELAY_API_LISTEN`; neither set: no listener |
 | Model endpoint | `model_endpoint.listen` | no listener |
 | Remote mTLS | `remote.listen` | `127.0.0.1:9910` when remote is enabled |
-| Enrolment requests | `remote.enrolment_listen` | `127.0.0.1:9911`, bound only when `remote.enrolment_requests` and `remote.enabled` are both `true` and the tool-call audit log is recording; `remote.enabled` alone binds none |
+| Enrolment window | `remote.enrolment_listen` | `127.0.0.1:9911`, bound only while an enrolment window is open (`relay enrol open`, five minutes at most) and only when `remote.enabled` is `true` and the tool-call audit log is recording; `remote.enabled` alone binds none |
 
 `api.listen` beats `RELAY_API_LISTEN`; both are read at start and both must be
 loopback. A refusal names the key or variable that supplied the address. The
@@ -929,9 +930,10 @@ returns only certificates: the private key never leaves the client, and
 never exists in this process at all. Prefer `sign`. `enrol requests` /
 `enrol approve` / `enrol refuse` are the network CSR path's operator
 surface (ADR-018 decision 8, narrowed by ADR-019): an unenrolled remote
-lodges a CSR over the enrolment-request listener, a six-character SAS
-comparison code identifies it, and the operator approves (signing it, same
-gate and digest as `sign`) or refuses it from here — never self-service.
+lodges a CSR over the enrolment listener while the operator has a window
+open (`enrol open`), a six-character SAS comparison code identifies it, and
+the operator approves (signing it, same gate and digest as `sign`) or refuses
+it from here — never self-service.
 
 ```
 relay enrol create --client-id ID --grant PROFILE-ID
@@ -947,12 +949,13 @@ relay enrol update --client-id ID [--window-seconds N] [--max-calls N]
                     [--mount-max-write-bytes N] [--grant PROFILE-ID] | [--clear-grants]
                     [--cli-admin[=true|false]]
 relay enrol revoke --client-id ID
+relay enrol open --profile PROFILE-ID [--json]
+relay enrol close [--json]
 relay enrol requests [--json]
-relay enrol approve --id REQUEST_ID --client-id ID (--grant PROFILE-ID | --no-grant)
+relay enrol approve --id REQUEST_ID --client-id ID
                      [--window-seconds N] [--max-calls N] [--max-result-bytes N]
                      [--mount-max-ops N] [--mount-max-read-bytes N] [--mount-max-write-bytes N]
 relay enrol refuse --id REQUEST_ID
-relay enrol ca-fingerprint
 ```
 
 ### `enrol create`
@@ -1204,9 +1207,52 @@ revoked enrolment "hermes"
 
 Exit codes: `0` revoked; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. A missing `--client-id` is `1`.
 
+### `enrol open`
+
+Opens a five-minute enrolment window for one access profile. While it is
+open, relay binds the enrolment listener (`remote.enrolment_listen`) and one
+remote machine may lodge one request to enrol into that profile; the first
+accepted request closes the window, and so does the timer or `enrol close`.
+The window lives in memory only: a restart closes it. Opening another
+replaces the first (close reason `replaced`).
+
+| Flag | Meaning |
+|---|---|
+| `--profile` | Id of the access profile (a remote-kind record) the machine will enrol into (required). |
+| `--json` | Print the window as JSON. |
+
+Refused before any prompt: an id that is not an access profile
+(`"ID" is not an access profile`), the remote listener off (`turn the remote
+listener on first: Settings > Remote Clients, or relay remote set`), and
+auditing off. Then the presence prompt reads `open a five-minute window for
+one remote machine to request enrolment into the access profile "NAME"`. An
+approved open writes a `credential_issued` audit row with credential
+`enrolment_window` before the listener binds, and binds nothing if the row
+cannot be written.
+
+Needs service: yes. Prompts: yes. Works over SSH: no.
+
+Text output names the profile and the expiry. `--json` prints
+`{"open":true,"target":"profile","profile_id":"…","profile_name":"…","expires":"RFC 3339","listen":"host:port"}`.
+Exit codes: `0` opened; `1` when relay is not running, when it cannot prompt,
+when the prompt is declined, and for the refusals above; `2` for an unknown
+flag.
+
+### `enrol close`
+
+Closes the open enrolment window, if any. Ungated: closing narrows what is
+reachable. A request already lodged stays in the table until it is approved,
+refused or expires.
+
+Needs service: yes. Prompts: no. Works over SSH: yes.
+
+Output: `closed: access profile "NAME"`, or `no enrolment window was open`
+(exit `0` either way). `--json` prints `{"closed":["profile"]}`, or
+`{"closed":[]}` with nothing open. Exit `1` when relay is not running.
+
 ### `enrol requests`
 
-Lists live pending CSR requests lodged over the enrolment-request listener.
+Lists live pending CSR requests lodged over the enrolment listener.
 Brokered like every other mutation here: the pending table lives only in
 the running tray's memory, so this needs the service up even though it is
 read-only.
@@ -1224,8 +1270,8 @@ Usage of enrol requests:
 
 The table form's `SAS` column carries the six-character comparison code: a
 value once both sides have completed it, `(waiting)` before the client
-opens its commitment, `FAILED` if it opened it wrongly, and `-` for a
-legacy carried-pin `relayremote request` row that has no comparison at all.
+opens its commitment, and `FAILED` if it opened it wrongly. The `PROFILE`
+column is the access profile the window was opened for.
 
 Needs service: yes. Prompts: no. Works over SSH: yes.
 
@@ -1244,10 +1290,10 @@ Needs service: yes. Prompts: no. Works over SSH: yes.
 | `sas` | string, optional | The six-character comparison code, once both sides completed it. |
 | `sas_ready` | boolean | `true` when `sas` is shown. |
 | `sas_failed` | boolean | `true` when the client opened its commitment wrongly. Such a request cannot be approved. |
-| `is_legacy_request` | boolean | `true` for a request lodged by `relayremote request`, which has no comparison code. |
-| `requested_profile` | string, optional | The access profile the client asked for. |
+| `profile_id` | string | The access profile the window was opened for; approval enrols into it. |
+| `profile_name` | string | That profile's name. |
 
-Text mode prints the header `REQUEST ID  SAS  KEY  LABEL  FROM  ARRIVED  EXPIRES
+Text mode prints the header `REQUEST ID  PROFILE  SAS  KEY  LABEL  FROM  ARRIVED  EXPIRES
 STATUS` and one row per request (`KEY` is `sha256:` plus 64 hex characters,
 `LABEL` is `-` when empty, `STATUS` is `pending` or `approved: CLIENT-ID`), or
 `no pending enrolment requests`. Exit codes: `0`; `1` when relay is not running.
@@ -1257,18 +1303,16 @@ STATUS` and one row per request (`KEY` is `sha256:` plus 64 hex characters,
 Signs a pending request exactly as `enrol sign` does — same op, same gate,
 same digest — over the request's own stored CSR bytes, so there is no
 `--csr` flag here: the CSR is whatever the client already lodged. Requires
-a grant: with no `--grant` it refuses with a message naming `--no-grant` as
-the explicit way to enrol a machine with no access (ADR-019 decision 7 — an
-enrolment that reaches nothing reads on the client as a broken install, so
-the operator says which they meant). Also refuses, before the gate, a
-request whose comparison was never completed or failed.
+no grant: the certificate is issued for the access profile the window was
+opened for, which the pending record carries, and approval takes no profile.
+Refuses, before the gate, a request whose comparison was never completed or
+failed, and a request whose machine disconnected (`the requesting machine
+disconnected; ask it to register again`).
 
 | Flag | Meaning |
 |---|---|
 | `--id` | Pending request id to approve (required). |
 | `--client-id` | Human-readable, unique id for this enrolment (required); names the enrolment, not the request's label. |
-| `--grant` | Id of the one **access profile** this certificate may use — never a local project. Two exit `1`. Mutually exclusive with `--no-grant`. |
-| `--no-grant` | Enrol this machine with no access at all; nothing works until a later `relay enrol update --grant`. |
 | `--window-seconds` | Budget window, seconds (default 3600). |
 | `--max-calls` | Max tool calls per window (default 120). |
 | `--max-result-bytes` | Max cumulative result bytes per window (default 67108864, 64 MiB). |
@@ -1281,8 +1325,6 @@ $ relay enrol approve -h
 Usage of enrol approve:
   -client-id string
     	human-readable id for this enrolment (required, unique); this, not the request's label, names the enrolment
-  -grant value
-    	access profile id this certificate may use (one only: an enrolment reaches one profile); a grant must name an access profile (a remote-kind record), never a local project
   -id string
     	pending request id to approve (required)
   -max-calls int
@@ -1295,8 +1337,6 @@ Usage of enrol approve:
     	max mount-plane bytes read per window (default 536870912)
   -mount-max-write-bytes int
     	max mount-plane bytes written per window (default 536870912)
-  -no-grant
-    	enrol this machine with no access at all (nothing will work until `relay enrol update --grant` adds one); mutually exclusive with --grant
   -window-seconds int
     	budget window in seconds (default 3600)
 ```
@@ -1313,9 +1353,8 @@ mount-plane budget as they do for `enrol create`.
 No JSON form. The first output line is `approved enrolment request "REQUEST-ID"
 as "CLIENT-ID"`, followed by `  fingerprint: sha256:<64 hex>` and `  profiles:`
 lines, and `  the certificate is delivered to the client on its next poll;
-nothing further to do on this host`. Exit codes: `0` approved; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag. Naming
-neither `--grant` nor `--no-grant`, or both, is `1`; so is an unknown request
-id (`error: bridge error (code -32603): enrolment request not found: ID`).
+nothing further to do on this host`. Exit codes: `0` approved; `1` when relay is not running, when it is run where it cannot prompt (`error: refused: this needs your confirmation on the Mac's screen ...`), when the prompt is declined, and when the server refuses the act; `2` for an unknown flag, including `--grant` and `--no-grant`, which no longer exist. An unknown request
+id is `1` (`error: bridge error (code -32603): enrolment request not found: ID`).
 
 ### `enrol refuse`
 
@@ -1341,27 +1380,6 @@ No JSON form. Output: `refused enrolment request "REQUEST-ID"`. Exit codes: `0`
 refused; `1` for an unknown id
 (`error: bridge error (code -32603): enrolment request not found: ID`), a missing
 `--id`, or relay not running; `2` for an unknown flag.
-
-### `enrol ca-fingerprint`
-
-Prints relay's CA certificate hash, `sha256:` and 64 hex characters of the
-SHA-256 over the certificate's DER bytes — the value a client pins with
-`relayremote enrol --ca-fingerprint` so it can tell the real relay from an
-impostor on the network. Reads `ca.crt` straight off disk, so it is the
-one `enrol` subcommand that works with the tray stopped; the certificate is public and the
-key it corresponds to is not needed to fingerprint it.
-
-Needs service: no. Prompts: no. Works over SSH: yes.
-
-`ca.crt` does not exist on a fresh install. Relay writes it the first time it
-needs a CA: the first start of the remote listener (`listeners.remote` enabled
-with auditing on), or the first `relay enrol create` or `relay enrol sign`.
-`relay enrol ca-fingerprint` itself never creates it.
-
-No JSON form. The one line on stdout is the fingerprint, `sha256:` followed by 64
-hex characters, and nothing else. Exit codes: `0`; `1` when `ca.crt` does not
-exist yet; the error reads "no CA certificate exists yet at DIR/ca.crt" and says to
-run `relay enrol create` or `relay enrol sign` once to generate one.
 
 ## `relay login`
 
@@ -2416,12 +2434,13 @@ remote-listener settings the Remote Clients tab shows (`GET /api/remote`).
 | `effective` | string | The address the listener binds or would bind. |
 | `audit_enabled` | boolean | Whether the tool-call audit log is on. Remote access needs it. |
 | `ca_fingerprint` | string, optional | The CA certificate hash (`sha256:` and 64 hex characters); absent until a CA exists. |
-| `enrolment_requests` | boolean | Whether the enrolment-request listener runs. |
+| `enrolment_window` | object | The open enrolment window: `{"open":false}`, or `open` true with `target` (`profile`), `profile_id`, `profile_name`, `expires` and `listen`. |
 | `enrolment_listen` | string, optional | The address the operator set for it. |
 | `enrolment_effective` | string | The address it binds or would bind. |
 
-Text form: `remote listener off at 127.0.0.1:9910; enrolment requests off at
-127.0.0.1:9911` (`on` in place of `off` when enabled). Exit codes: `0`; `1` when
+Text form: `remote listener off at 127.0.0.1:9910; enrolment window closed`
+(`on` in place of `off` when enabled; `enrolment window open for access profile
+"NAME" until TIME` while a window is open). Exit codes: `0`; `1` when
 relay is not running; `2` for an unknown flag.
 
 ### `remote set`
@@ -2431,12 +2450,14 @@ relay is not running; `2` for an unknown flag.
 | `--file` | The `PUT /api/remote` body as a JSON file, or `-` for stdin. Required. |
 | `--json` | Print the new settings as JSON. |
 
-The body replaces the whole record (`enabled`, `listen`, `enrolment_requests`,
-`enrolment_listen`, `remove`, all booleans except the two addresses), so a field
-the body leaves out is cleared. Needs service: yes. It prompts
-(`remote.configure`) when the change touches `enabled`, `listen`,
-`enrolment_requests` or `enrolment_listen`, in either direction, and then
-refuses over SSH; a body that leaves all four as they are does not prompt.
+The body replaces the whole record (`enabled`, `listen`, `enrolment_listen`,
+`remove`, all booleans except the two addresses), so a field the body leaves
+out is cleared. A body that carries `enrolment_requests` is refused (exit `1`;
+`PUT /api/remote` answers 400): `enrolment_requests was removed: open
+enrolment with Allow Enrolment… in the tray, or relay enrol open`. Needs
+service: yes. It prompts (`remote.configure`) when the change touches
+`enabled`, `listen` or `enrolment_listen`, in either direction, and then
+refuses over SSH; a body that leaves all three as they are does not prompt.
 Operator-only. `--json` and the text form print the same document and line as
 `remote show`. Exit codes: `0` saved; `1` when `--file` is missing or unreadable
 (`error: open PATH: no such file or directory`), the body is refused, a needed
@@ -2884,7 +2905,7 @@ Needs service: yes. Prompts: no. Works over SSH: yes. Operator-only. Lists every
 HTTP route, IPC op, bridge request and CLI verb of the running server, built
 from the tables the server dispatches from. Each door names its credential
 class and the presence gates its core may require. It lists no id, path,
-address or config value. The model endpoint, remote mTLS and enrolment-request
+address or config value. The model endpoint, remote mTLS and enrolment
 listeners are not listed.
 
 `--json` prints one line: a document with `schema` (number, `1`), `version`
@@ -3199,8 +3220,8 @@ Keyed on the literal strings you will see.
 A command that mutates or shows configuration was run with the tray stopped
 — that includes `relay grant` and every `list`, because the running tray is
 the only reader of the configuration. Start Relay (open the app, or run it)
-and retry. Only `relay audit` and `relay enrol ca-fingerprint`, which read
-their own files, work with the tray stopped.
+and retry. Only `relay audit`, which reads
+its own file, works with the tray stopped.
 
 ### `refused: this needs your confirmation on the Mac's screen, ...`
 
@@ -3275,8 +3296,8 @@ what the whole design spends its effort closing; see
   task-ordered version of this document's worked example: start relay,
   register an MCP, create a project, call a tool, on one Mac.
 - [`docs/install-remote-machine.md`](install-remote-machine.md) — the same
-  for a second machine: which command runs where, the enrolment-request
-  channel, and the operator-carried fallback.
+  for a second machine: which command runs where, the enrolment
+  window, and the operator-carried fallback.
 - [`docs/sealed-config.md`](sealed-config.md) — why project tokens, the
   admin secret, OAuth bearers and the CA key are sealed at rest, why the
   rest of `settings.json` deliberately is not, and the break-glass recovery

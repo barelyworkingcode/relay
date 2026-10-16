@@ -28,15 +28,13 @@ type EnrolmentRequestWire struct {
 	Label  string `json:"label,omitempty"`
 
 	// SASCommit is a hiding commitment to the client's comparison nonce,
-	// 64 lowercase hex characters. Present means the peer is registering
-	// and expects a comparison code back; absent means this is a
-	// `relayremote request` and the row gets no comparison at all.
-	SASCommit string `json:"sas_commit,omitempty"`
-
-	// RequestedProfile is a HINT displayed to the operator as a request
-	// and never honoured automatically. As hostile as Label and bounded
-	// by the same rule.
-	RequestedProfile string `json:"requested_profile,omitempty"`
+	// 64 lowercase hex characters. Required: every request carries a
+	// comparison, because the enrolment port is plain TCP and the code
+	// comparison is the only thing that stops a stranger who reaches the
+	// port first. There is deliberately no field naming the profile the
+	// peer wants: the window the operator opened names it, and strict
+	// decoding refuses any attempt to send one.
+	SASCommit string `json:"sas_commit"`
 }
 
 // EnrolmentRequestPollWire names the pending request a client is asking
@@ -69,11 +67,11 @@ func DecodeEnrolmentRequest(line []byte) (*EnrolmentRequestWire, error) {
 	if req.CSRPEM == "" {
 		return nil, fmt.Errorf("csr_pem is required")
 	}
-	if req.SASCommit != "" && !lowerHexOfLength(req.SASCommit, 64) {
-		return nil, fmt.Errorf("sas_commit must be 64 lowercase hex characters")
+	if req.SASCommit == "" {
+		return nil, fmt.Errorf("sas_commit is required")
 	}
-	if req.RequestedProfile != "" && !safeWireID(req.RequestedProfile, 64) {
-		return nil, fmt.Errorf("requested_profile must be 1-64 bytes of letters, digits, '.', '_' or '-'")
+	if !lowerHexOfLength(req.SASCommit, 64) {
+		return nil, fmt.Errorf("sas_commit must be 64 lowercase hex characters")
 	}
 	return &req, nil
 }
@@ -109,26 +107,6 @@ func lowerHexOfLength(s string, n int) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-// safeWireID is the door's bound on requested_profile — the same charset
-// internal/enrolment's SafeID enforces, checked here so hostile text is
-// refused before it reaches a table at all. The main package re-checks it
-// with SafeID itself, which stays the authority; this is the earlier of
-// two refusals, not the only one.
-func safeWireID(s string, maxBytes int) bool {
-	if s == "" || s == "." || s == ".." || len(s) > maxBytes {
-		return false
-	}
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '-' || r == '_' || r == '.':
-		default:
 			return false
 		}
 	}

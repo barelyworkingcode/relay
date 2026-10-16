@@ -212,7 +212,9 @@ subject: the run nonce, or the id it acts on. Two prompts carry no nonce.
 `execute-credential-renewal` mints the fixed name `devbox-verify`, so it
 expects relay's whole reason for that mint, closing period included.
 `gate-eve-enrolment-open-pos` expects relay's fixed reason, which names no
-subject. Relay has no API, flag or environment variable that skips the gate. Its CLI,
+subject. `gate-enrolment-window-open-pos` and `-neg` expect the window reason's
+fixed part, `open a five-minute window for one remote machine`; the profile
+name after it is the run's own. Relay has no API, flag or environment variable that skips the gate. Its CLI,
 exit codes and safety checks are in [its README](../devboxpresence/README.md).
 
 The helper that runs is the installed one, never a fresh build: macOS ties
@@ -350,7 +352,8 @@ planted in the project folder 403 `SYMLINK`, and a write after
 `execute-credential-renewal`, `gate-mcp-register-pos`,
 `gate-project-grant-pos`, `gate-service-register-pos`,
 `gate-project-agent-pos`, `gate-project-chat-template-pos`, `gate-project-rotate-token-pos`,
-`gate-eve-enrolment-open-pos`, `gate-credential-revoke-pos`. The harness triggers the op as the owner, the
+`gate-eve-enrolment-open-pos`, `gate-enrolment-window-open-pos`,
+`gate-credential-revoke-pos`. The harness triggers the op as the owner, the
 helper answers the prompt whose text carries the request's subject (the
 nonce, except for the renewal and the eve enrolment above), and the journey
 checks the effect and a new issuance or `config_change` row carrying
@@ -368,7 +371,11 @@ missing reads BLOCKED naming the journey that sets it.
   `execute-credential-renewal` reads NOTRUN until P4 has 48 h left; then it
   mints a new 168 h P4 and rewrites the credential file at mode 0600.
   `gate-eve-enrolment-open-pos` consumes the window it opened, so a run
-  never ends with it open.
+  never ends with it open. `gate-enrolment-window-open-pos` needs the first
+  `kind: remote` project and the remote listener on; it checks the
+  `enrolment_window` `credential_issued` row (with `presence_id`) and the open
+  window in `relay remote show --json`, then closes it with `relay enrol
+  close`. With no access profile, or the listener off, it reads BLOCKED.
 
 **gate-mcp-oauth-start-pos** (screen). Runs the installed binary as `relay
 serve` on `/tmp/dbv-oauth`, a dir the journey recreates, never the tray's
@@ -510,7 +517,7 @@ map ([`docs/FEATURES.md`](../../docs/FEATURES.md)) say why for each.
 
 **Owner-gate negatives with a prompt** (screen): `gate-<op>-neg` for
 `credential.mint`, `credential.revoke`, `mcp.register`, `service.register`,
-`eve.enrolment.open`, `eve.passkey.revoke`, `enrolment.create`,
+`eve.enrolment.open`, `enrolment.window.open`, `eve.passkey.revoke`, `enrolment.create`,
 `enrolment.sign`, `enrolment.update`, `enrolment.revoke`,
 `login.bootstrap.mint` and `login.passkey.revoke`. The harness plays the
 agent: inside a world-probe session in Acme Corp it runs the op's `relay`
@@ -522,6 +529,9 @@ effect (the name, id or window is absent or unchanged).
 - Reached by: `relay` inside the session, over the bridge's `admin_op`.
 - Traps: helper exit 1 is FAIL, since the gate never asked. Relay records no
   row for a cancelled prompt, so the detail says the refusal is not audited.
+  `gate-enrolment-window-open-neg` runs `relay enrol open --profile <id>`
+  for the first `kind: remote` project and checks that no window is open
+  afterwards; without a profile or with the listener off it reads BLOCKED.
   The enrolment update and revoke negatives name an id that does not exist:
   the gate runs before the lookup, and a "not found" reads FAIL.
   `gate-eve-passkey-revoke-neg` reads NOTRUN unless relay's eve passkey

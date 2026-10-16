@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -162,20 +163,25 @@ type EnrolmentCreated struct {
 // remoteConfigFields is the PUT /api/remote and update_remote_config
 // request; JSON tags match ipcRemoteConfigMsg's.
 //
-// EnrolmentRequests/EnrolmentListen follow Enabled/Listen's own shape,
-// carrying the operator's say-so for the third listener (spec §1). Neither
-// door reimplements enrolment_requests:true-with-enabled:false as a
-// save-time refusal here: that check lives once, at resolve time
-// (resolveRemoteEnrolment), so a value this handler accepted and the
-// value the supervisor later refuses to serve can never disagree about
-// which one is authoritative.
+// EnrolmentListen follows Listen's own shape: the address an enrolment
+// window binds (spec §1).
 type remoteConfigFields struct {
-	Remove            bool   `json:"remove"`
-	Enabled           bool   `json:"enabled"`
-	Listen            string `json:"listen"`
-	EnrolmentRequests bool   `json:"enrolment_requests"`
-	EnrolmentListen   string `json:"enrolment_listen"`
+	Remove          bool   `json:"remove"`
+	Enabled         bool   `json:"enabled"`
+	Listen          string `json:"listen"`
+	EnrolmentListen string `json:"enrolment_listen"`
+
+	// RemovedEnrolmentRequests catches a body that still names the retired
+	// always-on enrolment toggle. It is never read for a value: its presence
+	// is the refusal (see errEnrolmentRequestsRemoved), so a script that kept
+	// sending it learns it no longer does anything instead of believing the
+	// port is open or closed because of it.
+	RemovedEnrolmentRequests json.RawMessage `json:"enrolment_requests,omitempty"`
 }
+
+// errEnrolmentRequestsRemoved refuses a remote config body that carries the
+// retired enrolment_requests field.
+var errEnrolmentRequestsRemoved = enrolment.Invalid("enrolment_requests was removed: open enrolment with Allow Enrolment… in the tray, or relay enrol open")
 
 // The one core behind both the HTTP door (enrolment_routes.go) and the
 // WebView IPC door (ipc_enrolments.go); neither holds validation or logic
@@ -205,6 +211,10 @@ type EnrolmentOps struct {
 	// Approve/Refuse/PendingRequests refuse instead of panicking when it is
 	// unset (errEnrolmentRequestsNotWired).
 	Requests EnrolmentRequestApprovalSink
+	// Window opens and closes the enrolment window those requests arrive in.
+	// Nil in a process that runs no remote supervisor; its doors then answer
+	// errEnrolmentWindowOpsUnavailable.
+	Window *EnrolmentWindowOps
 }
 
 func (o *EnrolmentOps) runQueued(ctx context.Context, fn func() error) error {
@@ -371,15 +381,16 @@ func (o *EnrolmentOps) completeSigning(req enrolment.Request, csr *x509.Certific
 // field here that could carry a CSR, deliberately: a field like that would
 // make the presence digest's SPKI binding decorative (§11.3), since the
 // digest would no longer provably bind to what was lodged. An acceptance
-// test asserts this absence by reflection. Budget and ProjectIDs are the
-// human's choice at approval, same as Sign; CLIAdmin has no field here at
+// test asserts this absence by reflection. Budget is the human's choice at
+// approval, same as Sign; there is no profile field either:
+// the profile is the one the window named, read from the pending record, so an
+// approval cannot attach another. CLIAdmin has no field here at
 // all — ADR-018 decision 6 keeps that a separate, discrete act from any
 // door (§3).
 type approveFields struct {
-	RequestID  string                 `json:"request_id"`
-	ClientID   string                 `json:"client_id"`
-	ProjectIDs []string               `json:"project_ids"`
-	Budget     config.EnrolmentBudget `json:"budget"`
+	RequestID string                 `json:"request_id"`
+	ClientID  string                 `json:"client_id"`
+	Budget    config.EnrolmentBudget `json:"budget"`
 }
 
 // enrolmentApproveReason names the approval act distinctly from a plain
@@ -423,13 +434,16 @@ var (
 	// (issue #93).
 	errEnrolmentRequestRefused = errors.New("the operator refused this request while its approval was already in flight")
 
+	// errEnrolmentRequestAbandonedInFlight is errEnrolmentRequestAbandoned's
+	// twin for a connection that closed while the approval's prompt was open.
+	// It is joined to the result like errEnrolmentRequestExpired, because the
+	// enrolment already committed.
+	errEnrolmentRequestAbandonedInFlight = errors.New("the requesting machine disconnected during approval, so it cannot collect its certificate; the enrolment stands (revoke it with relay enrol revoke)")
+
 	// errEnrolmentRequestSASIncomplete is the host's own enforcement of the
 	// comparison, independent of anything the client claims it did: a row
 	// that lodged a commitment and never opened it, or opened it wrongly,
-	// is unapprovable from EVERY door — CLI, IPC and HTTP alike. A row
-	// lodged WITHOUT a commitment (`relayremote request`) is untouched by
-	// this and stays approvable exactly as before; its control is the CA
-	// fingerprint the operator carried.
+	// is unapprovable from EVERY door — CLI, IPC and HTTP alike.
 	errEnrolmentRequestSASIncomplete = errors.New("this request has not completed its comparison handshake, so it cannot be approved")
 )
 
@@ -473,7 +487,10 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 
 	// Before the gate, deliberately: an operator should not be asked for
 	// Touch ID for an act that is going to be refused either way.
-	if rec.SASCommit != "" && (rec.SASOpen == "" || rec.SASFailed) {
+	if rec.Abandoned {
+		return EnrolmentCreated{}, errEnrolmentRequestAbandoned
+	}
+	if rec.SASOpen == "" || rec.SASFailed {
 		return EnrolmentCreated{}, fmt.Errorf("%w: %s", errEnrolmentRequestSASIncomplete, sasIncompleteDetail(rec))
 	}
 
@@ -483,15 +500,18 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	if err != nil {
 		return EnrolmentCreated{}, enrolment.Invalid(err.Error())
 	}
-	if err := enrolment.CheckSingleProfile(f.ProjectIDs); err != nil {
-		return EnrolmentCreated{}, err
+	// The window's profile, from the record the lodge stamped: nothing the
+	// approver or the wire sends can name another.
+	if rec.ProfileID == "" {
+		return EnrolmentCreated{}, enrolment.Invalid("this request carries no access profile, so it cannot be approved")
 	}
+	profileIDs := []string{rec.ProfileID}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
 		return EnrolmentCreated{}, err
 	}
-	norm := enrolmentSignFields{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget, CSRPEM: string(rec.CSRPEM)}
-	reason := enrolmentApproveReason(rec.RemoteAddr, clientID, f.ProjectIDs)
+	norm := enrolmentSignFields{ClientID: clientID, ProjectIDs: profileIDs, Budget: f.Budget, CSRPEM: string(rec.CSRPEM)}
+	reason := enrolmentApproveReason(rec.RemoteAddr, clientID, profileIDs)
 	grant, err := requireGate(o.Gate, ctx, "enrolment.sign", norm.presenceDigest(csr), reason,
 		presenceAttempt{auditor: o.auditor(), via: via, credID: credID, subject: clientID})
 	if err != nil {
@@ -500,7 +520,7 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 
 	var signingErr error
 	err = o.runQueued(ctx, func() error {
-		created, signingErr = o.completeSigning(enrolment.Request{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
+		created, signingErr = o.completeSigning(enrolment.Request{ClientID: clientID, ProjectIDs: profileIDs, Budget: f.Budget}, csr, grant, via, credID)
 		if signingErr != nil && !errors.Is(signingErr, enrolment.ErrBundle) {
 			return signingErr
 		}
@@ -521,9 +541,11 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 		// line runs after it, never before), so the right answer is never to
 		// undo it; it is to say which of the two happened, the same way an
 		// on-disk bundle failure already does with enrolment.ErrBundle.
-		switch o.Requests.MarkApproved(requestID, clientID, o.approvedProjects(f.ProjectIDs), o.relayAddr(), created.CertPEM, created.CAPEM) {
+		switch o.Requests.MarkApproved(requestID, clientID, o.approvedProjects(profileIDs), o.relayAddr(), created.CertPEM, created.CAPEM) {
 		case markApprovedRowGone:
 			signingErr = errors.Join(signingErr, errEnrolmentRequestExpired)
+		case markApprovedRowAbandoned:
+			signingErr = errors.Join(signingErr, errEnrolmentRequestAbandonedInFlight)
 		case markApprovedRowRefused:
 			signingErr = errors.Join(signingErr, errEnrolmentRequestRefused)
 		}
@@ -839,7 +861,7 @@ func (o *EnrolmentOps) RemoteConfig() remoteConfigView {
 // what reaches the host" (presence-gate.md's `configure`-subset argument) --
 // so either address names itself on ANY actual change, in either direction.
 //
-// Enabled and EnrolmentRequests now gate on ANY change too, turning a
+// Enabled now gates on ANY change too, turning a
 // listener off included. An earlier revision of this function only gated
 // turning one ON, on the theory that closing a listener that was already
 // reachable is never escalation (decision 1's "removal is not escalation")
@@ -856,12 +878,11 @@ func (o *EnrolmentOps) RemoteConfig() remoteConfigView {
 // whole block isn't a per-field change this function's shape can name.
 func remoteConfigChangedFields(existing *config.RemoteConfig, listen, enrolListen string, f remoteConfigFields) []string {
 	var existingListen, existingEnrolListen string
-	var existingEnabled, existingEnrolRequests bool
+	var existingEnabled bool
 	if existing != nil {
 		existingListen = existing.Listen
 		existingEnrolListen = existing.EnrolmentListen
 		existingEnabled = boolOr(existing.Enabled, false)
-		existingEnrolRequests = boolOr(existing.EnrolmentRequests, false)
 	}
 	var out []string
 	if listen != existingListen {
@@ -873,19 +894,15 @@ func remoteConfigChangedFields(existing *config.RemoteConfig, listen, enrolListe
 	if enrolListen != existingEnrolListen {
 		out = append(out, "enrolment_listen")
 	}
-	if f.EnrolmentRequests != existingEnrolRequests {
-		out = append(out, "enrolment_requests")
-	}
 	return out
 }
 
 // remoteConfigFieldPhrase is remoteConfigReason's vocabulary: one clause per
 // name remoteConfigChangedFields can produce.
 var remoteConfigFieldPhrase = map[string]string{
-	"listen":             "the remote listener's bind address",
-	"enabled":            "turning the remote listener on or off",
-	"enrolment_listen":   "the enrolment-request listener's bind address",
-	"enrolment_requests": "turning the enrolment-request listener on or off",
+	"listen":           "the remote listener's bind address",
+	"enabled":          "turning the remote listener on or off",
+	"enrolment_listen": "the address an enrolment window binds",
 }
 
 // remoteConfigReason names only the fields remoteConfigChangedFields found
@@ -910,7 +927,6 @@ func (f remoteConfigFields) presenceDigest(listen, enrolListen string) presence.
 	return presence.NewDigestBuilder("remote.configure").
 		BoolField("enabled", true, f.Enabled).
 		StringField("listen", true, listen).
-		BoolField("enrolment_requests", true, f.EnrolmentRequests).
 		StringField("enrolment_listen", true, enrolListen).
 		Build()
 }
@@ -1005,6 +1021,9 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 		ev.Set("enabled", f.Enabled && !f.Remove)
 		endEvent(ev, enrolmentEventErr(err))
 	}()
+	if len(f.RemovedEnrolmentRequests) > 0 {
+		return remoteConfigView{}, errEnrolmentRequestsRemoved
+	}
 	listen := strings.TrimSpace(f.Listen)
 	enrolListen := strings.TrimSpace(f.EnrolmentListen)
 	if !f.Remove {
@@ -1066,17 +1085,6 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 				s.Remote.Enabled = nil
 			}
 			s.Remote.EnrolmentListen = enrolListen
-			if f.EnrolmentRequests {
-				enrolEnabled := true
-				s.Remote.EnrolmentRequests = &enrolEnabled
-			} else {
-				// Same discipline as Enabled, and for the same reason: opening
-				// the enrolment-request door is a thing the operator says, and
-				// enrolment_requests:true-with-enabled:false is refused where
-				// it has always been refused — at resolve time
-				// (resolveRemoteEnrolment) — not duplicated here.
-				s.Remote.EnrolmentRequests = nil
-			}
 			return nil
 		}); err != nil {
 			if errors.Is(err, errRemoteConfigChangedDuringApproval) {
@@ -1126,7 +1134,8 @@ func validateRemoteListen(addr string) error {
 // operation.
 func enrolmentEventErr(err error) error {
 	if errors.Is(err, enrolment.ErrBundle) && !errors.Is(err, errEnrolmentUnrecorded) &&
-		!errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
+		!errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) &&
+		!errors.Is(err, errEnrolmentRequestAbandonedInFlight) {
 		return nil
 	}
 	return err

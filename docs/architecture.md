@@ -540,7 +540,20 @@ private key twice under two client ids.
 An unenrolled remote can also lodge its own CSR **over the network**,
 instead of an operator carrying it by hand, through a third listener
 (`enrolment_requests.go`, `enrolment_request_server.go`; ADR-018 decision
-8). That listener's entire capability is two methods, `Lodge` and `Poll`,
+8) that exists only while the operator has an **enrolment window** open.
+`relay enrol open --profile ID` (or the tray) is gated by presence
+(`enrolment.window.open`, the one gated op this path adds), records an
+`enrolment_window` issuance row, and only then binds the listener for one
+access profile for five minutes (`enrolment_window_ops.go`; the state is in
+memory, so a restart closes it). The first accepted lodge consumes the window
+under the table lock and stamps the request with the window's profile: the
+listener closes, the lodging connection stays open, and the machine polls on
+it. No other connection can poll that request, and a connection that closes
+before approval drops it. The supervisor tracks the lodging connection after
+the window is gone: remote or auditing turning off closes it (reason
+`listener_off` for a window still open), so nothing collects a certificate
+with no recording. An expiry that races a lodge counts as the lodge. Approval therefore takes no profile; it issues for
+the one the window named. That listener's entire capability is two methods, `Lodge` and `Poll`,
 over a bounded, in-memory, never-persisted table of at most 8 pending
 requests — it holds no reference to a router, the CA, the sealer or
 `settings.json`. **Lodging raises no prompt, ever**: no code on that path
@@ -565,14 +578,12 @@ redeemable for another. The listener itself is plain TCP, not mTLS: nothing
 on it is a secret in either direction (a self-signed CSR proves possession;
 the certificates it returns are public), so TLS here would be decoration
 that reads as a security property it cannot provide — the real control is
-client-side and comes in two forms, one per client verb. `relayremote
-request` pins the CA-fingerprint carried out of band (`--ca-fingerprint`, or
-a watched `--tofu`), unchanged. `relayremote register` instead completes a
+client-side: `relayremote register` completes a
 **commit–reveal comparison** (ADR-019 decision 3, `internal/enrolment/sas.go`): a
 six-character code over relay's CA SPKI, the CSR's SPKI and a 16-byte nonce
 from each side, the client's committed at lodge and opened on its first
-poll. Both close the same gap — an attacker who lets a real CSR through to
-relay and substitutes its own CA on the way back — and neither is optional:
+poll. It closes the gap — an attacker who lets a real CSR through to
+relay and substitutes its own CA on the way back — and it is not optional:
 a row that carries a commitment but was never opened, or whose open failed,
 is refused by `EnrolmentOps.Approve` before the presence gate from every
 door. `maxPendingEnrolmentRequests = 8` is now load-bearing for that bound
@@ -667,7 +678,7 @@ loopback so misconfiguration cannot expose the control plane to a LAN:
 
 ```json
 "remote": { "enabled": true, "listen": "127.0.0.1:9910",
-            "enrolment_requests": true, "enrolment_listen": "127.0.0.1:9911" }
+            "enrolment_listen": "127.0.0.1:9911" }
 ```
 
 The listener **refuses to start when auditing is disabled**: a remote grant is
@@ -677,13 +688,12 @@ a degraded mode. Local tooling is unaffected. It also sets read+write deadlines
 fingerprint so `enrolment.SetRevocationHook` closes a revoked client's *live*
 connections.
 
-`enrolment_requests` and `enrolment_listen` configure the third listener
-(`EnrolmentRequestServer`, `enrolment_request_server.go`) on the same block:
-`enrolment_requests` absent or `false` opens no enrolment socket at all —
-opening that network door is a thing the operator says, not a thing relay
-infers — and `enrolment_requests: true` with `enabled: false` is refused at
-resolve time, naming why, since the request channel is a companion to the
-tool-plane listener rather than a substitute for turning it on.
+`enrolment_listen` configures the third listener
+(`EnrolmentRequestServer`, `enrolment_request_server.go`) on the same block.
+It binds only inside an open window and never at reconcile: opening that
+network door is a thing the operator says, in time, not a standing setting.
+A saved `enrolment_requests` field from an older release is ignored on load
+and refused on write. A window needs `enabled: true`.
 `enrolment_listen` defaults to `127.0.0.1:9910`'s neighbour, `127.0.0.1:9911`
 — loopback, same reasoning as `listen`. Both accept port `0`; the bound
 address, not the setting, is what `ready.json` and `EnrolmentOps.relayAddr`
@@ -691,18 +701,18 @@ report. That listener carries its own,
 tighter bounds: at most 8 pending requests, a 15-minute TTL to be approved
 and another 15 minutes to be collected after approval, 16 concurrent
 connections, a 64-frames-then-redial cap per connection, and a 64 KiB frame
-limit (`enrolment_requests.go`, `enrolment_request_server.go`) — sized for a
+limit (`enrolment_requests.go`, `enrolment_request_server.go`; no frame cap once a connection has lodged) — sized for a
 human walking to the Mac, an order of magnitude tighter than the login
 challenge table's 64-entry, 60-second shape, because nothing on this
 listener is machine-paced.
 
 **The listener follows settings; it is not frozen at startup.**
-`RemoteSupervisor` (`remote_reconcile.go`) converges **both** listeners after every committed
-configuration change, on every bridge-driven reconcile and on a slow recovery tick: it binds each when
-its half of the block is enabled, moves either when its own `listen` changes,
-and closes either when its half is disabled *or auditing stops being live* —
-so `audit.enabled: false` is a refusal at runtime and not only at launch, for
-the enrolment-request listener exactly as for the tool-plane one. Convergence
+`RemoteSupervisor` (`remote_reconcile.go`) converges the tool-plane listener after every committed
+configuration change, on every bridge-driven reconcile and on a slow recovery tick: it binds it when
+enabled, moves it when `listen` changes,
+and closes it when disabled *or auditing stops being live* —
+so `audit.enabled: false` is a refusal at runtime and not only at launch. An
+open enrolment window closes on the same conditions (reason `listener_off`). Convergence
 can never open a listener the configuration does not explicitly ask for
 (absent block and omitted `enabled` both resolve to disabled). A rebind binds
 the new address **before** closing the old listener, so a failed bind leaves

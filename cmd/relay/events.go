@@ -150,7 +150,7 @@ func eventOutcome(err error) (logging.Outcome, string) {
 	case errors.Is(err, errEventInvalid), errors.Is(err, errMcpInvalid), errors.Is(err, enrolment.ErrInvalid), errors.Is(err, errServiceInvalid), errors.Is(err, errHostInvalid),
 		errors.Is(err, errTemplateInvalid), errors.Is(err, errPersistNameInvalid):
 		return logging.OutcomeError, "invalid"
-	case errors.Is(err, errEnrolmentRequestsNotWired), errors.Is(err, errLoginOpsUnavailable),
+	case errors.Is(err, errEnrolmentRequestsNotWired), errors.Is(err, errEnrolmentWindowOpsUnavailable), errors.Is(err, errLoginOpsUnavailable),
 		errors.Is(err, errEveEnrolmentOpsUnavailable), errors.Is(err, errEvePasskeyOpsUnavailable):
 		return logging.OutcomeError, "unavailable"
 	case errors.Is(err, errEventAudit):
@@ -166,6 +166,7 @@ func eventOutcome(err error) (logging.Outcome, string) {
 	case errors.Is(err, errMcpDiscovery):
 		return logging.OutcomeError, "upstream"
 	case errors.Is(err, errEventConflict), errors.Is(err, errEnrolmentRequestExpired), errors.Is(err, errEnrolmentRequestRefused),
+		errors.Is(err, errEnrolmentRequestAbandoned), errors.Is(err, errEnrolmentRequestAbandonedInFlight),
 		errors.Is(err, errEnrolmentRequestSASIncomplete), errors.Is(err, errRemoteConfigChangedDuringApproval),
 		errors.Is(err, errEvePasskeyAlreadyPending), errors.Is(err, errEvePasskeyLast), errors.Is(err, errEveEnrolmentClosed),
 		errors.Is(err, errServiceChangedDuringApproval), errors.Is(err, errTemplateExists), errors.Is(err, errPersistNoTmux):

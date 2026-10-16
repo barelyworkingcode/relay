@@ -113,7 +113,7 @@ refusal code of the launch or drop-in as `reason`: `denied` below status 500,
 - A refusal that happens at a door before any core runs: a missing credential,
   a class check, a body that does not decode, an unknown route. The
   `frontend.request` and `bridge.request` lines and the audit log cover them.
-- `relay audit`, `relay enrol ca-fingerprint` and `relay logs`. They read local
+- `relay audit` and `relay logs`. They read local
   files, and a CLI process's own log lines also go to the user's terminal.
 - Settings-only actions with no core (`reveal_*`, service inspector actions)
   and screen-only reads.
@@ -279,8 +279,11 @@ prompt and an unavailable audit log use the shared `presence_*` and
 | `enrolment.request.list` | Before the list is printed | `relay enrol requests` | `count` |
 | `enrolment.request.approve` | At the end of `EnrolmentOps.Approve` | `relay enrol approve`, Settings | `request_id`, `client_id` |
 | `enrolment.request.refuse` | At the end of `EnrolmentOps.Refuse` | `relay enrol refuse`, Settings | `request_id` |
-| `enrolment.request.lodge` | At the end of `handleEnrolmentLodge` | enrolment listener | `request_id` |
+| `enrolment.request.lodge` | At the end of `handleEnrolmentLodge` | enrolment listener | `request_id`, `profile_id` (the window's profile). A lodge with no open window, or after the window took a request, ends `denied` with reason `not_open` |
 | `enrolment.request.poll` | On failure only, in `handleEnrolmentPoll` (quiet) | enrolment listener | `request_id` |
+| `enrolment.request.abandon` | When the connection a request was lodged on closes before approval | enrolment listener | `request_id` |
+| `enrolment.window.open` | At the end of `EnrolmentWindowOps.Open` | `relay enrol open` | `profile_id`; `expires` on `ok`. A refused prompt ends `denied`; an unknown profile or a remote listener that is off ends `error` with reason `invalid` before any prompt |
+| `enrolment.window.close` | When the window ends, after its socket stops accepting | `relay enrol close`, the first lodged request, the timer, a replacing open, the remote listener turning off | `target` (`profile`), `profile_id`, `close_reason` (`lodged`, `expired`, `cancelled`, `replaced` or `listener_off`). The reason is a field of its own because a line's `reason` key exists only for a status that is not `ok` |
 
 ### Remote
 
