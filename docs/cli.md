@@ -464,8 +464,8 @@ Every gated command has its own version of this reason string:
 | `enrol revoke` | `revoke the enrolment "ID"` |
 | `login enrol` | `mint a login bootstrap code` |
 | `login revoke` | `revoke the passkey "ID"` |
-| `eve enrol` | `open a five-minute window for one new browser to register an Eve passkey` |
-| `eve revoke` | `revoke the Eve passkey ID` |
+| `eve enrol` | `open a five-minute window for one new browser to register a Home\|Work passkey` |
+| `eve revoke` | `revoke the Home\|Work passkey ID` |
 | `mcp register` | `register the MCP "NAME" (id) that runs COMMAND` (or `at URL` for HTTP) |
 | `service register` | `register the service "NAME" (id) that runs COMMAND` (or, when the id already exists and this is an update, `update the service "ID" to run COMMAND`) |
 

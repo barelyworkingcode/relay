@@ -137,7 +137,7 @@ func (o *EveEnrolmentOps) Open(ctx context.Context, via string) (_ eveEnrolmentS
 	// identifier.
 	grant, err := requireGate(o.Gate, ctx, "eve.enrolment.open",
 		presence.NewDigestBuilder("eve.enrolment.open").Build(),
-		"open a five-minute window for one new browser to register an Eve passkey",
+		"open a five-minute window for one new browser to register a Home|Work passkey",
 		presenceAttempt{auditor: o.auditor(), via: via})
 	if err != nil {
 		return eveEnrolmentStatusView{}, err
