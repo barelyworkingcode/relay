@@ -184,15 +184,33 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	}
 	if tmpl != nil {
 		var err error
-		if read, readFiles, err = addTemplateGrants(read, readFiles, "read", tmpl.Read, home); err != nil {
+		readWriteEntries := tmpl.ReadWrite
+		if readOnlyRoots != nil {
+			// A read-only-projects session must not gain a writable project
+			// folder from the new token, so a ${PROJECT_PATH} read_write
+			// entry is granted for reading only.
+			var demoted []string
+			readWriteEntries = nil
+			for _, entry := range tmpl.ReadWrite {
+				if strings.HasPrefix(entry, config.ProjectPathMarker) {
+					demoted = append(demoted, entry)
+				} else {
+					readWriteEntries = append(readWriteEntries, entry)
+				}
+			}
+			if read, readFiles, err = addTemplateGrants(read, readFiles, "read", demoted, home, workDir); err != nil {
+				return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
+			}
+		}
+		if read, readFiles, err = addTemplateGrants(read, readFiles, "read", tmpl.Read, home, workDir); err != nil {
 			return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
 		}
-		if readWrite, readWriteFiles, err = addTemplateGrants(readWrite, readWriteFiles, "read_write", tmpl.ReadWrite, home); err != nil {
+		if readWrite, readWriteFiles, err = addTemplateGrants(readWrite, readWriteFiles, "read_write", readWriteEntries, home, workDir); err != nil {
 			return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
 		}
 		// A denied file needs no separate spelling: a subtree rule on a
 		// regular file matches that file.
-		denyDirs, denyFiles, err := addTemplateGrants(nil, nil, "deny", tmpl.Deny, home)
+		denyDirs, denyFiles, err := addTemplateGrants(nil, nil, "deny", tmpl.Deny, home, workDir)
 		if err != nil {
 			return sandbox.Spec{}, fmt.Errorf("template %q: %w", tmpl.ID, err)
 		}
@@ -238,21 +256,11 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 // yet, is a subtree. An entry relay cannot place refuses the launch: a grant
 // it cannot enforce is one it must not drop quietly, or the operator believes
 // a folder is reachable when it is not.
-func addTemplateGrants(dirs, files []string, field string, entries []string, home string) ([]string, []string, error) {
+func addTemplateGrants(dirs, files []string, field string, entries []string, home, projectPath string) ([]string, []string, error) {
 	for _, raw := range entries {
-		p := raw
-		switch {
-		case p == "~":
-			p = home
-		case strings.HasPrefix(p, "~/"):
-			p = filepath.Join(home, p[2:])
-		}
-		if !filepath.IsAbs(p) {
-			return nil, nil, fmt.Errorf("%s %q is not an absolute path or a ~ path", field, raw)
-		}
-		p = filepath.Clean(p)
-		if p == "/" {
-			return nil, nil, fmt.Errorf("%s %q grants the whole filesystem", field, raw)
+		p, err := config.ExpandGrantPath(raw, home, projectPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s %q: %w", field, raw, err)
 		}
 		// Deliberate: a session can swap a read-write directory for a file
 		// before the next launch, so the name, not the disk, decides whether

@@ -131,6 +131,50 @@ func EnsureDefaultTerminalTemplates(s *Settings) bool {
 	return true
 }
 
+// DefaultAgentTemplates are the claude-code and pi templates the settings
+// version 3 migration adds (MigrateAgentTemplates).
+func DefaultAgentTemplates() []TerminalTemplate {
+	sandboxed := true
+	return []TerminalTemplate{
+		{
+			ID:        "claude-code",
+			Name:      "Claude Code",
+			Command:   "claude",
+			Sandbox:   &sandboxed,
+			ReadWrite: []string{"~/.claude", "~/.claude.json", "~/.cache", "~/Library/Caches"},
+			Read:      []string{"~/Library/Keychains", "~/.local/bin", "~/.local/share/claude", "/opt/homebrew"},
+		},
+		{
+			ID:        "pi",
+			Name:      "Pi",
+			Command:   "pi",
+			Sandbox:   &sandboxed,
+			ReadWrite: []string{"~/.pi", "~/.cache", "~/Library/Caches"},
+			Read:      []string{"~/.bun/bin", "~/.bun/install/global", "~/.local/bin", "/opt/homebrew"},
+		},
+	}
+}
+
+// MigrateAgentTemplates is the settings version 3 migration: it appends each
+// DefaultAgentTemplates entry whose id no template in s holds, then records
+// version 3. Any entry under an id wins, valid or not, and the persisted
+// version is what makes it run once: a template removed afterwards stays
+// removed. It reports the ids it added, and whether s changed.
+func MigrateAgentTemplates(s *Settings) (added []string, changed bool) {
+	if s.Version >= 3 {
+		return nil, false
+	}
+	for _, def := range DefaultAgentTemplates() {
+		if slices.ContainsFunc(s.TerminalTemplates, func(t TerminalTemplate) bool { return t.ID == def.ID }) {
+			continue
+		}
+		s.TerminalTemplates = append(s.TerminalTemplates, def)
+		added = append(added, def.ID)
+	}
+	s.Version = 3
+	return added, true
+}
+
 // ErrRelayTokenSubstitution is refused at validation, never silently
 // stripped or expanded to empty: a template whose argv or env still
 // reaches ${RELAY_TOKEN} is invalid input, the same way a template that
@@ -177,7 +221,15 @@ var ErrModelEndpointSubstitution = errors.New("template uses ${MODEL_ENDPOINT_UR
 
 // ErrTemplateGrant is refused at validation: a sandbox folder that is not an
 // absolute or ~ path, or that grants the whole filesystem.
-var ErrTemplateGrant = errors.New("sandbox folder must be an absolute path or start with ~, and not be /")
+var ErrTemplateGrant = errors.New("sandbox folder must be an absolute path or start with ~ or ${PROJECT_PATH}, and not be /")
+
+// ErrTemplateGrantToken is refused at validation: a sandbox folder with a
+// ${...} token anywhere but a leading ${PROJECT_PATH}.
+var ErrTemplateGrantToken = errors.New("sandbox folder may use ${PROJECT_PATH}, and only at its start; no other ${...} expands")
+
+// ProjectPathMarker is the one token a sandbox folder may start with. A
+// sandboxed launch expands it to the launching project's folder (ExpandGrantPath).
+const ProjectPathMarker = "${PROJECT_PATH}"
 
 // ErrModelKeySubstitution is refused at validation: ${MODEL_KEY} outside an
 // env value, or in a template that did not opt in with model_key: true.
@@ -278,20 +330,58 @@ func validateTemplateCommon(t TerminalTemplate) error {
 }
 
 // validateGrantPath is the shape check for one sandbox folder. Expansion of
-// `~` needs the launching user's home, so it happens at launch; this only
-// refuses what can never be placed: a relative path, `~user`, an empty entry,
-// and the whole filesystem, which would make the sandbox decoration.
+// `~` and ${PROJECT_PATH} needs the launching user's home and project, so it
+// happens at launch (ExpandGrantPath); this only refuses what can never be
+// placed: a relative path, `~user`, an empty entry, any ${...} token but a
+// leading ${PROJECT_PATH}, and the whole filesystem, which would make the
+// sandbox decoration.
 func validateGrantPath(p string) error {
 	if p == "" {
 		return ErrTemplateGrant
 	}
-	if p != "~" && !strings.HasPrefix(p, "~/") && !filepath.IsAbs(p) {
+	marked := p == ProjectPathMarker || strings.HasPrefix(p, ProjectPathMarker+"/")
+	if strings.Contains(p, "${") {
+		if !marked || strings.Contains(p[len(ProjectPathMarker):], "${") {
+			return ErrTemplateGrantToken
+		}
+	}
+	if !marked && p != "~" && !strings.HasPrefix(p, "~/") && !filepath.IsAbs(p) {
 		return ErrTemplateGrant
 	}
 	if filepath.Clean(p) == "/" {
 		return ErrTemplateGrant
 	}
 	return nil
+}
+
+// ExpandGrantPath resolves one sandbox folder to the absolute, cleaned path a
+// launch grants. The substituted home or project path is never rescanned for
+// tokens. A ${PROJECT_PATH} entry with no project folder is refused, so a
+// launch that cannot place a grant fails closed instead of dropping it.
+func ExpandGrantPath(entry, home, projectPath string) (string, error) {
+	if err := validateGrantPath(entry); err != nil {
+		return "", err
+	}
+	p := entry
+	switch {
+	case p == "~":
+		p = home
+	case strings.HasPrefix(p, "~/"):
+		p = filepath.Join(home, p[2:])
+	case strings.HasPrefix(p, ProjectPathMarker):
+		if projectPath == "" {
+			return "", errors.New("${PROJECT_PATH} has no value: this launch has no project folder")
+		}
+		p = filepath.Join(projectPath, p[len(ProjectPathMarker):])
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("%q is not an absolute path", p)
+	}
+	p = filepath.Clean(p)
+	if p == "/" {
+		return "", errors.New("grants the whole filesystem")
+	}
+	return p, nil
 }
 
 // ExpandTemplateVars substitutes ${PROJECT_PATH} and ${PROJECT_ID} into in.
