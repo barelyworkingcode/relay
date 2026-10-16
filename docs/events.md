@@ -283,7 +283,7 @@ prompt and an unavailable audit log use the shared `presence_*` and
 | `enrolment.request.poll` | On failure only, in `handleEnrolmentPoll` (quiet) | enrolment listener | `request_id` |
 | `enrolment.request.abandon` | When the connection a request was lodged on closes before approval | enrolment listener | `request_id` |
 | `enrolment.window.open` | At the end of `EnrolmentWindowOps.Open` | `relay enrol open` | `profile_id`; `expires` on `ok`. A refused prompt ends `denied`; an unknown profile or a remote listener that is off ends `error` with reason `invalid` before any prompt |
-| `enrolment.window.close` | When the window ends, after its socket stops accepting | `relay enrol close`, the first lodged request, the timer, a replacing open, the remote listener turning off | `target` (`profile`), `profile_id`, `close_reason` (`lodged`, `expired`, `cancelled`, `replaced` or `listener_off`). The reason is a field of its own because a line's `reason` key exists only for a status that is not `ok` |
+| `enrolment.window.close` | When the window ends, after its socket stops accepting; for `home_work` and `relay_login`, when `Close` clears a live window or code (`EveEnrolmentOps.Close`, `LoginOps.CancelBootstrap`), always with `close_reason` `cancelled` | `relay enrol close`, the tray's Cancel Enrolment, the first lodged request, the timer, a replacing open, the remote listener turning off | `target` (`profile`, `home_work` or `relay_login`), `profile_id` (`profile` only), `close_reason` (`lodged`, `expired`, `cancelled`, `replaced` or `listener_off`). The reason is a field of its own because a line's `reason` key exists only for a status that is not `ok` |
 
 ### Remote
 

@@ -1240,15 +1240,21 @@ flag.
 
 ### `enrol close`
 
-Closes the open enrolment window, if any. Ungated: closing narrows what is
+Closes every open enrolment window: the access-profile window, the Home|Work
+window and an unused relay sign-in code. Ungated: closing narrows what is
 reachable. A request already lodged stays in the table until it is approved,
-refused or expires.
+refused or expires. After a Home|Work window closes, eve's consume answers 409;
+after a sign-in code is cancelled, registering a passkey with it is refused.
+The tray's **Cancel Enrolment** item does the same.
 
 Needs service: yes. Prompts: no. Works over SSH: yes.
 
-Output: `closed: access profile "NAME"`, or `no enrolment window was open`
-(exit `0` either way). `--json` prints `{"closed":["profile"]}`, or
-`{"closed":[]}` with nothing open. Exit `1` when relay is not running.
+Output: `closed: ` and the targets that closed, comma separated, each as
+`access profile "NAME"`, `Home|Work browser` or `Relay sign-in` (for example
+`closed: Home|Work browser, Relay sign-in`), or `no enrolment window was open`
+(exit `0` either way). `--json` prints `{"closed":[…]}` listing `profile`,
+`home_work` and `relay_login` as each closed, or `{"closed":[]}` with nothing
+open. Exit `1` when relay is not running.
 
 ### `enrol requests`
 
@@ -1412,7 +1418,7 @@ login code: <32 hex characters>
   this code is shown ONCE and is not recoverable
 ```
 
-The tray's own **Show Login Code…** menu item reaches the identical gated
+The tray's own **Allow Enrolment…** sheet (Relay sign-in) reaches the identical gated
 core method — this command is not a weaker second door, it is the same
 door, useful when the tray's menu is unreachable (e.g. no one is at the
 keyboard to click it, but someone is running the CLI in the desktop
@@ -1510,8 +1516,7 @@ unknown flag.
 Host-side anchor for a second browser to register a Home|Work passkey
 ([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md)). Eve's first
 visitor enrols directly; every later browser needs an operator to open a
-five-minute, single-use window first — from the tray's **Allow Home|Work Passkey
-Enrolment…** item or this command.
+five-minute, single-use window first — from the tray's **Allow Enrolment…** sheet (Home|Work browser) or this command.
 
 ```
 relay eve enrol
@@ -1532,7 +1537,7 @@ Home|Work passkey enrolment open until 10:15:00 (5m0s, single use)
   on the new browser, open Home|Work, and tap "Add this browser"
 ```
 
-The tray's own **Allow Home|Work Passkey Enrolment…** menu item reaches the
+The tray's own **Allow Enrolment…** sheet (Home|Work browser) reaches the
 identical gated core method — this command is not a weaker second door, it
 is the same door, useful over a terminal in the desktop session when no one
 is at the keyboard to click the tray. Relay notifies the console when the

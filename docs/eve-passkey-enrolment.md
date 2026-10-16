@@ -103,11 +103,12 @@ phone and tap; short enough that an operator does not forget it is open.
 ### Core: `EveEnrolmentOps`
 
 Same shape as `LoginOps`: `Store`, `Audit`, `Gate`, `OnChange`, every method
-nil-safe. Three methods.
+nil-safe. Four methods.
 
 | Method | Gate | Effect |
 |---|---|---|
 | `Open(ctx, via)` | **yes** — `eve.enrolment.open` | Writes a fresh `eve_enrolment` (replacing any), records the issuance in the audit log, returns `{expires, ttl}`. Withheld if it cannot be recorded, as `MintBootstrap` is. |
+| `Close(ctx)` | no — it narrows | Clears `eve_enrolment` inside one `store.With` and reports whether a live window was closed; logs `enrolment.window.close` with `target` `home_work` and `close_reason` `cancelled`. After it, consume answers 409. Reached by `Cancel Enrolment`, `relay enrol close` and the sheet's close door. |
 | `Status()` | no | `{open bool, expires string}` — open iff a record exists and has not expired. |
 | `Consume(ctx, claim)` | no | Inside one `store.With`: if open, delete it and return the record; else `errEveEnrolmentClosed`. Records the consumption (source IP + label from `claim`) in the audit log and notifies the tray. |
 
@@ -123,12 +124,16 @@ that here the HTTP door is *eve's*, so it carries status/consume rather than
 open. Opening is deliberately reachable only from a surface with a human at
 it.
 
-- **Tray menu** — `Allow Home|Work Passkey Enrolment…` beneath `Show Login Code...`.
-  Runs `Open` in a tracked goroutine (never on the Cocoa main thread — see
-  `showLoginCode`'s comment) and posts a notification: *Home|Work passkey enrolment
-  open for 5 minutes*. While the window is open, the menu shows a disabled
-  line `Home|Work enrolment open — 4m 12s left`, refreshed by the existing 2-second
-  poll; it disappears when the slot is consumed or expires.
+- **Tray menu** — `Allow Enrolment…` opens Settings on a sheet with three
+  targets; **Home|Work browser** is this window. Choosing it and pressing Open
+  runs `Open` in a tracked goroutine (never on the Cocoa main thread — see
+  `openAllowEnrolmentSheet`'s comment) and posts a notification: *Home|Work
+  passkey enrolment open for 5 minutes*. While the window is open, the menu
+  shows a disabled line `Enrolment open: Home|Work browser · 4:12 left`,
+  refreshed by the existing 2-second poll, and a `Cancel Enrolment` item.
+  Both disappear when the slot is consumed, cancelled or expired. A window
+  that expires unused raises the notification *Enrolment closed; nothing
+  enrolled.*
 - **CLI** — `relay eve enrol`, brokered over `admin_op` (`eve.enrolment.open`)
   like `relay login enrol`, because this process holds no gate. Prints the
   expiry and one line saying what to do next:
@@ -219,8 +224,8 @@ buttons when the window is open: *Enrolment is open for a few minutes.*
 ## Operator flow
 
 1. Open Home|Work on the new device. It shows *Sign In* (no passkey here yet).
-2. At the console: tray → **Allow Home|Work Passkey Enrolment…**, answer the
-   presence prompt. (Or `relay eve enrol` over SSH — refused, like every
+2. At the console: tray → **Allow Enrolment…** → **Home|Work browser** → Open,
+   answer the presence prompt. (Or `relay eve enrol` over SSH — refused, like every
    gated op, when no prompt can be shown.)
 3. Within three seconds the device shows **Add this browser**. Tap it, do
    Face ID / Touch ID / PIN.
