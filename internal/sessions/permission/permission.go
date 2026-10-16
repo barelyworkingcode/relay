@@ -343,19 +343,10 @@ func (m *PermissionManager) WaitForDecisionContext(ctx context.Context, id strin
 	case d := <-ch:
 		return d, true
 	case <-m.clock.After(60 * time.Second):
-		req, removed := m.take(id)
-		if !removed {
-			// An answer or a session stop took the request in the same
-			// instant; its decision is on the channel (or about to be) and
-			// it already reported its own outcome.
-			select {
-			case d := <-ch:
-				return d, true
-			case <-time.After(time.Second):
-			}
-			return PermissionDecision{Decision: "deny", Reason: ReasonExpired}, true
+		// Only the path that removed the request reports its outcome.
+		if req, removed := m.take(id); removed {
+			m.NotifySession(req.SessionID, req.ResolvedFrame(OutcomeExpired))
 		}
-		m.NotifySession(req.SessionID, req.ResolvedFrame(OutcomeExpired))
 		return PermissionDecision{Decision: "deny", Reason: ReasonExpired}, true
 	case <-ctx.Done():
 		if req, removed := m.take(id); removed {
