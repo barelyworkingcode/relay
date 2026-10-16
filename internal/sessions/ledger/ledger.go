@@ -56,6 +56,16 @@ type Record struct {
 	// caller again. Never carries a secret or key: C5's session_request is
 	// eve's POST /api/sessions body shape, which has no field for either.
 	SessionRequest json.RawMessage `json:"session_request,omitempty"`
+	// Detached marks a claude session whose agent runs on an SSH host,
+	// outside relay's process tree; nil for every other session.
+	Detached *DetachedRef `json:"detached,omitempty"`
+}
+
+// DetachedRef names the host a detached session's agent runs on. The event
+// cursor is not kept here: only relay-sessions reads the agent's output, so it
+// saves the cursor with the conversation's state.
+type DetachedRef struct {
+	HostID string `json:"host_id"`
 }
 
 const fileName = "sessions-ledger.json"
@@ -131,13 +141,14 @@ func (l *Ledger) SetState(id string, state State) (bool, error) {
 }
 
 // MarkLiveDormant sets every StateLive record to StateDormant with a single
-// save and reports how many changed. It does not save when none did.
-func (l *Ledger) MarkLiveDormant() (int, error) {
+// save, except the records keep reports true for, and reports how many
+// changed. A nil keep keeps none. It does not save when none changed.
+func (l *Ledger) MarkLiveDormant(keep func(Record) bool) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	changed := 0
 	for id, r := range l.records {
-		if r.State != StateLive {
+		if r.State != StateLive || (keep != nil && keep(r)) {
 			continue
 		}
 		r.State = StateDormant

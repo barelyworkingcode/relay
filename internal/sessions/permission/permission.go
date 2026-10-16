@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +72,10 @@ type PermissionRequest struct {
 type pendingPermission struct {
 	sessionID string
 	ch        chan PermissionDecision
+	// req is what a viewer that joins later is shown; seq orders it among the
+	// requests of its session.
+	req PermissionRequest
+	seq uint64
 }
 
 // PermissionManager tracks pending permission requests. Both the hook binary
@@ -80,6 +85,7 @@ type pendingPermission struct {
 type PermissionManager struct {
 	mu      sync.Mutex
 	pending map[string]pendingPermission
+	nextSeq uint64
 	sink    types.EventSink
 	clock   clk.Clock
 
@@ -163,18 +169,39 @@ func (m *PermissionManager) CreateRequest(sessionID, toolName, toolInput, toolUs
 	m.mu.Lock()
 	id := uuid.New().String()
 	ch := make(chan PermissionDecision, 1)
-	m.pending[id] = pendingPermission{sessionID: sessionID, ch: ch}
-	n := m.pendingFor(sessionID)
-	m.mu.Unlock()
-	m.observe(sessionID, n)
-
-	return PermissionRequest{
+	req := PermissionRequest{
 		ID:        id,
 		SessionID: sessionID,
 		ToolName:  toolName,
 		ToolInput: toolInput,
 		ToolUseID: toolUseID,
-	}, ch
+	}
+	m.nextSeq++
+	m.pending[id] = pendingPermission{sessionID: sessionID, ch: ch, req: req, seq: m.nextSeq}
+	n := m.pendingFor(sessionID)
+	m.mu.Unlock()
+	m.observe(sessionID, n)
+
+	return req, ch
+}
+
+// PendingRequests returns the requests of sessionID still waiting for a
+// decision in the order they were raised, so a viewer that joins after a request was raised can be shown it.
+func (m *PermissionManager) PendingRequests(sessionID string) []PermissionRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var held []pendingPermission
+	for _, p := range m.pending {
+		if p.sessionID == sessionID {
+			held = append(held, p)
+		}
+	}
+	sort.Slice(held, func(i, j int) bool { return held[i].seq < held[j].seq })
+	out := make([]PermissionRequest, len(held))
+	for i, p := range held {
+		out[i] = p.req
+	}
+	return out
 }
 
 // PendingSessionID reports the sessionID a still-pending permission request

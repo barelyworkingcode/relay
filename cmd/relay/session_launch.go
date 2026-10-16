@@ -556,13 +556,17 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		spec.Project = projJSON
 	}
 
+	detachedHostID := ""
 	if proj != nil && proj.IsHosted() {
 		host, hostErr := buildHostSpec(settings, proj.HostID)
 		if hostErr != nil {
 			return nil, invalidRequest("host_unavailable", hostErr.Error(), baseFields)
 		}
-		if req.Resume && req.Kind == KindClaude && host.Detach && !sshhost.IsWindowsOS(host.OS) {
-			if refusal := checkDetachedRunnerGone(settings, proj.HostID, host.OS, sessionID, baseFields); refusal != nil {
+		if req.Kind == KindClaude && host.Detach && !sshhost.IsWindowsOS(host.OS) {
+			detachedHostID = host.ID
+		}
+		if req.Resume && detachedHostID != "" {
+			if refusal := checkDetachedHostAnswers(settings, proj.HostID, host.OS, sessionID, baseFields); refusal != nil {
 				return nil, refusal
 			}
 		}
@@ -672,6 +676,9 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 			Entry:          baseFields.Entry,
 			State:          ledger.StateLive,
 			SessionRequest: sessionRequest,
+		}
+		if detachedHostID != "" {
+			ledgerRecord.Detached = &ledger.DetachedRef{HostID: detachedHostID}
 		}
 	}
 
@@ -1102,11 +1109,12 @@ func mergePermissionSettings(clientSettings json.RawMessage, projectPolicy *conf
 // session makes before it starts anything.
 const detachedStatusTimeout = 30 * time.Second
 
-// checkDetachedRunnerGone refuses a resume while the session's detached agent
-// still runs on the host: a second agent would read the same conversation.
-// It fails closed: a host that cannot answer is "host_unavailable", never "not
-// running".
-func checkDetachedRunnerGone(settings *config.Settings, hostID, hostOS, sessionID string, fields sessionLaunchAuditFields) *LaunchRefusal {
+// checkDetachedHostAnswers refuses a resume of a detached session when the
+// host cannot say whether the session's agent runs. It fails closed: a host
+// that cannot answer is "host_unavailable", never "not running". An agent
+// that does run is not a refusal: relay-sessions reattaches it, and starts
+// no second one, when it launches the resume.
+func checkDetachedHostAnswers(settings *config.Settings, hostID, hostOS, sessionID string, fields sessionLaunchAuditFields) *LaunchRefusal {
 	var h *config.Host
 	for i := range settings.Hosts {
 		if settings.Hosts[i].ID == hostID {
@@ -1119,13 +1127,8 @@ func checkDetachedRunnerGone(settings *config.Settings, hostID, hostOS, sessionI
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), detachedStatusTimeout)
 	defer cancel()
-	st, err := sshhost.AgentRunStatus(ctx, *h, hostOS, sessionID)
-	if err != nil {
+	if _, err := sshhost.AgentRunStatus(ctx, *h, hostOS, sessionID); err != nil {
 		return invalidRequest("host_unavailable", err.Error(), fields)
-	}
-	if st.Phase == sshhost.RunAlive {
-		return deniedRefusal(http.StatusConflict, "runner_alive",
-			fmt.Sprintf("the agent for this session still runs on host %q; relay session stop ends it and deletes the session", h.Name), nil, fields)
 	}
 	return nil
 }

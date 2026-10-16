@@ -2657,7 +2657,10 @@ those of `session message`: `host_link_down`, `send_unknown`,
 | `--timeout` | Stop waiting after this long. The turn keeps running. Default and longest `9m`. |
 | `--json` | Print the answer as JSON. |
 
-It waits for the session's current turn to end. It exits `0` with the reply
+It waits for the session's current turn to end. On a detached host session
+with no provider (after a restart), it first attaches the running agent, which
+takes up to the ssh connect timeout on a host that is down, before `--timeout`
+starts to count. It exits `0` with the reply
 excerpt (the last 500 runes) when the turn ends, and at once when no turn is
 running. It exits `1` for every other state; `--json` prints the answer in all
 cases:
@@ -2705,13 +2708,17 @@ session is deleted, not left dormant: it cannot be resumed.
 | `resumed` | boolean | `false` when the session was already live. |
 
 A resume applies to a dormant session. Every session is dormant after a relay
-restart; an unknown id exits `1` (`404`). Text form: `resumed session ID` or
+restart, except a detached host session whose agent still runs (below); an
+unknown id exits `1` (`404`). Text form: `resumed session ID` or
 `session ID is already live`.
 
 A detached host session ([ssh-hosts.md](ssh-hosts.md)) whose agent still
-runs on the host is refused with `runner_alive` (exit `1`, `409`) and no second
-agent starts. A host that cannot answer whether its agent runs is refused with
-`host_unavailable`.
+runs on the host is attached and no second agent starts. A host that cannot
+answer whether its agent runs is refused with `host_unavailable`. After a relay
+restart a detached session whose agent runs is usually already live, so `resume`
+prints `session ID is already live`. relay-sessions can attach a session whose
+record reads dormant (the host was down when relay started); `resume` then
+finds the agent running and attaches it.
 
 ### `session mode`
 
@@ -3004,6 +3011,12 @@ CLI exits, when relay-sessions sees the terminal end: wait for the session's
 prompt, as for `relay sandbox`. The same drop-in is `POST
 /api/sessions/{id}/drop-in` (class `execute`), which answers with the new
 terminal for a client to join.
+
+On a detached host session ([ssh-hosts.md](ssh-hosts.md#detached-sessions))
+the stop ends the agent's process group on the host, and the terminal resumes
+the conversation there with its full history. After a relay restart relay
+attaches the still-running agent first, so the stop reaches it and the agent
+and the terminal never run on one conversation together.
 
 No JSON form: the terminal belongs to Claude. Exit codes: Claude's own exit
 status after a hand-over; `1` for any refusal below (`error: relay drop-in needs

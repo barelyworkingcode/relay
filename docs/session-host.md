@@ -540,7 +540,10 @@ Once the ancestry walk resolves a session id, and the decoded body's own
 6. `Preflight` says ask, but no viewer has joined the session (`HasViewers`):
    `200` deny, `no client is viewing this session to approve the tool call`.
    No request is created — nothing is queued to replay if a viewer joins
-   later.
+   later. (A request a host session's stream raised with no viewer joined is
+   different: it is created and waits, and `join_session` sends the joiner a
+   `permission_request` frame for each one still pending, after
+   `session_joined` (a live broadcast may arrive first), in the order raised.)
 7. A viewer is present: `CreateRequest` mints a permission id and
    `NotifySession` sends every viewer of the session a `permission_request`
    frame (`sessionId`, `permissionId`, `toolName`, `toolInput`, `toolUseId`).
@@ -987,9 +990,18 @@ and reach `processLine` once and in order across a link drop. `Kill` ends the
 agent's process group on the host. `Events(ctx, after, max)` returns the
 complete lines after a cursor and the cursor to pass next. A shutdown of
 relay or relay-sessions calls `Release`, which stops the local reader and
-leaves the agent running: a detached agent survives a relay restart, the
-session reads dormant, and a resume answers `runner_alive` while the agent
-runs, and `relay session stop` ends the agent. Idle stop, drop-in, stop and
+leaves the agent running: a detached agent survives a relay restart.
+`GetState` carries the run's generation and cursor, so a state save (every
+turn end, and shutdown) records where reading stopped. `Manager.ReattachDetached`
+runs at relay-sessions startup: for each persisted detached claude session it
+asks the host for the run's status and, for a live runner, calls `Create` with
+`AttachOnly`, so the provider attaches (`attachDetached`) and never starts an
+agent. The attach reads the lines after the cursor before it returns and
+holds each `control_request` that has no `control_response` in `in.jsonl`; `Create` raises them (`TakeAttach`) once the slot is published, so the board reads `asking` and viewers get the prompt, and `Release` does not deny a waiting prompt;
+`SendMessage`, `SendMessageSync`, `Wait`, `Events` and `Handoff` call the same
+attach for a detached session with no live provider. A plain resume (`ClaudeConfig.Resume`)
+asks for a running agent first and attaches to it too. `relay session stop`
+ends the agent. Idle stop, drop-in, stop and
 delete call `Kill`, which ends the agent; deleting a dormant session does the
 same through `DeleteDetachedRun`. With `detach` unset the `ssh -T` path is
 unchanged. A Windows host refuses a detached start.
@@ -1076,6 +1088,8 @@ Body `{session_id}`. Internal peer only, like `/launch`. Answers `200 {session_i
 | 409 | `tool_running` | a tool call is open; the message names the earliest |
 | 409 | `turn_timeout` | the turn did not end within the wait |
 | 409 | `no_conversation` | no Claude conversation id yet |
+| 409 | `host_unavailable` | a detached session's host did not say whether its agent runs; nothing is stopped |
+| 409 | `attach_failed` | the host answered and the agent runs, but relay-sessions could not attach it; nothing is stopped |
 
 A session with no live process can be taken over; it loads from disk first. If a turn is in flight and no tool is open, the request waits for the turn to end, a tool to open, the timeout or the caller to go away. It does not poll. A tool call opens on an assistant `content_block_stop` of a `tool_use` block and closes on its `tool_result`; `message_complete`, `error`, `process_exited`, `StopGeneration` and `ClearSession` clear them all. Waiting through a tool could last without bound, and stopping mid-tool leaves a half-finished call, so a running tool refuses at once.
 
@@ -1739,15 +1753,16 @@ caller cannot squat a live session id or resume one project's session under
 another project's name this way.
 
 A resume of a detached host session first runs `RunnerStatus` on the latest
-generation. A running agent refuses the launch with `runner_alive` (`409`) and
-starts nothing: a second agent would read the same conversation. A host that
-cannot answer refuses with `host_unavailable`.
+generation. A host that cannot answer refuses with `host_unavailable`. A
+running agent does not refuse the launch: the provider that relay-sessions
+builds for the resume attaches to that agent, and a second agent never starts.
 
 At startup relay ages every `live` ledger record to `dormant`
 (`ledger.MarkLiveDormant`, called from `openSessionLedger` in
-`cmd/relay/trayapp.go`). relay-sessions and every provider it hosts are
-children of this relay process, so no record from an earlier run can still be
-live; a provider that was live when relay quit never sent the `SessionExited`
+`cmd/relay/trayapp.go`), except a detached host session whose runner answers
+`RunnerStatus` as alive: its agent is not a child of this relay process, and
+relay-sessions reattaches it. Every other provider is a child of this relay
+process, so no other record from an earlier run can still be live; a provider that was live when relay quit never sent the `SessionExited`
 that would have aged it. Left `live`, that record makes relay's
 `POST /api/sessions/{id}/resume` answer "already live" (`resumed: false`)
 without launching anything, and the client's next message gets

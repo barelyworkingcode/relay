@@ -83,6 +83,14 @@ type ClaudeConfig struct {
 	Launcher *sessionstypes.Launcher
 	// DefaultModel leaves out --model, so the binary uses its own default.
 	DefaultModel bool
+
+	// Resume marks a start that continues an existing conversation. A
+	// detached host session asks the host for a running agent first and
+	// attaches to it, so a resume never starts a second agent.
+	Resume bool
+	// AttachOnly makes Start of a detached host session attach to a running
+	// agent and fail with ErrNoDetachedRun rather than start one.
+	AttachOnly bool
 }
 
 // ClaudeProvider manages a persistent Claude CLI process and translates its
@@ -111,6 +119,14 @@ type ClaudeProvider struct {
 	// det is the detached agent a host session with detach_sessions runs; nil
 	// for every other spawn. cmd and stdin are nil while it is set.
 	det *detachedRun
+	// restoredRun is the detached run and cursor the saved state named; Start
+	// attaches from it when that run is still alive.
+	restoredRun *detachedCursor
+	// released is set by Release, which leaves the agent running.
+	released atomic.Bool
+	// attachedTurnOpen is what an attach found and left for TakeAttach;
+	// guarded by mu.
+	attachedTurnOpen bool
 
 	// root is published atomically because ProcessRoot is called from
 	// other goroutines while p.mu is held across blocking stdin writes.
@@ -186,6 +202,10 @@ type claudeSpawnState struct {
 	// sawStdout flips on this spawn's first non-empty stdout line; stderr
 	// before it logs at Warn (logProviderStderr).
 	sawStdout atomic.Bool
+	// countResultsFrom, when positive, makes a detached read count the result
+	// lines it delivers from that byte offset on; an attach sets it.
+	countResultsFrom int64
+	resultsSeen      atomic.Int32
 }
 
 // NewClaudeProvider constructs a provider for session. perms may be nil for
@@ -723,6 +743,9 @@ func (p *ClaudeProvider) processLine(raw json.RawMessage, spawn *claudeSpawnStat
 	case events.EvtResult:
 		p.translateResult(raw)
 	case "control_request":
+		if det := p.det; det != nil && (!det.claimRequest(raw) || det.deferRaise(raw)) {
+			return
+		}
 		p.handleControlRequest(raw)
 	default:
 		p.emitter.EmitVersionedRaw(raw)
@@ -1512,6 +1535,9 @@ func (p *ClaudeProvider) GetState() json.RawMessage {
 	sid := p.claudeSessionID
 	p.mu.Unlock()
 	state := map[string]interface{}{"claudeSessionId": sid}
+	if det := p.det; det != nil {
+		state["detached"] = detachedCursor{Generation: det.dir.Generation, Offset: det.offset.Load()}
+	}
 	data, _ := json.Marshal(state)
 	return data
 }
@@ -1521,11 +1547,13 @@ func (p *ClaudeProvider) RestoreState(state json.RawMessage) {
 		return
 	}
 	var s struct {
-		ClaudeSessionID string `json:"claudeSessionId"`
+		ClaudeSessionID string          `json:"claudeSessionId"`
+		Detached        *detachedCursor `json:"detached"`
 	}
 	if err := json.Unmarshal(state, &s); err == nil {
 		p.mu.Lock()
 		p.claudeSessionID = s.ClaudeSessionID
+		p.restoredRun = s.Detached
 		p.mu.Unlock()
 	}
 }

@@ -368,6 +368,7 @@ func TestDetachedStartNamesRunDirectoryItCannotCreate(t *testing.T) {
 	// A regular file where the agents directory belongs.
 	r.write(t, filepath.Join(r.remote, ".relay", "agents"), "not a directory\n", 0o600)
 
+	base := len(r.hostStarts(t))
 	res := r.i.CLI("session", "start", "--project", r.projectID, "--model", "sonnet", "--json")
 	if res.Code == 0 {
 		t.Fatalf("session start exited 0 though the run directory cannot be created\nstdout: %s", res.Stdout)
@@ -375,8 +376,8 @@ func TestDetachedStartNamesRunDirectoryItCannotCreate(t *testing.T) {
 	if !strings.Contains(string(res.Stderr), ".relay/agents") {
 		t.Fatalf("the refusal does not name the run directory .relay/agents\nstderr: %s", res.Stderr)
 	}
-	if got := agStartArgvs(r.i, "claude"); len(got) != 0 {
-		t.Fatalf("a start that failed still launched %d agents: %v", len(got), got)
+	if got := r.hostStarts(t)[base:]; len(got) != 0 {
+		t.Fatalf("a start that failed still launched %d agents on the host: %v", len(got), got)
 	}
 }
 
@@ -468,40 +469,6 @@ func TestDetachedStopSparesUnrelatedProcess(t *testing.T) {
 	}
 	if !g11dAlive(other.Process.Pid) {
 		t.Fatalf("unrelated pid %d is not running after session stop", other.Process.Pid)
-	}
-}
-
-// Criterion 7: a resume of a session whose agent still runs answers
-// runner_alive and starts no second agent.
-func TestDetachedResumeWhileAgentRunsAnswersRunnerAlive(t *testing.T) {
-	t.Parallel()
-	r := g11dStart(t)
-	i := r.i
-	sid := r.startSession(t, "")
-	run := r.run(t, sid, "g1")
-	g1sSendText(t, i, sid, "hi", "echo: hi")
-
-	// Every session is dormant after a relay restart; the detached agent is
-	// not relay's child, so it outlives it.
-	i.Restart()
-	i.WaitSessionHost(g1tHostDeadline)
-	if !g11dAlive(run.PID) {
-		t.Fatalf("agent pid %d did not outlive the relay restart", run.PID)
-	}
-
-	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions/"+sid+"/resume", nil)
-	// docs/routes.md: a handler error body is human text; the code is the
-	// event's reason.
-	if resp.Status != 409 {
-		t.Fatalf("resume answered %d, want 409 (runner_alive)\n%s", resp.Status, resp.Body)
-	}
-	i.WaitEvent(harness.EventQuery{Key: "session.resume",
-		Fields: map[string]any{"reason": "runner_alive"}}, g11dLinkDeadline)
-	if gens := r.generations(t, sid); len(gens) != 1 || gens[0] != "g1" {
-		t.Fatalf("generations after the refused resume are %v, want only g1", gens)
-	}
-	if after := r.run(t, sid, "g1"); after.PID != run.PID || !g11dAlive(run.PID) {
-		t.Fatalf("run.json pid went from %d to %d, or the agent stopped", run.PID, after.PID)
 	}
 }
 
