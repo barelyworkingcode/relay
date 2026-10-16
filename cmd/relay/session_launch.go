@@ -1125,7 +1125,7 @@ func checkDetachedRunnerGone(settings *config.Settings, hostID, hostOS, sessionI
 	}
 	if st.Phase == sshhost.RunAlive {
 		return deniedRefusal(http.StatusConflict, "runner_alive",
-			fmt.Sprintf("the agent for this session still runs on host %q; stop the session before resuming it", h.Name), nil, fields)
+			fmt.Sprintf("the agent for this session still runs on host %q; relay session stop ends it and deletes the session", h.Name), nil, fields)
 	}
 	return nil
 }

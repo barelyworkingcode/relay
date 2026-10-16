@@ -868,7 +868,8 @@ func (m *Manager) DeleteSession(id string) {
 // — completes before StopAll returns, mirroring
 // internal/sessions/terminal.Manager.StopAll's own discipline: shutdown
 // must never return while a process it is responsible for might still be
-// alive or still exiting.
+// alive or still exiting. The one deliberate exception: a detached host agent
+// is released and left running on its host.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
 	var live []*sessionstypes.Session

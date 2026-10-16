@@ -794,7 +794,8 @@ latest generation. A running agent refuses the resume with `runner_alive` (HTTP
 that names the host. A host whose login manager kills a user's processes when
 the last session ends (`KillUserProcesses=yes`) takes the agent with it. A
 runner killed from outside leaves its agent orphaned in the group; a stop
-still ends the group.
+leaves such an agent alone, because without a live leader relay cannot prove
+the group is still its own.
 
 ## What is deliberately absent (v1)
 
