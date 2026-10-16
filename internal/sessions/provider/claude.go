@@ -126,6 +126,9 @@ type ClaudeProvider struct {
 	// carries a bearer today, but both can carry project-specific text no
 	// process outside this session needs to keep reading after it ends.
 	spawnFiles []string
+	// spawnFilesMu guards spawnFiles: Kill can run twice at once (a stop,
+	// then shutdown).
+	spawnFilesMu sync.Mutex
 
 	// perms services a host session's control_request permission prompts —
 	// a host has no local hook binary to dial, so Claude's own
@@ -460,7 +463,7 @@ func (p *ClaudeProvider) Start() error {
 				return fmt.Errorf("write mcp config: %w", err)
 			}
 			mcpConfigPath = path
-			p.spawnFiles = append(p.spawnFiles, path)
+			p.addSpawnFile(path)
 			spawn.relayMCPWritten = true
 		} else if useRelayTools(p.session.Settings) {
 			warnRelayToolsUnavailable(p.session.ID, "claude", "relay_mcp_command_unset")
@@ -471,7 +474,7 @@ func (p *ClaudeProvider) Start() error {
 				return fmt.Errorf("write system prompt: %w", err)
 			}
 			sysPromptPath = path
-			p.spawnFiles = append(p.spawnFiles, path)
+			p.addSpawnFile(path)
 		}
 
 		args := p.buildClaudeArgs(mcpConfigPath, sysPromptPath)
@@ -618,11 +621,20 @@ func (p *ClaudeProvider) ProcessRoot() (sessionstypes.ProcessRoot, bool) {
 	return *root, true
 }
 
+func (p *ClaudeProvider) addSpawnFile(path string) {
+	p.spawnFilesMu.Lock()
+	p.spawnFiles = append(p.spawnFiles, path)
+	p.spawnFilesMu.Unlock()
+}
+
 func (p *ClaudeProvider) cleanupSpawnFiles() {
-	for _, path := range p.spawnFiles {
+	p.spawnFilesMu.Lock()
+	files := p.spawnFiles
+	p.spawnFiles = nil
+	p.spawnFilesMu.Unlock()
+	for _, path := range files {
 		_ = os.Remove(path)
 	}
-	p.spawnFiles = nil
 }
 
 func (p *ClaudeProvider) readStdout(r io.ReadCloser, spawn *claudeSpawnState, done chan<- struct{}) {
