@@ -147,7 +147,7 @@ func TestHoldRefusesExtraFields(t *testing.T) {
 		"tool":   {"tool": "Bash"},
 		"text":   {"text": "hi"},
 		"code":   {"code": 3},
-		"stderr": {"stderr": "boom"},
+		"stderr": {"stderr": []string{"boom"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
