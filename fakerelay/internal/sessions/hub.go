@@ -52,6 +52,12 @@ func (s *svc) broadcast(v any) {
 
 func (s *svc) toViewers(x *session, v any) {
 	s.mu.Lock()
+	// Every permission_request passes here; keep it so a connection that joins
+	// later can be sent it. Recorded under the same lock as the viewer
+	// snapshot, so a joiner sees it live or by replay, never neither.
+	if f, ok := v.(map[string]any); ok && f["type"] == "permission_request" {
+		s.heldPerms = append(s.heldPerms, f)
+	}
 	cs := make([]*conn, 0, len(x.viewers))
 	for c := range x.viewers {
 		cs = append(cs, c)
@@ -171,8 +177,41 @@ func (s *svc) joinSession(c *conn, id string) {
 	if x.host != nil {
 		frame["host"] = x.host
 	}
+	replay := s.unansweredPerms(x)
 	s.mu.Unlock()
 	c.send(frame)
+	for _, f := range replay {
+		c.send(f)
+	}
+}
+
+// dropPerms forgets x's unanswered requests: the turn that raised them is
+// stopped, so a later join must not see them. The caller holds s.mu.
+func (s *svc) dropPerms(x *session) {
+	for id, sid := range s.perms {
+		if sid == x.id {
+			delete(s.perms, id)
+		}
+	}
+}
+
+// unansweredPerms returns x's permission_request frames still awaiting an
+// answer, in the order raised. A turn that ended (answered, stopped) leaves
+// nothing to answer. The caller holds s.mu.
+func (s *svc) unansweredPerms(x *session) []map[string]any {
+	kept := s.heldPerms[:0]
+	var out []map[string]any
+	for _, f := range s.heldPerms {
+		if _, open := s.perms[str(f["permissionId"])]; !open {
+			continue
+		}
+		kept = append(kept, f)
+		if f["sessionId"] == x.id && x.processing {
+			out = append(out, f)
+		}
+	}
+	s.heldPerms = kept
+	return out
 }
 
 func (s *svc) permissionResponse(c *conn, f inFrame) {
@@ -229,8 +268,10 @@ func (s *svc) sessionCommand(c *conn, f inFrame) {
 		if x.cancel != nil && x.processing {
 			x.cancel()
 		}
+		s.dropPerms(x)
 	case "end_session":
 		x.live, x.agent = false, nil
+		s.dropPerms(x)
 		if x.cancel != nil {
 			x.cancel()
 		}
