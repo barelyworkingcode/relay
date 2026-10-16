@@ -40,11 +40,12 @@ const unixSocketPathMax = 103
 
 // ListenAddrs is the TCP addresses a server actually bound, so a port-0
 // request reports its real port. A listener that is not bound has no entry.
+// The enrolment window's listener is deliberately absent: it is transient and
+// its address is reported by the window itself.
 type ListenAddrs struct {
-	API       string `json:"api,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Remote    string `json:"remote,omitempty"`
-	Enrolment string `json:"enrolment,omitempty"`
+	API    string `json:"api,omitempty"`
+	Model  string `json:"model,omitempty"`
+	Remote string `json:"remote,omitempty"`
 }
 
 // ListenAddrs reads the live sockets, never settings.
@@ -55,10 +56,9 @@ func (a *App) ListenAddrs() ListenAddrs {
 	a.addrMu.RLock()
 	defer a.addrMu.RUnlock()
 	return ListenAddrs{
-		API:       a.frontendServer.LoopbackAddr(),
-		Model:     a.modelEndpoint.TCPAddr(),
-		Remote:    a.remote.Addr(),
-		Enrolment: a.remote.EnrolAddr(),
+		API:    a.frontendServer.LoopbackAddr(),
+		Model:  a.modelEndpoint.TCPAddr(),
+		Remote: a.remote.Addr(),
 	}
 }
 
