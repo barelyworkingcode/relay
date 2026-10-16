@@ -31,7 +31,10 @@ type svc struct {
 	sessions map[string]*session
 	terms    map[string]*terminal
 	perms    map[string]string // permission id -> session id
-	logs     map[string]*termLog
+	// heldPerms are the permission_request frames raised, oldest first; an
+	// entry whose id is gone from perms was answered.
+	heldPerms []map[string]any
+	logs      map[string]*termLog
 }
 
 // Register installs the doors and the /ws hub, and seeds the world's sessions.
