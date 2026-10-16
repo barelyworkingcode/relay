@@ -1432,7 +1432,7 @@ Sends a message and waits for the whole reply.
   `{"error": "resume_required"|"dropped_in", "message"}`, or an empty body for
   an already-processing session; `503` with `{"error": "host_link_down",
   "message"}` when a detached host session's link stayed down past the wait
-  (`?link_wait_ms=N` sets the wait, default 30 s); `502` with
+  (`?link_wait_ms=N` sets the wait, default 30 s, at most 9 minutes; the wait ends if the request does); `502` with
   `{"error": "send_unknown", "message"}` when an ssh exit left the delivery
   unknown; `500`.
 - **Event:** `session.message` (`session_id`). **CLI equivalent:** `relay session message`.

@@ -413,6 +413,22 @@ func (p *ClaudeProvider) consumeLines(ctx context.Context, det *detachedRun, spa
 // DefaultLinkWait is how long a send waits for a lost host link to return.
 const DefaultLinkWait = 30 * time.Second
 
+// MaxLinkWait is the longest wait a caller may ask for. It stays under the
+// bridge's ten-minute inactivity limit on the operator's call.
+const MaxLinkWait = 9 * time.Minute
+
+// ClampLinkWait returns DefaultLinkWait for a zero or negative d and MaxLinkWait
+// for one above the limit.
+func ClampLinkWait(d time.Duration) time.Duration {
+	switch {
+	case d <= 0:
+		return DefaultLinkWait
+	case d > MaxLinkWait:
+		return MaxLinkWait
+	}
+	return d
+}
+
 var (
 	// ErrHostLinkDown means the link to a detached session's host stayed down
 	// for the whole wait; nothing was sent and the agent keeps running.
@@ -434,10 +450,14 @@ func sshConnectFailure(msg string) bool {
 }
 
 // awaitLink returns once the link is not marked lost. It gives up when the
-// timer fires, the runner is gone or the spawn is killed.
-func (p *ClaudeProvider) awaitLink(det *detachedRun, wait time.Duration, timer *time.Timer) error {
+// timer fires, the caller's ctx ends, the runner is gone or the spawn is
+// killed. A caller that has left gets ErrHostLinkDown and nothing is written.
+func (p *ClaudeProvider) awaitLink(ctx context.Context, det *detachedRun, wait time.Duration, timer *time.Timer) error {
+	down := fmt.Errorf("%w: the message was not sent; retry when host %q is reachable", ErrHostLinkDown, det.spec.Name)
+	if ctx.Err() != nil {
+		return down
+	}
 	for det.linkLost.Load() {
-		down := fmt.Errorf("%w: the message was not sent; retry when host %q is reachable", ErrHostLinkDown, det.spec.Name)
 		if wait <= 0 {
 			return down
 		}
@@ -448,6 +468,8 @@ func (p *ClaudeProvider) awaitLink(det *detachedRun, wait time.Duration, timer *
 		select {
 		case <-ch:
 		case <-timer.C:
+			return down
+		case <-ctx.Done():
 			return down
 		case <-det.done:
 			return fmt.Errorf("claude on host %q has exited", det.spec.Name)
@@ -464,16 +486,19 @@ func (p *ClaudeProvider) awaitLink(det *detachedRun, wait time.Duration, timer *
 // command started may still have landed the line, and a second append would
 // deliver it twice. A failure that proves ssh never connected is the one
 // retry: the link is marked lost and the wait begins again.
-func (p *ClaudeProvider) sendDetached(det *detachedRun, data []byte, wait time.Duration) error {
+func (p *ClaudeProvider) sendDetached(callerCtx context.Context, det *detachedRun, data []byte, wait time.Duration) error {
 	line := bytes.TrimSuffix(data, []byte("\n"))
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	for {
-		if err := p.awaitLink(det, wait, timer); err != nil {
+		if err := p.awaitLink(callerCtx, det, wait, timer); err != nil {
 			return err
 		}
+		// Deliberate: the write itself does not follow the caller's ctx. A
+		// line already on its way cannot be recalled, so it is left to finish.
 		ctx, cancel := context.WithTimeout(det.ctx, detachedSendTimeout)
 		_, msg, err := runHost(ctx, det.spec, sshhost.RunnerSend(det.spec.OS, det.dir), bytes.NewReader(line))
+		cut := ctx.Err() != nil
 		cancel()
 		switch {
 		case err == nil:
@@ -482,7 +507,7 @@ func (p *ClaudeProvider) sendDetached(det *detachedRun, data []byte, wait time.D
 			if det.markLost() {
 				p.emitHostLink(det, "lost")
 			}
-		case sendOutcomeUnknown(err):
+		case cut || sendOutcomeUnknown(err):
 			return fmt.Errorf("%w: the connection to host %q ended during the send; the message may have been delivered, so read the session's events before sending again", ErrSendUnknown, det.spec.Name)
 		default:
 			return fmt.Errorf("send to claude on host %q: %s", det.spec.Name, msg)
@@ -491,10 +516,10 @@ func (p *ClaudeProvider) sendDetached(det *detachedRun, data []byte, wait time.D
 }
 
 // sendOutcomeUnknown is true when the failure is ssh's own (exit 255) or the
-// command was cut short, so the remote append may have run.
+// command was killed, so the remote append may have run.
 func sendOutcomeUnknown(err error) bool {
 	var ee *exec.ExitError
-	return !errors.As(err, &ee) || ee.ExitCode() == 255
+	return !errors.As(err, &ee) || ee.ExitCode() == 255 || ee.ExitCode() < 0
 }
 
 // Release detaches this provider from its agent and leaves the agent running

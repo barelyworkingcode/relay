@@ -751,7 +751,7 @@ A blank cell means no change. `Launching` from any state, or from none, gives `s
 | TurnEnded | | | idle | idle | idle | |
 | TurnFailed | | | errored | errored | errored | |
 | TurnStopped | | | idle | idle | idle | |
-| SendAborted | | | idle | | | |
+| SendAborted | | | the state before the send | | | |
 | ProcessExited | ended | ended | errored | errored | errored | |
 | DroppedIn | running, held | running, held | running, held | running, held | running, held | running, held |
 | HandedBack | | | idle (held entries only), released | | | |
@@ -768,7 +768,7 @@ Claude, pi and Codex share one path in `handleProviderEvent` and the manager met
 |---|---|
 | `Create` resolves a tracked session | Launching |
 | `Create` or a restart: the provider start fails, or the manager is stopping, or it succeeds | LaunchFailed, SessionEnded or Launched |
-| `SendMessage`, just before the provider call; if that call errors | TurnStarted; TurnFailed, or SendAborted when the host link stayed down (a detached session), or none when the outcome is unknown |
+| `SendMessage`, just before the provider call; if that call errors | TurnStarted; TurnFailed, or SendAborted when the host link stayed down or the caller left (a detached session), or none when the outcome is unknown |
 | `StopGeneration`, `ClearSession`, before the kill or abort | TurnStopped |
 | `ClearSession` on a project-bound session (provider left dead) | SessionEnded |
 | `EndSession`, `DeleteSession`, `StopAll`, before the kill | SessionEnded |
@@ -798,7 +798,7 @@ zero ends the wait with state `timeout` on the manager's clock; the turn keeps
 running. A session with no agent state answers `ErrNotTracked`.
 
 A send that fails because the host link stayed down signals `SendAborted`
-(`running` to `idle`, no `turn_done`) instead of `TurnFailed`, and removes the
+(`running` back to the state before the send, with its exit detail; no `turn_done`) instead of `TurnFailed`, and removes the
 message it had added to the history. A send that ends `send_unknown` signals
 nothing: the line may have landed, so the agent's own events settle the state.
 
@@ -979,7 +979,7 @@ A claude session whose host spec carries `detach: true` (from
 `SendMessage` and the `control_response` writes append one line to `in.jsonl`
 through a short ssh command. `SendMessageWithin` is `SendMessage` with the
 longest a send waits for a lost link to return; a `control_response` does not
-wait. The wait ends on `restored`, the runner's exit, a kill or the cap, and
+wait. The wait ends on `restored`, the runner's exit, a kill, the caller's request ending or the cap (at most nine minutes), and
 the write happens once (`ErrHostLinkDown` past the cap, `ErrSendUnknown` after
 an ambiguous ssh exit). Stdout lines come from `out.jsonl` by byte offset
 and reach `processLine` once and in order across a link drop. `Kill` ends the

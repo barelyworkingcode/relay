@@ -127,10 +127,6 @@ type Manager struct {
 	attnSink *sinkAdapter
 	watch    *turnWatch
 
-	// linkWaits holds the one-shot host-link wait a caller asked for, by
-	// session id, until the next send takes it.
-	linkWaits sync.Map
-
 	// onExit mirrors internal/sessions/terminal.Manager's own field of the
 	// same name and purpose: a later unit's SessionExited bridge hook, fired
 	// from handleProviderEvent's "process_exited" case, usually on the
@@ -933,6 +929,13 @@ func (m *Manager) SendMessage(id, text string, files []sessionstypes.FileAttachm
 // transcript entry and the live user_message frame. An empty origin is a
 // person's message and leaves both unmarked.
 func (m *Manager) SendMessageAs(id, text string, files []sessionstypes.FileAttachment, origin string) error {
+	return m.SendMessageWith(context.Background(), id, text, files, origin, provider.DefaultLinkWait)
+}
+
+// SendMessageWith is SendMessageAs for a caller that can leave: a detached
+// session waits up to linkWait for a lost host link, and a ctx that ends
+// first abandons the send with nothing written.
+func (m *Manager) SendMessageWith(ctx context.Context, id, text string, files []sessionstypes.FileAttachment, origin string, linkWait time.Duration) error {
 	sess, ok := m.Get(id)
 	if !ok {
 		return ErrSessionNotFound
@@ -987,14 +990,17 @@ func (m *Manager) SendMessageAs(id, text string, files []sessionstypes.FileAttac
 		sink.SendToSession(id, frame)
 	}
 
+	before, _ := m.attn.Get(id)
 	m.signal(sess, attention.TurnStarted)
-	if err := m.deliver(p, id, text, files); err != nil {
+	if err := deliver(ctx, p, text, files, linkWait); err != nil {
 		linkDown := errors.Is(err, provider.ErrHostLinkDown)
 		switch {
 		case linkDown:
 			// A dropped link is not a failure of the agent: the message
 			// never left, so the session returns to what it was.
-			m.signal(sess, attention.SendAborted)
+			if tracked(sess) {
+				m.attn.AbortSend(id, before)
+			}
 		case errors.Is(err, provider.ErrSendUnknown):
 			// The line may have landed; the agent's own events settle the
 			// state.
@@ -1014,32 +1020,13 @@ func (m *Manager) SendMessageAs(id, text string, files []sessionstypes.FileAttac
 	return nil
 }
 
-// SetLinkWait sets how long the next send to id waits for a lost host link.
-// A zero or negative d leaves the default.
-func (m *Manager) SetLinkWait(id string, d time.Duration) {
-	if d > 0 {
-		m.linkWaits.Store(id, d)
-	}
-}
-
-// ClearLinkWait drops a wait no send took.
-func (m *Manager) ClearLinkWait(id string) { m.linkWaits.Delete(id) }
-
-func (m *Manager) takeLinkWait(id string) time.Duration {
-	if v, ok := m.linkWaits.LoadAndDelete(id); ok {
-		return v.(time.Duration)
-	}
-	return provider.DefaultLinkWait
-}
-
 // deliver hands the message to the provider; a provider that can wait for a
-// lost host link gets the caller's wait.
-func (m *Manager) deliver(p sessionstypes.Provider, id, text string, files []sessionstypes.FileAttachment) error {
-	wait := m.takeLinkWait(id)
+// lost host link gets the caller's ctx and wait.
+func deliver(ctx context.Context, p sessionstypes.Provider, text string, files []sessionstypes.FileAttachment, wait time.Duration) error {
 	if w, ok := p.(interface {
-		SendMessageWithin(string, []sessionstypes.FileAttachment, time.Duration) error
+		SendMessageWithin(context.Context, string, []sessionstypes.FileAttachment, time.Duration) error
 	}); ok {
-		return w.SendMessageWithin(text, files, wait)
+		return w.SendMessageWithin(ctx, text, files, wait)
 	}
 	return p.SendMessage(text, files)
 }
@@ -1051,6 +1038,12 @@ var sendMessageSyncTimeout = 5 * time.Minute
 // relayLLM's own synchronous HTTP surface for services that aren't a WS
 // client (relayScheduler, relayTelegram).
 func (m *Manager) SendMessageSync(id, text string, files []sessionstypes.FileAttachment) (string, sessionstypes.SessionStats, error) {
+	return m.SendMessageSyncWith(context.Background(), id, text, files, provider.DefaultLinkWait)
+}
+
+// SendMessageSyncWith is SendMessageSync with SendMessageWith's ctx and
+// link wait.
+func (m *Manager) SendMessageSyncWith(ctx context.Context, id, text string, files []sessionstypes.FileAttachment, linkWait time.Duration) (string, sessionstypes.SessionStats, error) {
 	if _, ok := m.Get(id); !ok {
 		return "", sessionstypes.SessionStats{}, ErrSessionNotFound
 	}
@@ -1065,7 +1058,7 @@ func (m *Manager) SendMessageSync(id, text string, files []sessionstypes.FileAtt
 		m.collMu.Unlock()
 	}()
 
-	if err := m.SendMessage(id, text, files); err != nil {
+	if err := m.SendMessageWith(ctx, id, text, files, "", linkWait); err != nil {
 		return "", sessionstypes.SessionStats{}, err
 	}
 

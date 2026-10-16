@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
@@ -68,7 +70,9 @@ func HandleSessionMessageSync(mgr *session.Manager, id string, w http.ResponseWr
 		return
 	}
 
-	text, stats, err := mgr.SendMessageSync(id, req.Text, req.Files)
+	// link_wait_ms is the operator verb's cap on waiting for a lost host link.
+	ms, _ := strconv.ParseInt(r.URL.Query().Get("link_wait_ms"), 10, 64)
+	text, stats, err := mgr.SendMessageSyncWith(r.Context(), id, req.Text, req.Files, provider.ClampLinkWait(time.Duration(ms)*time.Millisecond))
 	if err != nil {
 		ev.End(logging.OutcomeError, sessionErrorReason(err), err)
 		writeSessionError(w, err)

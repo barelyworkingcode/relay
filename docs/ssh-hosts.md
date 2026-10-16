@@ -777,11 +777,12 @@ session as any process exit does, with the exit code.
 
 **A send during a drop.** `relay session send` and `relay session message`
 wait for `session.host_link` `restored` within the command's `--timeout`
-(default 30 s), then write once. Past the cap the command exits `1` with
+(default 30 s, at most 9 minutes; a longer value is 9 minutes), then write once. A command that is killed or interrupted while it waits writes nothing. Past the cap the command exits `1` with
 `host_link_down` and a message to retry when the host is reachable; nothing was
 written, and the session returns to the state it had before the send. The wait
 holds the session's one in-flight send, so a second send meanwhile answers
-`already_processing`. An ssh failure that proves the connection never opened
+`already_processing`. An ssh command that was cut short by its own timeout or killed
+reports `send_unknown` like any ambiguous exit. An ssh failure that proves the connection never opened
 marks the link lost and waits again. Any other ssh failure after the command
 started may still have landed the line, so it is not retried: the command exits
 `1` with `send_unknown`, and the operator reads `relay session events` before

@@ -3,6 +3,7 @@ package provider
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1266,7 +1267,7 @@ func (p *ClaudeProvider) writeControlResponse(data []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if det := p.det; det != nil {
-		if err := p.sendDetached(det, append(data, '\n'), 0); err != nil {
+		if err := p.sendDetached(context.Background(), det, append(data, '\n'), 0); err != nil {
 			slog.Warn("claude: write control_response failed", "session", p.session.ID, "error", err)
 		}
 		return
@@ -1280,12 +1281,13 @@ func (p *ClaudeProvider) writeControlResponse(data []byte) {
 }
 
 func (p *ClaudeProvider) SendMessage(text string, files []sessionstypes.FileAttachment) error {
-	return p.SendMessageWithin(text, files, DefaultLinkWait)
+	return p.SendMessageWithin(context.Background(), text, files, DefaultLinkWait)
 }
 
 // SendMessageWithin is SendMessage with the longest a detached session waits
-// for a lost host link to return. Other sessions ignore wait.
-func (p *ClaudeProvider) SendMessageWithin(text string, files []sessionstypes.FileAttachment, wait time.Duration) error {
+// for a lost host link to return, ended early when ctx ends. Other sessions
+// ignore both.
+func (p *ClaudeProvider) SendMessageWithin(ctx context.Context, text string, files []sessionstypes.FileAttachment, wait time.Duration) error {
 	p.mu.Lock()
 	unlocked := false
 	unlock := func() {
@@ -1336,7 +1338,7 @@ func (p *ClaudeProvider) SendMessageWithin(text string, files []sessionstypes.Fi
 		// Deliberate: the lock is released before the link wait, so a stop
 		// or a permission answer is not held behind a send that is waiting.
 		unlock()
-		return p.sendDetached(det, data, wait)
+		return p.sendDetached(ctx, det, data, wait)
 	}
 	if _, err := p.stdin.Write(data); err != nil {
 		return fmt.Errorf("write to stdin: %w", err)

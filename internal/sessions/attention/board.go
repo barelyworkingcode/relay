@@ -46,6 +46,8 @@ type entry struct {
 	dead    bool
 	held    bool
 	exit    *Exit
+	// restoreTo is set only while AbortSend applies its signal.
+	restoreTo State
 }
 
 type Board struct {
@@ -95,6 +97,24 @@ func (b *Board) Exited(sessionID string, x *Exit) {
 		return
 	}
 	b.apply(e, ProcessExited, time.Time{}, x)
+}
+
+// AbortSend undoes the TurnStarted of a message that never reached the agent:
+// a session still running returns to prev, the state it had before the send,
+// with its exit detail. No turn ran, so no turn_done follows.
+func (b *Board) AbortSend(sessionID string, prev Attention) {
+	e := b.lookup(sessionID, false)
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.dead || e.state != Running {
+		return
+	}
+	e.restoreTo = prev.State
+	b.apply(e, SendAborted, time.Time{}, prev.Exit)
+	e.restoreTo = ""
 }
 
 // Reply appends to the current turn's excerpt and counts as activity.
@@ -208,6 +228,9 @@ func (b *Board) apply(e *entry, sig Signal, since time.Time, x *Exit) {
 	now := b.clk.Now()
 	prev := e.state
 	next := Next(prev, sig)
+	if sig == SendAborted && e.restoreTo != "" {
+		next = e.restoreTo
+	}
 	wasCounted := prev == Running && !e.held
 	switch sig {
 	case DroppedIn:
@@ -234,7 +257,7 @@ func (b *Board) apply(e *entry, sig Signal, since time.Time, x *Exit) {
 		}
 		e.state, e.since = next, since
 		e.exit = nil
-		if sig == ProcessExited && next == Errored {
+		if (sig == ProcessExited || sig == SendAborted) && next == Errored {
 			e.exit = x
 		}
 		logging.BeginEvent(context.Background(), "session.state").

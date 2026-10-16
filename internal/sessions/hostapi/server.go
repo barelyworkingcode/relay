@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"time"
 
@@ -20,7 +19,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/sessions/api"
-	"github.com/barelyworkingcode/relay/internal/sessions/attention"
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
@@ -407,10 +405,7 @@ func (s *Server) ListenInternal() error {
 		}
 	}))
 	mux.HandleFunc("POST /api/sessions/{id}/message", s.guarded(func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		s.sessions.SetLinkWait(id, linkWaitFrom(r.URL.Query().Get("link_wait_ms")))
-		defer s.sessions.ClearLinkWait(id)
-		api.HandleSessionMessageSync(s.sessions, id, w, r)
+		api.HandleSessionMessageSync(s.sessions, r.PathValue("id"), w, r)
 	}))
 	mux.HandleFunc("GET /api/terminals", s.guarded(func(w http.ResponseWriter, r *http.Request) {
 		api.HandleListTerminals(s.terminals, w, r)
@@ -1068,10 +1063,16 @@ type SessionWaitRequest struct {
 // SessionWaitResponse is POST /session-wait's 200 body. State is one of
 // idle, asking, errored, ended and timeout.
 type SessionWaitResponse struct {
-	SessionID string          `json:"session_id"`
-	State     string          `json:"state"`
-	Excerpt   string          `json:"excerpt,omitempty"`
-	Exit      *attention.Exit `json:"exit,omitempty"`
+	SessionID string    `json:"session_id"`
+	State     string    `json:"state"`
+	Excerpt   string    `json:"excerpt,omitempty"`
+	Exit      *WaitExit `json:"exit,omitempty"`
+}
+
+// WaitExit is the exit of an agent that died; stderr is a list even when empty.
+type WaitExit struct {
+	Code   int      `json:"code"`
+	Stderr []string `json:"stderr"`
 }
 
 // SessionEventsRequest is POST /session-events' body. After is empty for the
@@ -1097,14 +1098,6 @@ const (
 	ErrNotTracked        = "not_tracked"        // 409
 	ErrEventsFailed      = "events_failed"      // 502
 )
-
-func linkWaitFrom(ms string) time.Duration {
-	n, err := strconv.ParseInt(ms, 10, 64)
-	if err != nil || n <= 0 {
-		return 0
-	}
-	return time.Duration(n) * time.Millisecond
-}
 
 func decodeVerbBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	if r.Method != http.MethodPost {
@@ -1161,10 +1154,9 @@ func (s *Server) handleSessionSend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, ErrSessionNotFound, "session not found")
 		return
 	}
-	s.sessions.SetLinkWait(req.ID, time.Duration(req.TimeoutMS)*time.Millisecond)
-	defer s.sessions.ClearLinkWait(req.ID)
 	ev := logging.BeginEvent(r.Context(), "session.send").Set("session_id", req.ID)
-	if err := s.sessions.SendMessage(req.ID, req.Text, req.Files); err != nil {
+	wait := provider.ClampLinkWait(time.Duration(req.TimeoutMS) * time.Millisecond)
+	if err := s.sessions.SendMessageWith(r.Context(), req.ID, req.Text, req.Files, "", wait); err != nil {
 		ev.End(logging.OutcomeError, "send_failed", err)
 		writeVerbError(w, err)
 		return
@@ -1198,7 +1190,11 @@ func (s *Server) handleSessionWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ev.End(logging.OutcomeOK, "", nil)
-	writeVerbJSON(w, http.StatusOK, SessionWaitResponse{SessionID: req.ID, State: string(res.State), Excerpt: res.Excerpt, Exit: res.Exit})
+	out := SessionWaitResponse{SessionID: req.ID, State: string(res.State), Excerpt: res.Excerpt}
+	if res.Exit != nil {
+		out.Exit = &WaitExit{Code: res.Exit.Code, Stderr: append([]string{}, res.Exit.Stderr...)}
+	}
+	writeVerbJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
