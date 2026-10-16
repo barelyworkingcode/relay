@@ -31,6 +31,16 @@ func (r *g11dRig) restart(t *testing.T) {
 		Fields: map[string]any{"service_id": "relaysessions", "status": "ok"}}, g1tHostDeadline)
 }
 
+// restartHostDown restarts relay while the host is unreachable, so the startup
+// check cannot read the run record, and brings the host back once relay is up.
+func (r *g11dRig) restartHostDown(t *testing.T) {
+	t.Helper()
+	r.i.Stop()
+	r.i.SSHDown(g11dTarget)
+	r.restart(t)
+	r.i.SSHUp(g11dTarget)
+}
+
 // hostStarts lists the argv of every start the host-side fake claude logged.
 // The ssh stub runs the agent with TMPDIR under the remote root, so its call
 // log is not under the instance's own TMPDIR and i.FakeAgentCalls does not
@@ -182,7 +192,8 @@ func TestDetachedExitedReadsDormantAfterRestart(t *testing.T) {
 }
 
 // Criterion 3: a resume of a detached session whose agent still runs
-// reattaches it and starts no second agent.
+// reattaches it and starts no second agent. The restart happens with the host
+// unreachable, so the session reads dormant and the resume is what attaches.
 func TestDetachedResumeReattachesNoSecondAgent(t *testing.T) {
 	t.Parallel()
 	r := g11dStart(t)
@@ -192,7 +203,7 @@ func TestDetachedResumeReattachesNoSecondAgent(t *testing.T) {
 	run := r.run(t, sid, "g1")
 	g1sSendText(t, i, sid, "hi", "echo: hi")
 
-	r.restart(t)
+	r.restartHostDown(t)
 	if !g11dAlive(run.PID) {
 		t.Fatalf("agent pid %d did not outlive the relay restart", run.PID)
 	}
@@ -200,10 +211,11 @@ func TestDetachedResumeReattachesNoSecondAgent(t *testing.T) {
 	res := i.MustCLI("session", "resume", "--id", sid, "--json")
 	var resumed struct {
 		SessionID string `json:"session_id"`
+		Resumed   bool   `json:"resumed"`
 	}
 	res.JSON(t, &resumed)
-	if resumed.SessionID != sid {
-		t.Fatalf("resume printed session_id %q, want %s", resumed.SessionID, sid)
+	if resumed.SessionID != sid || !resumed.Resumed {
+		t.Fatalf("resume printed %+v, want resumed true for %s", resumed, sid)
 	}
 
 	if after := r.run(t, sid, "g1"); after.PID != run.PID || after.Generation != run.Generation || !g11dAlive(run.PID) {
@@ -295,18 +307,14 @@ func TestDetachedSessionsRestartKeepsAgent(t *testing.T) {
 	r.onlyGeneration(t, sid, "g1", "after the session host restart")
 }
 
-// Criterion 6: relay drop-in on a detached host session ends its agent at turn
-// end and opens the conversation with its history: the terminal's claude
-// resumes the conversation id the agent wrote.
-func TestDetachedDropIn(t *testing.T) {
-	t.Parallel()
-	r := g11dStart(t)
+// dropIn takes the session over in a terminal and checks the headless agent's
+// group ends and the terminal's claude resumes the agent's conversation. The
+// terminal's start is logged by the host's fake once it runs; no event marks
+// it, so the log is polled under the frame deadline.
+func (r *g11dRig) dropIn(t *testing.T, sid string, run g11dRun) {
+	t.Helper()
 	i := r.i
-	sid := r.startSession(t, `{"headless":true,"agent":true}`)
-	run := r.run(t, sid, "g1")
-	g1sSendText(t, i, sid, "hi", "echo: hi")
 	conversation := r.conversationID(t, sid, "g1")
-
 	ws := i.WebSocket("/ws", i.Credential("mounter"))
 	defer ws.Close()
 	ws.Send(map[string]any{"type": "join_session", "sessionId": sid})
@@ -329,9 +337,6 @@ func TestDetachedDropIn(t *testing.T) {
 	if g11dAlive(run.PID) || !g11dGroupGone(run.PGID) {
 		t.Fatalf("agent pid %d or its group %d still runs after the drop-in took the session", run.PID, run.PGID)
 	}
-
-	// The terminal's claude start is logged by the fake once it runs; no event
-	// marks it, so the log is polled under the frame deadline.
 	g11dUntil(t, "the drop-in terminal to start claude with --resume "+conversation, func() bool {
 		for _, argv := range r.hostStarts(t) {
 			if agHasPair(argv, "--resume", conversation) {
@@ -340,6 +345,99 @@ func TestDetachedDropIn(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// Criterion 6: relay drop-in on a detached host session ends its agent at turn
+// end and opens the conversation with its history.
+func TestDetachedDropIn(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	sid := r.startSession(t, `{"headless":true,"agent":true}`)
+	run := r.run(t, sid, "g1")
+	g1sSendText(t, r.i, sid, "hi", "echo: hi")
+	r.dropIn(t, sid, run)
+}
+
+// A drop-in after a relay restart takes the reattached session the same way.
+func TestDetachedDropInAfterRestart(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	sid := r.startSession(t, `{"headless":true,"agent":true}`)
+	run := r.run(t, sid, "g1")
+	g1sSendText(t, r.i, sid, "hi", "echo: hi")
+
+	r.restart(t)
+	if !g11dAlive(run.PID) {
+		t.Fatalf("agent pid %d did not outlive the relay restart", run.PID)
+	}
+	r.dropIn(t, sid, run)
+}
+
+type g11rPermission struct {
+	Type         string `json:"type"`
+	SessionID    string `json:"sessionId"`
+	PermissionID string `json:"permissionId"`
+	ToolName     string `json:"toolName"`
+}
+
+// A permission the agent was waiting on when relay restarted is raised again:
+// wait reports asking, a viewer that joins gets the permission_request, and
+// its answer reaches the agent once.
+func TestDetachedPermissionReraisedAfterRestart(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	i := r.i
+	sid := r.startSession(t, "")
+	run := r.run(t, sid, "g1")
+
+	before := i.WebSocket("/ws", i.Credential("mounter"))
+	before.Send(map[string]any{"type": "join_session", "sessionId": sid})
+	g1vSend(t, i, sid, "!ask Write")
+	b367Next(t, before, sid, "session_state", "asking")
+	before.Close()
+
+	r.restart(t)
+	if !g11dAlive(run.PID) {
+		t.Fatalf("agent pid %d did not outlive the relay restart", run.PID)
+	}
+	if res, w := g1vWaitFor(t, i, sid); res.Code != 1 || w.State != "asking" {
+		t.Fatalf("wait after the restart exited %d with state %q, want 1 and asking", res.Code, w.State)
+	}
+
+	ws := i.WebSocket("/ws", i.Credential("mounter"))
+	defer ws.Close()
+	ws.Send(map[string]any{"type": "join_session", "sessionId": sid})
+	var ask g11rPermission
+	for n := 0; ; n++ {
+		if n == 4*g1tFrameLimit {
+			t.Fatalf("no permission_request for %s in %d frames after the join", sid, n)
+		}
+		var f g11rPermission
+		if err := json.Unmarshal(ws.Next(g1tFrameDeadline), &f); err != nil {
+			t.Fatalf("decoding a frame: %v", err)
+		}
+		if f.Type == "permission_request" && f.SessionID == sid {
+			ask = f
+			break
+		}
+	}
+	if ask.PermissionID == "" || ask.ToolName != "Write" {
+		t.Fatalf("permission_request is %+v, want a permissionId for the Write tool", ask)
+	}
+
+	ws.Send(map[string]any{"type": "permission_response", "permissionId": ask.PermissionID, "approved": true})
+	b367Next(t, ws, sid, "session_state", "idle")
+
+	if all := g1vEventsAfter(t, i, sid, ""); g1vAssistantCount(all.Events, "ask: allow Write") != 1 {
+		t.Fatalf("the turn did not end once with ask: allow Write: %s", g1vJoin(all.Events))
+	}
+	raw, err := os.ReadFile(filepath.Join(r.agentsDir(sid), "g1", "in.jsonl"))
+	if err != nil {
+		t.Fatalf("reading in.jsonl: %v", err)
+	}
+	if n := bytes.Count(raw, []byte(`"type":"control_response"`)); n != 1 {
+		t.Fatalf("in.jsonl holds %d control_response lines, want 1\n%s", n, raw)
+	}
 }
 
 // After a relay-sessions-only restart a detached session whose agent was
@@ -363,6 +461,28 @@ func TestDetachedProjectDeleteAfterSessionsRestartEndsAgent(t *testing.T) {
 		Fields: map[string]any{"service_id": "relaysessions", "status": "ok"}}, g1tHostDeadline)
 	if !g11dAlive(run.PID) {
 		t.Fatalf("agent pid %d did not outlive the session host restart", run.PID)
+	}
+
+	i.MustCLI("project", "remove", "--id", r.projectID, "--json")
+	g11dUntil(t, "the removed project's agent and group to end", func() bool {
+		return !g11dAlive(run.PID) && g11dGroupGone(run.PGID)
+	})
+}
+
+// A host-down restart leaves the session dormant; a message reattaches it,
+// and removing its project then ends the agent and its group.
+func TestDetachedProjectDeleteAfterHostDownRestartEndsAgent(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	i := r.i
+	sid := r.startSession(t, "")
+	run := r.run(t, sid, "g1")
+	g1sSendText(t, i, sid, "hi", "echo: hi")
+
+	r.restartHostDown(t)
+	g1sSendText(t, i, sid, "after the restart", "echo: after the restart")
+	if after := r.run(t, sid, "g1"); after.PID != run.PID || !g11dAlive(run.PID) {
+		t.Fatalf("run.json went from %+v to %+v, or the agent stopped", run, after)
 	}
 
 	i.MustCLI("project", "remove", "--id", r.projectID, "--json")
