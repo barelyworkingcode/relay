@@ -112,7 +112,7 @@ nil-safe. Three methods.
 | `Consume(ctx, claim)` | no | Inside one `store.With`: if open, delete it and return the record; else `errEveEnrolmentClosed`. Records the consumption (source IP + label from `claim`) in the audit log and notifies the tray. |
 
 Presence prompt reason for `eve.enrolment.open`:
-`open a five-minute window for one new browser to register an Eve passkey`.
+`open a five-minute window for one new browser to register a Home|Work passkey`.
 Add it to the gated-operation list in `docs/presence-gate.md` and the prompt
 table in `docs/cli.md`; nothing checks that the two agree.
 
@@ -344,7 +344,7 @@ so a stale mirror (eve down for a week) is visibly stale in the tab.
 | `SubscribeRevocations(fn)` | no | Registers `fn`. Calls it at once with the pending set when that is non-empty, then with the whole pending set after every `Revoke` commit. Calls are serialised and the snapshot is taken under the same lock, so no push precedes it; `fn` must not block. Returns a cancel func. `/ws/files` is the one subscriber. |
 | `Unrevoke(id)` | no | Withdraws a pending revocation eve has not yet applied. Narrowing nothing, so ungated, like unregistering an MCP. |
 
-Presence prompt reason for `eve.passkey.revoke`: `revoke the Eve passkey %s`
+Presence prompt reason for `eve.passkey.revoke`: `revoke the Home|Work passkey %s`
 where `%s` is the abbreviated credential id (`abbreviatePasskeyID`). Add it
 to `docs/presence-gate.md` and the prompt table in `docs/cli.md`.
 
