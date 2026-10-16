@@ -62,6 +62,7 @@ var GatedOps = []string{
 	"enrolment.update",
 	"enrolment.revoke",
 	"enrolment.sign",
+	"enrolment.window.open",
 	"login.bootstrap.mint",
 	"login.passkey.revoke",
 	"mcp.register",

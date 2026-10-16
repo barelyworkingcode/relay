@@ -188,6 +188,32 @@ var dialogNegSpecs = []negSpec{
 		},
 	},
 	{
+		op: "enrolment.window.open",
+		pre: func(ctx context.Context, e env, id string) (negState, result, bool) {
+			token, res, ok := runCredential(e, id)
+			if !ok {
+				return negState{}, res, false
+			}
+			profile, res, ok := windowOpenSetup(ctx, e, id, token)
+			if !ok {
+				return negState{}, res, false
+			}
+			return negState{Subject: profile}, result{}, true
+		},
+		expect: func(env, negState) string { return "open a five-minute window for one remote machine" },
+		line: func(e env, st negState) string {
+			return relayLine(e, "enrol", "open", "--profile", st.Subject)
+		},
+		effect: func(ctx context.Context, e env, _ negState) (string, error) {
+			v, err := remoteWindow(ctx, e)
+			if err != nil || !v.Window.Open {
+				return "", err
+			}
+			uerr := relayCmd(ctx, e, "enrol", "close")
+			return "the enrolment window opened after Cancel" + undoNote(uerr), nil
+		},
+	},
+	{
 		op: "eve.passkey.revoke",
 		pre: func(ctx context.Context, e env, id string) (negState, result, bool) {
 			keys, err := listEvePasskeys(ctx, e)

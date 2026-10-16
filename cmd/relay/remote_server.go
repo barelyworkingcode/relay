@@ -78,30 +78,16 @@ func resolveRemoteConfig(c *config.RemoteConfig) resolvedRemoteConfig {
 	return out
 }
 
-// resolveRemoteEnrolment derives the enrolment-request listener's config from
-// the same block resolveRemoteConfig reads for the tool-plane listener.
-// Unlike resolveRemoteConfig, this can fail: enrolment_requests:true with
-// enabled:false names a configuration mistake rather than something to
-// silently take at face value — the enrolment channel is a companion to the
-// tool-plane listener, not a substitute for enabling it, and letting it
-// start on its own would mean "no remote access" in settings.json no longer
-// implied "no network door open."
-func resolveRemoteEnrolment(c *config.RemoteConfig) (resolvedRemoteConfig, error) {
-	wantEnrolment := c != nil && boolOr(c.EnrolmentRequests, false)
-	if !wantEnrolment {
-		return resolvedRemoteConfig{Enabled: false, Listen: defaultEnrolmentListen}, nil
+// resolveRemoteEnrolment names the address an enrolment window binds. The
+// enrolment channel is a companion to the tool-plane listener, so it is only
+// available while that one is enabled; there is no setting that keeps the port
+// open between windows.
+func resolveRemoteEnrolment(c *config.RemoteConfig) resolvedRemoteConfig {
+	listen := defaultEnrolmentListen
+	if c != nil && c.EnrolmentListen != "" {
+		listen = c.EnrolmentListen
 	}
-	if !resolveRemoteConfig(c).Enabled {
-		return resolvedRemoteConfig{}, fmt.Errorf(
-			"remote.enrolment_requests is true but remote.enabled is false: the enrolment-request channel " +
-				"is a companion to the remote tool-plane listener, not a replacement for it — set remote.enabled " +
-				"to true as well, or turn enrolment_requests off")
-	}
-	listen := c.EnrolmentListen
-	if listen == "" {
-		listen = defaultEnrolmentListen
-	}
-	return resolvedRemoteConfig{Enabled: true, Listen: listen}, nil
+	return resolvedRemoteConfig{Enabled: resolveRemoteConfig(c).Enabled, Listen: listen}
 }
 
 // RemoteToolRouter is a separate, two-method interface so the narrowing is

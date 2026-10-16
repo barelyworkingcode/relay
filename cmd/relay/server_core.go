@@ -872,6 +872,15 @@ func startServerCore(opts serverOptions) (*App, error) {
 	// needs no further synchronization: nothing reads enrolmentOps.Requests
 	// before this line runs.
 	enrolmentOps.Requests = app.remote.EnrolTable()
+	enrolmentOps.Window = &EnrolmentWindowOps{
+		Store:  store,
+		Queue:  serviceQueue,
+		Audit:  rec,
+		Gate:   presenceGate,
+		Remote: app.remote,
+		Notify: platform.Notify,
+		Clock:  clock,
+	}
 
 	// Catch termination signals so child processes get cleaned up.
 	// This goroutine is NOT tracked via goFunc because cleanup() calls

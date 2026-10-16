@@ -619,10 +619,9 @@ Done for `credential list`, `service list`, `mcp list`, `login list`,
 `eve list`, `enrol list`, `grant` and the name resolution in
 `service unregister/restart` and `mcp unregister`. The owner's decision is
 that there is no offline recovery read (`relay config export --offline` is not
-built): a stopped tray is an explicit unavailable state. Two commands still
-read a file of their own and need no tray: `relay audit` (the audit log) and
-`relay enrol ca-fingerprint` (the public `ca.crt`); neither reads
-`settings.json`. The scoped commands do not
+built): a stopped tray is an explicit unavailable state. One command still
+reads a file of its own and needs no tray: `relay audit` (the audit log); it
+does not read `settings.json`. The scoped commands do not
 construct a settings store; nothing guards that automatically.
 
 ### Phase 6 — replace polling with event-driven convergence

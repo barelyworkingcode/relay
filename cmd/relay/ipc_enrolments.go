@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,15 +33,13 @@ type ipcEnrolmentIDMsg struct {
 	ClientID string `json:"client_id"`
 }
 
-// ipcRemoteConfigMsg's JSON tags match remoteConfigFields' — see that
-// type's doc comment for why EnrolmentRequests/EnrolmentListen carry no
-// save-time refusal of their own.
+// ipcRemoteConfigMsg's JSON tags match remoteConfigFields'.
 type ipcRemoteConfigMsg struct {
-	Remove            bool   `json:"remove"`
-	Enabled           bool   `json:"enabled"`
-	Listen            string `json:"listen"`
-	EnrolmentRequests bool   `json:"enrolment_requests"`
-	EnrolmentListen   string `json:"enrolment_listen"`
+	Remove                   bool            `json:"remove"`
+	Enabled                  bool            `json:"enabled"`
+	Listen                   string          `json:"listen"`
+	EnrolmentListen          string          `json:"enrolment_listen"`
+	RemovedEnrolmentRequests json.RawMessage `json:"enrolment_requests,omitempty"`
 }
 
 // ipcEnrolmentRequestIDMsg is refuse_enrolment_request's whole body: the
@@ -53,14 +52,14 @@ type ipcEnrolmentRequestIDMsg struct {
 // approveFields' own JSON shape (enrolment_ops.go), repeated here rather
 // than reused directly so this door's wire type can evolve independently of
 // the CLI's, the way ipcCreateEnrolmentMsg already stands apart from
-// enrolmentFields. There is deliberately no field that could carry a CSR:
-// see approveFields' own doc comment for why that field must not exist on
-// ANY caller of Approve, this one included.
+// enrolmentFields. There is deliberately no field that could carry a CSR or
+// a profile: see approveFields' own doc comment for why those fields must not
+// exist on ANY caller of Approve, this one included. The body decodes with
+// unknown fields refused (see ipcApproveEnrolmentRequest).
 type ipcApproveEnrolmentRequestMsg struct {
-	RequestID  string                 `json:"request_id"`
-	ClientID   string                 `json:"client_id"`
-	ProjectIDs []string               `json:"project_ids"`
-	Budget     config.EnrolmentBudget `json:"budget"`
+	RequestID string                 `json:"request_id"`
+	ClientID  string                 `json:"client_id"`
+	Budget    config.EnrolmentBudget `json:"budget"`
 }
 
 // pendingEnrolmentRequestView is the Pending requests panel's projection of
@@ -71,7 +70,8 @@ type ipcApproveEnrolmentRequestMsg struct {
 // added here under a name that dodges the reflection scan (or a stray
 // %v-style dump) still fails the marshal check. The request carries no
 // grant and no budget field either (spec §3): those are the human's choice
-// at approval, never the network peer's.
+// at approval, never the network peer's. ProfileID and ProfileName are the
+// window's profile: the sheet shows it and offers no choice.
 type pendingEnrolmentRequestView struct {
 	RequestID        string `json:"request_id"`
 	SPKISHA256       string `json:"spki_sha256"`
@@ -87,17 +87,16 @@ type pendingEnrolmentRequestView struct {
 	// is why SASReady exists as its own bool rather than being inferred
 	// from a non-empty string: "no code yet" and "this row will never have
 	// one" are different sentences on screen and only one of them is an
-	// error. IsLegacyRequest marks a `relayremote request` row, which
-	// carries no comparison at all and stays approvable exactly as before.
-	SAS             string `json:"sas,omitempty"`
-	SASReady        bool   `json:"sas_ready"`
-	SASFailed       bool   `json:"sas_failed"`
-	IsLegacyRequest bool   `json:"is_legacy_request"`
+	// error.
+	SAS       string `json:"sas,omitempty"`
+	SASReady  bool   `json:"sas_ready"`
+	SASFailed bool   `json:"sas_failed"`
 
-	// RequestedProfile is hostile input from an unauthenticated peer, shown
-	// as a request and never acted on — see the panel's own rendering,
-	// which never pre-ticks it.
-	RequestedProfile string `json:"requested_profile,omitempty"`
+	// ProfileID is the access profile of the window the request arrived in,
+	// and ProfileName its display name (the id when the profile has none or
+	// is gone).
+	ProfileID   string `json:"profile_id"`
+	ProfileName string `json:"profile_name"`
 
 	// SuggestedClientID is the host's collision-free suggestion for the
 	// approval sheet's client-id field. Advisory: the validation inside
@@ -119,8 +118,8 @@ func pendingEnrolmentRequestViewOf(v enrolmentRequestView) pendingEnrolmentReque
 		SAS:              v.SAS,
 		SASReady:         v.SASReady,
 		SASFailed:        v.SASFailed,
-		IsLegacyRequest:  v.IsLegacyRequest,
-		RequestedProfile: v.RequestedProfile,
+		ProfileID:        v.ProfileID,
+		ProfileName:      v.ProfileID,
 	}
 }
 
@@ -133,6 +132,7 @@ func pendingEnrolmentRequestViewsOf(views []enrolmentRequestView, s *config.Sett
 	for _, v := range views {
 		pv := pendingEnrolmentRequestViewOf(v)
 		pv.SuggestedClientID = suggestClientID(s, v.Label)
+		pv.ProfileName = profileDisplayName(s, v.ProfileID)
 		out = append(out, pv)
 	}
 	return out
@@ -158,27 +158,22 @@ type remoteConfigView struct {
 	Listen       string `json:"listen"`
 	Effective    string `json:"effective"`
 	AuditEnabled bool   `json:"audit_enabled"`
-	// CAFingerprint is relay's CA certificate SHA-256 (spec §6) — the value
-	// `relayremote request --ca-fingerprint` must be given, and the one
-	// thing that closes the request channel's MITM (§6: "only the CA pin
-	// stops this"). Read straight off disk, exactly like `relay enrol
-	// ca-fingerprint`, so this and that command are byte-identical for the
-	// same CA (AC-30) with no sealer and no CA generation on this path.
-	// Empty when no CA has been generated yet (no enrolment created or
-	// signed on this install): the tab shows that as an explanation rather
-	// than surfacing enrolment.LoadCACertificateOnly's error, since a missing CA here
-	// is not a caller mistake to report as a failure.
+	// CAFingerprint is relay's CA certificate SHA-256, read straight off
+	// disk with no sealer and no CA generation on this path. Empty when no CA
+	// has been generated yet. It stays in the API for readers that already
+	// use it; no relay command or screen asks the operator to carry it.
 	CAFingerprint string `json:"ca_fingerprint,omitempty"`
 
-	// EnrolmentRequests/EnrolmentListen/EnrolmentEffective mirror
-	// Enabled/Listen/Effective for the third listener (spec §1).
-	// EnrolmentEffective is always populated — the address the listener
-	// would bind if turned on — so the tab can show it even while the
-	// listener is off, the same way Effective already does for the
-	// tool-plane one.
-	EnrolmentRequests  bool   `json:"enrolment_requests"`
+	// EnrolmentListen/EnrolmentEffective mirror Listen/Effective for the
+	// enrolment window's socket. EnrolmentEffective is always populated — the
+	// address a window binds — so the tab can show it while no window is open.
 	EnrolmentListen    string `json:"enrolment_listen,omitempty"`
 	EnrolmentEffective string `json:"enrolment_effective"`
+
+	// EnrolmentWindow is the open enrolment window, or {"open": false}.
+	// Filled in by the doors that hold the supervisor (EnrolmentOps.RemoteConfig);
+	// remoteConfigViewOf alone cannot see in-memory state.
+	EnrolmentWindow enrolmentWindowView `json:"enrolment_window"`
 }
 
 func remoteConfigViewOf(s *config.Settings, auditEnabled bool) remoteConfigView {
@@ -189,10 +184,10 @@ func remoteConfigViewOf(s *config.Settings, auditEnabled bool) remoteConfigView 
 		Effective:          resolved.Listen,
 		AuditEnabled:       auditEnabled,
 		EnrolmentEffective: defaultEnrolmentListen,
+		EnrolmentWindow:    currentEnrolmentWindowView(s),
 	}
 	if s.Remote != nil {
 		v.Listen = s.Remote.Listen
-		v.EnrolmentRequests = boolOr(s.Remote.EnrolmentRequests, false)
 		v.EnrolmentListen = s.Remote.EnrolmentListen
 		if v.EnrolmentListen != "" {
 			v.EnrolmentEffective = v.EnrolmentListen
@@ -278,11 +273,11 @@ func ipcUpdateRemoteConfig(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	fields := remoteConfigFields{
-		Remove:            msg.Remove,
-		Enabled:           msg.Enabled,
-		Listen:            msg.Listen,
-		EnrolmentRequests: msg.EnrolmentRequests,
-		EnrolmentListen:   msg.EnrolmentListen,
+		Remove:                   msg.Remove,
+		Enabled:                  msg.Enabled,
+		Listen:                   msg.Listen,
+		EnrolmentListen:          msg.EnrolmentListen,
+		RemovedEnrolmentRequests: msg.RemovedEnrolmentRequests,
 	}
 	// Off the main thread: EnrolmentOps.SetRemoteConfig is gated
 	// (remote.configure) when the request actually widens what a remote
@@ -326,15 +321,22 @@ func ipcListEnrolmentRequests(ctx *IPCContext, _ json.RawMessage) {
 // request — Approve reuses enrolment.sign's own gate rather than opening a
 // second door into issuance, see EnrolmentOps.Approve's own doc comment.
 func ipcApproveEnrolmentRequest(ctx *IPCContext, raw json.RawMessage) {
-	msg, ok := unmarshalIPC[ipcApproveEnrolmentRequestMsg](raw, MsgApproveEnrolmentRequest)
-	if !ok || msg.RequestID == "" || msg.ClientID == "" {
+	// Unknown fields are refused, not ignored: a body that still names a
+	// profile must not be read as an approval that ignored it.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var msg ipcApproveEnrolmentRequestMsg
+	if err := dec.Decode(&msg); err != nil {
+		dispatchEmit(ctx, "onEnrolmentError", fmt.Sprintf("approve_enrolment_request: invalid request: %v", err))
+		return
+	}
+	if msg.RequestID == "" || msg.ClientID == "" {
 		return
 	}
 	fields := approveFields{
-		RequestID:  msg.RequestID,
-		ClientID:   msg.ClientID,
-		ProjectIDs: msg.ProjectIDs,
-		Budget:     msg.Budget,
+		RequestID: msg.RequestID,
+		ClientID:  msg.ClientID,
+		Budget:    msg.Budget,
 	}
 
 	// Off the main thread: EnrolmentOps.Approve is gated (enrolment.sign,
@@ -346,12 +348,14 @@ func ipcApproveEnrolmentRequest(ctx *IPCContext, raw json.RawMessage) {
 	// DispatchToMain before any UI touch.
 	ctx.GoFunc(func() {
 		created, err := ctx.EnrolmentOps.Approve(ctx.Ctx, fields, auditViaIPC, "")
-		// Only enrolment.ErrBundle, errEnrolmentRequestExpired and
-		// errEnrolmentRequestRefused mean the record landed; every other
+		// Only enrolment.ErrBundle, errEnrolmentRequestExpired,
+		// errEnrolmentRequestRefused and errEnrolmentRequestAbandonedInFlight
+		// mean the record landed; every other
 		// error means nothing was persisted, and announcing a row for it
 		// would add a credential-less enrolment to the list — same rule
 		// ipcCreateEnrolment follows.
-		if err != nil && !errors.Is(err, enrolment.ErrBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
+		if err != nil && !errors.Is(err, enrolment.ErrBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) &&
+			!errors.Is(err, errEnrolmentRequestAbandonedInFlight) {
 			dispatchEmit(ctx, "onEnrolmentError", err.Error())
 			return
 		}

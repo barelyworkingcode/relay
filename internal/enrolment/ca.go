@@ -201,10 +201,9 @@ func (ca *RelayCA) CertPEM() []byte {
 	return out
 }
 
-// CertFingerprint is FingerprintCert applied to the CA's own certificate —
-// the value a client's --ca-fingerprint pin is checked against (§6), so
-// this and `relay enrol ca-fingerprint`'s output must be byte-identical for
-// the same CA. It never touches ca.key: the certificate is public, and
+// CertFingerprint is FingerprintCert applied to the CA's own certificate,
+// the value `relay remote show --json` reports as ca_fingerprint, so the two
+// are byte-identical for the same CA. It never touches ca.key: the certificate is public, and
 // nothing here needs the sealer that protects the key.
 func (ca *RelayCA) CertFingerprint() string {
 	return FingerprintCert(ca.cert)
@@ -269,11 +268,9 @@ func CAMaterialFromDisk() (certPEM, spki []byte, err error) {
 	return certPEM, cert.RawSubjectPublicKeyInfo, nil
 }
 
-// CAFingerprintFromDisk is `relay enrol ca-fingerprint`'s whole
-// implementation: read the certificate straight off disk and fingerprint
-// it, with no store, no dial and no sealer — the same "read commands work
-// with the tray stopped" shape `relay enrol list` and `relay audit` already
-// have.
+// CAFingerprintFromDisk reads the certificate straight off disk and
+// fingerprints it, with no store, no dial and no sealer; it backs the
+// ca_fingerprint field of `relay remote show --json`.
 func CAFingerprintFromDisk() (string, error) {
 	cert, err := LoadCACertificateOnly()
 	if err != nil {
