@@ -90,26 +90,20 @@ type App struct {
 	// runs through (docs/eve-passkey-enrolment.md).
 	eveEnrolmentOps *EveEnrolmentOps
 
-	// shownEnrolment remembers the Home|Work window and relay sign-in code the
-	// tray last listed (target to expiry), so a poll that finds one gone can
-	// tell expiry from a consume or a cancel. Main-thread only, like
-	// lastMenuJSON.
-	shownEnrolment map[string]string
+	// shownEnrolment remembers which of the Home|Work window and relay sign-in
+	// code the tray last listed, so a poll that finds one gone knows to ask
+	// whether it expired. Main-thread only, like lastMenuJSON.
+	shownEnrolment map[string]bool
 
 	// evePasskeyOps backs the Passkeys tab's eve section and
 	// pushFullSettings' eve_passkeys payload; it is the same core `relay eve
 	// list|revoke` and eve's own PUT/GET mirror routes use.
 	evePasskeyOps *EvePasskeyOps
 
-	// pendingLoginCode is a just-minted bootstrap code waiting for the first
-	// paint of a Settings window that is not open yet. Main-thread only, like
-	// lastMenuJSON and svcMenuMap.
-	pendingLoginCode *loginCodeView
-
 	// pendingSettingsPage is the page a tray action wants the next Settings
-	// window to open on, waiting for the same first paint and for the same
-	// reason pendingLoginCode does. Main-thread only. Empty is the ordinary
-	// case: the window opens where it always did.
+	// window to open on, waiting for the first paint: a window that is not up
+	// has no document to receive an emit. Main-thread only. Empty is the
+	// ordinary case: the window opens where it always did.
 	pendingSettingsPage string
 
 	// lastStatusBatchDigest fingerprints the most recently emitted service-
@@ -600,7 +594,7 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 	// on the timer that already runs, so the menu and the notice never
 	// disagree about what is open.
 	open := a.openEnrolmentWindows()
-	a.noteEnrolmentExpiry(open)
+	a.noteEnrolmentExpiry(open, s)
 	now := clockNow(a.clock)
 	for _, v := range open {
 		items = append(items, menuItem{Title: enrolmentMenuLine(v, now), ID: 0})
@@ -790,27 +784,36 @@ func enrolmentCountdown(expires string, now time.Time) string {
 
 // noteEnrolmentExpiry raises "Enrolment closed; nothing enrolled." when a
 // Home|Work window or relay sign-in code the menu showed has gone because its
-// time ran out. One that went early, consumed or cancelled, is not expiry and
-// raises nothing. The access-profile window raises its own notice from the
-// supervisor. Main thread only.
-func (a *App) noteEnrolmentExpiry(open []enrolmentWindowView) {
-	now := clockNow(a.clock)
-	current := map[string]string{}
+// time ran out unused.
+//
+// This is subtle: the decision reads the stores' own state, not poll timing. A
+// consume or a cancel clears the record; an expiry leaves it in place, past its
+// time, until the next open replaces it. So a target that left the open list
+// while its record is still stored expired unused, and one whose record is gone
+// was consumed or cancelled. The access-profile window raises its own notice
+// from the supervisor. Main thread only.
+func (a *App) noteEnrolmentExpiry(open []enrolmentWindowView, s *config.Settings) {
+	current := map[string]bool{}
 	for _, v := range open {
-		if v.Target == enrolmentWindowTargetHomeWork || v.Target == enrolmentWindowTargetRelayLogin {
-			current[v.Target] = v.Expires
-		}
+		current[v.Target] = true
 	}
 	expired := false
-	for target, expires := range a.shownEnrolment {
-		if _, still := current[target]; still {
+	for target := range a.shownEnrolment {
+		if current[target] {
 			continue
 		}
-		if at, err := time.Parse(time.RFC3339, expires); err == nil && !now.Before(at) {
+		switch {
+		case target == enrolmentWindowTargetHomeWork && s.EveEnrolment != nil,
+			target == enrolmentWindowTargetRelayLogin && s.LoginBootstrap != nil:
 			expired = true
 		}
 	}
-	a.shownEnrolment = current
+	a.shownEnrolment = map[string]bool{}
+	for _, t := range []string{enrolmentWindowTargetHomeWork, enrolmentWindowTargetRelayLogin} {
+		if current[t] {
+			a.shownEnrolment[t] = true
+		}
+	}
 	if expired {
 		a.platform.Notify("Relay", "Enrolment closed; nothing enrolled.")
 	}
