@@ -40,6 +40,9 @@ const (
 	detachedStopTries    = 3
 	detachedEventsMax    = 200
 	detachedEventsWait   = 30 * time.Second
+	// detachedQuickFail is how long a read must run, delivering nothing, to
+	// count as a dropped link rather than a read that failed at once.
+	detachedQuickFail = 2 * time.Second
 )
 
 type detachedRun struct {
@@ -174,15 +177,36 @@ func (p *ClaudeProvider) followDetached(det *detachedRun, spawn *claudeSpawnStat
 }
 
 func (p *ClaudeProvider) pumpDetached(det *detachedRun, spawn *claudeSpawnState) (int, []string) {
+	// backoff grows across reads that deliver nothing and resets only after a
+	// read that delivered lines, so a read that fails at once cannot spin.
 	backoff := detachedBackoffMin
+	grow := func() {
+		if backoff *= 2; backoff > detachedBackoffMax {
+			backoff = detachedBackoffMax
+		}
+	}
 	for {
+		before, began := det.offset.Load(), time.Now()
 		p.readDetached(det, spawn)
 		if det.ctx.Err() != nil {
 			return -1, nil
 		}
+		delivered := det.offset.Load() > before
+		if delivered {
+			backoff = detachedBackoffMin
+		}
 		st, err := p.detachedStatus(det)
 		if err == nil && st.Phase != sshhost.RunAlive {
 			return p.finishDetached(det, spawn, st)
+		}
+		if err == nil && !delivered && time.Since(began) < detachedQuickFail {
+			// The read failed at once while the host answers: not a link
+			// drop, so no event; wait and try again.
+			if !sleepCtx(det.ctx, backoff) {
+				return -1, nil
+			}
+			grow()
+			continue
 		}
 
 		// The runner is alive or the host cannot be asked: either way the
@@ -193,14 +217,11 @@ func (p *ClaudeProvider) pumpDetached(det *detachedRun, spawn *claudeSpawnState)
 			if !sleepCtx(det.ctx, backoff) {
 				return -1, nil
 			}
-			if backoff *= 2; backoff > detachedBackoffMax {
-				backoff = detachedBackoffMax
-			}
+			grow()
 			if st, err = p.detachedStatus(det); err == nil {
 				break
 			}
 		}
-		backoff = detachedBackoffMin
 		det.linkLost.Store(false)
 		p.emitHostLink(det, "restored")
 		if st.Phase != sshhost.RunAlive {
@@ -328,17 +349,9 @@ func (p *ClaudeProvider) sendDetached(det *detachedRun, data []byte) error {
 		return fmt.Errorf("the link to host %q is down; the agent keeps running, send again when it returns", det.spec.Name)
 	}
 	line := bytes.TrimSuffix(data, []byte("\n"))
-	var remote string
-	var stdin io.Reader
-	if len(line) <= sshhost.MaxInlineSendBytes {
-		remote = sshhost.RunnerSend(det.spec.OS, det.dir, line)
-	} else {
-		remote = sshhost.RunnerSendStdin(det.spec.OS, det.dir)
-		stdin = bytes.NewReader(line)
-	}
 	ctx, cancel := context.WithTimeout(det.ctx, detachedSendTimeout)
 	defer cancel()
-	if _, msg, err := runHost(ctx, det.spec, remote, stdin); err != nil {
+	if _, msg, err := runHost(ctx, det.spec, sshhost.RunnerSend(det.spec.OS, det.dir), bytes.NewReader(line)); err != nil {
 		return fmt.Errorf("send to claude on host %q: %s", det.spec.Name, msg)
 	}
 	return nil

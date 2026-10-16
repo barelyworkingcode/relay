@@ -835,22 +835,25 @@ func (m *Manager) EndSession(id string) {
 // Claude's JSONL history) and removes the persisted session file.
 func (m *Manager) DeleteSession(id string) {
 	sess := m.stopSlot(id)
-	if sess == nil {
-		// A dormant session has no provider, but a detached host agent may
-		// still run; it must end with the session.
-		if stored, err := m.store.Load(id); err == nil {
-			provider.DeleteDetachedRun(id, stored.GetHost())
-		}
-	}
 	if sess != nil {
 		sess.MarkDeleted()
 		m.signal(sess, attention.SessionEnded)
-		if p := sess.Provider(); p != nil {
-			if err := p.DeleteSession(); err != nil {
-				slog.Warn("session: delete provider data failed", "id", id, "error", err)
-			}
-			p.Kill()
+	}
+	if p := providerOf(sess); p != nil {
+		if err := p.DeleteSession(); err != nil {
+			slog.Warn("session: delete provider data failed", "id", id, "error", err)
 		}
+		p.Kill()
+	} else {
+		// A dormant session has no provider, but a detached host agent may
+		// still run; it must end with the session.
+		host := (*sessionstypes.HostSpec)(nil)
+		if sess != nil {
+			host = sess.GetHost()
+		} else if stored, err := m.store.Load(id); err == nil {
+			host = stored.GetHost()
+		}
+		provider.DeleteDetachedRun(id, host)
 	}
 	if m.perms != nil {
 		m.perms.RevokeHookToken(id)
@@ -1364,4 +1367,11 @@ func (m *Manager) ClaudeSessionIDs() []string {
 		}
 	}
 	return ids
+}
+
+func providerOf(sess *sessionstypes.Session) sessionstypes.Provider {
+	if sess == nil {
+		return nil
+	}
+	return sess.Provider()
 }

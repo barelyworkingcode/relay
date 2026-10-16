@@ -42,7 +42,8 @@ type RunState struct {
 // (generation, empty for the latest). It is deliberate that every value is
 // checked against [A-Za-z0-9_-] before it reaches a path: the ids are relay's
 // own, but a path built from a caller string must not escape the agents dir.
-const agentPrelude = `umask 077
+const agentPrelude = `oldumask=$(umask)
+umask 077
 case "$1" in ''|*[!A-Za-z0-9_-]*) echo "relay: invalid session id" >&2; exit 2;; esac
 case "$2" in *[!A-Za-z0-9_-]*) echo "relay: invalid generation" >&2; exit 2;; esac
 [ -n "$HOME" ] || { echo "relay: HOME is not set on the host" >&2; exit 2; }
@@ -89,8 +90,10 @@ started=$(lstart "$pid")
 printf '{"pid":%s,"pgid":%s,"started":"%s","generation":"%s"}\n' "$pid" "$pgid" "$started" "${dir##*/}" > run.json.tmp && mv run.json.tmp run.json
 tail -n +1 -f in.jsonl > in.pipe &
 tailpid=$!
+umask "$2"
 sh agent.sh < in.pipe >> out.jsonl 2>> stderr.log
 code=$?
+umask 077
 kill "$tailpid" 2>/dev/null
 printf '{"code":%s,"at":"%s"}\n' "$code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > exit.tmp && mv exit.tmp exit
 `
@@ -120,10 +123,10 @@ printf %s "$3" | base64 -d > agent.sh || { echo "relay: cannot write agent scrip
 cat > runner.sh <<'RELAY_RUNNER_EOF'
 ` + agentRunnerScript + `RELAY_RUNNER_EOF
 if command -v setsid >/dev/null 2>&1; then
-  setsid sh "$dir/runner.sh" "$dir" </dev/null >/dev/null 2>&1 &
+  setsid sh "$dir/runner.sh" "$dir" "$oldumask" </dev/null >/dev/null 2>&1 &
 else
   set -m
-  sh "$dir/runner.sh" "$dir" </dev/null >/dev/null 2>&1 &
+  sh "$dir/runner.sh" "$dir" "$oldumask" </dev/null >/dev/null 2>&1 &
   set +m
 fi
 rpid=$!
@@ -137,17 +140,17 @@ while [ ! -f "$dir/run.json" ]; do
   fi
   sleep 0.1 2>/dev/null || sleep 1
 done
-echo "relay-run $gen"
+echo "@@RELAY_RUN@@ $gen"
 `
 
 const agentStatusScript = agentPrelude + `
-resolve "$@" || { echo none; exit 0; }
+resolve "$@" || { echo "@@RELAY_RUN@@ none"; exit 0; }
 if [ -f "$dir/exit" ]; then
   code=$(sed -n 's/.*"code":\(-\{0,1\}[0-9][0-9]*\).*/\1/p' "$dir/exit")
-  echo "exited $gen ${code:-1}"
+  echo "@@RELAY_RUN@@ exited $gen ${code:-1}"
   exit 0
 fi
-if runner_alive; then echo "alive $gen"; else echo "dead $gen"; fi
+if runner_alive; then echo "@@RELAY_RUN@@ alive $gen"; else echo "@@RELAY_RUN@@ dead $gen"; fi
 `
 
 // agentSendBody appends one line from stdin to in.jsonl. The refusal when the
@@ -160,10 +163,6 @@ printf '%s\n' "$line" >> "$dir/in.jsonl" || exit 6
 `
 
 const agentSendScript = agentPrelude + agentSendBody
-
-const agentSendInlineScript = agentPrelude + `printf %s "$3" | base64 -d | {
-` + agentSendBody + `}
-`
 
 // agentReadScript takes $3, the byte offset of a line start. When the runner
 // is already gone it prints the rest and ends. Otherwise it follows out.jsonl
@@ -202,19 +201,20 @@ exec tail -c +"$((off+1))" "$dir/out.jsonl"
 `
 
 // agentStopScript ends the runner's process group, TERM then KILL, and
-// returns once the group is gone. The pid-reuse guard is deliberate: a pid
-// that is alive with another start time is not ours and its group is left
-// alone. A dead leader with a live group is still ours, because a pid is not
-// reused while a group carries it.
+// returns once the group is gone. Deliberate: it kills only while the leader
+// is alive with the start time run.json recorded. A dead leader, a different
+// start time or an exit file means the group is gone or no longer ours, and
+// nothing is signalled.
 const agentStopScript = agentPrelude + `
 resolve "$@" || exit 0
+[ ! -f "$dir/exit" ] || exit 0
 [ -f "$dir/run.json" ] || exit 0
 pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$dir/run.json")
 pgid=$(sed -n 's/.*"pgid":\([0-9][0-9]*\).*/\1/p' "$dir/run.json")
 started=$(sed -n 's/.*"started":"\([^"]*\)".*/\1/p' "$dir/run.json")
 [ -n "$pid" ] && [ "$pid" = "$pgid" ] || exit 0
 cur=$(lstart "$pid")
-if [ -n "$cur" ] && [ "$cur" != "$started" ]; then exit 0; fi
+[ -n "$cur" ] && [ "$cur" = "$started" ] || exit 0
 kill -0 -- "-$pgid" 2>/dev/null || exit 0
 kill -s TERM -- "-$pgid" 2>/dev/null
 i=0
@@ -249,7 +249,7 @@ func RunnerStart(hostOS string, d RunDir, argv []string, env map[string]string) 
 }
 
 // RunnerStartIn creates the run directory, starts argv under dir as a detached
-// agent and returns after run.json exists. It prints "relay-run <generation>".
+// agent and returns after run.json exists. It prints "@@RELAY_RUN@@ <generation>".
 // An empty d.Generation allocates the next one; a given one is refused if its
 // directory exists. env goes to the agent only.
 func RunnerStartIn(hostOS, dir string, d RunDir, argv []string, env map[string]string) string {
@@ -257,24 +257,14 @@ func RunnerStartIn(hostOS, dir string, d RunDir, argv []string, env map[string]s
 	return agentCommand(hostOS, agentStartScript, d.Session, d.Generation, script)
 }
 
-// RunnerSend appends line as one complete line to in.jsonl, carried inside the
-// command. It fails, and so reports no delivery, when the append fails or the
-// agent is gone. A caller must not retry on an ambiguous ssh exit: the append
-// may have landed.
-func RunnerSend(hostOS string, d RunDir, line []byte) string {
-	enc := base64.StdEncoding.EncodeToString(line)
-	return agentCommand(hostOS, agentSendInlineScript, d.Session, d.Generation, enc)
-}
-
-// RunnerSendStdin is RunnerSend with the line read from the command's stdin,
-// for a line too large for a command line.
-func RunnerSendStdin(hostOS string, d RunDir) string {
+// RunnerSend appends the line on its stdin as one complete line to in.jsonl.
+// The line travels on stdin so no other account sees it in a process listing.
+// It fails, and so reports no delivery, when the append fails or the agent is
+// gone. A caller must not retry on an ambiguous ssh exit: the append may have
+// landed.
+func RunnerSend(hostOS string, d RunDir) string {
 	return agentCommand(hostOS, agentSendScript, d.Session, d.Generation)
 }
-
-// MaxInlineSendBytes is the largest line RunnerSend should carry in the
-// command; a larger one goes over stdin.
-const MaxInlineSendBytes = 32 * 1024
 
 // RunnerRead follows out.jsonl from a byte offset and ends when the runner is
 // gone, after the data has drained. Its stdout is event bytes only.
@@ -311,18 +301,33 @@ func RunnerRemove(hostOS string, session string) string {
 
 // ParseRunStart returns the generation RunnerStart printed.
 func ParseRunStart(out string) (string, error) {
-	f := strings.Fields(out)
-	if len(f) != 2 || f[0] != "relay-run" {
+	f, ok := runSentinelFields(out)
+	if !ok || len(f) != 1 {
 		return "", fmt.Errorf("unexpected runner start answer %q", firstLine(out))
 	}
-	return f[1], nil
+	return f[0], nil
+}
+
+const runSentinel = "@@RELAY_RUN@@"
+
+// runSentinelFields returns the words after the first sentinel line. A host
+// whose rc files print to stdout adds lines before it, so the answer is found,
+// not assumed to be the whole output.
+func runSentinelFields(out string) ([]string, bool) {
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		if len(f) > 0 && f[0] == runSentinel {
+			return f[1:], true
+		}
+	}
+	return nil, false
 }
 
 // ParseRunState parses RunnerStatus's answer.
 func ParseRunState(out string) (RunState, error) {
-	f := strings.Fields(firstLine(out))
-	if len(f) == 0 {
-		return RunState{}, fmt.Errorf("empty runner status answer")
+	f, ok := runSentinelFields(out)
+	if !ok || len(f) == 0 {
+		return RunState{}, fmt.Errorf("unexpected runner status answer %q", firstLine(out))
 	}
 	switch RunPhase(f[0]) {
 	case RunNone:

@@ -780,10 +780,10 @@ that cannot be reached at stop time leaves the agent running; relay logs it.
 
 **A relay restart.** A detached agent outlives relay. When relay or
 relay-sessions shuts down, each detached provider drops its local reader and
-leaves the agent running; the session reads dormant afterwards. Relay does
-not reattach yet; stop ends it. A resume answers `runner_alive` while the
-agent runs. Deleting a dormant detached session ends its agent and removes its
-run directory on the host, as for a live one.
+leaves the agent running; the session reads dormant afterwards. After a
+restart a resume answers `runner_alive` while the agent runs, and
+`relay session stop` ends it. Deleting a dormant detached session ends its
+agent and removes its run directory on the host, as for a live one.
 
 **Resume.** A resume of a detached session first asks the host about the
 latest generation. A running agent refuses the resume with `runner_alive` (HTTP

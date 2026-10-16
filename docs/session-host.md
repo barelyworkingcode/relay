@@ -962,7 +962,7 @@ complete lines after a cursor and the cursor to pass next. A shutdown of
 relay or relay-sessions calls `Release`, which stops the local reader and
 leaves the agent running: a detached agent survives a relay restart, the
 session reads dormant, and a resume answers `runner_alive` while the agent
-runs. Relay does not reattach yet; stop ends it. Idle stop, drop-in, stop and
+runs, and `relay session stop` ends the agent. Idle stop, drop-in, stop and
 delete call `Kill`, which ends the agent; deleting a dormant session does the
 same through `DeleteDetachedRun`. With `detach` unset the `ssh -T` path is
 unchanged. A Windows host refuses a detached start.
