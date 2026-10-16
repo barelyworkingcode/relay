@@ -2638,6 +2638,11 @@ A resume applies to a dormant session. Every session is dormant after a relay
 restart; an unknown id exits `1` (`404`). Text form: `resumed session ID` or
 `session ID is already live`.
 
+A detached host session ([ssh-hosts.md](ssh-hosts.md)) whose agent still
+runs on the host is refused with `runner_alive` (exit `1`, `409`) and no second
+agent starts. A host that cannot answer whether its agent runs is refused with
+`host_unavailable`.
+
 ### `session mode`
 
 `--id` and `--mode` (a permission mode) are required. It changes a session's
