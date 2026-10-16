@@ -762,10 +762,13 @@ on stdout and a heartbeat dot on stderr every few seconds: a reader orphaned
 by a dropped link dies when that write fails, and a heartbeat on stdout could
 land inside a half-written line.
 
-**A drop.** When a reader ends and the runner is alive, or the host cannot be
-asked, relay writes `session.host_link` with `link=lost`, retries with a
-backoff from one to ten seconds, reopens the read at its cursor and writes
-`link=restored`. The agent keeps running throughout. A send while the link is
+**A drop.** When a reader ends while the runner has not exited, relay writes
+`session.host_link` with `link=lost`, once per outage, however soon after the
+read opened. It retries with a backoff from one to ten seconds that grows
+across reads that deliver nothing and resets after a read that delivered
+lines, and reopens the read at its cursor. The reopened read writes
+`link=restored` once it has delivered a line or stayed open for two seconds; a
+read that keeps failing at once writes one `lost` and nothing more. The agent keeps running throughout. A send while the link is
 down fails with an error and nothing is delivered; there is no retry, because
 an ssh failure after the command started may still have landed the line. When
 the runner has exited, relay delivers the remaining lines and ends the

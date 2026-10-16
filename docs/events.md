@@ -421,7 +421,7 @@ prompt and an unavailable audit log use the shared `presence_*` and
 | `terminal.log` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes, `relay terminal stop`, `relay terminal log` | `terminal_id` |
 | `session.ws.close` | At connection end in the relay-sessions hub | `/ws` | none |
 | `session.state` | On an agent state change (background, relay-sessions) | none (background) | `session_id`, `from`, `to` (the agent states before and after) |
-| `session.host_link` | When a detached host session's link to its host is lost or comes back (background, relay-sessions) | none (background) | `session_id`, `host_id`, `link` (`lost` or `restored`; the line's `status` is the outcome, so the link state has its own key) |
+| `session.host_link` | When a detached host session's link to its host is lost, once per outage, or comes back once a reopened read has delivered a line or stayed open two seconds (background, relay-sessions) | none (background) | `session_id`, `host_id`, `link` (`lost` or `restored`; the line's `status` is the outcome, so the link state has its own key) |
 
 ### Sandbox
 

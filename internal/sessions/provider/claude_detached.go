@@ -56,6 +56,9 @@ type detachedRun struct {
 	// once and in order.
 	offset   atomic.Int64
 	linkLost atomic.Bool
+	// lineSig is nudged when a line arrives, so a reopened read can prove
+	// itself without waiting out its timer.
+	lineSig chan struct{}
 	// finished is set once the runner is known to be gone, so Kill has nothing
 	// to stop.
 	finished atomic.Bool
@@ -124,6 +127,7 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 		cancel:  runCancel,
 		stopped: make(chan struct{}),
 		done:    make(chan struct{}),
+		lineSig: make(chan struct{}, 1),
 	}
 
 	p.cmd, p.stdin, p.targetPID = nil, nil, 0
@@ -176,9 +180,13 @@ func (p *ClaudeProvider) followDetached(det *detachedRun, spawn *claudeSpawnStat
 	p.handler("process_exited", providerExitData(code, tail, wasKilled))
 }
 
+// pumpDetached reads the agent's events until it exits or the spawn is killed.
+// A read that ends while the runner lives marks the link lost (one `lost`
+// event per outage). A reopened read clears the mark, with `restored`, once it
+// has delivered a line or stayed open detachedQuickFail, so a read that keeps
+// failing at once produces one `lost` and no churn. The backoff grows across
+// reads that deliver nothing and resets after one that delivered lines.
 func (p *ClaudeProvider) pumpDetached(det *detachedRun, spawn *claudeSpawnState) (int, []string) {
-	// backoff grows across reads that deliver nothing and resets only after a
-	// read that delivered lines, so a read that fails at once cannot spin.
 	backoff := detachedBackoffMin
 	grow := func() {
 		if backoff *= 2; backoff > detachedBackoffMax {
@@ -186,47 +194,69 @@ func (p *ClaudeProvider) pumpDetached(det *detachedRun, spawn *claudeSpawnState)
 		}
 	}
 	for {
-		before, began := det.offset.Load(), time.Now()
+		select {
+		case <-det.lineSig:
+		default:
+		}
+		before := det.offset.Load()
+		readDone := make(chan struct{})
+		watched := make(chan struct{})
+		go func() {
+			defer close(watched)
+			p.confirmRestored(det, readDone)
+		}()
 		p.readDetached(det, spawn)
+		close(readDone)
+		<-watched
 		if det.ctx.Err() != nil {
 			return -1, nil
 		}
-		delivered := det.offset.Load() > before
-		if delivered {
+		if det.offset.Load() > before {
 			backoff = detachedBackoffMin
 		}
-		st, err := p.detachedStatus(det)
-		if err == nil && st.Phase != sshhost.RunAlive {
-			return p.finishDetached(det, spawn, st)
-		}
-		if err == nil && !delivered && time.Since(began) < detachedQuickFail {
-			// The read failed at once while the host answers: not a link
-			// drop, so no event; wait and try again.
-			if !sleepCtx(det.ctx, backoff) {
-				return -1, nil
-			}
-			grow()
-			continue
-		}
 
-		// The runner is alive or the host cannot be asked: either way the
-		// link is what ended the read.
-		p.emitHostLink(det, "lost")
-		det.linkLost.Store(true)
-		for {
+		st, err := p.detachedStatus(det)
+		for err == nil && st.Phase == sshhost.RunAlive || err != nil {
+			if !det.linkLost.Load() {
+				det.linkLost.Store(true)
+				p.emitHostLink(det, "lost")
+			}
 			if !sleepCtx(det.ctx, backoff) {
 				return -1, nil
 			}
 			grow()
-			if st, err = p.detachedStatus(det); err == nil {
+			if err == nil {
 				break
 			}
+			st, err = p.detachedStatus(det)
 		}
-		det.linkLost.Store(false)
-		p.emitHostLink(det, "restored")
-		if st.Phase != sshhost.RunAlive {
+		if err == nil && st.Phase != sshhost.RunAlive {
+			if det.linkLost.CompareAndSwap(true, false) {
+				p.emitHostLink(det, "restored")
+			}
 			return p.finishDetached(det, spawn, st)
 		}
+	}
+}
+
+// confirmRestored clears a lost mark once the read has proved itself: a line
+// arrived or it stayed open long enough. It ends when the read does.
+func (p *ClaudeProvider) confirmRestored(det *detachedRun, readDone <-chan struct{}) {
+	if !det.linkLost.Load() {
+		return
+	}
+	t := time.NewTimer(detachedQuickFail)
+	defer t.Stop()
+	select {
+	case <-det.lineSig:
+	case <-t.C:
+	case <-readDone:
+		return
+	case <-det.ctx.Done():
+		return
+	}
+	if det.linkLost.CompareAndSwap(true, false) {
+		p.emitHostLink(det, "restored")
 	}
 }
 
@@ -336,6 +366,10 @@ func (p *ClaudeProvider) consumeLines(ctx context.Context, det *detachedRun, spa
 			p.processLine(json.RawMessage(body), spawn)
 		}
 		det.offset.Add(int64(len(line)))
+		select {
+		case det.lineSig <- struct{}{}:
+		default:
+		}
 	}
 	_ = cmd.Process.Kill()
 	_ = cmd.Wait()
