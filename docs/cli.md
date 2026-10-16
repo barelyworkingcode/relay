@@ -2539,6 +2539,12 @@ or conflicting flag (each is named in its section), a refusal from the session
 host (`error: session host: CODE: MESSAGE`) or the project's authorization, or a
 host that is down; `2` for an unknown flag.
 
+`session message`, `send`, `wait` and `events` report a refusal that carries a
+code (`host_link_down`, `send_unknown`, `replay_unavailable`, `not_tracked`,
+`already_processing`, ...) as before without `--json`: `error: session host:
+CODE: MESSAGE` on stderr. With `--json` they print one line on stderr,
+`{"code":"CODE","message":"MESSAGE"}`, nothing on stdout, and exit `1`.
+
 ### `session start`
 
 | Flag | Meaning |

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -181,6 +182,9 @@ func hostError(status int, body []byte) error {
 		msg := e.Message
 		if msg == "" {
 			msg = e.Error
+		} else if e.Code == "" {
+			// {"error": CODE, "message": TEXT} is the host's coded shape.
+			e.Code = e.Error
 		}
 		if msg != "" {
 			if e.Code != "" {
@@ -702,7 +706,7 @@ func sessionMessage(args []string) {
 	}
 	req := messageRequest(*id, *text, *file)
 	req.TimeoutMS = timeout.Milliseconds()
-	raw := adminCall("relay session message", "session.message", req)
+	raw := sessionAdminCall("relay session message", "session.message", req, *asJSON)
 	if *asJSON {
 		printJSONLine(raw)
 		return
@@ -712,6 +716,29 @@ func sessionMessage(args []string) {
 	}
 	decodeCLIResult(raw, &res)
 	fmt.Println(res.Text)
+}
+
+var hostCodedError = regexp.MustCompile(`session host: ([a-z][a-z_]*): (.*)$`)
+
+// sessionAdminCall is adminCall for the verbs whose host refusals carry a
+// code. Under --json a coded refusal is one line on stderr,
+// {"code","message"}, and the exit is 1; otherwise the text is as adminCall's.
+func sessionAdminCall(command, op string, args any, asJSON bool) json.RawMessage {
+	client := requireService(command)
+	raw, err := client.AdminOp(op, marshalCLIArgs(args))
+	if err == nil {
+		return raw
+	}
+	if m := hostCodedError.FindStringSubmatch(err.Error()); asJSON && m != nil {
+		line, _ := json.Marshal(struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}{m[1], m[2]})
+		fmt.Fprintln(os.Stderr, string(line))
+		os.Exit(1)
+	}
+	exitError("%s", adminOpErrorText(err))
+	return nil
 }
 
 // messageRequest builds the request from --text or --file the way session message does.
@@ -744,7 +771,7 @@ func sessionSend(args []string) {
 	}
 	req := messageRequest(*id, *text, *file)
 	req.TimeoutMS = timeout.Milliseconds()
-	raw := adminCall("relay session send", "session.send", req)
+	raw := sessionAdminCall("relay session send", "session.send", req, *asJSON)
 	if *asJSON {
 		printJSONLine(raw)
 		return
@@ -766,7 +793,7 @@ func sessionWait(args []string) {
 	if *id == "" {
 		exitError("--id is required")
 	}
-	raw := adminCall("relay session wait", "session.wait", sessionWaitRequest{ID: *id, TimeoutMS: timeout.Milliseconds()})
+	raw := sessionAdminCall("relay session wait", "session.wait", sessionWaitRequest{ID: *id, TimeoutMS: timeout.Milliseconds()}, *asJSON)
 	var res sessionWaitResult
 	decodeCLIResult(raw, &res)
 	if *asJSON {
@@ -811,7 +838,7 @@ func sessionEvents(args []string) {
 	if *id == "" {
 		exitError("--id is required")
 	}
-	raw := adminCall("relay session events", "session.events", sessionEventsRequest{ID: *id, After: *after})
+	raw := sessionAdminCall("relay session events", "session.events", sessionEventsRequest{ID: *id, After: *after}, *asJSON)
 	if *asJSON {
 		printJSONLine(raw)
 		return
