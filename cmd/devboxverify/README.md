@@ -765,6 +765,23 @@ is ended and deleted whatever the outcome.
   scope header, which narrows the run credential for that request only. Run on
   Claude Haiku `claude-haiku-5-5`; any other model reads BLOCKED.
 
+**Transcript cleanup** (session-drop-in, session-drop-in-host, cos-start). The
+interactive Claudes these journeys start leave a conversation in Claude's
+session list. Each journey removes it when it ends, after its own terminal and
+session deletes and on every path, and the cleanup never changes a result. The
+id is the one the journey learned: the drop-in's `claudeSessionId`, or for the
+cos-start terminal the `sessionId` in `~/.claude/sessions/<pid>.json` of the
+`claude` process whose argv holds `--model haiku -- verify-<nonce>-term`. The
+journey waits up to 15 s for that process to exit, then deletes
+`~/.claude/projects/*/<id>.jsonl` (on the loopback host over ssh for
+session-drop-in-host) only if the id is a UUID and the file holds
+`verify-<nonce>-`. Headless legs that are never resumed are not listed and stay.
+One stderr line per session, never posted and never holding a path:
+`transcript <journey>: <id> deleted <n>`, `... absent`, `... kept: <reason>`
+(for example `kept: EPERM` or `kept: process still running`), or
+`transcript <journey>: id unknown: <reason>`. Sessions left by earlier runs are
+not touched.
+
 **cos-start-host** (screen). The Chief of Staff starts an agent in a project on
 an SSH host. A host `loopback-<nonce>-cos` targeting `localhost` and a project
 `Drop-in Host cos <nonce>` on a fresh folder are created (the project create

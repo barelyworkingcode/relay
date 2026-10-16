@@ -535,6 +535,22 @@ func driveDropInLeg(ctx context.Context, e env, launch, run, projectID, name, ma
 			frontendDo(cleanup, e, run, http.MethodDelete, "/api/terminals/"+l.TerminalID, nil)
 		}
 		l.Delete = frontendDo(cleanup, e, run, http.MethodDelete, "/api/sessions/"+id, nil)
+		if l.TerminalID != "" {
+			journey, ps := dropInID, func(c context.Context) (string, bool) {
+				out, err := exec.CommandContext(c, "ps", "-axwwo", "command").Output()
+				return string(out), err == nil
+			}
+			if hostDoor {
+				journey, ps = dropInHostID, func(c context.Context) (string, bool) {
+					out, errText := hostProcessTable(c)
+					return string(out), errText == ""
+				}
+			}
+			removeTranscript(journey, l.ClaudeID, "verify-"+e.Nonce+"-", hostDoor, func(c context.Context) bool {
+				table, ok := ps(c)
+				return ok && !resumeLaunched(table, l.ClaudeID)
+			})
+		}
 		l.Frames = log.snapshot()
 	}()
 
