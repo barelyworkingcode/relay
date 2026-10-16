@@ -107,6 +107,10 @@ type ClaudeProvider struct {
 	// process group, not just the shim.
 	targetPID int
 
+	// det is the detached agent a host session with detach_sessions runs; nil
+	// for every other spawn. cmd and stdin are nil while it is set.
+	det *detachedRun
+
 	// root is published atomically because ProcessRoot is called from
 	// other goroutines while p.mu is held across blocking stdin writes.
 	// nil for an SSH-hosted session and whenever no spawn is running.
@@ -399,6 +403,7 @@ func buildHostExec(spec *sessionstypes.HostSpec, program []string, dir string, a
 
 func (p *ClaudeProvider) Start() error {
 	p.root.Store(nil)
+	p.det = nil
 	p.cleanupSpawnFiles()
 	p.pinnedSessionID = ""
 	if p.claudeSessionID == "" {
@@ -437,6 +442,9 @@ func (p *ClaudeProvider) Start() error {
 			// visible via KERN_PROCARGS2 on this machine at all; it never
 			// executes locally).
 			args = append(args, "--append-system-prompt", p.session.SystemPrompt)
+		}
+		if host.Detach {
+			return p.startDetached(host, args)
 		}
 		name, argv, err := buildHostExec(host, p.cfg.Launcher.Program(host.ClaudePath), p.directory, args, p.session.ID)
 		if err != nil {
@@ -1257,6 +1265,12 @@ func (p *ClaudeProvider) handleControlRequest(raw json.RawMessage) {
 func (p *ClaudeProvider) writeControlResponse(data []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if det := p.det; det != nil {
+		if err := p.sendDetached(det, append(data, '\n')); err != nil {
+			slog.Warn("claude: write control_response failed", "session", p.session.ID, "error", err)
+		}
+		return
+	}
 	if p.stdin == nil {
 		return
 	}
@@ -1269,7 +1283,7 @@ func (p *ClaudeProvider) SendMessage(text string, files []sessionstypes.FileAtta
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !p.alive.Load() || p.stdin == nil {
+	if !p.alive.Load() || (p.stdin == nil && p.det == nil) {
 		return fmt.Errorf("claude process not running")
 	}
 
@@ -1305,6 +1319,9 @@ func (p *ClaudeProvider) SendMessage(text string, files []sessionstypes.FileAtta
 	p.msgStartNano.Store(time.Now().UnixNano())
 	p.firstTokenNano.Store(0)
 
+	if det := p.det; det != nil {
+		return p.sendDetached(det, data)
+	}
 	if _, err := p.stdin.Write(data); err != nil {
 		return fmt.Errorf("write to stdin: %w", err)
 	}
@@ -1327,6 +1344,11 @@ func (p *ClaudeProvider) Kill() {
 	p.cleanupSpawnFiles()
 
 	p.root.Store(nil)
+
+	if det := p.det; det != nil {
+		p.killDetached(det)
+		return
+	}
 
 	if p.cmd == nil || p.cmd.Process == nil {
 		return
@@ -1432,6 +1454,9 @@ func (p *ClaudeProvider) emitSupersededExit(exit *spawnExit) {
 }
 
 func (p *ClaudeProvider) DeleteSession() error {
+	if host := p.session.GetHost(); host != nil && host.Detach {
+		p.removeDetachedRun(host)
+	}
 	p.mu.Lock()
 	sid := p.claudeSessionID
 	p.mu.Unlock()

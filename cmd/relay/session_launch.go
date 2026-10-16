@@ -561,6 +561,11 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		if hostErr != nil {
 			return nil, invalidRequest("host_unavailable", hostErr.Error(), baseFields)
 		}
+		if req.Resume && req.Kind == KindClaude && host.Detach && !sshhost.IsWindowsOS(host.OS) {
+			if refusal := checkDetachedRunnerGone(settings, proj.HostID, host.OS, sessionID, baseFields); refusal != nil {
+				return nil, refusal
+			}
+		}
 		hostJSON, err := json.Marshal(host)
 		if err != nil {
 			return nil, invalidRequest("internal", fmt.Sprintf("encode host: %v", err), baseFields)
@@ -1093,6 +1098,38 @@ func mergePermissionSettings(clientSettings json.RawMessage, projectPolicy *conf
 	return json.Marshal(fields)
 }
 
+// detachedStatusTimeout bounds the one ssh round trip a resume of a detached
+// session makes before it starts anything.
+const detachedStatusTimeout = 30 * time.Second
+
+// checkDetachedRunnerGone refuses a resume while the session's detached agent
+// still runs on the host: a second agent would read the same conversation.
+// It fails closed: a host that cannot answer is "host_unavailable", never "not
+// running".
+func checkDetachedRunnerGone(settings *config.Settings, hostID, hostOS, sessionID string, fields sessionLaunchAuditFields) *LaunchRefusal {
+	var h *config.Host
+	for i := range settings.Hosts {
+		if settings.Hosts[i].ID == hostID {
+			h = &settings.Hosts[i]
+			break
+		}
+	}
+	if h == nil {
+		return invalidRequest("host_unavailable", fmt.Sprintf("host %q not found", hostID), fields)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), detachedStatusTimeout)
+	defer cancel()
+	st, err := sshhost.AgentRunStatus(ctx, *h, hostOS, sessionID)
+	if err != nil {
+		return invalidRequest("host_unavailable", err.Error(), fields)
+	}
+	if st.Phase == sshhost.RunAlive {
+		return deniedRefusal(http.StatusConflict, "runner_alive",
+			fmt.Sprintf("the agent for this session still runs on host %q; stop the session before resuming it", h.Name), nil, fields)
+	}
+	return nil
+}
+
 // buildHostSpec resolves an SSH-hosted project's config.Host into the
 // sessiontypes.HostSpec relay-sessions needs to reach it, reusing
 // sshhost.SSHArgv (the one place relay derives ssh arguments) rather than
@@ -1123,6 +1160,7 @@ func buildHostSpec(settings *config.Settings, hostID string) (*sessiontypes.Host
 		spec.Shell = h.Probe.Shell
 		spec.OS = h.Probe.OS
 	}
+	spec.Detach = h.DetachSessions
 	// Codex's path comes from the host's own codex template, not the probe; a
 	// template that fails host validation is ignored, so the launch is refused
 	// the same as when none exists.

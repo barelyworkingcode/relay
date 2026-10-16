@@ -947,6 +947,20 @@ Image attachments precede the text block as `{"type":"image","source":{"type":"b
 
 Streaming forms are also read: `{"type":"assistant","index":N,"content_block":{…}}`, `{"type":"assistant","index":N,"delta":{"type":"text_delta","text":"…"}}` and `{"type":"assistant","index":N,"content_block_stop":true}`. A `user` line carrying `tool_result` blocks becomes a tool result. Any other `type` is passed on unchanged. A `control_request` line is answered on stdin; only SSH-host sessions produce one.
 
+### Detached on a host
+
+A claude session whose host spec carries `detach: true` (from
+`hosts[].detach_sessions`) runs its agent on the host under
+`~/.relay/agents/<session id>/<generation>/` instead of as the child of an
+`ssh -T` process (`docs/ssh-hosts.md`, "Detached sessions"). Argv comes from
+`buildClaudeArgs`, as for any host session; only the transport differs.
+`SendMessage` and the `control_response` writes append one line to `in.jsonl`
+through a short ssh command. Stdout lines come from `out.jsonl` by byte offset
+and reach `processLine` once and in order across a link drop. `Kill` ends the
+agent's process group on the host. `Events(ctx, after, max)` returns the
+complete lines after a cursor and the cursor to pass next. With `detach`
+unset the `ssh -T` path is unchanged. A Windows host refuses a detached start.
+
 ### History on join
 
 `join_session` on `/ws` answers with `session_joined`, whose `history[]` is built from one of two sources.
@@ -1690,6 +1704,11 @@ the ledger until a caller explicitly resumes it: `POST /launch` with
 is `StateDormant`, and names the same project the resume request names — a
 caller cannot squat a live session id or resume one project's session under
 another project's name this way.
+
+A resume of a detached host session first runs `RunnerStatus` on the latest
+generation. A running agent refuses the launch with `runner_alive` (`409`) and
+starts nothing: a second agent would read the same conversation. A host that
+cannot answer refuses with `host_unavailable`.
 
 At startup relay ages every `live` ledger record to `dormant`
 (`ledger.MarkLiveDormant`, called from `openSessionLedger` in
