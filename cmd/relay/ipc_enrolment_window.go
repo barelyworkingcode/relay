@@ -100,8 +100,22 @@ func windowCore(ctx *IPCContext) *EnrolmentWindowOps {
 	return ctx.EnrolmentOps.Window
 }
 
+func windowCoreEve(ctx *IPCContext) *EveEnrolmentOps {
+	if w := windowCore(ctx); w != nil {
+		return w.Eve
+	}
+	return nil
+}
+
+func windowCoreLogin(ctx *IPCContext) *LoginOps {
+	if w := windowCore(ctx); w != nil {
+		return w.Login
+	}
+	return nil
+}
+
 func openHomeWorkWindow(ctx *IPCContext) (string, any, error) {
-	eve := runningEveEnrolmentOps()
+	eve := windowCoreEve(ctx)
 	if eve == nil {
 		return "", nil, errEveEnrolmentOpsUnavailable
 	}
@@ -113,10 +127,11 @@ func openHomeWorkWindow(ctx *IPCContext) (string, any, error) {
 }
 
 func openRelayLoginCode(ctx *IPCContext) (string, any, error) {
-	if ctx.LoginOps == nil {
+	login := windowCoreLogin(ctx)
+	if login == nil {
 		return "", nil, errLoginOpsUnavailable
 	}
-	view, err := ctx.LoginOps.MintBootstrap(ctx.Ctx, auditViaIPC)
+	view, err := login.MintBootstrap(ctx.Ctx, auditViaIPC)
 	if err != nil {
 		return "", nil, err
 	}

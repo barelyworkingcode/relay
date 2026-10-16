@@ -62,24 +62,11 @@ type EnrolmentWindowOps struct {
 	// nothing lodged. Nil raises nothing.
 	Notify func(title, body string)
 	Clock  serverClock
-}
-
-// runningEveEnrolmentOps and runningLoginOps are the cores that own the
-// Home|Work window and the relay sign-in code. Close and the Settings sheet
-// reach them through the running server so one cancel covers all three
-// targets; either is nil in a process that runs no server.
-func runningEveEnrolmentOps() *EveEnrolmentOps {
-	if appInstance == nil {
-		return nil
-	}
-	return appInstance.eveEnrolmentOps
-}
-
-func runningLoginOps() *LoginOps {
-	if appInstance == nil {
-		return nil
-	}
-	return appInstance.loginOps
+	// Eve and Login own the Home|Work window and the relay sign-in code. Close
+	// and Status reach them here so one cancel covers all three targets; either
+	// may be nil in a process that wires neither.
+	Eve   *EveEnrolmentOps
+	Login *LoginOps
 }
 
 var errEnrolmentWindowOpsUnavailable = errors.New("enrolment windows are not available in this relay process")
@@ -183,15 +170,15 @@ func (o *EnrolmentWindowOps) Close(ctx context.Context, _ string) (closed []stri
 	if o.Remote.CloseEnrolmentWindow(windowClosedCancelled) {
 		closed = append(closed, enrolmentWindowTargetProfile)
 	}
-	if eve := runningEveEnrolmentOps(); eve != nil {
-		if ok, err := eve.Close(ctx); err != nil {
+	if o.Eve != nil {
+		if ok, err := o.Eve.Close(ctx); err != nil {
 			errs = append(errs, err)
 		} else if ok {
 			closed = append(closed, enrolmentWindowTargetHomeWork)
 		}
 	}
-	if login := runningLoginOps(); login != nil {
-		if ok, err := login.CancelBootstrap(ctx); err != nil {
+	if o.Login != nil {
+		if ok, err := o.Login.CancelBootstrap(ctx); err != nil {
 			errs = append(errs, err)
 		} else if ok {
 			closed = append(closed, enrolmentWindowTargetRelayLogin)
