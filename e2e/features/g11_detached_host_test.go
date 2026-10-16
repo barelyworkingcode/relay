@@ -212,12 +212,19 @@ func TestDetachedAgentSurvivesLinkDrop(t *testing.T) {
 	r.i.SSHDown(g11dTarget)
 	g11dUntil(t, "relay to notice the dropped link", func() bool { return g11dNoticed(r.i, sid) })
 	r.i.SSHUp(g11dTarget)
+	// A send while the link is down fails, so the reply waits for the restore;
+	// without the feature the session has ended and nothing restores.
+	g11dUntil(t, "relay to restore the link", func() bool {
+		return len(r.i.Events(harness.EventQuery{Key: "session.host_link", Fields: map[string]any{"link": "restored", "session_id": sid}})) > 0 ||
+			len(r.i.Events(harness.EventQuery{Key: "session.state", Fields: map[string]any{"session_id": sid, "to": "ended"}})) > 0 ||
+			len(r.i.Events(harness.EventQuery{Key: "session.state", Fields: map[string]any{"session_id": sid, "to": "errored"}})) > 0
+	})
 
 	g1sSendText(t, r.i, sid, "after the drop", "echo: after the drop")
 
-	for _, status := range []string{"lost", "restored"} {
+	for _, link := range []string{"lost", "restored"} {
 		r.i.WaitEvent(harness.EventQuery{Key: "session.host_link",
-			Fields: map[string]any{"link": status, "session_id": sid, "host_id": g11dHostID}}, g11dLinkDeadline)
+			Fields: map[string]any{"link": link, "session_id": sid, "host_id": g11dHostID}}, g11dLinkDeadline)
 	}
 	run := r.run(t, sid, "g1")
 	if !g11dAlive(run.PID) {
@@ -483,13 +490,13 @@ func TestDetachedResumeWhileAgentRunsAnswersRunnerAlive(t *testing.T) {
 	}
 
 	resp := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/sessions/"+sid+"/resume", nil)
-	var body struct {
-		Error string `json:"error"`
+	// docs/routes.md: a handler error body is human text; the code is the
+	// event's reason.
+	if resp.Status != 409 {
+		t.Fatalf("resume answered %d, want 409 (runner_alive)\n%s", resp.Status, resp.Body)
 	}
-	resp.JSON(t, &body)
-	if resp.Status < 400 || body.Error != "runner_alive" {
-		t.Fatalf("resume answered %d %q, want a refusal coded runner_alive\n%s", resp.Status, body.Error, resp.Body)
-	}
+	i.WaitEvent(harness.EventQuery{Key: "session.resume",
+		Fields: map[string]any{"reason": "runner_alive"}}, g11dLinkDeadline)
 	if gens := r.generations(t, sid); len(gens) != 1 || gens[0] != "g1" {
 		t.Fatalf("generations after the refused resume are %v, want only g1", gens)
 	}
