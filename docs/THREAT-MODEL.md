@@ -29,7 +29,10 @@ outside it is not a relay bug, however real.
    project folder, and every mutation it permits or refuses is in the audit.
 2. **An enrolled remote client** (a machine holding a relay certificate). It
    reaches exactly its profile and nothing else, within its budget.
-   Revocation ends it, live connections included.
+   Revocation ends it, live connections included. One enrolment reaches one
+   access profile; an enrolment that names more than one is refused on every
+   call. Deleting a profile revokes every enrolment naming it, live
+   connections included, and the audit trail records each revocation.
 3. **A prompt-injected agent acting within its grants** (any of the above,
    steered by content it read). Relay does not stop it using what it was
    granted. Relay's job is to **limit and record**: grants default narrow,
@@ -114,7 +117,14 @@ outside it is not a relay bug, however real.
    relay listener, or a web page open on this Mac reaching relay's localhost
    ports). It gets nothing without a credential: no tool call, no config
    change, no enrolment without the operator's approval on this Mac, no
-   prompt it can trigger on the operator's screen.
+   prompt it can trigger on the operator's screen. It reaches relay's
+   enrolment port only while the operator holds a window open for one access
+   profile. A window takes one request and closes. The request cannot name or
+   change the profile it joins. Approval needs the code comparison and the
+   operator's presence on this Mac, and lodging a request raises no prompt.
+   Residual: while a window is open, any peer that can reach the port may
+   lodge first and so close the window. That costs the operator a retry; the
+   code comparison stops the peer being enrolled.
 5. **Other code running as the user, outside relay.** It can do anything the
    user can do without relay. It cannot pass relay's gates: it can't borrow a
    service's launch identity, act through the bridge as another project, or

@@ -500,6 +500,8 @@ a promise there updates this table in the same PR.
 | `TM2.1` | 2 An enrolled remote client | A | It reaches exactly its profile | `G10.13` |
 | `TM2.2` | 2 An enrolled remote client | A | It stays within its budget | `G10.15` |
 | `TM2.3` | 2 An enrolled remote client | B | Revocation ends it, live connections included | `G10.10` |
+| `TM2.4` | 2 An enrolled remote client | A | One enrolment reaches one profile | `G10.13` `G10.07` |
+| `TM2.5` | 2 An enrolled remote client | A, C | Deleting its profile revokes it, live connections included | `G10.16` |
 | `TM3.1` | 3 A prompt-injected agent | A | Grants default narrow | `G2.01` `G3.06` |
 | `TM3.2` | 3 A prompt-injected agent | D | Anything reaching outside this Mac is refused unless granted | `G1.17` |
 | `TM3.3` | 3 A prompt-injected agent | A | Budgets cap volume | `G10.15` |
@@ -517,7 +519,9 @@ a promise there updates this table in the same PR.
 | `TM3d.1` | 3d Outside transcript reader | A, D | It reads only the inventory's derived transcript, at most 256 KiB per request, writes nothing, and the scope cannot reach it | `G1.36` |
 | `TM4.1` | 4 A peer on the network or in the browser | A, B | It gets no tool call or config change without a credential | `G9.04` |
 | `TM4.2` | 4 A peer on the network or in the browser | B | It gets no enrolment without the operator's approval | `G10.06` |
-| `TM4.3` | 4 A peer on the network or in the browser | B | It can trigger no prompt on the operator's screen | `G9.04` `G7.03` |
+| `TM4.3` | 4 A peer on the network or in the browser | B | It can trigger no prompt on the operator's screen | `G9.04` `G7.03` `G10.03` |
+| `TM4.4` | 4 A peer on the network or in the browser | B | It reaches no enrolment port unless a window is open | `G10.17` `G10.18` |
+| `TM4.5` | 4 A peer on the network or in the browser | B | A window takes one request, and the request cannot choose its profile | `G10.03` `G10.06` |
 | `TM5.1` | 5 Other code running as the user | B | It cannot borrow a service's launch identity | `G5.12` |
 | `TM5.2` | 5 Other code running as the user | A | It cannot act through the bridge as another project | `G3.05` |
 | `TM5.3` | 5 Other code running as the user | B | It cannot complete a presence-gated action without the operator | `G2.01` `G9.01` |
