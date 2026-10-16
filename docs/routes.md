@@ -691,6 +691,10 @@ the stored value.
 - **Listeners:** socket, tcp. **Credential:** `configure`. **Gate:** none.
 - **Response `204`.** **Errors:** `404`; `500` save failed.
 - **Event:** `project.remove` (`project_id`). Live sessions of the project end.
+- **Access profiles:** removing one also removes every enrolment that names
+  it, closes their live connections and writes one `credential_revoked` row
+  per enrolment with `cause` `profile_deleted`. The route is not gated: the
+  cascade only narrows.
 - **CLI equivalent:** `relay project remove`.
 
 ### PUT /api/default_project/{mode}
@@ -1052,11 +1056,12 @@ Creates a client certificate bundle on this Mac.
 
 - **Listeners:** socket, tcp. **Credential:** `grant`. **Gate:** `enrolment.create`.
 - **Request:** `{"client_id": string (required), "project_ids": string[], "budget": object}`
-  (`budget` fields as the enrolment object).
+  (`budget` fields as the enrolment object). `project_ids` holds at most one id.
 - **Response `201`:** an enrolment object with `dir`. The private key is in the
   bundle directory, never in the response.
-- **Errors:** `400` invalid client ID or budget; refusal as in "Gated routes"
-  (`500`); the issuance is refused when auditing is off.
+- **Errors:** `400` invalid client ID or budget, or two `project_ids` (no
+  enrolment is issued); refusal as in "Gated routes" (`500`); the issuance is
+  refused when auditing is off.
 - **Event:** `enrolment.create` (`client_id`).
 - **Audit row:** `credential_issued` (credential `enrolment`). It is written
   before the bundle is announced; an unrecorded create is undone.

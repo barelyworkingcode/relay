@@ -8,8 +8,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -434,8 +436,24 @@ func (o *ProjectOps) RegenSkill(ctx context.Context, lister SkillLister, id stri
 // returns "" for one with an empty Path). The one core HTTP DELETE
 // /api/projects/{id} and IPC delete_project share, so removal and its
 // skill cleanup cannot drift between the two doors.
+//
+// Removing an access profile also removes every enrolment that names it, in
+// the same settings write, so no enrolment ever names a profile that is gone.
+// Narrowing needs no gate. Remove derives the audit door from the context (an
+// HTTP request carries its credential id); RemoveVia takes it from a caller
+// that knows it.
 func (o *ProjectOps) Remove(ctx context.Context, id string) (found bool, err error) {
+	if credID, ok := APICredentialIDFromContext(ctx); ok {
+		return o.RemoveVia(ctx, id, auditViaHTTP, credID)
+	}
+	return o.RemoveVia(ctx, id, auditViaCLI, "")
+}
+
+// RemoveVia is Remove with the door named for the revocation rows the delete
+// causes.
+func (o *ProjectOps) RemoveVia(ctx context.Context, id, via, credID string) (found bool, err error) {
 	var removed config.Project
+	var revoked []config.Enrolment
 	ev := logging.BeginEvent(ctx, "project.remove")
 	defer func() {
 		ev.Set("project_id", id)
@@ -451,6 +469,9 @@ func (o *ProjectOps) Remove(ctx context.Context, id string) (found bool, err err
 			found = true
 			removed = *proj
 			clearedDefaults = s.DefaultModesFor(id)
+			if proj.IsRemote() {
+				revoked = enrolment.RemoveNamingProject(s, id)
+			}
 			s.RemoveProject(id)
 		})
 	}); err != nil {
@@ -459,6 +480,7 @@ func (o *ProjectOps) Remove(ctx context.Context, id string) (found bool, err err
 	if !found {
 		return false, nil
 	}
+	o.finishEnrolmentCascade(revoked, via, credID)
 	if len(clearedDefaults) > 0 {
 		slog.Info("project removed; default cleared", "project_id", id, "modes", clearedDefaults)
 	}
@@ -476,6 +498,28 @@ func (o *ProjectOps) Remove(ctx context.Context, id string) (found bool, err err
 	o.SessionCleanup.cleanupProject(id)
 	o.SessionCleanup.endReadOnlySessions(readOnlyRootsChanged)
 	return true, nil
+}
+
+// finishEnrolmentCascade does what the settings write cannot: closes each
+// removed enrolment's live connections, removes its bundle and records the
+// revocation. A failed audit write is logged and never undoes the revocation:
+// revoking is never refused for a broken log.
+func (o *ProjectOps) finishEnrolmentCascade(revoked []config.Enrolment, via, credID string) {
+	for _, e := range revoked {
+		enrolment.CloseRevoked(e.ClientID, e.Fingerprint)
+		enrolment.RemoveBundle(e.ClientID)
+		if err := recordIssuance(o.Issuance, audit.CredentialIssuance{
+			Revoked:    true,
+			Credential: auditCredentialEnrolment,
+			Subject:    e.ClientID,
+			Grants:     e.ProjectIDs,
+			Via:        via,
+			CredID:     credID,
+			Cause:      auditCauseProfileDeleted,
+		}); err != nil {
+			slog.Error("enrolment revoked by profile delete but not recorded in the audit log", "client_id", e.ClientID, "error", err)
+		}
+	}
 }
 
 // SetDefaultProject makes projectID the default project for mode, or clears

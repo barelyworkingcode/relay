@@ -31,7 +31,7 @@ type enrolGrantBudgetFlags struct {
 
 func addEnrolGrantBudgetFlags(fs *flag.FlagSet) *enrolGrantBudgetFlags {
 	f := &enrolGrantBudgetFlags{}
-	fs.Var(&f.grants, "grant", "access profile id this certificate may use (repeatable); a grant must name an access profile (a remote-kind record), never a local project")
+	fs.Var(&f.grants, "grant", "access profile id this certificate may use (one only: an enrolment reaches one profile); a grant must name an access profile (a remote-kind record), never a local project")
 	f.windowSeconds = fs.Int("window-seconds", enrolment.DefaultWindowSeconds, "budget window in seconds")
 	f.maxCalls = fs.Int("max-calls", enrolment.DefaultMaxCalls, "max tool calls per window")
 	f.maxResultBytes = fs.Int64("max-result-bytes", enrolment.DefaultMaxResultBytes, "max cumulative result bytes per window")
@@ -254,20 +254,29 @@ func enrolList() {
 	}
 
 	w := newTabWriter()
-	fmt.Fprintln(w, "CLIENT ID\tPROFILES\tCLI-ADMIN\tCALLS/WINDOW\tBYTES/WINDOW\tMOUNT-OPS/WINDOW\tMOUNT-READ/WINDOW\tMOUNT-WRITE/WINDOW\tCREATED\tFINGERPRINT")
+	fmt.Fprintln(w, "CLIENT ID\tPROFILES\tSTATUS\tCLI-ADMIN\tCALLS/WINDOW\tBYTES/WINDOW\tMOUNT-OPS/WINDOW\tMOUNT-READ/WINDOW\tMOUNT-WRITE/WINDOW\tCREATED\tFINGERPRINT")
 	for _, e := range enrolments {
 		// Printed in full, and last, so all 64 hex characters cost nothing
 		// in readability: a revoked client's audit history stays legible
 		// after its enrolment is gone, and a listing that shortened it
 		// would be the obvious place for someone to copy the short form
 		// from.
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%ds\t%d\t%d\t%d\t%d\t%s\t%s\n",
-			e.ClientID, formatGrants(e.ProjectIDs), formatCLIAdmin(e.CLIAdmin),
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d/%ds\t%d\t%d\t%d\t%d\t%s\t%s\n",
+			e.ClientID, formatGrants(e.ProjectIDs), formatEnrolmentStatus(e.ProjectIDs), formatCLIAdmin(e.CLIAdmin),
 			e.Budget.MaxCalls, e.Budget.WindowSeconds, e.Budget.MaxResultBytes,
 			e.Budget.MountMaxOps, e.Budget.MountMaxReadBytes, e.Budget.MountMaxWriteBytes,
 			e.CreatedAt, e.Fingerprint)
 	}
 	w.Flush()
+}
+
+// formatEnrolmentStatus marks a record from before one-enrolment-one-profile:
+// it loads, and every remote call from it is refused until it is narrowed.
+func formatEnrolmentStatus(profileIDs []string) string {
+	if len(profileIDs) > 1 {
+		return fmt.Sprintf("refused: names %d profiles", len(profileIDs))
+	}
+	return "-"
 }
 
 func formatCLIAdmin(on bool) string {
@@ -301,7 +310,7 @@ func parseEnrolUpdateFlags(args []string) enrolment.UpdateRequest {
 	mountMaxReadBytes := fs.Int64("mount-max-read-bytes", 0, "new max mount-plane bytes read per window (0 resets to the default; omit to leave unchanged)")
 	mountMaxWriteBytes := fs.Int64("mount-max-write-bytes", 0, "new max mount-plane bytes written per window (0 resets to the default; omit to leave unchanged)")
 	var grants stringSlice
-	fs.Var(&grants, "grant", "access profile id this certificate may use (repeatable); passing --grant at all REPLACES the whole grant list, same as create")
+	fs.Var(&grants, "grant", "the one access profile id this certificate may use; passing --grant at all REPLACES the grant list, same as create")
 	clearGrants := fs.Bool("clear-grants", false, "remove every access profile grant, leaving the certificate enrolled but able to reach nothing; mutually exclusive with --grant")
 	cliAdmin := fs.Bool("cli-admin", false, "let this certificate adjust its OWN access profiles over the remote listener (narrowing only); --cli-admin=false withdraws it. Effective on the client's next request.")
 	fs.Parse(args)

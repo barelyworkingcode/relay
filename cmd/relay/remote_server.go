@@ -695,6 +695,15 @@ func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*config.Set
 			fmt.Errorf("this certificate is no longer enrolled"))
 	}
 
+	// A record from before one-enrolment-one-profile can still name several.
+	// It loads, and is refused here on every request type until the operator
+	// narrows it; picking one grant for the caller would guess.
+	if len(enr.ProjectIDs) > 1 {
+		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+			fmt.Errorf("enrolment %q names %d access profiles, and one enrolment reaches one; on the Mac run: relay enrol update --client-id %s --grant <one profile id>",
+				enr.ClientID, len(enr.ProjectIDs), enr.ClientID))
+	}
+
 	if projectID == "" {
 		switch len(enr.ProjectIDs) {
 		case 0:
@@ -702,9 +711,6 @@ func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*config.Set
 				fmt.Errorf("enrolment %q holds no grants", enr.ClientID))
 		case 1:
 			projectID = enr.ProjectIDs[0]
-		default:
-			return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams,
-				fmt.Errorf("project_id is required: enrolment %q holds %d grants", enr.ClientID, len(enr.ProjectIDs)))
 		}
 	}
 

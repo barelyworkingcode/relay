@@ -181,7 +181,14 @@ func validate(s *config.Settings, e *config.Enrolment) error {
 // Tests IsRemote(), never Kind == ProjectKindLocal: the zero value is
 // local, so an equality check invites a future bug where an unset field
 // reads as remote.
+//
+// One enrolment names at most one profile, checked first and with no
+// settings needed, so a door can refuse before it asks the operator for
+// presence. Zero stays legal on the carried doors: it reaches nothing.
 func ValidateGrants(s *config.Settings, e *config.Enrolment) error {
+	if err := CheckSingleProfile(e.ProjectIDs); err != nil {
+		return err
+	}
 	for _, id := range e.ProjectIDs {
 		proj, _ := config.FindProjectByID(s, id)
 		if proj == nil {
@@ -192,6 +199,34 @@ func ValidateGrants(s *config.Settings, e *config.Enrolment) error {
 		}
 	}
 	return nil
+}
+
+// CheckSingleProfile is the one-profile rule without the settings lookups.
+func CheckSingleProfile(ids []string) error {
+	if len(ids) > 1 {
+		return Invalid("one enrolment names one access profile; enrol again for another")
+	}
+	return nil
+}
+
+// RemoveNamingProject removes every enrolment whose grants name projectID and
+// returns them. Call inside the same store.With that removes the project, so
+// no enrolment ever names a profile that is gone; the caller closes the live
+// connections and records each revocation after the commit.
+func RemoveNamingProject(s *config.Settings, projectID string) []config.Enrolment {
+	var removed []config.Enrolment
+	kept := s.Enrolments[:0:0]
+	for _, e := range s.Enrolments {
+		if e.GrantsProject(projectID) {
+			removed = append(removed, e)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if len(removed) > 0 {
+		s.Enrolments = kept
+	}
+	return removed
 }
 
 // ValidateProjectConversion refuses converting a project remote→local while
@@ -613,15 +648,15 @@ func Revoke(store config.SettingsStore, clientID string) (config.Enrolment, erro
 	// Closing it outright needs the process that owns the connection table,
 	// which is why the hook exists.
 	CloseRevoked(removed.ClientID, removed.Fingerprint)
-	removeBundle(removed.ClientID)
+	RemoveBundle(removed.ClientID)
 	return removed, nil
 }
 
-// removeBundle is best-effort: the operator may have already moved
+// RemoveBundle is best-effort: the operator may have already moved
 // the bundle to the client and deleted it here, and a revocation must not
 // fail because the host's copy is already gone. Revocation's teeth are the
 // deleted record and the closed connection, not this.
-func removeBundle(clientID string) {
+func RemoveBundle(clientID string) {
 	if !SafeID(clientID) {
 		return // never join an unvalidated id into a path we then remove
 	}

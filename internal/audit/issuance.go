@@ -83,6 +83,11 @@ type CredentialIssuance struct {
 	// Via is one of cmd/relay's auditVia* values.
 	Via string
 
+	// Cause says why a revocation happened when the operator did not ask for
+	// it directly. Empty for every act an operator performed on the
+	// credential itself.
+	Cause string
+
 	// CredID names the control-plane credential that asked for this, and is
 	// set only for Via == "http": the other doors authorize by ownership of
 	// the config dir, where there is no credential to name.

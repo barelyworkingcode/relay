@@ -5587,8 +5587,8 @@ function renderEnrolmentForm() {
 
     // ---- Grants ----
     html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Granted Access Profiles</div>';
-    html += '<p class="proj-section-help">Only <strong>access profiles</strong> can be granted. A remote client granted a local project would inherit that project\'s host-directory scope, so the grant is refused outright — this list offers nothing that would be refused.</p>';
+    html += '<div class="proj-section-title">Access Profile</div>';
+    html += '<p class="proj-section-help">An enrolment reaches <strong>one</strong> access profile; enrol again for another. Only <strong>access profiles</strong> can be granted. A remote client granted a local project would inherit that project\'s host-directory scope, so the grant is refused outright — this list offers nothing that would be refused.</p>';
     const grantable = remoteGrantableProjects();
     if (!grantable.length) {
         html += '<div class="proj-tool-empty">No access profiles exist yet. Create one in the <strong>Projects</strong> tab (Kind → Access profile) first.</div>';
@@ -5596,7 +5596,7 @@ function renderEnrolmentForm() {
     for (const p of grantable) {
         const checked = f.project_ids.indexOf(p.id) >= 0;
         html += '<label class="proj-tool-row">';
-        html += '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="toggleEnrolGrant(\'' + esc(p.id) + '\', this.checked)" />';
+        html += '<input type="radio" name="enrolProfile" ' + (checked ? 'checked' : '') + ' onchange="toggleEnrolGrant(\'' + esc(p.id) + '\', this.checked)" />';
         html += '<div><div>' + esc(p.name) + '</div><div class="desc">' + esc(p.id) + '</div></div>';
         html += '</label>';
     }
@@ -5709,10 +5709,9 @@ function cancelEnrolment() {
 function toggleEnrolGrant(projectID, checked) {
     const f = state.enrolForm;
     if (!f) return;
-    const i = f.project_ids.indexOf(projectID);
-    if (checked && i < 0) f.project_ids.push(projectID);
-    if (!checked && i >= 0) f.project_ids.splice(i, 1);
-    // Ticking a profile answers the question the checkbox asks, so the
+    // One profile per enrolment: choosing one replaces any earlier choice.
+    f.project_ids = checked ? [projectID] : [];
+    // Choosing a profile answers the question the checkbox asks, so the
     // checkbox stops claiming the opposite.
     if (f.project_ids.length > 0) f.no_grant = false;
     render();
