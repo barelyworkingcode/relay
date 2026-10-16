@@ -564,6 +564,9 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 
 	settings, enr, proj, err := s.resolveCaller(fingerprint, req.ProjectID)
 	if err != nil {
+		if req.Type == bridge.ReqCallTool && bridge.ErrorCode(err) == jsonrpc.CodeUnauthorized {
+			s.recordCallRefusal(ctx, req.Name, err)
+		}
 		return bridge.ErrorResponse(bridge.ErrorCode(err), err.Error())
 	}
 
@@ -648,6 +651,31 @@ func logRemoteRequest(ctx context.Context, reqType, name string, resp *bridge.Br
 		attrs = append(attrs, slog.String("client_id", rc.ClientID))
 	}
 	slog.LogAttrs(ctx, level, "remote request", attrs...)
+}
+
+// recordCallRefusal writes the denied call_tool row for a tool call refused
+// before it reached the router (the enrolment did not resolve, or names more
+// than one profile). The router writes the same row for a refusal of its own;
+// without this a remote call could be refused with no trace that it was tried.
+// Arguments are never recorded here: the call was not authorized to be read.
+func (s *RemoteServer) recordCallRefusal(ctx context.Context, tool string, cause error) {
+	if !s.audit.Enabled() {
+		return
+	}
+	ev := audit.AuditEvent{
+		ID:      audit.NewAuditID(),
+		TS:      time.Now().UTC(),
+		Event:   audit.AuditEventCallTool,
+		Actor:   audit.AuditActor{Kind: audit.AuditActorUnknown, Auth: audit.AuditAuthNone},
+		Tool:    logging.Truncate(tool),
+		Outcome: audit.AuditOutcomeDenied,
+		Error:   cause.Error(),
+		TraceID: logging.TraceFromContext(ctx),
+	}
+	if rc, ok := bridge.RemoteCallerFromContext(ctx); ok {
+		ev.Actor = remoteAuditActor(rc)
+	}
+	s.audit.Record(ev)
 }
 
 // recordConfigRefusal is the control_decision half of refusing a config
