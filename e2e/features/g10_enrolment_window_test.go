@@ -3,6 +3,8 @@ package features
 import (
 	"encoding/json"
 	"net"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +114,9 @@ func TestEnrolmentWindowRefusesNonProfile(t *testing.T) {
 		t.Fatalf("enrol open with the remote listener off exited %d, want 1\nstderr: %s", res.Code, res.Stderr)
 	}
 	requireEvent(t, off.i, harness.EventQuery{Key: "enrolment.window.open", Trace: res.Trace, Fields: map[string]any{"status": "error", "reason": "invalid"}})
+	if !strings.Contains(string(res.Stderr), "turn the remote listener on first") {
+		t.Fatalf("the refusal does not say how to turn the remote listener on: %s", res.Stderr)
+	}
 	for _, row := range off.i.Audit(harness.AuditQuery{Event: "control_decision"}) {
 		if row["method"] == "enrolment.window.open" {
 			t.Fatalf("a prompt was raised with the remote listener off: %v", row)
@@ -136,7 +141,8 @@ func TestEnrolmentWindowOpenDenied(t *testing.T) {
 
 func TestEnrolmentPortClosedWithoutWindow(t *testing.T) {
 	t.Parallel()
-	// A fixed address lets the test dial a port that no window bound.
+	// A fixed address lets the test dial a port that no window bound. The old
+	// enrolment_requests switch is seeded on to show relay ignores it.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("reserving a loopback port: %v", err)
@@ -146,7 +152,7 @@ func TestEnrolmentPortClosedWithoutWindow(t *testing.T) {
 		t.Fatalf("releasing the port: %v", err)
 	}
 	r := g10Start(t, nil, func(o *harness.Options) {
-		o.Settings = map[string]json.RawMessage{"remote": json.RawMessage(`{"enabled":true,"listen":"127.0.0.1:0","enrolment_listen":"` + addr + `"}`)}
+		o.Settings = map[string]json.RawMessage{"remote": json.RawMessage(`{"enabled":true,"listen":"127.0.0.1:0","enrolment_requests":true,"enrolment_listen":"` + addr + `"}`)}
 	})
 	i := r.i
 
@@ -195,6 +201,9 @@ func TestEnrolmentPollOnlyOnLodgeConnection(t *testing.T) {
 	result, _ := reply["result"].(map[string]any)
 	if !ok || reply["type"] != "Result" || result["status"] != "unknown" {
 		t.Fatalf("a poll from another connection answered ok=%v %v, want status unknown", ok, reply)
+	}
+	if !other.Closed() {
+		t.Fatalf("relay left the connection open after an unknown answer")
 	}
 	if st, _ := l.poll(t)["status"].(string); st != "pending" {
 		t.Fatalf("the lodging connection reads %q, want pending", st)
@@ -252,7 +261,16 @@ func TestEnrolmentWindowExpires(t *testing.T) {
 	i := r.i
 	addr := i.EnrolOpen(r.profile)
 
-	i.ClockAdvance(5 * time.Minute)
+	i.ClockAdvance(5*time.Minute - 10*time.Second)
+	if w := g10RemoteShow(t, i).EnrolmentWindow; !w.Open {
+		t.Fatalf("the window closed before its five minutes ran out: %+v", w)
+	}
+	i.EnrolDial(addr)
+	if got := i.Events(harness.EventQuery{Key: "enrolment.window.close"}); len(got) != 0 {
+		t.Fatalf("a close event was written before the window expired: %v", got)
+	}
+
+	i.ClockAdvance(20 * time.Second)
 	g10WaitClose(i, "expired")
 	if !i.EnrolRefused(addr) {
 		t.Fatalf("a connection to %s succeeded after the window expired", addr)
@@ -432,6 +450,9 @@ func TestEnrolmentApproveAfterWindowCloses(t *testing.T) {
 	if poll["status"] != "approved" || cert == "" || ca == "" || len(ids) != 1 || ids[0] != r.profile || len(projects) != 1 {
 		t.Fatalf("the poll on the lodging connection answered %v, want approved with a certificate and the one profile %s", poll, r.profile)
 	}
+	if !l.conn.Closed() {
+		t.Fatalf("relay left the lodging connection open after an approved answer")
+	}
 	if names, ok := g10ListTools(t, i.RemoteDial(l.id, []byte(cert), []byte(ca)), r.profile); !ok || len(names) != 2 {
 		t.Fatalf("the collected certificate lists tools %v (ok=%v), want the profile's two", names, ok)
 	}
@@ -495,10 +516,19 @@ func TestEnrolmentApproveRefusesFailedCodeExchange(t *testing.T) {
 
 func TestCAFingerprintGone(t *testing.T) {
 	t.Parallel()
-	i := harness.Start(t, harness.Options{})
+	i := harness.Start(t, harness.Options{Presence: map[string]harness.Outcome{"enrolment.sign": harness.OutcomeApprove}})
+	// A CA exists once a certificate is signed, so a surviving verb would print its fingerprint.
+	id := harness.NewRemoteIdentity(t, "acme-ca")
+	out := filepath.Join(i.Dir, "signed-out")
+	if res := i.CLIWith(harness.CLIOpts{Stdin: id.CSRPEM()}, "enrol", "sign", "--client-id", "acme-ca", "--csr", "-", "--out", out); res.Code != 0 {
+		t.Fatalf("enrol sign exited %d\nstderr: %s", res.Code, res.Stderr)
+	}
 
 	res := i.CLI("enrol", "ca-fingerprint")
 	if res.Code != 1 || len(res.Stdout) != 0 {
 		t.Fatalf("enrol ca-fingerprint exited %d with %d stdout bytes, want exit 1 and none", res.Code, len(res.Stdout))
+	}
+	if !strings.Contains(strings.ToLower(string(res.Stderr)), "unknown") {
+		t.Fatalf("enrol ca-fingerprint stderr does not name an unknown command: %s", res.Stderr)
 	}
 }

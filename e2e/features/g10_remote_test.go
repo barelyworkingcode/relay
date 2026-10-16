@@ -492,6 +492,9 @@ func TestEnrolmentRefuse(t *testing.T) {
 	if st, _ := l.poll(t)["status"].(string); st != "refused" {
 		t.Fatalf("a poll of a refused request answered %q, want refused", st)
 	}
+	if !l.conn.Closed() {
+		t.Fatalf("relay left the lodging connection open after a refused answer")
+	}
 	var pending []json.RawMessage
 	i.MustCLI("enrol", "requests", "--json").JSON(t, &pending)
 	if len(pending) != 0 {
@@ -524,6 +527,9 @@ func TestEnrolmentApprove(t *testing.T) {
 	poll := l.poll(t)
 	if poll["status"] != "approved" || poll["client_id"] != "acme-approved" {
 		t.Fatalf("a poll after the approval answered %v, want approved for acme-approved", poll)
+	}
+	if !l.conn.Closed() {
+		t.Fatalf("relay left the lodging connection open after an approved answer")
 	}
 	cert, _ := poll["cert_pem"].(string)
 	ca, _ := poll["ca_pem"].(string)

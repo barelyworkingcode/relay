@@ -161,16 +161,21 @@ func TestListenerAddressesFromSettings(t *testing.T) {
 		if err != nil || host != "127.0.0.1" || port == 0 {
 			t.Fatalf("listeners.%s = %q, want 127.0.0.1 and a bound port", k, addr)
 		}
-		if other, dup := seen[addr]; dup {
-			t.Fatalf("listeners.%s and listeners.%s share %s", k, other, addr)
-		}
 		seen[addr] = k
 	}
 	if got := listeners["enrolment"]; got != "" {
 		t.Fatalf("ready.json lists an enrolment listener %q while a window is open, want none", got)
 	}
-	if w := g10RemoteShow(t, i).EnrolmentWindow; !w.Open || w.Listen != windowAddr {
+	w := g10RemoteShow(t, i).EnrolmentWindow
+	if !w.Open || w.Listen != windowAddr {
 		t.Fatalf("remote show reports the window %+v, want it open at %s", w, windowAddr)
+	}
+	host, port, err := splitHostPort(w.Listen)
+	if err != nil || host != "127.0.0.1" || port == 0 {
+		t.Fatalf("the window listens on %q, want 127.0.0.1 and a bound port", w.Listen)
+	}
+	if other, dup := seen[w.Listen]; dup {
+		t.Fatalf("the window and listeners.%s share %s", other, w.Listen)
 	}
 	show := g10RemoteShow(t, i)
 	if !show.Enabled || show.Listen != "127.0.0.1:0" || show.EnrolmentListen != "127.0.0.1:0" {
