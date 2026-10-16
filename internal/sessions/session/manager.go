@@ -838,12 +838,22 @@ func (m *Manager) DeleteSession(id string) {
 	if sess != nil {
 		sess.MarkDeleted()
 		m.signal(sess, attention.SessionEnded)
-		if p := sess.Provider(); p != nil {
-			if err := p.DeleteSession(); err != nil {
-				slog.Warn("session: delete provider data failed", "id", id, "error", err)
-			}
-			p.Kill()
+	}
+	if p := providerOf(sess); p != nil {
+		if err := p.DeleteSession(); err != nil {
+			slog.Warn("session: delete provider data failed", "id", id, "error", err)
 		}
+		p.Kill()
+	} else {
+		// A dormant session has no provider, but a detached host agent may
+		// still run; it must end with the session.
+		host := (*sessionstypes.HostSpec)(nil)
+		if sess != nil {
+			host = sess.GetHost()
+		} else if stored, err := m.store.Load(id); err == nil {
+			host = stored.GetHost()
+		}
+		provider.DeleteDetachedRun(id, host)
 	}
 	if m.perms != nil {
 		m.perms.RevokeHookToken(id)
@@ -858,7 +868,8 @@ func (m *Manager) DeleteSession(id string) {
 // — completes before StopAll returns, mirroring
 // internal/sessions/terminal.Manager.StopAll's own discipline: shutdown
 // must never return while a process it is responsible for might still be
-// alive or still exiting.
+// alive or still exiting. The one deliberate exception: a detached host agent
+// is released and left running on its host.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
 	var live []*sessionstypes.Session
@@ -879,7 +890,13 @@ func (m *Manager) StopAll() {
 	for _, sess := range live {
 		m.signal(sess, attention.SessionEnded)
 		if p := sess.Provider(); p != nil {
-			p.Kill()
+			// Deliberate: a detached host agent outlives relay, so shutdown
+			// releases it instead of ending it.
+			if r, ok := p.(interface{ Release() }); ok {
+				r.Release()
+			} else {
+				p.Kill()
+			}
 		}
 		m.persist(sess)
 	}
@@ -1351,4 +1368,11 @@ func (m *Manager) ClaudeSessionIDs() []string {
 		}
 	}
 	return ids
+}
+
+func providerOf(sess *sessionstypes.Session) sessionstypes.Provider {
+	if sess == nil {
+		return nil
+	}
+	return sess.Provider()
 }

@@ -11,18 +11,27 @@
 //	               as cmd.exe refuses past 8,191 characters
 //
 // A command runs as /bin/sh -c <remote> in root with a scrubbed environment.
+// A -T remote shell gets its own pipes and fakessh copies between them and its
+// own stdio, as the ssh client does over a channel. A remote process that
+// outlives the shell holds only those pipes, never relay's: when fakessh exits
+// (normally or on a SIGTERM drop) relay's end closes, and the remote writes
+// into a dead channel. On a normal exit the shell's output is drained first,
+// bounded by drainBound so a grandchild holding the pipe cannot hang the exit.
 package main
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -131,7 +140,18 @@ func runCommand(cfg config, c call, st, master string) int {
 
 	cmd := exec.Command("/bin/sh", "-c", c.Remote)
 	cmd.Dir = cfg.Root
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	// A -tt session keeps the caller's terminal, as ssh gives the remote a
+	// pty of its own; only a -T channel gets pipes.
+	var inR, inW, outR, outW, errR, errW *os.File
+	if c.TTY {
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	} else {
+		var err error
+		if inR, inW, outR, outW, errR, errW, err = childPipes(); err != nil {
+			return fail(err)
+		}
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
+	}
 	cmd.Env = []string{
 		"HOME=" + cfg.Root,
 		"SHELL=/bin/sh",
@@ -145,16 +165,43 @@ func runCommand(cfg config, c call, st, master string) int {
 	if err := cmd.Start(); err != nil {
 		return fail(fmt.Errorf("start remote command: %w", err))
 	}
+	var dropped atomic.Bool
+	var copies sync.WaitGroup
+	if !c.TTY {
+		// The child holds its ends now; fakessh keeps only its own.
+		_ = inR.Close()
+		_ = outW.Close()
+		_ = errW.Close()
+		go func() {
+			_, _ = io.Copy(inW, os.Stdin)
+			_ = inW.Close()
+		}()
+		copies.Add(2)
+		go pump(&copies, &dropped, os.Stdout, outR)
+		go pump(&copies, &dropped, os.Stderr, errR)
+	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
 	select {
 	case <-sig:
+		// Exit at once: the shell is killed, but a grandchild may still hold
+		// the pipes, and nothing it writes may reach relay.
+		dropped.Store(true)
 		_ = cmd.Process.Kill()
-		<-done
+		if c.TTY {
+			<-done
+		}
 		fmt.Fprintf(os.Stderr, "Connection to %s closed by remote host.\n", c.Dest)
 		return 255
 	case err := <-done:
+		// Output already in the pipes is read at once; the deadline only
+		// bounds a grandchild that keeps them open.
+		if !c.TTY {
+			_ = outR.SetReadDeadline(time.Now().Add(drainBound))
+			_ = errR.SetReadDeadline(time.Now().Add(drainBound))
+		}
+		copies.Wait()
 		var ee *exec.ExitError
 		switch {
 		case err == nil:
@@ -312,4 +359,50 @@ func exists(path string) bool {
 func fail(err error) int {
 	fmt.Fprintln(os.Stderr, "fakessh:", err)
 	return 255
+}
+
+// drainBound is how long fakessh keeps reading the shell's output after the
+// shell has exited.
+const drainBound = time.Second
+
+func childPipes() (inR, inW, outR, outW, errR, errW *os.File, err error) {
+	var all []*os.File
+	pipe := func() (r, w *os.File) {
+		if err != nil {
+			return nil, nil
+		}
+		var e error
+		r, w, e = os.Pipe()
+		if e != nil {
+			err = e
+			for _, f := range all {
+				_ = f.Close()
+			}
+			return nil, nil
+		}
+		all = append(all, r, w)
+		return r, w
+	}
+	inR, inW = pipe()
+	outR, outW = pipe()
+	errR, errW = pipe()
+	return
+}
+
+// pump copies src to dst until src ends or errs, and stops writing once the
+// link is dropped.
+func pump(wg *sync.WaitGroup, dropped *atomic.Bool, dst io.Writer, src io.Reader) {
+	defer wg.Done()
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 && !dropped.Load() {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }

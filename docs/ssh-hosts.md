@@ -195,6 +195,7 @@ it describes anything running on this machine.
         "error": ""                 // non-empty iff ok == false
       },
       "tmux_path": "",              // optional operator override of probe.tmux_path
+      "detach_sessions": false,     // true: Claude sessions on this host outlive the ssh link
       "terminal_templates": [       // host-scoped; see Terminals on a host
         { "id": "shell", "name": "Shell" },
         { "id": "claude-code", "name": "Claude Code", "command": "/opt/homebrew/bin/claude" }
@@ -718,6 +719,87 @@ relayScheduler creates sessions through relayLLM by `projectId` and
 for an interactive session. A task on a host project therefore runs on the
 host with no scheduler change. The cron stays on the console, which is what
 "cron running local, remote execution" asks for.
+
+## Detached sessions
+
+A Claude session on a Unix host with `detach_sessions: true` keeps its agent
+when relay's link to the host drops. An everyday user sets nothing: eve shows
+the session as it does any other. A power user sets `hosts[].detach_sessions`
+in `settings.json`. The field is read when a session starts, so it applies to
+sessions started or resumed after the change.
+
+**On the host.** Relay starts the agent under
+`~/.relay/agents/<session id>/<generation>/` (mode `0700`; the generation is
+created with a plain `mkdir`, so one that exists is refused):
+
+| File | Holds |
+|---|---|
+| `in.jsonl` | The agent's input. Relay appends one complete line per user message or `control_response`. |
+| `out.jsonl` | The agent's stdout, appended. |
+| `stderr.log` | The agent's stderr. |
+| `run.json` | `{"pid":N,"pgid":N,"started":"<process start time>","generation":"g1"}`, written by the runner once it leads its own process group. |
+| `exit` | `{"code":N,"at":"RFC3339"}`, written by the runner when the agent ends. |
+
+Each spawn gets a new generation: `g1`, `g2`, and so on, one past the highest
+that exists. A start whose run directory cannot be created fails and names the
+directory. `relay session start` returns only after `run.json` exists.
+
+The runner is a POSIX `sh` script (`internal/sshhost/agentrun.go`) that
+`setsid(1)` or `set -m` puts in its own process group, with every file
+descriptor redirected and `HUP` ignored. It feeds the agent's stdin from
+`tail -n +1 -f in.jsonl` and kills that `tail` when the agent exits. It needs
+no perl or python. A host with neither `setsid` nor a `sh` that honours
+`set -m` without a terminal (dash, without util-linux) refuses the start with
+"agent runner did not start"; it never runs the agent in the ssh session's own
+group. Every command goes through `RemoteCommandForOS`, so decision 8's
+launcher carries it.
+
+**The cursor.** Events are read from `out.jsonl` by byte offset. A cursor is
+the opaque string `<generation>:<byte offset of a line start>`. Relay consumes
+only complete lines and moves the cursor by the bytes it consumed, so after a
+reconnect each event arrives once and in order. A reader prints event bytes
+on stdout and a heartbeat dot on stderr every few seconds: a reader orphaned
+by a dropped link dies when that write fails, and a heartbeat on stdout could
+land inside a half-written line.
+
+**A drop.** When a reader ends while the runner has not exited, relay writes
+`session.host_link` with `link=lost`, once per outage, however soon after the
+read opened. It retries with a backoff from one to ten seconds that grows
+across reads that deliver nothing and resets after a read that delivered
+lines, and reopens the read at its cursor. The reopened read writes
+`link=restored` once it has delivered a line or stayed open for two seconds,
+and a runner found to have exited during the outage writes it before the last
+read; a read that keeps failing at once writes one `lost` and nothing more.
+The agent keeps running throughout. A send while the link is down fails with an error and nothing is delivered; there is no retry, because
+an ssh failure after the command started may still have landed the line. When
+the runner has exited, relay delivers the remaining lines and ends the
+session as any process exit does, with the exit code.
+
+**Stop.** Idle stop, drop-in and `relay session stop` end the runner's process
+group, `TERM` then `KILL`, and return when it is gone. The stop checks the
+start time in `run.json` against the live pid first: a pid that is alive with
+another start time is not ours and its group is left alone. Deleting a session
+also removes `~/.relay/agents/<session id>/`, which holds tool output. A host
+that cannot be reached at stop time leaves the agent running; relay logs it.
+
+**A relay restart.** A detached agent outlives relay. When relay or
+relay-sessions shuts down, each detached provider drops its local reader and
+leaves the agent running; the session reads dormant afterwards. After a
+restart a resume answers `runner_alive` while the agent runs, and
+`relay session stop` ends it. Deleting a dormant detached session ends its
+agent and removes its run directory on the host, as for a live one.
+
+**Resume.** A resume of a detached session first asks the host about the
+latest generation. A running agent refuses the resume with `runner_alive` (HTTP
+`409`) and starts nothing; a host that cannot answer refuses with
+`host_unavailable`.
+
+**Not covered.** Windows hosts: a detached start there is refused with an error
+that names the host. A host whose login manager kills a user's processes when
+the last session ends (`KillUserProcesses=yes`) takes the agent with it. A
+runner killed from outside leaves its agent orphaned in the group; a stop
+leaves such an agent alone, because without a live leader relay cannot prove
+the group is still its own.
 
 ## What is deliberately absent (v1)
 

@@ -421,6 +421,7 @@ prompt and an unavailable audit log use the shared `presence_*` and
 | `terminal.log` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes, `relay terminal stop`, `relay terminal log` | `terminal_id` |
 | `session.ws.close` | At connection end in the relay-sessions hub | `/ws` | none |
 | `session.state` | On an agent state change (background, relay-sessions) | none (background) | `session_id`, `from`, `to` (the agent states before and after) |
+| `session.host_link` | When a detached host session's link to its host is lost, once per outage, or comes back once a reopened read has delivered a line or stayed open two seconds, or the runner is found to have exited (background, relay-sessions) | none (background) | `session_id`, `host_id`, `link` (`lost` or `restored`; the line's `status` is the outcome, so the link state has its own key) |
 
 ### Sandbox
 
@@ -459,7 +460,7 @@ of them. A wait for one uses `relay logs --follow --event <key>`.
 
 ## 8. Background events and how to wait on them
 
-`server.ready`, `service.state`, `mcp.state`, `session.state`, `chat.turn` and
+`server.ready`, `service.state`, `mcp.state`, `session.state`, `session.host_link`, `chat.turn` and
 `session.exited` are written when something happens, not when a caller asks.
 `server.ready` and `session.exited` carry no caller's trace.
 
@@ -467,7 +468,7 @@ of them. A wait for one uses `relay logs --follow --event <key>`.
   nothing to wait for after the CLI exits or the response arrives.
 - **Events from relay-sessions** (`session.delete`, `session.message`,
   `terminal.delete`, `terminal.log`, `model.list`, `session.ws.close`,
-  `chat.turn`, `session.state`) reach `relaysessions.log` through relay's
+  `chat.turn`, `session.state`, `session.host_link`) reach `relaysessions.log` through relay's
   capture of the helper's stderr, after the response. So do the `service.state`
   lines of a supervised service. Wait for them with a deadline, not a sleep:
 
