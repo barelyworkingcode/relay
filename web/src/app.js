@@ -212,7 +212,7 @@ let state = {
     enrolmentBudgetDefaults: ENROLMENT_BUDGET_DEFAULTS_INIT,
     enrolForm: null,                        // null = list, object = create form; object.request_id set = approving a pending request
     enrolmentError: null,
-    enrolBundle: null,                      // {client_id, dir} — DIRECTORY only, never key material
+    enrolBundle: null,                      // {client_id, dir, approved} — DIRECTORY only, never key material
     enrolRevoked: null,                     // {client_id, fingerprint} shown after a revoke
     remoteDraft: null,                      // uncommitted edit of the remote block
     remoteDirty: false,
@@ -5493,6 +5493,14 @@ function renderEnrolments() {
 // and key material that reaches it has been copied somewhere nobody will think
 // to wipe. The filenames below are static copy, matching `relay enrol create`.
 function renderEnrolBundleBanner(b) {
+    if (b.approved) {
+        // An approval writes no private key: the requesting machine generated
+        // it and collects its certificate itself, so there is no bundle to move.
+        return '<div class="enrol-bundle">'
+            + 'Enrolled <strong>' + esc(b.client_id) + '</strong>. The requesting machine collects its certificate itself; its private key never left it. There is nothing to move.'
+            + '<div style="margin-top:8px"><button class="btn btn-sm" onclick="dismissEnrolBundle()">Done</button></div>'
+            + '</div>';
+    }
     let html = '<div class="enrol-bundle">';
     html += 'Enrolled <strong>' + esc(b.client_id) + '</strong>. Bundle written to <code>' + esc(b.dir) + '</code>';
     html += '<ul>';
@@ -5941,12 +5949,13 @@ function removeRemoteConfig() {
 window.onEnrolmentCreated = function(e, bundle) {
     if (!e || !e.client_id) return;
     state.enrolments = (state.enrolments || []).filter(x => x.client_id !== e.client_id).concat(e);
+    const approved = !!(state.enrolForm && state.enrolForm.request_id);
     state.enrolForm = null;
     state.enrolmentError = null;
     state.enrolRevoked = null;
     // Only the bundle DIRECTORY is ever held here. The private key inside it
     // does not cross the IPC boundary and has no representation in this state.
-    state.enrolBundle = { client_id: e.client_id, dir: (bundle && bundle.dir) || '' };
+    state.enrolBundle = { client_id: e.client_id, dir: (bundle && bundle.dir) || '', approved: approved };
     if (state.page === 'remote') render('push');
 };
 
