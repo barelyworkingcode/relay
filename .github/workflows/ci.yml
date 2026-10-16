@@ -1,18 +1,9 @@
 name: ci
 
+# Manual runs only. Nothing gates a PR or a push on this workflow: proof before main is the
+# verification task (repo suite plus devboxverify on the head), and this is one optional way
+# to run the repo suite on a clean Linux checkout of any ref.
 on:
-  pull_request:
-    # labeled and unlabeled rerun every job, so a map-narrowing-approved label
-    # takes effect and no job reads "skipping".
-    types: [opened, synchronize, reopened, labeled, unlabeled]
-  push:
-    branches: [main]
-  # A nightly run of main on a clean checkout: the independent check that main still builds
-  # and passes with no state carried from any PR. Scheduled runs use the default branch.
-  schedule:
-    - cron: '17 10 * * *'
-  # A manual run on any ref: an epic's close step dispatches this on the epic head so every job
-  # runs before the epic merges, as eve's does.
   workflow_dispatch:
 
 permissions:

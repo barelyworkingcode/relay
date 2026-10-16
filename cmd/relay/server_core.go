@@ -627,7 +627,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 		BrokerRows: app.modelEndpoint.catalog.Snapshot,
 	}
 
-	sessLedger := openSessionLedger(configDir)
+	sessLedger := openSessionLedger(configDir, store)
 
 	// sessionAccounts is the launch-identity/model-key bookkeeping SessionExited
 	// (router_sessions.go) and project-delete cleanup (project_ops.go) both

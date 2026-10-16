@@ -20,6 +20,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sealed"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
+	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
 // appInstance is the singleton tray app, set by runTrayApp and read by Cocoa
@@ -207,7 +208,7 @@ const cleanupWaitGroupTimeout = 5 * time.Second
 // does not silently drop every resumable session a user already had. It
 // returns nil when the ledger cannot be read; resume is then unavailable this
 // run.
-func openSessionLedger(configDir string) *ledger.Ledger {
+func openSessionLedger(configDir string, store config.SettingsStore) *ledger.Ledger {
 	isFirstRun := !ledger.Exists(configDir)
 	l, err := ledger.Open(configDir)
 	if err != nil {
@@ -221,14 +222,80 @@ func openSessionLedger(configDir string) *ledger.Ledger {
 	}
 	// Deliberate: relay-sessions and every provider it hosts are children of
 	// this relay process, so no record from an earlier run can still be live.
-	// A live record left over would make resume skip the launch.
-	n, err := l.MarkLiveDormant()
+	// A live record left over would make resume skip the launch. The one
+	// exception is a detached host session whose agent still runs: the agent
+	// is not relay's child, and relay-sessions reattaches it as it starts.
+	running := detachedRunnersAnswering(l, store)
+	n, err := l.MarkLiveDormant(func(r ledger.Record) bool { return running[r.SessionID] })
 	if err != nil {
 		slog.Warn("session ledger: could not age stale live sessions to dormant", "count", n, "error", err)
 	} else if n > 0 {
 		slog.Info("session ledger: aged stale live sessions to dormant", "count", n)
 	}
 	return l
+}
+
+// detachedRunnerProbeTimeout bounds each startup question to a host. A host
+// that does not answer in time counts as not running: the session reads
+// dormant, and a resume asks again.
+const detachedRunnerProbeTimeout = 15 * time.Second
+
+// detachedRunnerAlive asks the host of a detached claude record whether its
+// agent's runner is alive and reports whether it is. A host that
+// cannot answer, or an unknown or Windows host, reads as not alive.
+func detachedRunnerAlive(settings *config.Settings, rec ledger.Record) bool {
+	if settings == nil || rec.Detached == nil || rec.Kind != KindClaude {
+		return false
+	}
+	var host *config.Host
+	for i := range settings.Hosts {
+		if settings.Hosts[i].ID == rec.Detached.HostID {
+			host = &settings.Hosts[i]
+			break
+		}
+	}
+	if host == nil || host.Probe == nil || sshhost.IsWindowsOS(host.Probe.OS) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), detachedRunnerProbeTimeout)
+	defer cancel()
+	st, err := sshhost.AgentRunStatus(ctx, *host, host.Probe.OS, rec.SessionID)
+	if err != nil {
+		slog.Warn("session ledger: could not ask a host whether a detached agent runs", "session", rec.SessionID, "host", host.ID, "error", err)
+		return false
+	}
+	return st.Phase == sshhost.RunAlive
+}
+
+// detachedRunnersAnswering asks the host of every live detached claude record
+// whether its agent's runner is alive, one ssh question per record and all at
+// once, and returns the ids that answered "alive". The runner check compares
+// the process start time with run.json, so a recycled pid reads as gone.
+func detachedRunnersAnswering(l *ledger.Ledger, store config.SettingsStore) map[string]bool {
+	var settings *config.Settings
+	if store != nil {
+		settings = store.Get()
+	}
+	var mu sync.Mutex
+	running := map[string]bool{}
+	var wg sync.WaitGroup
+	for _, rec := range l.All() {
+		if rec.State != ledger.StateLive || rec.Detached == nil || rec.Kind != KindClaude || settings == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(rec ledger.Record) {
+			defer wg.Done()
+			if !detachedRunnerAlive(settings, rec) {
+				return
+			}
+			mu.Lock()
+			running[rec.SessionID] = true
+			mu.Unlock()
+		}(rec)
+	}
+	wg.Wait()
+	return running
 }
 
 // importSessionLedgerFromRelayLLM runs once, on a feature build's first

@@ -3,6 +3,7 @@ package provider
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,6 +83,14 @@ type ClaudeConfig struct {
 	Launcher *sessionstypes.Launcher
 	// DefaultModel leaves out --model, so the binary uses its own default.
 	DefaultModel bool
+
+	// Resume marks a start that continues an existing conversation. A
+	// detached host session asks the host for a running agent first and
+	// attaches to it, so a resume never starts a second agent.
+	Resume bool
+	// AttachOnly makes Start of a detached host session attach to a running
+	// agent and fail with ErrNoDetachedRun rather than start one.
+	AttachOnly bool
 }
 
 // ClaudeProvider manages a persistent Claude CLI process and translates its
@@ -107,6 +116,18 @@ type ClaudeProvider struct {
 	// process group, not just the shim.
 	targetPID int
 
+	// det is the detached agent a host session with detach_sessions runs; nil
+	// for every other spawn. cmd and stdin are nil while it is set.
+	det *detachedRun
+	// restoredRun is the detached run and cursor the saved state named; Start
+	// attaches from it when that run is still alive.
+	restoredRun *detachedCursor
+	// released is set by Release, which leaves the agent running.
+	released atomic.Bool
+	// attachedTurnOpen is what an attach found and left for TakeAttach;
+	// guarded by mu.
+	attachedTurnOpen bool
+
 	// root is published atomically because ProcessRoot is called from
 	// other goroutines while p.mu is held across blocking stdin writes.
 	// nil for an SSH-hosted session and whenever no spawn is running.
@@ -126,6 +147,9 @@ type ClaudeProvider struct {
 	// carries a bearer today, but both can carry project-specific text no
 	// process outside this session needs to keep reading after it ends.
 	spawnFiles []string
+	// spawnFilesMu guards spawnFiles: Kill can run twice at once (a stop,
+	// then shutdown).
+	spawnFilesMu sync.Mutex
 
 	// perms services a host session's control_request permission prompts —
 	// a host has no local hook binary to dial, so Claude's own
@@ -181,6 +205,10 @@ type claudeSpawnState struct {
 	// sawStdout flips on this spawn's first non-empty stdout line; stderr
 	// before it logs at Warn (logProviderStderr).
 	sawStdout atomic.Bool
+	// countResultsFrom, when positive, makes a detached read count the result
+	// lines it delivers from that byte offset on; an attach sets it.
+	countResultsFrom int64
+	resultsSeen      atomic.Int32
 }
 
 // NewClaudeProvider constructs a provider for session. perms may be nil for
@@ -399,6 +427,7 @@ func buildHostExec(spec *sessionstypes.HostSpec, program []string, dir string, a
 
 func (p *ClaudeProvider) Start() error {
 	p.root.Store(nil)
+	p.det = nil
 	p.cleanupSpawnFiles()
 	p.pinnedSessionID = ""
 	if p.claudeSessionID == "" {
@@ -438,6 +467,9 @@ func (p *ClaudeProvider) Start() error {
 			// executes locally).
 			args = append(args, "--append-system-prompt", p.session.SystemPrompt)
 		}
+		if host.Detach {
+			return p.startDetached(host, args)
+		}
 		name, argv, err := buildHostExec(host, p.cfg.Launcher.Program(host.ClaudePath), p.directory, args, p.session.ID)
 		if err != nil {
 			return err
@@ -460,7 +492,7 @@ func (p *ClaudeProvider) Start() error {
 				return fmt.Errorf("write mcp config: %w", err)
 			}
 			mcpConfigPath = path
-			p.spawnFiles = append(p.spawnFiles, path)
+			p.addSpawnFile(path)
 			spawn.relayMCPWritten = true
 		} else if useRelayTools(p.session.Settings) {
 			warnRelayToolsUnavailable(p.session.ID, "claude", "relay_mcp_command_unset")
@@ -471,7 +503,7 @@ func (p *ClaudeProvider) Start() error {
 				return fmt.Errorf("write system prompt: %w", err)
 			}
 			sysPromptPath = path
-			p.spawnFiles = append(p.spawnFiles, path)
+			p.addSpawnFile(path)
 		}
 
 		args := p.buildClaudeArgs(mcpConfigPath, sysPromptPath)
@@ -618,11 +650,20 @@ func (p *ClaudeProvider) ProcessRoot() (sessionstypes.ProcessRoot, bool) {
 	return *root, true
 }
 
+func (p *ClaudeProvider) addSpawnFile(path string) {
+	p.spawnFilesMu.Lock()
+	p.spawnFiles = append(p.spawnFiles, path)
+	p.spawnFilesMu.Unlock()
+}
+
 func (p *ClaudeProvider) cleanupSpawnFiles() {
-	for _, path := range p.spawnFiles {
+	p.spawnFilesMu.Lock()
+	files := p.spawnFiles
+	p.spawnFiles = nil
+	p.spawnFilesMu.Unlock()
+	for _, path := range files {
 		_ = os.Remove(path)
 	}
-	p.spawnFiles = nil
 }
 
 func (p *ClaudeProvider) readStdout(r io.ReadCloser, spawn *claudeSpawnState, done chan<- struct{}) {
@@ -714,6 +755,9 @@ func (p *ClaudeProvider) processLine(raw json.RawMessage, spawn *claudeSpawnStat
 	case events.EvtResult:
 		p.translateResult(raw)
 	case "control_request":
+		if det := p.det; det != nil && (!det.claimRequest(raw) || det.deferRaise(raw)) {
+			return
+		}
 		p.handleControlRequest(raw)
 	default:
 		p.emitter.EmitVersionedRaw(raw)
@@ -1231,14 +1275,7 @@ func (p *ClaudeProvider) handleControlRequest(raw json.RawMessage) {
 	}
 
 	pending, ch := p.perms.CreateRequest(p.session.ID, req.Request.ToolName, toolInput, req.Request.ToolUseID)
-	p.perms.NotifySession(p.session.ID, map[string]interface{}{
-		"type":         "permission_request",
-		"sessionId":    p.session.ID,
-		"permissionId": pending.ID,
-		"toolName":     req.Request.ToolName,
-		"toolInput":    toolInput,
-		"toolUseId":    req.Request.ToolUseID,
-	})
+	p.perms.NotifySession(p.session.ID, pending.Frame())
 
 	go func() {
 		decision := p.perms.WaitForDecision(pending.ID, ch)
@@ -1257,6 +1294,12 @@ func (p *ClaudeProvider) handleControlRequest(raw json.RawMessage) {
 func (p *ClaudeProvider) writeControlResponse(data []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if det := p.det; det != nil {
+		if err := p.sendDetached(context.Background(), det, append(data, '\n'), 0); err != nil {
+			slog.Warn("claude: write control_response failed", "session", p.session.ID, "error", err)
+		}
+		return
+	}
 	if p.stdin == nil {
 		return
 	}
@@ -1266,10 +1309,24 @@ func (p *ClaudeProvider) writeControlResponse(data []byte) {
 }
 
 func (p *ClaudeProvider) SendMessage(text string, files []sessionstypes.FileAttachment) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	return p.SendMessageWithin(context.Background(), text, files, DefaultLinkWait)
+}
 
-	if !p.alive.Load() || p.stdin == nil {
+// SendMessageWithin is SendMessage with the longest a detached session waits
+// for a lost host link to return, ended early when ctx ends. Other sessions
+// ignore both.
+func (p *ClaudeProvider) SendMessageWithin(ctx context.Context, text string, files []sessionstypes.FileAttachment, wait time.Duration) error {
+	p.mu.Lock()
+	unlocked := false
+	unlock := func() {
+		if !unlocked {
+			unlocked = true
+			p.mu.Unlock()
+		}
+	}
+	defer unlock()
+
+	if !p.alive.Load() || (p.stdin == nil && p.det == nil) {
 		return fmt.Errorf("claude process not running")
 	}
 
@@ -1305,6 +1362,12 @@ func (p *ClaudeProvider) SendMessage(text string, files []sessionstypes.FileAtta
 	p.msgStartNano.Store(time.Now().UnixNano())
 	p.firstTokenNano.Store(0)
 
+	if det := p.det; det != nil {
+		// Deliberate: the lock is released before the link wait, so a stop
+		// or a permission answer is not held behind a send that is waiting.
+		unlock()
+		return p.sendDetached(ctx, det, data, wait)
+	}
 	if _, err := p.stdin.Write(data); err != nil {
 		return fmt.Errorf("write to stdin: %w", err)
 	}
@@ -1327,6 +1390,11 @@ func (p *ClaudeProvider) Kill() {
 	p.cleanupSpawnFiles()
 
 	p.root.Store(nil)
+
+	if det := p.det; det != nil {
+		p.killDetached(det, true)
+		return
+	}
 
 	if p.cmd == nil || p.cmd.Process == nil {
 		return
@@ -1432,6 +1500,9 @@ func (p *ClaudeProvider) emitSupersededExit(exit *spawnExit) {
 }
 
 func (p *ClaudeProvider) DeleteSession() error {
+	if host := p.session.GetHost(); host != nil && host.Detach {
+		p.removeDetachedRun(host)
+	}
 	p.mu.Lock()
 	sid := p.claudeSessionID
 	p.mu.Unlock()
@@ -1469,6 +1540,9 @@ func (p *ClaudeProvider) GetState() json.RawMessage {
 	sid := p.claudeSessionID
 	p.mu.Unlock()
 	state := map[string]interface{}{"claudeSessionId": sid}
+	if det := p.det; det != nil {
+		state["detached"] = detachedCursor{Generation: det.dir.Generation, Offset: det.offset.Load()}
+	}
 	data, _ := json.Marshal(state)
 	return data
 }
@@ -1478,11 +1552,13 @@ func (p *ClaudeProvider) RestoreState(state json.RawMessage) {
 		return
 	}
 	var s struct {
-		ClaudeSessionID string `json:"claudeSessionId"`
+		ClaudeSessionID string          `json:"claudeSessionId"`
+		Detached        *detachedCursor `json:"detached"`
 	}
 	if err := json.Unmarshal(state, &s); err == nil {
 		p.mu.Lock()
 		p.claudeSessionID = s.ClaudeSessionID
+		p.restoredRun = s.Detached
 		p.mu.Unlock()
 	}
 }

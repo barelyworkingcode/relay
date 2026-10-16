@@ -63,6 +63,7 @@ var screenJourneys = []journey{
 	{cosSettingsID, []string{"projects", "settings-ui"}, []string{"project:acme"}, phaseScreen, 60 * time.Second, runCosSettings},
 	{auditViewID, []string{"audit", "settings-ui"}, nil, phaseScreen, 60 * time.Second, runAuditViewFilter},
 	{slowRouteID, []string{"credentials", "sessions", "hosts"}, nil, phaseScreen, gateTimeout, runSlowRouteKeepalive},
+	{detachedHostID, []string{"sessions", "hosts"}, nil, phaseScreen, 240 * time.Second, runDetachedHost},
 	// Last: it restarts the session host under every live session.
 	{hostRstID, []string{"services", "sessions"}, nil, phaseScreen, 30 * time.Second, runSessionHostRestart},
 }
