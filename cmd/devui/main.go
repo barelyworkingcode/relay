@@ -143,8 +143,7 @@ const fixtureLoginSessions = `[
 
 const fixtureEvePasskeys = `[]`
 
-// Null, which is the state on every ordinary open: a code is present only in
-// a paint seeded with a sign-in code from the Allow Enrolment… sheet.
+// Null: no paint is seeded with a code; the sheet shows one when it mints it.
 const fixtureLoginCode = `null`
 
 const fixtureMcpScopeFields = `{

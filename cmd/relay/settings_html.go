@@ -60,9 +60,8 @@ func renderSettingsHTML(settings *config.Settings, runningIDs []string, toolCach
 }
 
 // renderSettingsDocument is renderSettingsHTML plus the two things only the
-// tray can supply: a bootstrap code (nil from every caller now; the page no
-// longer reads it) and the page that menu item wants the window to open on.
-// The page is seeded into the first paint rather than emitted, because a
+// tray can supply: loginCode, which the page does not read (callers pass nil),
+// and the page that menu item wants the window to open on. The page is seeded into the first paint rather than emitted, because a
 // window that is not up yet has no document to receive an emit — see
 // App.openAllowEnrolmentSheet and App.openRemoteClientsPage. "" is the
 // ordinary case and every other caller's.
