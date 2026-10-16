@@ -543,7 +543,7 @@ Once the ancestry walk resolves a session id, and the decoded body's own
    later. (A request a host session's stream raised with no viewer joined is
    different: it is created and waits, and `join_session` sends the joiner a
    `permission_request` frame for each one still pending, after
-   `session_joined`.)
+   `session_joined` (a live broadcast may arrive first), in the order raised.)
 7. A viewer is present: `CreateRequest` mints a permission id and
    `NotifySession` sends every viewer of the session a `permission_request`
    frame (`sessionId`, `permissionId`, `toolName`, `toolInput`, `toolUseId`).

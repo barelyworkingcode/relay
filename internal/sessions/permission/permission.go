@@ -72,8 +72,10 @@ type PermissionRequest struct {
 type pendingPermission struct {
 	sessionID string
 	ch        chan PermissionDecision
-	// req is what a viewer that joins later is shown.
+	// req is what a viewer that joins later is shown; seq orders it among the
+	// requests of its session.
 	req PermissionRequest
+	seq uint64
 }
 
 // PermissionManager tracks pending permission requests. Both the hook binary
@@ -83,6 +85,7 @@ type pendingPermission struct {
 type PermissionManager struct {
 	mu      sync.Mutex
 	pending map[string]pendingPermission
+	nextSeq uint64
 	sink    types.EventSink
 	clock   clk.Clock
 
@@ -173,7 +176,8 @@ func (m *PermissionManager) CreateRequest(sessionID, toolName, toolInput, toolUs
 		ToolInput: toolInput,
 		ToolUseID: toolUseID,
 	}
-	m.pending[id] = pendingPermission{sessionID: sessionID, ch: ch, req: req}
+	m.nextSeq++
+	m.pending[id] = pendingPermission{sessionID: sessionID, ch: ch, req: req, seq: m.nextSeq}
 	n := m.pendingFor(sessionID)
 	m.mu.Unlock()
 	m.observe(sessionID, n)
@@ -182,17 +186,21 @@ func (m *PermissionManager) CreateRequest(sessionID, toolName, toolInput, toolUs
 }
 
 // PendingRequests returns the requests of sessionID still waiting for a
-// decision, so a viewer that joins after a request was raised can be shown it.
+// decision in the order they were raised, so a viewer that joins after a request was raised can be shown it.
 func (m *PermissionManager) PendingRequests(sessionID string) []PermissionRequest {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []PermissionRequest
+	var held []pendingPermission
 	for _, p := range m.pending {
 		if p.sessionID == sessionID {
-			out = append(out, p.req)
+			held = append(held, p)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(held, func(i, j int) bool { return held[i].seq < held[j].seq })
+	out := make([]PermissionRequest, len(held))
+	for i, p := range held {
+		out[i] = p.req
+	}
 	return out
 }
 

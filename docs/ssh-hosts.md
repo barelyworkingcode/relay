@@ -816,7 +816,7 @@ A session with no saved cursor, one from another generation, or one past the
 end of the output starts at the end of the output. A turn is read as open when the host holds more
 user messages than results. A permission prompt the agent is still waiting on
 is raised again, once the session is published: the session reads `asking` and
-a viewer that is joined, or that joins later, gets the `permission_request` (`join_session` sends each pending one after `session_joined`). A shutdown does not deny a
+a viewer that is joined, or that joins later, gets the `permission_request` (`join_session` sends each pending one after `session_joined`, in the order raised). A shutdown does not deny a
 waiting prompt, so it survives the restart; one whose `control_response` is
 already in `in.jsonl` is not raised. A `message` or a drop-in that meets a detached
 session with no provider attaches it first. At startup relay asks the same
@@ -845,7 +845,9 @@ resume with `host_unavailable`.
 relay-sessions has none attached, waits for the turn to end, then ends the
 agent's process group and opens the conversation in the terminal with its full
 history. A session whose host does not answer is refused (`host_unavailable`,
-`409`) and nothing is stopped, because the agent might still run. The agent and the terminal never run on the conversation together.
+`409`) and nothing is stopped, because the agent might still run; a host that
+answers but whose running agent cannot be attached is refused with
+`attach_failed`, and nothing is stopped either. The agent and the terminal never run on the conversation together.
 
 **Not covered.** Windows hosts: a detached start there is refused with an error
 that names the host. A host whose login manager kills a user's processes when

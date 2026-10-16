@@ -122,9 +122,10 @@ type ClaudeProvider struct {
 	// restoredRun is the detached run and cursor the saved state named; Start
 	// attaches from it when that run is still alive.
 	restoredRun *detachedCursor
-	// attachedRequests and attachedTurnOpen are what an attach found and left
-	// for TakeAttach; guarded by mu.
-	attachedRequests []json.RawMessage
+	// released is set by Release, which leaves the agent running.
+	released atomic.Bool
+	// attachedTurnOpen is what an attach found and left for TakeAttach;
+	// guarded by mu.
 	attachedTurnOpen bool
 
 	// root is published atomically because ProcessRoot is called from

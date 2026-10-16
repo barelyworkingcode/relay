@@ -136,6 +136,9 @@ func (m *Manager) Handoff(ctx context.Context, id string, wait time.Duration, be
 	// so the stop below ends it: a terminal and a second agent must not share
 	// the conversation.
 	if err := m.reattachIfDetached(id); err != nil {
+		if errors.Is(err, ErrAttachFailed) {
+			return "", &HandoffError{"attach_failed", "the host answered and the session's agent is running, but relay could not attach to it, so it cannot be stopped for the terminal; try again"}
+		}
 		return "", &HandoffError{"host_unavailable", "the host of this session did not answer, so its agent cannot be stopped for the terminal; try again when the host is reachable"}
 	}
 	sess, ok := m.Get(id)

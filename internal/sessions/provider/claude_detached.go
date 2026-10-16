@@ -661,6 +661,7 @@ func sendOutcomeUnknown(err error) bool {
 func (p *ClaudeProvider) Release() {
 	p.root.Store(nil)
 	if det := p.det; det != nil {
+		p.released.Store(true)
 		// Deliberate: no denial of waiting permission prompts. The agent is
 		// still blocked on each, and the next attach raises it again.
 		p.killDetached(det, false)
@@ -668,6 +669,10 @@ func (p *ClaudeProvider) Release() {
 	}
 	p.Kill()
 }
+
+// Released reports whether Release detached this provider from a running
+// agent.
+func (p *ClaudeProvider) Released() bool { return p.released.Load() }
 
 func (p *ClaudeProvider) killDetached(det *detachedRun, stopAgent bool) {
 	det.stopOnce.Do(func() {
@@ -804,10 +809,17 @@ func (p *ClaudeProvider) Events(ctx context.Context, after string, max int) (lin
 // not attach.
 func (p *ClaudeProvider) TakeAttach() (turnOpen bool, raise func()) {
 	p.mu.Lock()
-	reqs := p.attachedRequests
 	turnOpen = p.attachedTurnOpen
-	p.attachedRequests, p.attachedTurnOpen = nil, false
+	p.attachedTurnOpen = false
+	det := p.det
 	p.mu.Unlock()
+	// Deliberate: the hold ends here, not when the attach returns. A request
+	// the follow loop delivers before the manager has published the session
+	// joins the held ones and is raised with the session in place.
+	var reqs []json.RawMessage
+	if det != nil {
+		reqs = det.endDeferring()
+	}
 	return turnOpen, func() {
 		for _, raw := range reqs {
 			p.handleControlRequest(raw)
@@ -959,7 +971,6 @@ func (p *ClaudeProvider) attachDetached(host *sessionstypes.HostSpec, gen string
 	p.session.SetProcessing(turnOpen)
 	p.mu.Lock()
 	p.attachedTurnOpen = turnOpen
-	p.attachedRequests = det.endDeferring()
 	p.mu.Unlock()
 	p.runDetached(det, spawn, spawnGen)
 
