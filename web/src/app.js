@@ -211,8 +211,9 @@ let state = {
     remote: REMOTE_INIT,                    // remoteConfigView from Go, or null
     enrolmentBudgetDefaults: ENROLMENT_BUDGET_DEFAULTS_INIT,
     enrolForm: null,                        // null = list, object = create form; object.request_id set = approving a pending request
+    enrolApprovedIds: {},                   // client ids whose in-flight enrolment is an approval
     enrolmentError: null,
-    enrolBundle: null,                      // {client_id, dir} — DIRECTORY only, never key material
+    enrolBundle: null,                      // {client_id, dir, approved} — DIRECTORY only, never key material
     enrolRevoked: null,                     // {client_id, fingerprint} shown after a revoke
     remoteDraft: null,                      // uncommitted edit of the remote block
     remoteDirty: false,
@@ -5487,12 +5488,21 @@ function renderEnrolments() {
     return html;
 }
 
-// renderEnrolBundleBanner names the emitted directory and tells the operator to
-// MOVE it. The private key is inside that directory and is never rendered,
+// renderEnrolBundleBanner names the emitted directory and, for a create, tells
+// the operator to MOVE it; an approval gets a confirmation instead, because no
+// key was written. The private key is inside that directory and is never rendered,
 // previewed, or fetched over IPC — the settings WebView is a rendering surface,
 // and key material that reaches it has been copied somewhere nobody will think
 // to wipe. The filenames below are static copy, matching `relay enrol create`.
 function renderEnrolBundleBanner(b) {
+    if (b.approved) {
+        // An approval writes no private key: the requesting machine generated
+        // it and collects its certificate itself, so there is no bundle to move.
+        return '<div class="enrol-bundle">'
+            + 'Enrolled <strong>' + esc(b.client_id) + '</strong>. The requesting machine collects its certificate itself; its private key never left it. There is nothing to move.'
+            + '<div style="margin-top:8px"><button class="btn btn-sm" onclick="dismissEnrolBundle()">Done</button></div>'
+            + '</div>';
+    }
     let html = '<div class="enrol-bundle">';
     html += 'Enrolled <strong>' + esc(b.client_id) + '</strong>. Bundle written to <code>' + esc(b.dir) + '</code>';
     html += '<ul>';
@@ -5754,6 +5764,7 @@ function saveEnrolment() {
     // EnrolmentOps.Approve (spec §3's second door onto enrolment.sign)
     // rather than Create.
     if (f.request_id) {
+        state.enrolApprovedIds[clientID] = true;
         ipc(JSON.stringify({
             type: 'approve_enrolment_request',
             request_id: f.request_id,
@@ -5762,6 +5773,7 @@ function saveEnrolment() {
         }));
         return;
     }
+    delete state.enrolApprovedIds[clientID];
     ipc(JSON.stringify({
         type: 'create_enrolment',
         client_id: clientID,
@@ -5941,12 +5953,14 @@ function removeRemoteConfig() {
 window.onEnrolmentCreated = function(e, bundle) {
     if (!e || !e.client_id) return;
     state.enrolments = (state.enrolments || []).filter(x => x.client_id !== e.client_id).concat(e);
+    const approved = !!state.enrolApprovedIds[e.client_id];
+    delete state.enrolApprovedIds[e.client_id];
     state.enrolForm = null;
     state.enrolmentError = null;
     state.enrolRevoked = null;
     // Only the bundle DIRECTORY is ever held here. The private key inside it
     // does not cross the IPC boundary and has no representation in this state.
-    state.enrolBundle = { client_id: e.client_id, dir: (bundle && bundle.dir) || '' };
+    state.enrolBundle = { client_id: e.client_id, dir: (bundle && bundle.dir) || '', approved: approved };
     if (state.page === 'remote') render('push');
 };
 

@@ -1337,9 +1337,11 @@ window.__RELAY_INIT__ = {
     enrolmentBudgetDefaults: ENROLMENT_BUDGET_DEFAULTS_INIT,
     enrolForm: null,
     // null = list, object = create form; object.request_id set = approving a pending request
+    enrolApprovedIds: {},
+    // client ids whose in-flight enrolment is an approval
     enrolmentError: null,
     enrolBundle: null,
-    // {client_id, dir} — DIRECTORY only, never key material
+    // {client_id, dir, approved} — DIRECTORY only, never key material
     enrolRevoked: null,
     // {client_id, fingerprint} shown after a revoke
     remoteDraft: null,
@@ -5177,6 +5179,9 @@ window.__RELAY_INIT__ = {
     return html;
   }
   function renderEnrolBundleBanner(b) {
+    if (b.approved) {
+      return '<div class="enrol-bundle">Enrolled <strong>' + esc(b.client_id) + '</strong>. The requesting machine collects its certificate itself; its private key never left it. There is nothing to move.<div style="margin-top:8px"><button class="btn btn-sm" onclick="dismissEnrolBundle()">Done</button></div></div>';
+    }
     let html = '<div class="enrol-bundle">';
     html += "Enrolled <strong>" + esc(b.client_id) + "</strong>. Bundle written to <code>" + esc(b.dir) + "</code>";
     html += "<ul>";
@@ -5364,6 +5369,7 @@ window.__RELAY_INIT__ = {
       max_result_bytes: num("enrolMaxBytes")
     };
     if (f.request_id) {
+      state.enrolApprovedIds[clientID] = true;
       ipc(JSON.stringify({
         type: "approve_enrolment_request",
         request_id: f.request_id,
@@ -5372,6 +5378,7 @@ window.__RELAY_INIT__ = {
       }));
       return;
     }
+    delete state.enrolApprovedIds[clientID];
     ipc(JSON.stringify({
       type: "create_enrolment",
       client_id: clientID,
@@ -5499,10 +5506,12 @@ window.__RELAY_INIT__ = {
   window.onEnrolmentCreated = function(e, bundle) {
     if (!e || !e.client_id) return;
     state.enrolments = (state.enrolments || []).filter((x) => x.client_id !== e.client_id).concat(e);
+    const approved = !!state.enrolApprovedIds[e.client_id];
+    delete state.enrolApprovedIds[e.client_id];
     state.enrolForm = null;
     state.enrolmentError = null;
     state.enrolRevoked = null;
-    state.enrolBundle = { client_id: e.client_id, dir: bundle && bundle.dir || "" };
+    state.enrolBundle = { client_id: e.client_id, dir: bundle && bundle.dir || "", approved };
     if (state.page === "remote") render("push");
   };
   window.onEnrolmentRevoked = function(clientID, fingerprint) {
