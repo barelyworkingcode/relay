@@ -186,9 +186,8 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 		var err error
 		readWriteEntries := tmpl.ReadWrite
 		if readOnlyRoots != nil {
-			// A read-only-projects session must not gain a writable project
-			// folder from the new token, so a ${PROJECT_PATH} read_write
-			// entry is granted for reading only.
+			// A ${PROJECT_PATH} read_write entry never makes a read-only
+			// session's project writable, so it is granted for reading only.
 			var demoted []string
 			readWriteEntries = nil
 			for _, entry := range tmpl.ReadWrite {

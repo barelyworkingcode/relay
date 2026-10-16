@@ -564,7 +564,7 @@ MCP and mount lines, whether or not the project reaches any MCP:
 PROJECT  Acme  (id: 2f0c1e4a-7b1d-4c55-9a52-3d6f1c0e8a10, path: /Users/you/acme)
   no MCPs or mounts granted — this project reaches nothing
   template shell        sandbox=on  read_write=~  !! read_write "~" is a whole home directory
-  template claude-code  sandbox=on  read_write=~/.claude,~/.cache  read=/opt/homebrew
+  template claude-code  sandbox=on  read=/opt/homebrew  read_write=~/.claude,~/.cache
 ```
 
 A folder reaching a whole home directory or more is marked `!!` with the reason,
