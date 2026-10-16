@@ -38,7 +38,7 @@ var (
 	idRe          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	serviceCaps   = map[string]bool{"frontend": true, "manifest": true, "models": true, "model_host": true}
 	agentStates   = map[string]bool{"none": true, "connecting": true, "connected": true, "unreachable": true}
-	replyKinds    = map[string]bool{"echo": true, "text": true, "permission": true, "plan": true, "fail": true, "exit": true}
+	replyKinds    = map[string]bool{"echo": true, "text": true, "permission": true, "hold": true, "plan": true, "fail": true, "exit": true}
 	faultModes    = map[string]bool{"down": true, "slow": true, "error": true}
 	sessionStates = map[string]bool{"idle": true, "dormant": true}
 )
@@ -168,7 +168,7 @@ func Validate(w *World) error {
 		}
 		models[m.Value] = true
 		if !replyKinds[m.Reply.Kind] {
-			return bad(p+".reply.kind", "must be echo, text, permission, plan, fail or exit")
+			return bad(p+".reply.kind", "must be echo, text, permission, hold, plan, fail or exit")
 		}
 		if err := validExit(p+".reply", m.Reply); err != nil {
 			return err
@@ -295,6 +295,9 @@ const (
 // validExit checks the exit detail of a reply: required in range for kind
 // exit, refused on every other kind.
 func validExit(p string, r Reply) error {
+	if r.Kind == "hold" && (r.Tool != "" || r.Text != "" || r.Code != 0 || r.Stderr != nil) {
+		return bad(p, "tool, text, code and stderr are refused on kind hold")
+	}
 	if r.Kind != "exit" {
 		if r.Code != 0 || r.Stderr != nil {
 			return bad(p, "code and stderr belong to kind exit only")
