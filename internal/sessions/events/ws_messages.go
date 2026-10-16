@@ -49,6 +49,7 @@ const (
 	WSMsgModelChanged         = "model_changed"
 	WSMsgThinkingLevelChanged = "thinking_level_changed"
 	WSMsgPermissionRequest    = "permission_request"
+	WSMsgPermissionResolved   = "permission_resolved"
 	WSMsgError                = "error"
 	WSMsgSessionState         = "session_state"
 	WSMsgTurnDone             = "turn_done"

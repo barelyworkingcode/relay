@@ -523,8 +523,8 @@ stays the console's cwd (irrelevant). `resolveClaudePath` is not consulted.
 3. On `permission_response`, write to stdin:
    - allow: `{"type":"control_response","response":{"request_id":R,"subtype":"success","response":{"behavior":"allow","updatedInput":<input>}}}`
    - deny: `{"type":"control_response","response":{"request_id":R,"subtype":"success","response":{"behavior":"deny","message":<reason or "Denied by user">}}}`
-4. A request unanswered after 60 s is denied with `"No response"`, matching
-   the hook's timeout; a stop/kill denies every pending request.
+4. A request unanswered after 60 s is denied with `"No approval: the request was not answered within 60 seconds."`,
+   matching the hook's timeout; a stop/kill denies every pending request.
 
 Any other `control_request` subtype is answered
 `{"subtype":"error","error":"unsupported"}` so the CLI never blocks on us.

@@ -98,6 +98,9 @@ func (a *agent) runClaude() int {
 		if cmdline, ok := strings.CutPrefix(text, "!sh "); ok {
 			answer = runShellTurn(cmdline)
 		}
+		if name, ok := strings.CutPrefix(text, "!tool "); ok {
+			answer = runToolTurn(cwd, strings.TrimSpace(name))
+		}
 		// "!error <code>" ends the turn as the CLI ends one on an API error:
 		// a top-level error on the assistant line and an error result.
 		errCode, isErr := strings.CutPrefix(text, "!error ")
@@ -203,6 +206,48 @@ func runShellTurn(cmdline string) string {
 		}
 	}
 	return fmt.Sprintf("exit: %d", code)
+}
+
+// runToolTurn plays what Claude Code does before a tool call: it runs the
+// PreToolUse command of <cwd>/.claude/settings.local.json with the call on
+// stdin, in this process's environment, and answers
+// "hook: <permissionDecision>: <permissionDecisionReason>". A hook that prints
+// no decision answers "hook: none: ". The file is Claude Code's shape:
+// {"hooks":{"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"..."}]}]}}.
+func runToolTurn(cwd, tool string) string {
+	raw, err := os.ReadFile(filepath.Join(cwd, ".claude", "settings.local.json"))
+	if err != nil {
+		return "hook: error: no settings.local.json"
+	}
+	var cfg struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Hooks []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	if json.Unmarshal(raw, &cfg) != nil || len(cfg.Hooks.PreToolUse) == 0 || len(cfg.Hooks.PreToolUse[0].Hooks) == 0 {
+		return "hook: error: no PreToolUse command"
+	}
+	stdin, _ := json.Marshal(map[string]any{
+		"tool_name": tool, "tool_input": map[string]any{}, "tool_use_id": randomID("toolu_"),
+	})
+	cmd := exec.Command("/bin/sh", "-c", cfg.Hooks.PreToolUse[0].Hooks[0].Command)
+	cmd.Dir = cwd
+	cmd.Stdin = strings.NewReader(string(stdin))
+	out, _ := cmd.Output()
+	var res struct {
+		Specific struct {
+			Decision string `json:"permissionDecision"`
+			Reason   string `json:"permissionDecisionReason"`
+		} `json:"hookSpecificOutput"`
+	}
+	if json.Unmarshal(out, &res) != nil || res.Specific.Decision == "" {
+		return "hook: none: "
+	}
+	return "hook: " + res.Specific.Decision + ": " + res.Specific.Reason
 }
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)

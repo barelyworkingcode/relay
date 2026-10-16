@@ -539,20 +539,34 @@ Once the ancestry walk resolves a session id, and the decoded body's own
 
 5. `Preflight` deciding without asking ends the request there: no
    `permission_request` frame, no wait.
-6. `Preflight` says ask, but no viewer has joined the session (`HasViewers`):
-   `200` deny, `no client is viewing this session to approve the tool call`.
-   No request is created — nothing is queued to replay if a viewer joins
-   later. (A request a host session's stream raised with no viewer joined is
-   different: it is created and waits, and `join_session` sends the joiner a
-   `permission_request` frame for each one still pending, after
-   `session_joined` (a live broadcast may arrive first), in the order raised.)
-7. A viewer is present: `CreateRequest` mints a permission id and
+6. `Preflight` says ask: `CreateRequest` mints a permission id and
    `NotifySession` sends every viewer of the session a `permission_request`
    frame (`sessionId`, `permissionId`, `toolName`, `toolInput`, `toolUseId`).
-8. `WaitForDecisionContext` returns the person's decision as given (an
-   empty-reason deny becomes `Denied by user`), denies with `No response`
-   after 60 seconds with no decision, and — on a hook-side disconnect —
-   cleans up the pending request and writes nothing back.
+   This holds with zero viewers: the request stays pending, the session's
+   state becomes `asking` on every connection, and a connection that later
+   sends `join_session` receives each pending request of that session, in
+   creation order, after its `session_joined`. `permission_response` still
+   needs the answering connection to have joined.
+7. `WaitForDecisionContext` returns the person's decision as given (an
+   empty-reason deny becomes `Denied by user`) and, after 60 seconds with no
+   decision, denies with `No approval: the request was not answered within 60
+   seconds.` If no connection is joined to the session at that moment the
+   reason is instead `No approval: the request waited 60 seconds and no
+   screen was open to answer it. This session is interactive; the owner was
+   away.` On a hook-side disconnect it cleans up the pending request and
+   writes nothing back.
+
+   Whichever path removes the request from the pending set also sends every
+   viewer of the session one `permission_resolved` frame (`sessionId`,
+   `permissionId`, `outcome`), through the same `NotifySession` as the
+   `permission_request`, after the request left the set and outside the
+   lock. `outcome` is `expired` (the 60 second timer), `answered` (`Resolve`,
+   from a joined connection's `permission_response`) or `ended` (the session
+   stopped or was killed, so `DenyAllForSession` ran, or the hook's request
+   context ended). A request never gets two outcomes. The reasons the model
+   sees do not change. An answer that arrives after the request left the
+   set is dropped with no reply. A connection that was not joined misses the
+   frame; its next `join_session` replays only the still-pending requests.
 
 Every path from step 2 on logs `slog.Info("permission decided", …)` with the
 session, tool and decision — never the tool's input.
