@@ -56,6 +56,10 @@ type detachedRun struct {
 	// once and in order.
 	offset   atomic.Int64
 	linkLost atomic.Bool
+	// linkMu orders linkLost with restored: restored is non-nil exactly while
+	// the link is marked lost, and closes when it is restored.
+	linkMu   sync.Mutex
+	restored chan struct{}
 	// lineSig is nudged when a line arrives, so a reopened read can prove
 	// itself without waiting out its timer.
 	lineSig chan struct{}
@@ -68,6 +72,38 @@ type detachedRun struct {
 	// of a killed spawn waits on it so the exit follows the real end.
 	stopped chan struct{}
 	done    chan struct{}
+}
+
+// markLost marks the link lost and reports whether this call did it.
+func (d *detachedRun) markLost() bool {
+	d.linkMu.Lock()
+	defer d.linkMu.Unlock()
+	if d.linkLost.Load() {
+		return false
+	}
+	d.restored = make(chan struct{})
+	d.linkLost.Store(true)
+	return true
+}
+
+// markRestored clears the lost mark, wakes every send waiting on it, and
+// reports whether this call did it.
+func (d *detachedRun) markRestored() bool {
+	d.linkMu.Lock()
+	defer d.linkMu.Unlock()
+	if !d.linkLost.Load() {
+		return false
+	}
+	d.linkLost.Store(false)
+	close(d.restored)
+	d.restored = nil
+	return true
+}
+
+func (d *detachedRun) restoredSignal() <-chan struct{} {
+	d.linkMu.Lock()
+	defer d.linkMu.Unlock()
+	return d.restored
 }
 
 func hostExec(ctx context.Context, spec *sessionstypes.HostSpec, remote string) *exec.Cmd {
@@ -217,8 +253,7 @@ func (p *ClaudeProvider) pumpDetached(det *detachedRun, spawn *claudeSpawnState)
 
 		st, err := p.detachedStatus(det)
 		for err == nil && st.Phase == sshhost.RunAlive || err != nil {
-			if !det.linkLost.Load() {
-				det.linkLost.Store(true)
+			if det.markLost() {
 				p.emitHostLink(det, "lost")
 			}
 			if !sleepCtx(det.ctx, backoff) {
@@ -231,7 +266,7 @@ func (p *ClaudeProvider) pumpDetached(det *detachedRun, spawn *claudeSpawnState)
 			st, err = p.detachedStatus(det)
 		}
 		if err == nil && st.Phase != sshhost.RunAlive {
-			if det.linkLost.CompareAndSwap(true, false) {
+			if det.markRestored() {
 				p.emitHostLink(det, "restored")
 			}
 			return p.finishDetached(det, spawn, st)
@@ -255,7 +290,7 @@ func (p *ClaudeProvider) confirmRestored(det *detachedRun, readDone <-chan struc
 	case <-det.ctx.Done():
 		return
 	}
-	if det.linkLost.CompareAndSwap(true, false) {
+	if det.markRestored() {
 		p.emitHostLink(det, "restored")
 	}
 }
@@ -375,20 +410,129 @@ func (p *ClaudeProvider) consumeLines(ctx context.Context, det *detachedRun, spa
 	_ = cmd.Wait()
 }
 
-// sendDetached appends one line (data ends in a newline) to the agent's input.
-// Deliberate: no retry. An ssh failure after the command started may still
-// have landed the line, and a second append would deliver it twice.
-func (p *ClaudeProvider) sendDetached(det *detachedRun, data []byte) error {
-	if det.linkLost.Load() {
-		return fmt.Errorf("the link to host %q is down; the agent keeps running, send again when it returns", det.spec.Name)
+// DefaultLinkWait is how long a send waits for a lost host link to return.
+const DefaultLinkWait = 30 * time.Second
+
+// MaxLinkWait is the longest wait a caller may ask for. It stays under the
+// bridge's ten-minute inactivity limit on the operator's call.
+const MaxLinkWait = 9 * time.Minute
+
+// MaxMessageLinkWait is the longest `message` waits for the link. The reply
+// wait that follows can take five minutes, and the sum stays under the
+// bridge's ten-minute limit.
+const MaxMessageLinkWait = 4 * time.Minute
+
+// ClampMessageLinkWait is ClampLinkWait for the message route.
+func ClampMessageLinkWait(d time.Duration) time.Duration {
+	return min(ClampLinkWait(d), MaxMessageLinkWait)
+}
+
+// ClampLinkWait returns DefaultLinkWait for a zero or negative d and MaxLinkWait
+// for one above the limit.
+func ClampLinkWait(d time.Duration) time.Duration {
+	switch {
+	case d <= 0:
+		return DefaultLinkWait
+	case d > MaxLinkWait:
+		return MaxLinkWait
 	}
-	line := bytes.TrimSuffix(data, []byte("\n"))
-	ctx, cancel := context.WithTimeout(det.ctx, detachedSendTimeout)
-	defer cancel()
-	if _, msg, err := runHost(ctx, det.spec, sshhost.RunnerSend(det.spec.OS, det.dir), bytes.NewReader(line)); err != nil {
-		return fmt.Errorf("send to claude on host %q: %s", det.spec.Name, msg)
+	return d
+}
+
+var (
+	// ErrHostLinkDown means the link to a detached session's host stayed down
+	// for the whole wait; nothing was sent and the agent keeps running.
+	ErrHostLinkDown = errors.New("the host link is down")
+	// ErrSendUnknown means the connection ended during the send, so the line
+	// may or may not have reached the agent. It is never retried.
+	ErrSendUnknown = errors.New("the outcome of the send is unknown")
+	// ErrNotDetached means the session has no detached agent to replay.
+	ErrNotDetached = errors.New("session is not a detached host session")
+	// ErrInvalidCursor means an events cursor was not one this package issued.
+	ErrInvalidCursor = errors.New("invalid event cursor")
+)
+
+// sshConnectFailure reports a first stderr line that proves ssh never reached
+// the host's shell, so the command did not run and a later attempt cannot
+// deliver twice.
+func sshConnectFailure(msg string) bool {
+	return strings.HasPrefix(msg, "ssh: connect to host") || strings.HasPrefix(msg, "ssh: Could not resolve hostname")
+}
+
+// awaitLink returns once the link is not marked lost. It gives up when the
+// timer fires, the caller's ctx ends, the runner is gone or the spawn is
+// killed. A caller that has left gets ErrHostLinkDown and nothing is written.
+func (p *ClaudeProvider) awaitLink(ctx context.Context, det *detachedRun, wait time.Duration, timer *time.Timer) error {
+	down := fmt.Errorf("%w: the message was not sent; retry when host %q is reachable", ErrHostLinkDown, det.spec.Name)
+	if ctx.Err() != nil {
+		return down
+	}
+	for det.linkLost.Load() {
+		if wait <= 0 {
+			return down
+		}
+		ch := det.restoredSignal()
+		if ch == nil {
+			continue
+		}
+		select {
+		case <-ch:
+		case <-timer.C:
+			return down
+		case <-ctx.Done():
+			return down
+		case <-det.done:
+			return fmt.Errorf("claude on host %q has exited", det.spec.Name)
+		case <-det.ctx.Done():
+			return fmt.Errorf("the session on host %q was stopped", det.spec.Name)
+		}
 	}
 	return nil
+}
+
+// sendDetached appends one line (data ends in a newline) to the agent's input.
+// It waits up to wait for a lost link to return, then writes once.
+// Deliberate: no retry after the command ran. An ssh failure after the
+// command started may still have landed the line, and a second append would
+// deliver it twice. A failure that proves ssh never connected is the one
+// retry: the link is marked lost and the wait begins again.
+func (p *ClaudeProvider) sendDetached(callerCtx context.Context, det *detachedRun, data []byte, wait time.Duration) error {
+	line := bytes.TrimSuffix(data, []byte("\n"))
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		if err := p.awaitLink(callerCtx, det, wait, timer); err != nil {
+			return err
+		}
+		if callerCtx.Err() != nil {
+			return fmt.Errorf("%w: the message was not sent; retry when host %q is reachable", ErrHostLinkDown, det.spec.Name)
+		}
+		// Deliberate: the write itself does not follow the caller's ctx. A
+		// line already on its way cannot be recalled, so it is left to finish.
+		ctx, cancel := context.WithTimeout(det.ctx, detachedSendTimeout)
+		_, msg, err := runHost(ctx, det.spec, sshhost.RunnerSend(det.spec.OS, det.dir), bytes.NewReader(line))
+		cut := ctx.Err() != nil
+		cancel()
+		switch {
+		case err == nil:
+			return nil
+		case sshConnectFailure(msg):
+			if det.markLost() {
+				p.emitHostLink(det, "lost")
+			}
+		case cut || sendOutcomeUnknown(err):
+			return fmt.Errorf("%w: the connection to host %q ended during the send; the message may have been delivered, so read the session's events before sending again", ErrSendUnknown, det.spec.Name)
+		default:
+			return fmt.Errorf("send to claude on host %q: %s", det.spec.Name, msg)
+		}
+	}
+}
+
+// sendOutcomeUnknown is true when the failure is ssh's own (exit 255) or the
+// command was killed, so the remote append may have run.
+func sendOutcomeUnknown(err error) bool {
+	var ee *exec.ExitError
+	return !errors.As(err, &ee) || ee.ExitCode() == 255 || ee.ExitCode() < 0
 }
 
 // Release detaches this provider from its agent and leaves the agent running
@@ -476,7 +620,7 @@ func DeleteDetachedRun(session string, host *sessionstypes.HostSpec) {
 func (p *ClaudeProvider) Events(ctx context.Context, after string, max int) (lines []json.RawMessage, next string, err error) {
 	det := p.det
 	if det == nil {
-		return nil, "", errors.New("session is not a detached host session")
+		return nil, "", ErrNotDetached
 	}
 	d := det.dir
 	var offset int64
@@ -484,7 +628,7 @@ func (p *ClaudeProvider) Events(ctx context.Context, after string, max int) (lin
 		gen, off, ok := strings.Cut(after, ":")
 		n, perr := strconv.ParseInt(off, 10, 64)
 		if !ok || gen == "" || perr != nil || n < 0 {
-			return nil, "", fmt.Errorf("invalid event cursor %q", after)
+			return nil, "", fmt.Errorf("%w %q", ErrInvalidCursor, after)
 		}
 		d.Generation, offset = gen, n
 	}

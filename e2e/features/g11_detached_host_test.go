@@ -582,3 +582,119 @@ func TestDetachedDropsLeaveNoOrphanReader(t *testing.T) {
 	i.MustCLI("session", "stop", "--id", sid, "--json")
 	g11dUntil(t, "no reader of out.jsonl after the stop", func() bool { return g11dReaders(t, sid, 0) == 0 })
 }
+
+// g11dNotErrored fails if the session list row reads errored.
+func g11dNotErrored(t *testing.T, i *harness.Instance, sid, when string) {
+	t.Helper()
+	list, _ := g1sListSessions(t, i)
+	if row, ok := g1sFindSession(list, sid); ok && row.Attention != nil && row.Attention.State == "errored" {
+		t.Fatalf("session %s reads errored %s", sid, when)
+	}
+}
+
+// Criterion 10: a send or message while the link is down is delivered once
+// when the link returns within the command's cap.
+func TestDetachedSendWhileLinkDownDeliveredOnce(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	i := r.i
+	sid := r.startSession(t, "")
+
+	for _, verb := range []string{"send", "message"} {
+		text := "after the drop " + verb
+		since := time.Now()
+		i.SSHDown(g11dTarget)
+		g11dLink(t, i, sid, "lost", since)
+		done := g1vAsync(i.StartCLI(harness.CLIOpts{}, "session", verb, "--id", sid, "--text", text, "--timeout", "30s", "--json"))
+		i.SSHUp(g11dTarget)
+		g11dLink(t, i, sid, "restored", since)
+		if res := <-done; res.Code != 0 {
+			t.Fatalf("%s across a link drop exited %d, want 0\nstdout: %s\nstderr: %s", verb, res.Code, res.Stdout, res.Stderr)
+		}
+		if res, w := g1vWaitFor(t, i, sid); res.Code != 0 || w.State != "idle" {
+			t.Fatalf("wait after %s exited %d with state %q, want 0 and idle", verb, res.Code, w.State)
+		}
+		all := g1vEventsAfter(t, i, sid, "")
+		if n := g1vAssistantCount(all.Events, "echo: "+text); n != 1 {
+			t.Fatalf("the message of %s was delivered %d times, want once", verb, n)
+		}
+	}
+}
+
+// refuseDown sends with the link down and a short cap and checks the refusal.
+func (r *g11dRig) refuseDown(t *testing.T, sid, verb string) {
+	t.Helper()
+	res := r.i.CLI("session", verb, "--id", sid, "--text", "never "+verb, "--timeout", "2s", "--json")
+	if res.Code != 1 || g1vErrCode(res) != "host_link_down" {
+		t.Fatalf("%s with the link down past the cap exited %d with code %q, want 1 and host_link_down\nstdout: %s\nstderr: %s",
+			verb, res.Code, g1vErrCode(res), res.Stdout, res.Stderr)
+	}
+	out := strings.ToLower(string(res.Stdout) + string(res.Stderr))
+	if !strings.Contains(out, "retry") || !strings.Contains(out, "reachable") {
+		t.Fatalf("the %s refusal does not say to retry when the host is reachable\nstdout: %s\nstderr: %s", verb, res.Stdout, res.Stderr)
+	}
+	g11dNotErrored(t, r.i, sid, "after a "+verb+" refused with host_link_down")
+}
+
+// Criterion 11: past the cap with the link still down, send and message exit 1
+// with host_link_down, and the session does not read errored.
+func TestDetachedSendLinkStaysDownRefused(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	sid := r.startSession(t, "")
+
+	since := time.Now()
+	r.i.SSHDown(g11dTarget)
+	g11dLink(t, r.i, sid, "lost", since)
+	for _, verb := range []string{"send", "message"} {
+		r.refuseDown(t, sid, verb)
+	}
+}
+
+// Criterion 12: a link drop while the agent runs, and a send refused or
+// delivered across it, never read errored in the session list or in a
+// session_state frame.
+func TestDetachedLinkDropNeverErrored(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	i := r.i
+	sid := r.startSession(t, "")
+	ws := i.WebSocket("/ws", i.Credential("mounter"))
+	defer ws.Close()
+	ws.Send(map[string]any{"type": "join_session", "sessionId": sid})
+
+	// A send refused during a drop leaves the session as it was.
+	since := time.Now()
+	i.SSHDown(g11dTarget)
+	g11dLink(t, i, sid, "lost", since)
+	r.refuseDown(t, sid, "send")
+	i.SSHUp(g11dTarget)
+	g11dLink(t, i, sid, "restored", since)
+	g11dNotErrored(t, i, sid, "after the link returned")
+	g1sSendText(t, i, sid, "after the refusal", "echo: after the refusal")
+	noErrored := func(frames []g11dFrame) {
+		t.Helper()
+		for _, f := range frames {
+			if f.Type == "session_state" && f.State == "errored" {
+				t.Fatalf("a session_state errored frame reached the viewer across the drop")
+			}
+		}
+	}
+	noErrored(g11dCollect(t, ws, sid, 1))
+
+	// A drop across a running turn.
+	text, opened := g1vHold(t, r.remote)
+	g1vSend(t, i, sid, text)
+	hold := g1vReading(t, opened)
+	since = time.Now()
+	i.SSHDown(g11dTarget)
+	g11dLink(t, i, sid, "lost", since)
+	g11dNotErrored(t, i, sid, "while the link is down")
+	i.SSHUp(g11dTarget)
+	g11dLink(t, i, sid, "restored", since)
+	g11dNotErrored(t, i, sid, "after the link returned")
+
+	_ = hold.Close()
+	noErrored(g11dCollect(t, ws, sid, 1))
+	g11dNotErrored(t, i, sid, "after the turn ended")
+}

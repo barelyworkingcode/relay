@@ -416,6 +416,9 @@ prompt and an unavailable audit log use the shared `presence_*` and
 | `session.persistent.kill` | At the end of `PersistentSessionOps.Kill` | `DELETE /api/projects/{id}/persistent-sessions/{name}`, `relay terminal persistent-kill` | `project_id` |
 | `session.exited` | At the end of `appRouter.SessionExited` | bridge `session_exited` | `session_id` |
 | `session.delete` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message`, `relay session stop`, `relay session message` | `session_id` |
+| `session.send` | In relay-sessions `handleSessionSend` | `relay session send` | `session_id` (a link that stays down ends the event `error` with reason `send_failed`) |
+| `session.wait` | In relay-sessions `handleSessionWait` | `relay session wait` | `session_id` |
+| `session.events` | In relay-sessions `handleSessionEvents` | `relay session events` | `session_id`, `count` |
 | `session.message` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message`, `relay session stop`, `relay session message` | `session_id` |
 | `terminal.delete` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes, `relay terminal stop`, `relay terminal log` | `terminal_id` |
 | `terminal.log` | In relay-sessions `HandleDeleteTerminal` / `HandleTerminalLog` | forwarded terminal routes, `relay terminal stop`, `relay terminal log` | `terminal_id` |
@@ -468,7 +471,8 @@ of them. A wait for one uses `relay logs --follow --event <key>`.
   nothing to wait for after the CLI exits or the response arrives.
 - **Events from relay-sessions** (`session.delete`, `session.message`,
   `terminal.delete`, `terminal.log`, `model.list`, `session.ws.close`,
-  `chat.turn`, `session.state`, `session.host_link`) reach `relaysessions.log` through relay's
+  `chat.turn`, `session.state`, `session.host_link`, `session.send`,
+  `session.wait`, `session.events`) reach `relaysessions.log` through relay's
   capture of the helper's stderr, after the response. So do the `service.state`
   lines of a supervised service. Wait for them with a deadline, not a sleep:
 

@@ -751,6 +751,7 @@ A blank cell means no change. `Launching` from any state, or from none, gives `s
 | TurnEnded | | | idle | idle | idle | |
 | TurnFailed | | | errored | errored | errored | |
 | TurnStopped | | | idle | idle | idle | |
+| SendAborted | | | the state before the send | | the state before the send | |
 | ProcessExited | ended | ended | errored | errored | errored | |
 | DroppedIn | running, held | running, held | running, held | running, held | running, held | running, held |
 | HandedBack | | | idle (held entries only), released | | | |
@@ -767,7 +768,7 @@ Claude, pi and Codex share one path in `handleProviderEvent` and the manager met
 |---|---|
 | `Create` resolves a tracked session | Launching |
 | `Create` or a restart: the provider start fails, or the manager is stopping, or it succeeds | LaunchFailed, SessionEnded or Launched |
-| `SendMessage`, just before the provider call; if that call errors | TurnStarted; TurnFailed |
+| `SendMessage`, just before the provider call; if that call errors | TurnStarted; TurnFailed, or SendAborted when the host link stayed down or the caller left (a detached session), or none when the outcome is unknown |
 | `StopGeneration`, `ClearSession`, before the kill or abort | TurnStopped |
 | `ClearSession` on a project-bound session (provider left dead) | SessionEnded |
 | `EndSession`, `DeleteSession`, `StopAll`, before the kill | SessionEnded |
@@ -785,6 +786,28 @@ Claude, pi and Codex share one path in `handleProviderEvent` and the manager met
 A failed Claude turn also says so on the session's own frames. The assistant `message_start` llm_event of a turn the CLI ended with an API error carries `"error":"<code>"` (for example `authentication_failed`), plus `"apiErrorStatus":<n>` when the line has one. The `message_complete` frame carries `"isError":true`, plus `"apiErrorStatus":<n>` when the CLI's result has one. A normal turn carries none of these keys.
 
 A Claude Stop kills the process, so the state reads `idle`, then `ended` a moment later. pi and Codex have no question path yet, so `asking` is reachable only for Claude: a Codex session reports six of the seven states.
+
+### Wait and send
+
+`Manager.Wait(ctx, id, cap)` answers when the session needs its caller. It reads
+the board and sleeps on a per-session wake-up that every state change sends, so
+it needs no polling. `idle` returns at once, with the excerpt of the last turn that
+ended (empty before the first); `asking`, `errored` (with `exit`) and `ended`
+also return at once; `starting`, `running` and `stalled` keep waiting. A cap above
+zero ends the wait with state `timeout` on the manager's clock; the turn keeps
+running. A session with no agent state answers `ErrNotTracked`.
+
+A send that fails because the host link stayed down signals `SendAborted`
+(`running` or `stalled` back to the state before the send, with its exit
+detail; no `turn_done`) instead of `TurnFailed`, and removes the
+message it had added to the history. A send that ends `send_unknown` signals
+nothing: the line may have landed, so the agent's own events settle the state.
+
+The operator verbs reach the host on `POST /session-send`, `POST /session-wait`
+and `POST /session-events`, reserved against manifests and not on
+relay-sessions' manifest. Request and response bodies are the `--json` shapes in
+[cli.md](cli.md#session-send). `/session-wait` caps its wait at nine minutes, under the
+bridge's ten-minute inactivity limit.
 
 ### Frames
 
@@ -955,7 +978,11 @@ A claude session whose host spec carries `detach: true` (from
 `ssh -T` process (`docs/ssh-hosts.md`, "Detached sessions"). Argv comes from
 `buildClaudeArgs`, as for any host session; only the transport differs.
 `SendMessage` and the `control_response` writes append one line to `in.jsonl`
-through a short ssh command. Stdout lines come from `out.jsonl` by byte offset
+through a short ssh command. `SendMessageWithin` is `SendMessage` with the
+longest a send waits for a lost link to return; a `control_response` does not
+wait. The wait ends on `restored`, the runner's exit, a kill, the caller's request ending or the cap (at most nine minutes), and
+the write happens once (`ErrHostLinkDown` past the cap, `ErrSendUnknown` after
+an ambiguous ssh exit). Stdout lines come from `out.jsonl` by byte offset
 and reach `processLine` once and in order across a link drop. `Kill` ends the
 agent's process group on the host. `Events(ctx, after, max)` returns the
 complete lines after a cursor and the cursor to pass next. A shutdown of
