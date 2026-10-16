@@ -354,10 +354,12 @@ func TestEnrolmentLodgedConnectionClosesWhenRemoteTurnsOff(t *testing.T) {
 	if res.Code != 0 {
 		t.Fatalf("an approved remote set exited %d\nstderr: %s", res.Code, res.Stderr)
 	}
-	i.WaitEvent(harness.EventQuery{Key: "enrolment.request.abandon", Fields: map[string]any{"status": "ok", "request_id": l.requestID}}, windowEventDeadline)
+	// Closed first and within closeDeadline: relay's 30 s idle timeout would
+	// otherwise close the socket and write the same abandon event.
 	if !l.conn.Closed(closeDeadline) {
 		t.Fatalf("relay left the lodging connection open after the remote listener turned off")
 	}
+	i.WaitEvent(harness.EventQuery{Key: "enrolment.request.abandon", Fields: map[string]any{"status": "ok", "request_id": l.requestID}}, closeDeadline)
 	if n := g10PendingCount(t, i); n != 0 {
 		t.Fatalf("enrol requests lists %d requests after the remote listener turned off, want none", n)
 	}
