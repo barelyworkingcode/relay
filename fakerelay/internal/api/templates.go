@@ -20,7 +20,7 @@ func validTemplate(t world.Template) *httpErr {
 	case strings.TrimSpace(t.Name) == "":
 		return &httpErr{http.StatusBadRequest, "template name is required"}
 	}
-	return nil
+	return validTemplateFolders(t)
 }
 
 func (a *api) templateRoutes(r server.Registrar) {

@@ -273,6 +273,7 @@ type sessionLaunchAuditFields struct {
 
 	ReadOnlyProjects bool
 	ReadRoots        int
+	GrantWarnings    []string
 }
 
 type sessionLaunchAuditArgs struct {
@@ -291,6 +292,9 @@ type sessionLaunchAuditArgs struct {
 	Command            string `json:"command,omitempty"`
 	ReadOnlyProjects   bool   `json:"read_only_projects,omitempty"`
 	ReadRoots          int    `json:"read_roots,omitempty"`
+	// GrantWarnings are the template folders that reach a whole home
+	// directory or more (project.TemplateFolderWarnings).
+	GrantWarnings []string `json:"grant_warnings,omitempty"`
 }
 
 // maxAuditErrorRunes leaves room for a refusal's fixed text around one
@@ -313,6 +317,7 @@ func newSessionLaunchAuditEvent(f sessionLaunchAuditFields, outcome, errMsg stri
 		Origin: f.Origin, PromptBytes: f.PromptBytes, HostID: f.HostID,
 		Entry: capAuditText(f.Entry, maxRefusalNameRunes), Command: capAuditText(f.Command, maxAuditDirectoryRunes),
 		ReadOnlyProjects: f.ReadOnlyProjects, ReadRoots: f.ReadRoots,
+		GrantWarnings: cappedAuditTexts(f.GrantWarnings, maxAuditDirectoryRunes),
 	})
 	return audit.AuditEvent{
 		ID:      audit.NewAuditID(),
@@ -323,6 +328,17 @@ func newSessionLaunchAuditEvent(f sessionLaunchAuditFields, outcome, errMsg stri
 		Error:   capAuditText(errMsg, maxAuditErrorRunes),
 		Args:    args,
 	}
+}
+
+func cappedAuditTexts(in []string, max int) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, w := range in {
+		out[i] = capAuditText(w, max)
+	}
+	return out
 }
 
 // capAuditText keeps the first max runes of s and marks the cut with "…",
@@ -647,6 +663,15 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		if readOnly {
 			readOnlyRoots = readOnlyProjectRoots(settings)
 			baseFields.ReadRoots = len(readOnlyRoots)
+		}
+		if grants != nil {
+			if home, homeErr := os.UserHomeDir(); homeErr == nil {
+				projectPath := directory
+				if proj != nil && proj.Path != "" {
+					projectPath = proj.Path
+				}
+				baseFields.GrantWarnings = project.TemplateFolderWarnings(*grants, projectPath, home)
+			}
 		}
 		profilePath, err := writeSessionSandboxProfile(settings, proj, directory, sessionID, req.Kind, grants, readOnlyRoots)
 		if err != nil {

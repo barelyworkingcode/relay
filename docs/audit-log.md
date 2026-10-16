@@ -795,6 +795,15 @@ credential to name ([`docs/sandbox-command.md`](sandbox-command.md)):
  "outcome":"denied","error":"session is not a dormant session of this project"}
 ```
 
+A sandboxed launch whose template folders reach a whole home directory or more
+carries `args.grant_warnings`, an array of strings placed after `read_roots`, one
+per folder, such as `read_write "~" is a whole home directory`
+(`project.TemplateFolderWarnings`). It is set before the profile is written, so
+an allowed row and a refused one both carry it; it covers terminals, kind
+sessions, `relay sandbox` and resume. Each string is capped at 1024 runes. A
+launch from a narrow template has no such key. `relay audit` shows the row's
+detail with a `GRANT BREADTH:` prefix.
+
 The `session_resume` example above is `session_not_resumable`, the
 refusal `AuthorizeLaunch` (`cmd/relay/session_launch.go`) raises before it
 ever sets `baseFields.Sandbox` or `baseFields.SessionID` — so the real args
