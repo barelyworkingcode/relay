@@ -240,6 +240,33 @@ func openSessionLedger(configDir string, store config.SettingsStore) *ledger.Led
 // dormant, and a resume asks again.
 const detachedRunnerProbeTimeout = 15 * time.Second
 
+// detachedRunnerAlive asks the host of a detached claude record whether its
+// agent's runner is alive and returns the generation it found. A host that
+// cannot answer, or an unknown or Windows host, reads as not alive.
+func detachedRunnerAlive(settings *config.Settings, rec ledger.Record) (string, bool) {
+	if settings == nil || rec.Detached == nil || rec.Kind != KindClaude {
+		return "", false
+	}
+	var host *config.Host
+	for i := range settings.Hosts {
+		if settings.Hosts[i].ID == rec.Detached.HostID {
+			host = &settings.Hosts[i]
+			break
+		}
+	}
+	if host == nil || host.Probe == nil || sshhost.IsWindowsOS(host.Probe.OS) {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), detachedRunnerProbeTimeout)
+	defer cancel()
+	st, err := sshhost.AgentRunStatus(ctx, *host, host.Probe.OS, rec.SessionID)
+	if err != nil {
+		slog.Warn("session ledger: could not ask a host whether a detached agent runs", "session", rec.SessionID, "host", host.ID, "error", err)
+		return "", false
+	}
+	return st.Generation, st.Phase == sshhost.RunAlive
+}
+
 // detachedRunnersAnswering asks the host of every live detached claude record
 // whether its agent's runner is alive, one ssh question per record and all at
 // once, and returns the ids that answered "alive". The runner check compares
@@ -257,36 +284,20 @@ func detachedRunnersAnswering(l *ledger.Ledger, store config.SettingsStore) map[
 		if rec.State != ledger.StateLive || rec.Detached == nil || rec.Kind != KindClaude || settings == nil {
 			continue
 		}
-		var host *config.Host
-		for i := range settings.Hosts {
-			if settings.Hosts[i].ID == rec.Detached.HostID {
-				host = &settings.Hosts[i]
-				break
-			}
-		}
-		if host == nil || host.Probe == nil || sshhost.IsWindowsOS(host.Probe.OS) {
-			continue
-		}
 		wg.Add(1)
-		go func(rec ledger.Record, host config.Host) {
+		go func(rec ledger.Record) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), detachedRunnerProbeTimeout)
-			defer cancel()
-			st, err := sshhost.AgentRunStatus(ctx, host, host.Probe.OS, rec.SessionID)
-			if err != nil {
-				slog.Warn("session ledger: could not ask a host whether a detached agent runs", "session", rec.SessionID, "host", host.ID, "error", err)
-				return
-			}
-			if st.Phase != sshhost.RunAlive {
+			gen, alive := detachedRunnerAlive(settings, rec)
+			if !alive {
 				return
 			}
 			mu.Lock()
 			running[rec.SessionID] = true
 			mu.Unlock()
-			if _, err := l.SetDetachedGeneration(rec.SessionID, st.Generation); err != nil {
+			if _, err := l.SetDetachedGeneration(rec.SessionID, gen); err != nil {
 				slog.Warn("session ledger: could not record a detached run's generation", "session", rec.SessionID, "error", err)
 			}
-		}(rec, *host)
+		}(rec)
 	}
 	wg.Wait()
 	return running

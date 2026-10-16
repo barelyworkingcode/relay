@@ -50,7 +50,7 @@ func (r *appRouter) SessionExited(ctx context.Context, req bridge.SessionExitedR
 		default:
 			// A terminal is never in the ledger (C5), so "no such record" here
 			// is the ordinary pty case, not a failure worth logging.
-			if _, ok := r.sessions.Get(req.SessionID); ok {
+			if rec, ok := r.sessions.Get(req.SessionID); ok && !r.detachedAgentStillRuns(rec) {
 				if _, err := r.sessions.SetState(req.SessionID, ledger.StateDormant); err != nil {
 					slog.Warn("session exited: ledger update failed", "session", req.SessionID, "error", err)
 				}
@@ -94,4 +94,16 @@ func (r *appRouter) recordSessionExited(req bridge.SessionExitedRequest) {
 		Outcome: audit.AuditOutcomeOK,
 		Args:    args,
 	})
+}
+
+// detachedAgentStillRuns reports whether rec is a detached host session whose
+// agent runs after its provider released it, as a relay-sessions restart
+// leaves it. relay-sessions attaches that agent again as it starts, so the
+// record stays live and project-delete cleanup still finds it.
+func (r *appRouter) detachedAgentStillRuns(rec ledger.Record) bool {
+	if rec.Detached == nil || r.sessionDeps.store == nil {
+		return false
+	}
+	_, alive := detachedRunnerAlive(r.sessionDeps.store.Get(), rec)
+	return alive
 }
