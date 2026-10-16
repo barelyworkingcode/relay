@@ -1791,6 +1791,11 @@ Rules:
   - `text`: the answer is the fixed `text`.
   - `permission`: raises a `permission_request` for `tool`, then echoes on
     approve.
+  - `hold`: the turn starts (`session_state` `running`, turn start) and then
+    sends nothing, with no `permission_request`, until `stop_generation` or
+    `end_session` ends it as it ends a turn held on a permission. `tool`,
+    `text`, `code` and `stderr` are refused. It models a headless routine
+    run that stays running.
   - `plan`: a plan-mode turn. `text` (optional) is the plan. The agent
     writes it to `DIR/home/.claude/plans/<sessionId>.md` before any frame,
     then sends a `Write` `tool_use` with that `file_path` and its
