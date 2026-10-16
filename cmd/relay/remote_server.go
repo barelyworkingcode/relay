@@ -723,9 +723,9 @@ func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*config.Set
 			fmt.Errorf("this certificate is no longer enrolled"))
 	}
 
-	// A record from before one-enrolment-one-profile can still name several.
-	// It loads, and is refused here on every request type until the operator
-	// narrows it; picking one grant for the caller would guess.
+	// A record on disk may name several profiles. It loads, and is refused
+	// here on every request type until the operator narrows it; picking one
+	// grant for the caller would guess.
 	if len(enr.ProjectIDs) > 1 {
 		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("enrolment %q names %d access profiles, and one enrolment reaches one; on the Mac run: relay enrol update --client-id %s --grant <one profile id>",

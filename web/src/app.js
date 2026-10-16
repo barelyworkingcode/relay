@@ -5593,6 +5593,12 @@ function renderEnrolmentForm() {
     if (!grantable.length) {
         html += '<div class="proj-tool-empty">No access profiles exist yet. Create one in the <strong>Projects</strong> tab (Kind → Access profile) first.</div>';
     }
+    if (grantable.length) {
+        html += '<label class="proj-tool-row">';
+        html += '<input type="radio" name="enrolProfile" ' + (f.project_ids.length === 0 ? 'checked' : '') + ' onchange="toggleEnrolGrant(\'\', true)" />';
+        html += '<div><div>None</div><div class="desc">enrol without an access profile</div></div>';
+        html += '</label>';
+    }
     for (const p of grantable) {
         const checked = f.project_ids.indexOf(p.id) >= 0;
         html += '<label class="proj-tool-row">';
@@ -5605,7 +5611,7 @@ function renderEnrolmentForm() {
     // and a pre-ticked box is a grant issued by a machine rather than by the
     // operator. Approving without touching the list issues nothing.
     if (approving && f.pendingRequest && f.pendingRequest.requested_profile) {
-        html += '<p class="proj-section-help">This machine asked for <code>' + esc(f.pendingRequest.requested_profile) + '</code> — a request from that machine, not a grant. Nothing is ticked for you; tick it above only if you mean to.</p>';
+        html += '<p class="proj-section-help">This machine asked for <code>' + esc(f.pendingRequest.requested_profile) + '</code> — a request from that machine, not a grant. Nothing is chosen for you; choose it above only if you mean to.</p>';
     }
     if (f.project_ids.length === 0) {
         // Same note `relay enrol create` prints: enrolling with nothing is
@@ -5710,9 +5716,10 @@ function toggleEnrolGrant(projectID, checked) {
     const f = state.enrolForm;
     if (!f) return;
     // One profile per enrolment: choosing one replaces any earlier choice.
-    f.project_ids = checked ? [projectID] : [];
-    // Choosing a profile answers the question the checkbox asks, so the
-    // checkbox stops claiming the opposite.
+    // An empty id is the "None" choice.
+    f.project_ids = checked && projectID ? [projectID] : [];
+    // Choosing a profile answers the question the "no access" checkbox asks,
+    // so that checkbox stops claiming the opposite.
     if (f.project_ids.length > 0) f.no_grant = false;
     render();
 }
@@ -5759,7 +5766,7 @@ function saveEnrolment() {
     // loud — the certificate issued below connects successfully and reaches
     // nothing, which reads on the client machine as a broken install.
     if (f.project_ids.length === 0 && !f.no_grant) {
-        state.enrolmentError = 'choose at least one access profile, or tick "Enrol with no access for now"';
+        state.enrolmentError = 'choose an access profile, or tick "Enrol with no access for now"';
         render();
         return;
     }

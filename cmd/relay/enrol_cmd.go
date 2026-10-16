@@ -270,8 +270,8 @@ func enrolList() {
 	w.Flush()
 }
 
-// formatEnrolmentStatus marks a record from before one-enrolment-one-profile:
-// it loads, and every remote call from it is refused until it is narrowed.
+// formatEnrolmentStatus marks a record on disk that names several profiles: it
+// loads, and every remote call from it is refused until it is narrowed.
 func formatEnrolmentStatus(profileIDs []string) string {
 	if len(profileIDs) > 1 {
 		return fmt.Sprintf("refused: names %d profiles", len(profileIDs))
