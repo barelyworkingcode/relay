@@ -1,6 +1,7 @@
 package features
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -87,9 +88,12 @@ func TestTemplateFolderProjectPath(t *testing.T) {
 	}
 }
 
+// g1fTokenRule is the part of a 400 body only the ${...} token rule writes.
+const g1fTokenRule = "sandbox folder may use ${PROJECT_PATH}, and only at its start; no other ${...} expands"
+
 func TestTemplateFolderUnknownTokenRefused(t *testing.T) {
 	t.Parallel()
-	supplied := json.RawMessage(`[{"id":"acme-badtoken","name":"Acme bad token","command":"/bin/true","sandbox":true,"read":["${PROJECT_ID}"]}]`)
+	supplied := json.RawMessage(`[{"id":"acme-badtoken","name":"Acme bad token","command":"/bin/true","sandbox":true,"read":["/opt/${PROJECT_ID}"]}]`)
 	i := harness.Start(t, harness.Options{
 		Credentials: g1tCreds, Presence: g1tApprove,
 		Settings: map[string]json.RawMessage{"terminal_templates": supplied},
@@ -131,6 +135,8 @@ func TestTemplateFolderUnknownTokenRefused(t *testing.T) {
 		trace := harness.NewTrace(t)
 		if resp := cfg.Do("POST", "/api/terminal/templates", body, harness.ReqOpts{Trace: trace}); resp.Status != 400 {
 			t.Fatalf("POST with %s %q answered %d, want 400", c.field, c.entry, resp.Status)
+		} else if !bytes.Contains(resp.Body, []byte(g1fTokenRule)) {
+			t.Fatalf("POST with %s %q answered 400 without the token rule: %s", c.field, c.entry, resp.Body)
 		}
 		g1tEvent(t, i, harness.EventQuery{Key: "template.create", Trace: trace,
 			Fields: map[string]any{"status": "error", "reason": "invalid"}})
@@ -142,6 +148,8 @@ func TestTemplateFolderUnknownTokenRefused(t *testing.T) {
 		trace = harness.NewTrace(t)
 		if resp := cfg.Do("PUT", "/api/terminal/templates/acme-edit", body, harness.ReqOpts{Trace: trace}); resp.Status != 400 {
 			t.Fatalf("PUT with %s %q answered %d, want 400", c.field, c.entry, resp.Status)
+		} else if !bytes.Contains(resp.Body, []byte(g1fTokenRule)) {
+			t.Fatalf("PUT with %s %q answered 400 without the token rule: %s", c.field, c.entry, resp.Body)
 		}
 		g1tEvent(t, i, harness.EventQuery{Key: "template.update", Trace: trace,
 			Fields: map[string]any{"status": "error", "reason": "invalid"}})
