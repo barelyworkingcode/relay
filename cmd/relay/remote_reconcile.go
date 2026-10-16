@@ -55,6 +55,10 @@ type RemoteSupervisor struct {
 	// only: a restart closes it, and nothing reopens a port by itself.
 	enrolWindow *enrolmentWindow
 	windowGen   uint64
+	// lodging holds the servers of consumed windows while a lodging
+	// connection is still alive. Remote or auditing turning off closes them:
+	// a machine mid-poll must not collect a certificate with no recording.
+	lodging map[*EnrolmentRequestServer]struct{}
 	// onWindowClosed is told why each window closed. The window core uses it
 	// to notify the operator of an expiry.
 	onWindowClosed func(reason string)
@@ -234,6 +238,7 @@ func (sup *RemoteSupervisor) reconcileToolListenerLocked(settings *config.Settin
 func (sup *RemoteSupervisor) reconcileEnrolmentWindowLocked(settings *config.Settings) {
 	if !resolveRemoteConfig(settings.Remote).Enabled || !remoteAuditingLive(settings, sup.audit) {
 		sup.closeWindowLocked(windowClosedListenerOff)
+		sup.closeLodgingLocked()
 		return
 	}
 	sup.refreshEnrolCALocked()
@@ -372,10 +377,25 @@ func (sup *RemoteSupervisor) closeWindowLocked(reason string) bool {
 	}
 	sup.enrolWindow = nil
 	close(w.done)
-	sup.enrolTable.closeWindow(w.gen)
+	// This is subtle: a window the table no longer holds was already
+	// consumed by a lodge whose windowConsumed has not run yet. Whatever
+	// raced it here, the close is the lodge's, and the lodging connection
+	// must survive it.
+	if !sup.enrolTable.closeWindow(w.gen) {
+		reason = windowClosedLodged
+	}
 	w.server.StopAccepting()
 	if reason == windowClosedLodged {
-		sup.run(w.server.CloseWhenIdle)
+		if sup.lodging == nil {
+			sup.lodging = map[*EnrolmentRequestServer]struct{}{}
+		}
+		sup.lodging[w.server] = struct{}{}
+		sup.run(func() {
+			w.server.CloseWhenIdle()
+			sup.mu.Lock()
+			delete(sup.lodging, w.server)
+			sup.mu.Unlock()
+		})
 	} else {
 		sup.run(w.server.Close)
 	}
@@ -385,6 +405,14 @@ func (sup *RemoteSupervisor) closeWindowLocked(reason string) bool {
 		sup.onWindowClosed(reason)
 	}
 	return true
+}
+
+// closeLodgingLocked ends every lodging connection still alive; each request
+// is then abandoned as with any dropped connection.
+func (sup *RemoteSupervisor) closeLodgingLocked() {
+	for srv := range sup.lodging {
+		sup.run(srv.Close)
+	}
 }
 
 func (sup *RemoteSupervisor) StopAccepting() {
@@ -414,9 +442,14 @@ func (sup *RemoteSupervisor) Close() {
 		close(sup.enrolWindow.done)
 		sup.enrolWindow = nil
 	}
+	lodging := sup.lodging
+	sup.lodging = nil
 	sup.mu.Unlock()
 	s.Close()
 	es.Close()
+	for srv := range lodging {
+		srv.Close()
+	}
 }
 
 func (sup *RemoteSupervisor) stopLocked(why string) {

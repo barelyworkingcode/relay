@@ -549,7 +549,10 @@ memory, so a restart closes it). The first accepted lodge consumes the window
 under the table lock and stamps the request with the window's profile: the
 listener closes, the lodging connection stays open, and the machine polls on
 it. No other connection can poll that request, and a connection that closes
-before approval drops it. Approval therefore takes no profile; it issues for
+before approval drops it. The supervisor tracks the lodging connection after
+the window is gone: remote or auditing turning off closes it (reason
+`listener_off` for a window still open), so nothing collects a certificate
+with no recording. An expiry that races a lodge counts as the lodge. Approval therefore takes no profile; it issues for
 the one the window named. That listener's entire capability is two methods, `Lodge` and `Poll`,
 over a bounded, in-memory, never-persisted table of at most 8 pending
 requests — it holds no reference to a router, the CA, the sealer or

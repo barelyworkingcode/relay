@@ -57,6 +57,9 @@ type ipcEnrolmentRequestIDMsg struct {
 // exist on ANY caller of Approve, this one included. The body decodes with
 // unknown fields refused (see ipcApproveEnrolmentRequest).
 type ipcApproveEnrolmentRequestMsg struct {
+	// Type is the IPC envelope's own tag, which onSettingsIpc passes through
+	// with the body. It is ignored; every other unknown field is refused.
+	Type      string                 `json:"type"`
 	RequestID string                 `json:"request_id"`
 	ClientID  string                 `json:"client_id"`
 	Budget    config.EnrolmentBudget `json:"budget"`

@@ -1882,9 +1882,10 @@ Wire type `EnrolmentRequestPoll`. Asks about a lodged request. Only the
 connection that lodged the request may poll it; any other request id answers
 `{"status":"unknown"}`. The connection has no frame cap, stays open through 30
 seconds idle, and closes after `approved`, `refused` or `unknown`. A connection
-that closes before approval drops its request (event
-`enrolment.request.abandon`), and approving it then fails with `the requesting
-machine disconnected; ask it to register again`.
+that closes before approval drops its request (event `enrolment.request.abandon`), and approving it then
+fails with `the requesting machine disconnected; ask it to register again`.
+Turning the remote listener or auditing off closes a lodging connection the
+same way.
 
 - **Request:** `{"type": "EnrolmentRequestPoll", "request_id": string (required),
   "sas_open": string}`. `sas_open` is 32 lowercase hex, sent on the first poll.
