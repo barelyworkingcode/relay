@@ -54,6 +54,13 @@ func runAllowEnrolment(ctx context.Context, e env) result {
 		_ = s.Restore(bg)
 	}()
 
+	// A Settings window that was already up is left up; one the press opens is
+	// closed again at the end.
+	before, err := s.findWindow(ctx, 2*time.Second)
+	if err != nil {
+		return stepResult(id, err)
+	}
+
 	// One Allow Enrolment… item, neither retired item; then press it.
 	if err := s.pressTrayItem(ctx, func(labels []string) error {
 		n := 0
@@ -74,6 +81,8 @@ func runAllowEnrolment(ctx context.Context, e env) result {
 	}, func(label string) bool { return label == allowEnrolmentItem }); err != nil {
 		return stepResult(id, err)
 	}
+
+	s.opened = before == nil
 
 	// The sheet's three targets.
 	if err := s.waitSheet(ctx, "Home|Work browser", "Relay sign-in", "Access profile"); err != nil {
@@ -99,8 +108,13 @@ func runAllowEnrolment(ctx context.Context, e env) result {
 
 	// Waits: the eve.enrolment.open event. The tray menu has no hook, so the
 	// countdown line is polled within its own timeout after the event.
-	if err := pollCheck(ctx, allowEnrolmentWait, func() (bool, error) { return eveOpenEvent(ctx, e, since) }); err != nil {
-		return fail("no eve.enrolment.open event with status ok after the prompt was answered: " + err.Error())
+	var eventErr error
+	if !pollUntil(ctx, allowEnrolmentWait, func() bool {
+		var seen bool
+		seen, eventErr = eveOpenEvent(ctx, e, since)
+		return seen
+	}) {
+		return fail(fmt.Sprintf("no eve.enrolment.open event with status ok within %s of the prompt being answered (%v)", allowEnrolmentWait, eventErr))
 	}
 	if open, err := eveWindowOpen(ctx, e, token); err != nil {
 		return blocked(id, err.Error())
@@ -123,11 +137,13 @@ func runAllowEnrolment(ctx context.Context, e env) result {
 
 	// Cancel Enrolment was pressed: the window reads closed and consume is
 	// refused, which is what eve's own login screen sees.
-	if err := pollCheck(ctx, allowEnrolmentWait, func() (bool, error) {
-		open, err := eveWindowOpen(ctx, e, token)
-		return !open, err
-	}); err != nil {
-		return fail("the Home|Work window still reads open after Cancel Enrolment: " + err.Error())
+	var statusErr error
+	if !pollUntil(ctx, allowEnrolmentWait, func() bool {
+		var open bool
+		open, statusErr = eveWindowOpen(ctx, e, token)
+		return statusErr == nil && !open
+	}) {
+		return fail(fmt.Sprintf("the Home|Work window does not read closed within %s of Cancel Enrolment (%v)", allowEnrolmentWait, statusErr))
 	}
 	if status := consumeEveWindow(ctx, e, token); status != http.StatusConflict {
 		return fail(fmt.Sprintf("consume answered %d after Cancel Enrolment, want 409", status))
@@ -142,25 +158,6 @@ func stepResult(id string, err error) result {
 		return blocked(id, err.Error())
 	}
 	return result{id, stateFail, err.Error()}
-}
-
-// pollUntil retries done every 200 ms until it reports true, errors, or the
-// time is up.
-func pollCheck(ctx context.Context, within time.Duration, done func() (bool, error)) error {
-	var lastErr error
-	for deadline := time.Now().Add(within); ; time.Sleep(200 * time.Millisecond) {
-		ok, err := done()
-		if ok {
-			return nil
-		}
-		lastErr = err
-		if time.Now().After(deadline) || ctx.Err() != nil {
-			if lastErr == nil {
-				lastErr = fmt.Errorf("not within %s", within)
-			}
-			return lastErr
-		}
-	}
 }
 
 // eveOpenEvent reports whether relay logged an ok eve.enrolment.open since
@@ -278,15 +275,24 @@ func (s *allowEnrolmentSteps) toggleTrayMenu(ctx context.Context) {
 	})
 }
 
-// sheetNode finds a control in the Settings window by role and a label that
-// contains text, ignoring case: CSS-styled text reads differently to the
-// accessibility tree than in the source.
+// sheetNode finds a control inside the Allow Enrolment dialog by role and a
+// label that contains text, ignoring case: CSS-styled text reads differently to
+// the accessibility tree than in the source. The search is scoped to the dialog
+// so the pages' own buttons, such as Overview's, cannot match.
 func (s *allowEnrolmentSteps) sheetNode(role, text string) (*axNode, func(), error) {
 	win, release, err := s.settingsWindow()
 	if err != nil || win == nil {
 		return nil, release, err
 	}
-	return findNode(win, func(n *axNode) bool {
+	dialog := findNodeIn(win, func(n *axNode) bool {
+		return n.Role != "AXStaticText" && n.Role != "AXHeading" && len(n.Children) > 0 &&
+			strings.EqualFold(normText(n.Label), "Allow Enrolment")
+	})
+	if dialog == nil {
+		release()
+		return nil, func() {}, nil
+	}
+	return findNode(dialog, func(n *axNode) bool {
 		return n.Role == role && strings.Contains(strings.ToLower(normText(n.Label)), strings.ToLower(text))
 	}, release)
 }
@@ -294,7 +300,6 @@ func (s *allowEnrolmentSteps) sheetNode(role, text string) (*axNode, func(), err
 // waitSheet waits for the sheet to show a radio for every label. A window that
 // just opened has not loaded its page yet.
 func (s *allowEnrolmentSteps) waitSheet(ctx context.Context, labels ...string) error {
-	s.opened = true
 	for _, label := range labels {
 		n, release, err := pollNode(ctx, allowEnrolmentWait, func() (*axNode, func(), error) { return s.sheetNode("AXRadioButton", label) })
 		if err != nil {
