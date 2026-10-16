@@ -2,9 +2,12 @@ package project
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // Classification is a property of the string an operator typed, never of the
@@ -136,4 +139,42 @@ func ScopeBreadthWarnings(scope map[string]json.RawMessage) []string {
 		}
 	}
 	return out
+}
+
+// TemplateFolderWarnings names the read and read_write folders of t that reach
+// a whole home directory or more, in that order; deny is never flagged. An
+// entry is judged as stored and as a launch from projectPath expands it, so
+// ${PROJECT_PATH}/.. on a project directly in home is caught. An entry
+// ExpandGrantPath refuses is skipped: the launch refuses it anyway.
+func TemplateFolderWarnings(t config.TerminalTemplate, projectPath, home string) []string {
+	var out []string
+	for _, list := range []struct {
+		field   string
+		entries []string
+	}{{"read", t.Read}, {"read_write", t.ReadWrite}} {
+		for _, entry := range list.entries {
+			expanded, err := config.ExpandGrantPath(entry, home, projectPath)
+			if err != nil {
+				continue
+			}
+			kind := widerBreadth(ScopeEntryBreadth(entry), ScopeEntryBreadth(expanded))
+			if home != "" && (expanded == filepath.Clean(home) || strings.HasPrefix(filepath.Clean(home), expanded+"/")) {
+				kind = widerBreadth(kind, ScopeBreadthHome)
+			}
+			if phrase := scopeBreadthPhrase(kind); phrase != "" {
+				out = append(out, fmt.Sprintf("%s %q is %s", list.field, entry, phrase))
+			}
+		}
+	}
+	return out
+}
+
+func widerBreadth(a, b string) string {
+	if a == ScopeBreadthRoot || b == ScopeBreadthRoot {
+		return ScopeBreadthRoot
+	}
+	if a == ScopeBreadthHome || b == ScopeBreadthHome {
+		return ScopeBreadthHome
+	}
+	return ScopeBreadthBounded
 }

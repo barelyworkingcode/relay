@@ -214,7 +214,7 @@ func (ss *FileSettingsStore) path() string {
 	return filepath.Join(ss.dir, "settings.json")
 }
 
-const CurrentSettingsVersion = 2
+const CurrentSettingsVersion = 3
 
 // defaultModelEndpointListen is the loopback address EnsureDefaultModelEndpoint
 // writes in for the model endpoint's TCP listener (plan-broker-and-sessions.md
@@ -369,7 +369,9 @@ func (s *Settings) normalize() {
 				p.AllowedTemplates = []string{"*"}
 			}
 		}
-		s.Version = CurrentSettingsVersion
+		// Not CurrentSettingsVersion: a version 1 file still owes the later
+		// migrations.
+		s.Version = 2
 	}
 	ensureSlice(&s.ExternalMcps)
 	ensureSlice(&s.Services)

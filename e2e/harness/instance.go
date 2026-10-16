@@ -89,6 +89,11 @@ type Options struct {
 	// PrepareConfigDir runs after the harness wrote its files and before serve
 	// starts, so a test can plant a file the harness has no option for.
 	PrepareConfigDir func(configDir string)
+	// NoDefaultTemplates stops the harness adding its own terminal templates
+	// (shell, claude-code, pi, codex): settings.json holds exactly the
+	// templates the test supplies, so a test of relay's own template defaults
+	// or migration sees what relay itself wrote.
+	NoDefaultTemplates bool
 }
 
 // Ready is ready.json, schema 1 (docs/cli.md).
@@ -242,6 +247,9 @@ func (i *Instance) linkAgents() {
 // under HOME/.local/bin, so the fake runs wherever a real CLI is installed.
 // A template the test supplied under the same id replaces the harness one.
 func (i *Instance) agentTemplates(supplied []json.RawMessage) []json.RawMessage {
+	if i.opts.NoDefaultTemplates {
+		return append([]json.RawMessage{}, supplied...)
+	}
 	have := map[string]bool{}
 	for _, raw := range supplied {
 		var t struct {
