@@ -879,8 +879,9 @@ func startServerCore(opts serverOptions) (*App, error) {
 		Gate:   presenceGate,
 		Remote: app.remote,
 		Notify: platform.Notify,
-		Clock:  clock, Eve: eveEnrolmentOps,
-		Login: loginOps,
+		Clock:  clock,
+		Eve:    eveEnrolmentOps,
+		Login:  loginOps,
 	}
 
 	// Catch termination signals so child processes get cleaned up.
