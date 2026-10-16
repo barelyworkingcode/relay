@@ -41,10 +41,10 @@ updates it), and the **verify harness** is `cmd/devboxverify`. Planners and
 reviewers judge security findings against the threat model: a finding names
 the attacker, the asset and the promise broken, or it is out of scope.
 
-The **verify cadence** is `epic`: a PR needs no `devbox/verify` status. CI runs
-the e2e tests the change reaches ([selection](docs/testing.md#test-selection)),
-and each epic's last task runs `devboxverify --epic N` on `main`
-([README](cmd/devboxverify/README.md)).
+The **verify cadence** is `epic`: a PR needs no `devbox/verify` status. No CI
+gates a PR. Proof before `main` is the verification task of each epic or story:
+the e2e suite and `devboxverify` on the head ([README](cmd/devboxverify/README.md)),
+closed with a `Verified:` line.
 
 ADR-NNN citations in code and docs are labels for reasoning recorded in those
 documents; there is no ADR directory to look in.
@@ -84,9 +84,8 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 |---|---|
 | commit | `gofmt`, `go build`, `go vet` — seconds |
 | push | `go build ./...`, `go vet ./...` |
-| PR and `main` (GitHub Actions) | `gofmt`, `go build`, `go vet`, `go vet -tags relaytest ./...`, the test-build absent/present check, and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` |
-| PR and `main` (GitHub Actions) | the `e2e` job: `gofmt` and `go vet` in `e2e/`, then the selected feature tests on a PR (the whole package on a push to `main`) plus the coverage package, `go test -race -count=1`; see [selection](docs/testing.md#test-selection) |
-| PR and `main` (GitHub Actions) | the `fakerelay` job (Linux): `gofmt`, `go vet`, a cgo-free build for Linux and macOS, then the proof tests in `fakerelay/` |
+| verification task, before `main` | `(cd e2e && go test -race ./features/)`, then `devboxverify` on the head |
+| by hand only (`gh workflow run ci --ref <ref>`) | `ci.yml`: the `build`, `e2e`, `fakerelay` and `contract` jobs on a clean Linux checkout. No PR or push runs it |
 
 ## House rules
 
@@ -133,7 +132,7 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
 
 ### Tests
 
-- Relay has no unit tests and CI rejects a `_test.go` outside `e2e/` and `fakerelay/`. A bug's
+- Relay has no unit tests: no `_test.go` outside `e2e/` and `fakerelay/`. A bug's
   failing repro is an `e2e/` feature test that drives relay through its CLI or
   HTTP; what only the real Mac can show (the screen, Touch ID, the login
   keychain) is a devbox journey (`cmd/devboxverify`).
