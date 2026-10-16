@@ -504,3 +504,81 @@ func TestDetachedResumeWhileAgentRunsAnswersRunnerAlive(t *testing.T) {
 		t.Fatalf("run.json pid went from %d to %d, or the agent stopped", run.PID, after.PID)
 	}
 }
+
+// Criterion 5 for a dormant session: after a relay restart the agent still
+// runs, and session stop ends it and its group and removes the run directory.
+func TestDetachedStopAfterRestartEndsAgent(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	i := r.i
+	sid := r.startSession(t, "")
+	run := r.run(t, sid, "g1")
+	g1sSendText(t, i, sid, "hi", "echo: hi")
+
+	i.Restart()
+	i.WaitSessionHost(g1tHostDeadline)
+	if !g11dAlive(run.PID) {
+		t.Fatalf("agent pid %d did not outlive the relay restart", run.PID)
+	}
+
+	i.MustCLI("session", "stop", "--id", sid, "--json")
+	if g11dAlive(run.PID) || !g11dGroupGone(run.PGID) {
+		t.Fatalf("agent pid %d or its group %d still runs after session stop returned", run.PID, run.PGID)
+	}
+	if _, err := os.Stat(r.agentsDir(sid)); !os.IsNotExist(err) {
+		t.Fatalf("the run directory %s outlives the stopped session: stat err = %v", r.agentsDir(sid), err)
+	}
+}
+
+// g11dReaders counts the processes on the fake host whose command line names
+// the session's out.jsonl, leaving out the agent's own group.
+func g11dReaders(t *testing.T, sid string, skipPGID int) int {
+	t.Helper()
+	out, err := exec.Command("ps", "-axo", "pid=,pgid=,command=").Output()
+	if err != nil {
+		t.Fatalf("reading the process table: %v", err)
+	}
+	needle := "/.relay/agents/" + sid + "/"
+	n := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || !strings.Contains(line, needle) || !strings.Contains(line, "out.jsonl") {
+			continue
+		}
+		if pgid, _ := strconv.Atoi(f[1]); pgid == skipPGID {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+func g11dLink(t *testing.T, i *harness.Instance, sid, link string, since time.Time) {
+	t.Helper()
+	i.WaitEvent(harness.EventQuery{Key: "session.host_link", Since: since,
+		Fields: map[string]any{"link": link, "session_id": sid, "host_id": g11dHostID}}, g11dLinkDeadline)
+}
+
+// Repeated drops leave no orphaned reader: a reader whose channel dropped dies
+// on its next heartbeat write, so at most one stays and stop leaves none.
+func TestDetachedDropsLeaveNoOrphanReader(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	i := r.i
+	sid := r.startSession(t, "")
+	run := r.run(t, sid, "g1")
+	g1sSendText(t, i, sid, "hi", "echo: hi")
+
+	for cycle := 0; cycle < 3; cycle++ {
+		since := time.Now()
+		i.SSHDown(g11dTarget)
+		g11dLink(t, i, sid, "lost", since)
+		i.SSHUp(g11dTarget)
+		g11dLink(t, i, sid, "restored", since)
+	}
+	g1sSendText(t, i, sid, "fence", "echo: fence")
+	g11dUntil(t, "at most one reader of out.jsonl", func() bool { return g11dReaders(t, sid, run.PGID) <= 1 })
+
+	i.MustCLI("session", "stop", "--id", sid, "--json")
+	g11dUntil(t, "no reader of out.jsonl after the stop", func() bool { return g11dReaders(t, sid, 0) == 0 })
+}
