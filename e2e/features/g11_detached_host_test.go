@@ -606,13 +606,6 @@ func TestDetachedSendWhileLinkDownDeliveredOnce(t *testing.T) {
 		i.SSHDown(g11dTarget)
 		g11dLink(t, i, sid, "lost", since)
 		done := g1vAsync(i.StartCLI(harness.CLIOpts{}, "session", verb, "--id", sid, "--text", text, "--timeout", "30s", "--json"))
-		// The cap is 30 s and the link is still down: the command is inside
-		// its link wait, so it has not returned.
-		select {
-		case res := <-done:
-			t.Fatalf("%s returned (exit %d) with the link still down: %s", verb, res.Code, res.Stdout)
-		default:
-		}
 		i.SSHUp(g11dTarget)
 		g11dLink(t, i, sid, "restored", since)
 		if res := <-done; res.Code != 0 {

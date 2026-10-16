@@ -751,7 +751,7 @@ A blank cell means no change. `Launching` from any state, or from none, gives `s
 | TurnEnded | | | idle | idle | idle | |
 | TurnFailed | | | errored | errored | errored | |
 | TurnStopped | | | idle | idle | idle | |
-| SendAborted | | | the state before the send | | | |
+| SendAborted | | | the state before the send | | the state before the send | |
 | ProcessExited | ended | ended | errored | errored | errored | |
 | DroppedIn | running, held | running, held | running, held | running, held | running, held | running, held |
 | HandedBack | | | idle (held entries only), released | | | |

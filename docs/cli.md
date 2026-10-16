@@ -2613,7 +2613,7 @@ Text form: the line `N sessions`, then one `ID<TAB>NAME` line per session.
 | `--id` | Session id. Required. |
 | `--text` | The message. |
 | `--file` | A JSON file, or `-` for stdin, `{"text","files"}`, instead of `--text`. Cannot be combined with `--text`. |
-| `--timeout` | The longest to wait for a lost host link to return, a Go duration such as `10s`. Default `30s`; above `9m` it is `9m`. |
+| `--timeout` | The longest to wait for a lost host link to return, a Go duration such as `10s`. Default `30s`; above `4m` it is `4m`, because the reply wait that follows can take five minutes more. |
 | `--json` | Print the reply as JSON. |
 
 With neither `--text` nor `--file` it exits `1` (`error: pass --text or
@@ -2640,7 +2640,7 @@ provider reports them. The text form is the reply text alone.
 | `--id` | Session id. Required. |
 | `--text` | The message. |
 | `--file` | A JSON file, or `-` for stdin, `{"text","files"}`, instead of `--text`. Cannot be combined with `--text`. |
-| `--timeout` | As for `session message`: the longest to wait for a lost host link. Default `30s`, at most `9m`. |
+| `--timeout` | As for `session message`: the longest to wait for a lost host link. Default `30s`, at most `9m` (`message` allows `4m`). |
 | `--json` | Print the answer as JSON. |
 
 It returns once the message is written, before the turn ends; read the reply

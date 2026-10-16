@@ -109,7 +109,7 @@ func (b *Board) AbortSend(sessionID string, prev Attention) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.dead || e.state != Running {
+	if e.dead || (e.state != Running && e.state != Stalled) {
 		return
 	}
 	e.restoreTo = prev.State

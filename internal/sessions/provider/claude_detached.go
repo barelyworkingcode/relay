@@ -417,6 +417,16 @@ const DefaultLinkWait = 30 * time.Second
 // bridge's ten-minute inactivity limit on the operator's call.
 const MaxLinkWait = 9 * time.Minute
 
+// MaxMessageLinkWait is the longest `message` waits for the link. The reply
+// wait that follows can take five minutes, and the sum stays under the
+// bridge's ten-minute limit.
+const MaxMessageLinkWait = 4 * time.Minute
+
+// ClampMessageLinkWait is ClampLinkWait for the message route.
+func ClampMessageLinkWait(d time.Duration) time.Duration {
+	return min(ClampLinkWait(d), MaxMessageLinkWait)
+}
+
 // ClampLinkWait returns DefaultLinkWait for a zero or negative d and MaxLinkWait
 // for one above the limit.
 func ClampLinkWait(d time.Duration) time.Duration {
@@ -493,6 +503,9 @@ func (p *ClaudeProvider) sendDetached(callerCtx context.Context, det *detachedRu
 	for {
 		if err := p.awaitLink(callerCtx, det, wait, timer); err != nil {
 			return err
+		}
+		if callerCtx.Err() != nil {
+			return fmt.Errorf("%w: the message was not sent; retry when host %q is reachable", ErrHostLinkDown, det.spec.Name)
 		}
 		// Deliberate: the write itself does not follow the caller's ctx. A
 		// line already on its way cannot be recalled, so it is left to finish.

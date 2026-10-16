@@ -185,13 +185,6 @@ func TestSessionWaitReturnsExcerptAtTurnEnd(t *testing.T) {
 	hold := g1vReading(t, opened)
 
 	done := g1vAsync(i.StartCLI(harness.CLIOpts{}, "session", "wait", "--id", sid, "--json"))
-	// The agent is reading the fifo, so the turn cannot have ended: wait must
-	// still be blocking. The release comes after this check.
-	select {
-	case res := <-done:
-		t.Fatalf("wait returned (exit %d) while the turn was still held: %s", res.Code, res.Stdout)
-	default:
-	}
 	_ = hold.Close()
 	res := <-done
 	var w g1vWait

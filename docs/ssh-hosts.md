@@ -777,7 +777,7 @@ session as any process exit does, with the exit code.
 
 **A send during a drop.** `relay session send` and `relay session message`
 wait for `session.host_link` `restored` within the command's `--timeout`
-(default 30 s, at most 9 minutes; a longer value is 9 minutes), then write once. A command that is killed or interrupted while it waits writes nothing. Past the cap the command exits `1` with
+(default 30 s; at most 9 minutes for `send` and 4 minutes for `message`, whose reply wait follows; a longer value is clamped), then write once. A command that is killed or interrupted while it waits writes nothing. Past the cap the command exits `1` with
 `host_link_down` and a message to retry when the host is reachable; nothing was
 written, and the session returns to the state it had before the send. The wait
 holds the session's one in-flight send, so a second send meanwhile answers
@@ -819,6 +819,10 @@ the last session ends (`KillUserProcesses=yes`) takes the agent with it. A
 runner killed from outside leaves its agent orphaned in the group; a stop
 leaves such an agent alone, because without a live leader relay cannot prove
 the group is still its own.
+
+**Known limit.** An eve tab's send to a detached session during a drop waits
+up to the 30 s default for the link inside that tab's connection, so a stop
+sent from the same tab waits behind it.
 
 ## What is deliberately absent (v1)
 

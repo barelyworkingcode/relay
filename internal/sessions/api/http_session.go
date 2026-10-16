@@ -72,7 +72,7 @@ func HandleSessionMessageSync(mgr *session.Manager, id string, w http.ResponseWr
 
 	// link_wait_ms is the operator verb's cap on waiting for a lost host link.
 	ms, _ := strconv.ParseInt(r.URL.Query().Get("link_wait_ms"), 10, 64)
-	text, stats, err := mgr.SendMessageSyncWith(r.Context(), id, req.Text, req.Files, provider.ClampLinkWait(time.Duration(ms)*time.Millisecond))
+	text, stats, err := mgr.SendMessageSyncWith(r.Context(), id, req.Text, req.Files, provider.ClampMessageLinkWait(time.Duration(ms)*time.Millisecond))
 	if err != nil {
 		ev.End(logging.OutcomeError, sessionErrorReason(err), err)
 		writeSessionError(w, err)
