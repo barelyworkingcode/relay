@@ -31,6 +31,8 @@ type svc struct {
 	sessions map[string]*session
 	terms    map[string]*terminal
 	perms    map[string]string // permission id -> session id
+	// permRaised is when, on the instance clock, each open request was raised.
+	permRaised map[string]time.Time
 	// heldPerms are the permission_request frames raised, oldest first; an
 	// entry whose id is gone from perms was answered.
 	heldPerms []map[string]any
@@ -42,8 +44,11 @@ func Register(r server.Registrar, d server.Deps) error {
 	calls := fakes.NewCallLog(d.Dir)
 	s := &svc{Deps: d, factory: fakes.NewAgentFactory(calls, filepath.Join(d.Dir, "home")), started: d.Clock.Now().UTC(),
 		hosts: fakes.WorldModelHost{List: d.World.Models, Log: calls},
-		conns: map[*conn]struct{}{}, sessions: map[string]*session{}, terms: map[string]*terminal{}, perms: map[string]string{}, logs: map[string]*termLog{}}
+		conns: map[*conn]struct{}{}, sessions: map[string]*session{}, terms: map[string]*terminal{}, perms: map[string]string{}, permRaised: map[string]time.Time{}, logs: map[string]*termLog{}}
 	s.seed()
+	if w, ok := d.Clock.(server.ClockWatcher); ok {
+		w.Watch(s.expirePerms)
+	}
 	r.Route(server.ClassRead, "POST /api/tmux/views", s.createOutsideView)
 	r.Route(server.ClassProxy, "GET /api/models", s.listModels)
 	r.Route(server.ClassProxy, "GET /api/sessions", s.listSessions)
