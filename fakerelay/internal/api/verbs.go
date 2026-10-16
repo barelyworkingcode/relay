@@ -48,6 +48,8 @@ type grantRecord struct {
 	Kind string     `json:"kind"`
 	Path string     `json:"path,omitempty"`
 	MCPs []grantMCP `json:"mcps"`
+	// Templates is absent for an access profile and a hosted project.
+	Templates []grantTemplate `json:"templates,omitempty"`
 }
 
 func (a *api) grantVerb(ctx context.Context, args []string) server.VerbResult {
@@ -85,6 +87,9 @@ func (a *api) grantVerb(ctx context.Context, args []string) server.VerbResult {
 				rec.MCPs = append(rec.MCPs, grantMCP{MCP: x, Access: "read", Outbound: "blocked", Tools: "all tools"})
 			}
 			sort.Slice(rec.MCPs, func(i, j int) bool { return rec.MCPs[i].MCP < rec.MCPs[j].MCP })
+			if p.Kind != "remote" && p.HostID == "" {
+				rec.Templates = grantTemplates(m.Templates, p)
+			}
 			recs = append(recs, rec)
 		}
 	})
@@ -104,6 +109,8 @@ func (a *api) grantVerb(ctx context.Context, args []string) server.VerbResult {
 		return out("%s\n", b)
 	}
 	var buf bytes.Buffer
+	var sb strings.Builder
+	templateWarned := false
 	for _, r := range recs {
 		label := "PROJECT"
 		if r.Kind != "project" {
@@ -113,6 +120,15 @@ func (a *api) grantVerb(ctx context.Context, args []string) server.VerbResult {
 		for _, g := range r.MCPs {
 			fmt.Fprintf(&buf, "  %-12s access=%s  outbound=%s  tools=%s\n", g.MCP, g.Access, g.Outbound, g.Tools)
 		}
+		sb.Reset()
+		if writeGrantTemplates(&sb, r.Templates) {
+			templateWarned = true
+		}
+		buf.WriteString(sb.String())
+	}
+	if templateWarned {
+		fmt.Fprintln(&buf)
+		fmt.Fprintln(&buf, "A '!!' after a template marks a folder reaching a whole home directory or more.")
 	}
 	return server.VerbResult{Stdout: buf.Bytes()}
 }

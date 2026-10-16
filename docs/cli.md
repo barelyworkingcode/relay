@@ -555,6 +555,26 @@ otherwise let a client under-report (see `docs/tokens.md` and
 `internal/project/scope_breadth.go`). Nothing on this machine currently triggers that warning
 — every registered scope names a bounded subfolder.
 
+A local project's record also lists the terminal templates it may launch
+(`allowed_templates`), with each template's sandbox setting and its `read`,
+`read_write` and `deny` folders as stored. Each template is one line after the
+MCP and mount lines, whether or not the project reaches any MCP:
+
+```
+PROJECT  Acme  (id: 2f0c1e4a-7b1d-4c55-9a52-3d6f1c0e8a10, path: /Users/you/acme)
+  no MCPs or mounts granted — this project reaches nothing
+  template shell        sandbox=on  read_write=~  !! read_write "~" is a whole home directory
+  template claude-code  sandbox=on  read=/opt/homebrew  read_write=~/.claude,~/.cache
+```
+
+A folder reaching a whole home directory or more is marked `!!` with the reason,
+judged as stored and as a launch from this project expands it, so
+`${PROJECT_PATH}/..` on a project directly in the home directory is marked and
+`${PROJECT_PATH}/sub` is not. `deny` is never marked. When any template is
+marked the footer adds: `A '!!' after a template marks a folder reaching a whole
+home directory or more.` An access profile and a hosted project list no
+templates.
+
 `relay grant` **never prints a secret**. It builds a `StoredToken` from the
 clear fields already in `settings.json` and reads through the same
 permission-derivation code the router uses at call time — it does not, and
@@ -596,6 +616,11 @@ sorted by name:
 | `mounts[].access` | string | Mount access mode. |
 | `mounts[].path` | string | Mount path. |
 | `mounts[].warnings` | array of string, optional | Breadth warnings for the mount path. |
+| `templates` | array, optional | The terminal templates a local project may launch. Absent for an access profile and a hosted project. |
+| `templates[].id` | string | The template id. |
+| `templates[].sandbox` | boolean | Whether a launch of the template is sandboxed. |
+| `templates[].read`, `read_write`, `deny` | array of string, optional | The folders as stored, `${PROJECT_PATH}` and `~` unexpanded. |
+| `templates[].warnings` | array of string, optional | One text per folder reaching a whole home directory or more, such as `read_write "~" is a whole home directory`. |
 | `enrolments` | array, optional | Enrolments that reach this record, sorted by `client_id`. |
 | `enrolments[].client_id` | string | The enrolment's client id. |
 | `enrolments[].cli_admin` | boolean | Whether that certificate may narrow this profile's own grant. |
@@ -674,7 +699,11 @@ ones a script usually reads (the full set is in
 | `trace_id` | string, optional | The trace of the request, on `call_tool`, `list_tools`, `list_skills`, `model_call` and `model_list` rows only. Every other event kind leaves it out. |
 
 Text mode prints the header `TIME  OUTCOME  PROJECT  MCP  TOOL  MS  CALLER
-DETAIL`, one row per record, a dash in an empty column. With no matching record
+DETAIL`, one row per record, a dash in an empty column. The detail of a
+`session_launch` or `session_resume` row whose `args` carry `grant_warnings`
+starts with `GRANT BREADTH: ` and the warnings joined by `; `, then two
+spaces: the sandboxed launch's template reaches a whole home directory or more.
+`--json` shows the raw row. With no matching record
 it prints `no matching tool calls`.
 
 Exit codes: `0` when it printed (a filter that matches nothing is still `0`,
