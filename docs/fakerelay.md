@@ -1493,7 +1493,8 @@ Terminal templates. Shape (omit empty keys):
 
 Other keys relay accepts are `env_passthrough`, `sandbox`, `read`,
 `read_write`, `deny` and `model_key`. fakerelay stores and returns them
-unchanged and applies none of them.
+unchanged and applies none of them, except that it checks the three folder
+lists on save and shows them in `relay grant`.
 
 | Route | Request | Success | Errors |
 |---|---|---|---|
@@ -1514,6 +1515,13 @@ unchanged and applies none of them.
   `{"error":"template \"<id>\" not found"}`.
 - A name that is empty, or other validation failures, answer 400
   `{"error":"<text>"}`.
+- A `read`, `read_write` or `deny` folder must be an absolute path, `~`, `~/...`
+  or start with `${PROJECT_PATH}`, and not be `/`; any other `${...}`, or
+  `${PROJECT_PATH}` not at the start, is refused. Else 400
+  `terminal template "<id>": <field> "<entry>": <reason>`, the reason being
+  `sandbox folder must be an absolute path or start with ~ or ${PROJECT_PATH}, and not be /`
+  or `sandbox folder may use ${PROJECT_PATH}, and only at its start; no other ${...} expands`.
+  `POST` and `PUT` on host templates apply the same check.
 
 Events: `template.list`, `template.get`, `template.create`, `template.update`,
 `template.remove`.
@@ -1686,6 +1694,16 @@ profile, sorted by `name`:
 | `mcps[].scope`, `mcps[].warnings` | omitted when empty. `scope` maps a field to its JSON text |
 | `mounts` | omitted when empty. Elements: `{id,access,path,warnings?}` |
 | `enrolments` | omitted when empty. Elements: `{client_id,cli_admin}` |
+| `templates` | local projects only (absent for an access profile and a hosted project), omitted when empty. Elements: `{id,sandbox,read?,read_write?,deny?,warnings?}`, sorted by `id` |
+| `templates[].id` | each console template the project's `allowed_templates` allows: a lone `*` allows all, an empty list none. A template whose sandbox folders fail the save rules is left out |
+| `templates[].sandbox` | `true` unless the template stores `sandbox: false` |
+| `templates[].read`, `read_write`, `deny` | the folders as stored, `~` and `${PROJECT_PATH}` unexpanded |
+| `templates[].warnings` | one text per `read` or `read_write` folder reaching a whole home directory or more, judged as stored and as expanded from the project path, such as `read_write "~" is a whole home directory`. `deny` is never flagged |
+
+Text mode adds one line per template after the MCP lines:
+`  template <id>  sandbox=on|off  read=a,b  read_write=...  deny=...  !! <warnings joined by "; ">`
+and, when any carries a warning, the footer
+`A '!!' after a template marks a folder reaching a whole home directory or more.`
 
 Exit and output edge cases:
 
