@@ -150,6 +150,7 @@ func IssuanceEvent(iss CredentialIssuance) AuditEvent {
 		SubjectName:       name,
 		Grants:            grants,
 		Via:               iss.Via,
+		Cause:             iss.Cause,
 		IssuanceTruncated: subjectCut || nameCut || grantsCut,
 		Actor:             issuanceActor(iss),
 		PresenceID:        iss.PresenceID,

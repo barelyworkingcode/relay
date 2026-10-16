@@ -430,7 +430,7 @@ func (o *ProjectOps) RegenSkill(ctx context.Context, lister SkillLister, id stri
 	return dir, true, nil
 }
 
-// Remove deletes a project and its on-disk skill directory (best-effort;
+// RemoveVia deletes a project and its on-disk skill directory (best-effort;
 // EmitSkills only ever wrote there, so a hosted project — which cannot
 // carry GenerateSkill — has nothing to clean up and projectSkillDir simply
 // returns "" for one with an empty Path). The one core HTTP DELETE
@@ -439,18 +439,8 @@ func (o *ProjectOps) RegenSkill(ctx context.Context, lister SkillLister, id stri
 //
 // Removing an access profile also removes every enrolment that names it, in
 // the same settings write, so no enrolment ever names a profile that is gone.
-// Narrowing needs no gate. Remove derives the audit door from the context (an
-// HTTP request carries its credential id); RemoveVia takes it from a caller
-// that knows it.
-func (o *ProjectOps) Remove(ctx context.Context, id string) (found bool, err error) {
-	if credID, ok := APICredentialIDFromContext(ctx); ok {
-		return o.RemoveVia(ctx, id, auditViaHTTP, credID)
-	}
-	return o.RemoveVia(ctx, id, auditViaCLI, "")
-}
-
-// RemoveVia is Remove with the door named for the revocation rows the delete
-// causes.
+// Narrowing needs no gate. via and credID name the door for the revocation
+// rows the delete causes.
 func (o *ProjectOps) RemoveVia(ctx context.Context, id, via, credID string) (found bool, err error) {
 	var removed config.Project
 	var revoked []config.Enrolment

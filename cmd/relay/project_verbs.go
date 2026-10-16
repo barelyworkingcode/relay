@@ -115,7 +115,7 @@ func adminProjectRemove(ctx context.Context, r *appRouter, args json.RawMessage)
 	if proj, _ := config.FindProjectByID(config.FreshSettings(ops.Store), req.ID); proj != nil {
 		name = proj.Name
 	}
-	found, err := ops.Remove(ctx, req.ID)
+	found, err := ops.RemoveVia(ctx, req.ID, auditViaCLI, "")
 	if err != nil {
 		return nil, err
 	}
