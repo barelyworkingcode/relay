@@ -134,7 +134,7 @@ func ipcRemoveProject(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	found, err := ctx.ProjectOps.Remove(ctx.Ctx, msg.ID)
+	found, err := ctx.ProjectOps.RemoveVia(ctx.Ctx, msg.ID, auditViaIPC, "")
 	if err != nil {
 		ctx.UI.EmitEvent("onProjectError", err.Error())
 		return

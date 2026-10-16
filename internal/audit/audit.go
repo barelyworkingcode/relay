@@ -396,6 +396,10 @@ type AuditEvent struct {
 	Grants      []string `json:"grants,omitempty"`
 	Via         string   `json:"via,omitempty"`
 
+	// Cause says why a revocation happened when the operator did not ask for
+	// that credential directly, e.g. "profile_deleted".
+	Cause string `json:"cause,omitempty"`
+
 	// One marker for the four fields above rather than one each, unlike
 	// MethodTruncated/PathTruncated: they describe a single act, and the
 	// question an operator has of a cut record is whether it was cut, not

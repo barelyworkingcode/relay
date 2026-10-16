@@ -43,6 +43,10 @@ const (
 	auditCredentialRemote = "remote"
 )
 
+// auditCauseProfileDeleted is the cause of a credential_revoked row written
+// because the access profile the enrolment named was deleted.
+const auditCauseProfileDeleted = "profile_deleted"
+
 // How an act was initiated. A separate axis from the actor kind: `cli` and
 // `ipc` are both the operator, and knowing which one told relay to do this is
 // what tells a terminal session apart from a click in the Settings window.

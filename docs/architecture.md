@@ -518,7 +518,7 @@ entry or audit row, and it stays out of the grant digests.
 ### Remote client enrolment
 
 An **enrolment** (`internal/enrolment`, `settings.json` → `enrolments`) binds one
-client certificate to the remote projects it may use. It is keyed by
+client certificate to the one access profile it may use. It is keyed by
 *certificate, not by machine* — several agents on one VM each hold their own
 enrolment, granted, audited, and revoked independently, and nothing may assume
 one per machine. There is **no bearer token anywhere on this path**: a stolen
@@ -590,13 +590,29 @@ long-lived because *revocation, not expiry, is the control*; revoking deletes
 the record and fires `enrolment.SetRevocationHook` so the listener can close
 live connections.
 
-Grants are validated at enrolment (`enrolment.ValidateGrants` — every grant must
-name a project with `IsRemote()` true) and at conversion
+Grants are validated at enrolment (`enrolment.ValidateGrants` — at most one
+grant, checked first, and it must name a project with `IsRemote()` true; create,
+sign, approve and update all pass through it) and at conversion
 (`enrolment.ValidateProjectConversion` — remote→local is refused while any enrolment
 grants the project, naming the offenders), and a third time at call time by the
 listener (`RemoteServer.resolveGrant` re-checks `IsRemote()` immediately before
 dispatch, so a grant that went stale by any route relay did not anticipate
 fails closed).
+
+**One enrolment, one profile; deleting the profile ends the enrolment.** A
+record from before that rule can still name several profiles. It loads, and
+`RemoteServer.resolveCaller` refuses every request from it, whatever the
+request type, with a message naming `relay enrol update --client-id ID --grant
+<one profile id>`; the refused call writes the usual denied `call_tool` row.
+Picking one of the grants for the caller would guess, and refusing to load
+would break relay's settings, so the record waits for the operator to narrow
+it. Removing a remote project (`ProjectOps.Remove`) removes every enrolment
+naming it in the same settings write (`enrolment.RemoveNamingProject`), then
+closes each one's live connections (`enrolment.CloseRevoked`), removes its
+bundle and writes one `credential_revoked` row with `cause` `profile_deleted`.
+The cascade only narrows, so it is not gated, and a failed audit write is
+logged and never undoes it. The other direction does not cascade: revoking an
+enrolment leaves its profile, so rotating a certificate needs no re-authoring.
 
 ### The remote listener
 

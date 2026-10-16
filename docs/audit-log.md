@@ -955,6 +955,13 @@ argument rests on.
 - **`grants`** is the ADR-015 class set for an `api_credential` and the granted
   access-profile ids for an `enrolment`. Absent for the kinds that have
   neither.
+- **`cause`** says why a revocation happened when the operator did not ask
+  for that credential directly. Only one value exists: `profile_deleted`, on
+  the `credential_revoked` row of each enrolment removed because the access
+  profile it named was deleted (one row per enrolment, `via` the delete's
+  door, no `presence_id`: the delete narrows and is not gated). Absent
+  otherwise. A failed write of that row is logged and never undoes the
+  revocation.
 - **`via`** is how the act was initiated: `cli`, `ipc` (the Settings window),
   `tray` (the menu item), or `http`.
 - **`actor.kind`** is `operator` for every door authorized by ownership of the

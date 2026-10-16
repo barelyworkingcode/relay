@@ -246,6 +246,10 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 	if clientID == "" {
 		return EnrolmentCreated{}, enrolment.Invalid("client id is required")
 	}
+	// Before the gate: no prompt for an act that is going to be refused.
+	if err := enrolment.CheckSingleProfile(f.ProjectIDs); err != nil {
+		return EnrolmentCreated{}, err
+	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
 		return EnrolmentCreated{}, err
@@ -307,6 +311,9 @@ func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, cre
 	csr, err := enrolment.ParseClientCSR([]byte(f.CSRPEM))
 	if err != nil {
 		return EnrolmentCreated{}, enrolment.Invalid(err.Error())
+	}
+	if err := enrolment.CheckSingleProfile(f.ProjectIDs); err != nil {
+		return EnrolmentCreated{}, err
 	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
@@ -475,6 +482,9 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	csr, err := enrolment.ParseClientCSR(rec.CSRPEM)
 	if err != nil {
 		return EnrolmentCreated{}, enrolment.Invalid(err.Error())
+	}
+	if err := enrolment.CheckSingleProfile(f.ProjectIDs); err != nil {
+		return EnrolmentCreated{}, err
 	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
@@ -690,6 +700,11 @@ func (o *EnrolmentOps) Update(ctx context.Context, req enrolment.UpdateRequest, 
 	req.ClientID = strings.TrimSpace(req.ClientID)
 	if req.ClientID == "" {
 		return config.Enrolment{}, config.Enrolment{}, enrolment.Invalid("client id is required")
+	}
+	if req.ProjectIDs != nil {
+		if err := enrolment.CheckSingleProfile(*req.ProjectIDs); err != nil {
+			return config.Enrolment{}, config.Enrolment{}, err
+		}
 	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {

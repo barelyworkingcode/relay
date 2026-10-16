@@ -905,21 +905,21 @@ comparison code identifies it, and the operator approves (signing it, same
 gate and digest as `sign`) or refuses it from here — never self-service.
 
 ```
-relay enrol create --client-id ID --grant PROFILE-ID [--grant PROFILE-ID...]
+relay enrol create --client-id ID --grant PROFILE-ID
                     [--window-seconds N] [--max-calls N] [--max-result-bytes N]
                     [--mount-max-ops N] [--mount-max-read-bytes N] [--mount-max-write-bytes N]
-relay enrol sign --client-id ID --csr PATH|- [--grant PROFILE-ID...]
+relay enrol sign --client-id ID --csr PATH|- [--grant PROFILE-ID]
                   [--window-seconds N] [--max-calls N] [--max-result-bytes N]
                   [--mount-max-ops N] [--mount-max-read-bytes N] [--mount-max-write-bytes N]
                   [--out DIR]
 relay enrol list
 relay enrol update --client-id ID [--window-seconds N] [--max-calls N]
                     [--max-result-bytes N] [--mount-max-ops N] [--mount-max-read-bytes N]
-                    [--mount-max-write-bytes N] [--grant PROFILE-ID...] | [--clear-grants]
+                    [--mount-max-write-bytes N] [--grant PROFILE-ID] | [--clear-grants]
                     [--cli-admin[=true|false]]
 relay enrol revoke --client-id ID
 relay enrol requests [--json]
-relay enrol approve --id REQUEST_ID --client-id ID (--grant PROFILE-ID [--grant PROFILE-ID...] | --no-grant)
+relay enrol approve --id REQUEST_ID --client-id ID (--grant PROFILE-ID | --no-grant)
                      [--window-seconds N] [--max-calls N] [--max-result-bytes N]
                      [--mount-max-ops N] [--mount-max-read-bytes N] [--mount-max-write-bytes N]
 relay enrol refuse --id REQUEST_ID
@@ -931,7 +931,7 @@ relay enrol ca-fingerprint
 | Flag | Meaning |
 |---|---|
 | `--client-id` | Human-readable, unique id for this enrolment (required). |
-| `--grant` | Repeatable. Id of an **access profile** (a `kind: remote` record) this certificate may use — never a local project. |
+| `--grant` | Id of the one **access profile** (a `kind: remote` record) this certificate may use — never a local project. Two `--grant` flags exit `1` and issue nothing: an enrolment names one profile, so enrol again for another. |
 | `--window-seconds` | Budget window, seconds (default 3600). |
 | `--max-calls` | Max tool calls per window (default 120). |
 | `--max-result-bytes` | Max cumulative result bytes per window (default 67108864, 64 MiB). |
@@ -947,7 +947,7 @@ Usage of enrol create:
   -client-id string
     	human-readable id for this enrolment (required, unique)
   -grant value
-    	access profile id this certificate may use (repeatable); a grant must name an access profile (a remote-kind record), never a local project
+    	access profile id this certificate may use (one only: an enrolment reaches one profile); a grant must name an access profile (a remote-kind record), never a local project
   -max-calls int
     	max tool calls per window (default 120)
   -max-result-bytes int
@@ -1002,7 +1002,7 @@ never writes to disk — a private key it did not generate itself.
 |---|---|
 | `--client-id` | Human-readable, unique id for this enrolment (required). Names the enrolment; the CSR's own CN is advisory and is overridden. |
 | `--csr` | Path to the signing request, or `-` for stdin (required). |
-| `--grant` | Repeatable. Id of an **access profile** this certificate may use — never a local project. |
+| `--grant` | Id of the one **access profile** this certificate may use — never a local project. Two `--grant` flags exit `1` and issue nothing. |
 | `--window-seconds` | Budget window, seconds (default 3600). |
 | `--max-calls` | Max tool calls per window (default 120). |
 | `--max-result-bytes` | Max cumulative result bytes per window (default 67108864, 64 MiB). |
@@ -1054,9 +1054,9 @@ Example, two enrolments:
 
 ```
 $ relay enrol list
-CLIENT ID  PROFILES                              CLI-ADMIN  CALLS/WINDOW  BYTES/WINDOW  MOUNT-OPS/WINDOW  MOUNT-READ/WINDOW  MOUNT-WRITE/WINDOW  CREATED               FINGERPRINT
-hermes     477d9a17-da03-45eb-a433-764f93fe96fc  -          120/3600s     67108864      500000            536870912          536870912           2026-08-26T00:02:54Z  sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
-hermes-ro  aaaabf48-95c9-4d72-97b8-7060138930f1  on         120/3600s     67108864      500000            536870912          536870912           2026-08-26T14:32:16Z  sha256:d1846a1b393e738dfe7043a5299cd1f67a9c203bdb01d27cb070c19228f4c6ca
+CLIENT ID  PROFILES                              STATUS  CLI-ADMIN  CALLS/WINDOW  BYTES/WINDOW  MOUNT-OPS/WINDOW  MOUNT-READ/WINDOW  MOUNT-WRITE/WINDOW  CREATED               FINGERPRINT
+hermes     477d9a17-da03-45eb-a433-764f93fe96fc  -       -          120/3600s     67108864      500000            536870912          536870912           2026-08-26T00:02:54Z  sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
+hermes-ro  aaaabf48-95c9-4d72-97b8-7060138930f1  -       on         120/3600s     67108864      500000            536870912          536870912           2026-08-26T14:32:16Z  sha256:d1846a1b393e738dfe7043a5299cd1f67a9c203bdb01d27cb070c19228f4c6ca
 ```
 
 The fingerprint is printed in full (all 64 hex characters), deliberately: an
@@ -1064,9 +1064,11 @@ enrolment's audit history stays legible after it's revoked, and a shortened
 listing is the obvious place someone starts copying a truncated form from.
 Needs service: yes (`enrolment.list`). Prompts: no. Works over SSH: yes.
 
-No JSON form. Columns: `CLIENT ID  PROFILES  CLI-ADMIN  CALLS/WINDOW  BYTES/WINDOW
+No JSON form. Columns: `CLIENT ID  PROFILES  STATUS  CLI-ADMIN  CALLS/WINDOW  BYTES/WINDOW
 MOUNT-OPS/WINDOW  MOUNT-READ/WINDOW  MOUNT-WRITE/WINDOW  CREATED  FINGERPRINT`.
-`PROFILES` is the granted ids joined by commas, or `-`. `CALLS/WINDOW` reads
+`PROFILES` is the granted ids joined by commas, or `-`. `STATUS` is `-`, or
+`refused: names N profiles` for an enrolment from before one-profile enrolments
+that still names several (see `enrol update`). `CALLS/WINDOW` reads
 `CALLS/SECONDSs`, for example `120/3600s`; the byte and mount columns are plain
 numbers. With none it prints `no enrolments`. Exit codes: `0`; `1` when relay is
 not running.
@@ -1074,8 +1076,11 @@ not running.
 ### `enrol update`
 
 Every flag is optional; an unset one leaves the stored value alone.
-`--grant`, passed at all, **replaces the whole grant list** — same rule as
-`create`. `--clear-grants` empties it explicitly and is mutually exclusive
+`--grant`, passed at all, **replaces the grant list** with that one profile —
+same rule as `create`; two `--grant` flags exit `1` and leave the enrolment
+unchanged. An enrolment from before one-profile enrolments may still name
+several: it loads, every remote call from it is refused (the refusal names this
+command), and `--grant` with one id makes it work again. `--clear-grants` empties it explicitly and is mutually exclusive
 with `--grant`. `--cli-admin` (`--cli-admin=false` to withdraw it) lets this
 certificate narrow its own access profiles over the remote listener
 (ADR-018 decision 4) — never widen them, and never anything outside its own
@@ -1094,7 +1099,7 @@ Usage of enrol update:
   -client-id string
     	client id of the enrolment to update (required)
   -grant value
-    	access profile id this certificate may use (repeatable); passing --grant at all REPLACES the whole grant list, same as create
+    	the one access profile id this certificate may use; passing --grant at all REPLACES the grant list, same as create
   -max-calls int
     	new max tool calls per window (0 resets to the default; omit to leave unchanged)
   -max-result-bytes int
@@ -1233,7 +1238,7 @@ request whose comparison was never completed or failed.
 |---|---|
 | `--id` | Pending request id to approve (required). |
 | `--client-id` | Human-readable, unique id for this enrolment (required); names the enrolment, not the request's label. |
-| `--grant` | Repeatable. Id of an **access profile** this certificate may use — never a local project. Mutually exclusive with `--no-grant`. |
+| `--grant` | Id of the one **access profile** this certificate may use — never a local project. Two exit `1`. Mutually exclusive with `--no-grant`. |
 | `--no-grant` | Enrol this machine with no access at all; nothing works until a later `relay enrol update --grant`. |
 | `--window-seconds` | Budget window, seconds (default 3600). |
 | `--max-calls` | Max tool calls per window (default 120). |
@@ -1248,7 +1253,7 @@ Usage of enrol approve:
   -client-id string
     	human-readable id for this enrolment (required, unique); this, not the request's label, names the enrolment
   -grant value
-    	access profile id this certificate may use (repeatable); a grant must name an access profile (a remote-kind record), never a local project
+    	access profile id this certificate may use (one only: an enrolment reaches one profile); a grant must name an access profile (a remote-kind record), never a local project
   -id string
     	pending request id to approve (required)
   -max-calls int
@@ -1626,7 +1631,10 @@ when relay is not running; `2` for an unknown flag.
 ### `project remove`
 
 Needs service: yes. Prompts: no. Works over SSH: yes. Removes the project.
-`--json` prints `{"id","name"}`.
+Removing an access profile also revokes every enrolment that names it: live
+connections close, the enrolment's bundle goes, and the audit log gets one
+`credential_revoked` row per enrolment with `cause` `profile_deleted`.
+Revoking an enrolment does not remove its profile. `--json` prints `{"id","name"}`.
 
 Flags: `--id` (the project id, required) and `--json`. `--json` prints:
 

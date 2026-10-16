@@ -5228,21 +5228,27 @@ window.__RELAY_INIT__ = {
     }
     html += "</div>";
     html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Granted Access Profiles</div>';
-    html += `<p class="proj-section-help">Only <strong>access profiles</strong> can be granted. A remote client granted a local project would inherit that project's host-directory scope, so the grant is refused outright \u2014 this list offers nothing that would be refused.</p>`;
+    html += '<div class="proj-section-title">Access Profile</div>';
+    html += `<p class="proj-section-help">An enrolment reaches <strong>one</strong> access profile; enrol again for another. Only <strong>access profiles</strong> can be granted. A remote client granted a local project would inherit that project's host-directory scope, so the grant is refused outright \u2014 this list offers nothing that would be refused.</p>`;
     const grantable = remoteGrantableProjects();
     if (!grantable.length) {
       html += '<div class="proj-tool-empty">No access profiles exist yet. Create one in the <strong>Projects</strong> tab (Kind \u2192 Access profile) first.</div>';
     }
+    if (grantable.length) {
+      html += '<label class="proj-tool-row">';
+      html += '<input type="radio" name="enrolProfile" ' + (f.project_ids.length === 0 ? "checked" : "") + ` onchange="toggleEnrolGrant('', true)" />`;
+      html += '<div><div>None</div><div class="desc">enrol without an access profile</div></div>';
+      html += "</label>";
+    }
     for (const p of grantable) {
       const checked = f.project_ids.indexOf(p.id) >= 0;
       html += '<label class="proj-tool-row">';
-      html += '<input type="checkbox" ' + (checked ? "checked" : "") + ` onchange="toggleEnrolGrant('` + esc(p.id) + `', this.checked)" />`;
+      html += '<input type="radio" name="enrolProfile" ' + (checked ? "checked" : "") + ` onchange="toggleEnrolGrant('` + esc(p.id) + `', this.checked)" />`;
       html += "<div><div>" + esc(p.name) + '</div><div class="desc">' + esc(p.id) + "</div></div>";
       html += "</label>";
     }
     if (approving && f.pendingRequest && f.pendingRequest.requested_profile) {
-      html += '<p class="proj-section-help">This machine asked for <code>' + esc(f.pendingRequest.requested_profile) + "</code> \u2014 a request from that machine, not a grant. Nothing is ticked for you; tick it above only if you mean to.</p>";
+      html += '<p class="proj-section-help">This machine asked for <code>' + esc(f.pendingRequest.requested_profile) + "</code> \u2014 a request from that machine, not a grant. Nothing is chosen for you; choose it above only if you mean to.</p>";
     }
     if (f.project_ids.length === 0) {
       html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no access profile until one is added.</p>';
@@ -5318,9 +5324,7 @@ window.__RELAY_INIT__ = {
   function toggleEnrolGrant(projectID, checked) {
     const f = state.enrolForm;
     if (!f) return;
-    const i = f.project_ids.indexOf(projectID);
-    if (checked && i < 0) f.project_ids.push(projectID);
-    if (!checked && i >= 0) f.project_ids.splice(i, 1);
+    f.project_ids = checked && projectID ? [projectID] : [];
     if (f.project_ids.length > 0) f.no_grant = false;
     render();
   }
@@ -5353,7 +5357,7 @@ window.__RELAY_INIT__ = {
     }
     f.client_id = clientID;
     if (f.project_ids.length === 0 && !f.no_grant) {
-      state.enrolmentError = 'choose at least one access profile, or tick "Enrol with no access for now"';
+      state.enrolmentError = 'choose an access profile, or tick "Enrol with no access for now"';
       render();
       return;
     }

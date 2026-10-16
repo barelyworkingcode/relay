@@ -281,7 +281,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 
 	rr.Handle(control.ClassConfigure, "DELETE /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		found, err := ops.Remove(r.Context(), id)
+		found, err := ops.RemoveVia(r.Context(), id, auditViaHTTP, credIDOf(r))
 		if err != nil {
 			slog.Error("delete project: save failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
