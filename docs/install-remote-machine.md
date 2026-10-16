@@ -23,9 +23,6 @@ signing request and the certificate by hand.
   `relayremote enrol`, `relay enrol sign --grant`, `relayremote install`. Only
   for a machine with no network path to the Mac.
 
-The tray item **Allow Enrolment…** arrives with the epic's tray task. Until it
-lands in your build, the `relay enrol open` command below does the same thing.
-
 ---
 
 ## Which machine runs what
