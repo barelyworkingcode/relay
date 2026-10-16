@@ -1430,7 +1430,11 @@ Sends a message and waits for the whole reply.
   "cacheReadTokens", "cacheCreationTokens", "costUsd", ...}}`.
 - **Errors:** `400` malformed JSON; `404` unknown session; `409` with
   `{"error": "resume_required"|"dropped_in", "message"}`, or an empty body for
-  an already-processing session; `500`.
+  an already-processing session; `503` with `{"error": "host_link_down",
+  "message"}` when a detached host session's link stayed down past the wait
+  (`?link_wait_ms=N` sets the wait, default 30 s, at most 4 minutes; the wait ends if the request does); `502` with
+  `{"error": "send_unknown", "message"}` when an ssh exit left the delivery
+  unknown; `500`.
 - **Event:** `session.message` (`session_id`). **CLI equivalent:** `relay session message`.
 
 ### proxy:GET /api/terminals
@@ -1477,7 +1481,11 @@ Client to server. Binds the connection to a session and replays it.
 
 - **Frame:** `{"type": "join_session", "sessionId": "<id>"}`.
 - **Answer:** `session_joined` (with the session's history and `live`), or
-  `{"type": "error", "message": "session not found: <id>"}`.
+  `{"type": "error", "message": "session not found: <id>"}`. The
+  joiner is bound before `session_joined` is written, so a live broadcast frame
+  may arrive first; then, in the order they were raised, it gets one
+  `permission_request` frame for each permission request of the session still
+  waiting for an answer.
 - **`session_joined.history[]`:** entries `{"timestamp": "<string>",
   "role": "user"|"assistant"|"tool", "content": <raw JSON>, "toolUseId"?: "<id>",
   "origin"?: "<writer>", "toolName"?, "files"?, "error"?: "<code>"}`. `toolUseId`

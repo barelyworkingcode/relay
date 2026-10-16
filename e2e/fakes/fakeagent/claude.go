@@ -29,7 +29,39 @@ func (a *agent) runClaude() int {
 
 	inited := false
 	turn := 0
+	askID, askTool := "", ""
 	a.stdinLines(func(line []byte) {
+		// A "!ask <tool>" turn waits here for the control_response that answers
+		// its control_request, then ends as any turn does.
+		if askID != "" {
+			var resp struct {
+				Type     string `json:"type"`
+				Response struct {
+					RequestID string `json:"request_id"`
+					Response  struct {
+						Behavior string `json:"behavior"`
+					} `json:"response"`
+				} `json:"response"`
+			}
+			if json.Unmarshal(line, &resp) == nil && resp.Type == "control_response" && resp.Response.RequestID == askID {
+				answer := "ask: " + resp.Response.Response.Behavior + " " + askTool
+				askID = ""
+				a.emitJSON(map[string]any{
+					"type": "assistant",
+					"message": map[string]any{
+						"id": randomID("msg_"), "role": "assistant",
+						"content": []map[string]any{{"type": "text", "text": answer}},
+					},
+				})
+				a.emitJSON(map[string]any{
+					"type": "result", "subtype": "success", "is_error": false,
+					"session_id": sessionID, "num_turns": turn, "result": answer,
+					"total_cost_usd": 0,
+					"usage":          map[string]int{"input_tokens": 1, "output_tokens": 1},
+				})
+				return
+			}
+		}
 		var msg struct {
 			Type    string `json:"type"`
 			Message struct {
@@ -51,6 +83,17 @@ func (a *agent) runClaude() int {
 			})
 		}
 		turn++
+		if tool, ok := strings.CutPrefix(text, "!ask "); ok {
+			askID, askTool = randomID("req_"), tool
+			a.emitJSON(map[string]any{
+				"type": "control_request", "request_id": askID,
+				"request": map[string]any{
+					"subtype": "can_use_tool", "tool_name": tool,
+					"input": map[string]any{}, "tool_use_id": randomID("tu_"),
+				},
+			})
+			return
+		}
 		answer := "echo: " + text
 		if cmdline, ok := strings.CutPrefix(text, "!sh "); ok {
 			answer = runShellTurn(cmdline)
