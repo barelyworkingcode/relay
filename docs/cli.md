@@ -254,7 +254,7 @@ clean shutdown. The tray writes it too. It holds no credential.
 ```json
 {"schema":1,"pid":41234,"version":"dev","config_dir":"/tmp/rr.Ab12/a",
  "sockets":{"bridge":"/tmp/rr.Ab12/a/relay.sock","frontend":"/tmp/rr.Ab12/a/relay-frontend-41234.sock","model":"/tmp/rr.Ab12/a/model.sock"},
- "listeners":{"api":"127.0.0.1:53001","model":"127.0.0.1:53002","remote":"127.0.0.1:53003","enrolment":"127.0.0.1:53004"}}
+ "listeners":{"api":"127.0.0.1:53001","model":"127.0.0.1:53002","remote":"127.0.0.1:53003"}}
 ```
 
 `listeners` is always present; a listener that is not bound has no key, and

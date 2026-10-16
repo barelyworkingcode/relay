@@ -1831,8 +1831,9 @@ certificate and no credential. It exists only while an enrolment window is open
 (`relay enrol open`, five minutes, one access profile; the remote listener must
 be enabled and auditing on). With no window there is no socket. The first
 accepted lodge closes the listener; the lodging connection stays open, and the
-machine polls on it. Its address is `listeners.enrolment` in `ready.json` while
-a window is open.
+machine polls on it. `ready.json` lists no enrolment listener; the address is
+`listen` from `relay enrol open --json` and from `relay remote show --json`
+(`enrolment_window`) while a window is open.
 
 Limits: 16 concurrent connections; 64 frames per connection, then the server
 closes it; 64 KiB per frame; 10 seconds to the first frame and 30 seconds idle;
@@ -1863,7 +1864,7 @@ Wire type `EnrolmentRequest`. Lodges a request.
   | `type` | string | `"EnrolmentRequest"` |
   | `csr_pem` | string | A certificate signing request (required) |
   | `label` | string | Untrusted display label. Optional; when present 1 to 64 bytes of `A-Za-z0-9._-`, else `-32602` |
-  | `sas_commit` | string | 64 lowercase hex: commitment to a comparison nonce (required) |
+  | `sas_commit` | string | 64 lowercase hex: commitment to a comparison nonce (required). `sas_commit = hex(sha256("relay.sas.commit.v1\0" \|\| sha256(CSR SubjectPublicKeyInfo DER) \|\| rc))`, where `rc` is the 16 raw bytes whose hex is the later `sas_open` |
 
   The wire names no profile: the window does. Any other field, including
   `requested_profile`, is `-32602`.
