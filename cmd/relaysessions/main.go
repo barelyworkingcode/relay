@@ -204,6 +204,10 @@ func runService(args []string) int {
 		}
 	}
 
+	// A detached host agent outlives this process, so a start finds the ones
+	// that still run and follows them again.
+	go sessions.ReattachDetached()
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh

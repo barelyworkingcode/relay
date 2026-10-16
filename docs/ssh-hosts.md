@@ -801,17 +801,42 @@ another start time is not ours and its group is left alone. Deleting a session
 also removes `~/.relay/agents/<session id>/`, which holds tool output. A host
 that cannot be reached at stop time leaves the agent running; relay logs it.
 
-**A relay restart.** A detached agent outlives relay. When relay or
-relay-sessions shuts down, each detached provider drops its local reader and
-leaves the agent running; the session reads dormant afterwards. After a
-restart a resume answers `runner_alive` while the agent runs, and
-`relay session stop` ends it. Deleting a dormant detached session ends its
-agent and removes its run directory on the host, as for a live one.
+**A relay restart.** A detached agent outlives relay and relay-sessions. When
+either shuts down, each detached provider drops its local reader and leaves the
+agent running, and relay-sessions saves the cursor of the last line it read
+with the session's state. A save also happens at the end of every turn, so a
+crash loses at most the lines since the last turn.
+
+When relay-sessions starts it asks each persisted detached session's host
+whether the agent's runner is alive, and attaches to every one that is (the
+session reads live; no resume is needed). Attaching reads what the agent wrote
+while nobody was reading, from the saved cursor, before it follows the output.
+A session with no saved cursor, one from another generation, or one past the
+end of the output starts at the end of the output. A permission prompt the
+agent is still waiting on is raised again; one whose `control_response` is
+already in `in.jsonl` is not. A `message` or a drop-in that meets a detached
+session with no provider attaches it first. At startup relay asks the same
+question for each live ledger record and keeps live the ones whose agent runs
+(the record's `detached.host_id` names the host); it ages the rest to dormant,
+as it does every other session. A host that does not answer in 15 s reads as
+not running, and a resume asks again.
+
+A relay-sessions restart on its own leaves detached agents running in the same
+way.
 
 **Resume.** A resume of a detached session first asks the host about the
-latest generation. A running agent refuses the resume with `runner_alive` (HTTP
-`409`) and starts nothing; a host that cannot answer refuses with
-`host_unavailable`.
+latest generation. A running agent is attached and no second agent starts, so
+the session continues in the conversation it already has. An agent that
+exited, or a runner whose pid now names another process (the start time in
+`run.json` differs, so the run counts as exited and that process is never
+signalled), starts a new generation with `--resume`, and the conversation
+continues from Claude's own history. A host that cannot answer refuses the
+resume with `host_unavailable`.
+
+**Drop-in.** `relay drop-in` on a detached session attaches its agent first if
+relay-sessions has none attached, waits for the turn to end, then ends the
+agent's process group and opens the conversation in the terminal with its full
+history. The agent and the terminal never run on the conversation together.
 
 **Not covered.** Windows hosts: a detached start there is refused with an error
 that names the host. A host whose login manager kills a user's processes when

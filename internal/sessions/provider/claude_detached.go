@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/logging"
+	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
@@ -67,6 +68,11 @@ type detachedRun struct {
 	// to stop.
 	finished atomic.Bool
 
+	// requests holds the ids of control requests already answered or raised, so
+	// an attach that replays old output raises none twice.
+	reqMu    sync.Mutex
+	requests map[string]struct{}
+
 	stopOnce sync.Once
 	// stopped closes when the host stop has returned; the final process_exited
 	// of a killed spawn waits on it so the exit follows the real end.
@@ -106,6 +112,60 @@ func (d *detachedRun) restoredSignal() <-chan struct{} {
 	return d.restored
 }
 
+// claimRequest reports whether the control request in raw has not been
+// answered or raised before, and marks it as handled.
+func (d *detachedRun) claimRequest(raw json.RawMessage) bool {
+	return d.claimRequestID(controlRequestID(raw))
+}
+
+func (d *detachedRun) claimRequestID(id string) bool {
+	if id == "" {
+		return true
+	}
+	d.reqMu.Lock()
+	defer d.reqMu.Unlock()
+	if _, seen := d.requests[id]; seen {
+		return false
+	}
+	if d.requests == nil {
+		d.requests = map[string]struct{}{}
+	}
+	d.requests[id] = struct{}{}
+	return true
+}
+
+// controlRequestID is the request id of a control_request or control_response
+// line, compacted so the same id compares equal whatever its spacing.
+func controlRequestID(raw json.RawMessage) string {
+	var line struct {
+		RequestID json.RawMessage `json:"request_id"`
+		Response  struct {
+			RequestID json.RawMessage `json:"request_id"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(raw, &line) != nil {
+		return ""
+	}
+	id := line.RequestID
+	if len(id) == 0 {
+		id = line.Response.RequestID
+	}
+	var buf bytes.Buffer
+	if len(id) == 0 || json.Compact(&buf, id) != nil {
+		return ""
+	}
+	return buf.String()
+}
+
+// detachedCursor is where a detached session's saved state says relay stopped
+// reading: the byte offset of a line start in one generation's output. Only
+// relay-sessions reads the output, so it saves the cursor with the
+// conversation's state, at every save.
+type detachedCursor struct {
+	Generation string `json:"generation"`
+	Offset     int64  `json:"cursor"`
+}
+
 func hostExec(ctx context.Context, spec *sessionstypes.HostSpec, remote string) *exec.Cmd {
 	argv := append(slices.Clone(spec.SSHArgv[1:]), "-T", "--", remote)
 	cmd := exec.CommandContext(ctx, spec.SSHArgv[0], argv...)
@@ -140,6 +200,20 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 	if len(host.SSHArgv) == 0 {
 		return fmt.Errorf("host %q has no ssh_argv", host.Name)
 	}
+	if p.cfg.Resume || p.cfg.AttachOnly {
+		ctx, cancel := context.WithTimeout(context.Background(), detachedStartTimeout)
+		st, err := DetachedRunState(ctx, host, p.session.ID)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("ask host %q whether the agent runs: %w", host.Name, err)
+		}
+		if st.Phase == sshhost.RunAlive {
+			return p.attachDetached(host, st.Generation)
+		}
+		if p.cfg.AttachOnly {
+			return fmt.Errorf("%w on host %q", ErrNoDetachedRun, host.Name)
+		}
+	}
 	program := p.cfg.Launcher.Program(host.ClaudePath)
 	env := map[string]string{"RELAY_SESSION_ID": p.session.ID}
 	remote := sshhost.RunnerStartIn(host.OS, p.directory, sshhost.RunDir{Session: p.session.ID}, append(slices.Clone(program), args...), env)
@@ -155,10 +229,23 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 		return fmt.Errorf("start detached claude on host %q: %w", host.Name, err)
 	}
 
+	p.mu.Lock()
+	p.restoredRun = nil
+	p.mu.Unlock()
+	det, spawn, spawnGen := p.beginDetached(host, sshhost.RunDir{Session: p.session.ID, Generation: gen})
+	p.runDetached(det, spawn, spawnGen)
+	slog.Info("claude detached agent started", "session", p.session.ID, "host", host.ID, "generation", gen)
+	return nil
+}
+
+// beginDetached installs the state of a spawn that follows det's run and
+// marks the provider alive. It starts no goroutine: runDetached does, so an
+// attach can read what the agent wrote while relay was away first.
+func (p *ClaudeProvider) beginDetached(host *sessionstypes.HostSpec, dir sshhost.RunDir) (*detachedRun, *claudeSpawnState, uint64) {
 	runCtx, runCancel := context.WithCancel(context.Background())
 	det := &detachedRun{
 		spec:    host,
-		dir:     sshhost.RunDir{Session: p.session.ID, Generation: gen},
+		dir:     dir,
 		ctx:     runCtx,
 		cancel:  runCancel,
 		stopped: make(chan struct{}),
@@ -180,13 +267,12 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 	p.killed = &atomic.Bool{}
 	p.exit = &spawnExit{done: make(chan struct{})}
 	p.touchActivity()
+	return det, &claudeSpawnState{}, spawnGen
+}
 
-	spawn := &claudeSpawnState{}
+func (p *ClaudeProvider) runDetached(det *detachedRun, spawn *claudeSpawnState, spawnGen uint64) {
 	go p.followDetached(det, spawn, spawnGen, p.killed, p.exit)
 	go p.idleWatcher(p.stopIdle)
-
-	slog.Info("claude detached agent started", "session", p.session.ID, "host", host.ID, "generation", gen)
-	return nil
 }
 
 // followDetached owns the spawn from start to end: it reads the agent's events,
@@ -448,6 +534,8 @@ var (
 	ErrSendUnknown = errors.New("the outcome of the send is unknown")
 	// ErrNotDetached means the session has no detached agent to replay.
 	ErrNotDetached = errors.New("session is not a detached host session")
+	// ErrNoDetachedRun means an attach found no running agent for the session.
+	ErrNoDetachedRun = errors.New("no running detached agent")
 	// ErrInvalidCursor means an events cursor was not one this package issued.
 	ErrInvalidCursor = errors.New("invalid event cursor")
 )
@@ -669,4 +757,156 @@ func (p *ClaudeProvider) Events(ctx context.Context, after string, max int) (lin
 		return nil, "", fmt.Errorf("read events on host %q: %w", det.spec.Name, rctx.Err())
 	}
 	return lines, d.Generation + ":" + strconv.FormatInt(offset, 10), nil
+}
+
+// DetachedHost reports whether a session on host runs its agent detached.
+func DetachedHost(host *sessionstypes.HostSpec) bool {
+	return host != nil && host.Detach && len(host.SSHArgv) > 0 && !sshhost.IsWindowsOS(host.OS)
+}
+
+// DetachedRunState asks host about the latest run of session's agent. A host
+// that cannot answer is an error, never "not running".
+func DetachedRunState(ctx context.Context, host *sessionstypes.HostSpec, session string) (sshhost.RunState, error) {
+	stdout, msg, err := runHost(ctx, host, sshhost.RunnerStatus(host.OS, sshhost.RunDir{Session: session}), nil)
+	if err != nil {
+		return sshhost.RunState{}, errors.New(msg)
+	}
+	return sshhost.ParseRunState(stdout)
+}
+
+// attachProbeScript takes $1 session and $2 generation and prints what an
+// attach needs in one round trip, one tagged line each: "S <n>", the end of
+// the last complete line of out.jsonl; "T <line>", its last line; "O <line>",
+// every control_request line; "I <line>", every control_response line of
+// in.jsonl. Deliberate: a file that ends in a half-written line puts S at
+// that line's start, because a cursor must sit on a line start.
+const attachProbeScript = `case "$1" in ''|*[!A-Za-z0-9_-]*) echo "relay: invalid session id" >&2; exit 2;; esac
+case "$2" in ''|*[!A-Za-z0-9_-]*) echo "relay: invalid generation" >&2; exit 2;; esac
+[ -n "$HOME" ] || { echo "relay: HOME is not set on the host" >&2; exit 2; }
+d="$HOME/.relay/agents/$1/$2"
+f="$d/out.jsonl"
+[ -f "$f" ] || { echo "relay: no agent output in $d" >&2; exit 5; }
+n=$(wc -c < "$f" | tr -d ' ')
+if [ "$n" -gt 0 ] && [ "$(tail -c 1 "$f" | od -An -tx1 | tr -d ' \n')" != 0a ]; then
+  n=$((n - $(tail -n 1 "$f" | wc -c | tr -d ' ')))
+fi
+echo "S $n"
+echo "T $(tail -n 1 "$f")"
+grep -a '"control_request"' "$f" | sed 's/^/O /'
+if [ -f "$d/in.jsonl" ]; then grep -a '"control_response"' "$d/in.jsonl" | sed 's/^/I /'; fi
+exit 0
+`
+
+type attachProbe struct {
+	size     int64
+	last     string
+	requests []json.RawMessage
+	answered []string
+}
+
+func probeAttach(ctx context.Context, host *sessionstypes.HostSpec, dir sshhost.RunDir) (attachProbe, error) {
+	remote := sshhost.RemoteCommandForOS(host.OS, "", []string{"sh", "-c", attachProbeScript, "relay-agent", dir.Session, dir.Generation}, nil)
+	stdout, msg, err := runHost(ctx, host, remote, nil)
+	if err != nil {
+		return attachProbe{}, errors.New(msg)
+	}
+	var pr attachProbe
+	sawSize := false
+	for _, l := range strings.Split(stdout, "\n") {
+		if len(l) < 2 || l[1] != ' ' {
+			continue
+		}
+		body := strings.TrimRight(l[2:], "\r")
+		switch l[0] {
+		case 'S':
+			if n, perr := strconv.ParseInt(strings.TrimSpace(body), 10, 64); perr == nil && n >= 0 {
+				pr.size, sawSize = n, true
+			}
+		case 'T':
+			pr.last = body
+		case 'O':
+			if lineType(body) == "control_request" {
+				pr.requests = append(pr.requests, json.RawMessage(body))
+			}
+		case 'I':
+			if lineType(body) == "control_response" {
+				if id := controlRequestID(json.RawMessage(body)); id != "" {
+					pr.answered = append(pr.answered, id)
+				}
+			}
+		}
+	}
+	if !sawSize {
+		return attachProbe{}, fmt.Errorf("unexpected attach answer %q", firstLineOf(stdout))
+	}
+	return pr, nil
+}
+
+func lineType(line string) string {
+	var env struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(line), &env) != nil {
+		return ""
+	}
+	return env.Type
+}
+
+func firstLineOf(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
+}
+
+// turnOpen reports whether the agent's last output line says a turn is in
+// progress: it is mid-answer, running a tool or waiting on a permission. A
+// result or system line, or none, is an idle agent.
+func turnOpen(lastLine string) bool {
+	switch lineType(lastLine) {
+	case events.EvtAssistant, "user", "control_request":
+		return true
+	}
+	return false
+}
+
+// attachDetached follows the agent already running in generation gen. It
+// reads, before it returns, what the agent wrote since the saved cursor, so a
+// message sent next meets only its own reply, and it raises the permission
+// requests nobody answered: the agent is blocked on each. A cursor that is
+// absent, from another generation or past the output starts at the end of the
+// output.
+func (p *ClaudeProvider) attachDetached(host *sessionstypes.HostSpec, gen string) error {
+	dir := sshhost.RunDir{Session: p.session.ID, Generation: gen}
+	ctx, cancel := context.WithTimeout(context.Background(), detachedStartTimeout)
+	defer cancel()
+	probe, err := probeAttach(ctx, host, dir)
+	if err != nil {
+		return fmt.Errorf("attach to the agent on host %q: %w", host.Name, err)
+	}
+
+	offset := probe.size
+	p.mu.Lock()
+	saved := p.restoredRun
+	p.mu.Unlock()
+	if saved != nil && saved.Generation == gen && saved.Offset >= 0 && saved.Offset <= probe.size {
+		offset = saved.Offset
+	}
+
+	det, spawn, spawnGen := p.beginDetached(host, dir)
+	det.offset.Store(offset)
+	for _, id := range probe.answered {
+		det.claimRequestID(id)
+	}
+	if turnOpen(probe.last) {
+		p.session.SetProcessing(true)
+	}
+	for _, raw := range probe.requests {
+		if det.claimRequest(raw) {
+			p.handleControlRequest(raw)
+		}
+	}
+	p.consumeLines(ctx, det, spawn, hostExec(ctx, host, sshhost.RunnerReadOnce(host.OS, dir, offset)))
+	p.runDetached(det, spawn, spawnGen)
+
+	slog.Info("claude detached agent attached", "session", p.session.ID, "host", host.ID, "generation", gen, "cursor", offset)
+	return nil
 }

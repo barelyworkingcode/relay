@@ -132,6 +132,10 @@ func (m *Manager) Held(id string) bool {
 // end. beforeStop runs just before the process is killed. The provider and
 // slot stay installed, so the process's exit still reaches the exit handler.
 func (m *Manager) Handoff(ctx context.Context, id string, wait time.Duration, beforeStop func()) (string, error) {
+	// A detached agent that relay or this host left running is attached first,
+	// so the stop below ends it: a terminal and a second agent must not share
+	// the conversation.
+	m.reattachIfDetached(id)
 	sess, ok := m.Get(id)
 	if !ok {
 		return "", ErrSessionNotFound

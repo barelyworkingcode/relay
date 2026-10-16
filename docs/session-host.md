@@ -987,9 +987,18 @@ and reach `processLine` once and in order across a link drop. `Kill` ends the
 agent's process group on the host. `Events(ctx, after, max)` returns the
 complete lines after a cursor and the cursor to pass next. A shutdown of
 relay or relay-sessions calls `Release`, which stops the local reader and
-leaves the agent running: a detached agent survives a relay restart, the
-session reads dormant, and a resume answers `runner_alive` while the agent
-runs, and `relay session stop` ends the agent. Idle stop, drop-in, stop and
+leaves the agent running: a detached agent survives a relay restart.
+`GetState` carries the run's generation and cursor, so a state save (every
+turn end, and shutdown) records where reading stopped. `Manager.ReattachDetached`
+runs at relay-sessions startup: for each persisted detached claude session it
+asks the host for the run's status and, for a live runner, calls `Create` with
+`AttachOnly`, so the provider attaches (`attachDetached`) and never starts an
+agent. The attach reads the lines after the cursor before it returns and
+raises each `control_request` that has no `control_response` in `in.jsonl`;
+`SendMessage`, `SendMessageSync` and `Handoff` call the same attach for a
+detached session with no live provider. A plain resume (`ClaudeConfig.Resume`)
+asks for a running agent first and attaches to it too. `relay session stop`
+ends the agent. Idle stop, drop-in, stop and
 delete call `Kill`, which ends the agent; deleting a dormant session does the
 same through `DeleteDetachedRun`. With `detach` unset the `ssh -T` path is
 unchanged. A Windows host refuses a detached start.
@@ -1739,15 +1748,16 @@ caller cannot squat a live session id or resume one project's session under
 another project's name this way.
 
 A resume of a detached host session first runs `RunnerStatus` on the latest
-generation. A running agent refuses the launch with `runner_alive` (`409`) and
-starts nothing: a second agent would read the same conversation. A host that
-cannot answer refuses with `host_unavailable`.
+generation. A host that cannot answer refuses with `host_unavailable`. A
+running agent does not refuse the launch: the provider that relay-sessions
+builds for the resume attaches to that agent, and a second agent never starts.
 
 At startup relay ages every `live` ledger record to `dormant`
 (`ledger.MarkLiveDormant`, called from `openSessionLedger` in
-`cmd/relay/trayapp.go`). relay-sessions and every provider it hosts are
-children of this relay process, so no record from an earlier run can still be
-live; a provider that was live when relay quit never sent the `SessionExited`
+`cmd/relay/trayapp.go`), except a detached host session whose runner answers
+`RunnerStatus` as alive: its agent is not a child of this relay process, and
+relay-sessions reattaches it. Every other provider is a child of this relay
+process, so no other record from an earlier run can still be live; a provider that was live when relay quit never sent the `SessionExited`
 that would have aged it. Left `live`, that record makes relay's
 `POST /api/sessions/{id}/resume` answer "already live" (`resumed: false`)
 without launching anything, and the client's next message gets

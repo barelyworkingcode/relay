@@ -19,6 +19,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
+	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
 // Session kinds this manager can actually spawn a provider for. Mirrors
@@ -137,6 +138,11 @@ type Manager struct {
 
 	collMu     sync.Mutex
 	collectors map[string]*ResponseCollector
+
+	// reattaching holds one mutex per session id, so the startup reattach and
+	// a message that arrives meanwhile attach the same agent once.
+	reattachMu  sync.Mutex
+	reattaching map[string]*sync.Mutex
 
 	// providerFactory, when non-nil, replaces the built-in claude/pi switch
 	// in startProvider. Test-only seam, mirroring relayLLM's own
@@ -271,6 +277,10 @@ type CreateSpec struct {
 	// reattach the persisted session (history, provider state) under a
 	// freshly spawned provider process, rather than starting empty.
 	Resume bool
+	// AttachOnly makes a resume of a detached host session attach to its
+	// running agent and fail when none runs, where a plain resume would start
+	// one.
+	AttachOnly bool
 }
 
 func (m *Manager) providerKindSupported(kind string) bool {
@@ -639,6 +649,8 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 		ccfg.SandboxProfile = spec.SandboxProfile
 		ccfg.Launcher = spec.Launcher
 		ccfg.DefaultModel = spec.Entry != "" && spec.Model == ""
+		ccfg.Resume = spec.Resume
+		ccfg.AttachOnly = spec.AttachOnly
 		return provider.NewClaudeProvider(sess, handler, ccfg, m.perms), nil
 	case KindPi:
 		picfg := m.cfg.Pi
@@ -873,6 +885,104 @@ func (m *Manager) DeleteSession(id string) {
 	}
 }
 
+// detachedMaxParallelProbes bounds the ssh questions a startup reattach asks
+// at once.
+const detachedMaxParallelProbes = 4
+
+// ReattachDetached attaches every persisted detached host session whose agent
+// still runs. The agent is not this process's child, so a restart of this host
+// or of relay finds it alive; a session whose agent exited stays dormant and
+// resumes with its history. It returns when every attach has finished.
+func (m *Manager) ReattachDetached() {
+	sessions, err := m.store.LoadAll()
+	if err != nil {
+		slog.Warn("session: reattach: could not list persisted sessions", "error", err)
+		return
+	}
+	sem := make(chan struct{}, detachedMaxParallelProbes)
+	var wg sync.WaitGroup
+	for _, sess := range sessions {
+		if !detachedClaude(sess) {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(id string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			m.reattachDetached(id)
+		}(sess.ID)
+	}
+	wg.Wait()
+}
+
+func detachedClaude(sess *sessionstypes.Session) bool {
+	return sess.ProviderType == KindClaude && provider.DetachedHost(sess.GetHost())
+}
+
+// reattachIfDetached attaches id's agent when id is a detached host session
+// with no live provider. Every caller that would otherwise find the session
+// dormant calls it first.
+func (m *Manager) reattachIfDetached(id string) {
+	sess, ok := m.Get(id)
+	if !ok || !detachedClaude(sess) {
+		return
+	}
+	if p := sess.Provider(); p != nil && p.Alive() {
+		return
+	}
+	m.reattachDetached(id)
+}
+
+// reattachDetached asks the host whether id's agent runs and, when it does,
+// attaches a provider to it. It never starts an agent: AttachOnly makes the
+// provider fail when the run is gone, and the status question first keeps a
+// dormant session from reading as launching. It reports whether the session
+// is attached afterwards.
+func (m *Manager) reattachDetached(id string) bool {
+	m.reattachMu.Lock()
+	if m.reattaching == nil {
+		m.reattaching = map[string]*sync.Mutex{}
+	}
+	lock := m.reattaching[id]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		m.reattaching[id] = lock
+	}
+	m.reattachMu.Unlock()
+	lock.Lock()
+	defer lock.Unlock()
+
+	sess, ok := m.Get(id)
+	if !ok || !detachedClaude(sess) || m.Held(id) {
+		return false
+	}
+	if p := sess.Provider(); p != nil && p.Alive() {
+		return true
+	}
+	host := sess.GetHost()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	st, err := provider.DetachedRunState(ctx, host, id)
+	cancel()
+	if err != nil {
+		slog.Warn("session: reattach: the host did not say whether the agent runs", "session", id, "host", host.ID, "error", err)
+		return false
+	}
+	if st.Phase != sshhost.RunAlive {
+		return false
+	}
+	_, err = m.Create(CreateSpec{
+		SessionID: id, ProjectID: sess.ProjectID, Kind: KindClaude, Directory: sess.Directory,
+		Name: sess.Name, Model: sess.Model, Origin: sess.Origin, Settings: sess.Settings,
+		SystemPrompt: sess.SystemPrompt, Host: host, Resume: true, AttachOnly: true,
+	})
+	if err != nil {
+		slog.Warn("session: reattach failed", "session", id, "host", host.ID, "error", err)
+		return false
+	}
+	return true
+}
+
 // StopAll tears down every live and in-flight session. Every provider Kill
 // call — the one that can block on a subprocess's own shutdown grace period
 // — completes before StopAll returns, mirroring
@@ -936,6 +1046,7 @@ func (m *Manager) SendMessageAs(id, text string, files []sessionstypes.FileAttac
 // session waits up to linkWait for a lost host link, and a ctx that ends
 // first abandons the send with nothing written.
 func (m *Manager) SendMessageWith(ctx context.Context, id, text string, files []sessionstypes.FileAttachment, origin string, linkWait time.Duration) error {
+	m.reattachIfDetached(id)
 	sess, ok := m.Get(id)
 	if !ok {
 		return ErrSessionNotFound
@@ -1044,6 +1155,9 @@ func (m *Manager) SendMessageSync(id, text string, files []sessionstypes.FileAtt
 // SendMessageSyncWith is SendMessageSync with SendMessageWith's ctx and
 // link wait.
 func (m *Manager) SendMessageSyncWith(ctx context.Context, id, text string, files []sessionstypes.FileAttachment, linkWait time.Duration) (string, sessionstypes.SessionStats, error) {
+	// Deliberate: before the collector exists, so the output an attach reads
+	// from the time relay was away cannot complete this send's reply.
+	m.reattachIfDetached(id)
 	if _, ok := m.Get(id); !ok {
 		return "", sessionstypes.SessionStats{}, ErrSessionNotFound
 	}
