@@ -20,17 +20,12 @@ import (
 
 func (a *App) openSettingsWindow() {
 	s := config.DisplaySettings(a.store)
-	// Consumed here so a code minted for THIS open never survives into the
-	// next one: it is single use and two minutes old at best, and a stale one
-	// reappearing would read as a code that still works.
-	code := a.pendingLoginCode
-	a.pendingLoginCode = nil
-	// Consumed for the same reason the code above is: a page selected for
-	// THIS open must not survive into the next one, or every subsequent
-	// "Settings..." click reopens on a tab nobody asked for.
+	// Consumed here: a page selected for THIS open must not survive into the
+	// next one, or every subsequent "Settings..." click reopens on a tab
+	// nobody asked for.
 	page := a.pendingSettingsPage
 	a.pendingSettingsPage = ""
-	html := renderSettingsDocument(s, a.registry.RunningIDs(), a.buildToolCache(s), a.buildScopeFields(), code, page, a.buildOverviewSeed(s))
+	html := renderSettingsDocument(s, a.registry.RunningIDs(), a.buildToolCache(s), a.buildScopeFields(), nil, page, a.buildOverviewSeed(s))
 	a.platform.OpenSettings(html)
 	a.settingsOpen.Store(true)
 	// First paint shouldn't wait the full 2s poll interval. pushServiceStatusBatch

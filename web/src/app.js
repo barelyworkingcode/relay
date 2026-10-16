@@ -54,11 +54,6 @@ const ENROLMENT_BUDGET_DEFAULTS_INIT = window.__RELAY_INIT__.enrolmentBudgetDefa
 const PASSKEYS_INIT = window.__RELAY_INIT__.passkeys || [];
 const LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
 const EVE_PASSKEYS_INIT = window.__RELAY_INIT__.evePasskeys || [];
-// A bootstrap code minted for the Allow Enrolment sheet, seeded into the first
-// paint because the window it is meant for did not exist when the code was
-// minted. Null on every ordinary open, and never persisted anywhere:
-// it lives in this page for two minutes and is not recoverable afterwards.
-const LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
 // The page the tray wants this window to open on. Seeded into the first paint
 // rather than emitted, because a window that is not up yet has no document to
 // receive an emit — see App.openRemoteClientsPage for the other arm.
@@ -239,7 +234,9 @@ let state = {
     // credential you cannot see is one you will not revoke.
     passkeys: PASSKEYS_INIT,
     loginSessions: LOGIN_SESSIONS_INIT,
-    loginCode: LOGIN_CODE_INIT,
+    // A sign-in code minted from the sheet: never persisted, valid two minutes,
+    // not recoverable once dismissed.
+    loginCode: null,
     // The Allow Enrolment sheet: null when closed, else {target, profileId,
     // busy, error, opened}. It is an overlay with its own container, so a page
     // repaint never wipes it.
@@ -6398,8 +6395,8 @@ window.onPasskeyError = function(msg) {
 
 // onLoginCodeMinted is the tray's channel into a window that was ALREADY open
 // when the menu item was clicked. A window that was not open gets the same
-// value seeded into its first paint instead (LOGIN_CODE_INIT) — see
-// App.showLoginCode for why the two cases cannot share one mechanism.
+// sheet seeded into its first paint instead (INITIAL_PAGE) — see
+// App.openAllowEnrolmentSheet for why the two cases cannot share one mechanism.
 window.onLoginCodeMinted = function(code) {
     state.loginCode = code || null;
     state.passkeyError = null;
@@ -7928,10 +7925,7 @@ window.onServiceActionResult = function(result) {
 // tray-selected page does the same for a pending enrolment request, and loses
 // to the code: the code is unrecoverable once this window closes and the
 // request is not.
-if (LOGIN_CODE_INIT) {
-    showPage('passkeys');
-    openAllowEnrolmentSheet();
-} else if (INITIAL_PAGE === 'allow-enrolment') {
+if (INITIAL_PAGE === 'allow-enrolment') {
     showPage('overview');
     openAllowEnrolmentSheet();
 } else {

@@ -432,7 +432,7 @@ browser register one. See
 and `relay eve enrol` in [`docs/cli.md`](cli.md#relay-eve) for the door.
 
 **A second presentation of the code, not a second anchor.** The tray's
-**Show Login Code...** item and `relay login enrol` both reach the same gated
+**Allow Enrolment…** sheet (Relay sign-in) and `relay login enrol` both reach the same gated
 core method, `LoginOps.MintBootstrap`, and show the result in the Settings
 window — relay is `LSUIElement`, so that window is the only surface the tray
 has. ADR-016 decision 2 accepts the menu item as a presentation and refuses it

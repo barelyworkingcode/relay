@@ -1172,7 +1172,6 @@ window.__RELAY_INIT__ = {
   var PASSKEYS_INIT = window.__RELAY_INIT__.passkeys || [];
   var LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
   var EVE_PASSKEYS_INIT = window.__RELAY_INIT__.evePasskeys || [];
-  var LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
   var INITIAL_PAGE = window.__RELAY_INIT__.initialPage || null;
   var MCP_HEALTH_INIT = window.__RELAY_INIT__.mcpHealth || {};
   var SERVICE_RUNTIME_INIT = window.__RELAY_INIT__.serviceRuntime || {};
@@ -1363,7 +1362,9 @@ window.__RELAY_INIT__ = {
     // credential you cannot see is one you will not revoke.
     passkeys: PASSKEYS_INIT,
     loginSessions: LOGIN_SESSIONS_INIT,
-    loginCode: LOGIN_CODE_INIT,
+    // A sign-in code minted from the sheet: never persisted, valid two minutes,
+    // not recoverable once dismissed.
+    loginCode: null,
     // The Allow Enrolment sheet: null when closed, else {target, profileId,
     // busy, error, opened}. It is an overlay with its own container, so a page
     // repaint never wipes it.
@@ -7048,10 +7049,7 @@ That browser's credential stops authenticating on its next request and it has to
     }
     if (state.page === "inspector") updateServiceStatusDOM(result.serviceId, state.serviceStatuses[result.serviceId]);
   };
-  if (LOGIN_CODE_INIT) {
-    showPage("passkeys");
-    openAllowEnrolmentSheet();
-  } else if (INITIAL_PAGE === "allow-enrolment") {
+  if (INITIAL_PAGE === "allow-enrolment") {
     showPage("overview");
     openAllowEnrolmentSheet();
   } else {
