@@ -701,7 +701,9 @@ func enrolOpen(args []string) {
 	fmt.Println("  on the remote machine: relayremote register NAME --host <this Mac's address>")
 }
 
-// enrolClose closes every open enrolment window. Nothing open is not an error.
+// enrolClose closes every open enrolment window: the access-profile window, the
+// Home|Work window and an unused relay sign-in code. Nothing open is not an
+// error.
 func enrolClose(args []string) {
 	fs := flag.NewFlagSet("enrol close", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "print the result as JSON")
@@ -728,13 +730,29 @@ func enrolClose(args []string) {
 		fmt.Println("no enrolment window was open")
 		return
 	}
+	names := make([]string, 0, len(result.Closed))
 	for _, target := range result.Closed {
-		if target == enrolmentWindowTargetProfile && name != "" {
-			fmt.Printf("closed: access profile %q\n", name)
-			continue
-		}
-		fmt.Printf("closed: %s\n", target)
+		names = append(names, enrolmentTargetLabel(target, name))
 	}
+	fmt.Printf("closed: %s\n", strings.Join(names, ", "))
+}
+
+// enrolmentTargetLabel is how the operator reads a window target. It never
+// carries the word "Eve": the browser path is Home|Work to the person at the
+// keyboard.
+func enrolmentTargetLabel(target, profileName string) string {
+	switch target {
+	case enrolmentWindowTargetHomeWork:
+		return "Home|Work browser"
+	case enrolmentWindowTargetRelayLogin:
+		return "Relay sign-in"
+	case enrolmentWindowTargetProfile:
+		if profileName != "" {
+			return fmt.Sprintf("access profile %q", profileName)
+		}
+		return "access profile"
+	}
+	return target
 }
 
 func formatGrants(ids []string) string {

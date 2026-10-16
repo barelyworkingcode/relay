@@ -23,6 +23,15 @@ const enrolmentWindowTTL = 5 * time.Minute
 // remote machine into one access profile.
 const enrolmentWindowTargetProfile = "profile"
 
+// The other two targets Close and Status cover. Each is a window of its own,
+// kept in settings.json rather than on a listener: a Home|Work window lets one
+// browser register a passkey with Home|Work, and a relay sign-in code lets one
+// browser register a passkey with relay.
+const (
+	enrolmentWindowTargetHomeWork   = "home_work"
+	enrolmentWindowTargetRelayLogin = "relay_login"
+)
+
 // auditCredentialEnrolmentWindow is the credential kind of an approved open:
 // the window is what lets a stranger's request reach the table, so its opening
 // is recorded as an issuance, before the port binds.
@@ -53,6 +62,24 @@ type EnrolmentWindowOps struct {
 	// nothing lodged. Nil raises nothing.
 	Notify func(title, body string)
 	Clock  serverClock
+}
+
+// runningEveEnrolmentOps and runningLoginOps are the cores that own the
+// Home|Work window and the relay sign-in code. Close and the Settings sheet
+// reach them through the running server so one cancel covers all three
+// targets; either is nil in a process that runs no server.
+func runningEveEnrolmentOps() *EveEnrolmentOps {
+	if appInstance == nil {
+		return nil
+	}
+	return appInstance.eveEnrolmentOps
+}
+
+func runningLoginOps() *LoginOps {
+	if appInstance == nil {
+		return nil
+	}
+	return appInstance.loginOps
 }
 
 var errEnrolmentWindowOpsUnavailable = errors.New("enrolment windows are not available in this relay process")
@@ -141,29 +168,63 @@ func (o *EnrolmentWindowOps) windowClosed(reason string) {
 	}
 }
 
-// Close closes every open window and names what it closed. Ungated: closing
-// narrows. Nothing open is not an error.
+// Close closes every open window and names what it closed, in the order
+// "profile", "home_work", "relay_login". Ungated: closing narrows. Nothing open
+// is not an error. A target that fails to close does not stop the others.
 //
-// The close event itself (reason "cancelled") is written by the supervisor, in
-// the one place every close goes through.
-func (o *EnrolmentWindowOps) Close(_ context.Context, _ string) (closed []string, err error) {
+// The profile close event (reason "cancelled") is written by the supervisor,
+// in the one place every close goes through; the other two are written by
+// their own cores.
+func (o *EnrolmentWindowOps) Close(ctx context.Context, _ string) (closed []string, err error) {
 	if o == nil || o.Remote == nil {
 		return nil, errEnrolmentWindowOpsUnavailable
 	}
+	var errs []error
 	if o.Remote.CloseEnrolmentWindow(windowClosedCancelled) {
 		closed = append(closed, enrolmentWindowTargetProfile)
 	}
-	return closed, nil
+	if eve := runningEveEnrolmentOps(); eve != nil {
+		if ok, err := eve.Close(ctx); err != nil {
+			errs = append(errs, err)
+		} else if ok {
+			closed = append(closed, enrolmentWindowTargetHomeWork)
+		}
+	}
+	if login := runningLoginOps(); login != nil {
+		if ok, err := login.CancelBootstrap(ctx); err != nil {
+			errs = append(errs, err)
+		} else if ok {
+			closed = append(closed, enrolmentWindowTargetRelayLogin)
+		}
+	}
+	return closed, errors.Join(errs...)
 }
 
-// Status lists the open windows, one entry each.
+// recordEnrolmentWindowCancelled writes the close event for a window that is
+// not on the supervisor. The reason rides as close_reason for the reason
+// closeWindowLocked gives.
+func recordEnrolmentWindowCancelled(ctx context.Context, target string) {
+	logging.BeginEvent(ctx, "enrolment.window.close").
+		Set("target", target).Set("close_reason", windowClosedCancelled).End(logging.OutcomeOK, "", nil)
+}
+
+// Status lists the open windows, one entry each: the profile window, a
+// Home|Work window and an unexpired relay sign-in code.
 func (o *EnrolmentWindowOps) Status() []enrolmentWindowView {
 	if o == nil || o.Remote == nil {
 		return nil
 	}
+	s := config.DisplaySettings(o.Store)
+	now := clockNow(o.Clock)
 	var out []enrolmentWindowView
-	if v := windowViewOf(o.Remote, config.DisplaySettings(o.Store)); v.Open {
+	if v := windowViewOf(o.Remote, s); v.Open {
 		out = append(out, v)
+	}
+	if w := s.EveEnrolment; eveEnrolmentOpen(w, now) {
+		out = append(out, enrolmentWindowView{Open: true, Target: enrolmentWindowTargetHomeWork, Expires: w.Expires})
+	}
+	if b := s.LoginBootstrap; bootstrapCodeLive(b, now) {
+		out = append(out, enrolmentWindowView{Open: true, Target: enrolmentWindowTargetRelayLogin, Expires: b.Expires})
 	}
 	return out
 }

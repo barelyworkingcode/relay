@@ -480,6 +480,11 @@ var ipcHandlers = map[string]ipcEntry{
 	MsgApproveEnrolmentRequest: {handle: ipcApproveEnrolmentRequest, gates: []string{"enrolment.sign"}},
 	MsgRefuseEnrolmentRequest:  {handle: ipcRefuseEnrolmentRequest},
 
+	// Allow Enrolment sheet (ipc_enrolment_window.go). The gates are the three
+	// targets' own; the close is ungated.
+	MsgOpenEnrolmentWindow:   {handle: ipcOpenEnrolmentWindow, gates: []string{"eve.enrolment.open", "login.bootstrap.mint", "enrolment.window.open"}},
+	MsgCloseEnrolmentWindows: {handle: ipcCloseEnrolmentWindows},
+
 	// Passkeys (ipc_login.go)
 	MsgListPasskeys:     {handle: ipcListPasskeys},
 	MsgRevokePasskey:    {handle: ipcRevokePasskey, gates: []string{"login.passkey.revoke"}},

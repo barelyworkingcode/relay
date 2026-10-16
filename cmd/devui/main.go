@@ -144,7 +144,7 @@ const fixtureLoginSessions = `[
 const fixtureEvePasskeys = `[]`
 
 // Null, which is the state on every ordinary open: a code is present only in
-// the paint the tray's "Show Login Code..." item triggered.
+// a paint seeded with a sign-in code from the Allow Enrolment… sheet.
 const fixtureLoginCode = `null`
 
 const fixtureMcpScopeFields = `{

@@ -85,10 +85,16 @@ type App struct {
 	// the same core `relay login` runs through.
 	loginOps *LoginOps
 
-	// eveEnrolmentOps backs the tray's "Allow Home|Work Passkey Enrolment…" item
-	// and its countdown line; it is the same core `relay eve enrol` runs
-	// through (docs/eve-passkey-enrolment.md).
+	// eveEnrolmentOps owns the Home|Work window the Allow Enrolment sheet
+	// opens and Cancel Enrolment closes; it is the same core `relay eve enrol`
+	// runs through (docs/eve-passkey-enrolment.md).
 	eveEnrolmentOps *EveEnrolmentOps
+
+	// shownEnrolment remembers the Home|Work window and relay sign-in code the
+	// tray last listed (target to expiry), so a poll that finds one gone can
+	// tell expiry from a consume or a cancel. Main-thread only, like
+	// lastMenuJSON.
+	shownEnrolment map[string]string
 
 	// evePasskeyOps backs the Passkeys tab's eve section and
 	// pushFullSettings' eve_passkeys payload; it is the same core `relay eve
@@ -278,10 +284,10 @@ func waitWithTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 const (
 	menuIDSettings          = 2
 	menuIDExit              = 3
-	menuIDLoginCode         = 4
 	menuIDResetSealedStore  = 5
 	menuIDPendingEnrolments = 6
-	menuIDEveEnrolment      = 7
+	menuIDAllowEnrolment    = 8
+	menuIDCancelEnrolment   = 9
 	menuIDSvcBase           = 100 // service items start here
 )
 
@@ -586,20 +592,21 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 	items = append(items,
 		menuItem{Title: "-", ID: 0},
 		menuItem{Title: "Settings...", ID: menuIDSettings, Enabled: true, Key: ","},
-		menuItem{Title: "Show Login Code...", ID: menuIDLoginCode, Enabled: true},
-		menuItem{Title: "Allow Home|Work Passkey Enrolment…", ID: menuIDEveEnrolment, Enabled: true},
+		menuItem{Title: "Allow Enrolment…", ID: menuIDAllowEnrolment, Enabled: true},
 	)
 
-	// The disabled countdown line (docs/eve-passkey-enrolment.md): shown
-	// only while a window is open, computed fresh on every poll so it can
-	// never drift from what Status() and eve's own login-screen poll agree
-	// on. Recomputed from s.EveEnrolment directly rather than through
-	// a.eveEnrolmentOps.Status() — s is the exact snapshot this whole
-	// rebuild already carries, and reading through the ops core again would
-	// risk a second, later Get() disagreeing with it under a concurrent
-	// Open/Consume.
-	if remaining, open := eveEnrolmentRemaining(s.EveEnrolment, clockNow(a.clock)); open {
-		items = append(items, menuItem{Title: "Home|Work enrolment open — " + remaining, ID: 0})
+	// One disabled line per open window, then the one item that closes them
+	// all. The lines are derived from the same read the expiry notice uses,
+	// on the timer that already runs, so the menu and the notice never
+	// disagree about what is open.
+	open := a.openEnrolmentWindows()
+	a.noteEnrolmentExpiry(open)
+	now := clockNow(a.clock)
+	for _, v := range open {
+		items = append(items, menuItem{Title: enrolmentMenuLine(v, now), ID: 0})
+	}
+	if len(open) > 0 {
+		items = append(items, menuItem{Title: "Cancel Enrolment", ID: menuIDCancelEnrolment, Enabled: true})
 	}
 
 	items = append(items,
@@ -636,7 +643,7 @@ const settingsPageRemoteClients = "remote"
 // and calls no gated core method — the approval still happens from the panel,
 // behind enrolment.sign's own prompt.
 //
-// Two arms, for the reason showLoginCode's doc comment gives in full: a
+// Two arms, for the reason openAllowEnrolmentSheet's doc comment gives in full: a
 // window that is not up yet has no document to receive an emit, because
 // cocoa_settings_eval_js drops a script when no WebView exists and
 // OpenSettings loads its document asynchronously — so a cold open can only be
@@ -666,11 +673,11 @@ func (a *App) onMenuClick(itemID int) {
 	case itemID == menuIDSettings:
 		a.openSettingsWindow()
 
-	case itemID == menuIDLoginCode:
-		a.showLoginCode()
+	case itemID == menuIDAllowEnrolment:
+		a.openAllowEnrolmentSheet()
 
-	case itemID == menuIDEveEnrolment:
-		a.openEveEnrolment()
+	case itemID == menuIDCancelEnrolment:
+		a.cancelEnrolment()
 
 	case itemID == menuIDResetSealedStore:
 		a.confirmAndResetSealedStore()
@@ -690,11 +697,16 @@ func (a *App) onMenuClick(itemID int) {
 	}
 }
 
-// showLoginCode mints a bootstrap code and puts it in front of the operator
-// in the Settings window. That window is the only surface this app has for
-// showing anything — relay is LSUIElement, so there is no dock icon and no
-// main window, and the one other menu item with something to show opens it
-// too.
+// settingsPageAllowEnrolment is the initial-page id that opens Settings with
+// the Allow Enrolment sheet up. web/src/app.js reads it from INITIAL_PAGE; it
+// is not a sidebar page.
+const settingsPageAllowEnrolment = "allow-enrolment"
+
+// openAllowEnrolmentSheet puts the Allow Enrolment sheet in front of the
+// operator. It opens the sheet and nothing else: the presence prompt for a
+// target is asked only when the operator chooses one and presses Open, from
+// the sheet's IPC door. relay is LSUIElement, so Settings is the only surface
+// this app has for showing anything.
 //
 // This is subtle: cocoa_settings_eval_js drops a script when no WebView
 // exists yet, and OpenSettings loads its document asynchronously, so a window
@@ -702,48 +714,106 @@ func (a *App) onMenuClick(itemID int) {
 // never reloaded by OpenSettings, so for that one the emit is the only
 // channel. Hence the two arms rather than a single call.
 //
-// This is deliberate: onMenuClick runs on the Cocoa main thread, and
-// login.bootstrap.mint is gated (§6.4) — MintBootstrap now reaches a real
-// LocalAuthentication provider whose Evaluate blocks the calling goroutine
-// on a channel until the async completion handler fires. Running that on
-// the same thread that owns the run loop the dialog needs pumped would
-// deadlock the two against each other (§6.5), so the mint happens in a
-// tracked goroutine and every UI touch after it hops back to main.
-func (a *App) showLoginCode() {
+// This is deliberate: onMenuClick runs on the Cocoa main thread, and every
+// gated core reaches a real LocalAuthentication provider whose Evaluate blocks
+// the calling goroutine until an async completion handler fires, which needs
+// that same thread's run loop pumped. A gated call made here would deadlock
+// against itself (§6.5), so gated calls run in tracked goroutines and every UI
+// touch after them hops back to main.
+func (a *App) openAllowEnrolmentSheet() {
+	if a.settingsOpen.Load() {
+		a.emitSettingsEvent("openAllowEnrolmentSheet")
+	} else {
+		a.pendingSettingsPage = settingsPageAllowEnrolment
+	}
+	a.openSettingsWindow()
+}
+
+// cancelEnrolment closes every open enrolment window. The close is ungated,
+// but it writes the store, which must not happen on the main thread the menu
+// click arrives on.
+func (a *App) cancelEnrolment() {
 	a.goFunc(func() {
-		view, err := a.loginOps.MintBootstrap(a.ctx, auditViaTray)
+		window := a.enrolmentWindowOps()
+		if window == nil {
+			return
+		}
+		closed, err := window.Close(a.ctx, auditViaTray)
 		if err != nil {
-			slog.Error("failed to mint a login code from the tray", "error", err)
-			view = loginCodeView{Error: err.Error()}
+			slog.Error("failed to close the enrolment windows from the tray", "error", err)
+		}
+		if closed == nil {
+			closed = []string{}
 		}
 		a.platform.DispatchToMain(func() {
-			if a.settingsOpen.Load() {
-				a.emitSettingsEvent("onLoginCodeMinted", view)
-			} else {
-				a.pendingLoginCode = &view
-			}
-			a.openSettingsWindow()
+			a.emitSettingsEvent("onEnrolmentWindowsClosed", enrolmentWindowCloseResult{Closed: closed})
+			a.updateMenu()
 		})
 	})
 }
 
-// openEveEnrolment mints an eve passkey enrolment window from the tray menu.
-// Unlike showLoginCode there is nothing to display beyond the notification
-// -- eve's own login screen is where the operator (or whoever taps "Add this
-// browser") sees the result -- so this has no pending/emit split and no
-// Settings window to open; the post-commit event already
-// rebuilds the menu so the countdown line appears without a second dispatch
-// here.
-//
-// Runs in a tracked goroutine for the reason showLoginCode's doc comment
-// gives in full: eve.enrolment.open is gated, and onMenuClick runs on the
-// Cocoa main thread that the presence dialog needs pumped.
-func (a *App) openEveEnrolment() {
-	a.goFunc(func() {
-		if _, err := a.eveEnrolmentOps.Open(a.ctx, auditViaTray); err != nil {
-			slog.Error("failed to open an eve passkey enrolment window from the tray", "error", err)
+func (a *App) enrolmentWindowOps() *EnrolmentWindowOps {
+	if a.ipcCtx == nil || a.ipcCtx.EnrolmentOps == nil {
+		return nil
+	}
+	return a.ipcCtx.EnrolmentOps.Window
+}
+
+// openEnrolmentWindows lists what the menu shows: every open window, one entry
+// each.
+func (a *App) openEnrolmentWindows() []enrolmentWindowView {
+	return a.enrolmentWindowOps().Status()
+}
+
+// enrolmentMenuLine is the disabled line for one open window,
+// "Enrolment open: <target> · m:ss left".
+func enrolmentMenuLine(v enrolmentWindowView, now time.Time) string {
+	name := v.ProfileName
+	if name == "" {
+		name = v.ProfileID
+	}
+	return fmt.Sprintf("Enrolment open: %s · %s left", enrolmentTargetLabel(v.Target, name), enrolmentCountdown(v.Expires, now))
+}
+
+// enrolmentCountdown formats the time left as m:ss, never negative. An expiry
+// that does not parse reads as none left, matching how every window treats it.
+func enrolmentCountdown(expires string, now time.Time) string {
+	var d time.Duration
+	if at, err := time.Parse(time.RFC3339, expires); err == nil {
+		d = at.Sub(now).Round(time.Second)
+	}
+	if d < 0 {
+		d = 0
+	}
+	return fmt.Sprintf("%d:%02d", int(d/time.Minute), int(d/time.Second)%60)
+}
+
+// noteEnrolmentExpiry raises "Enrolment closed; nothing enrolled." when a
+// Home|Work window or relay sign-in code the menu showed has gone because its
+// time ran out. One that went early, consumed or cancelled, is not expiry and
+// raises nothing. The access-profile window raises its own notice from the
+// supervisor. Main thread only.
+func (a *App) noteEnrolmentExpiry(open []enrolmentWindowView) {
+	now := clockNow(a.clock)
+	current := map[string]string{}
+	for _, v := range open {
+		if v.Target == enrolmentWindowTargetHomeWork || v.Target == enrolmentWindowTargetRelayLogin {
+			current[v.Target] = v.Expires
 		}
-	})
+	}
+	expired := false
+	for target, expires := range a.shownEnrolment {
+		if _, still := current[target]; still {
+			continue
+		}
+		if at, err := time.Parse(time.RFC3339, expires); err == nil && !now.Before(at) {
+			expired = true
+		}
+	}
+	a.shownEnrolment = current
+	if expired {
+		a.platform.Notify("Relay", "Enrolment closed; nothing enrolled.")
+	}
 }
 
 // confirmAndResetSealedStore is the tray's break-glass menu item (§5.6
@@ -755,7 +825,7 @@ func (a *App) openEveEnrolment() {
 // prompt leaves every file untouched; resetSealedStore only starts deleting
 // after Require succeeds.
 //
-// Runs in a tracked goroutine for the same reason showLoginCode does:
+// Runs in a tracked goroutine for the reason openAllowEnrolmentSheet gives:
 // resetSealedStore reaches the real presence gate, which must never be
 // invoked from the Cocoa main thread onMenuClick runs on (§6.5).
 func (a *App) confirmAndResetSealedStore() {
