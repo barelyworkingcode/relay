@@ -540,7 +540,10 @@ Once the ancestry walk resolves a session id, and the decoded body's own
 6. `Preflight` says ask, but no viewer has joined the session (`HasViewers`):
    `200` deny, `no client is viewing this session to approve the tool call`.
    No request is created — nothing is queued to replay if a viewer joins
-   later.
+   later. (A request a host session's stream raised with no viewer joined is
+   different: it is created and waits, and `join_session` sends the joiner a
+   `permission_request` frame for each one still pending, after
+   `session_joined`.)
 7. A viewer is present: `CreateRequest` mints a permission id and
    `NotifySession` sends every viewer of the session a `permission_request`
    frame (`sessionId`, `permissionId`, `toolName`, `toolInput`, `toolUseId`).

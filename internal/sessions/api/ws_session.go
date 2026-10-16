@@ -271,6 +271,21 @@ func (sh *SessionHandlers) handleJoinSession(c *Conn, raw []byte) {
 		// concept of "joined but not live" since it respawned silently.
 		"live": p != nil && p.Alive(),
 	}))
+	// A request raised while nobody was joined (a detached agent's, after a
+	// restart) reaches no one when it is raised, so the joiner is shown each
+	// one still waiting, after session_joined.
+	if sh.perms != nil {
+		for _, pr := range sh.perms.PendingRequests(sess.ID) {
+			c.Write(mustJSON(map[string]any{
+				"type":         "permission_request",
+				"sessionId":    pr.SessionID,
+				"permissionId": pr.ID,
+				"toolName":     pr.ToolName,
+				"toolInput":    pr.ToolInput,
+				"toolUseId":    pr.ToolUseID,
+			}))
+		}
+	}
 }
 
 func (sh *SessionHandlers) handleSendMessage(c *Conn, raw []byte) {

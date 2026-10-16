@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +72,8 @@ type PermissionRequest struct {
 type pendingPermission struct {
 	sessionID string
 	ch        chan PermissionDecision
+	// req is what a viewer that joins later is shown.
+	req PermissionRequest
 }
 
 // PermissionManager tracks pending permission requests. Both the hook binary
@@ -163,18 +166,34 @@ func (m *PermissionManager) CreateRequest(sessionID, toolName, toolInput, toolUs
 	m.mu.Lock()
 	id := uuid.New().String()
 	ch := make(chan PermissionDecision, 1)
-	m.pending[id] = pendingPermission{sessionID: sessionID, ch: ch}
-	n := m.pendingFor(sessionID)
-	m.mu.Unlock()
-	m.observe(sessionID, n)
-
-	return PermissionRequest{
+	req := PermissionRequest{
 		ID:        id,
 		SessionID: sessionID,
 		ToolName:  toolName,
 		ToolInput: toolInput,
 		ToolUseID: toolUseID,
-	}, ch
+	}
+	m.pending[id] = pendingPermission{sessionID: sessionID, ch: ch, req: req}
+	n := m.pendingFor(sessionID)
+	m.mu.Unlock()
+	m.observe(sessionID, n)
+
+	return req, ch
+}
+
+// PendingRequests returns the requests of sessionID still waiting for a
+// decision, so a viewer that joins after a request was raised can be shown it.
+func (m *PermissionManager) PendingRequests(sessionID string) []PermissionRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []PermissionRequest
+	for _, p := range m.pending {
+		if p.sessionID == sessionID {
+			out = append(out, p.req)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // PendingSessionID reports the sessionID a still-pending permission request

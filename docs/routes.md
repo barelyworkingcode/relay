@@ -1481,7 +1481,9 @@ Client to server. Binds the connection to a session and replays it.
 
 - **Frame:** `{"type": "join_session", "sessionId": "<id>"}`.
 - **Answer:** `session_joined` (with the session's history and `live`), or
-  `{"type": "error", "message": "session not found: <id>"}`.
+  `{"type": "error", "message": "session not found: <id>"}`. After
+  `session_joined` the joiner gets one `permission_request` frame for each
+  permission request of the session still waiting for an answer.
 - **`session_joined.history[]`:** entries `{"timestamp": "<string>",
   "role": "user"|"assistant"|"tool", "content": <raw JSON>, "toolUseId"?: "<id>",
   "origin"?: "<writer>", "toolName"?, "files"?, "error"?: "<code>"}`. `toolUseId`

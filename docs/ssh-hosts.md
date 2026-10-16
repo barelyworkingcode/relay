@@ -816,7 +816,7 @@ A session with no saved cursor, one from another generation, or one past the
 end of the output starts at the end of the output. A turn is read as open when the host holds more
 user messages than results. A permission prompt the agent is still waiting on
 is raised again, once the session is published: the session reads `asking` and
-a joined viewer gets the `permission_request`. A shutdown does not deny a
+a viewer that is joined, or that joins later, gets the `permission_request` (`join_session` sends each pending one after `session_joined`). A shutdown does not deny a
 waiting prompt, so it survives the restart; one whose `control_response` is
 already in `in.jsonl` is not raised. A `message` or a drop-in that meets a detached
 session with no provider attaches it first. At startup relay asks the same
