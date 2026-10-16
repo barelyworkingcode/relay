@@ -184,7 +184,24 @@ func (o *EnrolmentWindowOps) Close(ctx context.Context, _ string) (closed []stri
 			closed = append(closed, enrolmentWindowTargetRelayLogin)
 		}
 	}
-	return closed, errors.Join(errs...)
+	if len(errs) > 0 {
+		// The admin door drops the closed list when it returns an error, so the
+		// error itself names what did close.
+		return closed, fmt.Errorf("%w%s", errors.Join(errs...), closedNote(closed))
+	}
+	return closed, nil
+}
+
+// closedNote says which targets closed before a failure, or nothing.
+func closedNote(closed []string) string {
+	if len(closed) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(closed))
+	for _, t := range closed {
+		names = append(names, enrolmentTargetLabel(t, ""))
+	}
+	return " (closed: " + strings.Join(names, ", ") + ")"
 }
 
 // recordEnrolmentWindowCancelled writes the close event for a window that is
@@ -201,8 +218,16 @@ func (o *EnrolmentWindowOps) Status() []enrolmentWindowView {
 	if o == nil || o.Remote == nil {
 		return nil
 	}
-	s := config.DisplaySettings(o.Store)
-	now := clockNow(o.Clock)
+	return o.statusOf(config.DisplaySettings(o.Store), clockNow(o.Clock))
+}
+
+// statusOf is Status over a snapshot the caller already holds. The tray reads
+// its views and its expiry judgement from one snapshot, so a consume between
+// two reads cannot make a consumed window look expired.
+func (o *EnrolmentWindowOps) statusOf(s *config.Settings, now time.Time) []enrolmentWindowView {
+	if o == nil || o.Remote == nil {
+		return nil
+	}
 	var out []enrolmentWindowView
 	if v := windowViewOf(o.Remote, s); v.Open {
 		out = append(out, v)

@@ -593,7 +593,7 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 	// all. The lines are derived from the same read the expiry notice uses,
 	// on the timer that already runs, so the menu and the notice never
 	// disagree about what is open.
-	open := a.openEnrolmentWindows()
+	open := a.enrolmentWindowOps().statusOf(s, clockNow(a.clock))
 	a.noteEnrolmentExpiry(open, s)
 	now := clockNow(a.clock)
 	for _, v := range open {
@@ -751,12 +751,6 @@ func (a *App) enrolmentWindowOps() *EnrolmentWindowOps {
 		return nil
 	}
 	return a.ipcCtx.EnrolmentOps.Window
-}
-
-// openEnrolmentWindows lists what the menu shows: every open window, one entry
-// each.
-func (a *App) openEnrolmentWindows() []enrolmentWindowView {
-	return a.enrolmentWindowOps().Status()
 }
 
 // enrolmentMenuLine is the disabled line for one open window,
