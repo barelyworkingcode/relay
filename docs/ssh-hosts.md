@@ -770,10 +770,28 @@ lines, and reopens the read at its cursor. The reopened read writes
 `link=restored` once it has delivered a line or stayed open for two seconds,
 and a runner found to have exited during the outage writes it before the last
 read; a read that keeps failing at once writes one `lost` and nothing more.
-The agent keeps running throughout. A send while the link is down fails with an error and nothing is delivered; there is no retry, because
-an ssh failure after the command started may still have landed the line. When
+The agent keeps running throughout, and the session never reads `errored`
+because of the drop. When
 the runner has exited, relay delivers the remaining lines and ends the
 session as any process exit does, with the exit code.
+
+**A send during a drop.** `relay session send` and `relay session message`
+wait for `session.host_link` `restored` within the command's `--timeout`
+(default 30 s), then write once. Past the cap the command exits `1` with
+`host_link_down` and a message to retry when the host is reachable; nothing was
+written, and the session returns to the state it had before the send. The wait
+holds the session's one in-flight send, so a second send meanwhile answers
+`already_processing`. An ssh failure that proves the connection never opened
+marks the link lost and waits again. Any other ssh failure after the command
+started may still have landed the line, so it is not retried: the command exits
+`1` with `send_unknown`, and the operator reads `relay session events` before
+sending again.
+
+**Replay.** `relay session events --after CURSOR` reads the agent's events
+from the cursor, up to 200 per call, and prints the cursor for the next call.
+Two calls chained by cursor print each event once and miss none. The empty
+cursor starts at the current generation's beginning. A session that is not
+detached, or is dormant, exits `1` with `replay_unavailable`.
 
 **Stop.** Idle stop, drop-in and `relay session stop` end the runner's process
 group, `TERM` then `KILL`, and return when it is gone. The stop checks the

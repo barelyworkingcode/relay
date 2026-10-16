@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -19,9 +20,12 @@ import (
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/sessions/api"
+	"github.com/barelyworkingcode/relay/internal/sessions/attention"
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
+	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	"github.com/barelyworkingcode/relay/internal/sessions/terminal"
+	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
 // Config is what a running relay-sessions host needs to serve C5's internal
@@ -360,6 +364,9 @@ func (s *Server) ListenInternal() error {
 	mux.HandleFunc("/handoff", s.handleHandoff)
 	mux.HandleFunc("/handback", s.handleHandback)
 	mux.HandleFunc("/managed-identities", s.handleManagedIdentities)
+	mux.HandleFunc("/session-send", s.guarded(s.handleSessionSend))
+	mux.HandleFunc("/session-wait", s.guarded(s.handleSessionWait))
+	mux.HandleFunc("/session-events", s.guarded(s.handleSessionEvents))
 
 	// The eve-facing manifest surface (internal/config's
 	// RelaySessionsManifestRoutes: /api/terminals/, /api/sessions/,
@@ -400,7 +407,10 @@ func (s *Server) ListenInternal() error {
 		}
 	}))
 	mux.HandleFunc("POST /api/sessions/{id}/message", s.guarded(func(w http.ResponseWriter, r *http.Request) {
-		api.HandleSessionMessageSync(s.sessions, r.PathValue("id"), w, r)
+		id := r.PathValue("id")
+		s.sessions.SetLinkWait(id, linkWaitFrom(r.URL.Query().Get("link_wait_ms")))
+		defer s.sessions.ClearLinkWait(id)
+		api.HandleSessionMessageSync(s.sessions, id, w, r)
 	}))
 	mux.HandleFunc("GET /api/terminals", s.guarded(func(w http.ResponseWriter, r *http.Request) {
 		api.HandleListTerminals(s.terminals, w, r)
@@ -1018,4 +1028,211 @@ func (s *Server) decidePermission(ctx context.Context, body permissionRequestBod
 		d.Reason = "Denied by user"
 	}
 	return d, true
+}
+
+// The operator verbs `relay session send`, `wait` and `events` reach the host
+// on these routes. They sit beside /send, which carries the Chief of Staff's
+// marked messages; these carry the operator's own, so they stamp no origin.
+// They are reserved in bridge.sessionHostReservedRoutes and are not on
+// relay-sessions' manifest, so eve cannot reach them.
+
+const (
+	// maxWaitCap stays under the bridge's ten-minute inactivity limit on the
+	// operator's call, so a wait ends in an answer, never a dropped connection.
+	maxWaitCap       = 9 * time.Minute
+	maxVerbBodyBytes = 16 << 20
+)
+
+// SessionSendRequest is POST /session-send's body. TimeoutMS bounds the wait
+// for a lost host link; zero leaves the default.
+type SessionSendRequest struct {
+	ID        string                        `json:"id"`
+	Text      string                        `json:"text"`
+	Files     []sessiontypes.FileAttachment `json:"files,omitempty"`
+	TimeoutMS int64                         `json:"timeout_ms,omitempty"`
+}
+
+// SessionSendResponse is POST /session-send's 202 body.
+type SessionSendResponse struct {
+	SessionID string `json:"session_id"`
+	At        string `json:"at"`
+}
+
+// SessionWaitRequest is POST /session-wait's body. TimeoutMS zero waits the
+// longest the host allows.
+type SessionWaitRequest struct {
+	ID        string `json:"id"`
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
+}
+
+// SessionWaitResponse is POST /session-wait's 200 body. State is one of
+// idle, asking, errored, ended and timeout.
+type SessionWaitResponse struct {
+	SessionID string          `json:"session_id"`
+	State     string          `json:"state"`
+	Excerpt   string          `json:"excerpt,omitempty"`
+	Exit      *attention.Exit `json:"exit,omitempty"`
+}
+
+// SessionEventsRequest is POST /session-events' body. After is empty for the
+// start of the current run.
+type SessionEventsRequest struct {
+	ID    string `json:"id"`
+	After string `json:"after,omitempty"`
+	Max   int    `json:"max,omitempty"`
+}
+
+// SessionEventsResponse is POST /session-events' 200 body.
+type SessionEventsResponse struct {
+	SessionID string            `json:"session_id"`
+	Events    []json.RawMessage `json:"events"`
+	Next      string            `json:"next"`
+}
+
+// Error codes of the operator verbs, beside the C5 set.
+const (
+	ErrHostLinkDown      = "host_link_down"     // 503
+	ErrSendUnknown       = "send_unknown"       // 502
+	ErrReplayUnavailable = "replay_unavailable" // 409
+	ErrNotTracked        = "not_tracked"        // 409
+	ErrEventsFailed      = "events_failed"      // 502
+)
+
+func linkWaitFrom(ms string) time.Duration {
+	n, err := strconv.ParseInt(ms, 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Millisecond
+}
+
+func decodeVerbBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return false
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxVerbBodyBytes)).Decode(v); err != nil {
+		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "malformed body")
+		return false
+	}
+	return true
+}
+
+func writeVerbJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeVerbError maps a manager error to the route's status and code.
+func writeVerbError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, session.ErrSessionNotFound):
+		writeErr(w, http.StatusNotFound, ErrSessionNotFound, "session not found")
+	case errors.Is(err, session.ErrAlreadyProcessing):
+		writeErr(w, http.StatusConflict, ErrAlreadyProcessing, "session is already processing a message")
+	case errors.Is(err, session.ErrResumeRequired):
+		writeErr(w, http.StatusConflict, ErrResumeRequired, "session is not running; resume it first")
+	case errors.Is(err, session.ErrDroppedIn):
+		writeErr(w, http.StatusConflict, ErrDroppedIn, "a terminal holds this session; close it first")
+	case errors.Is(err, provider.ErrHostLinkDown):
+		writeErr(w, http.StatusServiceUnavailable, ErrHostLinkDown, err.Error())
+	case errors.Is(err, provider.ErrSendUnknown):
+		writeErr(w, http.StatusBadGateway, ErrSendUnknown, err.Error())
+	case errors.Is(err, session.ErrReplayUnavailable):
+		writeErr(w, http.StatusConflict, ErrReplayUnavailable, "this session keeps no replayable event log; only a session on a host with detach_sessions does")
+	case errors.Is(err, session.ErrNotTracked):
+		writeErr(w, http.StatusConflict, ErrNotTracked, "this session reports no agent state")
+	default:
+		writeErr(w, http.StatusInternalServerError, ErrSendFailed, "request failed")
+	}
+}
+
+func (s *Server) handleSessionSend(w http.ResponseWriter, r *http.Request) {
+	var req SessionSendRequest
+	if !decodeVerbBody(w, r, &req) {
+		return
+	}
+	if req.ID == "" || (req.Text == "" && len(req.Files) == 0) {
+		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "id and text are required")
+		return
+	}
+	if !s.sessions.IsListed(req.ID) {
+		writeErr(w, http.StatusNotFound, ErrSessionNotFound, "session not found")
+		return
+	}
+	s.sessions.SetLinkWait(req.ID, time.Duration(req.TimeoutMS)*time.Millisecond)
+	defer s.sessions.ClearLinkWait(req.ID)
+	ev := logging.BeginEvent(r.Context(), "session.send").Set("session_id", req.ID)
+	if err := s.sessions.SendMessage(req.ID, req.Text, req.Files); err != nil {
+		ev.End(logging.OutcomeError, "send_failed", err)
+		writeVerbError(w, err)
+		return
+	}
+	ev.End(logging.OutcomeOK, "", nil)
+	writeVerbJSON(w, http.StatusAccepted, SessionSendResponse{SessionID: req.ID, At: time.Now().UTC().Format("2006-01-02T15:04:05.000Z")})
+}
+
+func (s *Server) handleSessionWait(w http.ResponseWriter, r *http.Request) {
+	var req SessionWaitRequest
+	if !decodeVerbBody(w, r, &req) {
+		return
+	}
+	if req.ID == "" {
+		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "id is required")
+		return
+	}
+	if !s.sessions.IsListed(req.ID) {
+		writeErr(w, http.StatusNotFound, ErrSessionNotFound, "session not found")
+		return
+	}
+	wait := time.Duration(req.TimeoutMS) * time.Millisecond
+	if wait <= 0 || wait > maxWaitCap {
+		wait = maxWaitCap
+	}
+	ev := logging.BeginEvent(r.Context(), "session.wait").Set("session_id", req.ID)
+	res, err := s.sessions.Wait(r.Context(), req.ID, wait)
+	if err != nil {
+		ev.End(logging.OutcomeError, "wait_failed", err)
+		writeVerbError(w, err)
+		return
+	}
+	ev.End(logging.OutcomeOK, "", nil)
+	writeVerbJSON(w, http.StatusOK, SessionWaitResponse{SessionID: req.ID, State: string(res.State), Excerpt: res.Excerpt, Exit: res.Exit})
+}
+
+func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
+	var req SessionEventsRequest
+	if !decodeVerbBody(w, r, &req) {
+		return
+	}
+	if req.ID == "" {
+		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "id is required")
+		return
+	}
+	if !s.sessions.IsListed(req.ID) {
+		writeErr(w, http.StatusNotFound, ErrSessionNotFound, "session not found")
+		return
+	}
+	ev := logging.BeginEvent(r.Context(), "session.events").Set("session_id", req.ID)
+	lines, next, err := s.sessions.Events(r.Context(), req.ID, req.After, req.Max)
+	if err != nil {
+		ev.End(logging.OutcomeError, "events_failed", err)
+	} else {
+		ev.Set("count", len(lines)).End(logging.OutcomeOK, "", nil)
+	}
+	switch {
+	case err == nil:
+		if lines == nil {
+			lines = []json.RawMessage{}
+		}
+		writeVerbJSON(w, http.StatusOK, SessionEventsResponse{SessionID: req.ID, Events: lines, Next: next})
+	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, session.ErrReplayUnavailable):
+		writeVerbError(w, err)
+	case errors.Is(err, provider.ErrInvalidCursor):
+		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, err.Error())
+	default:
+		slog.WarnContext(r.Context(), "session events", "op", "session.events", "session_id", req.ID, "error", err.Error())
+		writeErr(w, http.StatusBadGateway, ErrEventsFailed, err.Error())
+	}
 }

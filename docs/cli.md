@@ -2525,13 +2525,16 @@ relay session start --project ID (--model M | --entry N) [--name N] [--directory
                     [--settings JSON] [--system-prompt S] [--append-claude-md]
 relay session start --file F            # POST /api/sessions body
 relay session list
-relay session message --id ID (--text T | --file F)
+relay session message --id ID (--text T | --file F) [--timeout D]
+relay session send --id ID (--text T | --file F) [--timeout D]
+relay session wait --id ID [--timeout D]
+relay session events --id ID [--after CURSOR]
 relay session stop --id ID
 relay session resume --id ID
 relay session mode --id ID --mode M
 ```
 
-Every verb takes `--json`. Exit codes for all six: `0` done; `1` for a missing
+Every verb takes `--json`. Exit codes for all nine: `0` done; `1` for a missing
 or conflicting flag (each is named in its section), a refusal from the session
 host (`error: session host: CODE: MESSAGE`) or the project's authorization, or a
 host that is down; `2` for an unknown flag.
@@ -2604,10 +2607,16 @@ Text form: the line `N sessions`, then one `ID<TAB>NAME` line per session.
 | `--id` | Session id. Required. |
 | `--text` | The message. |
 | `--file` | A JSON file, or `-` for stdin, `{"text","files"}`, instead of `--text`. Cannot be combined with `--text`. |
+| `--timeout` | The longest to wait for a lost host link to return, a Go duration such as `10s`. Default `30s`. |
 | `--json` | Print the reply as JSON. |
 
 With neither `--text` nor `--file` it exits `1` (`error: pass --text or
---file`). The verb waits for the reply. `--json` prints:
+--file`). The verb waits for the reply. On a detached host session
+([ssh-hosts.md](ssh-hosts.md#detached-sessions)) whose link is down it first
+waits for the link, up to `--timeout`, and writes the message once. A link that
+stays down exits `1` with `host_link_down` and a message to retry when the host
+is reachable; an ambiguous ssh exit exits `1` with `send_unknown` and is never
+retried. `--json` prints:
 
 | Field | JSON type | Meaning |
 |---|---|---|
@@ -2617,6 +2626,61 @@ With neither `--text` nor `--file` it exits `1` (`error: pass --text or
 
 Further `stats` keys (`timeToFirstToken`, `tokensPerSecond`, ...) appear when the
 provider reports them. The text form is the reply text alone.
+
+### `session send`
+
+| Flag | Meaning |
+|---|---|
+| `--id` | Session id. Required. |
+| `--text` | The message. |
+| `--file` | A JSON file, or `-` for stdin, `{"text","files"}`, instead of `--text`. Cannot be combined with `--text`. |
+| `--timeout` | As for `session message`: the longest to wait for a lost host link. Default `30s`. |
+| `--json` | Print the answer as JSON. |
+
+It returns once the message is written, before the turn ends; read the reply
+with `session wait`. `--json` prints `session_id` (string) and `at` (string, RFC
+3339 with milliseconds). Text form: `sent to session ID at TIME`. Errors are
+those of `session message`: `host_link_down`, `send_unknown`,
+`already_processing`, `resume_required`, `dropped_in`, `session_not_found`.
+
+### `session wait`
+
+| Flag | Meaning |
+|---|---|
+| `--id` | Session id. Required. |
+| `--timeout` | Stop waiting after this long. The turn keeps running. Default and longest `9m`. |
+| `--json` | Print the answer as JSON. |
+
+It waits for the session's current turn to end. It exits `0` with the reply
+excerpt (the last 500 runes) when the turn ends, and at once when no turn is
+running. It exits `1` for every other state; `--json` prints the answer in all
+cases:
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `session_id` | string | The session id. |
+| `state` | string | `idle`, `asking` (the turn waits on a permission), `errored` (the agent died), `ended` or `timeout` (the cap passed first). |
+| `excerpt` | string, optional | The end of the last turn's reply. |
+| `exit` | object, optional | `code` (number) and `stderr` (array of lines) of an agent that died. |
+
+Text form: the excerpt on stdout for `idle`; for the other states the reason,
+and for `errored` the exit code and stderr tail, on stderr. A session that
+reports no agent state exits `1` with `not_tracked`.
+
+### `session events`
+
+| Flag | Meaning |
+|---|---|
+| `--id` | Session id. Required. |
+| `--after` | The cursor an earlier call printed. Empty starts at the beginning of the current run. |
+| `--json` | Print the answer as JSON. |
+
+It prints the events a detached host session's agent wrote after the cursor,
+in order, up to 200 per call. `--json` prints `session_id` (string), `events`
+(array of the agent's stream-json lines) and `next` (string, the cursor for
+the next call; unchanged when nothing is new). Text form: one event per line,
+then `next CURSOR`. A malformed cursor exits `1`. A session that is not a live
+detached host session exits `1` with `replay_unavailable`.
 
 ### `session stop`
 

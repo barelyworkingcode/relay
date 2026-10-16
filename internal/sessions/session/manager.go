@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +51,12 @@ var (
 	// of restarting anything. Only a caller-driven resume (Create with
 	// CreateSpec.Resume) brings it back.
 	ErrResumeRequired = errors.New("session: provider not running; resume required")
+	// ErrNotTracked is returned by Wait for a session that reports no agent
+	// state.
+	ErrNotTracked = errors.New("session: no agent state is tracked for this session")
+	// ErrReplayUnavailable is returned by Events for a session whose agent
+	// does not keep a replayable event log: only a detached host session does.
+	ErrReplayUnavailable = errors.New("session: events cannot be replayed for this session")
 )
 
 // Config is what Manager needs to spawn claude/pi providers: the base
@@ -118,6 +125,11 @@ type Manager struct {
 
 	attn     *attention.Board
 	attnSink *sinkAdapter
+	watch    *turnWatch
+
+	// linkWaits holds the one-shot host-link wait a caller asked for, by
+	// session id, until the next send takes it.
+	linkWaits sync.Map
 
 	// onExit mirrors internal/sessions/terminal.Manager's own field of the
 	// same name and purpose: a later unit's SessionExited bridge hook, fired
@@ -157,14 +169,16 @@ func (m *Manager) getProviderFactory() func(*sessionstypes.Session, CreateSpec, 
 // pi-only deployment).
 func NewManager(cfg Config, store *Store, perms *permission.PermissionManager) *Manager {
 	adapter := &sinkAdapter{}
+	watch := newTurnWatch(adapter)
 	m := &Manager{
 		slots:      make(map[string]*sessionSlot),
 		store:      store,
 		perms:      perms,
 		cfg:        cfg,
 		collectors: make(map[string]*ResponseCollector),
-		attn:       attention.NewBoard(cfg.clockOrDefault(), adapter),
+		attn:       attention.NewBoard(cfg.clockOrDefault(), watch),
 		attnSink:   adapter,
+		watch:      watch,
 	}
 	if perms != nil {
 		perms.SetPendingObserver(m.onPermissionPending)
@@ -974,10 +988,21 @@ func (m *Manager) SendMessageAs(id, text string, files []sessionstypes.FileAttac
 	}
 
 	m.signal(sess, attention.TurnStarted)
-	if err := p.SendMessage(text, files); err != nil {
-		m.signal(sess, attention.TurnFailed)
+	if err := m.deliver(p, id, text, files); err != nil {
+		linkDown := errors.Is(err, provider.ErrHostLinkDown)
+		switch {
+		case linkDown:
+			// A dropped link is not a failure of the agent: the message
+			// never left, so the session returns to what it was.
+			m.signal(sess, attention.SendAborted)
+		case errors.Is(err, provider.ErrSendUnknown):
+			// The line may have landed; the agent's own events settle the
+			// state.
+		default:
+			m.signal(sess, attention.TurnFailed)
+		}
 		sess.SetProcessing(false)
-		if len(files) > 0 {
+		if len(files) > 0 || linkDown {
 			sess.Lock()
 			if n := len(sess.Messages); n > 0 && sess.Messages[n-1].Role == "user" {
 				sess.Messages = sess.Messages[:n-1]
@@ -987,6 +1012,36 @@ func (m *Manager) SendMessageAs(id, text string, files []sessionstypes.FileAttac
 		return err
 	}
 	return nil
+}
+
+// SetLinkWait sets how long the next send to id waits for a lost host link.
+// A zero or negative d leaves the default.
+func (m *Manager) SetLinkWait(id string, d time.Duration) {
+	if d > 0 {
+		m.linkWaits.Store(id, d)
+	}
+}
+
+// ClearLinkWait drops a wait no send took.
+func (m *Manager) ClearLinkWait(id string) { m.linkWaits.Delete(id) }
+
+func (m *Manager) takeLinkWait(id string) time.Duration {
+	if v, ok := m.linkWaits.LoadAndDelete(id); ok {
+		return v.(time.Duration)
+	}
+	return provider.DefaultLinkWait
+}
+
+// deliver hands the message to the provider; a provider that can wait for a
+// lost host link gets the caller's wait.
+func (m *Manager) deliver(p sessionstypes.Provider, id, text string, files []sessionstypes.FileAttachment) error {
+	wait := m.takeLinkWait(id)
+	if w, ok := p.(interface {
+		SendMessageWithin(string, []sessionstypes.FileAttachment, time.Duration) error
+	}); ok {
+		return w.SendMessageWithin(text, files, wait)
+	}
+	return p.SendMessage(text, files)
 }
 
 // sendMessageSyncTimeout bounds SendMessageSync's wait. Test-only seam.
@@ -1375,4 +1430,137 @@ func providerOf(sess *sessionstypes.Session) sessionstypes.Provider {
 		return nil
 	}
 	return sess.Provider()
+}
+
+// WaitTimeout is the state Wait reports when its cap passes first. The turn
+// keeps running.
+const WaitTimeout attention.State = "timeout"
+
+// WaitResult is how a Wait ended. Excerpt is the end of the last turn's reply.
+// Exit is set when the agent died.
+type WaitResult struct {
+	State   attention.State
+	Excerpt string
+	Exit    *attention.Exit
+}
+
+// Wait returns when the session's current turn needs the caller: idle (the
+// turn ended, or none was running), asking, errored or ended. A cap above zero
+// ends the wait with WaitTimeout, measured on the manager's clock.
+func (m *Manager) Wait(ctx context.Context, id string, cap time.Duration) (WaitResult, error) {
+	sess, ok := m.Get(id)
+	if !ok {
+		return WaitResult{}, ErrSessionNotFound
+	}
+	if !tracked(sess) {
+		return WaitResult{}, ErrNotTracked
+	}
+	var deadline <-chan time.Time
+	if cap > 0 {
+		deadline = m.cfg.clockOrDefault().After(cap)
+	}
+	changed, unsubscribe := m.watch.subscribe(id)
+	defer unsubscribe()
+	for {
+		a, live := m.attn.Get(id)
+		if !live {
+			return WaitResult{State: attention.Ended}, nil
+		}
+		switch a.State {
+		case attention.Idle, attention.Asking, attention.Errored, attention.Ended:
+			return WaitResult{State: a.State, Excerpt: m.watch.excerpt(id), Exit: a.Exit}, nil
+		}
+		select {
+		case <-changed:
+		case <-deadline:
+			return WaitResult{State: WaitTimeout}, nil
+		case <-ctx.Done():
+			return WaitResult{}, ctx.Err()
+		}
+	}
+}
+
+// turnWatch sits between the attention board and its sink. It keeps the last
+// turn's excerpt and wakes the waiters of a session when its state changes.
+type turnWatch struct {
+	next attention.Sink
+
+	mu       sync.Mutex
+	excerpts map[string]string
+	subs     map[string]map[chan struct{}]struct{}
+}
+
+func newTurnWatch(next attention.Sink) *turnWatch {
+	return &turnWatch{next: next, excerpts: map[string]string{}, subs: map[string]map[chan struct{}]struct{}{}}
+}
+
+func (w *turnWatch) subscribe(id string) (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	w.mu.Lock()
+	if w.subs[id] == nil {
+		w.subs[id] = map[chan struct{}]struct{}{}
+	}
+	w.subs[id][ch] = struct{}{}
+	w.mu.Unlock()
+	return ch, func() {
+		w.mu.Lock()
+		delete(w.subs[id], ch)
+		if len(w.subs[id]) == 0 {
+			delete(w.subs, id)
+		}
+		w.mu.Unlock()
+	}
+}
+
+func (w *turnWatch) excerpt(id string) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.excerpts[id]
+}
+
+func (w *turnWatch) StateChanged(c attention.Change) {
+	w.mu.Lock()
+	if c.State == attention.Running || c.State == attention.Ended {
+		delete(w.excerpts, c.SessionID)
+	}
+	for ch := range w.subs[c.SessionID] {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	w.mu.Unlock()
+	w.next.StateChanged(c)
+}
+
+// TurnDone arrives before the state change it belongs to, so a waiter woken
+// by that change reads this turn's excerpt.
+func (w *turnWatch) TurnDone(d attention.TurnDone) {
+	w.mu.Lock()
+	w.excerpts[d.SessionID] = d.Excerpt
+	w.mu.Unlock()
+	w.next.TurnDone(d)
+}
+
+type eventSource interface {
+	Events(ctx context.Context, after string, max int) ([]json.RawMessage, string, error)
+}
+
+// Events returns up to max events a detached session's agent wrote after the
+// cursor, and the cursor to pass next. Any other session answers
+// ErrReplayUnavailable.
+func (m *Manager) Events(ctx context.Context, id, after string, max int) ([]json.RawMessage, string, error) {
+	sess, ok := m.Get(id)
+	if !ok {
+		return nil, "", ErrSessionNotFound
+	}
+	src, ok := sess.Provider().(eventSource)
+	if !ok {
+		return nil, "", ErrReplayUnavailable
+	}
+	lines, next, err := src.Events(ctx, after, max)
+	if errors.Is(err, provider.ErrNotDetached) {
+		return nil, "", ErrReplayUnavailable
+	}
+	return lines, next, err
 }

@@ -1266,7 +1266,7 @@ func (p *ClaudeProvider) writeControlResponse(data []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if det := p.det; det != nil {
-		if err := p.sendDetached(det, append(data, '\n')); err != nil {
+		if err := p.sendDetached(det, append(data, '\n'), 0); err != nil {
 			slog.Warn("claude: write control_response failed", "session", p.session.ID, "error", err)
 		}
 		return
@@ -1280,8 +1280,21 @@ func (p *ClaudeProvider) writeControlResponse(data []byte) {
 }
 
 func (p *ClaudeProvider) SendMessage(text string, files []sessionstypes.FileAttachment) error {
+	return p.SendMessageWithin(text, files, DefaultLinkWait)
+}
+
+// SendMessageWithin is SendMessage with the longest a detached session waits
+// for a lost host link to return. Other sessions ignore wait.
+func (p *ClaudeProvider) SendMessageWithin(text string, files []sessionstypes.FileAttachment, wait time.Duration) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	unlocked := false
+	unlock := func() {
+		if !unlocked {
+			unlocked = true
+			p.mu.Unlock()
+		}
+	}
+	defer unlock()
 
 	if !p.alive.Load() || (p.stdin == nil && p.det == nil) {
 		return fmt.Errorf("claude process not running")
@@ -1320,7 +1333,10 @@ func (p *ClaudeProvider) SendMessage(text string, files []sessionstypes.FileAtta
 	p.firstTokenNano.Store(0)
 
 	if det := p.det; det != nil {
-		return p.sendDetached(det, data)
+		// Deliberate: the lock is released before the link wait, so a stop
+		// or a permission answer is not held behind a send that is waiting.
+		unlock()
+		return p.sendDetached(det, data, wait)
 	}
 	if _, err := p.stdin.Write(data); err != nil {
 		return fmt.Errorf("write to stdin: %w", err)
