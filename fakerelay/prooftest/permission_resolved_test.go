@@ -67,7 +67,7 @@ func hasType(fr []J, typ string) bool {
 
 // Criteria: fakerelay expires a request when its clock moves to 60 s past the
 // request, and sends the viewer permission_resolved `expired` with the request's
-// permissionId; a request one millisecond short does not expire; an answer that
+// permissionId; a request one second short does not expire; an answer that
 // arrives after the expiry gets no reply.
 func TestPermissionExpiresOnClock(t *testing.T) {
 	t.Parallel()
