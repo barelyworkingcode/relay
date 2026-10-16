@@ -3,6 +3,7 @@ package features
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -50,8 +51,8 @@ func TestRefusedSecondMessageKeepsFirstReply(t *testing.T) {
 	}
 	defer w.Close()
 
-	if r := i.CLI("session", "message", "--id", sid, "--text", "ping", "--json"); r.Code == 0 {
-		t.Fatalf("a message during a running turn exited 0, want a refusal: %s", r.Stdout)
+	if r := i.CLI("session", "message", "--id", sid, "--text", "ping", "--json"); r.Code == 0 || !strings.Contains(string(r.Stderr), "409") {
+		t.Fatalf("a message during a running turn exited %d, want the 409 refusal: %s%s", r.Code, r.Stdout, r.Stderr)
 	}
 
 	w.Close()
