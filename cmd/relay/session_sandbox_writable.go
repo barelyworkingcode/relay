@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 )
@@ -39,25 +40,43 @@ func sandboxWritableRoots(settings *config.Settings, home string) ([]string, err
 			continue
 		}
 		for _, entry := range t.ReadWrite {
-			// Deliberate: an entry no launch can grant is skipped, not fatal.
-			// The template's own launch refuses at the same check, so no
-			// session ever writes it, and refusing here would refuse every
-			// unrelated launch too.
-			dirs, files, err := addTemplateGrants(nil, nil, "read_write", []string{entry}, home)
-			if err != nil {
-				slog.Warn("session sandbox: writable root skipped", "template", t.ID, "entry", entry, "error", err)
-				continue
+			// A ${PROJECT_PATH} entry is writable under every local project
+			// the launch could name it for.
+			projectPaths := []string{""}
+			if strings.HasPrefix(entry, config.ProjectPathMarker) {
+				projectPaths = localProjectPaths(settings)
 			}
-			roots = append(append(roots, dirs...), files...)
+			for _, projectPath := range projectPaths {
+				// Deliberate: an entry no launch can grant is skipped, not fatal.
+				// The template's own launch refuses at the same check, so no
+				// session ever writes it, and refusing here would refuse every
+				// unrelated launch too.
+				dirs, files, err := addTemplateGrants(nil, nil, "read_write", []string{entry}, home, projectPath)
+				if err != nil {
+					slog.Warn("session sandbox: writable root skipped", "template", t.ID, "entry", entry, "error", err)
+					continue
+				}
+				roots = append(append(roots, dirs...), files...)
+			}
 		}
 	}
 
+	for _, path := range localProjectPaths(settings) {
+		roots = append(roots, filepath.Clean(path))
+	}
+	return roots, nil
+}
+
+// localProjectPaths is the folder of every project a session on this machine
+// can write: not remote, not hosted, with a path set.
+func localProjectPaths(settings *config.Settings) []string {
+	var paths []string
 	for i := range settings.Projects {
 		p := &settings.Projects[i]
 		if p.IsRemote() || p.IsHosted() || p.Path == "" {
 			continue
 		}
-		roots = append(roots, filepath.Clean(p.Path))
+		paths = append(paths, p.Path)
 	}
-	return roots, nil
+	return paths
 }

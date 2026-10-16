@@ -35,8 +35,8 @@ function cosDraftFrom(view) {
 // Hosts tab and the project form's Where control need it on the first paint.
 const HOSTS_INIT = window.__RELAY_INIT__.hosts || [];
 // Terminal launch templates (internal/config/templates.go). Seeded like
-// Hosts: the list is small (five built-ins plus any override) and this tab
-// is read-only, so there is no form to protect from a push-sourced repaint.
+// Hosts: the list is small and the Templates tab reads it from here on first
+// paint; every mutation answers with a fresh list (onTemplatesListed).
 const TEMPLATES_INIT = window.__RELAY_INIT__.templates || [];
 const MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
 // What each MCP declares as narrowable: its scope: "restrict" fields, already
@@ -4626,9 +4626,8 @@ function renderHostProbeSummary(h) {
 // Templates tab (internal/config/templates.go)
 // ---------------------------------------------------------------------------
 //
-// Edits Settings.TerminalTemplates. A project's own ShellTemplates have no
-// editor. Every successful mutation answers with a fresh onTemplatesListed, so
-// that event is also what closes the form.
+// Edits Settings.TerminalTemplates. Every successful mutation answers with a
+// fresh onTemplatesListed, so that event is also what closes the form.
 
 function templateCommandLine(t) {
     const parts = [t.command || '(default shell)'].concat(t.args || []);
@@ -4640,7 +4639,7 @@ function renderTemplates() {
 
     let html = '<div class="page-header"><h2>Templates</h2>';
     html += '<button class="btn btn-primary" onclick="newTemplate()">+ Add template</button></div>';
-    html += '<p class="page-intro">Launch configs for project terminals: argv, env passthrough and the sandbox/model-key defaults a session inherits unless a project\'s own Shell Templates override them.</p>';
+    html += '<p class="page-intro">Launch configs for project terminals and agent sessions: argv, env passthrough, sandbox folders and the model key.</p>';
     if (state.templateError) html += '<div class="proj-error">' + esc(state.templateError) + '</div>';
 
     if ((state.templates || []).length === 0) {
@@ -4653,7 +4652,6 @@ function renderTemplates() {
         html += '<div class="proj-card-header">';
         html += '<div style="display:flex;align-items:center;gap:8px">';
         html += '<span class="proj-card-name">' + esc(t.name) + '</span>';
-        if (t.builtIn) html += '<span class="pill muted">built-in</span>';
         if (t.sandbox !== false) html += '<span class="pill ok">sandboxed</span>';
         if (t.model_key) html += '<span class="pill ok">model key</span>';
         html += '</div>';

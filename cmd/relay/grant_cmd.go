@@ -91,6 +91,17 @@ type grantMountView struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+// grantTemplateView is one terminal template a local project may launch, with
+// its sandbox folders as stored.
+type grantTemplateView struct {
+	ID        string   `json:"id"`
+	Sandbox   bool     `json:"sandbox"`
+	Read      []string `json:"read,omitempty"`
+	ReadWrite []string `json:"read_write,omitempty"`
+	Deny      []string `json:"deny,omitempty"`
+	Warnings  []string `json:"warnings,omitempty"`
+}
+
 type grantView struct {
 	ID   string         `json:"id"`
 	Name string         `json:"name"`
@@ -106,6 +117,9 @@ type grantView struct {
 	// (ADR-018 decision 5). Empty for a local project, which no enrolment
 	// can grant (enrolment.ValidateGrants).
 	Enrolments []grantEnrolmentView `json:"enrolments,omitempty"`
+	// Templates is the terminal templates a local project may launch;
+	// absent for an access profile and a hosted project.
+	Templates []grantTemplateView `json:"templates,omitempty"`
 }
 
 func newGrantView(s *config.Settings, p config.Project) grantView {
@@ -155,6 +169,16 @@ func newGrantView(s *config.Settings, p config.Project) grantView {
 			Path:     m.Path,
 			Warnings: project.MountBreadthWarnings(m),
 		})
+	}
+	if !p.IsRemote() && !p.IsHosted() {
+		home, _ := os.UserHomeDir()
+		for _, t := range config.EffectiveTerminalTemplatesForProject(s, &p) {
+			out.Templates = append(out.Templates, grantTemplateView{
+				ID: t.ID, Sandbox: t.Sandboxed(),
+				Read: t.Read, ReadWrite: t.ReadWrite, Deny: t.Deny,
+				Warnings: project.TemplateFolderWarnings(t, p.Path, home),
+			})
+		}
 	}
 	for _, e := range s.Enrolments {
 		if e.GrantsProject(p.ID) {
@@ -218,6 +242,7 @@ func printGrantEnrolments(w io.Writer, enrolments []grantEnrolmentView) {
 func printGrantViews(w io.Writer, views []grantView) {
 	warned := false
 	mountWarned := false
+	templateWarned := false
 	for i, v := range views {
 		if i > 0 {
 			fmt.Fprintln(w)
@@ -257,6 +282,26 @@ func printGrantViews(w io.Writer, views []grantView) {
 				fmt.Fprintln(w, line)
 			}
 		}
+		for _, t := range v.Templates {
+			sandbox := "off"
+			if t.Sandbox {
+				sandbox = "on"
+			}
+			line := fmt.Sprintf("  template %-12s sandbox=%s", t.ID, sandbox)
+			for _, list := range []struct {
+				name    string
+				folders []string
+			}{{"read", t.Read}, {"read_write", t.ReadWrite}, {"deny", t.Deny}} {
+				if len(list.folders) > 0 {
+					line += fmt.Sprintf("  %s=%s", list.name, strings.Join(list.folders, ","))
+				}
+			}
+			if len(t.Warnings) > 0 {
+				line += "  !! " + strings.Join(t.Warnings, "; ")
+				templateWarned = true
+			}
+			fmt.Fprintln(w, line)
+		}
 		if v.Kind == "access profile" {
 			printGrantEnrolments(w, v.Enrolments)
 		}
@@ -272,5 +317,8 @@ func printGrantViews(w io.Writer, views []grantView) {
 	}
 	if mountWarned {
 		fmt.Fprintln(w, "A '!!' after a mount marks a path reaching a filesystem root or a whole home directory.")
+	}
+	if templateWarned {
+		fmt.Fprintln(w, "A '!!' after a template marks a folder reaching a whole home directory or more.")
 	}
 }
