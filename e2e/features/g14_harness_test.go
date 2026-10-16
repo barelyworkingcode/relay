@@ -161,6 +161,9 @@ func TestListenerAddressesFromSettings(t *testing.T) {
 		if err != nil || host != "127.0.0.1" || port == 0 {
 			t.Fatalf("listeners.%s = %q, want 127.0.0.1 and a bound port", k, addr)
 		}
+		if other, dup := seen[addr]; dup {
+			t.Fatalf("listeners.%s and listeners.%s share %s", k, other, addr)
+		}
 		seen[addr] = k
 	}
 	if got := listeners["enrolment"]; got != "" {

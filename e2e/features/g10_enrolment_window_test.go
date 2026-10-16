@@ -13,6 +13,11 @@ import (
 
 const windowEventDeadline = 30 * time.Second
 
+// closeDeadline bounds how long relay may take to close a connection it is
+// ending. It is well under relay's 30 s idle timeout, which would close any
+// quiet connection and so prove nothing.
+const closeDeadline = 5 * time.Second
+
 // g10WaitClose waits for the enrolment.window.close line that carries reason.
 func g10WaitClose(i *harness.Instance, reason string) harness.Event {
 	return i.WaitEvent(harness.EventQuery{Key: "enrolment.window.close", Fields: map[string]any{"status": "ok", "target": "profile", "close_reason": reason}}, windowEventDeadline)
@@ -202,7 +207,7 @@ func TestEnrolmentPollOnlyOnLodgeConnection(t *testing.T) {
 	if !ok || reply["type"] != "Result" || result["status"] != "unknown" {
 		t.Fatalf("a poll from another connection answered ok=%v %v, want status unknown", ok, reply)
 	}
-	if !other.Closed() {
+	if !other.Closed(closeDeadline) {
 		t.Fatalf("relay left the connection open after an unknown answer")
 	}
 	if st, _ := l.poll(t)["status"].(string); st != "pending" {
@@ -339,6 +344,25 @@ func TestEnrolmentWindowClosesWhenRemoteTurnsOff(t *testing.T) {
 	}
 }
 
+func TestEnrolmentLodgedConnectionClosesWhenRemoteTurnsOff(t *testing.T) {
+	t.Parallel()
+	r := g10Start(t, map[string]harness.Outcome{"remote.configure": harness.OutcomeApprove})
+	i := r.i
+	l := g10OpenAndLodge(t, r, "acme-laptop")
+
+	res := i.CLIWith(harness.CLIOpts{Stdin: []byte(`{"enabled":false,"listen":"127.0.0.1:0","enrolment_listen":"127.0.0.1:0"}`)}, "remote", "set", "--file", "-", "--json")
+	if res.Code != 0 {
+		t.Fatalf("an approved remote set exited %d\nstderr: %s", res.Code, res.Stderr)
+	}
+	i.WaitEvent(harness.EventQuery{Key: "enrolment.request.abandon", Fields: map[string]any{"status": "ok", "request_id": l.requestID}}, windowEventDeadline)
+	if !l.conn.Closed(closeDeadline) {
+		t.Fatalf("relay left the lodging connection open after the remote listener turned off")
+	}
+	if n := g10PendingCount(t, i); n != 0 {
+		t.Fatalf("enrol requests lists %d requests after the remote listener turned off, want none", n)
+	}
+}
+
 func TestEnrolmentWindowGoneAfterRestart(t *testing.T) {
 	t.Parallel()
 	r := g10Start(t, nil)
@@ -450,7 +474,7 @@ func TestEnrolmentApproveAfterWindowCloses(t *testing.T) {
 	if poll["status"] != "approved" || cert == "" || ca == "" || len(ids) != 1 || ids[0] != r.profile || len(projects) != 1 {
 		t.Fatalf("the poll on the lodging connection answered %v, want approved with a certificate and the one profile %s", poll, r.profile)
 	}
-	if !l.conn.Closed() {
+	if !l.conn.Closed(closeDeadline) {
 		t.Fatalf("relay left the lodging connection open after an approved answer")
 	}
 	if names, ok := g10ListTools(t, i.RemoteDial(l.id, []byte(cert), []byte(ca)), r.profile); !ok || len(names) != 2 {

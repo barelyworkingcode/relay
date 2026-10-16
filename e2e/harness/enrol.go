@@ -102,17 +102,19 @@ func (c *EnrolConn) Send(frame any) (reply map[string]any, ok bool) {
 	return reply, true
 }
 
-// Closed reports whether relay has closed the connection: a read returns EOF
-// or a reset. It fails t when the connection stays open for 60 s.
-func (c *EnrolConn) Closed() bool {
+// Closed reports whether relay closes the connection within d: a read returns
+// EOF or a reset. It returns false when the connection is still open at d, so
+// d must be shorter than relay's own 30 s idle timeout for the answer to mean
+// anything.
+func (c *EnrolConn) Closed(d time.Duration) bool {
 	c.t.Helper()
-	if err := c.conn.SetReadDeadline(time.Now().Add(enrolDeadline)); err != nil {
+	if err := c.conn.SetReadDeadline(time.Now().Add(d)); err != nil {
 		c.t.Fatalf("setting the enrolment deadline: %v", err)
 	}
 	_, err := c.rd.ReadByte()
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
-		c.t.Fatalf("the enrolment connection stayed open for %s", enrolDeadline)
+		return false
 	}
 	return err != nil
 }
