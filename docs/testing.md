@@ -184,8 +184,8 @@ and `selected n of N`. Output lines: `AREAS`, `TESTS n/N`, `UNMAPPED`,
 `NARROWED`, `RUN`. Exit 0 selected; 1 a map finding, an unmapped path, or a
 narrowing without the label; 2 usage or a git error (a shallow clone, a missing
 commit). An error never becomes a full run, which is why the job checks out
-with `fetch-depth: 0`. `ci.yml` also triggers on `labeled` and `unlabeled`, so
-adding the label reruns every job.
+with `fetch-depth: 0`. `ci.yml` now runs only by hand, so on a dispatched run
+the job runs the whole package.
 
 **The e2e-test-writer agent** (`.claude/agents/e2e-test-writer.md`) writes
 feature tests from the documents and the harness's Go doc alone. A
@@ -205,17 +205,16 @@ hand-run tool for Settings UI work.
 |---|---|---|
 | commit | `gofmt -l`, `go build ./...`, `go vet ./...` | `.githooks/pre-commit` |
 | push | `go build ./...` and `go vet ./...`, skipped when the pushed commits touch no Go sources or web assets | `.githooks/pre-push` |
-| PR, and every push to `main` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags relaytest ./...`, `scripts/check-test-build.sh` (`absent` on an untagged build, `present` on a `relaytest` build), and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` | `.github/workflows/ci.yml` (`build` job) |
-| PR, and every push to `main` | the `fakerelay` job on Linux: `gofmt -l`, `go vet ./...`, a `CGO_ENABLED=0` build for Linux and macOS, then `go test -race -count=1 -parallel 24 ./...` in `fakerelay/` | `.github/workflows/ci.yml` (`fakerelay` job) |
-| PR, and every push to `main` | the `e2e` job: `gofmt -l` and `go vet ./...` in `e2e/`, then `selecttests`, `go test -race -count=1 ./coverage/...`, and `go test -race -count=1 ./features -run "$SELECT_RUN"` (the selected tests on a PR, the whole package on `main`; see Test selection) | `.github/workflows/ci.yml` (`e2e` job) |
-| PR, and every push to `main` | the `contract` job: `gofmt -l` in `e2e/`, then `go test -race -count=1 ./contract/` | `.github/workflows/ci.yml` (`contract` job) |
+| verification task, before `main` | `(cd e2e && go test -race ./features/)`, then `devboxverify` on the head | the issue's `Verified:` line |
+| by hand only, `gh workflow run ci --ref <ref>` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags relaytest ./...`, `scripts/check-test-build.sh` (`absent` on an untagged build, `present` on a `relaytest` build), and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` | `.github/workflows/ci.yml` (`build` job) |
+| by hand only | the `fakerelay` job on Linux: `gofmt -l`, `go vet ./...`, a `CGO_ENABLED=0` build for Linux and macOS, then `go test -race -count=1 -parallel 24 ./...` in `fakerelay/` | `.github/workflows/ci.yml` (`fakerelay` job) |
+| by hand only | the `e2e` job: `gofmt -l` and `go vet ./...` in `e2e/`, then `selecttests`, `go test -race -count=1 ./coverage/...`, and `go test -race -count=1 ./features -run "$SELECT_RUN"` (the selected tests on a PR, the whole package on `main`; see Test selection) | `.github/workflows/ci.yml` (`e2e` job) |
+| by hand only | the `contract` job: `gofmt -l` in `e2e/`, then `go test -race -count=1 ./contract/` | `.github/workflows/ci.yml` (`contract` job) |
 | `./build.sh --test` | `go vet ./...` before install | `build.sh` |
 
-The `protect-default-branch` ruleset requires a PR for every change to `main`,
-and the `build`, `contract`, `e2e`, `fakerelay` and `guards` checks from GitHub
-Actions on its head. GitHub auto-merge waits on exactly those. A PR that adds
-or renames a gating job needs the ruleset changed before it merges: a required
-job that never reports holds every PR open, and an unrequired one is not waited on.
+The `protect-default-branch` ruleset requires a PR for every change to `main`
+and requires no status checks. No workflow runs on a PR or a push, so a
+required check would never report and would hold every PR open.
 
 Do not set `core.hooksPath` in this repo. A global hooks dispatcher runs the
 files in `.githooks/`, and a local value skips its push checks.

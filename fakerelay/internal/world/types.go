@@ -257,8 +257,8 @@ type Model struct {
 	Reply    Reply  `json:"reply"`
 }
 
-// Reply scripts the echo agent: kind echo, text, permission, plan, fail or
-// exit. Code and Stderr belong to exit only.
+// Reply scripts the echo agent: kind echo, text, permission, hold, plan, fail
+// or exit. Code and Stderr belong to exit only.
 type Reply struct {
 	Kind   string   `json:"kind"`
 	Text   string   `json:"text,omitempty"`

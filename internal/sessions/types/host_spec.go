@@ -13,6 +13,9 @@ type HostSpec struct {
 	CodexPath  string   `json:"codex_path,omitempty"`
 	Shell      string   `json:"shell,omitempty"`
 	OS         string   `json:"os,omitempty"`
+	// Detach runs a Claude session's agent on the host, outliving relay's ssh
+	// link (docs/ssh-hosts.md, "Detached sessions").
+	Detach bool `json:"detach,omitempty"`
 }
 
 // Chip returns the {id, name} summary a terminal event carries — never the

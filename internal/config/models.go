@@ -456,6 +456,9 @@ type Host struct {
 	// defers to the probe's (EffectiveTmuxPath).
 	TmuxPath            string `json:"tmux_path,omitempty"`
 	ShowAllTmuxSessions bool   `json:"show_all_tmux_sessions,omitempty"`
+	// DetachSessions runs Claude sessions on this host as detached agents that
+	// survive a dropped ssh link. Unix hosts only.
+	DetachSessions bool `json:"detach_sessions,omitempty"`
 }
 
 // EffectiveTmuxPath is the tmux a persist template on h runs: the operator's

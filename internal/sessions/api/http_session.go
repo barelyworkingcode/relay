@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/logging"
+	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
@@ -67,7 +70,9 @@ func HandleSessionMessageSync(mgr *session.Manager, id string, w http.ResponseWr
 		return
 	}
 
-	text, stats, err := mgr.SendMessageSync(id, req.Text, req.Files)
+	// link_wait_ms is the operator verb's cap on waiting for a lost host link.
+	ms, _ := strconv.ParseInt(r.URL.Query().Get("link_wait_ms"), 10, 64)
+	text, stats, err := mgr.SendMessageSyncWith(r.Context(), id, req.Text, req.Files, provider.ClampMessageLinkWait(time.Duration(ms)*time.Millisecond))
 	if err != nil {
 		ev.End(logging.OutcomeError, sessionErrorReason(err), err)
 		writeSessionError(w, err)
@@ -87,6 +92,8 @@ func sessionErrorReason(err error) string {
 		return "not_found"
 	case errors.Is(err, session.ErrResumeRequired), errors.Is(err, session.ErrDroppedIn), errors.Is(err, session.ErrAlreadyProcessing):
 		return "conflict"
+	case errors.Is(err, provider.ErrHostLinkDown):
+		return "host_link_down"
 	}
 	return "internal"
 }
@@ -99,6 +106,12 @@ func endStatusEvent(ev *logging.Event, status int) {
 		err = errors.New(http.StatusText(status))
 	}
 	ev.End(outcome, reason, err)
+}
+
+func writeCoded(w http.ResponseWriter, status int, code string, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": err.Error()})
 }
 
 func writeSessionError(w http.ResponseWriter, err error) {
@@ -115,6 +128,10 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "dropped_in", "message": err.Error()})
 	case errors.Is(err, session.ErrAlreadyProcessing):
 		w.WriteHeader(http.StatusConflict)
+	case errors.Is(err, provider.ErrHostLinkDown):
+		writeCoded(w, http.StatusServiceUnavailable, "host_link_down", err)
+	case errors.Is(err, provider.ErrSendUnknown):
+		writeCoded(w, http.StatusBadGateway, "send_unknown", err)
 	default:
 		w.WriteHeader(http.StatusInternalServerError)
 	}

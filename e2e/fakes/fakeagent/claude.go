@@ -29,7 +29,39 @@ func (a *agent) runClaude() int {
 
 	inited := false
 	turn := 0
+	askID, askTool := "", ""
 	a.stdinLines(func(line []byte) {
+		// A "!ask <tool>" turn waits here for the control_response that answers
+		// its control_request, then ends as any turn does.
+		if askID != "" {
+			var resp struct {
+				Type     string `json:"type"`
+				Response struct {
+					RequestID string `json:"request_id"`
+					Response  struct {
+						Behavior string `json:"behavior"`
+					} `json:"response"`
+				} `json:"response"`
+			}
+			if json.Unmarshal(line, &resp) == nil && resp.Type == "control_response" && resp.Response.RequestID == askID {
+				answer := "ask: " + resp.Response.Response.Behavior + " " + askTool
+				askID = ""
+				a.emitJSON(map[string]any{
+					"type": "assistant",
+					"message": map[string]any{
+						"id": randomID("msg_"), "role": "assistant",
+						"content": []map[string]any{{"type": "text", "text": answer}},
+					},
+				})
+				a.emitJSON(map[string]any{
+					"type": "result", "subtype": "success", "is_error": false,
+					"session_id": sessionID, "num_turns": turn, "result": answer,
+					"total_cost_usd": 0,
+					"usage":          map[string]int{"input_tokens": 1, "output_tokens": 1},
+				})
+				return
+			}
+		}
 		var msg struct {
 			Type    string `json:"type"`
 			Message struct {
@@ -51,9 +83,23 @@ func (a *agent) runClaude() int {
 			})
 		}
 		turn++
+		if tool, ok := strings.CutPrefix(text, "!ask "); ok {
+			askID, askTool = randomID("req_"), tool
+			a.emitJSON(map[string]any{
+				"type": "control_request", "request_id": askID,
+				"request": map[string]any{
+					"subtype": "can_use_tool", "tool_name": tool,
+					"input": map[string]any{}, "tool_use_id": randomID("tu_"),
+				},
+			})
+			return
+		}
 		answer := "echo: " + text
 		if cmdline, ok := strings.CutPrefix(text, "!sh "); ok {
 			answer = runShellTurn(cmdline)
+		}
+		if name, ok := strings.CutPrefix(text, "!tool "); ok {
+			answer = runToolTurn(cwd, strings.TrimSpace(name))
 		}
 		// "!error <code>" ends the turn as the CLI ends one on an API error:
 		// a top-level error on the assistant line and an error result.
@@ -160,6 +206,48 @@ func runShellTurn(cmdline string) string {
 		}
 	}
 	return fmt.Sprintf("exit: %d", code)
+}
+
+// runToolTurn plays what Claude Code does before a tool call: it runs the
+// PreToolUse command of <cwd>/.claude/settings.local.json with the call on
+// stdin, in this process's environment, and answers
+// "hook: <permissionDecision>: <permissionDecisionReason>". A hook that prints
+// no decision answers "hook: none: ". The file is Claude Code's shape:
+// {"hooks":{"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"..."}]}]}}.
+func runToolTurn(cwd, tool string) string {
+	raw, err := os.ReadFile(filepath.Join(cwd, ".claude", "settings.local.json"))
+	if err != nil {
+		return "hook: error: no settings.local.json"
+	}
+	var cfg struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Hooks []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	if json.Unmarshal(raw, &cfg) != nil || len(cfg.Hooks.PreToolUse) == 0 || len(cfg.Hooks.PreToolUse[0].Hooks) == 0 {
+		return "hook: error: no PreToolUse command"
+	}
+	stdin, _ := json.Marshal(map[string]any{
+		"tool_name": tool, "tool_input": map[string]any{}, "tool_use_id": randomID("toolu_"),
+	})
+	cmd := exec.Command("/bin/sh", "-c", cfg.Hooks.PreToolUse[0].Hooks[0].Command)
+	cmd.Dir = cwd
+	cmd.Stdin = strings.NewReader(string(stdin))
+	out, _ := cmd.Output()
+	var res struct {
+		Specific struct {
+			Decision string `json:"permissionDecision"`
+			Reason   string `json:"permissionDecisionReason"`
+		} `json:"hookSpecificOutput"`
+	}
+	if json.Unmarshal(out, &res) != nil || res.Specific.Decision == "" {
+		return "hook: none: "
+	}
+	return "hook: " + res.Specific.Decision + ": " + res.Specific.Reason
 }
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
