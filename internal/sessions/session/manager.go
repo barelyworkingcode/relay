@@ -985,11 +985,19 @@ func (m *Manager) SendMessageSync(id, text string, files []sessionstypes.FileAtt
 
 	collector := NewResponseCollector()
 	m.collMu.Lock()
+	// A collector already waiting belongs to the in-flight call; replacing it
+	// would starve that call of its turn_done.
+	if _, waiting := m.collectors[id]; waiting {
+		m.collMu.Unlock()
+		return "", sessionstypes.SessionStats{}, ErrAlreadyProcessing
+	}
 	m.collectors[id] = collector
 	m.collMu.Unlock()
 	defer func() {
 		m.collMu.Lock()
-		delete(m.collectors, id)
+		if m.collectors[id] == collector {
+			delete(m.collectors, id)
+		}
 		m.collMu.Unlock()
 	}()
 
