@@ -110,6 +110,44 @@ func TestEnrolmentOneProfileUpdate(t *testing.T) {
 	}
 }
 
+// The one-profile check runs before the presence prompt: with presence denied,
+// a two-profile create and sign are refused as invalid input, never as a
+// presence refusal, and no presence refusal row is written.
+func TestEnrolmentOneProfileBeforePresence(t *testing.T) {
+	t.Parallel()
+	r := g10Start(t, map[string]harness.Outcome{"enrolment.create": harness.OutcomeDeny, "enrolment.sign": harness.OutcomeDeny})
+	i := r.i
+	other := g10SecondProfile(t, r, "globex-profile")
+
+	res := i.CLI("enrol", "create", "--client-id", "acme-two", "--grant", r.profile, "--grant", other)
+	if res.Code != 1 {
+		t.Fatalf("enrol create with two --grant under denied presence exited %d, want 1\nstderr: %s", res.Code, res.Stderr)
+	}
+	requireEvent(t, i, harness.EventQuery{Key: "enrolment.create", Trace: res.Trace, Fields: map[string]any{"status": "error", "reason": "invalid"}})
+
+	id := harness.NewRemoteIdentity(t, "acme-two")
+	sres := i.CLIWith(harness.CLIOpts{Stdin: id.CSRPEM()}, "enrol", "sign", "--client-id", "acme-two", "--csr", "-",
+		"--grant", r.profile, "--grant", other, "--out", filepath.Join(i.Dir, "signed-two"))
+	if sres.Code != 1 {
+		t.Fatalf("enrol sign with two --grant under denied presence exited %d, want 1\nstderr: %s", sres.Code, sres.Stderr)
+	}
+	requireEvent(t, i, harness.EventQuery{Key: "enrolment.sign", Trace: sres.Trace, Fields: map[string]any{"status": "error", "reason": "invalid"}})
+
+	for _, key := range []string{"enrolment.create", "enrolment.sign"} {
+		if got := i.Events(harness.EventQuery{Key: key, Fields: map[string]any{"reason": "presence_refused"}}); len(got) != 0 {
+			t.Fatalf("%s wrote %d presence_refused events for a two-profile request", key, len(got))
+		}
+	}
+	if rows := i.Audit(harness.AuditQuery{Event: "control_decision"}); len(rows) != 0 {
+		for _, row := range rows {
+			if m, _ := row["method"].(string); strings.HasPrefix(m, "enrolment.") {
+				t.Fatalf("a control_decision row exists for the refused two-profile request: %v", row)
+			}
+		}
+	}
+	g10RequireNoEnrolment(t, i, "acme-two")
+}
+
 func TestEnrolmentOneProfileHTTP(t *testing.T) {
 	t.Parallel()
 	r := g10Start(t, map[string]harness.Outcome{"enrolment.create": harness.OutcomeApprove})
@@ -220,8 +258,20 @@ func TestEnrolmentNamingTwoProfilesRefused(t *testing.T) {
 	if msg, _ := reply["message"].(string); !strings.Contains(msg, "relay enrol update") {
 		t.Fatalf("the refusal %q does not name relay enrol update", msg)
 	}
-	if rows := i.Audit(harness.AuditQuery{Event: "call_tool", Outcome: "denied"}); len(rows) == 0 {
-		t.Errorf("no call_tool denied row after the refused call")
+	rows := i.Audit(harness.AuditQuery{Event: "call_tool", Outcome: "denied"})
+	if len(rows) == 0 {
+		t.Fatalf("no call_tool denied row after the refused call")
+	}
+	for _, row := range rows {
+		actor, _ := row["actor"].(map[string]any)
+		if row["tool"] != "acme_ok" || actor["client_id"] != "acme-legacy" {
+			t.Errorf("denied call_tool row names tool %v and client %v, want acme_ok and acme-legacy: %v", row["tool"], actor["client_id"], row)
+		}
+		if args, has := row["args"]; has && args != nil {
+			if m, isMap := args.(map[string]any); !isMap || len(m) != 0 {
+				t.Errorf("denied call_tool row carries args %v, want none", args)
+			}
+		}
 	}
 	if reply, ok := conn.Send(map[string]any{"type": "ListTools", "project_id": other}); ok && reply["type"] != "Error" {
 		t.Fatalf("ListTools from a two-profile enrolment answered %v, want an Error", reply)
@@ -390,9 +440,16 @@ func TestEnrolmentRevokeKeepsProfile(t *testing.T) {
 	if resp.Status != 200 {
 		t.Fatalf("GET of the access profile after a revoke answered %d, want 200", resp.Status)
 	}
+	seen := false
 	for _, row := range g10RevokedRows(t, i) {
-		if row.Subject == "acme-keep" && row.Cause != "" {
-			t.Fatalf("a direct revoke wrote cause %q, want none", row.Cause)
+		if row.Subject == "acme-keep" {
+			seen = true
+			if row.Cause != "" {
+				t.Fatalf("a direct revoke wrote cause %q, want none", row.Cause)
+			}
 		}
+	}
+	if !seen {
+		t.Fatalf("no credential_revoked row for acme-keep after the revoke")
 	}
 }
