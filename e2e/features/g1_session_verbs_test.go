@@ -22,8 +22,8 @@ type g1vWait struct {
 	State     string `json:"state"`
 	Excerpt   string `json:"excerpt"`
 	Exit      *struct {
-		Code   int      `json:"code"`
-		Stderr []string `json:"stderr"`
+		Code   int       `json:"code"`
+		Stderr *[]string `json:"stderr"`
 	} `json:"exit"`
 }
 
@@ -88,6 +88,14 @@ func g1vErrCode(res harness.Result) string {
 		}
 	}
 	return ""
+}
+
+// g1vAsync waits for p on its own goroutine so a test can check the process
+// has not returned yet.
+func g1vAsync(p *harness.Proc) <-chan harness.Result {
+	done := make(chan harness.Result, 1)
+	go func() { done <- p.Wait() }()
+	return done
 }
 
 func g1vSend(t *testing.T, i *harness.Instance, sid, text string) {
@@ -176,9 +184,16 @@ func TestSessionWaitReturnsExcerptAtTurnEnd(t *testing.T) {
 	g1vSend(t, i, sid, text)
 	hold := g1vReading(t, opened)
 
-	p := i.StartCLI(harness.CLIOpts{}, "session", "wait", "--id", sid, "--json")
+	done := g1vAsync(i.StartCLI(harness.CLIOpts{}, "session", "wait", "--id", sid, "--json"))
+	// The agent is reading the fifo, so the turn cannot have ended: wait must
+	// still be blocking. The release comes after this check.
+	select {
+	case res := <-done:
+		t.Fatalf("wait returned (exit %d) while the turn was still held: %s", res.Code, res.Stdout)
+	default:
+	}
 	_ = hold.Close()
-	res := p.Wait()
+	res := <-done
 	var w g1vWait
 	res.JSON(t, &w)
 	if res.Code != 0 || w.State != "idle" || w.SessionID != sid || !strings.Contains(w.Excerpt, "exit:") {
@@ -230,8 +245,8 @@ func TestSessionWaitAgentDied(t *testing.T) {
 	b367Next(t, ws, sid, "process_exited", "")
 
 	res, w := g1vWaitFor(t, i, sid)
-	if res.Code != 1 || w.State != "errored" || w.Exit == nil {
-		t.Fatalf("wait after the agent died exited %d with %+v, want 1, errored and an exit", res.Code, w)
+	if res.Code != 1 || w.State != "errored" || w.Exit == nil || w.Exit.Code == 0 || w.Exit.Stderr == nil {
+		t.Fatalf("wait after the agent died exited %d with %+v, want 1, errored and an exit with a non-zero code and a stderr list", res.Code, w)
 	}
 }
 
