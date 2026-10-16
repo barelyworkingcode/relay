@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -33,11 +34,27 @@ func (r *g11dRig) restart(t *testing.T) {
 
 // restartHostDown restarts relay while the host is unreachable, so the startup
 // check cannot read the run record, and brings the host back once relay is up.
-func (r *g11dRig) restartHostDown(t *testing.T) {
+// The stub logs each call before it acts, so a logged call that names the
+// session's run directory after the restart began is the startup check; SSHUp
+// waits for it, which makes the check fail rather than race the host's return.
+func (r *g11dRig) restartHostDown(t *testing.T, sid string) {
 	t.Helper()
 	r.i.Stop()
 	r.i.SSHDown(g11dTarget)
+	seen := len(r.i.SSHCalls())
 	r.restart(t)
+	g11dUntil(t, "the startup check of the session's run directory to reach the host", func() bool {
+		calls := r.i.SSHCalls()
+		if len(calls) < seen {
+			return false
+		}
+		for _, c := range calls[seen:] {
+			if strings.Contains(c.Remote, sid) || strings.Contains(c.Script(), sid) {
+				return true
+			}
+		}
+		return false
+	})
 	r.i.SSHUp(g11dTarget)
 }
 
@@ -203,7 +220,7 @@ func TestDetachedResumeReattachesNoSecondAgent(t *testing.T) {
 	run := r.run(t, sid, "g1")
 	g1sSendText(t, i, sid, "hi", "echo: hi")
 
-	r.restartHostDown(t)
+	r.restartHostDown(t, sid)
 	if !g11dAlive(run.PID) {
 		t.Fatalf("agent pid %d did not outlive the relay restart", run.PID)
 	}
@@ -479,7 +496,7 @@ func TestDetachedProjectDeleteAfterHostDownRestartEndsAgent(t *testing.T) {
 	run := r.run(t, sid, "g1")
 	g1sSendText(t, i, sid, "hi", "echo: hi")
 
-	r.restartHostDown(t)
+	r.restartHostDown(t, sid)
 	g1sSendText(t, i, sid, "after the restart", "echo: after the restart")
 	if after := r.run(t, sid, "g1"); after.PID != run.PID || !g11dAlive(run.PID) {
 		t.Fatalf("run.json went from %+v to %+v, or the agent stopped", run, after)
@@ -489,4 +506,85 @@ func TestDetachedProjectDeleteAfterHostDownRestartEndsAgent(t *testing.T) {
 	g11dUntil(t, "the removed project's agent and group to end", func() bool {
 		return !g11dAlive(run.PID) && g11dGroupGone(run.PGID)
 	})
+}
+
+// Removing the project right after a host-down restart, with no message first,
+// still finds the session and ends its agent and group.
+func TestDetachedProjectRemoveAfterHostDownRestartNoMessageEndsAgent(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	i := r.i
+	sid := r.startSession(t, "")
+	run := r.run(t, sid, "g1")
+	g1sSendText(t, i, sid, "hi", "echo: hi")
+
+	r.restartHostDown(t, sid)
+	i.MustCLI("project", "remove", "--id", r.projectID, "--json")
+	g11dUntil(t, "the removed project's agent and group to end", func() bool {
+		return !g11dAlive(run.PID) && g11dGroupGone(run.PGID)
+	})
+}
+
+// A prompt that was answered and whose turn ended is not raised again by a
+// later restart, and the host's input still holds the one answer.
+func TestDetachedAnsweredPromptNotRaisedAgain(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	i := r.i
+	sid := r.startSession(t, "")
+	r.run(t, sid, "g1")
+
+	ws := i.WebSocket("/ws", i.Credential("mounter"))
+	ws.Send(map[string]any{"type": "join_session", "sessionId": sid})
+	g1vSend(t, i, sid, "!ask Write")
+	var ask g11rPermission
+	for n := 0; ask.PermissionID == ""; n++ {
+		if n == 4*g1tFrameLimit {
+			t.Fatalf("no permission_request for %s in %d frames", sid, n)
+		}
+		var f g11rPermission
+		if err := json.Unmarshal(ws.Next(g1tFrameDeadline), &f); err != nil {
+			t.Fatalf("decoding a frame: %v", err)
+		}
+		if f.Type == "permission_request" && f.SessionID == sid {
+			ask = f
+		}
+	}
+	ws.Send(map[string]any{"type": "permission_response", "permissionId": ask.PermissionID, "approved": true})
+	b367Next(t, ws, sid, "session_state", "idle")
+	ws.Close()
+
+	r.restart(t)
+	again := i.WebSocket("/ws", i.Credential("mounter"))
+	defer again.Close()
+	again.Send(map[string]any{"type": "join_session", "sessionId": sid})
+	// The fence: a message sent after the join ends in a message_complete, so
+	// every frame the join produced came before it.
+	g1vSend(t, i, sid, "fence")
+	for n := 0; ; n++ {
+		if n == 4*g1tFrameLimit {
+			t.Fatalf("no message_complete for %s in %d frames after the join", sid, n)
+		}
+		var f g11rPermission
+		raw := again.Next(g1tFrameDeadline)
+		if err := json.Unmarshal(raw, &f); err != nil {
+			t.Fatalf("decoding a frame: %v", err)
+		}
+		if f.SessionID != sid {
+			continue
+		}
+		if f.Type == "permission_request" {
+			t.Fatalf("a viewer joined after the restart got a permission_request for an answered prompt: %s", raw)
+		}
+		if f.Type == "message_complete" {
+			break
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(r.agentsDir(sid), "g1", "in.jsonl"))
+	if err != nil {
+		t.Fatalf("reading in.jsonl: %v", err)
+	}
+	if n := bytes.Count(raw, []byte(`"type":"control_response"`)); n != 1 {
+		t.Fatalf("in.jsonl holds %d control_response lines, want 1\n%s", n, raw)
+	}
 }
