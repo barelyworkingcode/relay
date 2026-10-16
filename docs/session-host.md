@@ -798,7 +798,8 @@ zero ends the wait with state `timeout` on the manager's clock; the turn keeps
 running. A session with no agent state answers `ErrNotTracked`.
 
 A send that fails because the host link stayed down signals `SendAborted`
-(`running` back to the state before the send, with its exit detail; no `turn_done`) instead of `TurnFailed`, and removes the
+(`running` or `stalled` back to the state before the send, with its exit
+detail; no `turn_done`) instead of `TurnFailed`, and removes the
 message it had added to the history. A send that ends `send_unknown` signals
 nothing: the line may have landed, so the agent's own events settle the state.
 

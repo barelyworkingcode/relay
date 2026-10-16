@@ -100,7 +100,7 @@ func (b *Board) Exited(sessionID string, x *Exit) {
 }
 
 // AbortSend undoes the TurnStarted of a message that never reached the agent:
-// a session still running returns to prev, the state it had before the send,
+// a session still running or stalled returns to prev, the state it had before the send,
 // with its exit detail. No turn ran, so no turn_done follows.
 func (b *Board) AbortSend(sessionID string, prev Attention) {
 	e := b.lookup(sessionID, false)
