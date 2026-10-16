@@ -128,6 +128,11 @@ type Gate interface {
 
 type Clock interface{ Now() time.Time }
 
+// ClockWatcher is an optional Clock capability: fn runs after every change to
+// the clock, before the change request is answered. A domain that expires
+// something on the clock type-asserts for it.
+type ClockWatcher interface{ Watch(fn func(now time.Time)) }
+
 var (
 	ErrPresenceRefused = errors.New("presence was refused")
 	ErrPresenceTimeout = errors.New("presence timed out")
