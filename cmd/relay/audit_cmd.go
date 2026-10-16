@@ -194,6 +194,20 @@ func auditDetail(ev audit.AuditEvent) string {
 }
 
 func auditBaseDetail(ev audit.AuditEvent) string {
+	detail := auditPlainDetail(ev)
+	if ev.Event != audit.AuditEventSessionLaunch && ev.Event != audit.AuditEventSessionResume {
+		return detail
+	}
+	var args struct {
+		GrantWarnings []string `json:"grant_warnings"`
+	}
+	if json.Unmarshal(ev.Args, &args) != nil || len(args.GrantWarnings) == 0 {
+		return detail
+	}
+	return "GRANT BREADTH: " + collapseWhitespace(strings.Join(args.GrantWarnings, "; ")) + "  " + detail
+}
+
+func auditPlainDetail(ev audit.AuditEvent) string {
 	// A supervision record (ADR-012) names no tool and carries no arguments:
 	// the transition itself is the detail.
 	if ev.Supervision != "" {

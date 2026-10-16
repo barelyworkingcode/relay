@@ -536,6 +536,28 @@ func driveDropInLeg(ctx context.Context, e env, launch, run, projectID, name, ma
 		}
 		l.Delete = frontendDo(cleanup, e, run, http.MethodDelete, "/api/sessions/"+id, nil)
 		l.Frames = log.snapshot()
+		if l.TerminalID != "" {
+			journey, ps := dropInID, func(c context.Context) (string, bool) {
+				out, err := exec.CommandContext(c, "ps", "-axwwo", "command").Output()
+				return string(out), err == nil
+			}
+			if hostDoor {
+				journey, ps = dropInHostID, func(c context.Context) (string, bool) {
+					out, errText := hostProcessTable(c)
+					return string(out), errText == ""
+				}
+			}
+			removeTranscript(journey, l.ClaudeID, "verify-"+e.Nonce+"-", hostDoor, func(c context.Context) string {
+				table, ok := ps(c)
+				switch {
+				case !ok:
+					return "process table unreadable"
+				case resumeLaunched(table, l.ClaudeID):
+					return "process still running"
+				}
+				return ""
+			})
+		}
 	}()
 
 	_ = wsSend(conn, map[string]string{"type": "join_session", "sessionId": id})

@@ -201,7 +201,7 @@ var dialogNegSpecs = []negSpec{
 			return negState{Subject: target}, result{}, true
 		},
 		expect: func(_ env, st negState) string {
-			return "revoke the Eve passkey " + st.Subject[:min(12, len(st.Subject))]
+			return "revoke the Home|Work passkey " + st.Subject[:min(12, len(st.Subject))]
 		},
 		line: func(e env, st negState) string { return relayLine(e, "eve", "revoke", "--id", st.Subject) },
 		effect: func(ctx context.Context, e env, st negState) (string, error) {

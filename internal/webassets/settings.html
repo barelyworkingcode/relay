@@ -4528,7 +4528,7 @@ window.__RELAY_INIT__ = {
     if (state.editingTemplateId) return renderTemplateForm();
     let html = '<div class="page-header"><h2>Templates</h2>';
     html += '<button class="btn btn-primary" onclick="newTemplate()">+ Add template</button></div>';
-    html += `<p class="page-intro">Launch configs for project terminals: argv, env passthrough and the sandbox/model-key defaults a session inherits unless a project's own Shell Templates override them.</p>`;
+    html += '<p class="page-intro">Launch configs for project terminals and agent sessions: argv, env passthrough, sandbox folders and the model key.</p>';
     if (state.templateError) html += '<div class="proj-error">' + esc(state.templateError) + "</div>";
     if ((state.templates || []).length === 0) {
       html += '<div class="empty-state">No templates.</div>';
@@ -4539,7 +4539,6 @@ window.__RELAY_INIT__ = {
       html += '<div class="proj-card-header">';
       html += '<div style="display:flex;align-items:center;gap:8px">';
       html += '<span class="proj-card-name">' + esc(t.name) + "</span>";
-      if (t.builtIn) html += '<span class="pill muted">built-in</span>';
       if (t.sandbox !== false) html += '<span class="pill ok">sandboxed</span>';
       if (t.model_key) html += '<span class="pill ok">model key</span>';
       html += "</div>";
