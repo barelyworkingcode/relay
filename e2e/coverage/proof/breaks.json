@@ -145,5 +145,12 @@
     "find": "if strings.EqualFold(e.Name, name) {\n\t\t\treturn agentRule(\"name_taken\", fmt.Sprintf(\"%q is already an agent",
     "replace": "if false && strings.EqualFold(e.Name, name) {\n\t\t\treturn agentRule(\"name_taken\", fmt.Sprintf(\"%q is already an agent",
     "why": "two agents in one project may share a name"
+  },
+  {
+    "area": "remote",
+    "file": "cmd/relay/remote_reconcile.go",
+    "find": "\tw.server.StopAccepting()\n\tif reason == windowClosedLodged {\n\t\tif sup.lodging == nil {\n\t\t\tsup.lodging = map[*EnrolmentRequestServer]struct{}{}\n\t\t}\n\t\tsup.lodging[w.server] = struct{}{}\n\t\tsup.run(func() {\n\t\t\tw.server.CloseWhenIdle()\n\t\t\tsup.mu.Lock()\n\t\t\tdelete(sup.lodging, w.server)\n\t\t\tsup.mu.Unlock()\n\t\t})\n\t} else {\n\t\tsup.run(w.server.Close)\n\t}\n\tlogging.BeginEvent",
+    "replace": "\tif reason == windowClosedLodged {\n\t\tif sup.lodging == nil {\n\t\t\tsup.lodging = map[*EnrolmentRequestServer]struct{}{}\n\t\t}\n\t\tsup.lodging[w.server] = struct{}{}\n\t\tsup.run(func() {\n\t\t\tw.server.CloseWhenIdle()\n\t\t\tsup.mu.Lock()\n\t\t\tdelete(sup.lodging, w.server)\n\t\t\tsup.mu.Unlock()\n\t\t})\n\t}\n\tlogging.BeginEvent",
+    "why": "closing an enrolment window that took no request leaves its port accepting connections"
   }
 ]
