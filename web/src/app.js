@@ -54,9 +54,9 @@ const ENROLMENT_BUDGET_DEFAULTS_INIT = window.__RELAY_INIT__.enrolmentBudgetDefa
 const PASSKEYS_INIT = window.__RELAY_INIT__.passkeys || [];
 const LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
 const EVE_PASSKEYS_INIT = window.__RELAY_INIT__.evePasskeys || [];
-// A bootstrap code minted by the tray's "Show Login Code..." item, seeded into
-// the first paint because the window it is meant for did not exist when the
-// code was minted. Null on every ordinary open, and never persisted anywhere:
+// A bootstrap code minted for the Allow Enrolment sheet, seeded into the first
+// paint because the window it is meant for did not exist when the code was
+// minted. Null on every ordinary open, and never persisted anywhere:
 // it lives in this page for two minutes and is not recoverable afterwards.
 const LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
 // The page the tray wants this window to open on. Seeded into the first paint
@@ -240,6 +240,10 @@ let state = {
     passkeys: PASSKEYS_INIT,
     loginSessions: LOGIN_SESSIONS_INIT,
     loginCode: LOGIN_CODE_INIT,
+    // The Allow Enrolment sheet: null when closed, else {target, profileId,
+    // busy, error, opened}. It is an overlay with its own container, so a page
+    // repaint never wipes it.
+    allowEnrol: null,
     passkeyError: null,
     passkeyRevoked: null,                   // {name, short} shown after a revoke
     loginSignedOut: null,                   // credential name shown after a sign-out
@@ -6019,7 +6023,7 @@ window.onEnrolmentRequestsChanged = function(list) {
 
 // The one place the tray item's name is written in the page. Whatever an
 // operator with no passkeys is told to click has to match the menu exactly.
-const LOGIN_CODE_MENU_ITEM = 'Show Login Code...';
+const ALLOW_ENROLMENT_MENU_ITEM = 'Allow Enrolment…';
 
 function pkSignCountText(p) {
     if (!p.counter_supported) return 'This authenticator does not count signatures — the ordinary case for a synced passkey, and not a fault.';
@@ -6037,7 +6041,7 @@ function renderLoginCodeBanner(c) {
     if (c.error) {
         html += '<strong>Could not mint a login code.</strong>';
         html += '<div class="pk-code-line">' + esc(c.error) + '</div>';
-        html += '<div class="pk-code-line">Nothing was changed. Try the tray item again, or run <code>relay login enrol</code> in a terminal — it writes through the same store and will report the same failure with more detail.</div>';
+        html += '<div class="pk-code-line">Nothing was changed. Try ' + esc(ALLOW_ENROLMENT_MENU_ITEM) + ' again, or run <code>relay login enrol</code> in a terminal — it writes through the same store and will report the same failure with more detail.</div>';
         html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="dismissLoginCode()">Done</button></div>';
         html += '</div>';
         return html;
@@ -6063,7 +6067,6 @@ function renderPasskeys() {
     html += '<button class="btn" onclick="refreshPasskeys()">Refresh</button></div>';
     html += '<p class="page-intro">Three lists: the passkeys that sign a browser in to relay, the ones that sign it in to Home|Work, and the browsers signed in now.</p>';
 
-    if (state.loginCode) html += renderLoginCodeBanner(state.loginCode);
     if (state.passkeyError) html += '<div class="proj-error">' + esc(state.passkeyError) + '</div>';
     if (state.passkeyRevoked) {
         html += '<div class="audit-note">Revoked passkey <strong>' + esc(state.passkeyRevoked.name || state.passkeyRevoked.short) + '</strong>. It can no longer complete a login. Any browser it already signed in keeps its session below until you end it or it expires.</div>';
@@ -6078,7 +6081,7 @@ function renderPasskeys() {
     const list = state.passkeys || [];
     if (!list.length) {
         html += '<div class="empty-state">No relay passkeys yet.<br>'
-            + 'To add one, choose <strong>' + esc(LOGIN_CODE_MENU_ITEM) + '</strong> in the Relay tray menu or run <code>relay login enrol</code>.</div>';
+            + 'To add one, choose <strong>' + esc(ALLOW_ENROLMENT_MENU_ITEM) + '</strong> &gt; <strong>Relay sign-in</strong> in the Relay tray menu or run <code>relay login enrol</code>.</div>';
     }
     for (const p of list) {
         html += '<div class="pk-card">';
@@ -6175,7 +6178,139 @@ function copyLoginCode() {
 
 function dismissLoginCode() {
     state.loginCode = null;
-    render();
+    closeAllowEnrolmentSheet();
+}
+
+// ---------------------------------------------------------------------------
+// Allow Enrolment sheet
+// ---------------------------------------------------------------------------
+//
+// One sheet for the three ways in: a Home|Work browser, a relay sign-in code and
+// an access profile. Each target asks for its own presence confirmation in the
+// tray process when Open is pressed, so nothing here grants anything. Controls
+// are native radios, a select and buttons so the screen reads the same to
+// Accessibility as to the eye.
+
+function allowEnrolProfiles() {
+    return (state.projects || []).filter(isRemoteProject);
+}
+
+// allowEnrolProfileBlock is why the access-profile target cannot be chosen, or
+// '' when it can. The no-profile reason comes first: turning the listener on
+// is no use without a profile to open a window for.
+function allowEnrolProfileBlock() {
+    if (!allowEnrolProfiles().length) return 'Create an access profile first';
+    if (!(state.remote && state.remote.enabled)) return 'Turn on the remote listener first';
+    return '';
+}
+
+function openAllowEnrolmentSheet() {
+    if (!state.allowEnrol) {
+        state.allowEnrol = { target: 'home_work', profileId: '', busy: false, error: null, opened: null };
+    }
+    renderAllowEnrolmentSheet();
+}
+
+function closeAllowEnrolmentSheet() {
+    state.allowEnrol = null;
+    renderAllowEnrolmentSheet();
+}
+
+function setAllowEnrolTarget(target) {
+    if (!state.allowEnrol) return;
+    state.allowEnrol.target = target;
+    state.allowEnrol.error = null;
+    renderAllowEnrolmentSheet();
+}
+
+function setAllowEnrolProfile(id) {
+    if (state.allowEnrol) state.allowEnrol.profileId = id;
+}
+
+function submitAllowEnrolment() {
+    const a = state.allowEnrol;
+    if (!a || a.busy) return;
+    const msg = { type: 'open_enrolment_window', target: a.target };
+    if (a.target === 'profile') {
+        const sel = document.getElementById('allowEnrolProfile');
+        a.profileId = sel ? sel.value : a.profileId;
+        if (!a.profileId) { a.error = 'Choose an access profile.'; renderAllowEnrolmentSheet(); return; }
+        msg.profile_id = a.profileId;
+    }
+    a.busy = true;
+    a.error = null;
+    renderAllowEnrolmentSheet();
+    ipc(JSON.stringify(msg));
+}
+
+function allowEnrolOpenedText(v) {
+    let until = v.expires || '';
+    const at = new Date(v.expires);
+    if (!isNaN(at.getTime())) until = at.toLocaleTimeString();
+    if (v.target === 'profile') {
+        return 'Enrolment is open for the access profile <strong>' + esc(v.profile_name || v.profile_id || '') + '</strong> until '
+            + esc(until) + '. One request is taken. On the remote machine run <code>relayremote register NAME --host &lt;this Mac\'s address&gt;</code>.';
+    }
+    return 'Enrolment is open for a Home|Work browser until ' + esc(until) + '. One browser can register a passkey.';
+}
+
+function renderAllowEnrolmentSheet() {
+    let el = document.getElementById('allowEnrolmentSheet');
+    const a = state.allowEnrol;
+    if (!a) {
+        if (el) el.remove();
+        return;
+    }
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'allowEnrolmentSheet';
+        document.body.appendChild(el);
+    }
+    const block = allowEnrolProfileBlock();
+    const profiles = allowEnrolProfiles();
+    let html = '<div role="dialog" aria-modal="true" aria-label="Allow Enrolment" style="position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.35)">';
+    html += '<div style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:20px;width:460px;max-width:92%;max-height:90%;overflow:auto">';
+    html += '<h2 style="margin-bottom:6px">Allow Enrolment</h2>';
+
+    if (state.loginCode && !a.opened) {
+        html += renderLoginCodeBanner(state.loginCode);
+        html += '</div></div>';
+        el.innerHTML = html;
+        return;
+    }
+    if (a.opened) {
+        html += '<p class="proj-section-help">' + allowEnrolOpenedText(a.opened) + '</p>';
+        html += '<p class="proj-section-help">Choose <strong>Cancel Enrolment</strong> in the Relay tray menu to close it early.</p>';
+        html += '<div style="margin-top:12px"><button class="btn btn-primary" onclick="closeAllowEnrolmentSheet()">Done</button></div>';
+        html += '</div></div>';
+        el.innerHTML = html;
+        return;
+    }
+
+    html += '<p class="proj-section-help">Let one new browser or machine in. You confirm with your password or Touch ID first.</p>';
+    if (a.error) html += '<div class="proj-error">' + esc(a.error) + '</div>';
+    const row = function(value, label, help, disabled) {
+        return '<div style="margin:10px 0"><label style="display:flex;gap:8px;align-items:flex-start">'
+            + '<input type="radio" name="allowEnrolTarget" value="' + value + '"' + (a.target === value ? ' checked' : '') + (disabled ? ' disabled' : '')
+            + ' onchange="setAllowEnrolTarget(this.value)" style="margin-top:3px">'
+            + '<span><strong>' + esc(label) + '</strong><br><span class="proj-section-help">' + help + '</span></span></label></div>';
+    };
+    html += row('home_work', 'Home|Work browser', 'Opens a five-minute window for one browser to register a Home|Work passkey.', false);
+    html += row('relay_login', 'Relay sign-in', 'Shows a one-time code, valid for two minutes, that registers a passkey with relay.', false);
+    html += row('profile', 'Access profile', block ? esc(block) : 'Opens a five-minute window for one remote machine to ask to enrol into a profile.', !!block);
+    if (!block && a.target === 'profile') {
+        html += '<div style="margin:0 0 10px 24px"><select id="allowEnrolProfile" aria-label="Access profile" onchange="setAllowEnrolProfile(this.value)">';
+        html += '<option value="">Choose an access profile</option>';
+        for (const p of profiles) {
+            html += '<option value="' + esc(p.id) + '"' + (a.profileId === p.id ? ' selected' : '') + '>' + esc(p.name || p.id) + '</option>';
+        }
+        html += '</select></div>';
+    }
+    html += '<div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">';
+    html += '<button class="btn" onclick="closeAllowEnrolmentSheet()">Close</button>';
+    html += '<button class="btn btn-primary" onclick="submitAllowEnrolment()"' + (a.busy ? ' disabled' : '') + '>Open</button>';
+    html += '</div></div></div>';
+    el.innerHTML = html;
 }
 
 // revokePasskey names what survives the act as well as what it cuts. "Are you
@@ -6268,7 +6403,32 @@ window.onPasskeyError = function(msg) {
 window.onLoginCodeMinted = function(code) {
     state.loginCode = code || null;
     state.passkeyError = null;
-    showPage('passkeys');
+    if (!state.allowEnrol) state.allowEnrol = { target: 'relay_login', profileId: '', busy: false, error: null, opened: null };
+    state.allowEnrol.busy = false;
+    state.allowEnrol.opened = null;
+    renderAllowEnrolmentSheet();
+};
+
+// The Allow Enrolment sheet's answers. A refusal or failure leaves the sheet up
+// with the reason, so the operator can choose again without reopening it.
+window.onEnrolmentWindowOpened = function(view) {
+    if (!state.allowEnrol) return;
+    state.allowEnrol.busy = false;
+    state.allowEnrol.opened = view || null;
+    renderAllowEnrolmentSheet();
+};
+
+window.onEnrolmentWindowError = function(e) {
+    if (!state.allowEnrol) return;
+    state.allowEnrol.busy = false;
+    state.allowEnrol.error = (e && e.error) || 'The enrolment window could not be opened.';
+    renderAllowEnrolmentSheet();
+};
+
+window.onEnrolmentWindowsClosed = function(r) {
+    if ((r && r.closed || []).indexOf('relay_login') >= 0) state.loginCode = null;
+    if (state.allowEnrol) state.allowEnrol.opened = null;
+    renderAllowEnrolmentSheet();
 };
 
 // Service Inspector — generic renderer driven by each service's manifest
@@ -7768,8 +7928,15 @@ window.onServiceActionResult = function(result) {
 // tray-selected page does the same for a pending enrolment request, and loses
 // to the code: the code is unrecoverable once this window closes and the
 // request is not.
-if (LOGIN_CODE_INIT) showPage('passkeys');
-else showPage(INITIAL_PAGE || 'overview');
+if (LOGIN_CODE_INIT) {
+    showPage('passkeys');
+    openAllowEnrolmentSheet();
+} else if (INITIAL_PAGE === 'allow-enrolment') {
+    showPage('overview');
+    openAllowEnrolmentSheet();
+} else {
+    showPage(INITIAL_PAGE || 'overview');
+}
 
 const sidebarVersionEl = document.getElementById('sidebarVersion');
 if (sidebarVersionEl) sidebarVersionEl.textContent = 'relay ' + VERSION_INIT;
@@ -7781,6 +7948,7 @@ if (sidebarVersionEl) sidebarVersionEl.textContent = 'relay ' + VERSION_INIT;
 Object.assign(window, {
     renderOverview, renderOverviewTiles, renderOverviewAttention, renderOverviewRecentToolCalls, renderOverviewFooter, overviewAttentionRows, serviceCounts, mcpHealthCounts, projectCounts, hostCounts, remoteTileValue, auditTile, pendingEnrolmentCount, revealConfigDir, revealLogsDir, revealServiceLog,
     auditBaseDetail, auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditScopeBreadthText, auditScopeText, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditShowAllowedControl, toggleAuditRow,
+    openAllowEnrolmentSheet, closeAllowEnrolmentSheet, renderAllowEnrolmentSheet, setAllowEnrolTarget, setAllowEnrolProfile, submitAllowEnrolment,
     copyLoginCode, dismissLoginCode, pkSignCountText, refreshPasskeys, renderLoginCodeBanner, renderLoginSessions, renderPasskeys, revokePasskey, signOutLogin, renderEvePasskeys, revokeEvePasskey,
     approveEnrolmentRequestForm, cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, listEnrolmentRequests, newEnrolment, refuseEnrolmentRequest, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderPendingEnrolmentRequests, renderPendingRequestFields, renderRemoteListener, renderRequestComparison, enrolRequestApprovable, toggleEnrolNoGrant, captureEnrolFormInputs, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueIsAsserted, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
