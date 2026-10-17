@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -309,13 +310,16 @@ func (p *persona) enumerate(params json.RawMessage) (json.RawMessage, *jsonrpc.E
 }
 
 type mailArgs struct {
-	ID                string `json:"id"`
-	Account           string `json:"account"`
-	Mailbox           string `json:"mailbox"`
-	Query             string `json:"query"`
-	Limit             int    `json:"limit"`
-	IncludeRecipients bool   `json:"include_recipients"`
-	IncludeBody       bool   `json:"include_body"`
+	MessageID        json.RawMessage `json:"message_id"`
+	Account          string          `json:"account"`
+	Mailbox          string          `json:"mailbox"`
+	Query            string          `json:"query"`
+	Limit            int             `json:"limit"`
+	BodyScanLimit    int             `json:"body_scan_limit"`
+	SearchRecipients bool            `json:"search_recipients"`
+	SearchBody       bool            `json:"search_body"`
+	To               json.RawMessage `json:"to"`
+	Subject          *string         `json:"subject"`
 }
 
 func (p *persona) call(params json.RawMessage) json.RawMessage {
@@ -363,27 +367,19 @@ func (p *persona) call(params json.RawMessage) json.RawMessage {
 		}
 		return toolJSON(out)
 	case "mail_get_emails", "mail_search":
-		if req.Name == "mail_search" && strings.TrimSpace(a.Query) == "" {
+		search := req.Name == "mail_search"
+		if search && strings.TrimSpace(a.Query) == "" {
 			return toolText("query is required", true)
+		}
+		if a.Mailbox == "" && !search {
+			a.Mailbox = "INBOX"
 		}
 		if res := p.outOfScope(sc, a); res != nil {
 			return res
 		}
-		return toolJSON(p.summaries(sc, a, req.Name == "mail_search"))
+		return toolJSON(p.scan(sc, a, search))
 	case "mail_get_email":
-		for _, m := range p.messages {
-			if fmt.Sprint(m.ID) != a.ID {
-				continue
-			}
-			if !sc.account(m.Account) || !sc.mailbox(m.Mailbox) {
-				return scopeViolation("message " + a.ID + " is outside this client's scope")
-			}
-			return toolJSON(map[string]any{"id": fmt.Sprint(m.ID), "message_id": m.MessageID, "account": m.Account,
-				"mailbox": m.Mailbox, "subject": m.Subject, "from": m.From, "to": nonNil(m.To), "cc": nonNil(m.Cc),
-				"date": m.Date.Format(time.RFC3339), "read": m.Seen, "flagged": m.Flagged, "body": m.Body,
-				"attachments": []any{}})
-		}
-		return toolText("no message with id "+a.ID, true)
+		return p.getEmail(sc, a)
 	case "mail_send":
 		return p.send(sc, a)
 	}
@@ -394,47 +390,128 @@ func (p *persona) outOfScope(sc scope, a mailArgs) json.RawMessage {
 	switch {
 	case a.Account != "" && !sc.account(a.Account):
 		return scopeViolation("account " + a.Account + " is outside this client's mail_accounts")
-	case a.Mailbox != "" && !sc.mailbox(a.Mailbox):
+	case !isAll(a.Mailbox) && !p.mailboxInScope(sc, a):
 		return scopeViolation("mailbox " + a.Mailbox + " is outside this client's mail_mailboxes")
 	}
 	return nil
 }
 
-func (p *persona) summaries(sc scope, a mailArgs, search bool) []map[string]any {
-	q := strings.ToLower(a.Query)
-	var hits []mailMessage
-	for _, m := range p.messages {
-		switch {
-		case !sc.account(m.Account) || !sc.mailbox(m.Mailbox):
-			continue
-		case a.Account != "" && m.Account != a.Account, a.Mailbox != "" && m.Mailbox != a.Mailbox:
-			continue
-		case search && !matches(m, q, a):
+// excludedBoxes are what a mailbox "all" scan leaves out of every account.
+var excludedBoxes = []string{"Drafts", "Trash", "Junk", "Outbox"}
+
+func isAll(mailbox string) bool { return mailbox == "" || strings.EqualFold(mailbox, "all") }
+
+// scan answers mail_get_emails and mail_search the way macMCP does: an object
+// holding the messages and the scan-coverage fields.
+func (p *persona) scan(sc scope, a mailArgs, search bool) map[string]any {
+	all := isAll(a.Mailbox)
+	var scanned []string
+	var excluded []string
+	var inScan []mailMessage
+	for _, acc := range p.accounts {
+		if !sc.account(acc.Name) || a.Account != "" && acc.Name != a.Account {
 			continue
 		}
-		hits = append(hits, m)
+		for _, box := range acc.Mailboxes {
+			switch {
+			case !sc.mailbox(box):
+				continue
+			case all && slices.Contains(excludedBoxes, box):
+				excluded = append(excluded, acc.Name+":"+box)
+				continue
+			case !all && !strings.EqualFold(box, a.Mailbox):
+				continue
+			}
+			scanned = append(scanned, acc.Name+":"+box)
+			for _, m := range p.messages {
+				if m.Account == acc.Name && m.Mailbox == box {
+					inScan = append(inScan, m)
+				}
+			}
+		}
 	}
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Date.After(hits[j].Date) })
+	sort.Strings(scanned)
+	sort.Strings(excluded)
+	sort.SliceStable(inScan, func(i, j int) bool { return inScan[i].Date.After(inScan[j].Date) })
+
+	hits := inScan
+	out := map[string]any{"messages_scanned": len(inScan), "scan_complete": true,
+		"scanned_mailboxes": nonNil(scanned), "skipped_mailboxes": []string{}}
+	if search {
+		hits = nil
+		var rest []mailMessage
+		q := strings.ToLower(a.Query)
+		for _, m := range inScan {
+			if matches(m, q, a.SearchRecipients) {
+				hits = append(hits, m)
+			} else {
+				rest = append(rest, m)
+			}
+		}
+		if a.SearchBody {
+			limit := a.BodyScanLimit
+			if limit <= 0 {
+				limit = 25
+			}
+			limit = min(limit, 200)
+			read := rest[:min(limit, len(rest))]
+			bodyHits := 0
+			for _, m := range read {
+				if strings.Contains(strings.ToLower(m.Body), q) {
+					hits = append(hits, m)
+					bodyHits++
+				}
+			}
+			bs := map[string]any{"bodies_read": len(read), "body_matches": bodyHits, "body_scan_complete": len(read) == len(rest),
+				"body_scan_limit": limit}
+			if short := limit - len(read); short > 0 {
+				bs["body_scan_shortfall"] = short
+				bs["body_scan_shortfall_note"] = fmt.Sprintf("There was room to read %d message body(ies) and only %d message(s) to read them from.", limit, len(read))
+			}
+			out["body_search"] = bs
+			sort.SliceStable(hits, func(i, j int) bool { return hits[i].Date.After(hits[j].Date) })
+		}
+		out["total_matches"] = len(hits)
+		if all {
+			out["excluded_mailboxes"] = nonNil(excluded)
+		}
+	} else {
+		out["total_messages"] = len(hits)
+		if all {
+			out["excluded_mailboxes"] = nonNil(excluded)
+		}
+	}
 	limit := a.Limit
 	if limit <= 0 {
-		limit = 20
+		limit = 10
 	}
-	out := []map[string]any{}
+	out["truncated"] = len(hits) > limit
+	msgs := []map[string]any{}
 	for _, m := range hits[:min(limit, len(hits))] {
-		out = append(out, map[string]any{"id": fmt.Sprint(m.ID), "account": m.Account, "mailbox": m.Mailbox,
-			"subject": m.Subject, "from": m.From, "date": m.Date.Format(time.RFC3339), "read": m.Seen, "flagged": m.Flagged})
+		msgs = append(msgs, map[string]any{"id": fmt.Sprint(m.ID), "account": m.Account, "mailbox": m.Mailbox,
+			"subject": m.Subject, "sender": m.From, "date_received": jsDate(m.Date), "read": m.Seen})
 	}
+	out["messages"] = msgs
 	return out
 }
 
-func matches(m mailMessage, q string, a mailArgs) bool {
+// jsDate renders a time the way macMCP reports Mail's dates (a JavaScript
+// Date string).
+func jsDate(t time.Time) string {
+	zone := map[string]string{"PDT": "Pacific Daylight Time", "PST": "Pacific Standard Time", "UTC": "Coordinated Universal Time"}
+	abbr, _ := t.Zone()
+	name := abbr
+	if n, ok := zone[abbr]; ok {
+		name = n
+	}
+	return t.Format("Mon Jan 02 2006 15:04:05 GMT-0700") + " (" + name + ")"
+}
+
+func matches(m mailMessage, q string, recipients bool) bool {
 	fields := []string{m.Subject, m.From}
-	if a.IncludeRecipients {
+	if recipients {
 		fields = append(fields, m.To...)
 		fields = append(fields, m.Cc...)
-	}
-	if a.IncludeBody {
-		fields = append(fields, m.Body)
 	}
 	for _, f := range fields {
 		if strings.Contains(strings.ToLower(f), q) {
@@ -442,6 +519,53 @@ func matches(m mailMessage, q string, a mailArgs) bool {
 		}
 	}
 	return false
+}
+
+// messageRef reads message_id as macMCP takes it: a number, a numeric string,
+// or an RFC Message-ID with or without its angle brackets.
+func messageRef(raw json.RawMessage) (id int, rfc string, ok bool) {
+	if len(raw) == 0 {
+		return 0, "", false
+	}
+	var n json.Number
+	if json.Unmarshal(raw, &n) == nil {
+		i, err := strconv.Atoi(n.String())
+		return i, "", err == nil
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil || strings.TrimSpace(s) == "" {
+		return 0, "", false
+	}
+	s = strings.TrimSpace(s)
+	if i, err := strconv.Atoi(s); err == nil {
+		return i, "", true
+	}
+	return 0, strings.Trim(s, "<>"), true
+}
+
+func (p *persona) getEmail(sc scope, a mailArgs) json.RawMessage {
+	id, rfc, ok := messageRef(a.MessageID)
+	if !ok {
+		return toolText("message_id is required: a numeric id or an RFC Message-ID", true)
+	}
+	label := strings.Trim(string(a.MessageID), `"`)
+	for _, m := range p.messages {
+		if rfc == "" && m.ID != id || rfc != "" && strings.Trim(m.MessageID, "<>") != rfc {
+			continue
+		}
+		if !sc.account(m.Account) || !sc.mailbox(m.Mailbox) {
+			return scopeViolation("message " + label + " is outside this client's scope")
+		}
+		return toolJSON(map[string]any{"id": fmt.Sprint(m.ID), "rfc_message_id": strings.Trim(m.MessageID, "<>"),
+			"account": m.Account, "mailbox": m.Mailbox, "subject": m.Subject, "sender": m.From,
+			"to": nonNil(m.To), "cc": nonNil(m.Cc), "date_received": jsDate(m.Date), "date_sent": jsDate(m.Date),
+			"read": m.Seen, "body": m.Body, "attachments": []any{}, "has_attachments": false,
+			"message_size": len(m.Body), "structure": map[string]any{"depth": 1, "parsed_complete": true, "parts": 1},
+			"fidelity": map[string]any{"complete": true, "bytes_measured": len(m.Body), "message_size": len(m.Body),
+				"ambiguous_nul_bytes": 0, "line_endings": "lf", "complete_basis": "wire+terminated",
+				"note": "The recorded body is complete."}})
+	}
+	return toolText("message not found with id: "+label, true)
 }
 
 // send delivers nothing. Inside the client's scope it answers what the
@@ -457,6 +581,8 @@ func (p *persona) send(sc scope, a mailArgs) json.RawMessage {
 		}
 	}
 	switch {
+	case len(a.To) == 0 || string(a.To) == "null" || a.Subject == nil:
+		return toolText("to and subject are required", true)
 	case account == "":
 		return toolText("no account in scope to send from", true)
 	case !sc.account(account):
@@ -473,4 +599,17 @@ func nonNil(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// mailboxInScope matches a mailbox name case-insensitively, as macMCP does, so
+// "inbox" is the same mailbox as "INBOX" for the scope check.
+func (p *persona) mailboxInScope(sc scope, a mailArgs) bool {
+	for _, acc := range p.accounts {
+		for _, box := range acc.Mailboxes {
+			if strings.EqualFold(box, a.Mailbox) && sc.mailbox(box) {
+				return true
+			}
+		}
+	}
+	return sc.mailbox(a.Mailbox)
 }
