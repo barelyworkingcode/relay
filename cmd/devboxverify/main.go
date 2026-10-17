@@ -170,7 +170,10 @@ func run() int {
 	stackPath := fs.String("stack", "", "a verification stack's stack.json: run the api phase against that stack's relay instance")
 	p, err := parseFlags(fs, os.Args[1:], pr, phaseFlag, epic, stackPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// The flag package has already printed its own errors.
+		if !errors.As(err, new(flagParseError)) {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic REF | --stack FILE [--phase api]]")
 		return 2
 	}
@@ -430,13 +433,16 @@ func fixturesSummary(js []journey) string {
 	return fmt.Sprintf("%d fixtures for %d journeys", len(ids), len(js))
 }
 
+// flagParseError marks an error the flag package already reported.
+type flagParseError struct{ error }
+
 // parseFlags refuses --post with --phase: a PR's evidence covers every
 // journey, so a one-phase run cannot stand for it. --epic is the same, and
 // a PR's evidence is not an epic's. --stack is the api phase only: a stack
 // has no console, no presence helper and no screen of its own.
 func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string, epic *string, stack *string) (phase, error) {
 	if err := fs.Parse(args); err != nil {
-		return "", err
+		return "", flagParseError{err}
 	}
 	if fs.NArg() > 0 {
 		return "", errors.New("unexpected arguments")
