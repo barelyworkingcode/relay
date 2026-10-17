@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -31,7 +30,7 @@ func gatedCLIStream(ctx context.Context, e env, expect string, onLine func(strin
 	}
 	cliCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd := exec.CommandContext(cliCtx, e.RelayBin, args...)
+	cmd := e.relayExec(cliCtx, args...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = 2 * time.Second

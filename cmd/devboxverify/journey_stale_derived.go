@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"slices"
 	"strings"
 )
@@ -49,7 +48,7 @@ func readStaleState(ctx context.Context, e env) (s staleState, recordID string, 
 	if err != nil {
 		return s, "", blocked(staleID, err.Error()), false
 	}
-	table, err := exec.CommandContext(ctx, e.RelayBin, "mcp", "list").Output()
+	table, err := e.relayExec(ctx, "mcp", "list").Output()
 	if err != nil {
 		return s, "", blocked(staleID, "relay mcp list failed"), false
 	}

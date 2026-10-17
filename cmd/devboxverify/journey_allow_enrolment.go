@@ -163,7 +163,7 @@ func stepResult(id string, err error) result {
 // eveOpenEvent reports whether relay logged an ok eve.enrolment.open since
 // the given time.
 func eveOpenEvent(ctx context.Context, e env, since time.Time) (bool, error) {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "logs", "--event", "eve.enrolment.open", "--json").Output()
+	out, err := e.relayExec(ctx, "logs", "--event", "eve.enrolment.open", "--json").Output()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 {
 		return false, nil

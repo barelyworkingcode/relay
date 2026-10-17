@@ -6,6 +6,8 @@ back, audit log included. No mocks. It runs on the devbox, never in CI.
 
 ```bash
 go run ./cmd/devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic REF]
+go run ./cmd/devboxverify [--checkout DIR] --stack STACK.json [--phase api]
+go run ./cmd/devboxverify record-macmcp [--check] [--mcp CMD] [--recording FILE]
 ```
 
 Environment:
@@ -165,6 +167,39 @@ credential, and renews P4 when it is due.
 
 The nightly runs relay `--phase api`, then eve's own run, then relay
 `--phase screen`. The nightly runner owns that order.
+
+### A stack run
+
+`--stack STACK.json` runs the api phase against one verification stack, a
+relay instance devboxWorld's `stack-up` started from its own
+`build.sh --bundle` app on its own config dir and its own clone of the
+world. It is how a story's verification runs while another runs beside it.
+`stack.json` is the file pinned on relay#479:
+`{"slot", "config_dir", "relay_bin", "marker", "eve_url", "eve_data_dir", "head": {"relay", "eve"}}`,
+plus an optional `credential_file`; without one the execute credential is
+`credential` beside `stack.json`.
+
+- The config dir, the relay binary and the machine marker come from the
+  file, never from `RELAY_BIN`, `DEVBOXWORLD_MARKER`,
+  `RELAY_VERIFY_CREDENTIAL_FILE` or the default config dir. Every relay
+  command the harness runs, in its own process or as a line inside a live
+  session, carries `--config-dir <config_dir>`; the harness also exports
+  `RELAY_CONFIG_DIR` and dials every socket and reads every file under that
+  dir.
+- Preflight is `stack` (`slot <slot>`, or FAIL naming what is wrong with the
+  file), `machine`, `pin`, `fixtures`, `session`, `head`, `build` (the
+  stack's binary and its `relay-sessions` built from HEAD, clean tree, and
+  `head.relay`, when set, equal to HEAD) and `app` (the stack's one live
+  frontend socket, served by its binary). There is no `helpers`,
+  `bootstrap` or `world` check, no `repair.sh`, no `reset.sh`, no sweep, no
+  lock and no `WORLD` or `RESET` line.
+- Without `--phase` it runs the api phase. `--phase screen`, `--post` and
+  `--epic` with `--stack` are a usage error, exit 2.
+- Without `--stack` nothing here changes.
+
+The journeys read the world's calendars, reminders, contacts and mail and
+write only their own scratch, under names that carry the run nonce, in the
+stack's own instance. The stack's `macmcp` is the mock below.
 
 Preflight, in order: `machine` (the marker, read on a VM: `vm; world v<N>`),
 `pin` (the marker's world version is relay's), `fixtures` (every fixture the
