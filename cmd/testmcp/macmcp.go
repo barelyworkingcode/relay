@@ -371,7 +371,7 @@ func (p *persona) call(params json.RawMessage) json.RawMessage {
 		if search && strings.TrimSpace(a.Query) == "" {
 			return toolText("query is required", true)
 		}
-		if a.Mailbox == "" && !search {
+		if a.Mailbox == "" && !search && !sc.mediated {
 			a.Mailbox = "INBOX"
 		}
 		if res := p.outOfScope(sc, a); res != nil {
@@ -472,12 +472,12 @@ func (p *persona) scan(sc scope, a mailArgs, search bool) map[string]any {
 			sort.SliceStable(hits, func(i, j int) bool { return hits[i].Date.After(hits[j].Date) })
 		}
 		out["total_matches"] = len(hits)
-		if all {
+		if all && !sc.mediated {
 			out["excluded_mailboxes"] = nonNil(excluded)
 		}
 	} else {
 		out["total_messages"] = len(hits)
-		if all {
+		if all && !sc.mediated {
 			out["excluded_mailboxes"] = nonNil(excluded)
 		}
 	}
