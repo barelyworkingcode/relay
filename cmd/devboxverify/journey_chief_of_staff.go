@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -435,7 +434,7 @@ func driveChiefOfStaff(ctx context.Context, e env, obs, cos *cosConn, run string
 }
 
 func auditJSONRows(ctx context.Context, e env, args ...string) ([]audit.AuditEvent, error) {
-	out, err := exec.CommandContext(ctx, e.RelayBin, append([]string{"audit"}, args...)...).Output()
+	out, err := e.relayExec(ctx, append([]string{"audit"}, args...)...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("relay audit %s failed", args[1])
 	}

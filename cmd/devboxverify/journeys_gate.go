@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -117,7 +116,7 @@ func cliExitFail(id, what string, c cliResult) result {
 
 // relayCmd runs an ungated relay command.
 func relayCmd(ctx context.Context, e env, args ...string) error {
-	out, err := exec.CommandContext(ctx, e.RelayBin, args...).CombinedOutput()
+	out, err := e.relayExec(ctx, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("relay %s: %s", strings.Join(args[:min(2, len(args))], " "), lastLine(string(out)))
 	}
@@ -127,7 +126,7 @@ func relayCmd(ctx context.Context, e env, args ...string) error {
 // issuanceRows answers the newest issuance rows of one event whose text
 // matches grep, oldest first.
 func issuanceRows(ctx context.Context, e env, event, grep string) ([]audit.AuditEvent, error) {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--event", event, "--grep", grep, "--json", "--tail", "50").Output()
+	out, err := e.relayExec(ctx, "audit", "--event", event, "--grep", grep, "--json", "--tail", "50").Output()
 	if err != nil {
 		return nil, fmt.Errorf("relay audit --event %s failed", event)
 	}

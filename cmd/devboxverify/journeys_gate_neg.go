@@ -77,7 +77,7 @@ type negSpec struct {
 
 func relayLine(e env, args ...string) string {
 	quoted := make([]string, len(args)+1)
-	quoted[0] = shellQuote(e.RelayBin)
+	quoted[0] = e.relayShell()
 	for i, a := range args {
 		quoted[i+1] = shellQuote(a)
 	}

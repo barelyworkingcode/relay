@@ -66,6 +66,7 @@ type env struct {
 	RelayBin, ConfigDir, FrontendSocket, WorldRoot, CredentialFile, Nonce string
 	RelayPID                                                              int
 	BinDir                                                                string
+	Stack                                                                 bool
 	World                                                                 worldView
 	Run                                                                   *runState
 }
@@ -166,21 +167,40 @@ func run() int {
 	pr := fs.Int("post", 0, "PR number to post the status and evidence comment to")
 	phaseFlag := fs.String("phase", "", "run only the api or the screen journeys (default: both, api first)")
 	epic := fs.String("epic", "", "epic issue, N or owner/repo#N: full run on an up-to-date main, posts devbox/verify-full and comments on the epic")
-	p, err := parseFlags(fs, os.Args[1:], pr, phaseFlag, epic)
+	stackPath := fs.String("stack", "", "a verification stack's stack.json: run the api phase against that stack's relay instance")
+	p, err := parseFlags(fs, os.Args[1:], pr, phaseFlag, epic, stackPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic REF]")
+		// The flag package has already printed its own errors.
+		if !errors.As(err, new(flagParseError)) {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic REF | --stack FILE [--phase api]]")
 		return 2
 	}
+	stackMode := *stackPath != ""
 	screen := p == "" || p == phaseScreen
 	selected := selectJourneys(journeys, p)
 
-	// Deliberate: machine, pin and fixtures run before anything else, so a
-	// host that is not a bootstrapped VM gets no lock, script or network call.
+	// Deliberate: the stack check comes first because it names the marker the
+	// machine check reads; machine, pin and fixtures then run before any lock,
+	// script or network call, so a host that is not a bootstrapped VM gets none.
 	var marker worldMarker
 	var wd world
+	var stack stackFile
+	markerFile := markerPath()
 	worldChecks := []preflightCheck{
+		{"stack", func() (string, error) {
+			if stack, err = readStack(*stackPath); err != nil {
+				return "", err
+			}
+			markerFile = stack.Marker
+			return "slot " + stack.Slot, nil
+		}},
 		{"machine", func() (string, error) {
-			marker, err = readMarker(markerPath(), vmCheck)
+			marker, err = readMarker(markerFile, vmCheck)
+			if stackMode && err != nil && err.Error() == markerAbsent {
+				err = errors.New("not a test machine: the stack's marker (stack.json marker field) does not exist")
+			}
 			return fmt.Sprintf("vm; world v%d", marker.WorldVersion), err
 		}},
 		{"pin", func() (string, error) {
@@ -198,6 +218,9 @@ func run() int {
 			}
 			return fixturesSummary(selected), nil
 		}},
+	}
+	if !stackMode {
+		worldChecks = worldChecks[1:]
 	}
 	if !runPreflight(worldChecks) {
 		return 2
@@ -220,6 +243,14 @@ func run() int {
 		CredentialFile: envOr("RELAY_VERIFY_CREDENTIAL_FILE", filepath.Join(home, ".config", "relay-verify", "credential")),
 		BinDir:         filepath.Dir(presenceBinPath()),
 		Run:            &runState{},
+	}
+	if stackMode {
+		e.RelayBin, e.ConfigDir, e.CredentialFile, e.Stack = stack.RelayBin, stack.ConfigDir, stack.CredentialFile, true
+		// Deliberate: besides the --config-dir every relay call carries, the
+		// environment and the bridge default name the stack too, so nothing
+		// this process or a child starts can fall back to the installed tray.
+		_ = os.Setenv(bridge.EnvConfigDir, stack.ConfigDir)
+		bridge.SetConfigDir(stack.ConfigDir)
 	}
 	var releaseLock func()
 	defer func() {
@@ -256,10 +287,13 @@ func run() int {
 					return "", fmt.Errorf("%s: %w", name, err)
 				}
 			}
+			if stackMode && stack.Head.Relay != "" && stack.Head.Relay != head {
+				return "", fmt.Errorf("stack.json names relay head %.12s, not HEAD %.12s", stack.Head.Relay, head)
+			}
 			return "app built from HEAD, clean tree", nil
 		}},
 		{"app", func() (string, error) {
-			e.FrontendSocket, e.RelayPID, err = findApp(e.ConfigDir, e.RelayBin)
+			e.FrontendSocket, e.RelayPID, err = findApp(e.ConfigDir, e.RelayBin, stackMode)
 			return fmt.Sprintf("pid %d", e.RelayPID), err
 		}},
 		{"helpers", func() (string, error) { return prepareHelpers(e, toolRoot, screen) }},
@@ -298,18 +332,25 @@ func run() int {
 		}},
 	}
 	screenOnly := map[string]bool{"lock": true, "console": true, "password": true, "sweep": true}
+	// A stack shares the world read-only and owns nothing else on the
+	// machine: the presence helper, the shared world's repair and reset, and
+	// every lock belong to the nightly and the installed app.
+	stackSkips := map[string]bool{"helpers": true, "bootstrap": true, "world": true}
 	checks = slices.DeleteFunc(checks, func(c preflightCheck) bool {
-		return c.name == "pr" && *pr == 0 || c.name == "main" && *epic == "" || screenOnly[c.name] && !screen
+		return c.name == "pr" && *pr == 0 || c.name == "main" && *epic == "" || screenOnly[c.name] && !screen ||
+			stackMode && stackSkips[c.name]
 	})
 	if !runPreflight(checks) {
 		return 2
 	}
-	emit("WORLD", fmt.Sprintf("pass=%d", repair.Pass), fmt.Sprintf("fail=%d", repair.Fail))
-	if script(worldCheckout, "reset.sh", nil) != nil {
-		emit("RESET", "FAIL")
-		return 2
+	if !stackMode {
+		emit("WORLD", fmt.Sprintf("pass=%d", repair.Pass), fmt.Sprintf("fail=%d", repair.Fail))
+		if script(worldCheckout, "reset.sh", nil) != nil {
+			emit("RESET", "FAIL")
+			return 2
+		}
+		emit("RESET", "OK")
 	}
-	emit("RESET", "OK")
 
 	nonce := make([]byte, 4)
 	_, _ = rand.Read(nonce)
@@ -392,12 +433,16 @@ func fixturesSummary(js []journey) string {
 	return fmt.Sprintf("%d fixtures for %d journeys", len(ids), len(js))
 }
 
+// flagParseError marks an error the flag package already reported.
+type flagParseError struct{ error }
+
 // parseFlags refuses --post with --phase: a PR's evidence covers every
 // journey, so a one-phase run cannot stand for it. --epic is the same, and
-// a PR's evidence is not an epic's.
-func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string, epic *string) (phase, error) {
+// a PR's evidence is not an epic's. --stack is the api phase only: a stack
+// has no console, no presence helper and no screen of its own.
+func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string, epic *string, stack *string) (phase, error) {
 	if err := fs.Parse(args); err != nil {
-		return "", err
+		return "", flagParseError{err}
 	}
 	if fs.NArg() > 0 {
 		return "", errors.New("unexpected arguments")
@@ -408,6 +453,17 @@ func parseFlags(fs *flag.FlagSet, args []string, pr *int, phaseFlag *string, epi
 		if _, _, err := parseEpicRef(*epic); err != nil {
 			return "", err
 		}
+	}
+	if set["stack"] {
+		switch {
+		case *stack == "":
+			return "", errors.New("--stack needs a stack.json path")
+		case set["post"] || set["epic"]:
+			return "", errors.New("--stack runs no --post or --epic")
+		case set["phase"] && *phaseFlag != string(phaseAPI):
+			return "", errors.New("--stack runs only --phase api")
+		}
+		return phaseAPI, nil
 	}
 	switch {
 	case set["epic"] && set["post"]:
@@ -593,7 +649,11 @@ func buildMatches(settings []debug.BuildSetting, head string) error {
 
 // A process that started before the binary's mtime is an older build still
 // running after an install, even when its executable path matches.
-func findApp(configDir, relayBin string) (string, int, error) {
+func findApp(configDir, relayBin string, stackMode bool) (string, int, error) {
+	binName, installed := "RELAY_BIN", "the installed binary"
+	if stackMode {
+		binName, installed = "the stack's relay binary", "the stack's relay binary"
+	}
 	socks, _ := filepath.Glob(filepath.Join(configDir, "relay-frontend-*.sock"))
 	var sock string
 	pid, live := 0, 0
@@ -615,7 +675,7 @@ func findApp(configDir, relayBin string) (string, int, error) {
 	exe, _, _ := strings.Cut(string(raw[4:]), "\x00")
 	want, _ := filepath.EvalSymlinks(relayBin)
 	if got, _ := filepath.EvalSymlinks(exe); got == "" || got != want {
-		return "", 0, errors.New("the running app is not RELAY_BIN")
+		return "", 0, fmt.Errorf("the running app is not %s", binName)
 	}
 	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	st, statErr := os.Stat(relayBin)
@@ -624,7 +684,7 @@ func findApp(configDir, relayBin string) (string, int, error) {
 	}
 	started := time.Unix(kp.Proc.P_starttime.Sec, int64(kp.Proc.P_starttime.Usec)*1000)
 	if started.Before(st.ModTime()) {
-		return "", 0, errors.New("the running app predates the installed binary")
+		return "", 0, fmt.Errorf("the running app predates %s", installed)
 	}
 	return sock, pid, nil
 }

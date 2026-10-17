@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -118,7 +117,7 @@ type grantRecord struct {
 }
 
 func grantRecords(ctx context.Context, e env) ([]grantRecord, error) {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "grant", "--json").Output()
+	out, err := e.relayExec(ctx, "grant", "--json").Output()
 	if err != nil {
 		return nil, errors.New("relay grant failed")
 	}

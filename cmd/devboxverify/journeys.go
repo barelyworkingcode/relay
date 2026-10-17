@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -304,7 +303,7 @@ func auditRow(ctx context.Context, e env, key string) *audit.AuditEvent {
 // asynchronously. It returns the newest row of event matching key.
 func auditEventRow(ctx context.Context, e env, event, key string) *audit.AuditEvent {
 	for deadline := time.Now().Add(5 * time.Second); ; {
-		out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--event", event, "--grep", key, "--json", "--tail", "1").Output()
+		out, err := e.relayExec(ctx, "audit", "--event", event, "--grep", key, "--json", "--tail", "1").Output()
 		line := bytes.TrimSpace(out)
 		var row audit.AuditEvent
 		if err == nil && len(line) > 0 && json.Unmarshal(line, &row) == nil {
@@ -320,7 +319,7 @@ func auditEventRow(ctx context.Context, e env, event, key string) *audit.AuditEv
 // auditLineBytes sizes the row as stored in the audit file, which is what
 // the cap protects; relay audit --json output is a rendering of it.
 func auditLineBytes(ctx context.Context, e env, rowID string) (int, error) {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--path").Output()
+	out, err := e.relayExec(ctx, "audit", "--path").Output()
 	if err != nil || rowID == "" {
 		return 0, errors.New("no audit path or row id")
 	}
@@ -352,7 +351,7 @@ func grantedAcme(ctx context.Context, e env) (worldProject, string, error) {
 	if err != nil {
 		return worldProject{}, "", err
 	}
-	out, err := exec.CommandContext(ctx, e.RelayBin, "grant", "--json").Output()
+	out, err := e.relayExec(ctx, "grant", "--json").Output()
 	if err != nil {
 		return wp, "", errors.New("relay grant failed")
 	}

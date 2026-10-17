@@ -167,7 +167,7 @@ func gatedCLI(ctx context.Context, e env, expect string, args ...string) (cliRes
 	cliCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var stdout, stderr strings.Builder
-	cmd := exec.CommandContext(cliCtx, e.RelayBin, args...)
+	cmd := e.relayExec(cliCtx, args...)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.WaitDelay = 2 * time.Second
 	done := make(chan int, 1)
