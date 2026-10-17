@@ -382,6 +382,8 @@ func (p *persona) call(params json.RawMessage) json.RawMessage {
 		return p.getEmail(sc, a)
 	case "mail_send":
 		return p.send(sc, a)
+	case "web_fetch":
+		return webFetch(req.Arguments)
 	}
 	return toolText("testmcp macmcp persona: no answer recorded for "+req.Name, true)
 }

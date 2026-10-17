@@ -303,8 +303,11 @@ own, and every copy of a message is one email. `mail_send` sends nothing and
 answers the recording's `answers.mail_send`. A call relay mediated (it carries
 `_meta`) is held to `mail_accounts` and `mail_mailboxes` the way macMCP holds
 it: an unset field refuses every `mail_*` tool, and a resource outside the
-scope is an error result with `_meta.scope_violation`. Any other recorded
-tool answers an error naming itself. It runs no program and sends no Apple
+scope is an error result with `_meta.scope_violation`. `web_fetch` does what the real one does: an HTTP GET (redirects followed, User-Agent `macmcp/1.0`, `timeout` 1-120 s, default 30)
+answered as `HTTP <status> — <content-type> — <n> bytes`, a blank line, the raw
+body (cut at 1,000,000 bytes and marked truncated); a 4xx or 5xx is a normal
+result, and a missing or non-http(s) `url` is an error result with the real
+text. Any other recorded tool answers an error naming itself. It runs no program and sends no Apple
 Event.
 
 **A failure seen only against the persona is a mock defect until the
