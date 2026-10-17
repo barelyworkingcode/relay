@@ -57,7 +57,15 @@ func webFetch(raw json.RawMessage) json.RawMessage {
 		return toolText("request failed: "+err.Error(), true)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	// Keep one byte past the cut to know it is needed; count the rest so the
+	// status line still reports the full size without holding it in memory.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, webFetchMaxBytes+1))
+	total := len(data)
+	if err == nil {
+		var rest int64
+		rest, err = io.Copy(io.Discard, resp.Body)
+		total += int(rest)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return toolText(fmt.Sprintf("request timed out after %ds", timeout), true)
@@ -69,8 +77,8 @@ func webFetch(raw json.RawMessage) json.RawMessage {
 	if ct == "" {
 		ct = "unknown"
 	}
-	header := fmt.Sprintf("HTTP %d — %s — %d bytes\n\n", resp.StatusCode, ct, len(data))
-	truncated := len(data) > webFetchMaxBytes
+	header := fmt.Sprintf("HTTP %d — %s — %d bytes\n\n", resp.StatusCode, ct, total)
+	truncated := total > webFetchMaxBytes
 	body := data
 	if truncated {
 		body = data[:webFetchMaxBytes]

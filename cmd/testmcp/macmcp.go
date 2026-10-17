@@ -335,6 +335,9 @@ func (p *persona) call(params json.RawMessage) json.RawMessage {
 			return scopeViolation(f + " is not set for this client")
 		}
 	}
+	if req.Name == "web_fetch" {
+		return webFetch(req.Arguments)
+	}
 	var a mailArgs
 	if len(req.Arguments) > 0 && json.Unmarshal(req.Arguments, &a) != nil {
 		return toolText("arguments must be an object", true)
@@ -382,8 +385,6 @@ func (p *persona) call(params json.RawMessage) json.RawMessage {
 		return p.getEmail(sc, a)
 	case "mail_send":
 		return p.send(sc, a)
-	case "web_fetch":
-		return webFetch(req.Arguments)
 	}
 	return toolText("testmcp macmcp persona: no answer recorded for "+req.Name, true)
 }
