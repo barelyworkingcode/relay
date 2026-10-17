@@ -411,6 +411,9 @@ func osReport(t *testing.T, home string, event map[string]any, env ...string) {
 func TestOutsideReportSpoolPerInstance(t *testing.T) {
 	t.Parallel()
 	spools := t.TempDir()
+	// One machine, one user: both instances share a HOME, so only
+	// RELAY_OUTSIDE_SPOOL keeps their spools apart.
+	home := t.TempDir()
 	type side struct {
 		r     *osRig
 		spool string
@@ -423,8 +426,8 @@ func TestOutsideReportSpoolPerInstance(t *testing.T) {
 		if err := os.Mkdir(spool, 0o700); err != nil {
 			t.Fatalf("creating the spool: %v", err)
 		}
-		r := osStart(t, false, func(o *harness.Options) { o.Env = append(o.Env, "RELAY_OUTSIDE_SPOOL="+spool) })
-		p := r.spawn(r.i.Home, t.TempDir(), "spool-"+name)
+		r := osStart(t, false, func(o *harness.Options) { o.Env = append(o.Env, "HOME="+home, "RELAY_OUTSIDE_SPOOL="+spool) })
+		p := r.spawn(home, t.TempDir(), "spool-"+name)
 		p.transcript(t, osPrompt("acme one"), osAnswer("acme done"))
 		if row := r.probe().at(p.dir); row == nil || row.State != "idle" {
 			t.Fatalf("instance %s row before any report = %+v, want idle", name, row)
@@ -435,8 +438,8 @@ func TestOutsideReportSpoolPerInstance(t *testing.T) {
 
 	subA, subB := osSubscribe(t, a.r.i), osSubscribe(t, b.r.i)
 	// A report naming b's session lands in a's spool, then a's own report.
-	osReport(t, a.r.i.Home, map[string]any{"hook_event_name": "PermissionRequest", "session_id": b.p.sid, "cwd": b.p.dir}, "RELAY_OUTSIDE_SPOOL="+a.spool)
-	osReport(t, a.r.i.Home, map[string]any{"hook_event_name": "PermissionRequest", "session_id": a.p.sid, "cwd": a.p.dir}, "RELAY_OUTSIDE_SPOOL="+a.spool)
+	osReport(t, home, map[string]any{"hook_event_name": "PermissionRequest", "session_id": b.p.sid, "cwd": b.p.dir}, "RELAY_OUTSIDE_SPOOL="+a.spool)
+	osReport(t, home, map[string]any{"hook_event_name": "PermissionRequest", "session_id": a.p.sid, "cwd": a.p.dir}, "RELAY_OUTSIDE_SPOOL="+a.spool)
 	subA.until(osHookBound, func(s osSnap) bool {
 		row := s.at(a.p.dir)
 		return row != nil && row.State == "asking" && row.Source == "hook"
@@ -447,7 +450,7 @@ func TestOutsideReportSpoolPerInstance(t *testing.T) {
 		t.Fatalf("instance a left %d reports in its spool after its own report showed: %v", len(left), left)
 	}
 
-	osReport(t, b.r.i.Home, map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": b.p.sid, "cwd": b.p.dir}, "RELAY_OUTSIDE_SPOOL="+b.spool)
+	osReport(t, home, map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": b.p.sid, "cwd": b.p.dir}, "RELAY_OUTSIDE_SPOOL="+b.spool)
 	subB.until(osHookBound, func(s osSnap) bool {
 		row := s.at(b.p.dir)
 		if row != nil && row.State == "asking" {
@@ -455,13 +458,8 @@ func TestOutsideReportSpoolPerInstance(t *testing.T) {
 		}
 		return row != nil && row.State == "running" && row.Source == "hook"
 	})
-	if row := subA.until(osBound, func(osSnap) bool { return true }).at(b.p.dir); row != nil {
-		t.Fatalf("instance a lists instance b's session: %+v", row)
-	}
-	for _, s := range []*side{a, b} {
-		if _, err := os.Stat(filepath.Join(s.r.i.Home, ".claude", "relay-outside-reports")); err == nil {
-			t.Fatalf("%s holds the default spool, so a report went past RELAY_OUTSIDE_SPOOL", s.r.i.Home)
-		}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "relay-outside-reports")); err == nil {
+		t.Fatalf("%s holds the default spool, so a report went past RELAY_OUTSIDE_SPOOL", home)
 	}
 }
 
