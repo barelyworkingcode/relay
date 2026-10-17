@@ -240,6 +240,15 @@ go build -race -tags relaytest -o "$R/relay" ./cmd/relay   # a throwaway build
 run while a process runs from that bundle, and it rejects `--release`.
 `--test` is allowed.
 
+`./build.sh --bundle DIR` is the build mode for a verification stack: a
+release-path (untagged) `Relay.app`, Developer ID signed with its
+`relay-sessions` helper pinned as an installed build's is, written to
+`DIR/Relay.app` and nothing else. It stops no relay, leaves
+`/Applications/Relay.app` alone and launches nothing; with no Developer ID
+identity it fails rather than sign ad hoc. Its intermediate binaries go
+under its own stage, so two bundle builds into different folders can run at
+once. It rejects `--release` and `--test-build`; `--test` is allowed.
+
 **Four seams, four controls in the config dir `X`.** Each acts only on a dir
 other than the default one ([below](#the-default-config-dir)).
 
