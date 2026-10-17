@@ -245,6 +245,59 @@ second up to `EVE_BROWSER_LOCK_TIMEOUT`. The holder writes
 release. The kernel drops the lock when its holder dies. The api phase never
 takes it.
 
+## The macMCP mock
+
+A stack (`--stack`, below) has no real macMCP: a per-run relay build cannot
+inherit macMCP's Automation (TCC) grant. Its `macmcp` record runs `testmcp`
+as a stand-in:
+
+| Variable | Meaning |
+|---|---|
+| `RELAY_TESTMCP_PERSONA=macmcp` | selects the persona |
+| `RELAY_TESTMCP_RECORDING` | the recording file; required |
+| `RELAY_TESTMCP_WORLD` | the devboxWorld checkout whose `data/world.json`, `data/projects/*.json` and `data/mail.json` it answers from; required |
+| `RELAY_TESTMCP_ANCHOR` | the world's day zero, `YYYY-MM-DD` (the manifest's `anchor`); default today, local time |
+
+Without the two required variables the persona exits 1 before it answers
+anything. It answers `initialize` (the context schema is in `serverInfo`) and
+`tools/list` exactly as the recording holds them. `mail_list_accounts`,
+`mail_list_mailboxes`, `mail_get_emails`, `mail_get_email`, `mail_search` and
+`context/enumerate` answer from the world data: the accounts are the world
+projects' names, each with devboxWorld's auto mailboxes plus its project's
+own, and every copy of a message is one email. `mail_send` sends nothing and
+answers the recording's `answers.mail_send`. A call relay mediated (it carries
+`_meta`) is held to `mail_accounts` and `mail_mailboxes` the way macMCP holds
+it: an unset field refuses every `mail_*` tool, and a resource outside the
+scope is an error result with `_meta.scope_violation`. Any other recorded
+tool answers an error naming itself. It runs no program and sends no Apple
+Event.
+
+**A failure seen only against the persona is a mock defect until the
+nightly reproduces it against the real macMCP.**
+
+```bash
+go run ./cmd/devboxverify record-macmcp [--check] [--mcp CMD] [--recording FILE]
+```
+
+`record-macmcp` runs the real macMCP over stdio, sends only `initialize` and
+`tools/list` (every page), and writes `testdata/macmcp-recording.json`
+(`RECORDED\t<name version>\t<file>`). `--mcp` defaults to the `macmcp` row's
+endpoint in `relay mcp list`. A re-record keeps the file's `answers`, which
+are not taken from the real macMCP, since that would send mail. `--check`
+writes nothing: one `DRIFT\t<difference>` line per tool added, removed or
+changed (naming the keys that moved), per context-schema field added, removed
+or changed, and for a changed `contextSchemaVersion`, then
+`MACMCP\tdiffers\t<n> differences from the recording` and exit 1, or
+`MACMCP\tmatches\t<name version>` and exit 0. Server name and version are not
+compared. A failure to run the real macMCP or read the recording is exit 2.
+The nightly runs `--check`.
+
+The checked-in recording was taken from the real macMCP on the devbox:
+`initialize` and `tools/list` by `record-macmcp`, and `answers.mail_send` by
+one direct stdio call of the real `mail_send` from one loopback test account
+to the other (testMail), kept as macMCP returned it. To refresh the answer,
+repeat that call and replace `answers.mail_send`; a re-record keeps it.
+
 ## Feature map
 
 **blank-model-refused.** A chat session launched with no model is refused
