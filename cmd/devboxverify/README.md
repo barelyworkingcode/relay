@@ -292,10 +292,11 @@ or changed, and for a changed `contextSchemaVersion`, then
 compared. A failure to run the real macMCP or read the recording is exit 2.
 The nightly runs `--check`.
 
-The checked-in recording is **provisional**: it was written by hand from the
-tool names and schema relay's and devboxWorld's docs publish, and says so in
-its `provisional` key. The first `record-macmcp` run on the devbox replaces
-it and drops that key.
+The checked-in recording was taken from the real macMCP on the devbox:
+`initialize` and `tools/list` by `record-macmcp`, and `answers.mail_send` by
+one direct stdio call of the real `mail_send` from one loopback test account
+to the other (testMail), kept as macMCP returned it. To refresh the answer,
+repeat that call and replace `answers.mail_send`; a re-record keeps it.
 
 ## Feature map
 

@@ -1,187 +1,1731 @@
 {
   "schema": 1,
-  "provisional": "Hand-written from the macMCP tool names and context schema that relay's and devboxWorld's docs publish, not taken from a real macMCP. Replace it with a devboxverify record-macmcp run on the devbox.",
-  "recorded_from": "",
+  "recorded_from": "macmcp 1.1.0",
   "initialize": {
+    "capabilities": {
+      "tools": {}
+    },
     "protocolVersion": "2024-11-05",
-    "capabilities": {"tools": {}},
     "serverInfo": {
-      "name": "macmcp",
-      "version": "1.1.0",
-      "contextSchemaVersion": 2,
       "contextSchema": {
-        "mail_accounts": {
-          "type": "array", "items": {"type": "string"},
-          "description": "Mail accounts this client may read from or send as",
-          "scope": "restrict", "source": "operator",
-          "applies_to": ["mail_*"], "enumerable": true
+        "calendar_accounts": {
+          "applies_to": [
+            "calendars_*"
+          ],
+          "description": "Calendar accounts this client may reach \u2014 the sources Calendar files calendars under, such as iCloud, On My Mac, or an Exchange or CalDAV server. A client sees no calendar outside these accounts.",
+          "enumerable": true,
+          "items": {
+            "type": "string"
+          },
+          "scope": "restrict",
+          "source": "operator",
+          "type": "array"
         },
-        "mail_mailboxes": {
-          "type": "array", "items": {"type": "string"},
-          "description": "Mailbox paths within those accounts this client may reach",
-          "scope": "restrict", "source": "operator",
-          "applies_to": ["mail_*"], "enumerable": true,
-          "depends_on": ["mail_accounts"]
+        "calendars": {
+          "applies_to": [
+            "calendars_*"
+          ],
+          "depends_on": [
+            "calendar_accounts"
+          ],
+          "description": "Calendars this client may read and add events to, each written as Account/Calendar \u2014 for example \u201ciCloud/Work\u201d. The account is part of the value because a calendar title on its own does not identify one: two accounts can each hold a calendar called Work, and a bare title would silently grant both. Choose these from the list rather than typing them.",
+          "enumerable": true,
+          "items": {
+            "type": "string"
+          },
+          "scope": "restrict",
+          "source": "operator",
+          "type": "array"
+        },
+        "contact_accounts": {
+          "applies_to": [
+            "contacts_*"
+          ],
+          "description": "Contact accounts this client may reach \u2014 the containers Contacts files cards under, such as On My Mac, iCloud, or an Exchange or CardDAV server. A client sees no card and no group outside these accounts. This is the field that bounds cards: every card in one of these accounts is reachable, whether or not it is in any group.",
+          "enumerable": true,
+          "items": {
+            "type": "string"
+          },
+          "scope": "restrict",
+          "source": "operator",
+          "type": "array"
+        },
+        "contact_groups": {
+          "applies_to": [
+            "contacts_list_groups",
+            "contacts_create_group",
+            "contacts_add_to_group",
+            "contacts_remove_from_group"
+          ],
+          "description": "Contact groups this client may list and change the membership of, each written as Account/Group \u2014 for example \u201ciCloud/Family\u201d. The account is part of the value because a group name on its own does not identify one: two accounts can each hold a group called Family, and a bare name would silently grant both. Choose these from the list rather than typing them. This field bounds groups, not cards: a client granted contact_accounts and no groups still reads every card in those accounts, and simply has no group tools.",
+          "enumerable": true,
+          "items": {
+            "type": "string"
+          },
+          "scope": "restrict",
+          "source": "operator",
+          "type": "array"
         },
         "file_dirs": {
-          "type": "array", "items": {"type": "string"},
-          "description": "Directories this client may write files into",
-          "scope": "restrict", "source": "project_path",
-          "applies_to": ["mail_save_attachment", "mail_get_source"]
+          "applies_to": [
+            "mail_save_attachment",
+            "capture_screenshot",
+            "capture_audio",
+            "utilities_play_sound",
+            "messages_save_attachment"
+          ],
+          "description": "Directories on this host this client may write files into and read files from \u2014 attachments it sends, attachments and message sources it saves, screenshots and recordings it captures, audio files it plays, and image attachments it sends or saves from Messages",
+          "items": {
+            "type": "string"
+          },
+          "scope": "restrict",
+          "source": "project_path",
+          "type": "array"
+        },
+        "mail_accounts": {
+          "applies_to": [
+            "mail_*"
+          ],
+          "description": "Mail accounts this client may read from or send as",
+          "enumerable": true,
+          "items": {
+            "type": "string"
+          },
+          "scope": "restrict",
+          "source": "operator",
+          "type": "array"
+        },
+        "mail_mailboxes": {
+          "applies_to": [
+            "mail_*"
+          ],
+          "depends_on": [
+            "mail_accounts"
+          ],
+          "description": "Mailbox paths within those accounts this client may reach \u2014 for reading and for writing alike, so a client that may not read a mailbox may not move a message into it either, and a client without Drafts here cannot create drafts",
+          "enumerable": true,
+          "items": {
+            "type": "string"
+          },
+          "scope": "restrict",
+          "source": "operator",
+          "type": "array"
+        },
+        "reminder_accounts": {
+          "applies_to": [
+            "reminders_*"
+          ],
+          "description": "Reminder accounts this client may reach \u2014 the sources Reminders files lists under, such as iCloud, On My Mac, or an Exchange or CalDAV server. A client sees no list outside these accounts.",
+          "enumerable": true,
+          "items": {
+            "type": "string"
+          },
+          "scope": "restrict",
+          "source": "operator",
+          "type": "array"
+        },
+        "reminder_lists": {
+          "applies_to": [
+            "reminders_*"
+          ],
+          "depends_on": [
+            "reminder_accounts"
+          ],
+          "description": "Reminder lists this client may read and add to, each written as Account/List \u2014 for example \u201ciCloud/Groceries\u201d. The account is part of the value because a list name on its own does not identify one: two accounts can each hold a list called Shopping, and a bare name would silently grant both. Choose these from the list rather than typing them.",
+          "enumerable": true,
+          "items": {
+            "type": "string"
+          },
+          "scope": "restrict",
+          "source": "operator",
+          "type": "array"
         }
-      }
+      },
+      "contextSchemaVersion": 2,
+      "name": "macmcp",
+      "version": "1.1.0"
     }
   },
   "tools_list": {
     "tools": [
       {
-        "name": "mail_list_accounts",
-        "description": "List all mail accounts configured in Mail.app",
-        "inputSchema": {"type": "object", "properties": {}},
-        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Calendar",
+        "description": "Create a timed event on one calendar and return a one-line text confirmation. It takes no attendees, so no invitation is sent. It cannot create an all-day or a recurring event: a bare-date start and end become a timed event from 00:00 to 23:59:59 local time. The confirmation carries no event identifier, and no tool edits or deletes the event afterwards.",
+        "inputSchema": {
+          "properties": {
+            "calendar_name": {
+              "description": "Calendar to add the event to, named as Account/Calendar exactly as calendars_list reports its `path` \u2014 for example 'iCloud/Work'. A bare calendar name works only when a single calendar carries it. Omitted, the event goes to this Mac's default calendar; a client whose access profile is scoped gets that default only when it is inside the scope, and is otherwise asked to name one rather than having the event filed somewhere it was never granted.",
+              "type": "string"
+            },
+            "end_date": {
+              "description": "End date \u2014 same formats as start_date; a bare date like '2026-06-12' means end of that day (23:59:59 local)",
+              "type": "string"
+            },
+            "location": {
+              "description": "Event location",
+              "type": "string"
+            },
+            "notes": {
+              "description": "Event notes",
+              "type": "string"
+            },
+            "start_date": {
+              "description": "Start date \u2014 ISO 8601: '2026-06-12' (local midnight), '2026-06-12T09:00:00' (local time), or '2026-06-12T09:00:00-07:00'",
+              "type": "string"
+            },
+            "title": {
+              "description": "Event title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "start_date",
+            "end_date"
+          ],
+          "type": "object"
+        },
+        "name": "calendars_create_event"
       },
       {
-        "name": "mail_list_mailboxes",
-        "description": "List mailboxes. Groups by account when no account specified. Includes Mail's app-level mailboxes.",
-        "inputSchema": {"type": "object", "properties": {
-          "account": {"type": "string", "description": "Account name; omit for every account"}
-        }},
-        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Calendar",
+        "description": "List the event calendars this client may read, as a JSON array of {title, path, type, source}. `path` is Account/Calendar and is the value to pass as calendar_name to calendars_list_events and calendars_create_event; `title` alone is not unique, since two accounts can each hold a calendar with the same title. Under a scoped access profile only the calendars inside the scope are listed. Reminder lists are not included; reminders_list reports those.",
+        "inputSchema": {
+          "properties": {},
+          "required": [],
+          "type": "object"
+        },
+        "name": "calendars_list"
       },
       {
-        "name": "mail_get_emails",
-        "description": "Get the most recent emails (newest first) from matching mailboxes across accounts. Returns summaries without bodies.",
-        "inputSchema": {"type": "object", "properties": {
-          "account": {"type": "string", "description": "Account name; omit for every account"},
-          "mailbox": {"type": "string", "description": "Mailbox path; omit for every mailbox"},
-          "limit": {"type": "integer", "description": "Most emails to return (default 20)"}
-        }},
-        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Calendar",
+        "description": "List the events that overlap a date range, as a JSON array of {title, start_date, end_date, calendar, calendar_path, location?, notes?}, with times rendered in this Mac's local UTC offset. A recurring event appears once per occurrence in the range. There is no result cap or pagination, so keep the range as narrow as the question needs. Attendees, URLs and event identifiers are not returned.",
+        "inputSchema": {
+          "properties": {
+            "calendar_name": {
+              "description": "Filter to one calendar, named as Account/Calendar exactly as calendars_list reports its `path` \u2014 for example 'iCloud/Work'. A bare calendar name works only when a single calendar carries it; two carriers is refused with both named, because a title on its own does not identify a calendar. Omit to read every calendar this client may reach.",
+              "type": "string"
+            },
+            "end_date": {
+              "description": "End date \u2014 same formats as start_date; a bare date like '2026-06-12' means end of that day (23:59:59 local)",
+              "type": "string"
+            },
+            "start_date": {
+              "description": "Start date \u2014 ISO 8601: '2026-06-12' (local midnight), '2026-06-12T09:00:00' (local time), or '2026-06-12T09:00:00-07:00'",
+              "type": "string"
+            }
+          },
+          "required": [
+            "start_date",
+            "end_date"
+          ],
+          "type": "object"
+        },
+        "name": "calendars_list_events"
       },
       {
-        "name": "mail_get_email",
-        "description": "Get full email by message ID, including the list of attachments (name, part_path, size, mime type).",
-        "inputSchema": {"type": "object", "properties": {
-          "id": {"type": "string", "description": "Message ID from mail_get_emails or mail_search"}
-        }, "required": ["id"]},
-        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Capture",
+        "description": "Record from this Mac's default input device to a mono AAC .m4a file and return the saved path as text. The call blocks for the whole recording, `duration` seconds (default 10). No audio data or transcript is returned. Needs the Microphone permission.",
+        "inputSchema": {
+          "properties": {
+            "duration": {
+              "description": "Recording duration in seconds (defaults to 10)",
+              "type": "integer"
+            },
+            "path": {
+              "description": "Absolute POSIX path to save the recording to (defaults to ~/Desktop/recording-{timestamp}.m4a). Confined to the file_dirs of the calling client's resource scope, exactly as capture_screenshot's path is: no file_dirs means no recording, and otherwise the file is written inside one of the named directories",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "capture_audio"
       },
       {
-        "name": "mail_search",
-        "description": "Search emails by subject and sender, optionally recipients and body (case-insensitive).",
-        "inputSchema": {"type": "object", "properties": {
-          "query": {"type": "string", "description": "Text to look for"},
-          "account": {"type": "string", "description": "Account name; omit for every account"},
-          "mailbox": {"type": "string", "description": "Mailbox path; omit for every mailbox"},
-          "include_recipients": {"type": "boolean", "description": "Also match To and Cc"},
-          "include_body": {"type": "boolean", "description": "Also match the body"},
-          "limit": {"type": "integer", "description": "Most emails to return (default 20)"}
-        }, "required": ["query"]},
-        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Capture",
+        "description": "Save a screenshot of this Mac's screen to a PNG file and return the saved path as text; the image itself is not returned. type \"fullscreen\" (the default) captures at once. \"window\" and \"selection\" are interactive: the call waits until a person at the Mac clicks a window or drags a region, so use them only when someone is there to do it. Needs the Screen Recording permission.",
+        "inputSchema": {
+          "properties": {
+            "path": {
+              "description": "Absolute POSIX path to save the screenshot to (defaults to ~/Desktop/screenshot-{timestamp}.png). Confined to the file_dirs of the calling client's resource scope. A client whose scope carries no file_dirs cannot take a screenshot at all \u2014 every call writes a file \u2014 and one whose scope names directories writes only inside them: the default location is used when it is one of them, the single allowed directory is used when there is only one, and otherwise you are asked to pass a path naming one of them",
+              "type": "string"
+            },
+            "type": {
+              "description": "Capture type",
+              "enum": [
+                "fullscreen",
+                "window",
+                "selection"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "capture_screenshot"
       },
       {
-        "name": "mail_get_source",
-        "description": "Get the raw RFC 822 source of an email, optionally saving it to a file.",
-        "inputSchema": {"type": "object", "properties": {
-          "id": {"type": "string", "description": "Message ID"},
-          "save_to": {"type": "string", "description": "File path to write the source to"}
-        }, "required": ["id"]},
-        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Contacts",
+        "description": "Add a contact to a group. Under a contacts resource scope both ends are checked: the contact must be in an account the profile names, and the group must be one the profile names.",
+        "inputSchema": {
+          "properties": {
+            "contact_id": {
+              "description": "Contact id from contacts_list results",
+              "type": "string"
+            },
+            "group_id": {
+              "description": "Group id from contacts_list_groups results",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contact_id",
+            "group_id"
+          ],
+          "type": "object"
+        },
+        "name": "contacts_add_to_group"
       },
       {
-        "name": "mail_save_attachment",
-        "description": "Save an email attachment to a file.",
-        "inputSchema": {"type": "object", "properties": {
-          "id": {"type": "string", "description": "Message ID"},
-          "part_path": {"type": "string", "description": "Attachment part path from mail_get_email"},
-          "save_to": {"type": "string", "description": "Directory to write the attachment into"}
-        }, "required": ["id", "part_path", "save_to"]},
-        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Contacts",
+        "description": "Create a new contact. Returns the new contact id. When this client's access profile carries a contacts resource scope, the new contact is filed in one of the accounts that scope names, so the client can read back what it wrote; pass `account` to choose which when the scope names more than one. Adding it to a group as well needs `group`, and that argument needs a contact group grant.",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Contact account to file the new contact in, as contacts_list_groups reports one (for example \"iCloud\" or \"On My Mac\"). Omit to use the default account, or \u2014 under a contacts resource scope naming exactly one account \u2014 that account.",
+              "type": "string"
+            },
+            "email": {
+              "description": "Email address",
+              "type": "string"
+            },
+            "first_name": {
+              "description": "First name",
+              "type": "string"
+            },
+            "group": {
+              "description": "Group to add the new contact to, written Account/Group (for example \"iCloud/Family\") as contacts_list_groups reports it. Omit to add it to no group. Under a contacts resource scope this argument requires a `contact_groups` grant, and the group decides the account.",
+              "type": "string"
+            },
+            "job_title": {
+              "description": "Job title",
+              "type": "string"
+            },
+            "last_name": {
+              "description": "Last name",
+              "type": "string"
+            },
+            "organization": {
+              "description": "Organization name",
+              "type": "string"
+            },
+            "phone": {
+              "description": "Phone number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "first_name"
+          ],
+          "type": "object"
+        },
+        "name": "contacts_create"
       },
       {
-        "name": "mail_create_draft",
-        "description": "Create a draft email in an account's Drafts mailbox. Nothing is sent.",
-        "inputSchema": {"type": "object", "properties": {
-          "account": {"type": "string", "description": "Account to draft from"},
-          "to": {"type": "array", "items": {"type": "string"}},
-          "cc": {"type": "array", "items": {"type": "string"}},
-          "subject": {"type": "string"},
-          "body": {"type": "string"},
-          "attachments": {"type": "array", "items": {"type": "string"}}
-        }, "required": ["to", "subject", "body"]},
-        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Contacts",
+        "description": "Create a contact group. Returns the new group id. Unavailable to a client whose access profile carries a contacts resource scope, because a newly created group is by construction not one the scope names.",
+        "inputSchema": {
+          "properties": {
+            "name": {
+              "description": "Group name",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "name": "contacts_create_group"
       },
       {
-        "name": "mail_send",
-        "description": "Send an email from an account.",
-        "inputSchema": {"type": "object", "properties": {
-          "account": {"type": "string", "description": "Account to send as"},
-          "to": {"type": "array", "items": {"type": "string"}},
-          "cc": {"type": "array", "items": {"type": "string"}},
-          "bcc": {"type": "array", "items": {"type": "string"}},
-          "subject": {"type": "string"},
-          "body": {"type": "string"},
-          "attachments": {"type": "array", "items": {"type": "string"}}
-        }, "required": ["to", "subject", "body"]},
-        "annotations": {"readOnlyHint": false, "openWorldHint": true}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Contacts",
+        "description": "Delete a contact permanently.",
+        "inputSchema": {
+          "properties": {
+            "id": {
+              "description": "Contact id from contacts_list results",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "name": "contacts_delete"
       },
       {
-        "name": "mail_move",
-        "description": "Move an email to another mailbox in the same account.",
-        "inputSchema": {"type": "object", "properties": {
-          "id": {"type": "string", "description": "Message ID"},
-          "mailbox": {"type": "string", "description": "Destination mailbox path"}
-        }, "required": ["id", "mailbox"]},
-        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Contacts",
+        "description": "Get one contact by id. Returns the same fields contacts_list returns (id, first and last name, organization, job title, phones, emails, postal addresses); contact notes are never read.",
+        "inputSchema": {
+          "properties": {
+            "id": {
+              "description": "Contact id from contacts_list results",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "name": "contacts_get"
       },
       {
-        "name": "mail_mark_read",
-        "description": "Mark an email read or unread.",
-        "inputSchema": {"type": "object", "properties": {
-          "id": {"type": "string", "description": "Message ID"},
-          "read": {"type": "boolean", "description": "true for read, false for unread"}
-        }, "required": ["id"]},
-        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Contacts",
+        "description": "Search or list contacts. Returns id, name, phones, emails, and addresses. There is no limit or paging: omitting query returns the whole address book. When this client's access profile carries a contacts resource scope, this lists the cards in the contact accounts that scope names and nothing else \u2014 including cards that belong to no group.",
+        "inputSchema": {
+          "properties": {
+            "query": {
+              "description": "Name to search for. Omit to list all contacts.",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "contacts_list"
       },
       {
-        "name": "contacts_list",
-        "description": "List contact cards.",
-        "inputSchema": {"type": "object", "properties": {
-          "limit": {"type": "integer", "description": "Most cards to return"}
-        }},
-        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Contacts",
+        "description": "List contact groups. Returns id, name, account and path (Account/Group) for each. Under a contacts resource scope, only the groups that scope names are listed, and a client whose profile grants accounts but no groups cannot call this at all.",
+        "inputSchema": {
+          "properties": {},
+          "required": [],
+          "type": "object"
+        },
+        "name": "contacts_list_groups"
       },
       {
-        "name": "contacts_create",
-        "description": "Create a contact card.",
-        "inputSchema": {"type": "object", "properties": {
-          "first_name": {"type": "string"},
-          "last_name": {"type": "string"},
-          "email": {"type": "string"},
-          "phone": {"type": "string"}
-        }},
-        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Contacts",
+        "description": "Remove a contact from a group. Under a contacts resource scope both ends are checked: the contact must be in an account the profile names, and the group must be one the profile names.",
+        "inputSchema": {
+          "properties": {
+            "contact_id": {
+              "description": "Contact id from contacts_list results",
+              "type": "string"
+            },
+            "group_id": {
+              "description": "Group id from contacts_list_groups results",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contact_id",
+            "group_id"
+          ],
+          "type": "object"
+        },
+        "name": "contacts_remove_from_group"
       },
       {
-        "name": "calendars_create_event",
-        "description": "Create a calendar event.",
-        "inputSchema": {"type": "object", "properties": {
-          "calendar": {"type": "string"},
-          "title": {"type": "string"},
-          "start": {"type": "string"},
-          "end": {"type": "string"}
-        }, "required": ["title", "start"]},
-        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Contacts",
+        "description": "Search contacts by phone number. Normalizes formatting before matching. Under a contacts resource scope, only the cards in the accounts that scope names are searched.",
+        "inputSchema": {
+          "properties": {
+            "phone": {
+              "description": "Phone number to search for (any format)",
+              "type": "string"
+            }
+          },
+          "required": [
+            "phone"
+          ],
+          "type": "object"
+        },
+        "name": "contacts_search_by_phone"
       },
       {
-        "name": "capture_screenshot",
-        "description": "Capture a screenshot of the screen or a window.",
-        "inputSchema": {"type": "object", "properties": {}},
-        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Contacts",
+        "description": "Update an existing contact. Only provided fields are changed. phone and email each REPLACE every existing phone number or email address on the card with the single value given; they do not add one. Postal addresses cannot be changed here.",
+        "inputSchema": {
+          "properties": {
+            "email": {
+              "description": "Email address",
+              "type": "string"
+            },
+            "first_name": {
+              "description": "First name",
+              "type": "string"
+            },
+            "id": {
+              "description": "Contact id from contacts_list results",
+              "type": "string"
+            },
+            "job_title": {
+              "description": "Job title",
+              "type": "string"
+            },
+            "last_name": {
+              "description": "Last name",
+              "type": "string"
+            },
+            "organization": {
+              "description": "Organization name",
+              "type": "string"
+            },
+            "phone": {
+              "description": "Phone number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "name": "contacts_update"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "category": "Location",
+        "description": "Forward geocode an address string to geographic coordinates",
+        "inputSchema": {
+          "properties": {
+            "address": {
+              "description": "Address to geocode",
+              "type": "string"
+            }
+          },
+          "required": [
+            "address"
+          ],
+          "type": "object"
+        },
+        "name": "location_geocode"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "category": "Location",
+        "description": "Get current location coordinates (latitude, longitude, accuracy, timestamp)",
+        "inputSchema": {
+          "properties": {},
+          "required": [],
+          "type": "object"
+        },
+        "name": "location_get_current"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "category": "Location",
+        "description": "Reverse geocode coordinates to a human-readable address",
+        "inputSchema": {
+          "properties": {
+            "latitude": {
+              "description": "Latitude",
+              "type": "number"
+            },
+            "longitude": {
+              "description": "Longitude",
+              "type": "number"
+            }
+          },
+          "required": [
+            "latitude",
+            "longitude"
+          ],
+          "type": "object"
+        },
+        "name": "location_reverse_geocode"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Mail",
+        "description": "Delete entries from macMCP's local scan cache (see mail_mark_reviewed and mail_move_to_junk). Only ever affects the calling client's own cache entries. At least one of message_id, account or older_than_days is required, or pass all: true to clear every entry this client has recorded -- an empty call with none of these is refused rather than silently clearing everything. Returns the number of entries removed",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Clear every entry for this account",
+              "type": "string"
+            },
+            "all": {
+              "description": "Clear every entry this client has recorded. Required to be explicitly true when no other filter is given",
+              "type": "boolean"
+            },
+            "message_id": {
+              "description": "Clear the cache entry for one message's RFC Message-ID (as returned by mail_move_to_junk, mail_mark_reviewed, mail_get_emails or mail_search)",
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "older_than_days": {
+              "description": "Clear every entry recorded more than this many days ago",
+              "type": "integer"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 30, minimum 5, maximum 600). Running out is not an error: whatever was read is returned, and the coverage fields say what was not. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "mail_clear_scan_cache"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Mail",
+        "description": "Create an email draft in Mail.app's Drafts folder, optionally as HTML and with file attachments. Does NOT send the email. Returns the saved draft's numeric and RFC message IDs so it can be read back with mail_get_email. rendered_chars is the length of the body Mail composed with all whitespace removed (an 18-character body of \"just one line here\" reports 15), and exists to catch a body Mail rendered as empty rather than to match the length of what was asked for. Mail rewrites the body of anything composed through its scripting interface: every scripted draft measured on Mail 16 came back with an EMPTY text/plain part, the body surviving only as HTML, so a plain-text-preferring client shows the draft as blank. That is reported as body_check, whose plain_text_matches_body is null and measured false unless you pass verify_body \u2014 the default does not re-download the draft to be told a constant, and says null rather than false because a hardcoded claim would go wrong the day Mail stops rewriting. verify_body: true fetches the saved draft back and compares its text/plain part with the body that was asked for. The result also reports from and account (the identity Mail composed as, read off the message) and autosaved_draft: Mail autosaves whatever it is composing, and this says whether that extra copy was found in Drafts. The draft you asked for is never counted as one of those, even when a compose slow enough for Mail's autosave timer to fire means the save landed on Mail's own copy and the draft carries its X-Apple-Auto-Saved header \u2014 that case is reported as saved_over_autosave. The draft is written into the sending account's own Drafts mailbox and takes no mailbox argument, so a client whose resource scope carries mail_mailboxes must have Drafts among them; without it the call is refused with nothing composed, the same refusal mail_move gives for a move into Drafts",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name to save the draft in (uses default account if omitted)",
+              "type": "string"
+            },
+            "attachments": {
+              "description": "Absolute POSIX paths of files to attach, e.g. [\"/Users/me/Budget.pdf\"]. Attached after the body so they appear at the end of the message. Each path is read off this host and its bytes leave the machine in the message, so it is confined to the file_dirs of the calling client's resource scope; a client whose scope carries no file_dirs may compose and send but may not attach a file from this host, and an out-of-scope path is refused with nothing composed",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "bcc": {
+              "description": "BCC recipient address(es), same forms as `to`",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "string",
+                "array"
+              ]
+            },
+            "body": {
+              "description": "Plain-text email body. Required unless html_body is given",
+              "type": "string"
+            },
+            "cc": {
+              "description": "CC recipient address(es), same forms as `to`",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "string",
+                "array"
+              ]
+            },
+            "from": {
+              "description": "Sender email address (overrides account lookup). Must be an address one of Mail's accounts sends as; an address no account owns is refused rather than substituted, because Mail's own behaviour is to send from the default account instead. The address the message actually went out as is reported back as `from`",
+              "type": "string"
+            },
+            "html_body": {
+              "description": "HTML email body. Sent as a real text/html message, so tables, headings and links render. Takes precedence over body when both are given (Mail generates its own plain-text alternative)",
+              "type": "string"
+            },
+            "subject": {
+              "description": "Email subject",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 180, minimum 5, maximum 600). Running out is reported as an error, and because it can fire after Mail has already acted, check the mailbox before retrying rather than assuming nothing happened. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            },
+            "to": {
+              "description": "Recipient address(es). One string, an array of strings, or a comma-separated list. Display names are allowed: \"Susan Cross\" <s@example.org>",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "string",
+                "array"
+              ]
+            },
+            "verify_body": {
+              "description": "Fetch the saved draft back from the server and compare its text/plain part with the body that was asked for, reported as body_check (default: false). Mail rewrites a scripted body and the answer has been the same on every draft measured, so this is off by default: it costs a full download of the draft to confirm something already known. Turn it on to confirm it for this draft, or to find out that a Mail release has changed",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "to",
+            "subject"
+          ],
+          "type": "object"
+        },
+        "name": "mail_create_draft"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Mail",
+        "description": "Get full email by message ID, including the list of attachments (name, part_path, size, mime_type, mime_type_source, listed_by_mail). The attachments list is read out of the message's own source and is the SAME list mail_save_attachment selects from, in the same order: index N there is entry N here, and every name here works as attachment_name. name is the filename the message declares; when Mail.app displays a different one for the same part \u2014 it mangles a non-ASCII filename, strips a \"/\", and invents \"Mail Attachment\" for a part that has none \u2014 that appears beside it as mail_name, which is a label rather than a handle. part_path is the part's position in the message (\"2\", \"1.2\") and is the exact handle mail_save_attachment takes. mime_type is the Content-Type the message itself declares, so it agrees with mail_save_attachment; mime_type_source is \"declared\" for that, or \"filename\" when the source could not be read and the type had to be guessed from the extension. inline_parts lists parts the message displays inside its body (a logo, a pasted image) \u2014 they are deliberately not attachments and do not count towards has_attachments, and mail_save_attachment writes one only when asked for it by part_path. attachments_mail_lists_only holds anything Mail claims for the message that is not in its source, which has no bytes behind it and cannot be saved. The message is checked against its own source, and the result reports fidelity (as mail_get_source does): when Mail has NOT finished downloading it, body, attachments and has_attachments are OMITTED rather than reported empty \u2014 an empty body and an empty attachment list from a half-downloaded message are answers a caller acts on \u2014 and the omitted field lists what was left out. listed_by_mail says whether Mail's own attachment list has the part, matched to it by MIME part path rather than by filename; false is common and not a fault, because Mail's list can stay empty for good for a message first read while it was still arriving. source_check appears instead of fidelity when the source could not be read at all, in which case the body and attachments are Mail's unverified answer. structure reports what the MIME reader made of the source: parsed_complete is false when the message nests multipart parts deeper than macMCP descends (max_depth) or declares more parts than it reads (max_parts), and the attachment list is then short by whatever those parts contain rather than complete \u2014 a short list and a message with fewer attachments look identical without it. Searches all accounts when account omitted. Use mail_save_attachment to retrieve attachment contents",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name from results (optional, speeds up lookup)",
+              "type": "string"
+            },
+            "mailbox": {
+              "description": "Mailbox to check first (default: INBOX); automatically falls back to searching all mailboxes. Matches a full path (Projects/Archive) or a leaf name",
+              "type": "string"
+            },
+            "message_id": {
+              "description": "Numeric message ID from mail_get_emails or mail_search, or an RFC Message-ID such as <abc@example.org> (use the RFC form for drafts, whose numeric id goes stale once the server syncs them)",
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 300, minimum 5, maximum 600). Running out is not an error: whatever was read is returned, and the coverage fields say what was not. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "message_id"
+          ],
+          "type": "object"
+        },
+        "name": "mail_get_email"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Mail",
+        "description": "Get the most recent emails (newest first) from matching mailboxes across accounts. Returns messages plus scan-coverage metadata (total_messages, truncated, messages_scanned, scanned/skipped mailboxes). Mailbox names in the result are paths (Projects/Archive), which is what identifies a mailbox and what you can pass straight back as mailbox/target_mailbox. excluded_mailboxes names what a mailbox 'all' scan deliberately left out \u2014 the accounts' own Trash, Junk, Drafts and Outbox \u2014 which are out of scope rather than unread, so they do not make scan_complete false. scan_complete says whether every mailbox in scope was actually read; when it is false the counts are a floor rather than a total and note says what was missed. The columns a scan reads arrive in separate Apple Events, so a mailbox that changes between them would pair one message's id with another message's subject. When that is detected, every row being returned from that mailbox is re-read message by message by its own id and carries that message's own subject, sender and date; the mailbox is named in changed_mailboxes with rows_reverified and rows_dropped, and note says what that means for the count. skipped_mailboxes names mailboxes that could not be read at all, each with the reason. If nothing in scope could be read the call is an error rather than an empty result, because total_messages 0 would be a claim that the mailbox is empty. unreviewed_only drives a batch-triage pattern: pass it to walk a large mailbox in pages of `limit` without re-fetching messages mail_move_to_junk or mail_mark_reviewed already recorded a verdict for (macMCP's own local cache, scoped to this client \u2014 see those tools). Each returned row then also carries rfc_message_id, the handle both of those take. Internally this scans a wider window than `limit` to leave room for ones already reviewed, so it costs more Apple Events than a plain call; unreviewed_scan_window reports how wide, and unreviewed_shortfall (present only when it fires) says the window came back short of `limit` unreviewed rows and does not by itself mean the mailbox is exhausted \u2014 call again once the returned rows have been triaged and progress will keep being made until it does",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name, or \"On My Mac\" for Mail's local mailboxes (scans every account and the local boxes if omitted)",
+              "type": "string"
+            },
+            "limit": {
+              "description": "Maximum number of emails to return (default: 10)",
+              "type": "integer"
+            },
+            "mailbox": {
+              "description": "Mailbox to read, matched case-insensitively in every account and local On-My-Mac boxes (default: INBOX). A mailbox is named by its path: Mail reports leaf names for a flattened tree, so one account can hold two mailboxes called Archive and two called Trash. A bare name means the mailbox at the root of the account (Archive is the account's own Archive, never Projects/Archive); a nested one is named by its full path with / separators (Projects/Archive). A leaf name that only one mailbox in the account carries also works. mail_list_mailboxes lists these paths, and every mailbox reported back to you is one. Pass 'all' to scan every mailbox except the account's own junk/trash/drafts/outbox \u2014 those are named in excluded_mailboxes, and a nested folder that happens to be called Trash is ordinary mail and is scanned",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 120, minimum 5, maximum 600). Running out is not an error: whatever was read is returned, and the coverage fields say what was not. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            },
+            "unreviewed_only": {
+              "description": "Skip messages already recorded in the local scan cache by mail_move_to_junk or mail_mark_reviewed for this client (default: false). Use to batch through a large mailbox a fixed number at a time without re-reading what was already triaged",
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "mail_get_emails"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Mail",
+        "description": "Get a message's raw RFC 822 source. Returns the first max_bytes by default, or writes the whole thing to save_to. An inline result reports source_encoding (utf-8, or iso-8859-1 for a source that is not valid UTF-8) and bytes_returned, which counts the bytes actually returned in that encoding \u2014 a truncation is moved back to a character boundary rather than cutting one in half. NOT byte-identical to the message on the server, so every result reports fidelity, measured over the WHOLE source (bytes_measured) rather than over the slice returned: line_endings is lf for every real message because Mail hands a source over with LF where the wire form has CRLF; ambiguous_nul_bytes counts bytes that are 0x80 where a NUL could have been lost, since Mail turns a NUL into 0x80 before macMCP sees it (a 0x80 inside a valid UTF-8 character is not counted, and base64 or quoted-printable parts are unaffected); complete says whether Mail had finished downloading the message \u2014 the fetch waits for it and reports a fragment as one rather than passing it off as the message \u2014 and complete_basis says what that rests on: \"bytes\" when the bytes reach message_size on their own, \"wire\" when they only reach it once each LF is counted as the CRLF it stood for (right for a server-side message, but a local draft is sized in LF units, so the note then says how many bytes would still be missing under that reading), \"wire+terminated\" when that reading is confirmed by the message being a multipart that ends with the \"--boundary--\" line closing it \u2014 which no fragment carries, whatever its bytes add up to \u2014 \"unterminated\" for a multipart on the wire reading that does NOT end where it says it ends, which is NOT complete, \"short\" for a fragment, \"unchecked\" when Mail would not report a size, \"none\" for no bytes at all. message_size is Mail's own size, or null when Mail would not report it, in which case complete means \"nothing contradicts it\" rather than a verified match. Errors rather than returning an empty string when Mail has none of the message yet. Use mail_save_attachment instead when the goal is just to extract attachments",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name (optional, speeds up lookup)",
+              "type": "string"
+            },
+            "mailbox": {
+              "description": "Mailbox to check first (default: INBOX); automatically falls back to searching all mailboxes. Matches a full path (Projects/Archive) or a leaf name",
+              "type": "string"
+            },
+            "max_bytes": {
+              "description": "How much source to return inline when save_to is omitted (default: 100000, max: 2000000). The cut is moved back to the nearest character boundary, so bytes_returned can be up to 3 less than this",
+              "type": "integer"
+            },
+            "message_id": {
+              "description": "Numeric message ID from mail_get_emails or mail_search, or an RFC Message-ID",
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "save_to": {
+              "description": "Absolute POSIX path to write the full source to. Prefer this for large messages. Confined to the file_dirs of the calling client's resource scope; a client whose scope carries no file_dirs may still read a message's source inline, but an out-of-scope save_to (including no file_dirs at all) is refused before anything is fetched -- omit save_to to read inline instead",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 300, minimum 5, maximum 600). Running out is not an error: whatever was read is returned, and the coverage fields say what was not. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "message_id"
+          ],
+          "type": "object"
+        },
+        "name": "mail_get_source"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Mail",
+        "description": "List the mail accounts configured in Mail.app. Returns a JSON array of account names, each usable as the account argument of every other mail tool. Mail's local mailboxes are not an account and are not listed here; they are addressed as \"On My Mac\" (see mail_list_mailboxes). Under a resource scope that names mail accounts, only those accounts are returned",
+        "inputSchema": {
+          "properties": {
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 45, minimum 5, maximum 600). Running out is not an error: whatever was read is returned, and the coverage fields say what was not. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "mail_list_accounts"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Mail",
+        "description": "List mailboxes. Groups by account when no account specified. Includes Mail's app-level mailboxes under the account name \"On My Mac\" \u2014 those belong to no account, and every mail tool accepts that name wherever an account is taken, so they can be scoped like any other. Nested folders are listed by their full path with / separators (Projects/Archive), because Mail reports leaf names for a flattened tree and one account can hold two mailboxes called Archive. Each string here is what identifies that mailbox and is accepted as mailbox, source_mailbox or target_mailbox by every other mail tool",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name, or \"On My Mac\" for Mail's local mailboxes (lists every account if omitted)",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 60, minimum 5, maximum 600). Running out is not an error: whatever was read is returned, and the coverage fields say what was not. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "mail_list_mailboxes"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Mail",
+        "description": "Mark an email as read or unread. Searches all accounts when account omitted. The result is read back off the message rather than restated from the request: it names the message (numeric and RFC ids), the account and mailbox it was found in, and the read state Mail reports afterwards. If Mail does not agree the flag was set, that is an error rather than a success sentence",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name",
+              "type": "string"
+            },
+            "mailbox": {
+              "description": "Mailbox to check first (default: INBOX); automatically falls back to searching all mailboxes. Matches a full path (Projects/Archive) or a leaf name",
+              "type": "string"
+            },
+            "message_id": {
+              "description": "Message ID from mail_get_emails or mail_search results",
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "read": {
+              "description": "true to mark as read, false to mark as unread",
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 60, minimum 5, maximum 600). Running out is reported as an error, and because it can fire after Mail has already acted, check the mailbox before retrying rather than assuming nothing happened. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "message_id",
+            "read"
+          ],
+          "type": "object"
+        },
+        "name": "mail_mark_read"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Mail",
+        "description": "Record a triage verdict for a message in macMCP's own local scan cache, without touching Mail.app at all -- no flag, colour or property on the message changes. This is the read-only half of the batch-triage pattern: mail_move_to_junk already records \"junk\" for a message it moves, so call this for the messages you looked at and decided were NOT junk, so a later mail_get_emails with unreviewed_only does not hand them back to you again. The cache is keyed on the account and the message's RFC Message-ID (never the numeric id, which does not survive a move) and is scoped to the calling client -- a different client's triage progress is never visible here and this call never affects what mail_move_to_junk or any other tool does. See mail_clear_scan_cache to remove entries",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name to search for the message (optional, speeds up lookup)",
+              "type": "string"
+            },
+            "mailbox": {
+              "description": "Mailbox to check first (default: INBOX); automatically falls back to searching all mailboxes. Matches a full path (Projects/Archive) or a leaf name",
+              "type": "string"
+            },
+            "message_id": {
+              "description": "Message ID from mail_get_emails or mail_search results",
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "note": {
+              "description": "Optional free-form note, e.g. why -- stored alongside the verdict",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 60, minimum 5, maximum 600). Running out is not an error: whatever was read is returned, and the coverage fields say what was not. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            },
+            "verdict": {
+              "description": "Free-form label for what was decided, e.g. \"not_junk\". Stored and returned verbatim; mail_get_emails' unreviewed_only only cares whether a verdict was recorded at all, not which one",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message_id",
+            "verdict"
+          ],
+          "type": "object"
+        },
+        "name": "mail_mark_reviewed"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Mail",
+        "description": "Move an email to a different mailbox of the same account. Searches all accounts when account omitted, and the destination is resolved inside whichever account the message was found in \u2014 pass target_account to move it to a different account instead. Returns where the message landed and whether that was confirmed by reading it back",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name to search for the message (optional, speeds up lookup)",
+              "type": "string"
+            },
+            "message_id": {
+              "description": "Message ID from mail_get_emails or mail_search results",
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "source_mailbox": {
+              "description": "Source mailbox to check first (default: INBOX); automatically falls back to searching all mailboxes. Matches a full path (Projects/Archive) or a leaf name",
+              "type": "string"
+            },
+            "target_account": {
+              "description": "Account to move the message INTO. Omit to keep it in its own account \u2014 which is almost always what you want, since every account has an Archive, Sent, Trash and Drafts. Setting this to another account uploads the message to that account and removes it from this one. That upload is a re-send of Mail's own copy, not a server-side move, so the bytes change: headers, content and RFC Message-Id survive, but the numeric message_id does not, line endings arrive as LF, and any NUL byte is lost \u2014 the same caveats mail_get_source reports as fidelity. Mail does fetch a message it holds only partially before uploading it, so nothing is truncated",
+              "type": "string"
+            },
+            "target_mailbox": {
+              "description": "Destination mailbox, resolved within the message's own account. A mailbox is named by its path: Mail reports leaf names for a flattened tree, so one account can hold two mailboxes called Archive and two called Trash. A bare name means the mailbox at the root of the account (Archive is the account's own Archive, never Projects/Archive); a nested one is named by its full path with / separators (Projects/Archive). A leaf name that only one mailbox in the account carries also works. mail_list_mailboxes lists these paths, and every mailbox reported back to you is one. If two mailboxes in the account carry the name and neither is at the root, the move is refused and both paths are named rather than one being guessed at",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 120, minimum 5, maximum 600). Running out is reported as an error, and because it can fire after Mail has already acted, check the mailbox before retrying rather than assuming nothing happened. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "message_id",
+            "target_mailbox"
+          ],
+          "type": "object"
+        },
+        "name": "mail_move"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Mail",
+        "description": "Move an email to its own account's Junk mailbox. This is a narrower capability than mail_move on purpose: it takes no target_mailbox and cannot move a message anywhere else, cannot cross an account boundary, and does NOT require Junk to be in a client's mail_mailboxes scope (that field is read+write, and requiring the destination in it would hand a read-only triage profile write access to every other mailbox the field also names). A profile can therefore be granted \"may read INBOX, may triage-move suspicious mail to Junk\" without ever being able to move mail anywhere else, draft, or send -- the intended shape for an agent evaluating untrusted mail, where the mail body itself may contain injected instructions. Refuses, naming the account, if it has no mailbox named Junk at all -- it never falls back to Trash, since recoverability from Junk is the reason this tool exists rather than mail_move. On success this is recorded in the local scan cache (verdict: junk) so a later mail_get_emails call with unreviewed_only can skip it; see mail_mark_reviewed for recording the other verdict",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name to search for the message (optional, speeds up lookup)",
+              "type": "string"
+            },
+            "mailbox": {
+              "description": "Mailbox to check first (default: INBOX); automatically falls back to searching all mailboxes. Matches a full path (Projects/Archive) or a leaf name",
+              "type": "string"
+            },
+            "message_id": {
+              "description": "Message ID from mail_get_emails or mail_search results",
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 100, minimum 5, maximum 600). Running out is reported as an error, and because it can fire after Mail has already acted, check the mailbox before retrying rather than assuming nothing happened. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "message_id"
+          ],
+          "type": "object"
+        },
+        "name": "mail_move_to_junk"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Mail",
+        "description": "Save attachments from a received message to disk. Writes the files directly (Mail's own save is blocked by its sandbox). Selects out of exactly the list mail_get_email reports in attachments \u2014 same membership, same order, same names \u2014 so index is an index into that list and attachment_name is one of its name values. Saves every attachment in it when none of part_path, attachment_name or index is given. Inline parts (a logo, a pasted image the message displays in its body) are never in that list and are never saved by default; mail_get_email reports them separately under inline_parts, and part_path \u2014 the part's position in the message, e.g. \"2\" or \"1.2\" \u2014 is the exact handle that reaches one, or any other single part. Each saved entry reports part_path too. The result reports fidelity for the message source the attachments were cut out of: Mail normalises CRLF to LF and turns any NUL into 0x80 before macMCP sees the bytes, so a part carried as 8bit or binary can reach disk altered in those two ways. A part carried as base64 or quoted-printable is unaffected. Refuses rather than writing a truncated file when Mail has not finished downloading the message, including when a multipart message stops before the \"--boundary--\" line that closes it (fidelity.complete_basis \"unterminated\"), which catches a fragment that the byte count alone cannot \u2014 Mail's size is quoted in units it does not name, and the slack in reading it as wire bytes is worth ~1.3% of a large message. Note that fidelity.message_size is null when Mail would not report the size, and completeness could then not be checked. The result also reports structure: parsed_complete is false when the message nests multipart parts deeper than macMCP descends (max_depth) or declares more parts than it reads (max_parts), in which case an attachment inside those parts is not in saved and not counted in attachments_in_message",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name (optional, speeds up lookup)",
+              "type": "string"
+            },
+            "attachment_name": {
+              "description": "Name of the attachment to save, as reported by mail_get_email in attachments[].name \u2014 the name the message itself declares (exact match preferred, substring accepted). Not mail_name, which is what Mail.app displays for the same part and can differ from what the message says",
+              "type": "string"
+            },
+            "destination": {
+              "description": "Absolute POSIX path: a directory to save into (created if missing), or a full file path when saving a single attachment",
+              "type": "string"
+            },
+            "index": {
+              "description": "Zero-based index into mail_get_email's attachments list, as an alternative to attachment_name. Never selects an inline part",
+              "type": "integer"
+            },
+            "mailbox": {
+              "description": "Mailbox to check first (default: INBOX); automatically falls back to searching all mailboxes. Matches a full path (Projects/Archive) or a leaf name",
+              "type": "string"
+            },
+            "message_id": {
+              "description": "Numeric message ID from mail_get_emails or mail_search, or an RFC Message-ID",
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "overwrite": {
+              "description": "Overwrite an existing file instead of saving alongside it as \"name (2).ext\" (default: false)",
+              "type": "boolean"
+            },
+            "part_path": {
+              "description": "Exact position of one part in the message (\"2\", \"1.2\"), as reported by mail_get_email in attachments[].part_path and inline_parts[].part_path. The one selector that reaches an inline part, and unambiguous where a name is not",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 300, minimum 5, maximum 600). Running out is not an error: whatever was read is returned, and the coverage fields say what was not. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "message_id",
+            "destination"
+          ],
+          "type": "object"
+        },
+        "name": "mail_save_attachment"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Mail",
+        "description": "Search emails by subject and sender, optionally recipients and body (case-insensitive). Scans every mailbox in every account by default, newest first. Returns matches plus scan-coverage metadata (total_matches, truncated, messages_scanned, scanned/skipped mailboxes). Mailbox names in the result are paths (Projects/Archive), which is what identifies a mailbox and what you can pass straight back as mailbox/target_mailbox. excluded_mailboxes names what a mailbox 'all' scan deliberately left out \u2014 the accounts' own Trash, Junk, Drafts and Outbox \u2014 which are out of scope rather than unread, so they do not make scan_complete false. scan_complete says whether every mailbox in scope was actually read; when it is false the counts are a floor rather than a total and note says what was missed. The columns a scan reads arrive in separate Apple Events, so a mailbox that changes between them would pair one message's id with another message's subject. When that is detected, every row being returned from that mailbox is re-read message by message by its own id and carries that message's own subject, sender and date; the mailbox is named in changed_mailboxes with rows_reverified and rows_dropped, and note says what that means for the count, which was taken from the columns. skipped_mailboxes names mailboxes that could not be read at all, each with the reason. If nothing in scope could be read the call is an error rather than an empty result, because total_matches 0 would be a claim that nothing matched. With search_body, body_search reports the second pass's own coverage separately (body_scan_complete, and body_scan_skipped_mailboxes / body_scan_failed_accounts / body_scan_changed_mailboxes / body_scan_note when they apply), because it is a second read of the same scope and can fall short where the first did not. That second pass is deliberately WIDER than body_scan_limit, because a message already among the results and a message that matched on its own subject or sender are not read again; when there were still fewer bodies to read than there was room for, body_scan_shortfall says how many and body_scan_shortfall_note says why",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name, or \"On My Mac\" for Mail's local mailboxes (searches every account and the local boxes if omitted)",
+              "type": "string"
+            },
+            "body_scan_limit": {
+              "description": "How many bodies the search_body pass may read (default: 25, max: 200). Expect ~1.2s per body",
+              "type": "integer"
+            },
+            "limit": {
+              "description": "Maximum number of results, newest first (default: 10)",
+              "type": "integer"
+            },
+            "mailbox": {
+              "description": "Mailbox to search (default: 'all' \u2014 every mailbox except the account's own junk/trash/drafts/outbox, which are named in excluded_mailboxes; a nested folder called Trash is ordinary mail and is searched). A mailbox is named by its path: Mail reports leaf names for a flattened tree, so one account can hold two mailboxes called Archive and two called Trash. A bare name means the mailbox at the root of the account (Archive is the account's own Archive, never Projects/Archive); a nested one is named by its full path with / separators (Projects/Archive). A leaf name that only one mailbox in the account carries also works. mail_list_mailboxes lists these paths, and every mailbox reported back to you is one",
+              "type": "string"
+            },
+            "query": {
+              "description": "Literal text matched case-insensitively as a substring of the subject or the sender (and of recipients or body when those options are on). No operators, wildcards, field prefixes or date filters: the whole string is one substring",
+              "type": "string"
+            },
+            "search_body": {
+              "description": "Also match body text. Mail can only supply bodies one at a time (~1.2s each), so this is a capped second pass over the newest messages in scope \u2014 it does NOT search every body. Coverage is reported in the body_search field of the result",
+              "type": "boolean"
+            },
+            "search_recipients": {
+              "description": "Also match To/CC recipient names and addresses (adds roughly 1s per 1000 messages scanned)",
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 300, minimum 5, maximum 600). Running out is not an error: whatever was read is returned, and the coverage fields say what was not. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        "name": "mail_search"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "category": "Mail",
+        "description": "Send an email via Mail.app, optionally as HTML and with file attachments. The result reports rendered_chars: the length of the body Mail composed with all whitespace removed, so an 18-character body of \"just one line here\" reports 15. It exists to catch a body Mail rendered as empty, not to match the length of what was sent. Note: Mail rewrites the body of anything composed through its scripting interface \u2014 the delivered message carries the text inside <blockquote type=\"cite\">, so its text/plain alternative arrives with \"> \" on every line. This is Mail's own behaviour (a message typed by hand in Mail is unaffected, and plain AppleScript produces the same result), not something this tool can turn off. Use mail_create_draft, whose result reports body_check from the saved message, if you need to see what Mail actually produced. The result also reports from and account (the identity Mail actually sent as, read off the message) and autosaved_draft: Mail autosaves whatever it is composing, and this says whether that copy was found in Drafts and removed",
+        "inputSchema": {
+          "properties": {
+            "account": {
+              "description": "Account name to send from (uses default account if omitted)",
+              "type": "string"
+            },
+            "attachments": {
+              "description": "Absolute POSIX paths of files to attach, e.g. [\"/Users/me/Budget.pdf\"]. Attached after the body so they appear at the end of the message. Each path is read off this host and its bytes leave the machine in the message, so it is confined to the file_dirs of the calling client's resource scope; a client whose scope carries no file_dirs may compose and send but may not attach a file from this host, and an out-of-scope path is refused with nothing composed",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "bcc": {
+              "description": "BCC recipient address(es), same forms as `to`",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "string",
+                "array"
+              ]
+            },
+            "body": {
+              "description": "Plain-text email body. Required unless html_body is given",
+              "type": "string"
+            },
+            "cc": {
+              "description": "CC recipient address(es), same forms as `to`",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "string",
+                "array"
+              ]
+            },
+            "from": {
+              "description": "Sender email address (overrides account lookup). Must be an address one of Mail's accounts sends as; an address no account owns is refused rather than substituted, because Mail's own behaviour is to send from the default account instead. The address the message actually went out as is reported back as `from`",
+              "type": "string"
+            },
+            "html_body": {
+              "description": "HTML email body. Sent as a real text/html message, so tables, headings and links render. Takes precedence over body when both are given (Mail generates its own plain-text alternative)",
+              "type": "string"
+            },
+            "subject": {
+              "description": "Email subject",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "description": "Wall-clock budget in seconds for this whole call, shared by every step it takes (default: 120, minimum 5, maximum 600). Running out is reported as an error, and because it can fire after Mail has already acted, check the mailbox before retrying rather than assuming nothing happened. Raise it when Mail is busy \u2014 another client driving Mail has been measured to slow the same request by 8x",
+              "type": "integer"
+            },
+            "to": {
+              "description": "Recipient address(es). One string, an array of strings, or a comma-separated list. Display names are allowed: \"Susan Cross\" <s@example.org>",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "string",
+                "array"
+              ]
+            }
+          },
+          "required": [
+            "to",
+            "subject"
+          ],
+          "type": "object"
+        },
+        "name": "mail_send"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Maps",
+        "description": "Build an Apple Maps directions URL from an origin, a destination and a travel mode, and return JSON {url, destination, origin?, mode?}. Nothing is looked up or opened: no route, distance or travel time is computed, and the places are not validated. With `from` omitted, Maps uses the device's current location when the URL is opened.",
+        "inputSchema": {
+          "properties": {
+            "from": {
+              "description": "Origin address or place name (uses current location if omitted)",
+              "type": "string"
+            },
+            "mode": {
+              "description": "Travel mode",
+              "enum": [
+                "driving",
+                "walking",
+                "transit"
+              ],
+              "type": "string"
+            },
+            "to": {
+              "description": "Destination address or place name",
+              "type": "string"
+            }
+          },
+          "required": [
+            "to"
+          ],
+          "type": "object"
+        },
+        "name": "maps_get_directions"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "category": "Maps",
+        "description": "Open a location in Apple Maps",
+        "inputSchema": {
+          "properties": {
+            "query": {
+              "description": "Address or place name to open in Apple Maps",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        "name": "maps_open"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "category": "Maps",
+        "description": "Geocode an address or a well-known place name with Apple's geocoder and return a JSON array of candidates with latitude, longitude, and whichever of name, street, street_number, city, state, country and postal_code are known. It is not a business or category search: a query such as \"coffee near me\" finds nothing useful. Same backend as location_geocode, with street-level address fields.",
+        "inputSchema": {
+          "properties": {
+            "query": {
+              "description": "Place name or address to search for",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        "name": "maps_search"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Messages",
+        "description": "Get messages from a specific chat conversation, newest first. chat_id is the chat_identifier as messages_list_chats reports it. A message's image attachments are listed under attachments (attachment_id, filename, mime_type); save one with messages_save_attachment.",
+        "inputSchema": {
+          "properties": {
+            "chat_id": {
+              "description": "The chat_identifier to retrieve messages from",
+              "type": "string"
+            },
+            "limit": {
+              "description": "Maximum number of messages to return (default 50)",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "chat_id"
+          ],
+          "type": "object"
+        },
+        "name": "messages_get_chat"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Messages",
+        "description": "List chat conversations from Messages.app, most recently active first; chats with no messages are left out. Requires Full Disk Access (reads Messages' local chat.db). Each entry has rowid, chat_identifier, service_name and, when the chat has one, display_name. chat_identifier is the chat_id messages_get_chat takes. Does not return message text",
+        "inputSchema": {
+          "properties": {
+            "limit": {
+              "description": "Maximum number of chats to return (default 20)",
+              "type": "integer"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "messages_list_chats"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Messages",
+        "description": "Save an image attachment to disk, by the attachment_id messages_get_chat or messages_search reported. Refuses an attachment that is not an image, or one no longer on disk. Writes one file at destination, replacing any file already there.",
+        "inputSchema": {
+          "properties": {
+            "attachment_id": {
+              "description": "attachment_id from messages_get_chat or messages_search",
+              "type": "integer"
+            },
+            "destination": {
+              "description": "Absolute path of the file to write, including its filename (not a directory). The parent directory must exist. Under a resource scope, must fall inside the client's file_dirs",
+              "type": "string"
+            }
+          },
+          "required": [
+            "attachment_id",
+            "destination"
+          ],
+          "type": "object"
+        },
+        "name": "messages_save_attachment"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Messages",
+        "description": "Search messages across every chat, by text and/or by who they are with. Requires Full Disk Access. Returns the newest matches first, with messages_scanned and scan_complete saying how much of the window was read. A message's image attachments are listed under attachments (attachment_id, filename, mime_type) \u2014 an image with no caption has no text to match query and only appears when query is omitted.",
+        "inputSchema": {
+          "properties": {
+            "contact": {
+              "description": "Phone number or email to limit the search to conversations with this person. Any formatting: +1 (555) 123-4567 and 5551234567 are the same handle. The whole thread is searched, including messages sent from this Mac.",
+              "type": "string"
+            },
+            "hours_ago": {
+              "description": "How far back to search, in hours (default 24). Ignored when 'since' is given.",
+              "type": "number"
+            },
+            "limit": {
+              "description": "Maximum number of matching messages to return (default 100)",
+              "type": "integer"
+            },
+            "query": {
+              "description": "Text to look for, matched case-insensitively anywhere in a message. Omit to get every message in the window.",
+              "type": "string"
+            },
+            "since": {
+              "description": "Search from this ISO 8601 date, with or without a time (2026-03-15 or 2026-03-15T09:00:00Z). Overrides hours_ago.",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "messages_search"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "category": "Messages",
+        "description": "Send an iMessage to a phone number or email address, and confirm from chat.db that it actually sent (Messages' own scripting interface has no delivery status). Returns an error if it definitely failed, or an 'unconfirmed' result if that isn't known within timeout_seconds. Text sends are reliable. Image sends via image_path are not known to work: in testing every image send failed inside Messages after hand-off (chat.db error 25, 22 or 1) while the text in the same call was delivered, and a non-error or 'unconfirmed' result does not show the image arrived. messages_get_chat shows the image's send_error if it failed.",
+        "inputSchema": {
+          "properties": {
+            "image_path": {
+              "description": "Absolute path to an image file to send. Must be a real, readable image; any other file is refused rather than handed to Messages.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Message text to send. Optional if image_path is given.",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "description": "How long to wait for Messages to confirm the send before reporting it as unconfirmed (default 8, max 60). A message to a working recipient typically confirms in under 2 seconds; one that will fail can take 20s or more to report why, so raise this to wait for that answer instead of an 'unconfirmed' one.",
+              "type": "number"
+            },
+            "to": {
+              "description": "Recipient phone number or email address",
+              "type": "string"
+            }
+          },
+          "required": [
+            "to"
+          ],
+          "type": "object"
+        },
+        "name": "messages_send"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "System",
+        "description": "Report current macOS permission status for the TCC-protected services macMCP uses (Location, Calendars, Contacts, Reminders, and Automation of Mail and of Messages, which mail_* and messages_send need). Does not cover Full Disk Access, which messages_list_chats/messages_get_chat/messages_search need to read chat.db -- macOS has no API to query that grant's status, only to be refused by it. Read-only; does not trigger system prompts. Use Relay > Settings > MCP > Reset Permissions to grant or re-grant.",
+        "inputSchema": {
+          "properties": {},
+          "required": [],
+          "type": "object"
+        },
+        "name": "permissions_check"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Reminders",
+        "description": "Mark one incomplete reminder complete, found by its whole title (case-insensitive) across every list this client may reach, and return a one-line confirmation. When several incomplete reminders share the title, the first one EventKit returns is completed; no list or identifier argument chooses between them. Completed reminders are never matched.",
+        "inputSchema": {
+          "properties": {
+            "title": {
+              "description": "Title of the reminder to complete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "title"
+          ],
+          "type": "object"
+        },
+        "name": "reminders_complete"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Reminders",
+        "description": "Create a reminder in one list and return a one-line text confirmation with no identifier. priority is clamped to 0-9.",
+        "inputSchema": {
+          "properties": {
+            "due_date": {
+              "description": "Due date and time, ISO 8601 with a UTC offset or Z, e.g. 2026-03-15T09:00:00Z or 2026-03-15T09:00:00-07:00. A bare date or a time without an offset is refused.",
+              "type": "string"
+            },
+            "list_name": {
+              "description": "Reminder list to create in, named as Account/List exactly as reminders_list reports its `list_path` \u2014 for example 'iCloud/Groceries'. A bare list name works only when a single list carries it. Omitted, the reminder goes to this Mac's default list; a client whose access profile is scoped gets that default only when it is inside the scope, and is otherwise asked to name one rather than having the reminder filed somewhere it was never granted.",
+              "type": "string"
+            },
+            "notes": {
+              "description": "Notes for the reminder",
+              "type": "string"
+            },
+            "priority": {
+              "description": "Priority: 0 = none, 1-4 = high, 5 = medium, 6-9 = low",
+              "type": "integer"
+            },
+            "title": {
+              "description": "Reminder title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "title"
+          ],
+          "type": "object"
+        },
+        "name": "reminders_create"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Reminders",
+        "description": "List reminders. Returns title, completed status, priority, list name, and optional due_date/notes.",
+        "inputSchema": {
+          "properties": {
+            "list_name": {
+              "description": "Reminder list to filter by, named as Account/List exactly as reminders_list reports its `list_path` \u2014 for example 'iCloud/Groceries'. A bare list name works only when a single list carries it; two carriers is refused with both named. Omit to list every reminder this client may reach.",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "reminders_list"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "category": "Shortcuts",
+        "description": "List all available macOS shortcuts",
+        "inputSchema": {
+          "properties": {},
+          "required": [],
+          "type": "object"
+        },
+        "name": "shortcuts_list"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "category": "Shortcuts",
+        "description": "Run an installed macOS shortcut by its exact name, as shortcuts_list prints it, and return the text it outputs, or a note that it produced none. A shortcut is user-authored automation and can have any side effect, including network requests and sending messages. The call blocks until the shortcut finishes, with no timeout; a shortcut that asks for input or confirmation waits for a person at the Mac. `input` is handed to the shortcut as a text file.",
+        "inputSchema": {
+          "properties": {
+            "input": {
+              "description": "Input text to pass to the shortcut",
+              "type": "string"
+            },
+            "name": {
+              "description": "Name of the shortcut to run",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "name": "shortcuts_run"
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "category": "Utilities",
+        "description": "Play a local audio file through this Mac's speakers and return a one-line confirmation when playback ends; the call blocks for the file's full length. Takes a file path only; a URL is not fetched.",
+        "inputSchema": {
+          "properties": {
+            "path": {
+              "description": "Absolute POSIX path of the audio file to play. Confined to the file_dirs of the calling client's resource scope; a client whose scope carries no file_dirs may not play a file off this host at all, and a path outside those directories is refused",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "name": "utilities_play_sound"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "category": "Weather",
+        "description": "Get current conditions for a latitude/longitude from Open-Meteo and return its raw JSON: temperature_2m and apparent_temperature in \u00b0C, relative_humidity_2m in %, wind_speed_10m in km/h, wind_direction_10m in degrees, and weather_code as a WMO weather code number.",
+        "inputSchema": {
+          "properties": {
+            "latitude": {
+              "description": "Latitude",
+              "type": "number"
+            },
+            "longitude": {
+              "description": "Longitude",
+              "type": "number"
+            }
+          },
+          "required": [
+            "latitude",
+            "longitude"
+          ],
+          "type": "object"
+        },
+        "name": "weather_current"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "category": "Weather",
+        "description": "Get a daily forecast for a latitude/longitude from Open-Meteo and return its raw JSON: per day temperature_2m_max and temperature_2m_min in \u00b0C, precipitation_sum in mm, and weather_code as a WMO weather code number. days is clamped to 1-16.",
+        "inputSchema": {
+          "properties": {
+            "days": {
+              "description": "Number of forecast days (default 7, max 16)",
+              "type": "integer"
+            },
+            "latitude": {
+              "description": "Latitude",
+              "type": "number"
+            },
+            "longitude": {
+              "description": "Longitude",
+              "type": "number"
+            }
+          },
+          "required": [
+            "latitude",
+            "longitude"
+          ],
+          "type": "object"
+        },
+        "name": "weather_forecast"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "category": "Weather",
+        "description": "Get an hourly forecast for a latitude/longitude from Open-Meteo and return its raw JSON: temperature_2m in \u00b0C, precipitation_probability in %, and weather_code as a WMO weather code number.",
+        "inputSchema": {
+          "properties": {
+            "hours": {
+              "description": "Number of forecast hours (default 24)",
+              "type": "integer"
+            },
+            "latitude": {
+              "description": "Latitude",
+              "type": "number"
+            },
+            "longitude": {
+              "description": "Longitude",
+              "type": "number"
+            }
+          },
+          "required": [
+            "latitude",
+            "longitude"
+          ],
+          "type": "object"
+        },
+        "name": "weather_hourly"
+      },
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "category": "Web",
+        "description": "Send an HTTP GET to an http/https URL, following redirects, and return a status line \"HTTP <status> \u2014 <content-type> \u2014 <n> bytes\" followed by the raw response body as text. HTML is returned as markup, not converted to readable text. A body over 1,000,000 bytes is cut and marked truncated. A 4xx or 5xx response comes back the same way rather than as an error, so read the status line.",
+        "inputSchema": {
+          "properties": {
+            "timeout": {
+              "description": "Request timeout in seconds (default 30, max 120)",
+              "type": "integer"
+            },
+            "url": {
+              "description": "The http or https URL to fetch",
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        },
+        "name": "web_fetch"
       }
     ]
   },
   "answers": {
-    "mail_send": {"content": [{"type": "text", "text": "Email sent."}], "isError": false}
+    "mail_send": {
+      "content": [
+        {
+          "text": "{\n  \"account\" : \"Alice\",\n  \"attachments\" : 0,\n  \"autosaved_draft\" : {\n    \"account\" : \"Alice\",\n    \"checked\" : true,\n    \"found\" : 0,\n    \"note\" : \"None was in Drafts when this was checked, immediately after Mail was told to close the message. Mail writes its autosaved copy on its own schedule and has been measured writing one several seconds later when it is busy, so a copy of this message can still appear there.\",\n    \"removed\" : 0\n  },\n  \"content_type\" : \"text\",\n  \"from\" : \"alice@relaytest.local\",\n  \"recipients\" : {\n    \"bcc\" : 0,\n    \"cc\" : 0,\n    \"to\" : 1\n  },\n  \"rendered_chars\" : 40,\n  \"status\" : \"sent\"\n}",
+          "type": "text"
+        }
+      ]
+    }
   }
 }
