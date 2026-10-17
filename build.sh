@@ -9,6 +9,9 @@
 #   ./build.sh --test-build     # build with the test seams (tag relaytest) into
 #                               # ~/Applications/RelayTest.app; the running tray
 #                               # is not stopped and the app is not launched; not with --release
+#   ./build.sh --bundle DIR     # build and Developer-ID-sign Relay.app into DIR: no
+#                               # install, no stop of any running relay, no launch;
+#                               # not with --release or --test-build
 #
 # go vet runs BEFORE install so a broken binary never lands in /Applications.
 # Use --test on every developer-machine build: vet otherwise runs only at
@@ -22,12 +25,23 @@ DEST="/Applications/$APP"
 RELEASE=false
 RUN_TESTS=false
 TEST_BUILD=false
+BUNDLE_DIR=""
 
-for arg in "$@"; do
+while [ $# -gt 0 ]; do
+    arg="$1"
+    shift
     case "$arg" in
         --release) RELEASE=true; RUN_TESTS=true ;;
         --test)    RUN_TESTS=true ;;
         --test-build) TEST_BUILD=true ;;
+        --bundle=*) BUNDLE_DIR="${arg#--bundle=}" ;;
+        --bundle)
+            if [ $# -eq 0 ] || [ -z "$1" ]; then
+                echo "--bundle needs a directory" >&2
+                exit 1
+            fi
+            BUNDLE_DIR="$1"
+            shift ;;
         --help|-h)
             # Print the header comment block (lines 3..first non-comment after).
             awk 'NR>=3 && /^[^#]/ {exit} NR>=3 {sub(/^# ?/,""); print}' "$0"
@@ -42,6 +56,18 @@ done
 if $TEST_BUILD && $RELEASE; then
     echo "--test-build cannot be combined with --release" >&2
     exit 1
+fi
+# A bundle build writes everything it builds under its own stage and DIR, so
+# two of them, from one checkout or two, can run at once.
+OUT="."
+if [ -n "$BUNDLE_DIR" ]; then
+    if $RELEASE || $TEST_BUILD; then
+        echo "--bundle cannot be combined with --release or --test-build" >&2
+        exit 1
+    fi
+    mkdir -p "$BUNDLE_DIR"
+    BUNDLE_DIR="$(cd "$BUNDLE_DIR" && pwd -P)"
+    DEST="$BUNDLE_DIR/$APP"
 fi
 if $TEST_BUILD; then
     DEST="$HOME/Applications/RelayTest.app"
@@ -71,8 +97,8 @@ stop_relay() {
     echo "relay did not exit after SIGTERM; sending SIGKILL" >&2
     pkill -KILL -x relay 2>/dev/null || true
 }
-# The test-build install leaves the real tray alone.
-if ! $TEST_BUILD; then
+# The test-build install and a bundle build leave the real tray alone.
+if ! $TEST_BUILD && [ -z "$BUNDLE_DIR" ]; then
     stop_relay
 fi
 
@@ -88,6 +114,9 @@ if $RUN_TESTS; then
 fi
 
 STAGE="/tmp/relay-build-$$"
+if [ -n "$BUNDLE_DIR" ]; then
+    OUT="$STAGE/bin"
+fi
 
 # Code signing -- per-binary, innermost first.
 # Both branches enable hardened runtime so dev builds catch the same entitlement
@@ -99,6 +128,9 @@ IDENTITY="${RELAY_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | gr
 if [ -n "$IDENTITY" ]; then
     echo "Signing with: $IDENTITY"
     SIGN_BASE=(--force --sign "$IDENTITY" --options runtime --timestamp)
+elif [ -n "$BUNDLE_DIR" ]; then
+    echo "--bundle needs a Developer ID Application identity; none found" >&2
+    exit 1
 else
     echo "No Developer ID found, ad-hoc signing"
     # Ad-hoc can't --timestamp (no cert authority), but runtime stays on for parity.
@@ -108,15 +140,15 @@ fi
 # Build relay-sessions first: it is signed, and its CDHash read back, before
 # relay itself is built (see the helper block below) -- R-S9, spikes/SP3.md.
 echo "Building relay-sessions..."
-CGO_ENABLED=1 go build -o relay-sessions ./cmd/relaysessions
+rm -rf "$STAGE"
+mkdir -p "$STAGE/$APP/Contents/MacOS" "$STAGE/$APP/Contents/Helpers" "$OUT"
+CGO_ENABLED=1 go build -o "$OUT/relay-sessions" ./cmd/relaysessions
 
 # Build bundle in /tmp
 # Use cat to copy binary -- breaks provenance chain that cp preserves
-rm -rf "$STAGE"
-mkdir -p "$STAGE/$APP/Contents/MacOS" "$STAGE/$APP/Contents/Helpers"
-cat relay-sessions > "$STAGE/$APP/Contents/Helpers/relay-sessions"
+cat "$OUT/relay-sessions" > "$STAGE/$APP/Contents/Helpers/relay-sessions"
 chmod +x "$STAGE/$APP/Contents/Helpers/relay-sessions"
-rm -f relay-sessions
+rm -f "$OUT/relay-sessions"
 
 # relay-sessions is signed before relay is even built, with its own minimal
 # entitlements (no get-task-allow, no JIT, no apple-events, no TCC --
@@ -149,7 +181,7 @@ RELAY_TAGS=()
 if $TEST_BUILD; then
     RELAY_TAGS=(-tags relaytest)
 fi
-CGO_ENABLED=1 go build ${RELAY_TAGS[@]+"${RELAY_TAGS[@]}"} -ldflags "-X main.buildVersion=$RELAY_VERSION -X main.HelperCDHash=$HELPER_CDHASH -X main.HelperTeam=$HELPER_TEAM" -o relay ./cmd/relay
+CGO_ENABLED=1 go build ${RELAY_TAGS[@]+"${RELAY_TAGS[@]}"} -ldflags "-X main.buildVersion=$RELAY_VERSION -X main.HelperCDHash=$HELPER_CDHASH -X main.HelperTeam=$HELPER_TEAM" -o "$OUT/relay" ./cmd/relay
 
 # A release-path binary must not carry the test seams; a test-build
 # binary must. Checked before anything is staged or installed.
@@ -158,13 +190,13 @@ if $TEST_BUILD; then
 else
     CHECK_MODE=absent
 fi
-if ! scripts/check-test-build.sh "$CHECK_MODE" relay; then
+if ! scripts/check-test-build.sh "$CHECK_MODE" "$OUT/relay"; then
     echo "✗ test-build check ($CHECK_MODE) failed; install aborted" >&2
-    rm -f relay
+    rm -f "$OUT/relay"
     exit 1
 fi
 
-cat relay > "$STAGE/$APP/Contents/MacOS/relay"
+cat "$OUT/relay" > "$STAGE/$APP/Contents/MacOS/relay"
 chmod +x "$STAGE/$APP/Contents/MacOS/relay"
 cat Info.plist > "$STAGE/$APP/Contents/Info.plist"
 mkdir -p "$STAGE/$APP/Contents/Resources"
@@ -183,9 +215,13 @@ codesign --verify --deep --strict --verbose=2 "$STAGE/$APP"
 mkdir -p "$(dirname "$DEST")"
 rm -rf "$DEST"
 mv "$STAGE/$APP" "$DEST"
+rm -f "$OUT/relay"
 rm -rf "$STAGE"
-rm -f relay
 
+if [ -n "$BUNDLE_DIR" ]; then
+    echo "Bundle built at $DEST"
+    exit 0
+fi
 echo "Installed to $DEST"
 
 if $RELEASE; then
