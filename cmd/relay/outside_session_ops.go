@@ -11,6 +11,8 @@ import (
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 	"io"
+	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -42,15 +44,47 @@ func (b *limitedOutsideBuffer) Write(p []byte) (int, error) {
 	}
 	return b.Buffer.Write(p)
 }
+
+// outsideSpoolEnv names this instance's console report spool. The outside
+// Claude session's hook reads the same variable, so a session started with an
+// instance's spool in its environment reports to that instance alone.
+const outsideSpoolEnv = "RELAY_OUTSIDE_SPOOL"
+
+const defaultOutsideSpool = `"$HOME/.claude/relay-outside-reports"`
+
+// outsideSpool is a report spool as a shell word: the default, unset, or the
+// quoted path relay was started with. valid is false for a path that is not
+// absolute and clean; that spool is never drained rather than guessed at.
+type outsideSpool struct {
+	word, path string
+	valid      bool
+}
+
+func consoleOutsideSpool() outsideSpool {
+	v := os.Getenv(outsideSpoolEnv)
+	switch {
+	case v == "":
+		return outsideSpool{word: defaultOutsideSpool, valid: true}
+	case !filepath.IsAbs(v) || filepath.Clean(v) != v:
+		return outsideSpool{}
+	}
+	return outsideSpool{word: outsideQuote(v), path: v, valid: true}
+}
+
 func newOutsideInventory(store config.SettingsStore, clock serverClock, deps sessionRouteDeps) *outsidesessions.Inventory {
+	console := consoleOutsideSpool()
+	if !console.valid {
+		slog.Warn("outside sessions: console spool disabled, "+outsideSpoolEnv+" is not an absolute clean path",
+			"env", outsideSpoolEnv, "value", os.Getenv(outsideSpoolEnv))
+	}
 	return outsidesessions.New(outsidesessions.Options{Clock: clock, Machines: func() []outsidesessions.Machine {
 		s := config.FreshSettings(store)
-		machines := []outsidesessions.Machine{outsideMachine(store, deps, nil)}
+		machines := []outsidesessions.Machine{outsideMachine(store, deps, nil, console)}
 		for _, h := range s.Hosts {
 			for _, p := range s.Projects {
 				if p.HostID == h.ID {
 					host := h
-					machines = append(machines, outsideMachine(store, deps, &host))
+					machines = append(machines, outsideMachine(store, deps, &host, outsideSpool{word: defaultOutsideSpool, valid: true}))
 					break
 				}
 			}
@@ -58,7 +92,7 @@ func newOutsideInventory(store config.SettingsStore, clock serverClock, deps ses
 		return machines
 	}})
 }
-func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config.Host) outsidesessions.Machine {
+func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config.Host, spool outsideSpool) outsidesessions.Machine {
 	key, name := "console", "Console"
 	var hostID *string
 	if h != nil {
@@ -78,6 +112,14 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 		native, err := outsidesessions.ParseNative(data)
 		if err != nil {
 			return outsidesessions.ProbeResult{}, err
+		}
+		// The probe script looks for the default spool only; an instance
+		// with its own spool answers for that one here.
+		if !spool.valid {
+			native.SawSpool = false
+		} else if spool.path != "" {
+			fi, err := os.Lstat(spool.path)
+			native.SawSpool = err == nil && fi.IsDir()
 		}
 		root := 0
 		managed := map[string]bool{}
@@ -178,7 +220,10 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 		if err != nil {
 			return nil, err
 		}
-		data, err := outsideRun(ctx, h, unixReports)
+		if !spool.valid {
+			return nil, outsidesessions.ErrUnavailable
+		}
+		data, err := outsideRun(ctx, h, outsideReportsScript(spool.word))
 		if err != nil {
 			return nil, err
 		}
@@ -249,7 +294,11 @@ func hostKey(h *config.Host) string {
 	return h.ID
 }
 
-const unixReports = `dir="$HOME/.claude/relay-outside-reports"; [ -d "$dir" ] || exit 0; [ ! -L "$dir" ] && [ ! -L "$HOME/.claude" ] || exit 1; [ "$(find "$dir" -maxdepth 0 -user "$(id -u)" -perm 0700 2>/dev/null)" = "$dir" ] || exit 1; n=0; for f in "$dir"/*.json; do [ -f "$f" ] && [ ! -L "$f" ] || continue; [ "$n" -lt 256 ] || break; [ -n "$(find "$f" -maxdepth 0 -user "$(id -u)" -perm 0600 2>/dev/null)" ] || continue; [ "$(wc -c < "$f")" -le 65536 ] || continue; at=$(stat -f %Fm "$f" 2>/dev/null || stat -c %y "$f"); printf '%s\t' "$at"; cat "$f" | base64 | tr -d '\r\n'; printf '\n'; rm -f "$f"; n=$((n+1)); done`
+// outsideReportsScript drains the spool dir, a shell word. It refuses a
+// symlink on the spool or its parent and a spool not 0700 and ours.
+func outsideReportsScript(dir string) string {
+	return `dir=` + dir + `; [ -d "$dir" ] || exit 0; [ ! -L "$dir" ] && [ ! -L "$(dirname "$dir")" ] || exit 1; [ "$(find "$dir" -maxdepth 0 -user "$(id -u)" -perm 0700 2>/dev/null)" = "$dir" ] || exit 1; n=0; for f in "$dir"/*.json; do [ -f "$f" ] && [ ! -L "$f" ] || continue; [ "$n" -lt 256 ] || break; [ -n "$(find "$f" -maxdepth 0 -user "$(id -u)" -perm 0600 2>/dev/null)" ] || continue; [ "$(wc -c < "$f")" -le 65536 ] || continue; at=$(stat -f %Fm "$f" 2>/dev/null || stat -c %y "$f"); printf '%s\t' "$at"; cat "$f" | base64 | tr -d '\r\n'; printf '\n'; rm -f "$f"; n=$((n+1)); done`
+}
 
 func freshOutsideHost(store config.SettingsStore, old *config.Host) (*config.Host, error) {
 	if old == nil {

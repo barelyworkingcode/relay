@@ -94,6 +94,9 @@ type Options struct {
 	// templates the test supplies, so a test of relay's own template defaults
 	// or migration sees what relay itself wrote.
 	NoDefaultTemplates bool
+	// Env adds KEY=VALUE entries to the environment serve and every CLI of
+	// this instance run with, after the harness's own.
+	Env []string
 }
 
 // Ready is ready.json, schema 1 (docs/cli.md).
@@ -188,7 +191,7 @@ func newInstanceFor(t *testing.T, o Options, fo *FakeOptions) *Instance {
 			t.Fatalf("creating %s: %v", d, err)
 		}
 	}
-	i.env = buildEnv(i.Home, i.Tmp, filepath.Join(i.Home, ".local", "bin"))
+	i.env = append(buildEnv(i.Home, i.Tmp, filepath.Join(i.Home, ".local", "bin")), o.Env...)
 	i.linkAgents()
 	if fo != nil {
 		i.bin = bundle.FakeRelay
