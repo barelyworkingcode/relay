@@ -157,6 +157,9 @@ func script(world, name string, out io.Writer, args ...string) error {
 }
 
 func run() int {
+	if len(os.Args) > 1 && os.Args[1] == "record-macmcp" {
+		return runRecordMacmcp(os.Args[2:])
+	}
 	start := time.Now()
 	fs := flag.NewFlagSet("devboxverify", flag.ContinueOnError)
 	checkout := fs.String("checkout", "", "relay checkout the running app must be built from (default: this checkout)")

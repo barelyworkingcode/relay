@@ -3,7 +3,8 @@
 // (externalMcpConn.SendRequest / readLoop) without mocking the connection.
 // Behavior is selected by the request method and by RELAY_TESTMCP_CONTEXT;
 // see contextMode below for the context/enumerate modes. RELAY_TESTMCP_CATALOG=wide
-// swaps the one-tool catalogue for a 48-tool one (wide.go).
+// swaps the one-tool catalogue for a 48-tool one (wide.go), and
+// RELAY_TESTMCP_PERSONA=macmcp makes it a stand-in for macMCP (macmcp.go).
 //
 // Built on demand by cmd/devboxverify.
 package main
@@ -155,6 +156,15 @@ func main() {
 		writeLine(b)
 	}
 
+	var mac *persona
+	if macmcpMode() {
+		var err error
+		if mac, err = loadPersona(); err != nil {
+			os.Stderr.WriteString("testmcp: macmcp persona: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+	}
+
 	var wg sync.WaitGroup
 	for in.Scan() {
 		var req struct {
@@ -167,6 +177,27 @@ func main() {
 		}
 		if req.ID == nil {
 			continue // notification (e.g. notifications/initialized) — no response
+		}
+
+		if mac != nil {
+			switch req.Method {
+			case "initialize":
+				writeResp(req.ID, mac.rec.Initialize)
+			case "tools/list":
+				writeResp(req.ID, mac.rec.ToolsList)
+			case "tools/call":
+				writeResp(req.ID, mac.call(req.Params))
+			case "context/enumerate":
+				result, rpcErr := mac.enumerate(req.Params)
+				if rpcErr != nil {
+					writeErr(req.ID, rpcErr.Code, rpcErr.Message)
+					break
+				}
+				writeResp(req.ID, result)
+			default:
+				writeErr(req.ID, jsonrpc.CodeMethodNotFound, "method not found: "+req.Method)
+			}
+			continue
 		}
 
 		if wideMode() {

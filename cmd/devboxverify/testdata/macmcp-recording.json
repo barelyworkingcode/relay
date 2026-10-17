@@ -1,0 +1,187 @@
+{
+  "schema": 1,
+  "provisional": "Hand-written from the macMCP tool names and context schema that relay's and devboxWorld's docs publish, not taken from a real macMCP. Replace it with a devboxverify record-macmcp run on the devbox.",
+  "recorded_from": "",
+  "initialize": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {"tools": {}},
+    "serverInfo": {
+      "name": "macmcp",
+      "version": "1.1.0",
+      "contextSchemaVersion": 2,
+      "contextSchema": {
+        "mail_accounts": {
+          "type": "array", "items": {"type": "string"},
+          "description": "Mail accounts this client may read from or send as",
+          "scope": "restrict", "source": "operator",
+          "applies_to": ["mail_*"], "enumerable": true
+        },
+        "mail_mailboxes": {
+          "type": "array", "items": {"type": "string"},
+          "description": "Mailbox paths within those accounts this client may reach",
+          "scope": "restrict", "source": "operator",
+          "applies_to": ["mail_*"], "enumerable": true,
+          "depends_on": ["mail_accounts"]
+        },
+        "file_dirs": {
+          "type": "array", "items": {"type": "string"},
+          "description": "Directories this client may write files into",
+          "scope": "restrict", "source": "project_path",
+          "applies_to": ["mail_save_attachment", "mail_get_source"]
+        }
+      }
+    }
+  },
+  "tools_list": {
+    "tools": [
+      {
+        "name": "mail_list_accounts",
+        "description": "List all mail accounts configured in Mail.app",
+        "inputSchema": {"type": "object", "properties": {}},
+        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+      },
+      {
+        "name": "mail_list_mailboxes",
+        "description": "List mailboxes. Groups by account when no account specified. Includes Mail's app-level mailboxes.",
+        "inputSchema": {"type": "object", "properties": {
+          "account": {"type": "string", "description": "Account name; omit for every account"}
+        }},
+        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+      },
+      {
+        "name": "mail_get_emails",
+        "description": "Get the most recent emails (newest first) from matching mailboxes across accounts. Returns summaries without bodies.",
+        "inputSchema": {"type": "object", "properties": {
+          "account": {"type": "string", "description": "Account name; omit for every account"},
+          "mailbox": {"type": "string", "description": "Mailbox path; omit for every mailbox"},
+          "limit": {"type": "integer", "description": "Most emails to return (default 20)"}
+        }},
+        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+      },
+      {
+        "name": "mail_get_email",
+        "description": "Get full email by message ID, including the list of attachments (name, part_path, size, mime type).",
+        "inputSchema": {"type": "object", "properties": {
+          "id": {"type": "string", "description": "Message ID from mail_get_emails or mail_search"}
+        }, "required": ["id"]},
+        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+      },
+      {
+        "name": "mail_search",
+        "description": "Search emails by subject and sender, optionally recipients and body (case-insensitive).",
+        "inputSchema": {"type": "object", "properties": {
+          "query": {"type": "string", "description": "Text to look for"},
+          "account": {"type": "string", "description": "Account name; omit for every account"},
+          "mailbox": {"type": "string", "description": "Mailbox path; omit for every mailbox"},
+          "include_recipients": {"type": "boolean", "description": "Also match To and Cc"},
+          "include_body": {"type": "boolean", "description": "Also match the body"},
+          "limit": {"type": "integer", "description": "Most emails to return (default 20)"}
+        }, "required": ["query"]},
+        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+      },
+      {
+        "name": "mail_get_source",
+        "description": "Get the raw RFC 822 source of an email, optionally saving it to a file.",
+        "inputSchema": {"type": "object", "properties": {
+          "id": {"type": "string", "description": "Message ID"},
+          "save_to": {"type": "string", "description": "File path to write the source to"}
+        }, "required": ["id"]},
+        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+      },
+      {
+        "name": "mail_save_attachment",
+        "description": "Save an email attachment to a file.",
+        "inputSchema": {"type": "object", "properties": {
+          "id": {"type": "string", "description": "Message ID"},
+          "part_path": {"type": "string", "description": "Attachment part path from mail_get_email"},
+          "save_to": {"type": "string", "description": "Directory to write the attachment into"}
+        }, "required": ["id", "part_path", "save_to"]},
+        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+      },
+      {
+        "name": "mail_create_draft",
+        "description": "Create a draft email in an account's Drafts mailbox. Nothing is sent.",
+        "inputSchema": {"type": "object", "properties": {
+          "account": {"type": "string", "description": "Account to draft from"},
+          "to": {"type": "array", "items": {"type": "string"}},
+          "cc": {"type": "array", "items": {"type": "string"}},
+          "subject": {"type": "string"},
+          "body": {"type": "string"},
+          "attachments": {"type": "array", "items": {"type": "string"}}
+        }, "required": ["to", "subject", "body"]},
+        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+      },
+      {
+        "name": "mail_send",
+        "description": "Send an email from an account.",
+        "inputSchema": {"type": "object", "properties": {
+          "account": {"type": "string", "description": "Account to send as"},
+          "to": {"type": "array", "items": {"type": "string"}},
+          "cc": {"type": "array", "items": {"type": "string"}},
+          "bcc": {"type": "array", "items": {"type": "string"}},
+          "subject": {"type": "string"},
+          "body": {"type": "string"},
+          "attachments": {"type": "array", "items": {"type": "string"}}
+        }, "required": ["to", "subject", "body"]},
+        "annotations": {"readOnlyHint": false, "openWorldHint": true}
+      },
+      {
+        "name": "mail_move",
+        "description": "Move an email to another mailbox in the same account.",
+        "inputSchema": {"type": "object", "properties": {
+          "id": {"type": "string", "description": "Message ID"},
+          "mailbox": {"type": "string", "description": "Destination mailbox path"}
+        }, "required": ["id", "mailbox"]},
+        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+      },
+      {
+        "name": "mail_mark_read",
+        "description": "Mark an email read or unread.",
+        "inputSchema": {"type": "object", "properties": {
+          "id": {"type": "string", "description": "Message ID"},
+          "read": {"type": "boolean", "description": "true for read, false for unread"}
+        }, "required": ["id"]},
+        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+      },
+      {
+        "name": "contacts_list",
+        "description": "List contact cards.",
+        "inputSchema": {"type": "object", "properties": {
+          "limit": {"type": "integer", "description": "Most cards to return"}
+        }},
+        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+      },
+      {
+        "name": "contacts_create",
+        "description": "Create a contact card.",
+        "inputSchema": {"type": "object", "properties": {
+          "first_name": {"type": "string"},
+          "last_name": {"type": "string"},
+          "email": {"type": "string"},
+          "phone": {"type": "string"}
+        }},
+        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+      },
+      {
+        "name": "calendars_create_event",
+        "description": "Create a calendar event.",
+        "inputSchema": {"type": "object", "properties": {
+          "calendar": {"type": "string"},
+          "title": {"type": "string"},
+          "start": {"type": "string"},
+          "end": {"type": "string"}
+        }, "required": ["title", "start"]},
+        "annotations": {"readOnlyHint": false, "openWorldHint": false}
+      },
+      {
+        "name": "capture_screenshot",
+        "description": "Capture a screenshot of the screen or a window.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "annotations": {"readOnlyHint": true, "openWorldHint": false}
+      }
+    ]
+  },
+  "answers": {
+    "mail_send": {"content": [{"type": "text", "text": "Email sent."}], "isError": false}
+  }
+}
