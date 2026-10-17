@@ -25,6 +25,7 @@ DEST="/Applications/$APP"
 RELEASE=false
 RUN_TESTS=false
 TEST_BUILD=false
+BUNDLE=false
 BUNDLE_DIR=""
 
 while [ $# -gt 0 ]; do
@@ -34,14 +35,16 @@ while [ $# -gt 0 ]; do
         --release) RELEASE=true; RUN_TESTS=true ;;
         --test)    RUN_TESTS=true ;;
         --test-build) TEST_BUILD=true ;;
-        --bundle=*) BUNDLE_DIR="${arg#--bundle=}" ;;
+        --bundle=*)
+            BUNDLE=true
+            BUNDLE_DIR="${arg#--bundle=}" ;;
         --bundle)
-            if [ $# -eq 0 ] || [ -z "$1" ]; then
-                echo "--bundle needs a directory" >&2
-                exit 1
-            fi
-            BUNDLE_DIR="$1"
-            shift ;;
+            BUNDLE=true
+            BUNDLE_DIR=""
+            if [ $# -gt 0 ]; then
+                BUNDLE_DIR="$1"
+                shift
+            fi ;;
         --help|-h)
             # Print the header comment block (lines 3..first non-comment after).
             awk 'NR>=3 && /^[^#]/ {exit} NR>=3 {sub(/^# ?/,""); print}' "$0"
@@ -60,7 +63,10 @@ fi
 # A bundle build writes everything it builds under its own stage and DIR, so
 # two of them, from one checkout or two, can run at once.
 OUT="."
-if [ -n "$BUNDLE_DIR" ]; then
+if $BUNDLE; then
+    case "$BUNDLE_DIR" in
+        ""|-*) echo "--bundle needs a directory" >&2; exit 1 ;;
+    esac
     if $RELEASE || $TEST_BUILD; then
         echo "--bundle cannot be combined with --release or --test-build" >&2
         exit 1
@@ -68,6 +74,10 @@ if [ -n "$BUNDLE_DIR" ]; then
     mkdir -p "$BUNDLE_DIR"
     BUNDLE_DIR="$(cd "$BUNDLE_DIR" && pwd -P)"
     DEST="$BUNDLE_DIR/$APP"
+    if [ "$DEST" = "/Applications/$APP" ]; then
+        echo "--bundle cannot target the install path /Applications/$APP" >&2
+        exit 1
+    fi
 fi
 if $TEST_BUILD; then
     DEST="$HOME/Applications/RelayTest.app"
@@ -98,7 +108,7 @@ stop_relay() {
     pkill -KILL -x relay 2>/dev/null || true
 }
 # The test-build install and a bundle build leave the real tray alone.
-if ! $TEST_BUILD && [ -z "$BUNDLE_DIR" ]; then
+if ! $TEST_BUILD && ! $BUNDLE; then
     stop_relay
 fi
 
@@ -114,7 +124,7 @@ if $RUN_TESTS; then
 fi
 
 STAGE="/tmp/relay-build-$$"
-if [ -n "$BUNDLE_DIR" ]; then
+if $BUNDLE; then
     OUT="$STAGE/bin"
 fi
 
@@ -128,7 +138,7 @@ IDENTITY="${RELAY_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | gr
 if [ -n "$IDENTITY" ]; then
     echo "Signing with: $IDENTITY"
     SIGN_BASE=(--force --sign "$IDENTITY" --options runtime --timestamp)
-elif [ -n "$BUNDLE_DIR" ]; then
+elif $BUNDLE; then
     echo "--bundle needs a Developer ID Application identity; none found" >&2
     exit 1
 else
@@ -218,7 +228,7 @@ mv "$STAGE/$APP" "$DEST"
 rm -f "$OUT/relay"
 rm -rf "$STAGE"
 
-if [ -n "$BUNDLE_DIR" ]; then
+if $BUNDLE; then
     echo "Bundle built at $DEST"
     exit 0
 fi
