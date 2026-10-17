@@ -129,7 +129,8 @@ machine never take each other's reports:
 - A relay started without it, the installed tray included, drains
   `~/.claude/relay-outside-reports/`, as it always has.
 - The helper writes to `RELAY_OUTSIDE_SPOOL` when its environment has it and
-  to `~/.claude/relay-outside-reports/` otherwise; it refuses a relative path,
+  to `~/.claude/relay-outside-reports/` otherwise; it refuses a relative or unclean path
+  (trailing slash, `//`, `.` or `..` elements; exit 1 with one line on stderr),
   and a symlink on the spool or its parent. So whoever starts an outside
   Claude session meant for an instance with its own spool puts that
   instance's `RELAY_OUTSIDE_SPOOL` in the session's environment, and the

@@ -11,6 +11,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,6 +73,10 @@ func consoleOutsideSpool() outsideSpool {
 
 func newOutsideInventory(store config.SettingsStore, clock serverClock, deps sessionRouteDeps) *outsidesessions.Inventory {
 	console := consoleOutsideSpool()
+	if !console.valid {
+		slog.Warn("outside sessions: console spool disabled, "+outsideSpoolEnv+" is not an absolute clean path",
+			"env", outsideSpoolEnv, "value", os.Getenv(outsideSpoolEnv))
+	}
 	return outsidesessions.New(outsidesessions.Options{Clock: clock, Machines: func() []outsidesessions.Machine {
 		s := config.FreshSettings(store)
 		machines := []outsidesessions.Machine{outsideMachine(store, deps, nil, console)}

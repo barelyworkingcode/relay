@@ -378,7 +378,7 @@ func TestOutsideHookReportUpdatesSnapshot(t *testing.T) {
 	}
 	event, _ := json.Marshal(map[string]any{"hook_event_name": "PermissionRequest", "session_id": p.sid, "cwd": p.dir})
 	hook := exec.Command("sh", script)
-	hook.Env = append(os.Environ(), "HOME="+r.i.Home)
+	hook.Env = append(os.Environ(), "HOME="+r.i.Home, "RELAY_OUTSIDE_SPOOL=")
 	hook.Stdin = strings.NewReader(string(event))
 	if out, err := hook.CombinedOutput(); err != nil {
 		t.Fatalf("the report hook failed: %v\n%s", err, out)

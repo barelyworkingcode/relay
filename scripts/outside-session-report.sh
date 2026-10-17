@@ -5,6 +5,14 @@
 umask 077
 dir="${RELAY_OUTSIDE_SPOOL:-$HOME/.claude/relay-outside-reports}"
 case "$dir" in /*) ;; *) exit 1 ;; esac
+# Relay drains only a clean path (no trailing slash, //, . or .. element), so
+# a report written under any other spelling would never be read.
+case "$dir" in
+  /) ;;
+  */ | *//* | */./* | */. | */../* | */..)
+    echo "outside-session-report: RELAY_OUTSIDE_SPOOL is not a clean absolute path: $dir" >&2
+    exit 1 ;;
+esac
 parent=$(dirname "$dir")
 [ ! -L "$parent" ] && [ ! -L "$dir" ] || exit 1
 mkdir -p "$dir" || exit 1
