@@ -1220,7 +1220,9 @@ status always posts on relay's own HEAD; only the comment goes to REF's repo.
 - Run from an operator shell, never inside a relay session. Relay refuses a
   sandbox attach from inside one.
 - `build.sh` signs and relaunches the app. Unlock the signing keychain first,
-  or the build fails at `codesign`.
+  or the build fails at `codesign`. A stack's app comes from
+  `./build.sh --bundle DIR`, which signs the same way and installs, stops and
+  launches nothing.
 - A stale or incomplete bootstrap (a helper build out of date, say) fails
   preflight as `BLOCKED environment: bootstrap incomplete; needs a person: …;
   run bootstrap.sh`. `repair.sh` checks it before any reset because reset

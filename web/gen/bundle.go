@@ -75,11 +75,26 @@ func main() {
 
 	// Write atomically (temp + rename in the same dir) so an interrupted run can
 	// never leave a truncated, committed generated asset behind.
-	tmp := outPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(out), 0o644); err != nil {
-		log.Fatalf("write %s: %v", tmp, err)
+	// The temp name is unique so concurrent runs in one checkout cannot race.
+	f, err := os.CreateTemp(filepath.Dir(outPath), "settings.html.*.tmp")
+	if err != nil {
+		log.Fatalf("create temp for %s: %v", outPath, err)
+	}
+	tmp := f.Name()
+	_, werr := f.WriteString(out)
+	cerr := f.Close()
+	if werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(tmp, 0o644)
+	}
+	if werr != nil {
+		os.Remove(tmp)
+		log.Fatalf("write %s: %v", tmp, werr)
 	}
 	if err := os.Rename(tmp, outPath); err != nil {
+		os.Remove(tmp)
 		log.Fatalf("rename %s -> %s: %v", tmp, outPath, err)
 	}
 	log.Printf("wrote %s (%d bytes, bundle %d bytes)", outPath, len(out), len(js))
