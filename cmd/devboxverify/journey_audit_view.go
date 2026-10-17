@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
@@ -166,7 +165,7 @@ func (s *liveAuditViewSteps) run(ctx context.Context) (r auditViewRun) {
 
 // controlRows reads control_decision rows written since start.
 func controlRows(ctx context.Context, e env, start time.Time) (allowed, denied bool, err error) {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--event", audit.AuditEventControlDecision, "--json", "--tail", "200").Output()
+	out, err := e.relayExec(ctx, "audit", "--event", audit.AuditEventControlDecision, "--json", "--tail", "200").Output()
 	if err != nil {
 		return false, false, errors.New("relay audit --event control_decision failed")
 	}

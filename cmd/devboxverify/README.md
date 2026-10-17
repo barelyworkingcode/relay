@@ -6,6 +6,8 @@ back, audit log included. No mocks. It runs on the devbox, never in CI.
 
 ```bash
 go run ./cmd/devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic REF]
+go run ./cmd/devboxverify [--checkout DIR] --stack STACK.json [--phase api]
+go run ./cmd/devboxverify record-macmcp [--check] [--mcp CMD] [--recording FILE]
 ```
 
 Environment:
@@ -166,6 +168,39 @@ credential, and renews P4 when it is due.
 The nightly runs relay `--phase api`, then eve's own run, then relay
 `--phase screen`. The nightly runner owns that order.
 
+### A stack run
+
+`--stack STACK.json` runs the api phase against one verification stack, a
+relay instance devboxWorld's `stack-up` started from its own
+`build.sh --bundle` app on its own config dir and its own clone of the
+world. It is how a story's verification runs while another runs beside it.
+`stack.json` is the file pinned on relay#479:
+`{"slot", "config_dir", "relay_bin", "marker", "eve_url", "eve_data_dir", "head": {"relay", "eve"}}`,
+plus an optional `credential_file`; without one the execute credential is
+`credential` beside `stack.json`.
+
+- The config dir, the relay binary and the machine marker come from the
+  file, never from `RELAY_BIN`, `DEVBOXWORLD_MARKER`,
+  `RELAY_VERIFY_CREDENTIAL_FILE` or the default config dir. Every relay
+  command the harness runs, in its own process or as a line inside a live
+  session, carries `--config-dir <config_dir>`; the harness also exports
+  `RELAY_CONFIG_DIR` and dials every socket and reads every file under that
+  dir.
+- Preflight is `stack` (`slot <slot>`, or FAIL naming what is wrong with the
+  file), `machine`, `pin`, `fixtures`, `session`, `head`, `build` (the
+  stack's binary and its `relay-sessions` built from HEAD, clean tree, and
+  `head.relay`, when set, equal to HEAD) and `app` (the stack's one live
+  frontend socket, served by its binary). There is no `helpers`,
+  `bootstrap` or `world` check, no `repair.sh`, no `reset.sh`, no sweep, no
+  lock and no `WORLD` or `RESET` line.
+- Without `--phase` it runs the api phase. `--phase screen`, `--post` and
+  `--epic` with `--stack` are a usage error, exit 2.
+- Without `--stack` nothing here changes.
+
+The journeys read the world's calendars, reminders, contacts and mail and
+write only their own scratch, under names that carry the run nonce, in the
+stack's own instance. The stack's `macmcp` is the mock below.
+
 Preflight, in order: `machine` (the marker, read on a VM: `vm; world v<N>`),
 `pin` (the marker's world version is relay's), `fixtures` (every fixture the
 selected journeys declare is in the catalogue), then `session` (not inside a
@@ -244,6 +279,63 @@ second up to `EVE_BROWSER_LOCK_TIMEOUT`. The holder writes
 `{"pid":N,"command":"…","since":"…"}` into the file and truncates it on
 release. The kernel drops the lock when its holder dies. The api phase never
 takes it.
+
+## The macMCP mock
+
+A stack (`--stack`, below) has no real macMCP: a per-run relay build cannot
+inherit macMCP's Automation (TCC) grant. Its `macmcp` record runs `testmcp`
+as a stand-in:
+
+| Variable | Meaning |
+|---|---|
+| `RELAY_TESTMCP_PERSONA=macmcp` | selects the persona |
+| `RELAY_TESTMCP_RECORDING` | the recording file; required |
+| `RELAY_TESTMCP_WORLD` | the devboxWorld checkout whose `data/world.json`, `data/projects/*.json` and `data/mail.json` it answers from; required |
+| `RELAY_TESTMCP_ANCHOR` | the world's day zero, `YYYY-MM-DD` (the manifest's `anchor`); default today, local time |
+
+Without the two required variables the persona exits 1 before it answers
+anything. It answers `initialize` (the context schema is in `serverInfo`) and
+`tools/list` exactly as the recording holds them. `mail_list_accounts`,
+`mail_list_mailboxes`, `mail_get_emails`, `mail_get_email`, `mail_search` and
+`context/enumerate` answer from the world data: the accounts are the world
+projects' names, each with devboxWorld's auto mailboxes plus its project's
+own, and every copy of a message is one email. `mail_send` sends nothing and
+answers the recording's `answers.mail_send`. A call relay mediated (it carries
+`_meta`) is held to `mail_accounts` and `mail_mailboxes` the way macMCP holds
+it: an unset field refuses every `mail_*` tool, and a resource outside the
+scope is an error result with `_meta.scope_violation`. `web_fetch` does what
+the real one does: an HTTP GET (redirects followed, User-Agent `macmcp/1.0`,
+`timeout` 1-120 s, default 30) answered as `HTTP <status> — <content-type> —
+<n> bytes`, a blank line, the raw body (cut at 1,000,000 bytes and marked
+truncated); a 4xx or 5xx is a normal result, and a missing or non-http(s) `url`
+is an error result with the real text. Any other recorded tool answers an error
+naming itself. It runs no program and sends no Apple Event.
+
+**A failure seen only against the persona is a mock defect until the
+nightly reproduces it against the real macMCP.**
+
+```bash
+go run ./cmd/devboxverify record-macmcp [--check] [--mcp CMD] [--recording FILE]
+```
+
+`record-macmcp` runs the real macMCP over stdio, sends only `initialize` and
+`tools/list` (every page), and writes `testdata/macmcp-recording.json`
+(`RECORDED\t<name version>\t<file>`). `--mcp` defaults to the `macmcp` row's
+endpoint in `relay mcp list`. A re-record keeps the file's `answers`, which
+are not taken from the real macMCP, since that would send mail. `--check`
+writes nothing: one `DRIFT\t<difference>` line per tool added, removed or
+changed (naming the keys that moved), per context-schema field added, removed
+or changed, and for a changed `contextSchemaVersion`, then
+`MACMCP\tdiffers\t<n> differences from the recording` and exit 1, or
+`MACMCP\tmatches\t<name version>` and exit 0. Server name and version are not
+compared. A failure to run the real macMCP or read the recording is exit 2.
+The nightly runs `--check`.
+
+The checked-in recording was taken from the real macMCP on the devbox:
+`initialize` and `tools/list` by `record-macmcp`, and `answers.mail_send` by
+one direct stdio call of the real `mail_send` from one loopback test account
+to the other (testMail), kept as macMCP returned it. To refresh the answer,
+repeat that call and replace `answers.mail_send`; a re-record keeps it.
 
 ## Feature map
 
@@ -1220,7 +1312,9 @@ status always posts on relay's own HEAD; only the comment goes to REF's repo.
 - Run from an operator shell, never inside a relay session. Relay refuses a
   sandbox attach from inside one.
 - `build.sh` signs and relaunches the app. Unlock the signing keychain first,
-  or the build fails at `codesign`.
+  or the build fails at `codesign`. A stack's app comes from
+  `./build.sh --bundle DIR`, which signs the same way and installs, stops and
+  launches nothing.
 - A stale or incomplete bootstrap (a helper build out of date, say) fails
   preflight as `BLOCKED environment: bootstrap incomplete; needs a person: …;
   run bootstrap.sh`. `repair.sh` checks it before any reset because reset

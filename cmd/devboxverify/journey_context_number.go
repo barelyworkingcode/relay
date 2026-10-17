@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os/exec"
 )
 
 const (
@@ -92,7 +91,7 @@ func saveNumber(ctx context.Context, e env, token, profileID, n, baseline string
 }
 
 func newestConfigChangeID(ctx context.Context, e env, subject string) (string, error) {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--event", "config_change", "--grep", subject, "--json", "--tail", "1").Output()
+	out, err := e.relayExec(ctx, "audit", "--event", "config_change", "--grep", subject, "--json", "--tail", "1").Output()
 	if err != nil {
 		return "", fmt.Errorf("relay audit config_change: %w", err)
 	}

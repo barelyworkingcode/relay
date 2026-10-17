@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -69,7 +68,7 @@ func fileCall(ctx context.Context, e env, token, route string, body any) fileSte
 }
 
 func fileOpRows(ctx context.Context, e env, projectID string) ([]audit.AuditEvent, error) {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--event", fileOpEvent, "--project", projectID,
+	out, err := e.relayExec(ctx, "audit", "--event", fileOpEvent, "--project", projectID,
 		"--json", "--tail", fmt.Sprint(fileRowWindow)).Output()
 	if err != nil {
 		return nil, errors.New("relay audit file_op failed")
@@ -148,7 +147,7 @@ func mergeFilePlaneLegs(console, host result) result {
 }
 
 func setFilesReadOnly(ctx context.Context, e env, projectID string, on bool) error {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "project", "update", "--id", projectID,
+	out, err := e.relayExec(ctx, "project", "update", "--id", projectID,
 		fmt.Sprintf("--files-read-only=%t", on)).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("relay project update --files-read-only=%t failed: %s", on, strings.TrimSpace(string(out)))

@@ -126,7 +126,7 @@ func listedIDs(body []byte, key string) []string {
 // time, oldest first. A time bound stands in for a baseline row id, which
 // other services' calls could push out of the window.
 func modelCallRows(ctx context.Context, e env, since time.Time, project string) ([]audit.AuditEvent, error) {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--event", audit.AuditEventModelCall, "--json", "--tail", "200").Output()
+	out, err := e.relayExec(ctx, "audit", "--event", audit.AuditEventModelCall, "--json", "--tail", "200").Output()
 	if err != nil {
 		return nil, errors.New("relay audit --event model_call failed")
 	}
@@ -400,8 +400,8 @@ func (p probeView) listed() bool { return slices.Contains(parseToolList(p.List.O
 
 func viewProbe(ctx context.Context, e env, s *liveSession) probeView {
 	return probeView{
-		List: sessionExec(ctx, s, shellQuote(e.RelayBin)+" mcp call --list"),
-		Call: sessionExec(ctx, s, toolCallLine(e.RelayBin, probeTool)),
+		List: sessionExec(ctx, s, e.relayShell()+" mcp call --list"),
+		Call: sessionExec(ctx, s, toolCallLine(e.relayShell(), probeTool)),
 	}
 }
 
@@ -484,7 +484,7 @@ func runDisabledTool(ctx context.Context, e env) result {
 	}
 	r.Restore = putProject(context.WithoutCancel(ctx), e, token, e.Run.GrantProjectID, map[string]any{"disabled_tools": map[string][]string{}})
 	if r.Restore.Status == http.StatusOK {
-		r.Restored = sessionExec(ctx, s, shellQuote(e.RelayBin)+" mcp call --list")
+		r.Restored = sessionExec(ctx, s, e.relayShell()+" mcp call --list")
 	}
 	return classifyDisabledTool(r)
 }
