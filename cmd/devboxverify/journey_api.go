@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -32,8 +31,8 @@ type execOut struct {
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-func toolCallLine(relayBin, tool string) string {
-	return shellQuote(relayBin) + " mcp call --tool " + tool + " --args '{}'"
+func toolCallLine(quotedRelay, tool string) string {
+	return quotedRelay + " mcp call --tool " + tool + " --args '{}'"
 }
 
 func sessionExec(ctx context.Context, s *liveSession, line string) execOut {
@@ -90,9 +89,9 @@ func runToolsThroughBridge(ctx context.Context, e env) result {
 	}
 	defer s.Close(context.WithoutCancel(ctx))
 	r := toolsRun{MCP: e.World.relayMCP()}
-	r.List = sessionExec(ctx, s, shellQuote(e.RelayBin)+" mcp call --list")
-	r.Allowed = sessionExec(ctx, s, toolCallLine(e.RelayBin, allowedTool))
-	r.Denied = sessionExec(ctx, s, toolCallLine(e.RelayBin, deniedTool))
+	r.List = sessionExec(ctx, s, e.relayShell()+" mcp call --list")
+	r.Allowed = sessionExec(ctx, s, toolCallLine(e.relayShell(), allowedTool))
+	r.Denied = sessionExec(ctx, s, toolCallLine(e.relayShell(), deniedTool))
 	return classifyToolsThroughBridge(r)
 }
 
@@ -172,8 +171,8 @@ func runToolCallAudited(ctx context.Context, e env) result {
 		return res
 	}
 	r := auditedRun{SessionID: s.ID, AcmeID: acmeID, AcmeName: acme.Name, MCP: e.World.relayMCP()}
-	r.Allowed = sessionExec(ctx, s, toolCallLine(e.RelayBin, allowedTool))
-	r.Denied = sessionExec(ctx, s, toolCallLine(e.RelayBin, deniedTool))
+	r.Allowed = sessionExec(ctx, s, toolCallLine(e.relayShell(), allowedTool))
+	r.Denied = sessionExec(ctx, s, toolCallLine(e.relayShell(), deniedTool))
 	s.Close(context.WithoutCancel(ctx))
 	if r.Allowed.Err == "" && r.Denied.Err == "" && r.SessionID != "" {
 		// Relay records a local call after it returns, off the caller's path.
@@ -193,7 +192,7 @@ func runToolCallAudited(ctx context.Context, e env) result {
 // callToolRows answers the newest n project_session call_tool rows, oldest
 // first, dropping every row up to and including after when it is set.
 func callToolRows(ctx context.Context, e env, n int, after string) ([]audit.AuditEvent, error) {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "audit", "--event", "call_tool", "--kind", audit.AuditActorProjectSession,
+	out, err := e.relayExec(ctx, "audit", "--event", "call_tool", "--kind", audit.AuditActorProjectSession,
 		"--json", "--tail", fmt.Sprint(n)).Output()
 	if err != nil {
 		return nil, errors.New("relay audit call_tool failed")

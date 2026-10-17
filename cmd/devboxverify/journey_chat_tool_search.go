@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -159,7 +158,7 @@ func driveToolSearchTurn(ctx context.Context, e env, launch, run string, r chatT
 // grantedProjectID resolves a project name as relay grant lists it; "" when
 // it is not there.
 func grantedProjectID(ctx context.Context, e env, name string) string {
-	out, err := exec.CommandContext(ctx, e.RelayBin, "grant", "--json").Output()
+	out, err := e.relayExec(ctx, "grant", "--json").Output()
 	if err != nil {
 		return ""
 	}
