@@ -170,6 +170,7 @@ func run() int {
 	stackPath := fs.String("stack", "", "a verification stack's stack.json: run the api phase against that stack's relay instance")
 	p, err := parseFlags(fs, os.Args[1:], pr, phaseFlag, epic, stackPath)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprintln(os.Stderr, "usage: devboxverify [--checkout DIR] [--post PR | --phase api|screen | --epic REF | --stack FILE [--phase api]]")
 		return 2
 	}
@@ -177,8 +178,9 @@ func run() int {
 	screen := p == "" || p == phaseScreen
 	selected := selectJourneys(journeys, p)
 
-	// Deliberate: machine, pin and fixtures run before anything else, so a
-	// host that is not a bootstrapped VM gets no lock, script or network call.
+	// Deliberate: the stack check comes first because it names the marker the
+	// machine check reads; machine, pin and fixtures then run before any lock,
+	// script or network call, so a host that is not a bootstrapped VM gets none.
 	var marker worldMarker
 	var wd world
 	var stack stackFile
@@ -193,6 +195,9 @@ func run() int {
 		}},
 		{"machine", func() (string, error) {
 			marker, err = readMarker(markerFile, vmCheck)
+			if stackMode && err != nil && err.Error() == markerAbsent {
+				err = errors.New("not a test machine: the stack's marker (stack.json marker field) does not exist")
+			}
 			return fmt.Sprintf("vm; world v%d", marker.WorldVersion), err
 		}},
 		{"pin", func() (string, error) {
@@ -285,7 +290,7 @@ func run() int {
 			return "app built from HEAD, clean tree", nil
 		}},
 		{"app", func() (string, error) {
-			e.FrontendSocket, e.RelayPID, err = findApp(e.ConfigDir, e.RelayBin)
+			e.FrontendSocket, e.RelayPID, err = findApp(e.ConfigDir, e.RelayBin, stackMode)
 			return fmt.Sprintf("pid %d", e.RelayPID), err
 		}},
 		{"helpers", func() (string, error) { return prepareHelpers(e, toolRoot, screen) }},
@@ -638,7 +643,11 @@ func buildMatches(settings []debug.BuildSetting, head string) error {
 
 // A process that started before the binary's mtime is an older build still
 // running after an install, even when its executable path matches.
-func findApp(configDir, relayBin string) (string, int, error) {
+func findApp(configDir, relayBin string, stackMode bool) (string, int, error) {
+	binName, installed := "RELAY_BIN", "the installed binary"
+	if stackMode {
+		binName, installed = "the stack's relay binary", "the stack's relay binary"
+	}
 	socks, _ := filepath.Glob(filepath.Join(configDir, "relay-frontend-*.sock"))
 	var sock string
 	pid, live := 0, 0
@@ -660,7 +669,7 @@ func findApp(configDir, relayBin string) (string, int, error) {
 	exe, _, _ := strings.Cut(string(raw[4:]), "\x00")
 	want, _ := filepath.EvalSymlinks(relayBin)
 	if got, _ := filepath.EvalSymlinks(exe); got == "" || got != want {
-		return "", 0, errors.New("the running app is not RELAY_BIN")
+		return "", 0, fmt.Errorf("the running app is not %s", binName)
 	}
 	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	st, statErr := os.Stat(relayBin)
@@ -669,7 +678,7 @@ func findApp(configDir, relayBin string) (string, int, error) {
 	}
 	started := time.Unix(kp.Proc.P_starttime.Sec, int64(kp.Proc.P_starttime.Usec)*1000)
 	if started.Before(st.ModTime()) {
-		return "", 0, errors.New("the running app predates the installed binary")
+		return "", 0, fmt.Errorf("the running app predates %s", installed)
 	}
 	return sock, pid, nil
 }
