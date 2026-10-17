@@ -63,9 +63,9 @@ type osRig struct {
 	remote string // the stub host's HOME and project root; "" without a host
 }
 
-func osStart(t *testing.T, host bool) *osRig {
+func osStart(t *testing.T, host bool, mut ...func(*harness.Options)) *osRig {
 	t.Helper()
-	i := cosStart(t, func(o *harness.Options) { o.SSHStub = host })
+	i := cosStart(t, append([]func(*harness.Options){func(o *harness.Options) { o.SSHStub = host }}, mut...)...)
 	src, err := os.ReadFile("/bin/sleep")
 	if err != nil {
 		t.Fatalf("reading /bin/sleep: %v", err)
@@ -387,6 +387,82 @@ func TestOutsideHookReportUpdatesSnapshot(t *testing.T) {
 		row := s.at(p.dir)
 		return row != nil && row.State == "asking" && row.Source == "hook"
 	})
+}
+
+// osReport runs the report hook with env added to HOME=home.
+func osReport(t *testing.T, home string, event map[string]any, env ...string) {
+	t.Helper()
+	script, err := filepath.Abs("../../scripts/outside-session-report.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(event)
+	hook := exec.Command("sh", script)
+	hook.Env = append(append(os.Environ(), "HOME="+home), env...)
+	hook.Stdin = strings.NewReader(string(body))
+	if out, err := hook.CombinedOutput(); err != nil {
+		t.Fatalf("the report hook failed: %v\n%s", err, out)
+	}
+}
+
+// Each relay instance drains only its own spool: a session started with an
+// instance's RELAY_OUTSIDE_SPOOL reports to that instance, and a report in
+// one instance's spool never reaches another's list.
+func TestOutsideReportSpoolPerInstance(t *testing.T) {
+	t.Parallel()
+	spools := t.TempDir()
+	type side struct {
+		r     *osRig
+		spool string
+		p     *osProc
+	}
+	sides := map[string]*side{}
+	for _, name := range []string{"a", "b"} {
+		spool := filepath.Join(spools, name)
+		// The spool must exist at the probe that finds the row: only then is it drained.
+		if err := os.Mkdir(spool, 0o700); err != nil {
+			t.Fatalf("creating the spool: %v", err)
+		}
+		r := osStart(t, false, func(o *harness.Options) { o.Env = append(o.Env, "RELAY_OUTSIDE_SPOOL="+spool) })
+		p := r.spawn(r.i.Home, t.TempDir(), "spool-"+name)
+		p.transcript(t, osPrompt("acme one"), osAnswer("acme done"))
+		if row := r.probe().at(p.dir); row == nil || row.State != "idle" {
+			t.Fatalf("instance %s row before any report = %+v, want idle", name, row)
+		}
+		sides[name] = &side{r, spool, p}
+	}
+	a, b := sides["a"], sides["b"]
+
+	subA, subB := osSubscribe(t, a.r.i), osSubscribe(t, b.r.i)
+	// A report naming b's session lands in a's spool, then a's own report.
+	osReport(t, a.r.i.Home, map[string]any{"hook_event_name": "PermissionRequest", "session_id": b.p.sid, "cwd": b.p.dir}, "RELAY_OUTSIDE_SPOOL="+a.spool)
+	osReport(t, a.r.i.Home, map[string]any{"hook_event_name": "PermissionRequest", "session_id": a.p.sid, "cwd": a.p.dir}, "RELAY_OUTSIDE_SPOOL="+a.spool)
+	subA.until(osHookBound, func(s osSnap) bool {
+		row := s.at(a.p.dir)
+		return row != nil && row.State == "asking" && row.Source == "hook"
+	})
+	// One drain pass reads every report present, so a's spool is empty once
+	// its own report has shown.
+	if left, _ := filepath.Glob(filepath.Join(a.spool, "*.json")); len(left) != 0 {
+		t.Fatalf("instance a left %d reports in its spool after its own report showed: %v", len(left), left)
+	}
+
+	osReport(t, b.r.i.Home, map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": b.p.sid, "cwd": b.p.dir}, "RELAY_OUTSIDE_SPOOL="+b.spool)
+	subB.until(osHookBound, func(s osSnap) bool {
+		row := s.at(b.p.dir)
+		if row != nil && row.State == "asking" {
+			t.Fatalf("instance b shows %s asking: the report in instance a's spool reached it", b.p.dir)
+		}
+		return row != nil && row.State == "running" && row.Source == "hook"
+	})
+	if row := subA.until(osBound, func(osSnap) bool { return true }).at(b.p.dir); row != nil {
+		t.Fatalf("instance a lists instance b's session: %+v", row)
+	}
+	for _, s := range []*side{a, b} {
+		if _, err := os.Stat(filepath.Join(s.r.i.Home, ".claude", "relay-outside-reports")); err == nil {
+			t.Fatalf("%s holds the default spool, so a report went past RELAY_OUTSIDE_SPOOL", s.r.i.Home)
+		}
+	}
 }
 
 // AC5: a hookless state change shows at the next completed probe.

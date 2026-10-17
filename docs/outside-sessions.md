@@ -115,8 +115,29 @@ On each originating machine, configure Claude Code command hooks explicitly.
 Relay never edits existing hook settings. Run `scripts/outside-session-report.sh`
 with native Claude hook JSON on stdin. Install the helper at an
 operator-chosen path and use that path in each hook command. It writes at most
-64 KiB atomically into the owner-only `~/.claude/relay-outside-reports/` spool,
-drops larger events, keeps at most 256 reports there, and calls no Relay action API.
+64 KiB atomically into the owner-only spool, drops larger events, keeps at
+most 256 reports there, and calls no Relay action API.
+
+### Which spool
+
+Each relay instance drains one spool on the console, so two instances on one
+machine never take each other's reports:
+
+- A relay started with `RELAY_OUTSIDE_SPOOL` set drains that directory. The
+  value must be an absolute, clean path; any other value means the console
+  spool is never drained, rather than a guessed one.
+- A relay started without it, the installed tray included, drains
+  `~/.claude/relay-outside-reports/`, as it always has.
+- The helper writes to `RELAY_OUTSIDE_SPOOL` when its environment has it and
+  to `~/.claude/relay-outside-reports/` otherwise; it refuses a relative path,
+  and a symlink on the spool or its parent. So whoever starts an outside
+  Claude session meant for an instance with its own spool puts that
+  instance's `RELAY_OUTSIDE_SPOOL` in the session's environment, and the
+  session's hooks inherit it.
+- SSH hosts always use `~/.claude/relay-outside-reports/` on the host.
+
+Draining applies the same checks to either spool: no symlink on it or its
+parent, owned by the user, mode 0700.
 
 | Claude event | State |
 |---|---|
