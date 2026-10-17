@@ -71,6 +71,10 @@ if $BUNDLE; then
         echo "--bundle cannot be combined with --release or --test-build" >&2
         exit 1
     fi
+    if [ "${RELAY_SIGN_IDENTITY:-}" = "-" ]; then
+        echo "--bundle needs a Developer ID Application identity; RELAY_SIGN_IDENTITY=- is ad-hoc" >&2
+        exit 1
+    fi
     mkdir -p "$BUNDLE_DIR"
     BUNDLE_DIR="$(cd "$BUNDLE_DIR" && pwd -P)"
     DEST="$BUNDLE_DIR/$APP"
