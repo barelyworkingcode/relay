@@ -335,6 +335,9 @@ func (p *persona) call(params json.RawMessage) json.RawMessage {
 			return scopeViolation(f + " is not set for this client")
 		}
 	}
+	if req.Name == "web_fetch" {
+		return webFetch(req.Arguments)
+	}
 	var a mailArgs
 	if len(req.Arguments) > 0 && json.Unmarshal(req.Arguments, &a) != nil {
 		return toolText("arguments must be an object", true)
