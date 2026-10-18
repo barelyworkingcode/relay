@@ -824,7 +824,7 @@ one of five values:
 | Launch | `session_kind` |
 |---|---|
 | `POST /api/terminals`, any terminal template (shell, a tool template, a custom one), `relay sandbox`, and the drop-in door | `pty` — the template shows in `args.template_id`, never in the kind |
-| `POST /api/sessions` with model `haiku`, `sonnet` or `opus` | `claude` |
+| `POST /api/sessions` with model `haiku`, `sonnet` or `opus`, or an id that starts `claude-haiku-`, `claude-sonnet-` or `claude-opus-` | `claude` |
 | `POST /api/sessions` with a `pi/…` model | `pi` |
 | `POST /api/sessions` with a `codex/…` model | `codex` |
 | `POST /api/sessions` with any other model (`deriveSessionKind`) | `chat` |
