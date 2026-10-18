@@ -274,7 +274,7 @@ stopping are forwarded to the session host (section 3).
   | Field | Type | Meaning |
   |---|---|---|
   | `projectId` | string | Project to launch in (required for a project session) |
-  | `model` | string | `haiku`, `sonnet` or `opus` (Claude), `pi/<id>`, `codex/<id>`, or any other model ID (a chat session). Send `model` or `entry`, not both |
+  | `model` | string | `haiku`, `sonnet` or `opus`, or a full id that starts `claude-haiku-`, `claude-sonnet-` or `claude-opus-` (Claude), `pi/<id>`, `codex/<id>`, or any other model ID (a chat session). Send `model` or `entry`, not both |
   | `entry` | string | The name of an agent in the project's agent list, matched without regard to case. The agent sets the kind, the model and the program the session runs |
   | `directory` | string | Working directory; must lie inside the project |
   | `name` | string | Session name |

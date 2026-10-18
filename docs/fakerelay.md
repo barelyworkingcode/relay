@@ -1029,7 +1029,7 @@ Behaviour:
 ### Sessions (G4)
 
 Session ids are UUIDs. `model` is a value from `GET /api/models`. Session
-kind comes from the model: `haiku`, `sonnet` and `opus` are `claude`; a model
+kind comes from the model: `haiku`, `sonnet` and `opus`, and ids that start `claude-haiku-`, `claude-sonnet-` or `claude-opus-`, are `claude`; a model
 that starts `pi/` is `pi`; one that starts `codex/` is `codex`; any other is
 `chat`.
 

@@ -388,7 +388,8 @@ func sessionLaunchRequest(body eveSessionRequestBody, caller LaunchCaller) Launc
 // Eve's POST /api/sessions body carries no explicit kind (C11: session
 // create is unchanged), so relay infers one from the model identifier
 // exactly as relayLLM's session manager used to: Claude's own aliases
-// select KindClaude, a "pi/..." model selects KindPi, a "codex/..." model selects KindCodex, and every other
+// ("haiku", "sonnet", "opus") and full tier ids ("claude-haiku-5-5") select
+// KindClaude, a "pi/..." model selects KindPi, a "codex/..." model selects KindCodex, and every other
 // relayLLM ProviderType (ollama, openai, llama, mlx) collapses to KindChat
 // -- all four speak through relay's own model endpoint now, so the
 // distinction among them is the session host's chat provider's concern, not
@@ -397,6 +398,13 @@ func deriveSessionKind(model string) string {
 	switch model {
 	case "haiku", "sonnet", "opus":
 		return KindClaude
+	}
+	// Deliberate: a Claude tier named by its full id ("claude-haiku-5-5") is the
+	// same Claude session as its alias, and the id reaches the CLI unchanged.
+	for _, tier := range []string{"claude-haiku-", "claude-sonnet-", "claude-opus-"} {
+		if strings.HasPrefix(model, tier) {
+			return KindClaude
+		}
 	}
 	if strings.HasPrefix(model, "pi/") {
 		return KindPi

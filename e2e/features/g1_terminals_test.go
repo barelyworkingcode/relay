@@ -843,6 +843,24 @@ func TestChiefOfStaffStart(t *testing.T) {
 		g1tEvent(t, i, harness.EventQuery{Key: "chief_of_staff.start", Trace: trace, Fields: fields})
 	}
 
+	// A Claude tier named by its full id launches a Claude session, as the alias
+	// does; an id that is not a Claude tier stays a chat (refused here: the
+	// project allows no chat template, so the kind relay chose is what is checked).
+	for _, model := range []string{"haiku", "claude-haiku-5-5", "claude-sonnet-4-6", "claude-opus-4-1"} {
+		trace := harness.NewTrace(t)
+		if r := start(map[string]any{"projectId": p.ID, "prompt": "acme kind", "model": model}, trace); r.Status != 201 {
+			t.Fatalf("a start with model %q answered %d, want 201; body: %s", model, r.Status, r.Body)
+		}
+		g1tEvent(t, i, harness.EventQuery{Key: "chief_of_staff.start", Trace: trace,
+			Fields: map[string]any{"status": "ok", "kind": "claude"}})
+	}
+	for _, model := range []string{"acme-local/chat-model", "claude-instant", "claude-haikuish-1"} {
+		trace := harness.NewTrace(t)
+		start(map[string]any{"projectId": p.ID, "prompt": "acme kind", "model": model}, trace)
+		g1tEvent(t, i, harness.EventQuery{Key: "chief_of_staff.start", Trace: trace,
+			Fields: map[string]any{"kind": "chat"}})
+	}
+
 	malformed := scoped.Do("POST", "/api/chief-of-staff/sessions", []byte("{not json"), harness.ReqOpts{Header: g1tScope})
 	if malformed.Status != 400 {
 		t.Fatalf("a malformed start body answered %d, want 400", malformed.Status)
