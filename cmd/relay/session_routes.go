@@ -398,6 +398,14 @@ func deriveSessionKind(model string) string {
 	case "haiku", "sonnet", "opus":
 		return KindClaude
 	}
+	// A Claude tier named by its full id ("claude-haiku-5-5") is the same
+	// session as its alias; the id reaches the CLI unchanged. Without this it
+	// became a chat that the model endpoint refuses as an unknown model.
+	for _, tier := range []string{"claude-haiku-", "claude-sonnet-", "claude-opus-"} {
+		if strings.HasPrefix(model, tier) {
+			return KindClaude
+		}
+	}
 	if strings.HasPrefix(model, "pi/") {
 		return KindPi
 	}
