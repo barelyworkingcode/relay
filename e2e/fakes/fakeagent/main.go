@@ -41,7 +41,7 @@ type agentLine struct {
 }
 
 // watchedEnv names the variables the start line reports.
-var watchedEnv = []string{"DISABLE_AUTOUPDATER"}
+var watchedEnv = []string{"DISABLE_AUTOUPDATER", "CLAUDE_CONFIG_DIR"}
 
 func watchedEnvValues() map[string]string {
 	out := map[string]string{}

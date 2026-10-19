@@ -543,6 +543,14 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	sandbox := wantsSandbox(req.Kind, tmpl) && !(proj != nil && proj.IsHosted())
 	baseFields.Sandbox = sandbox
 
+	var claudeDir string
+	if sandbox && isClaudeLaunch(req.Kind, tmpl) {
+		var err error
+		if claudeDir, err = ensureSandboxClaudeDir(); err != nil {
+			return nil, invalidRequest("sandbox_unavailable", err.Error(), baseFields)
+		}
+	}
+
 	sessionRequest, refusal := buildSessionRequest(req, proj, directory, baseFields)
 	if refusal != nil {
 		return nil, refusal
@@ -638,7 +646,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 			return nil, invalidRequest("model_endpoint_unavailable", err.Error(), baseFields)
 		}
 		if sandbox && tmpl.ID == kindTemplateIDs[KindClaude] {
-			for k, v := range childenv.SandboxedClaude() {
+			for k, v := range childenv.SandboxedClaude(claudeDir) {
 				if _, set := env[k]; !set {
 					env[k] = v
 				}

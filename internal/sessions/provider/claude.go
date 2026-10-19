@@ -394,7 +394,7 @@ func (p *ClaudeProvider) buildClaudeArgs(mcpConfigPath, sysPromptPath string) []
 // No RELAY_*TOKEN of any kind is ever added: a console session's tools reach
 // relay by C3 ancestry (the hook, the --mcp-config child), not a bearer this
 // process would otherwise have to mint, store, and eventually revoke.
-func (p *ClaudeProvider) buildClaudeEnv(base []string) []string {
+func (p *ClaudeProvider) buildClaudeEnv(base []string) ([]string, error) {
 	add := map[string]string{
 		"RELAY_SESSION_ID": p.session.ID,
 	}
@@ -408,11 +408,16 @@ func (p *ClaudeProvider) buildClaudeEnv(base []string) []string {
 		add["RELAY_MODEL_SOCKET"] = p.cfg.ModelSocket
 	}
 	if p.cfg.SandboxProfile != "" {
-		for k, v := range childenv.SandboxedClaude() {
+		// Relay made the folder in AuthorizeLaunch; the provider only names it.
+		dir, err := childenv.SandboxClaudeDir()
+		if err != nil {
+			return nil, fmt.Errorf("sandboxed claude: %w", err)
+		}
+		for k, v := range childenv.SandboxedClaude(dir) {
 			add[k] = v
 		}
 	}
-	return mergeEnv(base, add)
+	return mergeEnv(base, add), nil
 }
 
 // buildHostExec assembles argv to run Claude on a host: relay's ssh_argv
@@ -537,7 +542,11 @@ func (p *ClaudeProvider) Start() error {
 			cmd = exec.Command(program[0], append(program[1:], args...)...) // unchanged direct spawn
 		}
 		cmd.Dir = p.directory
-		cmd.Env = p.buildClaudeEnv(ensurePath(childBaseEnv()))
+		env, err := p.buildClaudeEnv(ensurePath(childBaseEnv()))
+		if err != nil {
+			return err
+		}
+		cmd.Env = env
 	}
 	fds := &spawnFDs{statusR: statusR, extraFiles: extraFiles}
 	defer fds.closeUnlessStarted()
