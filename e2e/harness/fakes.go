@@ -33,6 +33,8 @@ type AgentCall struct {
 	Argv           []string `json:"argv"`
 	Text           string   `json:"text"`
 	LineSHA256     string   `json:"line_sha256"`
+	// Env is the watched environment of a start line; an unset variable has no key.
+	Env map[string]string `json:"env"`
 }
 
 type fakeMCP struct {

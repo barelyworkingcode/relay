@@ -5,7 +5,7 @@
 // "echo: <user text>".
 //
 // The call log is $TMPDIR/fakeagent-<persona>.jsonl: a start line (argv,
-// cwd), one input line per stdin line (line_sha256, and text when the line is
+// cwd, watched environment), one input line per stdin line (line_sha256, and text when the line is
 // a user turn) and an exit line.
 package main
 
@@ -35,6 +35,22 @@ type agentLine struct {
 	Text       string   `json:"text,omitempty"`
 	LineSHA256 string   `json:"line_sha256,omitempty"`
 	ExitCode   *int     `json:"exit_code,omitempty"`
+	// Env holds the watched variables the process started with. A variable
+	// that is unset has no key, so "0" and unset differ.
+	Env map[string]string `json:"env,omitempty"`
+}
+
+// watchedEnv names the variables the start line reports.
+var watchedEnv = []string{"DISABLE_AUTOUPDATER"}
+
+func watchedEnvValues() map[string]string {
+	out := map[string]string{}
+	for _, k := range watchedEnv {
+		if v, ok := os.LookupEnv(k); ok {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // agent is the state every persona shares.
@@ -70,7 +86,7 @@ func run() int {
 	}
 	a.log = l
 	cwd, _ := os.Getwd()
-	a.record(agentLine{Event: "start", Argv: args, Cwd: cwd})
+	a.record(agentLine{Event: "start", Argv: args, Cwd: cwd, Env: watchedEnvValues()})
 
 	code := a.dispatch()
 	a.record(agentLine{Event: "exit", ExitCode: &code})
@@ -80,6 +96,11 @@ func run() int {
 func (a *agent) dispatch() int {
 	switch a.persona {
 	case "claude":
+		// --print-env is the fake's own flag: the start line already holds the
+		// environment, so the process ends at once.
+		if flagPresent(a.args, "--print-env") {
+			return 0
+		}
 		return a.runClaude()
 	case "pi":
 		return a.runPi()
@@ -158,4 +179,14 @@ func flagValue(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+// flagPresent reports whether args holds name.
+func flagPresent(args []string, name string) bool {
+	for _, x := range args {
+		if x == name {
+			return true
+		}
+	}
+	return false
 }
