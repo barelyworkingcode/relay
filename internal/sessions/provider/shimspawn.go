@@ -47,6 +47,8 @@ type shimSpec struct {
 	BridgeSocket   string
 	SandboxProfile string
 	Identity       *sessionsmcp.IdentitySpec
+	// ClaudeToken goes to the target on shim.TokenFD through a pipe; never argv.
+	ClaudeToken string
 }
 
 // wanted reports whether spec asks for a shim-wrapped launch at all — a
@@ -97,6 +99,9 @@ func buildShimCmd(spec shimSpec, name string, args []string) (cmd *exec.Cmd, sta
 	if spec.SandboxProfile != "" {
 		shimArgs = append(shimArgs, "--sandbox-profile", spec.SandboxProfile)
 	}
+	if spec.ClaudeToken != "" {
+		shimArgs = append(shimArgs, "--pass-token")
+	}
 
 	sr, sw, perr := os.Pipe()
 	if perr != nil {
@@ -106,12 +111,48 @@ func buildShimCmd(spec shimSpec, name string, args []string) (cmd *exec.Cmd, sta
 		return nil, nil, nil, fmt.Errorf("status pipe: %w", perr)
 	}
 	extraFiles = append(extraFiles, sw)
+	if spec.ClaudeToken != "" {
+		tokenR, terr := tokenPipe(spec.ClaudeToken)
+		if terr != nil {
+			_ = sr.Close()
+			for _, f := range extraFiles {
+				_ = f.Close()
+			}
+			return nil, nil, nil, terr
+		}
+		// ExtraFiles entry i is fd 3+i in the shim: nil pads fd 4 when no
+		// identity pipe took fd 3, so the token lands on shim.TokenFD.
+		for len(extraFiles) < shim.TokenFD-3 {
+			extraFiles = append(extraFiles, nil)
+		}
+		extraFiles = append(extraFiles, tokenR)
+	}
 	shimArgs = append(shimArgs, "--status-fd", strconv.Itoa(statusFDNum), "--", name)
 	shimArgs = append(shimArgs, args...)
 
 	cmd = exec.Command(spec.Binary, shimArgs...)
 	cmd.ExtraFiles = extraFiles
 	return cmd, sr, extraFiles, nil
+}
+
+// tokenPipe returns the read end of a pipe that already holds token and has
+// its write end closed. The token fits the pipe buffer (relay caps it), so the
+// write never blocks. Errors never carry the token.
+func tokenPipe(token string) (*os.File, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("claude token pipe: %w", err)
+	}
+	if _, err := w.WriteString(token); err != nil {
+		_ = r.Close()
+		_ = w.Close()
+		return nil, fmt.Errorf("write claude token: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		_ = r.Close()
+		return nil, fmt.Errorf("close claude token pipe write end: %w", err)
+	}
+	return r, nil
 }
 
 // shimOutcome is what the shim's fd-4 status events told the caller.

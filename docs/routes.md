@@ -307,6 +307,11 @@ stopping are forwarded to the session host (section 3).
   | `502` | `persist_list_failed` |
   | `503` | `models_unavailable` |
 
+  `sandbox_unavailable` also covers an unusable `claude_token_file` on a
+  sandboxed Claude launch: a missing, unreadable, empty, oversized or
+  non-regular file, or a value that is not absolute or `~/`-prefixed. The
+  message names the path and never the file's content.
+
   A launch needs the kind's template in the project's `allowed_templates`
   (`["*"]` covers all): `claude-code` for a Claude model, `pi`, `codex`, or
   `chat` for any other model ID. A chat launch in a project whose list lacks

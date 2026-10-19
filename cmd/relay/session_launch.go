@@ -543,10 +543,16 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	sandbox := wantsSandbox(req.Kind, tmpl) && !(proj != nil && proj.IsHosted())
 	baseFields.Sandbox = sandbox
 
-	var claudeDir string
+	var claudeDir, claudeToken string
 	if sandbox && isClaudeLaunch(req.Kind, tmpl) {
 		var err error
 		if claudeDir, err = ensureSandboxClaudeDir(); err != nil {
+			return nil, invalidRequest("sandbox_unavailable", err.Error(), baseFields)
+		}
+		// Read at every launch and resume, so a changed file reaches the next
+		// session. Before the model key mint and the profile write, so a refusal
+		// leaves nothing behind.
+		if claudeToken, err = loadClaudeToken(settings); err != nil {
 			return nil, invalidRequest("sandbox_unavailable", err.Error(), baseFields)
 		}
 	}
@@ -572,6 +578,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		ExtraArgs:      req.ExtraArgs,
 		IdleTimeoutSec: 86400,
 		SessionRequest: sessionRequest,
+		ClaudeToken:    claudeToken,
 		Origin:         req.Origin,
 	}
 	if entry != nil && entry.Command != "" {

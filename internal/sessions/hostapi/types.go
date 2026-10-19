@@ -75,10 +75,14 @@ type LaunchRequest struct {
 	// way. decodeHostSpec checks for that string explicitly rather than
 	// trusting the sender, so the guard holds even if this tag is ever
 	// removed.
-	Host           json.RawMessage `json:"host,omitempty"`
-	Sandbox        *SandboxSpec    `json:"sandbox"`
-	Identity       *IdentitySpec   `json:"identity"`
-	ModelKey       string          `json:"model_key,omitempty"`
+	Host     json.RawMessage `json:"host,omitempty"`
+	Sandbox  *SandboxSpec    `json:"sandbox"`
+	Identity *IdentitySpec   `json:"identity"`
+	ModelKey string          `json:"model_key,omitempty"`
+	// ClaudeToken is the token relay read from claude_token_file for this
+	// launch. Set only for a sandboxed claude launch or a sandboxed pty launch
+	// of the claude-code template. Never logged and never in an error message.
+	ClaudeToken    string          `json:"claude_token,omitempty"`
 	SessionRequest json.RawMessage `json:"session_request,omitempty"`
 	// DropInFor names the held agent session this pty terminal takes over
 	// (pty only). When the terminal exits, that session is handed back.

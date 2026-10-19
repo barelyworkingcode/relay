@@ -55,6 +55,12 @@ type CreateSpec struct {
 	// here puts it in the environment on its own, so a template with no
 	// mapping gets no key injected. Never used for a host (ssh) session.
 	ModelKey string
+
+	// ClaudeToken is a Claude long-term OAuth token relay read for this launch.
+	// It reaches the target only on fd 5 (a pipe the shim hands on) and never
+	// in argv or the environment, bar the descriptor's number. Sandboxed local
+	// launches only.
+	ClaudeToken string
 }
 
 // modelKeyMarker is the one substitution a template env value may name for
@@ -90,7 +96,7 @@ func expandModelKey(env map[string]string, key string) map[string]string {
 
 func (s CreateSpec) validate() error {
 	if s.Outside || s.ReadOnly || s.View != nil {
-		if !s.Outside || !s.ReadOnly || s.View == nil || len(s.Argv) > 0 || s.Identity != nil || s.Sandbox != nil || s.ModelKey != "" || s.TemplateID != "" {
+		if !s.Outside || !s.ReadOnly || s.View == nil || len(s.Argv) > 0 || s.Identity != nil || s.Sandbox != nil || s.ModelKey != "" || s.ClaudeToken != "" || s.TemplateID != "" {
 			return errors.New("terminal: an outside viewer is a read-only tmux attach with no argv or launch privileges")
 		}
 		if _, err := s.View.attachArgv(); err != nil {
@@ -110,6 +116,9 @@ func (s CreateSpec) validate() error {
 	}
 	if s.Sandbox != nil && s.Sandbox.ProfilePath == "" {
 		return errors.New("terminal: sandbox requested but profile path is empty")
+	}
+	if s.ClaudeToken != "" && (s.Sandbox == nil || s.Host != nil) {
+		return errors.New("terminal: claude token requires a sandboxed local launch")
 	}
 	return nil
 }

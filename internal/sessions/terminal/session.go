@@ -295,6 +295,9 @@ func buildShimCmd(spec CreateSpec, cfg Config, targetArgv []string, tty *os.File
 	}
 
 	args = append(args, "--pty")
+	if spec.ClaudeToken != "" {
+		args = append(args, "--pass-token")
+	}
 	if spec.Sandbox != nil && spec.Sandbox.ProfilePath != "" {
 		args = append(args, "--sandbox-profile", spec.Sandbox.ProfilePath)
 	}
@@ -307,6 +310,22 @@ func buildShimCmd(spec CreateSpec, cfg Config, targetArgv []string, tty *os.File
 		return nil, nil, nil, fmt.Errorf("status pipe: %w", perr)
 	}
 	extraFiles = append(extraFiles, sw)
+	if spec.ClaudeToken != "" {
+		tokenR, terr := tokenPipe(spec.ClaudeToken)
+		if terr != nil {
+			_ = sr.Close()
+			for _, f := range extraFiles {
+				_ = f.Close()
+			}
+			return nil, nil, nil, terr
+		}
+		// ExtraFiles entry i is fd 3+i in the shim: nil pads fd 4 when no
+		// identity pipe took fd 3, so the token lands on shim.TokenFD.
+		for len(extraFiles) < shim.TokenFD-3 {
+			extraFiles = append(extraFiles, nil)
+		}
+		extraFiles = append(extraFiles, tokenR)
+	}
 	args = append(args, "--status-fd", strconv.Itoa(statusFDNum), "--")
 	args = append(args, targetArgv...)
 
@@ -322,6 +341,26 @@ func buildShimCmd(spec CreateSpec, cfg Config, targetArgv []string, tty *os.File
 		cmd.Dir = spec.Directory
 	}
 	return cmd, sr, extraFiles, nil
+}
+
+// tokenPipe returns the read end of a pipe that already holds token and has
+// its write end closed. The token fits the pipe buffer (relay caps it), so the
+// write never blocks. Errors never carry the token.
+func tokenPipe(token string) (*os.File, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("claude token pipe: %w", err)
+	}
+	if _, err := w.WriteString(token); err != nil {
+		_ = r.Close()
+		_ = w.Close()
+		return nil, fmt.Errorf("write claude token: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		_ = r.Close()
+		return nil, fmt.Errorf("close claude token pipe write end: %w", err)
+	}
+	return r, nil
 }
 
 // relaySecretEnvKeys must never be inherited by a spawned session's shim: a
@@ -405,6 +444,11 @@ func buildShimEnv(spec CreateSpec, cfg Config) []string {
 		add[k] = v
 	}
 	add["RELAY_SESSION_ID"] = spec.SessionID
+	if spec.ClaudeToken != "" {
+		// After spec.Env, so a template's own number cannot point Claude at a
+		// descriptor relay did not fill.
+		add[childenv.EnvClaudeTokenFD] = strconv.Itoa(shim.TokenFD)
+	}
 	if cfg.BridgeSocket != "" {
 		add["RELAY_BRIDGE_SOCKET"] = cfg.BridgeSocket
 	}

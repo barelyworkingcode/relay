@@ -127,6 +127,9 @@ func serviceSupervisionToNativeView(statuses map[string]service.SupervisionStatu
 type pathsView struct {
 	Config string `json:"config"`
 	Logs   string `json:"logs"`
+	// ClaudeTokenFile is the stored setting value, a path and never the
+	// token. Empty when the setting is unset.
+	ClaudeTokenFile string `json:"claude_token_file"`
 }
 
 // paths resolves pathsView. Logs is best-effort: serviceLogDir() only fails
@@ -134,9 +137,9 @@ type pathsView struct {
 // logging elsewhere, so an empty string here just means "Reveal logs" can't
 // find anything to open -- not a reason to fail building the rest of the
 // payload.
-func (a *App) paths() pathsView {
+func (a *App) paths(s *config.Settings) pathsView {
 	logs, _ := serviceLogDir()
-	return pathsView{Config: a.configDir, Logs: logs}
+	return pathsView{Config: a.configDir, Logs: logs, ClaudeTokenFile: s.ClaudeTokenFile}
 }
 
 // overviewSeed bundles every payload the Overview tab needs beyond what
@@ -162,6 +165,6 @@ func (a *App) buildOverviewSeed(s *config.Settings) overviewSeed {
 		ServiceRuntime: serviceRuntimeToNativeView(a.registry.Runtime()),
 		SealStatus:     a.sealStatus,
 		Version:        buildVersion,
-		Paths:          a.paths(),
+		Paths:          a.paths(s),
 	}
 }

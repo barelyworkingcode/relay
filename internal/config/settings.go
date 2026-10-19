@@ -82,6 +82,11 @@ type Settings struct {
 	// means the built-in defaults.
 	SessionSandbox *SessionSandboxConfig `json:"session_sandbox,omitempty"`
 
+	// ClaudeTokenFile names a file holding a Claude long-term OAuth token,
+	// absolute or "~/"-prefixed. Empty: no launch gets a token. omitempty keeps
+	// an install that never sets it byte-identical.
+	ClaudeTokenFile string `json:"claude_token_file,omitempty"`
+
 	// APICredentials are the bearer credentials the control-plane API
 	// accepts, each naming its own capability classes (ADR-015 decision 3).
 	// omitempty, like Enrolments and Audit: an install that never mints one

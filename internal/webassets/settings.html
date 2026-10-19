@@ -1177,7 +1177,7 @@ window.__RELAY_INIT__ = {
   var SERVICE_RUNTIME_INIT = window.__RELAY_INIT__.serviceRuntime || {};
   var SEAL_STATUS_INIT = window.__RELAY_INIT__.sealStatus || "";
   var VERSION_INIT = window.__RELAY_INIT__.version || "dev";
-  var PATHS_INIT = window.__RELAY_INIT__.paths || { config: "", logs: "" };
+  var PATHS_INIT = window.__RELAY_INIT__.paths || { config: "", logs: "", claude_token_file: "" };
   function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
       window.webkit.messageHandlers.ipc.postMessage(msg);
@@ -1410,7 +1410,7 @@ window.__RELAY_INIT__ = {
     // '' when healthy, else store.SealStatus()'s reason
     version: VERSION_INIT,
     paths: PATHS_INIT,
-    // {config, logs}
+    // {config, logs, claude_token_file}
     mcpToolsOpen: {},
     // mcpId -> bool (the "N tools" disclosure)
     // The project form's Allowed Models picker. The catalog is a live read of
@@ -1701,6 +1701,9 @@ window.__RELAY_INIT__ = {
     html += "<span>relay " + esc(state.version) + "</span>";
     html += "<span>" + esc(state.paths.config || "\u2014") + ' <button type="button" class="btn-link" onclick="revealConfigDir()">Reveal</button></span>';
     html += '<button type="button" class="btn-link" onclick="revealLogsDir()">Reveal logs</button>';
+    if (state.paths.claude_token_file) {
+      html += "<span>Claude token file: " + esc(state.paths.claude_token_file) + "</span>";
+    }
     html += "</div>";
     return html;
   }
