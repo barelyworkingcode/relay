@@ -330,7 +330,7 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 	result, resp, refusal, err := d.launch(r.Context(), req)
 	switch {
 	case refusal != nil:
-		endEvent(ev, refusal)
+		endRawModelRefusal(ev, req, refusal)
 		writeChiefOfStaffRefusal(w, refusal)
 		return
 	case err != nil || result == nil || resp == nil:

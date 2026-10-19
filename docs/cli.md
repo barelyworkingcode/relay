@@ -2627,7 +2627,9 @@ With neither `--project` with `--model` or `--entry`, nor `--file`, it exits `1`
 `error: pass --project and --model or --entry, or --file`. `--model` with `--entry` exits `1`
 with `send model or entry, not both`. An unknown agent exits `1` with
 `no agent "x" in PROJECT; agents: a, b`, and a model the agent's kind does not
-offer exits `1` with the offered models in the message. `--json` prints the session as
+offer exits `1` with the offered models in the message. A raw `--model` the
+kind does not offer exits `1` the same way: the message names the model and
+lists the offered models, spelled as `--model` takes them. `--json` prints the session as
 the `POST /api/sessions` 201 body; the fields a script reads:
 
 | Field | JSON type | Meaning |

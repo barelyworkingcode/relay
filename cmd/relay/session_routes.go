@@ -464,7 +464,7 @@ func (d sessionRouteDeps) launchWithEvent(ctx context.Context, req LaunchRequest
 	switch {
 	case refusal != nil:
 		setEntryEventFields(ev, refusal.Audit)
-		endEvent(ev, refusal)
+		endRawModelRefusal(ev, req, refusal)
 	case err != nil:
 		endEvent(ev, upstreamErr(err))
 	default:

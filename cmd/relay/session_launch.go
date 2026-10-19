@@ -23,6 +23,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
@@ -524,6 +525,14 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		}
 		if proj != nil && proj.IsHosted() {
 			return nil, forbidden("read_only_local_only", "readOnlyProjects is not available on a host project", baseFields)
+		}
+	}
+
+	// Deliberate: after the read-only and persist checks so each keeps its own
+	// refusal code, and before buildSessionRequest so nothing launches.
+	if req.Entry == "" && !req.Resume && req.Model != "" && (req.Kind == KindChat || req.Kind == KindCodex || req.Kind == KindPi) {
+		if refusal := checkRawModel(req, proj, baseFields); refusal != nil {
+			return nil, refusal
 		}
 	}
 
@@ -1300,6 +1309,63 @@ func checkEntryModel(req LaunchRequest, proj *config.Project, e *config.AgentEnt
 	}
 	return deniedRefusal(http.StatusBadRequest, "model_not_offered",
 		fmt.Sprintf("model %q is not offered for %s; models: %s", e.Model, e.Kind, strings.Join(choices, ", ")), choices, fields)
+}
+
+// checkRawModel refuses a fresh chat, codex or pi start with no entry whose
+// model the kind does not offer. A list that cannot be read refuses the start.
+func checkRawModel(req LaunchRequest, proj *config.Project, fields sessionLaunchAuditFields) *LaunchRefusal {
+	var offered []string
+	var err error
+	if req.offer != nil {
+		offered, err = req.offer(req.Kind)
+	}
+	if req.offer == nil || err != nil || len(offered) == 0 {
+		return deniedRefusal(http.StatusServiceUnavailable, "models_unavailable",
+			fmt.Sprintf("the model list for %s could not be read", req.Kind), nil, fields)
+	}
+	if rawModelOffered(req.Kind, req.Model, offered) {
+		return nil
+	}
+	var choices []string
+	for _, o := range offered {
+		spelled := project.SessionModel(config.AgentEntry{Kind: req.Kind, Model: o})
+		if projectAllowsModel(proj, spelled) {
+			choices = append(choices, spelled)
+		}
+	}
+	if len(choices) > maxRefusalChoices {
+		choices = choices[:maxRefusalChoices]
+	}
+	shown := capAuditText(req.Model, maxRefusalNameRunes)
+	message := fmt.Sprintf("model %q is not offered for %s; ", shown, req.Kind)
+	if len(choices) == 0 {
+		message += proj.Name + " allows none of the offered models"
+	} else {
+		message += "models: " + strings.Join(choices, ", ")
+	}
+	switch req.Model {
+	case KindCodex:
+		message += "; for a codex session use codex/" + shown
+	case KindPi:
+		message += "; for a pi session use pi/relay-router/" + shown
+	case KindClaude:
+		message += "; for a claude session use haiku, sonnet or opus"
+	}
+	return deniedRefusal(http.StatusBadRequest, "model_not_offered", message, choices, fields)
+}
+
+// endRawModelRefusal ends a launch event for a refusal and, for the two codes
+// the raw-model check owns, sets the requested model. Deliberate: an unreadable
+// list ends denied, not error, though its status is 503: the start was refused
+// before any work began, as the other raw-model refusal is.
+func endRawModelRefusal(ev *logging.Event, req LaunchRequest, refusal *LaunchRefusal) {
+	rawModel := req.Entry == "" && (refusal.Code == "model_not_offered" || refusal.Code == "models_unavailable")
+	if !rawModel {
+		endEvent(ev, refusal)
+		return
+	}
+	ev.Set("model", capAuditText(req.Model, maxRefusalNameRunes))
+	ev.End(logging.OutcomeDenied, refusal.Code, refusal)
 }
 
 // withCommandRead returns the kind's sandbox template with exactly one more
