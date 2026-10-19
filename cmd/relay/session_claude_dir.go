@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -14,7 +16,7 @@ import (
 // sandboxClaudeLinks are the ~/.claude entries a sandboxed Claude sees through
 // its relay-owned config folder. Never .credentials.json (the login itself) or
 // .claude.json (account data, possibly an API key): the folder holds its own,
-// and relay seeds a fixed .claude.json instead.
+// and relay seeds its own .claude.json instead.
 // projects and sessions are directories relay and the outside-session probe
 // read under ~/.claude, so they are created in the target when absent.
 var sandboxClaudeLinks = []string{
@@ -24,9 +26,16 @@ var sandboxClaudeLinks = []string{
 // sandboxClaudeLinkDirs are the entries whose target is made when missing.
 var sandboxClaudeLinkDirs = map[string]bool{"projects": true, "sessions": true}
 
-// sandboxClaudeSeed is the whole .claude.json relay writes into a folder that
-// has none. 31 bytes, no trailing newline.
-var sandboxClaudeSeed = []byte(`{"hasCompletedOnboarding":true}`)
+// sandboxClaudeState is the whole .claude.json relay writes into a folder that
+// has none. Field order fixes the key order; a nil Projects is omitted.
+type sandboxClaudeState struct {
+	HasCompletedOnboarding bool                          `json:"hasCompletedOnboarding"`
+	Projects               map[string]sandboxClaudeTrust `json:"projects,omitempty"`
+}
+
+type sandboxClaudeTrust struct {
+	HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+}
 
 // isClaudeLaunch reports whether the launch runs Claude Code: the claude
 // session kind, or a terminal started from the claude-code template.
@@ -38,10 +47,11 @@ func isClaudeLaunch(kind string, tmpl *config.TerminalTemplate) bool {
 }
 
 // ensureSandboxClaudeDir creates the sandbox Claude folder and seeds it with
-// links into ~/.claude and the onboarding .claude.json, then returns its path.
+// links into ~/.claude and the onboarding .claude.json (which pre-trusts
+// launchDir), then returns its path.
 // It never reads, copies or opens a file in ~/.claude, and never overwrites an
 // entry already in the folder.
-func ensureSandboxClaudeDir() (string, error) {
+func ensureSandboxClaudeDir(launchDir string) (string, error) {
 	dir, err := childenv.SandboxClaudeDir()
 	if err != nil {
 		return "", err
@@ -80,22 +90,62 @@ func ensureSandboxClaudeDir() (string, error) {
 			return "", fmt.Errorf("sandbox claude dir %s: link %s: %w", dir, name, err)
 		}
 	}
-	if err := seedSandboxClaudeState(dir); err != nil {
+	if err := seedSandboxClaudeState(dir, launchDir); err != nil {
 		return "", fmt.Errorf("sandbox claude dir %s: seed .claude.json: %w", dir, err)
 	}
 	return dir, nil
 }
 
-// seedSandboxClaudeState writes sandboxClaudeSeed to <dir>/.claude.json when
-// that name has no entry. It returns nil when an entry exists or another
-// launch published one first. The publish is a hard link, deliberately not a
-// rename or a create on the final name: link(2) fails with EEXIST and never
-// follows an existing entry, while rename would replace a file a concurrent
-// launch or a person put there, and the folder is writable by sandboxed agents.
-func seedSandboxClaudeState(dir string) error {
+// sandboxClaudeTrustDir returns the path the seed trusts, or "" for none.
+// Deliberate: it resolves symlinks itself because Claude compares the resolved
+// path, and realpath falls back to Clean when resolution fails. A trust on the
+// home folder or a parent of it is refused, since Claude's trust check walks
+// parents and such an entry would trust home.
+func sandboxClaudeTrustDir(launchDir string) string {
+	if launchDir == "" {
+		return ""
+	}
+	r, err := filepath.EvalSymlinks(launchDir)
+	if err != nil {
+		return ""
+	}
+	r = filepath.Clean(r)
+	if !filepath.IsAbs(r) || r == "/" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if home, err = filepath.EvalSymlinks(home); err != nil {
+		return ""
+	}
+	home = filepath.Clean(home)
+	if r == home || strings.HasPrefix(home, r+string(filepath.Separator)) {
+		return ""
+	}
+	return r
+}
+
+// seedSandboxClaudeState writes the seed to <dir>/.claude.json when that name
+// has no entry, trusting launchDir when sandboxClaudeTrustDir allows. It
+// returns nil when an entry exists or another launch published one first. The
+// publish is a hard link, deliberately not a rename or a create on the final
+// name: link(2) fails with EEXIST and never follows an existing entry, while
+// rename would replace a file a concurrent launch or a person put there, and
+// the folder is writable by sandboxed agents.
+func seedSandboxClaudeState(dir, launchDir string) error {
 	final := filepath.Join(dir, ".claude.json")
 	if _, err := os.Lstat(final); !errors.Is(err, os.ErrNotExist) {
 		return nil
+	}
+	state := sandboxClaudeState{HasCompletedOnboarding: true}
+	if trust := sandboxClaudeTrustDir(launchDir); trust != "" {
+		state.Projects = map[string]sandboxClaudeTrust{trust: {HasTrustDialogAccepted: true}}
+	}
+	seed, err := json.Marshal(state)
+	if err != nil {
+		return err
 	}
 	tmp, err := os.CreateTemp(dir, ".claude.json.seed-*")
 	if err != nil {
@@ -107,7 +157,7 @@ func seedSandboxClaudeState(dir string) error {
 		tmp.Close()
 		return err
 	}
-	if _, err := tmp.Write(sandboxClaudeSeed); err != nil {
+	if _, err := tmp.Write(seed); err != nil {
 		tmp.Close()
 		return err
 	}
