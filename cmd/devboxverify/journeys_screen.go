@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -609,7 +611,12 @@ func crashPIDPattern(svcID string) string {
 	return "[c]rash-" + strings.TrimPrefix(svcID, crashPrefix) + `\.env`
 }
 
-const sessionHostPIDPattern = "[r]elay-sessions service"
+// The pattern names the helper inside the bundle under test, so another
+// relay's session host (a verification stack's) is not counted.
+func sessionHostPIDPattern(relayBin string) string {
+	helper := filepath.Join(filepath.Dir(relayBin), "..", "Helpers", "relay-sessions") + " service"
+	return "^[" + helper[:1] + "]" + regexp.QuoteMeta(helper[1:])
+}
 
 func pollService(ctx context.Context, e env, svcID, pidPattern string, within time.Duration, done func(svcView) bool, seen func(svcView)) (svcView, bool) {
 	for deadline := time.Now().Add(within); ; {
@@ -767,11 +774,11 @@ type hostRestartRun struct {
 
 func runSessionHostRestart(ctx context.Context, e env) result {
 	const svcID = config.RelaySessionsServiceID
-	r := hostRestartRun{Before: serviceView(ctx, e, svcID, sessionHostPIDPattern)}
+	r := hostRestartRun{Before: serviceView(ctx, e, svcID, sessionHostPIDPattern(e.RelayBin))}
 	if r.Before.Err == nil && isUp(r.Before) {
 		_, r.RestartErr = adminOp[json.RawMessage](ctx, e, "service.restart", jsonBody(map[string]string{"id": svcID}))
 		if r.RestartErr == nil {
-			r.After, r.Back = pollService(ctx, e, svcID, sessionHostPIDPattern, 15*time.Second,
+			r.After, r.Back = pollService(ctx, e, svcID, sessionHostPIDPattern(e.RelayBin), 15*time.Second,
 				func(v svcView) bool {
 					return isUp(v) && !slices.ContainsFunc(v.PIDs, func(p int) bool { return slices.Contains(r.Before.PIDs, p) })
 				}, nil)
