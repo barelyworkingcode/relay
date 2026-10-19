@@ -63,7 +63,9 @@ func cleanupRoot() {
 	if lockFile != nil {
 		_ = lockFile.Close()
 	}
-	killUnder(runRoot)
+	for _, p := range killUnder(runRoot) {
+		fmt.Fprintf(os.Stderr, "e2e harness: process still running under %s after cleanup: %s\n", runRoot, p)
+	}
 	_ = os.RemoveAll(runRoot)
 }
 

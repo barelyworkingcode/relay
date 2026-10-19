@@ -43,7 +43,11 @@ cd e2e && go test -race -run TestFakeMCPStdioListsTools ./features/   # one test
 `TestMain` builds one `-tags relaytest` bundle (the `relay-e2e` binary,
 `relay-sessions` and the fakes) into a run root under `/tmp`, then runs the
 tests. A passing run removes the root. A failing run keeps it, so the instance
-directories can be read, and the next run reaps it.
+directories can be read, and the next run reaps it. Before an instance's
+directory or the run root is removed, the harness kills every process whose
+command line names it and waits up to 5 s for them to go; a survivor fails the
+test. An SSH-host agent runner is started with `setsid`, so it leaves the
+test's process group and its path is the only handle on it.
 
 **The devbox 32 by 3 procedure.** CI runs at the runner's parallelism. On the
 devbox, run the suite three times with 32 instances live at once:
