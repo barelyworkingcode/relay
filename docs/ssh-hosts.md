@@ -589,9 +589,11 @@ program for each agent. On a host project the program lives on the host.
   take the same path. The script has two sections. The first is the login-shell
   lookup the host probe uses (`"$SHELL" -lic 'command -v NAME'`, from
   `sshhost.LoginShellLookup`), which sees a `PATH` set in the host's shell rc
-  file. The second is plain `command -v NAME`. The first non-empty line of the
-  first section wins, else of the second, and it must start with `/`. A
-  builtin, alias or function prints a bare word and is `command_not_found`.
+  file. The second is plain `command -v NAME`. The first line that starts
+  with `/` in the first section wins, else the first such line in the second.
+  Other lines are skipped: a banner a startup file prints, and the bare word a
+  builtin, alias or function prints. A section with no such line is
+  `command_not_found`.
   A name that is an absolute path goes through the same lookup, so a file that
   is not executable is not found.
 - **Result.** relay stores the absolute path, and the write answers with the
