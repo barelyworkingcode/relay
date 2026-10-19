@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // Bundle holds the absolute paths of the binaries a run builds.
@@ -62,6 +63,7 @@ func cleanupRoot() {
 	if lockFile != nil {
 		_ = lockFile.Close()
 	}
+	killUnder(runRoot)
 	_ = os.RemoveAll(runRoot)
 }
 
@@ -228,13 +230,40 @@ func reapStrays() {
 	}
 }
 
-// killUnder kills every process whose command line names the dead run's root.
-func killUnder(root string) {
+// killUnder kills every process whose command line names root and waits up to
+// a few seconds for them to leave the process table. It returns the survivors
+// as "pid command" lines.
+func killUnder(root string) []string {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		procs := processesUnder(root)
+		if len(procs) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			out := make([]string, 0, len(procs))
+			for pid, cmdline := range procs {
+				out = append(out, fmt.Sprintf("%d %s", pid, cmdline))
+			}
+			return out
+		}
+		for pid := range procs {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// processesUnder maps pid to command line for every process but this one whose
+// command line names root. A setsid child escapes the test's process group, so
+// the command line is the only handle on it.
+func processesUnder(root string) map[int]string {
 	out, err := exec.Command("ps", "-axo", "pid=,command=").Output()
 	if err != nil {
-		return
+		return nil
 	}
 	self := os.Getpid()
+	procs := map[int]string{}
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		pidStr, cmdline, ok := strings.Cut(line, " ")
@@ -245,6 +274,7 @@ func killUnder(root string) {
 		if err != nil || pid == self {
 			continue
 		}
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		procs[pid] = cmdline
 	}
+	return procs
 }
