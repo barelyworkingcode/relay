@@ -106,7 +106,7 @@ listener mints its own.
 
 **Event-specific codes.** `session.launch` and `session.drop_in` use the
 refusal code of the launch or drop-in as `reason`: `denied` below status 500,
-`error` at or above.
+`error` at or above. A raw-model start's `models_unavailable` (a start with no entry) ends `denied`.
 
 ## 5. What has no event
 
@@ -198,7 +198,7 @@ reasons. The agent's `args` are in the audit row only, never in an event.
 | `chief_of_staff.config.set` | At the end of `SetChiefOfStaff` | `PUT /api/chief-of-staff/config`, Settings | `project_id` |
 | `chief_of_staff.config.clear` | At the end of `ClearChiefOfStaff` | `DELETE /api/chief-of-staff/config`, Settings | none |
 | `chief_of_staff.send` | When a message is sent to the Chief of Staff session | `POST /api/chief-of-staff/messages` | `session_id` (`origin` (existing)) |
-| `chief_of_staff.start` | When a Chief of Staff session is started | `POST /api/chief-of-staff/sessions` | `session_id`, `project_id`, `kind`, `entry` and `entry_type` (`agent` or `chat`) once an entry is named, and `model` (the requested model, capped) on a `model_not_offered` or `models_unavailable` refusal (the outcome follows the HTTP status: `403` is `denied`, `400` is `error` with reason `invalid`; an unknown or ambiguous entry is `denied` with reason `entry_not_found` or `entry_ambiguous`) |
+| `chief_of_staff.start` | When a Chief of Staff session is started | `POST /api/chief-of-staff/sessions` | `session_id`, `project_id`, `kind`, `entry` and `entry_type` (`agent` or `chat`) once an entry is named, and `model` (the requested model, capped), set only on a start with no entry, on a `model_not_offered` or `models_unavailable` refusal (a `model_not_offered` `400` and a `403` end `denied`; a `models_unavailable` ends `denied`; an unknown or ambiguous entry is `denied` with reason `entry_not_found` or `entry_ambiguous`) |
 | `chief_of_staff.agents.list` | Before the list is returned | `GET /api/chief-of-staff/projects/{projectId}/agents` | `project_id`, `count` (`403` is `denied`) |
 | `chief_of_staff.agents.preview` | At the end of the preview | `POST /api/chief-of-staff/projects/{projectId}/agents/preview` | `project_id`, `machine` (set once the command is resolved; `403` is `denied`, `400` and `422` are `error` with reason `invalid`) |
 
@@ -410,7 +410,7 @@ prompt and an unavailable audit log use the shared `presence_*` and
 |---|---|---|---|
 | `session.list` | In `handleProxyList`, `listViaHost` | `GET /api/sessions`, `relay session list` | `count` |
 | `terminal.list` | In `handleProxyList`, `listViaHost` | `GET /api/terminals`, `relay terminal list` | `count` |
-| `session.launch` | In `launchWithEvent` | `POST /api/sessions`, `POST /api/terminals`, `relay session start`, `relay terminal start` | `session_id`, `project_id`, `kind`, and when the start named an agent `entry` and `command` (the stored absolute path; absent when the entry has none). On a refusal `reason` is the launch refusal code, and `model` (the requested model, capped) is set for `model_not_offered` and `models_unavailable` |
+| `session.launch` | In `launchWithEvent` | `POST /api/sessions`, `POST /api/terminals`, `relay session start`, `relay terminal start` | `session_id`, `project_id`, `kind`, and when the start named an agent `entry` and `command` (the stored absolute path; absent when the entry has none). On a refusal `reason` is the launch refusal code, and `model` (the requested model, capped) is set for `model_not_offered` and `models_unavailable`, only on a start with no entry |
 | `session.resume` | In `resumeSession` | `POST /api/sessions/{id}/resume`, `relay session resume` | `session_id`, `project_id` |
 | `session.drop_in` | In `dropIn` | `POST /api/sessions/{id}/drop-in`, bridge `drop_in_attach` (`relay drop-in`) | `session_id`, `host`, `terminal_id` |
 | `session.mode` | At the end of `adminSessionMode` | `relay session mode` | `session_id` (a `resume_required` answer from a local claude session ends the event `error` with reason `internal`) |

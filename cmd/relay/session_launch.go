@@ -1345,9 +1345,9 @@ func checkRawModel(req LaunchRequest, proj *config.Project, fields sessionLaunch
 	}
 	switch req.Model {
 	case KindCodex:
-		message += "; for a codex session use codex/" + shown
+		message += "; for a codex session use codex/<model>"
 	case KindPi:
-		message += "; for a pi session use pi/relay-router/" + shown
+		message += "; for a pi session use pi/relay-router/<model>"
 	case KindClaude:
 		message += "; for a claude session use haiku, sonnet or opus"
 	}

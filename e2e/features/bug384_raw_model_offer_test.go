@@ -48,7 +48,7 @@ func TestBug384RawModelNotOfferedRefused(t *testing.T) {
 	if res.Code != 1 {
 		t.Fatalf("relay session start --model codex exited %d, want 1\nstdout: %s\nstderr: %s", res.Code, res.Stdout, res.Stderr)
 	}
-	for _, want := range []string{`"codex"`, "chat", "fake-echo", "codex/codex"} {
+	for _, want := range []string{`"codex"`, "chat", "fake-echo", "codex/<model>"} {
 		if !strings.Contains(string(res.Stderr), want) {
 			t.Fatalf("the CLI refusal %q lacks %q", string(res.Stderr), want)
 		}
