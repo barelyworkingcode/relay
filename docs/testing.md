@@ -85,7 +85,7 @@ starts per instance; none touches the network beyond loopback.
     and what history they give are under
     [History on join](session-host.md#history-on-join).
   - The start line of the call log carries `env`: the value of each watched
-    variable the process started with (`DISABLE_AUTOUPDATER`), with no key for
+    variable the process started with (`DISABLE_AUTOUPDATER`, `CLAUDE_CONFIG_DIR`), with no key for
     one that is unset. `harness.AgentCall.Env` reads it. The claude persona
     given `--print-env` exits 0 at once after that line, so a terminal launch
     ends and a test can read the line after `session.exited`.
