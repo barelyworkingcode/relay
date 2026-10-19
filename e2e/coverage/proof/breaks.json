@@ -152,5 +152,12 @@
     "find": "\tw.server.StopAccepting()\n\tif reason == windowClosedLodged {\n\t\tif sup.lodging == nil {\n\t\t\tsup.lodging = map[*EnrolmentRequestServer]struct{}{}\n\t\t}\n\t\tsup.lodging[w.server] = struct{}{}\n\t\tsup.run(func() {\n\t\t\tw.server.CloseWhenIdle()\n\t\t\tsup.mu.Lock()\n\t\t\tdelete(sup.lodging, w.server)\n\t\t\tsup.mu.Unlock()\n\t\t})\n\t} else {\n\t\tsup.run(w.server.Close)\n\t}\n\tlogging.BeginEvent",
     "replace": "\tif reason == windowClosedLodged {\n\t\tif sup.lodging == nil {\n\t\t\tsup.lodging = map[*EnrolmentRequestServer]struct{}{}\n\t\t}\n\t\tsup.lodging[w.server] = struct{}{}\n\t\tsup.run(func() {\n\t\t\tw.server.CloseWhenIdle()\n\t\t\tsup.mu.Lock()\n\t\t\tdelete(sup.lodging, w.server)\n\t\t\tsup.mu.Unlock()\n\t\t})\n\t}\n\tlogging.BeginEvent",
     "why": "closing an enrolment window that took no request leaves its port accepting connections"
+  },
+  {
+    "area": "sessions",
+    "file": "cmd/relay/session_launch.go",
+    "find": "func checkRawModel(req LaunchRequest, proj *config.Project, fields sessionLaunchAuditFields) *LaunchRefusal {",
+    "replace": "func checkRawModel(req LaunchRequest, proj *config.Project, fields sessionLaunchAuditFields) *LaunchRefusal {\n\treturn nil",
+    "why": "a raw model that its kind does not offer starts a session instead of being refused"
   }
 ]
