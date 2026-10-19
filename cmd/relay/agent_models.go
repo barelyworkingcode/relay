@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 )
 
 // ModelOffer lists the models a session kind offers, as the bare ids an agent
 // entry stores: claude's aliases, codex's slugs without their prefix, and the
-// model endpoint's ids for pi.
+// model endpoint's ids for pi and chat.
 type ModelOffer func(ctx context.Context, kind string) ([]string, error)
 
 var errModelsUnavailable = errors.New("model list unavailable")
@@ -41,7 +42,7 @@ func newModelOffer(c *ModelCatalogOps) ModelOffer {
 				}
 			}
 			return nonEmptyOffer(out)
-		case KindPi:
+		case KindPi, KindChat:
 			if c == nil || c.BrokerRows == nil {
 				return nil, errModelsUnavailable
 			}
@@ -68,4 +69,31 @@ func nonEmptyOffer(models []string) ([]string, error) {
 		return nil, errModelsUnavailable
 	}
 	return models, nil
+}
+
+// rawModelOffered reports whether a raw session model names a model in its
+// kind's offer: codex drops "codex/"; pi keeps <id> of "pi/<provider>/<id>"
+// (a malformed pi model is never offered); chat matches the id, or <x> of
+// "llama/<x>" or "mlx/<x>", the spellings docs/model-endpoint.md accepts.
+func rawModelOffered(kind, model string, offered []string) bool {
+	switch kind {
+	case KindCodex:
+		return slices.Contains(offered, strings.TrimPrefix(model, codexOfferedPrefix))
+	case KindPi:
+		parts := strings.SplitN(model, "/", 3)
+		if len(parts) != 3 || parts[0] != KindPi || parts[1] == "" || parts[2] == "" {
+			return false
+		}
+		return slices.Contains(offered, parts[2])
+	case KindChat:
+		if slices.Contains(offered, model) {
+			return true
+		}
+		for _, prefix := range []string{"llama/", "mlx/"} {
+			if rest, ok := strings.CutPrefix(model, prefix); ok && rest != "" && slices.Contains(offered, rest) {
+				return true
+			}
+		}
+	}
+	return false
 }

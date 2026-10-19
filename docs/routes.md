@@ -311,6 +311,20 @@ stopping are forwarded to the session host (section 3).
   (`["*"]` covers all): `claude-code` for a Claude model, `pi`, `codex`, or
   `chat` for any other model ID. A chat launch in a project whose list lacks
   `chat` is refused `template_not_allowed`.
+- **Start by raw model:** a fresh `chat`, `codex` or `pi` start with `model`
+  and no `entry` checks the model against the kind's offer (as step 3 of an
+  entry start does), after the project, template, `allowed_models`,
+  `persist_session` and read-only checks and before anything launches. Chat
+  matches an offered id, or the id behind `llama/` or `mlx/`; codex matches a
+  slug with or without `codex/`; pi matches the id of `pi/<provider>/<id>`.
+  An unknown model is `400 model_not_offered`. The message names the model
+  and the kind and lists the offered models the project allows, at most 50,
+  each in the spelling `--model` accepts (`codex/<slug>`,
+  `pi/relay-router/<id>`, a chat id as is), also in `choices` on the Chief of
+  Staff route. When the model is `codex`, `pi` or `claude` the message adds
+  how to spell a model of that kind. A list relay cannot read is
+  `503 models_unavailable`. A claude start, a resume, an entry start and a
+  terminal are not checked here.
 - **Start by agent entry:** a body with `entry` and no `model` starts the
   named agent of the project's list. The check runs after the project and
   directory checks, so only a caller already allowed to launch in the project
