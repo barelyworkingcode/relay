@@ -309,8 +309,9 @@ stopping are forwarded to the session host (section 3).
 
   `sandbox_unavailable` also covers an unusable `claude_token_file` on a
   sandboxed Claude launch: a missing, unreadable, empty, oversized or
-  non-regular file, or a value that is not absolute or `~/`-prefixed. The
-  message names the path and never the file's content.
+  non-regular file. A value that is not absolute or `~/`-prefixed, or a deny
+  that hits a linked path, refuses every sandboxed launch, a shell terminal
+  included. The message names the path and never the file's content.
 
   A launch needs the kind's template in the project's `allowed_templates`
   (`["*"]` covers all): `claude-code` for a Claude model, `pi`, `codex`, or

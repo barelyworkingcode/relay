@@ -747,8 +747,8 @@ depend on the order, not just the end result:
    alone.
 5. **Wrap in `sandbox-exec` (`--sandbox-profile` only).** The target argv
    becomes `/usr/bin/sandbox-exec -f <profile> -- <target argv…>`.
-6. **Spawn the target.** With `--pass-token`, fd 5 (`shim.TokenFD`) must be an
-   open pipe, else the shim exits `ExitInternal`; it is marked close-on-exec,
+6. **Spawn the target.** With `--pass-token`, fd 5 (`shim.TokenFD`) must be
+   open, else the shim exits `ExitInternal`; it is marked close-on-exec,
    never read, and handed to the target at fd 5 through `ExtraFiles` (fds 3 and
    4 stay closed in the child). The shim closes its own copy once `cmd.Start`
    returns. `--status-fd 5` is refused with `--pass-token`.

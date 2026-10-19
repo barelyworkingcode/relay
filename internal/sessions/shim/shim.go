@@ -219,9 +219,11 @@ func runConfig(cfg Config) int {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// Env: nil inherits the shim's own environ, which by this point no
 	// longer has RELAY_LAUNCH_FD (unset above whenever --identity was set).
-	// fds 3 and 4 are never in ExtraFiles, so the target gets neither: 3 was
-	// fully closed by readIdentitySecret before we ever got here, and 4 is
-	// CLOEXEC (set in newStatusWriter), so exec(2) closes it in the child.
+	// ExtraFiles carries no fd 3 or 4 (nil entries when the token occupies
+	// fd 5), so the target gets neither: 3 was fully closed by
+	// readIdentitySecret before we ever got here, and 4 is CLOEXEC (set in
+	// newStatusWriter), so exec(2) closes it in the child. The token on fd 5
+	// is deliberate: it is how the target receives it.
 	attr := &syscall.SysProcAttr{Setpgid: true}
 	if cfg.PTY {
 		attr.Foreground = true

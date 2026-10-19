@@ -264,7 +264,8 @@ func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode i
 
 // buildShimCmd assembles the `relay-sessions exec ... --pty ... -- <target>`
 // invocation: the identity secret pipe (fd 3, iff spec.Identity is set), the
-// status pipe (always), and the shim's own env (buildShimEnv). tty is wired
+// status pipe (always), the Claude token pipe (fd 5, iff a token is
+// supplied; unused fds below it are nil placeholders), and the shim's own env (buildShimEnv). tty is wired
 // as the shim's stdio — deliberately via pty.Open()+Setsize rather than
 // pty.StartWithSize: the latter would call Setsid itself before exec, and
 // the shim's own --pty handling (C6 step 2) also calls Setsid — a second

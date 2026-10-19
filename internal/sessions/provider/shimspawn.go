@@ -59,12 +59,13 @@ func (s shimSpec) wanted() bool { return s.SandboxProfile != "" || s.Identity !=
 
 // buildShimCmd wraps name+args as the target argv of a `relay-sessions exec`
 // invocation, mirroring internal/sessions/mcp's buildShimCommand and
-// internal/sessions/terminal's buildShimCmd exactly: an identity secret pipe
-// (fd 3, iff spec.Identity is set), a status pipe (always), --sandbox-profile
-// when set, then `-- <target>`. `--pty` is never passed — pipe mode (no pty)
+// internal/sessions/terminal's buildShimCmd: an identity secret pipe
+// (fd 3, iff spec.Identity is set), a status pipe (always), a Claude token
+// pipe (fd 5, iff the spec carries a token; fds 3 and 4 are then nil
+// placeholders), --sandbox-profile when set, then `-- <target>`. `--pty` is never passed — pipe mode (no pty)
 // is this package's whole launch shape. The returned extraFiles are the
 // parent's own copies of the fds duplicated into the child (identity secret
-// read end, status write end) — the caller must close them once cmd.Start
+// read end, status write end, token read end) — the caller must close them once cmd.Start
 // has run, the same convention both mirrored callers use.
 //
 // cmd.Dir and cmd.Env are deliberately left unset here: the caller (Start)
