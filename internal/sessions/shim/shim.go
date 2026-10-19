@@ -54,6 +54,10 @@ const (
 // the host's ExtraFiles wiring and this file's constant drift independently).
 const identityFD = 3
 
+// TokenFD is fd 5: a pipe the target reads, present iff --pass-token. Above the
+// identity pipe (3) and the status pipe (3 or 4), so no launch pipe shares it.
+const TokenFD = 5
+
 // envLaunchFD names the inherited descriptor holding the launch secret, in
 // the shim's own environment (set by the host iff --identity). Spelled out
 // locally rather than imported from internal/bridge: see hello.go's doc
@@ -77,12 +81,13 @@ type StatusEvent struct {
 // Config is relay-sessions exec's parsed command line:
 //
 //	relay-sessions exec --session-id <id> [--identity] [--pty] \
-//	  [--sandbox-profile <abs path>] --status-fd 4 -- <target argv…>
+//	  [--sandbox-profile <abs path>] [--pass-token] --status-fd 4 -- <target argv…>
 type Config struct {
 	SessionID      string
 	Identity       bool
 	PTY            bool
 	SandboxProfile string
+	PassToken      bool
 	StatusFD       int
 	Argv           []string
 }
@@ -96,6 +101,7 @@ func ParseArgs(args []string) (Config, error) {
 	identity := fs.Bool("identity", false, "read a launch secret off fd 3 and Hello before spawning")
 	pty := fs.Bool("pty", false, "become a PTY session leader on fd 0 before spawning")
 	sandboxProfile := fs.String("sandbox-profile", "", "absolute path to an SBPL profile; wraps the target in sandbox-exec")
+	passToken := fs.Bool("pass-token", false, "hand the pipe on fd 5 to the target as its fd 5")
 	statusFD := fs.Int("status-fd", 4, "fd to write newline-delimited status JSON to")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -109,6 +115,9 @@ func ParseArgs(args []string) (Config, error) {
 	if *identity && *statusFD == identityFD {
 		return Config{}, fmt.Errorf("--status-fd cannot be %d: that fd is the identity secret pipe when --identity is set", identityFD)
 	}
+	if *passToken && *statusFD == TokenFD {
+		return Config{}, fmt.Errorf("--status-fd cannot be %d: that fd is the token pipe when --pass-token is set", TokenFD)
+	}
 	argv := fs.Args()
 	if len(argv) == 0 {
 		return Config{}, errors.New("no target argv given (expected `-- <argv...>`)")
@@ -118,6 +127,7 @@ func ParseArgs(args []string) (Config, error) {
 		Identity:       *identity,
 		PTY:            *pty,
 		SandboxProfile: *sandboxProfile,
+		PassToken:      *passToken,
 		StatusFD:       *statusFD,
 		Argv:           argv,
 	}, nil
@@ -161,6 +171,19 @@ func runConfig(cfg Config) int {
 		}
 	}
 
+	var tokenFile *os.File
+	if cfg.PassToken {
+		var err error
+		tokenFile, err = openTokenPipe()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "relay-sessions exec: token fd: %v\n", err)
+			return ExitInternal
+		}
+		// The shim never reads the token. Closing its copy once cmd.Start
+		// returns is what leaves the target the only reader.
+		defer tokenFile.Close()
+	}
+
 	if cfg.PTY {
 		if _, err := syscall.Setsid(); err != nil {
 			fmt.Fprintf(os.Stderr, "relay-sessions exec: setsid: %v\n", err)
@@ -196,17 +219,27 @@ func runConfig(cfg Config) int {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// Env: nil inherits the shim's own environ, which by this point no
 	// longer has RELAY_LAUNCH_FD (unset above whenever --identity was set).
-	// fds 3 and 4 are never in ExtraFiles, so the target gets neither: 3 was
-	// fully closed by readIdentitySecret before we ever got here, and 4 is
-	// CLOEXEC (set in newStatusWriter), so exec(2) closes it in the child.
+	// ExtraFiles carries no fd 3 or 4 (nil entries when the token occupies
+	// fd 5), so the target gets neither: 3 was fully closed by
+	// readIdentitySecret before we ever got here, and 4 is CLOEXEC (set in
+	// newStatusWriter), so exec(2) closes it in the child. The token on fd 5
+	// is deliberate: it is how the target receives it.
 	attr := &syscall.SysProcAttr{Setpgid: true}
 	if cfg.PTY {
 		attr.Foreground = true
 		attr.Ctty = 0 // fd 0 in the shim's own table: the PTY slave, ctty'd above.
 	}
 	cmd.SysProcAttr = attr
+	if tokenFile != nil {
+		// Entry i is the child's fd 3+i: the nil entries leave 3 and 4 closed.
+		cmd.ExtraFiles = []*os.File{nil, nil, tokenFile}
+	}
 
-	if err := cmd.Start(); err != nil {
+	startErr := cmd.Start()
+	if tokenFile != nil {
+		_ = tokenFile.Close()
+	}
+	if err := startErr; err != nil {
 		errno := 0
 		var se syscall.Errno
 		if errors.As(err, &se) {
@@ -321,6 +354,16 @@ func isLaunchSecret(s string) bool {
 		}
 	}
 	return true
+}
+
+// openTokenPipe wraps fd 5, which --pass-token promises is open, and marks it
+// close-on-exec so only the explicit ExtraFiles hand-off reaches the target.
+func openTokenPipe() (*os.File, error) {
+	if _, err := unix.FcntlInt(uintptr(TokenFD), unix.F_GETFD, 0); err != nil {
+		return nil, fmt.Errorf("fd %d is not open: %w", TokenFD, err)
+	}
+	syscall.CloseOnExec(TokenFD)
+	return os.NewFile(uintptr(TokenFD), "relay-claude-token"), nil
 }
 
 type statusWriter struct{ f *os.File }

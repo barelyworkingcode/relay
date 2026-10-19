@@ -68,7 +68,7 @@ const MCP_HEALTH_INIT = window.__RELAY_INIT__.mcpHealth || {};
 const SERVICE_RUNTIME_INIT = window.__RELAY_INIT__.serviceRuntime || {};
 const SEAL_STATUS_INIT = window.__RELAY_INIT__.sealStatus || '';
 const VERSION_INIT = window.__RELAY_INIT__.version || 'dev';
-const PATHS_INIT = window.__RELAY_INIT__.paths || { config: '', logs: '' };
+const PATHS_INIT = window.__RELAY_INIT__.paths || { config: '', logs: '', claude_token_file: '' };
 
 function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
@@ -274,7 +274,7 @@ let state = {
     serviceRuntime: SERVICE_RUNTIME_INIT, // serviceId -> {pid, started_at}
     sealStatus: SEAL_STATUS_INIT,         // '' when healthy, else store.SealStatus()'s reason
     version: VERSION_INIT,
-    paths: PATHS_INIT,                    // {config, logs}
+    paths: PATHS_INIT,                    // {config, logs, claude_token_file}
     mcpToolsOpen: {},                     // mcpId -> bool (the "N tools" disclosure)
 
     // The project form's Allowed Models picker. The catalog is a live read of
@@ -638,6 +638,9 @@ function renderOverviewFooter() {
     html += '<span>relay ' + esc(state.version) + '</span>';
     html += '<span>' + esc(state.paths.config || '—') + ' <button type="button" class="btn-link" onclick="revealConfigDir()">Reveal</button></span>';
     html += '<button type="button" class="btn-link" onclick="revealLogsDir()">Reveal logs</button>';
+    if (state.paths.claude_token_file) {
+        html += '<span>Claude token file: ' + esc(state.paths.claude_token_file) + '</span>';
+    }
     html += '</div>';
     return html;
 }

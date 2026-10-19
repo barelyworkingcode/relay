@@ -9,7 +9,7 @@ outside it is not a relay bug, however real.
 - **A. Grants**: what each project, session, service and remote client may
   reach (tools, files, sockets, models).
 - **B. Credentials**: tokens, launch identities, client certificates,
-  passkeys, model keys.
+  passkeys, model keys, the Claude long-term token named by `claude_token_file`.
 - **C. The audit trail**: every gated action recorded, unforgeable by the
   actor it records.
 - **D. Your data outside a grant**: files, mail, accounts and secrets no
@@ -21,7 +21,10 @@ outside it is not a relay bug, however real.
    code can do. It cannot read or write outside its grants, reach a
    relay-managed service it wasn't granted or any listener that trusts
    loopback in place of a credential, obtain or keep a credential it wasn't
-   issued, or act without the audit trail recording it.
+   issued, or act without the audit trail recording it. When
+   `claude_token_file` is set, a sandboxed Claude launch is issued the Claude
+   token on a descriptor, no other launch is, and no sandboxed process can open
+   the file by path.
    Examples: #53 (a planted symlink widens a later session's read grants),
    #104 (renaming a socket-deny directory to connect).
    The file plane (`docs/project-files.md`) holds the same line for eve's

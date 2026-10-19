@@ -109,6 +109,7 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 		spec.Identity = &terminal.IdentitySpec{Secret: req.Identity.Secret}
 	}
 	spec.ModelKey = req.ModelKey
+	spec.ClaudeToken = req.ClaudeToken
 	return spec, nil
 }
 
@@ -155,6 +156,9 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 	if err != nil {
 		return session.CreateSpec{}, err
 	}
+	if req.ClaudeToken != "" && (req.Kind != session.KindClaude || req.Sandbox == nil || host != nil) {
+		return session.CreateSpec{}, errors.New("hostapi: claude token requires a sandboxed local claude launch")
+	}
 
 	var projectID string
 	if len(req.Project) > 0 {
@@ -184,6 +188,7 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		Origin:         req.Origin,
 		Launcher:       req.Launcher,
 		Entry:          sr.Entry,
+		ClaudeToken:    req.ClaudeToken,
 	}
 	// session.CreateSpec has no validate() of its own to lean on the way
 	// terminal.CreateSpec does (buildTerminalSpec's own comment): an empty

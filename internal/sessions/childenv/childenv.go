@@ -42,6 +42,15 @@ func IsParentClaudeSession(kv string) bool {
 	return strings.HasPrefix(name, "CLAUDE_CODE_")
 }
 
+// EnvClaudeTokenFD names the descriptor Claude Code reads its long-term OAuth
+// token from.
+//
+// Deliberate: the name is CLAUDE_CODE_-prefixed, so IsParentClaudeSession drops
+// a copy from relay's own environment. The host adds relay's value after that
+// scrub, only to a launch that carries the token. The scrub itself does not
+// change.
+const EnvClaudeTokenFD = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
+
 // EnvDisableAutoUpdater is the Claude Code variable that turns its self-updater off.
 const EnvDisableAutoUpdater = "DISABLE_AUTOUPDATER"
 

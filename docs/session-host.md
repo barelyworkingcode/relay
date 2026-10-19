@@ -723,7 +723,7 @@ and the error lines are in [cli.md](cli.md#which-socket-the-relay-mcp-stdio-serv
 
 ```
 relay-sessions exec --session-id <id> [--identity] [--pty] \
-  [--sandbox-profile <abs path>] --status-fd 4 -- <target argv…>
+  [--sandbox-profile <abs path>] [--pass-token] --status-fd 4 -- <target argv…>
 ```
 
 Steps run in this exact order, and both the implementation and its own tests
@@ -747,7 +747,12 @@ depend on the order, not just the end result:
    alone.
 5. **Wrap in `sandbox-exec` (`--sandbox-profile` only).** The target argv
    becomes `/usr/bin/sandbox-exec -f <profile> -- <target argv…>`.
-6. **Spawn the target.** `Setpgid: true` always; `Foreground: true` and
+6. **Spawn the target.** With `--pass-token`, fd 5 (`shim.TokenFD`) must be
+   open, else the shim exits `ExitInternal`; it is marked close-on-exec,
+   never read, and handed to the target at fd 5 through `ExtraFiles` (fds 3 and
+   4 stay closed in the child). The shim closes its own copy once `cmd.Start`
+   returns. `--status-fd 5` is refused with `--pass-token`.
+   `Setpgid: true` always; `Foreground: true` and
    `Ctty: 0` (fd 0, the PTY slave already ctty'd in step 2) when `--pty`. A
    spawn failure reports `spawn_failed` with the errno and exits `127`
    (`ENOENT`) or `126` (any other cause).
@@ -1284,6 +1289,23 @@ are applied after this base, so a template that wants one of the dropped names,
 eve) still inherit relay's environment apart from relay's own tokens; that is not
 covered here.
 
+**The Claude token is the one deliberate exception, and it is never in the
+environment.** While `claude_token_file` (`settings.json`) names a file, relay
+reads it at each launch and resume of a sandboxed `claude` session or a
+sandboxed terminal from the `claude-code` template, and sends the bytes in the
+launch request (`claude_token`). The host writes them into a pipe, closes the
+write end, and the shim hands the read end to the target at fd 5. The host then
+adds `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=5` to that child's environment,
+after the scrub above and after a template's `env`, so relay's value wins. The
+variable is set only for a launch that carries the token; with the setting
+empty a template's value passes unchanged. An unsandboxed launch and an SSH
+host launch never get a token. A missing, unreadable, empty, oversized or
+non-regular file refuses the launch with 400 `sandbox_unavailable`, naming the
+path. The token never appears in argv, a log line, an audit row, an event or an
+API answer. The limit: the Claude process that receives the token, and every
+tool it runs, can read it; the sandbox protects other sessions and projects, not
+the session that holds it.
+
 ## CLI doors
 
 `relay session start|list|message|stop|resume|mode` and `relay terminal start|list|log|stop|persistent-list|persistent-kill` reach the same cores the HTTP routes reach. Each is an operator-only `admin_op`, so a session or a sandboxed process is refused (`docs/cli.md`).
@@ -1308,6 +1330,11 @@ unlink-and-clone deny on every ancestor of a denied path and on every
 unix-socket deny dir and its ancestors, then a deny on unlinking or renaming a
 socket inside a socket-deny dir. Apart from that fixed carve-out, nothing is
 denied by name unless a template says so.
+While `claude_token_file` is set, its resolved path is added to the `deny` list of
+every sandboxed launch, whatever the kind or template, because the seeded `shell`
+template grants `~` read-write and deny wins over every grant. A deny that follows
+a user-writable link refuses the launch. A sandboxed process cannot open the file
+by path.
 Relay's own data directory, another project, eve's data and `~/.ssh` are
 unreachable unless a template grants them, so a directory nobody thought to
 protect is protected anyway. Everything that is not a file (network, process,

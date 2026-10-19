@@ -226,6 +226,16 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 		}
 		deny = append(denyDirs, denyFiles...)
 	}
+	// Deliberate: every sandboxed launch denies the token file, not only Claude
+	// ones. The seeded shell template grants ~ read-write, and deny wins over
+	// every grant.
+	tokenPath, err := claudeTokenPath(settings)
+	if err != nil {
+		return sandbox.Spec{}, err
+	}
+	if tokenPath != "" {
+		deny = append(deny, tokenPath)
+	}
 	read = append(read, readOnlyRoots...)
 	ensureGrantDirs(readWrite)
 

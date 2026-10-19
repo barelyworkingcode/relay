@@ -597,7 +597,7 @@ func (s *Server) handleLaunch(rw http.ResponseWriter, r *http.Request) {
 	sessionID, kind = req.SessionID, req.Kind
 	viewer := req.Outside || req.ReadOnly || req.ViewTarget != nil
 	if viewer && (req.Kind != kindPTY || !req.Outside || !req.ReadOnly || req.ViewTarget == nil || len(req.Argv) > 0 ||
-		req.DropInFor != "" || req.Resume || req.Origin != "" || req.Identity != nil || req.Sandbox != nil || req.ModelKey != "" || req.TemplateID != "") {
+		req.DropInFor != "" || req.Resume || req.Origin != "" || req.Identity != nil || req.Sandbox != nil || req.ModelKey != "" || req.ClaudeToken != "" || req.TemplateID != "") {
 		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "outside viewer cannot act as a managed session")
 		return
 	}

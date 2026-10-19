@@ -260,6 +260,10 @@ type CreateSpec struct {
 	// mint (ad-hoc, SSH-hosted). Never cached across calls, same rule as
 	// ModelKey.
 	Identity *sessionsmcp.IdentitySpec
+	// ClaudeToken is this launch's Claude long-term OAuth token (claude only;
+	// sandboxed local launches). Never cached across calls, same rule as
+	// Identity; never logged.
+	ClaudeToken string
 	// SandboxProfile is this launch's own absolute SBPL profile path (C7),
 	// threaded to chat's MCP tool child. "" runs it unsandboxed.
 	SandboxProfile string
@@ -674,6 +678,7 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 	case KindClaude:
 		ccfg := m.cfg.Claude
 		ccfg.Identity = spec.Identity
+		ccfg.ClaudeToken = spec.ClaudeToken
 		ccfg.SandboxProfile = spec.SandboxProfile
 		ccfg.Launcher = spec.Launcher
 		ccfg.DefaultModel = spec.Entry != "" && spec.Model == ""

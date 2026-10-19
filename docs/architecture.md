@@ -1038,8 +1038,9 @@ is unset, deleted or no longer eligible), the last 6 tool calls (`call_tool`
 rows read from the audit log file by `recent_tool_calls`, so they survive a
 restart and agree with `relay audit`; live `call_tool` events prepend; other
 audit kinds are on the Tool Calls tab only), and a footer
-with the version and two "Reveal" actions (`reveal_config_dir`,
-`reveal_logs_dir`, both in `ipc_overview.go`). MCP health (`onMcpHealth`,
+with the version, two "Reveal" actions (`reveal_config_dir`,
+`reveal_logs_dir`, both in `ipc_overview.go`) and, when `claude_token_file` is
+set, its path (`paths.claude_token_file`: the stored value, never the token). MCP health (`onMcpHealth`,
 whole-map push) and service runtime (folded into the existing
 `onServiceStatus` push) are the two pieces of data no other tab seeds on its
 own; both ride along in `onSettingsReloaded` too.

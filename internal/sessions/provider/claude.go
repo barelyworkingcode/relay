@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sessions/hook"
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
+	"github.com/barelyworkingcode/relay/internal/sessions/shim"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
@@ -78,6 +80,11 @@ type ClaudeConfig struct {
 	// shim to relay's bridge socket — never by the CLI child itself, and never
 	// in argv. nil for a launch with no identity to mint (SSH-hosted).
 	Identity *sessionsmcp.IdentitySpec
+
+	// ClaudeToken is this launch's Claude long-term OAuth token, handed to the
+	// child on shim.TokenFD. Sandboxed local launches only; never cached across
+	// calls, same rule as Identity, and never logged.
+	ClaudeToken string
 
 	// Launcher runs in place of the claude binary, with the kind's own
 	// arguments after its args. nil runs Binary.
@@ -417,6 +424,9 @@ func (p *ClaudeProvider) buildClaudeEnv(base []string) ([]string, error) {
 			add[k] = v
 		}
 	}
+	if p.cfg.ClaudeToken != "" {
+		add[childenv.EnvClaudeTokenFD] = strconv.Itoa(shim.TokenFD)
+	}
 	return mergeEnv(base, add), nil
 }
 
@@ -526,8 +536,11 @@ func (p *ClaudeProvider) Start() error {
 			BridgeSocket:   p.cfg.BridgeSocket,
 			SandboxProfile: p.cfg.SandboxProfile,
 			Identity:       p.cfg.Identity,
+			ClaudeToken:    p.cfg.ClaudeToken,
 		}
 		switch {
+		case spec.ClaudeToken != "" && !spec.wanted():
+			return errors.New("claude token requires the shim")
 		case spec.wanted() && spec.Binary == "":
 			return ErrShimRequired
 		case spec.Identity != nil && spec.BridgeSocket == "":
@@ -578,7 +591,7 @@ func (p *ClaudeProvider) Start() error {
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
 	logStderr := func() []string {
-		return logProviderStderr(stderrR, p.session.ID, "claude", &spawn.sawStdout, p.identitySecret())
+		return logProviderStderr(stderrR, p.session.ID, "claude", &spawn.sawStdout, p.identitySecret(), p.cfg.ClaudeToken)
 	}
 	root := p.readProcessRoot(cmd.Process.Pid)
 	// drainStderr reads what the target wrote before the shim refused it.
