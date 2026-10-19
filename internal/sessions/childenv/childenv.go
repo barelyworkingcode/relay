@@ -34,3 +34,16 @@ func IsParentClaudeSession(kv string) bool {
 	}
 	return strings.HasPrefix(name, "CLAUDE_CODE_")
 }
+
+// EnvDisableAutoUpdater is the Claude Code variable that turns its self-updater off.
+const EnvDisableAutoUpdater = "DISABLE_AUTOUPDATER"
+
+// SandboxedClaude is the environment a sandboxed Claude Code launch carries.
+//
+// Deliberate: the sandbox grants the Claude install directory read-only, so
+// the updater could only fail at every start. Writing it would let a sandboxed
+// agent replace the binary the next unsandboxed launch runs. The person
+// updates Claude from an unsandboxed terminal instead.
+func SandboxedClaude() map[string]string {
+	return map[string]string{EnvDisableAutoUpdater: "1"}
+}

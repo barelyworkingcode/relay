@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
 	"log/slog"
 	"net/http"
 	"os"
@@ -635,6 +636,13 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		env, err := resolveTemplateEnv(*tmpl)
 		if err != nil {
 			return nil, invalidRequest("model_endpoint_unavailable", err.Error(), baseFields)
+		}
+		if sandbox && tmpl.ID == kindTemplateIDs[KindClaude] {
+			for k, v := range childenv.SandboxedClaude() {
+				if _, set := env[k]; !set {
+					env[k] = v
+				}
+			}
 		}
 		spec.Env = env
 		spec.TemplateID = tmpl.ID

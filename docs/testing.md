@@ -80,6 +80,11 @@ starts per instance; none touches the network beyond loopback.
     fake's contract, so a test can read `join_session` history. The line shapes
     and what history they give are under
     [History on join](session-host.md#history-on-join).
+  - The start line of the call log carries `env`: the value of each watched
+    variable the process started with (`DISABLE_AUTOUPDATER`), with no key for
+    one that is unset. `harness.AgentCall.Env` reads it. The claude persona
+    given `--print-env` exits 0 at once after that line, so a terminal launch
+    ends and a test can read the line after `session.exited`.
   - A turn whose prompt is `!error <code>` ends as Claude CLI ends an API
     error: the assistant line, on stdout and in the transcript, carries a
     top-level `"error":"<code>"` and `"isApiErrorMessage":true`, and the

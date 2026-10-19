@@ -299,6 +299,13 @@ for these sessions must not name one. The exception is a `${PROJECT_PATH}`
 `read_write` entry: it is applied as a `read` grant in a read-only-projects
 session, so the token never makes the session's project writable.
 
+A sandboxed Claude launch runs with the updater off. Both the `claude` session
+and the sandboxed terminal launch of the `claude-code` template carry
+`DISABLE_AUTOUPDATER=1` (`childenv.SandboxedClaude`), because the sandbox grants
+Claude's install folder read-only and an update could only fail. Update Claude
+from an unsandboxed terminal. A value the template's own `env` sets for that
+name wins. Unsandboxed and SSH host launches do not change.
+
 `buildClaudeArgs` also passes `--tools Read,Grep,Glob` and
 `--strict-mcp-config`, so the model is offered only those built-ins and the
 relay tools `--mcp-config` carries when `useRelayTools` is set. This keeps

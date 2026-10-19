@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
 	"io"
 	"log/slog"
 	"os"
@@ -405,6 +406,11 @@ func (p *ClaudeProvider) buildClaudeEnv(base []string) []string {
 	}
 	if p.cfg.ModelSocket != "" {
 		add["RELAY_MODEL_SOCKET"] = p.cfg.ModelSocket
+	}
+	if p.cfg.SandboxProfile != "" {
+		for k, v := range childenv.SandboxedClaude() {
+			add[k] = v
+		}
 	}
 	return mergeEnv(base, add)
 }
