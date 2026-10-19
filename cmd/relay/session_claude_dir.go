@@ -12,8 +12,9 @@ import (
 )
 
 // sandboxClaudeLinks are the ~/.claude entries a sandboxed Claude sees through
-// its relay-owned config folder. Never .credentials.json (the login itself) or
-// .claude.json (account data, possibly an API key): the folder holds its own.
+// its relay-owned config folder. Never .credentials.json (the login itself) and
+// never .claude.json (account data, possibly an API key): .claude.json is never
+// linked or copied, relay seeds its own.
 // projects and sessions are directories relay and the outside-session probe
 // read under ~/.claude, so they are created in the target when absent.
 var sandboxClaudeLinks = []string{
@@ -22,6 +23,10 @@ var sandboxClaudeLinks = []string{
 
 // sandboxClaudeLinkDirs are the entries whose target is made when missing.
 var sandboxClaudeLinkDirs = map[string]bool{"projects": true, "sessions": true}
+
+// sandboxClaudeSeed is the whole .claude.json relay writes into a folder that
+// has none. 31 bytes, no trailing newline.
+var sandboxClaudeSeed = []byte(`{"hasCompletedOnboarding":true}`)
 
 // isClaudeLaunch reports whether the launch runs Claude Code: the claude
 // session kind, or a terminal started from the claude-code template.
@@ -74,5 +79,42 @@ func ensureSandboxClaudeDir() (string, error) {
 			return "", fmt.Errorf("sandbox claude dir %s: link %s: %w", dir, name, err)
 		}
 	}
+	if err := seedSandboxClaudeState(dir); err != nil {
+		return "", fmt.Errorf("sandbox claude dir %s: seed .claude.json: %w", dir, err)
+	}
 	return dir, nil
+}
+
+// seedSandboxClaudeState writes sandboxClaudeSeed to <dir>/.claude.json when
+// that name has no entry. It returns nil when an entry exists or another
+// launch published one first. The publish is a hard link, deliberately not a
+// rename or a create on the final name: link(2) fails with EEXIST and never
+// follows an existing entry, while rename would replace a file a concurrent
+// launch or a person put there, and the folder is writable by sandboxed agents.
+func seedSandboxClaudeState(dir string) error {
+	final := filepath.Join(dir, ".claude.json")
+	if _, err := os.Lstat(final); !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	tmp, err := os.CreateTemp(dir, ".claude.json.seed-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(sandboxClaudeSeed); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(name, final); err != nil && !errors.Is(err, syscall.EEXIST) {
+		return err
+	}
+	return nil
 }

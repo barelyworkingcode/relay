@@ -325,8 +325,14 @@ stack under one HOME share one login.
   `sessions` are created in `~/.claude` when absent, because relay reads history
   and the outside-session probe reads the pid registry there. The other links
   exist only when their target does. Relay never reads or copies a file in
-  `~/.claude`; `.credentials.json` and `.claude.json` are never linked, and
-  plugins are not linked. An entry already in the folder, link or not, is kept.
+  `~/.claude`; `.credentials.json` and `.claude.json` are never linked or
+  copied, and plugins are not linked. An entry already in the folder, link or
+  not, is kept. Relay writes one file it authors, `.claude.json` =
+  `{"hasCompletedOnboarding":true}` (0600), only when the folder has no
+  `.claude.json` entry. It is published with a hard link, so a concurrent launch
+  or a planted entry is kept. It is a fixed seed, not a copy of the person's
+  file. It skips the theme picker and security notes at the first start; the
+  folder-trust prompt is not seeded.
 - **Login.** Claude keeps its login in `<folder>/.credentials.json`. Claude looks
   up a different keychain item for a non-default folder, so each person logs in
   once with `/login` inside a sandboxed Claude, and every later one shares and
