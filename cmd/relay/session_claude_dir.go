@@ -12,9 +12,9 @@ import (
 )
 
 // sandboxClaudeLinks are the ~/.claude entries a sandboxed Claude sees through
-// its relay-owned config folder. Never .credentials.json (the login itself) and
-// never .claude.json (account data, possibly an API key): .claude.json is never
-// linked or copied, relay seeds its own.
+// its relay-owned config folder. Never .credentials.json (the login itself) or
+// .claude.json (account data, possibly an API key): the folder holds its own,
+// and relay seeds a fixed .claude.json instead.
 // projects and sessions are directories relay and the outside-session probe
 // read under ~/.claude, so they are created in the target when absent.
 var sandboxClaudeLinks = []string{
@@ -38,8 +38,9 @@ func isClaudeLaunch(kind string, tmpl *config.TerminalTemplate) bool {
 }
 
 // ensureSandboxClaudeDir creates the sandbox Claude folder and seeds it with
-// links into ~/.claude, then returns its path. It never reads, copies or opens
-// a file in ~/.claude, and never overwrites an entry already in the folder.
+// links into ~/.claude and the onboarding .claude.json, then returns its path.
+// It never reads, copies or opens a file in ~/.claude, and never overwrites an
+// entry already in the folder.
 func ensureSandboxClaudeDir() (string, error) {
 	dir, err := childenv.SandboxClaudeDir()
 	if err != nil {
