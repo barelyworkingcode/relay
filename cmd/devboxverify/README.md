@@ -1245,15 +1245,18 @@ None of this drifts `verify.sh`.
   that targets `localhost`, so relay runs `claude` over SSH to the box itself.
   The box's own public key is in the login user's `authorized_keys`, the SSH
   client trusts the box's host key without a prompt, and `claude` is on the
-  login shell's PATH for a non-interactive SSH command (check with
-  `ssh localhost 'command -v claude'`). Without the key or the host-key trust
-  the journey reads BLOCKED; with no `claude` on that PATH it reads FAIL ("no
-  system/init"), because the first turn never starts. That `claude` must also
-  sign in for SSH logins. An SSH session starts with the login keychain
-  locked, and an unlock in one SSH session does not carry to the next, so the
-  login user's `~/.zshenv` unlocks it when `SSH_CONNECTION` is set (check with
-  `ssh localhost 'claude -p "say ok" </dev/null'`). Without it the first turn
-  errors and the journey reads FAIL.
+  interactive login shell's PATH, which is where the host probe looks (check
+  with `ssh localhost '"$SHELL" -lic "command -v claude"'`). A plain
+  `ssh localhost 'command -v claude'` reads a different PATH and can find a
+  different `claude`, so it proves nothing. Without the key or the host-key
+  trust the journey reads BLOCKED; with no `claude` on that PATH it reads FAIL
+  ("no system/init"), because the first turn never starts. That `claude` must
+  also sign in over SSH (check with
+  `ssh localhost '"$SHELL" -lic "claude -p \"say ok\"" </dev/null'`). On the
+  devbox the login fix is the `claude` wrapper in `~/bin`
+  (barelyworkingcode/devboxWorld#44), first on that PATH: it hands the real
+  binary the long-term token on fd 3. Without it the first turn errors and the
+  journey reads FAIL.
 
 ## Verifying an epic
 
