@@ -2,10 +2,13 @@ package features
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"relaye2e/harness"
 )
 
 const b506Seed = `{"hasCompletedOnboarding":true}`
@@ -32,14 +35,10 @@ func b506NoSeedTemp(t *testing.T, dir string) {
 	}
 }
 
-// A fresh folder gets relay's own fixed .claude.json, never a copy.
-func TestBug506SandboxClaudeDirOnboardingSeeded(t *testing.T) {
-	t.Parallel()
-	i, pid := b181Start(t, nil)
-	b181Fixture(t, i)
-	b181SessionEnv(t, i, pid)
-
-	w := b181Dir(i)
+// b506Read returns the folder's .claude.json after checking it is a regular
+// 0600 file.
+func b506Read(t *testing.T, w string) []byte {
+	t.Helper()
 	p := filepath.Join(w, ".claude.json")
 	st, err := os.Lstat(p)
 	if err != nil {
@@ -52,8 +51,77 @@ func TestBug506SandboxClaudeDirOnboardingSeeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading .claude.json: %v", err)
 	}
-	if string(b) != b506Seed {
-		t.Fatalf(".claude.json holds %q, want %q", b, b506Seed)
+	return b
+}
+
+// b506Projects decodes the seed and checks its two top-level keys. It returns
+// the projects object.
+func b506Projects(t *testing.T, b []byte) map[string]json.RawMessage {
+	t.Helper()
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(b, &top); err != nil {
+		t.Fatalf("decoding .claude.json %q: %v", b, err)
+	}
+	if len(top) != 2 {
+		t.Fatalf(".claude.json holds %d top-level keys, want 2: %s", len(top), b)
+	}
+	if string(top["hasCompletedOnboarding"]) != "true" {
+		t.Fatalf("hasCompletedOnboarding is %s, want true", top["hasCompletedOnboarding"])
+	}
+	var projects map[string]json.RawMessage
+	if err := json.Unmarshal(top["projects"], &projects); err != nil {
+		t.Fatalf("decoding projects %s: %v", top["projects"], err)
+	}
+	return projects
+}
+
+// b506WantTrust fails unless projects holds exactly one entry, keyed by want,
+// whose value is exactly {"hasTrustDialogAccepted":true}.
+func b506WantTrust(t *testing.T, projects map[string]json.RawMessage, want string) {
+	t.Helper()
+	if len(projects) != 1 {
+		t.Fatalf("projects holds %d keys, want exactly one: %v", len(projects), projects)
+	}
+	v, ok := projects[want]
+	if !ok {
+		t.Fatalf("projects has no key %q: %v", want, projects)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(v, &got); err != nil {
+		t.Fatalf("decoding the trust entry %s: %v", v, err)
+	}
+	if len(got) != 1 || got["hasTrustDialogAccepted"] != true {
+		t.Fatalf("trust entry is %s, want only hasTrustDialogAccepted=true", v)
+	}
+}
+
+// A fresh folder gets relay's own .claude.json, never a copy: onboarding plus
+// one trust entry for the resolved launch directory.
+func TestBug506SandboxClaudeDirOnboardingSeeded(t *testing.T) {
+	t.Parallel()
+	i, pid := b181Start(t, nil)
+	b181Fixture(t, i)
+	b181SessionEnv(t, i, pid)
+
+	w := b181Dir(i)
+	b := b506Read(t, w)
+	if !bytes.HasPrefix(b, []byte(`{"hasCompletedOnboarding":true,"projects":{`)) {
+		t.Fatalf(".claude.json starts %q", b)
+	}
+	if bytes.HasSuffix(b, []byte("\n")) {
+		t.Fatalf(".claude.json ends with a newline")
+	}
+	proj := filepath.Join(i.Home, "work", "acme-updater")
+	real, err := filepath.EvalSymlinks(proj)
+	if err != nil {
+		t.Fatalf("resolving %s: %v", proj, err)
+	}
+	projects := b506Projects(t, b)
+	b506WantTrust(t, projects, real)
+	if real != proj {
+		if _, ok := projects[proj]; ok {
+			t.Fatalf("projects is keyed by the unresolved path %q", proj)
+		}
 	}
 	if _, err := os.Lstat(filepath.Join(w, ".credentials.json")); err == nil {
 		t.Fatalf("the folder holds .credentials.json, want it absent")
@@ -69,6 +137,67 @@ func TestBug506SandboxClaudeDirOnboardingSeeded(t *testing.T) {
 				t.Fatalf("%s holds bytes of a fixture file", e.Name())
 			}
 		}
+	}
+}
+
+// A launch directory reached through a link is trusted by its resolved path
+// only. The sandbox refuses a project path that is itself a link, so the link
+// is a folder inside the project, named by the terminal's directory.
+func TestBug506SandboxClaudeDirTrustsResolvedLink(t *testing.T) {
+	t.Parallel()
+	i, pid := b181Start(t, nil)
+	proj := filepath.Join(i.Home, "work", "acme-updater")
+	realDir := filepath.Join(proj, "acme-real")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatalf("creating %s: %v", realDir, err)
+	}
+	link := filepath.Join(proj, "acme-link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatalf("linking: %v", err)
+	}
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	i.MustCLI("terminal", "start", "--project", pid, "--template", "claude-code", "--directory", link, "--json").JSON(t, &term)
+	if term.TerminalID == "" {
+		t.Fatalf("terminal start printed no terminalId")
+	}
+
+	want, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatalf("resolving %s: %v", realDir, err)
+	}
+	projects := b506Projects(t, b506Read(t, b181Dir(i)))
+	b506WantTrust(t, projects, want)
+	for k := range projects {
+		if strings.Contains(k, "acme-link") {
+			t.Fatalf("projects key %q holds the link name", k)
+		}
+	}
+}
+
+// A project at the home folder gets the onboarding key and no trust entry.
+func TestBug506SandboxClaudeDirHomeNotTrusted(t *testing.T) {
+	t.Parallel()
+	i, _ := b181Start(t, nil)
+	raw, err := json.Marshal(map[string]any{"name": "acme-home", "path": i.Home, "allowed_templates": []string{"claude-code"}})
+	if err != nil {
+		t.Fatalf("encoding the project: %v", err)
+	}
+	res := i.CLIWith(harness.CLIOpts{Stdin: raw}, "project", "create", "--file", "-", "--json")
+	if res.Code != 0 {
+		t.Fatalf("project create exited %d\nstderr: %s", res.Code, res.Stderr)
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	res.JSON(t, &p)
+	if p.ID == "" {
+		t.Fatalf("project create printed no id: %s", res.Stdout)
+	}
+	g1sLaunchClaude(t, i, p.ID)
+	if b := b506Read(t, b181Dir(i)); string(b) != b506Seed {
+		t.Fatalf(".claude.json holds %q, want %q", b, b506Seed)
 	}
 }
 
