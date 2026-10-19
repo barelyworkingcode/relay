@@ -27,6 +27,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/service"
+	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
 	"github.com/barelyworkingcode/relay/internal/sessions/sandbox"
 )
 
@@ -176,6 +177,16 @@ func sandboxSpecForLaunch(settings *config.Settings, proj *config.Project, direc
 	// (documented tradeoff, not fixed here).
 	if kind == KindPi {
 		readWrite = append(readWrite, sessionPiSessionsDir())
+	}
+
+	// The sandboxed Claude's login folder is relay's, not a project, so it
+	// stays writable in a read-only-projects session.
+	if isClaudeLaunch(kind, tmpl) {
+		claudeDir, err := childenv.SandboxClaudeDir()
+		if err != nil {
+			return sandbox.Spec{}, err
+		}
+		readWrite = append(readWrite, claudeDir)
 	}
 
 	var read, readFiles, readWriteFiles, deny []string

@@ -34,8 +34,8 @@
 //
 // Two SP2 findings are load-bearing and invisible in the output: `(with
 // report)` is a syntax error on a deny rule, so no deny here carries one, and
-// `~/Library/Keychains` must stay readable for Claude Code to stay logged in,
-// so a caller that wants that grants it explicitly.
+// `~/Library/Keychains` is kept readable, so a caller that wants that grants
+// it explicitly, but Claude's login no longer depends on it.
 //
 // This package renders text and writes a file. It does not decide whether a
 // session is sandboxed, what a session may reach, or when the profile is

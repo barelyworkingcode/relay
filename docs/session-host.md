@@ -306,6 +306,39 @@ Claude's install folder read-only and an update could only fail. Update Claude
 from an unsandboxed terminal. A value the template's own `env` sets for that
 name wins. Unsandboxed and SSH host launches do not change.
 
+A sandboxed Claude launch also keeps its own login. The sandbox refuses the
+login keychain write a token refresh needs, so a refreshed login would be lost
+and the old one would shadow the credentials file. Both the `claude` session and
+the sandboxed `claude-code` terminal launch therefore carry `CLAUDE_CONFIG_DIR`
+set to the sandbox Claude folder, `<Application Support>/relay/sandbox-claude`
+(`childenv.SandboxClaudeDir`). It is one folder for every sandboxed Claude on the
+Mac, and it does not move with `relay --config-dir`, so Relay.app and each verify
+stack under one HOME share one login.
+
+- **Who makes it.** `AuthorizeLaunch` (`ensureSandboxClaudeDir`) creates it, mode
+  0700, before the launch response; a resume goes through the same path. The
+  provider only names it. A path that exists and is not a real directory (a link
+  included) refuses the launch with 400 `sandbox_unavailable`, and the message
+  names the path.
+- **What is in it.** Absolute links to `~/.claude/settings.json`, `CLAUDE.md`,
+  `skills`, `agents`, `commands`, `projects` and `sessions`. `projects` and
+  `sessions` are created in `~/.claude` when absent, because relay reads history
+  and the outside-session probe reads the pid registry there. The other links
+  exist only when their target does. Relay never reads or copies a file in
+  `~/.claude`; `.credentials.json` and `.claude.json` are never linked, and
+  plugins are not linked. An entry already in the folder, link or not, is kept.
+- **Login.** Claude keeps its login in `<folder>/.credentials.json`. Claude looks
+  up a different keychain item for a non-default folder, so each person logs in
+  once with `/login` inside a sandboxed Claude, and every later one shares and
+  refreshes it. The keychain grants do not change.
+- **Grant.** The profile grants the folder read-write, also in a
+  read-only-projects session, because it is not a project.
+- **Template env wins.** A `CLAUDE_CONFIG_DIR` in the `claude-code` template's
+  `env` reaches the child unchanged; the operator must also grant that folder in
+  `read_write`. A `claude` session reads no template env.
+- **Unchanged.** Unsandboxed and SSH host launches get no `CLAUDE_CONFIG_DIR`,
+  and relay creates no folder for them.
+
 `buildClaudeArgs` also passes `--tools Read,Grep,Glob` and
 `--strict-mcp-config`, so the model is offered only those built-ins and the
 relay tools `--mcp-config` carries when `useRelayTools` is set. This keeps
@@ -1301,7 +1334,7 @@ A session's folders come from four places, and only the third is configured:
 | Grant | Paths | Where it lives |
 |---|---|---|
 | **System baseline** (read-only, every sandboxed session) | `/usr`, `/System/Library`, `/private/etc`, `/private/var/db/timezone`, `/private/var/select`, and the root directory and the `/var`, `/etc`, `/tmp` links themselves; `/usr/local/etc` and `/usr/local/var` are denied (read and write), except the files `/usr/local/etc/openssl@3/cert.pem`, `/usr/local/etc/ca-certificates/cert.pem` and `/usr/local/etc/gitconfig`, which are read-only | `sandbox.baselineReadDirs`. The smallest set a shell, `git`, `curl`, `ssh`, `python`, `go` and `node` needed, measured under a deny-all profile on macOS 26. It holds no user data. `sandbox.baselineDenyDirs` carves out Intel Homebrew's service config and data, which can hold credentials. `sandbox.baselineReopenedFiles` reads back its CA bundle (the `openssl@3` link and the `ca-certificates` file it points at) and system gitconfig, without which Homebrew curl, python and git lose TLS verification and their git config. They are fixed literals, never resolved on the host. Nothing else beneath the carve-out is reopened. The deny renders before the session's own grants, so any later grant that covers part of either subtree reopens that part: a grant beneath it (`/usr/local/etc/example.conf`, say) and an ancestor grant such as `/usr/local` alike. `/usr` and `/usr/local`, the carve-out's ancestors, cannot be renamed, removed or cloned (the ancestor rule below), so no session can clone `/usr` or `/usr/local` to read `etc` under a new name; a clone needs only read on its source. |
-| **Every session** | the project directory (read-write), `os.TempDir()`, `DARWIN_USER_TEMP_DIR` and `/dev` (read-write), the developer tools (read-only: `<Xcode>.app/Contents`, or `/Library/Developer/CommandLineTools`, resolved from `/var/select/developer_dir`) | `sandboxSpecForLaunch`. A pi session also gets `<config dir>/sessions/pi-sessions` for its transcript, since that path moves with `relay --config-dir` and no template can name it. |
+| **Every session** | the project directory (read-write), `os.TempDir()`, `DARWIN_USER_TEMP_DIR` and `/dev` (read-write), the developer tools (read-only: `<Xcode>.app/Contents`, or `/Library/Developer/CommandLineTools`, resolved from `/var/select/developer_dir`) | `sandboxSpecForLaunch`. A pi session also gets `<config dir>/sessions/pi-sessions` for its transcript, since that path moves with `relay --config-dir` and no template can name it. A Claude launch (a `claude` session, a `claude-code` terminal) also gets the sandbox Claude folder, `<Application Support>/relay/sandbox-claude`. |
 | **The template** | its `read` and `read_write` lists | the template's entry in `settings.json` |
 
 A fourth list, `deny`, is not a grant. It carves a path out of a grant that
