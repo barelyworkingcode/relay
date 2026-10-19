@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // Bundle holds the absolute paths of the binaries a run builds.
@@ -61,6 +62,9 @@ func cleanupRoot() {
 	}
 	if lockFile != nil {
 		_ = lockFile.Close()
+	}
+	for _, p := range killUnder(runRoot) {
+		fmt.Fprintf(os.Stderr, "e2e harness: process still running under %s after cleanup: %s\n", runRoot, p)
 	}
 	_ = os.RemoveAll(runRoot)
 }
@@ -228,13 +232,87 @@ func reapStrays() {
 	}
 }
 
-// killUnder kills every process whose command line names the dead run's root.
-func killUnder(root string) {
-	out, err := exec.Command("ps", "-axo", "pid=,command=").Output()
+// killUnder kills every process whose command line names root and waits up to
+// five seconds for them to exit. It returns the survivors as "pid command"
+// lines. A few rounds catch a process forked while the kill was in flight.
+func killUnder(root string) []string {
+	deadline := time.Now().Add(5 * time.Second)
+	for round := 0; round < 3; round++ {
+		procs := processesUnder(root)
+		if len(procs) == 0 {
+			return nil
+		}
+		killAndWait(procs, deadline)
+	}
+	procs := processesUnder(root)
+	out := make([]string, 0, len(procs))
+	for pid, cmdline := range procs {
+		out = append(out, fmt.Sprintf("%d %s", pid, cmdline))
+	}
+	return out
+}
+
+// killAndWait SIGKILLs each pid and blocks until the kernel reports its exit or
+// the deadline passes. The processes are not our children, so wait(2) cannot
+// reap them; kqueue EVFILT_PROC reports the exit of any process.
+func killAndWait(procs map[int]string, deadline time.Time) {
+	kq, err := syscall.Kqueue()
 	if err != nil {
+		for pid := range procs {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
 		return
 	}
+	defer func() { _ = syscall.Close(kq) }()
+
+	pending := 0
+	var ev [8]syscall.Kevent_t
+	for pid := range procs {
+		change := syscall.Kevent_t{
+			Ident:  uint64(pid),
+			Filter: syscall.EVFILT_PROC,
+			Flags:  syscall.EV_ADD | syscall.EV_ONESHOT,
+			Fflags: syscall.NOTE_EXIT,
+		}
+		// A zero timeout makes Kevent return at once. An error on registration
+		// comes back as an EV_ERROR event; ESRCH means the pid is already gone.
+		n, err := syscall.Kevent(kq, []syscall.Kevent_t{change}, ev[:1], &syscall.Timespec{})
+		if err != nil || (n > 0 && ev[0].Flags&syscall.EV_ERROR != 0) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			continue
+		}
+		if n == 0 {
+			pending++
+		}
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+	for pending > 0 {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return
+		}
+		ts := syscall.NsecToTimespec(remaining.Nanoseconds())
+		n, err := syscall.Kevent(kq, nil, ev[:], &ts)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil || n == 0 {
+			return
+		}
+		pending -= n
+	}
+}
+
+// processesUnder maps pid to command line for every process but this one whose
+// command line names root. A setsid child escapes the test's process group, so
+// the command line is the only handle on it.
+func processesUnder(root string) map[int]string {
+	out, err := exec.Command("ps", "-axo", "pid=,command=").Output()
+	if err != nil {
+		return nil
+	}
 	self := os.Getpid()
+	procs := map[int]string{}
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		pidStr, cmdline, ok := strings.Cut(line, " ")
@@ -245,6 +323,7 @@ func killUnder(root string) {
 		if err != nil || pid == self {
 			continue
 		}
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		procs[pid] = cmdline
 	}
+	return procs
 }

@@ -550,6 +550,9 @@ func (i *Instance) cleanup() {
 	i.Stop()
 	i.scanRaces()
 	i.stopFakes()
+	for _, p := range killUnder(i.Dir) {
+		i.t.Errorf("process still running under %s after cleanup: %s", i.Dir, p)
+	}
 	if i.t.Failed() {
 		i.dump()
 		i.t.Logf("instance directory kept at %s; the next run removes it", i.Dir)
