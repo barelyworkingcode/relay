@@ -605,8 +605,8 @@ func serviceView(ctx context.Context, e env, svcID, pidPattern string) svcView {
 	return v
 }
 
-// Each pgrep pattern opens with a bracket so it cannot match a shell that
-// quotes it.
+// Each pgrep pattern brackets its first literal character so it cannot match
+// a shell that quotes it.
 func crashPIDPattern(svcID string) string {
 	return "[c]rash-" + strings.TrimPrefix(svcID, crashPrefix) + `\.env`
 }

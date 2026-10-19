@@ -1107,9 +1107,9 @@ host under every live session.
   record), `internal/service` (the registry).
 - Reached by: the bridge admin op, ungated, as `relay service restart --id
   relaysessions` sends it; STATE from `service.list`, the process from
-  `pgrep -f` on the app under test's own `Contents/Helpers/relay-sessions
-  service`, so another relay's session host (a stack's) is not counted,
-  polled every 200 ms.
+  `pgrep -f`, polled every 200 ms, on the app under test's own
+  `Contents/Helpers/relay-sessions service`, so another relay's session
+  host (a stack's) is not counted.
 - Traps: BLOCKED when the host is not running with a process beforehand. A
   build that stops the host and then fails validation reads FAIL with the
   op's error; the host stays down until Relay.app is relaunched.
