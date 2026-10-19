@@ -1,6 +1,8 @@
-// Package childenv holds the one rule the session host's three base-environment
-// builders (terminal, provider, mcp) share about what a spawned child must not
-// inherit from relay-sessions' own environment beyond relay's credentials.
+// Package childenv holds what the session host's base-environment builders
+// (terminal, provider, mcp) and relay's launch path share about a child's
+// environment: what a spawned child must not inherit from relay-sessions' own
+// environment beyond relay's credentials, and what a sandboxed Claude Code
+// launch carries, including the folder that holds its login.
 //
 // It is a leaf on purpose: those packages keep their own copies of the relay
 // credential list rather than depend on each other, and this rule needs the
