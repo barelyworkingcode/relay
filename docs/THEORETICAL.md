@@ -54,3 +54,14 @@ promoted to an issue the day it does.
 - **Outside sessions: npm Claude started with no arguments.** `node .../claude`
   with nothing after it does not match the probe's pattern; the native binary
   does.
+- **Sandbox Claude trust seed: the launch folder swapped between checks.**
+  The seed resolves the launch folder again after the launch path confined
+  it. A folder swapped for a link to an outside path in that gap would be
+  trusted. A sandboxed Claude can already write any trust entry into that
+  folder's `.claude.json` itself.
+- **Sandbox Claude trust seed: a home project in a different letter case.**
+  The home check compares resolved strings, so `/users/<name>` is not seen as
+  home. It trusts home only if Claude matches trust keys ignoring case.
+- **Sandbox Claude trust seed: a launch that fails after the seed.** The seed
+  is written before the spawn, so a launch that then fails uses the folder's
+  one seed, and the next launch shows the trust prompt once.
