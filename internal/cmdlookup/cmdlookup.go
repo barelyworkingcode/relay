@@ -49,9 +49,10 @@ func script(name string) string {
 	return b.String()
 }
 
-// parse takes the first non-empty line of the login section, else of the
-// plain section. Only an absolute path counts: command -v also prints
-// builtin, alias and function names.
+// parse takes the first line that starts with "/" in the login section, else
+// in the plain section. Other lines are skipped: a startup file can print a
+// banner before the lookup answer, and command -v prints builtin, alias and
+// function names without a path.
 func parse(output string) (string, error) {
 	sections := map[string]string{}
 	current := ""
@@ -62,7 +63,7 @@ func parse(output string) (string, error) {
 			current = l
 			continue
 		}
-		if current == "" || l == "" {
+		if current == "" || !strings.HasPrefix(l, "/") {
 			continue
 		}
 		if _, seen := sections[current]; !seen {
@@ -73,7 +74,7 @@ func parse(output string) (string, error) {
 	if line == "" {
 		line = sections[sentinelPlain]
 	}
-	if !strings.HasPrefix(line, "/") {
+	if line == "" {
 		return "", ErrNotFound
 	}
 	return line, nil
