@@ -5,7 +5,8 @@
 // "echo: <user text>".
 //
 // The call log is $TMPDIR/fakeagent-<persona>.jsonl: a start line (argv,
-// cwd, watched environment), one input line per stdin line (line_sha256, and text when the line is
+// cwd, watched environment, full environment, and the digest of the token
+// descriptor when one is named), one input line per stdin line (line_sha256, and text when the line is
 // a user turn) and an exit line.
 package main
 
@@ -38,10 +39,40 @@ type agentLine struct {
 	// Env holds the watched variables the process started with. A variable
 	// that is unset has no key, so "0" and unset differ.
 	Env map[string]string `json:"env,omitempty"`
+	// Environ is the whole environment, for a scan that no secret is in it.
+	Environ []string `json:"environ,omitempty"`
+	// TokenSHA256 and TokenBytes describe what the process read from the
+	// descriptor CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR names; the bytes are
+	// never recorded. TokenError is the failure to read it.
+	TokenSHA256 string `json:"token_sha256,omitempty"`
+	TokenBytes  int    `json:"token_bytes,omitempty"`
+	TokenError  string `json:"token_error,omitempty"`
 }
 
 // watchedEnv names the variables the start line reports.
-var watchedEnv = []string{"DISABLE_AUTOUPDATER", "CLAUDE_CONFIG_DIR"}
+var watchedEnv = []string{"DISABLE_AUTOUPDATER", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "RELAY_SESSION_ID"}
+
+// maxTokenRead caps what the fake reads from the token descriptor.
+const maxTokenRead = 64 << 10
+
+// readTokenFD reads the descriptor the token variable names to EOF, the way
+// Claude Code does. It returns the digest and length, never the bytes.
+func readTokenFD() (sum string, n int, errText string) {
+	fd, ok := os.LookupEnv("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR")
+	if !ok {
+		return "", 0, ""
+	}
+	f, err := os.Open("/dev/fd/" + fd)
+	if err != nil {
+		return "", 0, err.Error()
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxTokenRead))
+	if err != nil {
+		return "", 0, err.Error()
+	}
+	return calllog.SHA256Hex(b), len(b), ""
+}
 
 func watchedEnvValues() map[string]string {
 	out := map[string]string{}
@@ -86,7 +117,9 @@ func run() int {
 	}
 	a.log = l
 	cwd, _ := os.Getwd()
-	a.record(agentLine{Event: "start", Argv: args, Cwd: cwd, Env: watchedEnvValues()})
+	sum, n, terr := readTokenFD()
+	a.record(agentLine{Event: "start", Argv: args, Cwd: cwd, Env: watchedEnvValues(),
+		Environ: os.Environ(), TokenSHA256: sum, TokenBytes: n, TokenError: terr})
 
 	code := a.dispatch()
 	a.record(agentLine{Event: "exit", ExitCode: &code})

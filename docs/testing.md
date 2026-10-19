@@ -85,8 +85,14 @@ starts per instance; none touches the network beyond loopback.
     and what history they give are under
     [History on join](session-host.md#history-on-join).
   - The start line of the call log carries `env`: the value of each watched
-    variable the process started with (`DISABLE_AUTOUPDATER`, `CLAUDE_CONFIG_DIR`), with no key for
-    one that is unset. `harness.AgentCall.Env` reads it. The claude persona
+    variable the process started with (`DISABLE_AUTOUPDATER`, `CLAUDE_CONFIG_DIR`,
+    `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `RELAY_SESSION_ID`), with no key for
+    one that is unset. `harness.AgentCall.Env` reads it. The line also carries
+    `environ` (the full `os.Environ()`) and, when the token variable is set,
+    `token_sha256` and `token_bytes` of what the process reads from
+    `/dev/fd/<n>` to EOF (64 KiB cap), or `token_error`; it never records the
+    bytes. `AgentCall.Environ`, `TokenSHA256`, `TokenBytes` and `TokenError`
+    read them. The claude persona
     given `--print-env` exits 0 at once after that line, so a terminal launch
     ends and a test can read the line after `session.exited`.
   - A turn whose prompt is `!error <code>` ends as Claude CLI ends an API

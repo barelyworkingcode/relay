@@ -35,6 +35,13 @@ type AgentCall struct {
 	LineSHA256     string   `json:"line_sha256"`
 	// Env is the watched environment of a start line; an unset variable has no key.
 	Env map[string]string `json:"env"`
+	// Environ is the whole environment of a start line.
+	Environ []string `json:"environ"`
+	// TokenSHA256, TokenBytes and TokenError describe what the process read
+	// from the descriptor CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR names.
+	TokenSHA256 string `json:"token_sha256"`
+	TokenBytes  int    `json:"token_bytes"`
+	TokenError  string `json:"token_error"`
 }
 
 type fakeMCP struct {
