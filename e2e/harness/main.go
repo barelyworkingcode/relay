@@ -233,26 +233,73 @@ func reapStrays() {
 }
 
 // killUnder kills every process whose command line names root and waits up to
-// a few seconds for them to leave the process table. It returns the survivors
-// as "pid command" lines.
+// five seconds for them to exit. It returns the survivors as "pid command"
+// lines. A few rounds catch a process forked while the kill was in flight.
 func killUnder(root string) []string {
 	deadline := time.Now().Add(5 * time.Second)
-	for {
+	for round := 0; round < 3; round++ {
 		procs := processesUnder(root)
 		if len(procs) == 0 {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			out := make([]string, 0, len(procs))
-			for pid, cmdline := range procs {
-				out = append(out, fmt.Sprintf("%d %s", pid, cmdline))
-			}
-			return out
-		}
+		killAndWait(procs, deadline)
+	}
+	procs := processesUnder(root)
+	out := make([]string, 0, len(procs))
+	for pid, cmdline := range procs {
+		out = append(out, fmt.Sprintf("%d %s", pid, cmdline))
+	}
+	return out
+}
+
+// killAndWait SIGKILLs each pid and blocks until the kernel reports its exit or
+// the deadline passes. The processes are not our children, so wait(2) cannot
+// reap them; kqueue EVFILT_PROC reports the exit of any process.
+func killAndWait(procs map[int]string, deadline time.Time) {
+	kq, err := syscall.Kqueue()
+	if err != nil {
 		for pid := range procs {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
-		time.Sleep(50 * time.Millisecond)
+		return
+	}
+	defer func() { _ = syscall.Close(kq) }()
+
+	pending := 0
+	var ev [8]syscall.Kevent_t
+	for pid := range procs {
+		change := syscall.Kevent_t{
+			Ident:  uint64(pid),
+			Filter: syscall.EVFILT_PROC,
+			Flags:  syscall.EV_ADD | syscall.EV_ONESHOT,
+			Fflags: syscall.NOTE_EXIT,
+		}
+		// A zero timeout makes Kevent return at once. An error on registration
+		// comes back as an EV_ERROR event; ESRCH means the pid is already gone.
+		n, err := syscall.Kevent(kq, []syscall.Kevent_t{change}, ev[:1], &syscall.Timespec{})
+		if err != nil || (n > 0 && ev[0].Flags&syscall.EV_ERROR != 0) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			continue
+		}
+		if n == 0 {
+			pending++
+		}
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+	for pending > 0 {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return
+		}
+		ts := syscall.NsecToTimespec(remaining.Nanoseconds())
+		n, err := syscall.Kevent(kq, nil, ev[:], &ts)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil || n == 0 {
+			return
+		}
+		pending -= n
 	}
 }
 
