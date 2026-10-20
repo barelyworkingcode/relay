@@ -1126,7 +1126,7 @@ host under every live session.
 template is deleted if present and checked gone. Every `devboxverify-probe-*` MCP and
 `devboxverify-crash-*` service is unregistered (both ungated) and every
 `Verify Grant *` and `Unreachable Host *` project deleted, from this run or a
-crashed one, with their state folders. Every `Drop-in Host *` project is deleted
+crashed one, with their state folders. Every `Drop-in Host *` and `Drop-in Local *` project is deleted
 too. Then every host named `blackhole-*` with target `192.0.2.1`, and every host
 named `loopback-*` with target `localhost`, is deleted. Every terminal whose directory is under a
 `grant-*` state folder or the World root is deleted, whatever its state. PASS

@@ -862,6 +862,16 @@ func legProblem(l dropInLeg, local bool) *result {
 
 func trustSuffix(l dropInLeg) string { return "; trust answers: " + l.Trust.String() }
 
+// endWithTrust appends teardown text, then the trust suffix when the leg
+// reached a terminal, so the suffix always ends the detail.
+func endWithTrust(detail, teardown string, l dropInLeg) string {
+	detail += teardown
+	if l.TerminalID != "" {
+		detail += trustSuffix(l)
+	}
+	return detail
+}
+
 func legProblemBare(l dropInLeg, local bool) *result {
 	id := dropInHostID
 	if local {
@@ -962,12 +972,12 @@ func classifyDropIn(r dropInRun) result {
 	if r.Setup != "" {
 		return blocked(dropInID, "scratch project not set up: "+r.Setup+r.Teardown)
 	}
-	if p := legProblem(r.Local, true); p != nil {
-		p.Detail += r.Teardown
+	if p := legProblemBare(r.Local, true); p != nil {
+		p.Detail = endWithTrust(p.Detail, r.Teardown, r.Local)
 		return *p
 	}
 	if r.Teardown != "" {
-		return result{dropInID, stateFail, "local leg passed" + r.Teardown}
+		return result{dropInID, stateFail, endWithTrust("local leg passed", r.Teardown, r.Local)}
 	}
 	path := "/exit ended the terminal"
 	if r.Local.ClosedConn {
@@ -981,12 +991,12 @@ func classifyDropInHost(r dropInHostRun) result {
 	if r.Setup != "" {
 		return blocked(dropInHostID, "loopback host not set up (setup P11): "+r.Setup+r.Teardown)
 	}
-	if p := legProblem(r.Leg, false); p != nil {
-		p.Detail += r.Teardown
+	if p := legProblemBare(r.Leg, false); p != nil {
+		p.Detail = endWithTrust(p.Detail, r.Teardown, r.Leg)
 		return *p
 	}
 	if r.Teardown != "" {
-		return result{dropInHostID, stateFail, "host leg passed" + r.Teardown}
+		return result{dropInHostID, stateFail, endWithTrust("host leg passed", r.Teardown, r.Leg)}
 	}
 	end := "terminal ended on /exit"
 	if r.Leg.Deleted {
