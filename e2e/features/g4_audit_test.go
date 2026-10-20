@@ -958,28 +958,50 @@ func TestChiefOfStaffStartRows(t *testing.T) {
 	})
 
 	t.Run("hosted", func(t *testing.T) {
-		host := harness.StartSSHHost(t)
-		i.TrustSSHHost(host)
-		create := i.HTTP(i.Credential("configurer")).Do("POST", "/api/hosts", map[string]any{
-			"name": "acme-box", "target": host.Target, "port": host.Port, "identity_file": host.IdentityFile,
+		// The loopback sshd of harness.StartSSHHost runs the machine's own
+		// claude, which no test can drive. The ssh stub runs the fake agent on
+		// the host, so a start there delivers its prompt.
+		hi := harness.Start(t, harness.Options{
+			Presence: g4Approve, Credentials: g4Creds, SSHStub: true,
 		})
-		if create.Status != http.StatusCreated {
-			t.Fatalf("POST /api/hosts answered %d, want 201; body: %s", create.Status, create.Body)
-		}
-		var h struct {
-			ID string `json:"id"`
-		}
-		create.JSON(t, &h)
-		hosted := g4Project(t, i, "Acme Hosted", map[string]any{"path": "/srv/acme", "host_id": h.ID})
+		hi.WaitSessionHost(g4Deadline)
+		hosted, _ := agHost(t, hi)
 
-		resp, _ := start(map[string]string{"projectId": hosted, "prompt": "hello", "model": "sonnet", "mode": "terminal"})
-		if resp.Status != http.StatusBadRequest {
-			t.Fatalf("a terminal start on a hosted project answered %d, want 400; body: %s", resp.Status, resp.Body)
+		opts := g4CoSScope()
+		opts.Trace = harness.NewTrace(t)
+		resp := hi.SocketHTTP(hi.Credential("cos")).Do("POST", "/api/chief-of-staff/sessions",
+			map[string]string{"projectId": hosted, "prompt": "hello", "model": "sonnet", "mode": "terminal"}, opts)
+		if resp.Status != http.StatusCreated {
+			t.Fatalf("a terminal start on a hosted project answered %d, want 201; body: %s", resp.Status, resp.Body)
 		}
-		rows := g4Wait(t, i, g4Has(func(r g4Row) bool { return r.obj("args").str("host_id") == h.ID }), "--event", "session_launch")
-		r := g4Where(rows, func(r g4Row) bool { return r.obj("args").str("host_id") == h.ID })[0]
-		if r.str("outcome") != "denied" || r.obj("args").str("origin") != "chief-of-staff" {
-			t.Fatalf("the hosted refusal row is %v, want outcome denied, origin chief-of-staff and host_id %s", r, h.ID)
+		var s struct {
+			SessionID string `json:"sessionId"`
+			Mode      string `json:"mode"`
+		}
+		resp.JSON(t, &s)
+		if s.Mode != "headless" {
+			t.Fatalf("a terminal start on a hosted project answered mode %q, want headless", s.Mode)
+		}
+
+		// A terminal-mode start writes the rows a headless one does.
+		mine := func(r g4Row) bool { return r.obj("args").str("session_id") == s.SessionID }
+		launch := g4Where(g4Wait(t, hi, g4Has(mine), "--event", "session_launch"), mine)
+		if len(launch) != 1 {
+			t.Fatalf("the hosted start wrote %d session_launch rows, want 1", len(launch))
+		}
+		a := launch[0].obj("args")
+		if launch[0].str("outcome") != "ok" || a.str("origin") != "chief-of-staff" || a.str("host_id") == "" || g4Num(a["prompt_bytes"]) != len("hello") {
+			t.Fatalf("the hosted launch row is %v, want outcome ok, origin chief-of-staff, a host_id and prompt_bytes %d", launch[0], len("hello"))
+		}
+		phases := map[string]string{}
+		g4Wait(t, hi, g4Has(func(r g4Row) bool { return mine(r) && r.str("phase") == "completion" }), "--event", "session_message")
+		for _, r := range g4Audit(t, hi, "--event", "session_message") {
+			if mine(r) {
+				phases[r.str("phase")] = r.str("outcome")
+			}
+		}
+		if phases["intent"] != "pending" || phases["completion"] != "ok" {
+			t.Fatalf("the hosted start's session_message outcomes by phase are %v, want a pending intent and an ok completion", phases)
 		}
 	})
 

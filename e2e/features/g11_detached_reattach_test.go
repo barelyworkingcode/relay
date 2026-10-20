@@ -336,9 +336,20 @@ func (r *g11dRig) dropIn(t *testing.T, sid string, run g11dRun) {
 	defer ws.Close()
 	ws.Send(map[string]any{"type": "join_session", "sessionId": sid})
 	tty := i.StartCLITTY(harness.CLIOpts{}, r.dir, "drop-in", sid)
-	t.Cleanup(func() { tty.Hangup(); tty.Wait() })
+	// The cleanup ends the terminal and, once the drop-in succeeded, waits for
+	// the hand-back resume so it finishes before the instance stops.
+	dropped := false
+	t.Cleanup(func() {
+		tty.Hangup()
+		tty.Wait()
+		if dropped {
+			i.WaitEvent(harness.EventQuery{Key: "session.hand_back",
+				Fields: map[string]any{"session_id": sid}}, g1tEventDeadline)
+		}
+	})
 	i.WaitEvent(harness.EventQuery{Key: "session.drop_in",
 		Fields: map[string]any{"status": "ok", "session_id": sid}}, g1tEventDeadline)
+	dropped = true
 	for n := 0; ; n++ {
 		if n == 4*g1tFrameLimit {
 			t.Fatalf("no process_exited for %s in %d frames after the drop-in", sid, n)

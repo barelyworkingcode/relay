@@ -256,7 +256,7 @@ func TestCosStartEntryRefusals(t *testing.T) {
 		{"a model the kind does not offer", "oddclaude", map[string]any{"projectId": pid, "entry": "oddclaude"}, 400, "model_not_offered", []string{"haiku", "sonnet", "opus"}, true},
 		{"model and entry", "", map[string]any{"projectId": pid, "entry": "codex", "model": "sonnet"}, 400, "model_or_entry", nil, false},
 		{"neither model nor entry", "", map[string]any{"projectId": pid}, 400, "model_or_entry", nil, false},
-		{"entry with a terminal", "", map[string]any{"projectId": pid, "entry": "codex", "mode": "terminal"}, 400, "mode_invalid", nil, false},
+		{"entry with a mode that is not headless or terminal", "", map[string]any{"projectId": pid, "entry": "codex", "mode": "acme-bogus"}, 400, "mode_invalid", nil, false},
 	} {
 		resp := start(c.body)
 		e := cosRefusal(t, resp, c.status, c.code)

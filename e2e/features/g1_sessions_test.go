@@ -568,8 +568,9 @@ func TestTerminalList(t *testing.T) {
 	projectID := g1sCreateProject(t, i, "acme-term-list", map[string]any{"allowed_templates": []string{"acme-sleep", "claude-code"}})
 	terminalID, _ := g1sStartTerminal(t, i, projectID)
 
-	// A Chief of Staff terminal carries the chief-of-staff origin in the list
-	// (docs/session-host.md, "Session origin"). Its start answers 201.
+	// A Chief of Staff start has one path: a terminal-mode request runs the
+	// headless start, so it makes a session with the chief-of-staff origin and
+	// no terminal row (docs/routes.md, POST /api/chief-of-staff/sessions).
 	cos := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/chief-of-staff/sessions",
 		map[string]any{"projectId": projectID, "prompt": "acme hello", "model": "sonnet", "mode": "terminal"},
 		harness.ReqOpts{Header: g1sScope, Trace: harness.NewTrace(t)})
@@ -586,6 +587,10 @@ func TestTerminalList(t *testing.T) {
 		} `json:"terminals"`
 	}
 	res.JSON(t, &out)
+	var started struct {
+		SessionID string `json:"sessionId"`
+	}
+	cos.JSON(t, &started)
 	found := false
 	cosRows := 0
 	for _, term := range out.Terminals {
@@ -597,16 +602,16 @@ func TestTerminalList(t *testing.T) {
 		}
 		if term.Origin == "chief-of-staff" {
 			cosRows++
-			if term.TemplateID != "claude-code" {
-				t.Fatalf("the Chief of Staff terminal row has template %q, want claude-code", term.TemplateID)
-			}
 		}
 	}
 	if !found {
 		t.Fatalf("terminal list holds %d terminals and not %s with template acme-sleep", len(out.Terminals), terminalID)
 	}
-	if cosRows != 1 {
-		t.Fatalf("terminal list holds %d rows with origin chief-of-staff, want 1", cosRows)
+	if cosRows != 0 {
+		t.Fatalf("terminal list holds %d rows with origin chief-of-staff, want none", cosRows)
+	}
+	if row := g1tSessions(t, i)[started.SessionID]; row.Origin != "chief-of-staff" {
+		t.Fatalf("the Chief of Staff start's session %s is listed with origin %q, want chief-of-staff", started.SessionID, row.Origin)
 	}
 	g1sEvent(t, i, harness.EventQuery{Key: "terminal.list", Trace: res.Trace,
 		Fields: map[string]any{"status": "ok", "count": len(out.Terminals)}})
