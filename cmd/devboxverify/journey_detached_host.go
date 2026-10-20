@@ -276,23 +276,18 @@ func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res res
 	}
 	mark := len(log.snapshot())
 
-	// The long answer keeps the turn open across the drop; the running frame
-	// is the signal that it has started.
+	// The long answer keeps the turn open across the drop. session send
+	// returns once relay holds the runner's receipt, so the drop never lands
+	// on a send still in flight (that ends unknown); the answer is read with
+	// session wait after the link returns.
 	marker1 := "verify-" + e.Nonce + "-turn"
-	turn := make(chan cliResult, 1)
-	go func() {
-		turn <- cliWithTimeout(ctx, e, detachedTurnWait, "session", "message", "--id", sid, "--json", "--text",
-			"Count from 1 to 150, one number per line, then on a last line write exactly: "+marker1)
-	}()
-	if !log.waitFor(ctx, agentFrameWait, stateSeq(sid, mark, "running")) {
-		return fail("the session never reported running after relay session message")
+	send := cliWithTimeout(ctx, e, detachedCLIWait, "session", "send", "--id", sid, "--json", "--text",
+		"Count from 1 to 150, one number per line, then on a last line write exactly: "+marker1)
+	if send.Exit != 0 {
+		return fail("relay session send exited %d: %s", send.Exit, firstLine(send.Stderr))
 	}
-	// The running frame comes when relay submits the message, before the
-	// runner has written it to the agent; a drop in that window ends the send
-	// unknown. The file in sent/ is the runner's receipt that the agent has
-	// the message, so the turn is open on the host.
-	if !pollUntil(ctx, agentFrameWait, func() bool { return runnerReceipt(agentsRoot, sid, "g1") }) {
-		return fail("the runner moved no message to sent/ after relay session message")
+	if !log.waitFor(ctx, agentFrameWait, stateSeq(sid, mark, "running")) {
+		return fail("the session never reported running after relay session send")
 	}
 	if stateSeq(sid, mark, "running", "idle")(log.snapshot()) {
 		return blockedf("the turn ended before the link was dropped; nothing was in flight")
@@ -309,17 +304,14 @@ func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res res
 		return fail("no session.host_link link=restored event within %s", detachedLinkWait)
 	}
 
-	select {
-	case r := <-turn:
-		var reply struct {
-			Text string `json:"text"`
-		}
-		_ = json.Unmarshal([]byte(r.Stdout), &reply)
-		if r.Exit != 0 || !bytes.Contains([]byte(reply.Text), []byte(marker1)) {
-			return fail("the turn in flight across the drop did not return its answer: exit %d, stderr %q, reply %q", r.Exit, firstLine(r.Stderr), tail(reply.Text, 80))
-		}
-	case <-ctx.Done():
-		return fail("the turn in flight across the drop never returned")
+	wait := cliWithTimeout(ctx, e, detachedTurnWait, "session", "wait", "--id", sid, "--json")
+	var turnReply struct {
+		State   string `json:"state"`
+		Excerpt string `json:"excerpt"`
+	}
+	_ = json.Unmarshal([]byte(wait.Stdout), &turnReply)
+	if wait.Exit != 0 || !bytes.Contains([]byte(turnReply.Excerpt), []byte(marker1)) {
+		return fail("the turn in flight across the drop did not return its answer: exit %d, state %q, stderr %q, reply %q", wait.Exit, turnReply.State, firstLine(wait.Stderr), tail(turnReply.Excerpt, 80))
 	}
 	if !log.waitFor(ctx, agentFrameWait, stateSeq(sid, mark, "running", "idle")) {
 		return fail("the session never returned to idle after the turn")
@@ -380,12 +372,6 @@ func readRunFile(root, sid, gen string) (detachedRunFile, error) {
 		return f, fmt.Errorf("runner.json is not JSON: %w", err)
 	}
 	return f, nil
-}
-
-// runnerReceipt reports whether the generation's sent/ holds a message.
-func runnerReceipt(root, sid, gen string) bool {
-	ents, err := os.ReadDir(filepath.Join(root, sid, gen, "sent"))
-	return err == nil && len(ents) > 0
 }
 
 func pidAlive(pid int) bool {

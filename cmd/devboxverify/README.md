@@ -1120,16 +1120,16 @@ at exec, `ANTHROPIC_AUTH_TOKEN`, and execs `claude`; the token goes into no
 file, log or detail. The entry's model is the `haiku` alias, never a `claude-*`
 id. Off a stack, or on a stack with no `claude_base_url`, the journey is NOTRUN
 ("needs a stack's local model endpoint"): it never runs claude against a hosted
-model. The journey starts the
-session with `relay session start --entry`, joins it on `/ws`, sends a long
-turn, runs `relay host disconnect`, and waits for `session.host_link`
-`link=lost` then `restored`. PASS when `runner.json` keeps its pid, pgid,
+model. The journey starts the session with `relay session start --entry`, joins it
+on `/ws`, sends a long turn with `relay session send` (which returns once
+relay holds the runner's receipt), runs `relay host disconnect`, waits for `session.host_link`
+`link=lost` then `restored`, and reads the turn with `relay session wait`. PASS when `runner.json` keeps its pid, pgid,
 start time and generation; the turn in flight returns its marker; a later
 message is answered; one generation directory exists; and `relay session stop`
 ends the process group and removes the run directory.
-- Waits: CLI exits, `/ws` frames, `session.host_link` events and the runner's
-  receipt in the run directory's `sent/` (the `running` frame comes before the
-  runner has the message, and a drop in that window ends the send unknown).
+- Waits: CLI exits, `/ws` frames and `session.host_link` events. `session
+  send` returns only once relay holds the receipt, so the drop never lands on
+  a send in flight (that ends `send_unknown`).
   The settings import has no event, so the `/ws` dial and `relay session
   start` are retried, bounded, until the import has run and `runner.json`
   exists.
