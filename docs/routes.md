@@ -2136,8 +2136,9 @@ is `404`; an unreadable machine is `502`.
 One read-only page of an outside session's conversation, newest page first.
 Query `before` (an opaque cursor from the previous page) and `limit` (1 to 200,
 default 50). Takes no body and writes nothing. Answer 200
-`{entries:[{id,role,text,at}],cursor,hasMore}`: `role` is `user`, `assistant`
-or `tool`, entries run oldest first within a page, `text` is at most 8192
+`{entries:[{id,role,text,at,kind?,name?}],cursor,hasMore}`: `role` is `user`,
+`assistant` or `tool`, a `tool` entry has `kind` `call` (with `name`) or
+`result`, entries run oldest first within a page, `text` is at most 8192
 characters, and `cursor` is `null` exactly when `hasMore` is false. relay reads
 at most 262144 bytes of the file per request, over the host shell for a host
 session. The `{id}` is only a key into the live inventory; no request field

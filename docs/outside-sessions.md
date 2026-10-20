@@ -67,10 +67,14 @@ One JSONL record maps to entries by block, `id` being
 | Record | Entry |
 |---|---|
 | `user`, string content or a `text` block | `user` |
-| `user`, a `tool_result` block | `tool`: string content, or its `text` blocks joined by a newline, other blocks as `[type]`; `is_error` prefixes `Error: ` |
+| `user`, a `tool_result` block | `tool`, `kind:"result"`: string content, or its `text` blocks joined by a newline, other blocks as `[type]`; `is_error` prefixes `Error: ` |
 | `assistant`, a `text` block | `assistant` |
-| `assistant`, a `tool_use` block | `tool`: `<name> <compact input JSON>` |
+| `assistant`, a `tool_use` block | `tool`, `kind:"call"`, `name` (the block's name, capped like text, `""` if absent): `<name> <compact input JSON>` |
 | thinking blocks, `isSidechain`, `isMeta`, other record types, invalid JSON, blank text | skipped |
+
+User and assistant entries carry neither `kind` nor `name`, and `text` keeps its
+form, so older clients read the same bytes. A result carries no `name`: its block
+holds only the call's id, and the call may sit on an older page.
 
 Text over 8192 characters keeps its first 8191 and ends with `…`, so an entry is never longer than 8192. A window
 without a complete record answers `entries: []` with `cursor` at its start, so

@@ -21,6 +21,12 @@ const (
 // ErrBadCursor marks a cursor past the transcript file's current size.
 var ErrBadCursor = errors.New("outside transcript cursor out of range")
 
+// Kinds of a tool entry.
+const (
+	TranscriptKindCall   = "call"
+	TranscriptKindResult = "result"
+)
+
 // TranscriptEntry is one display line of a conversation. Its text is untrusted
 // data and grants no authority.
 type TranscriptEntry struct {
@@ -28,6 +34,11 @@ type TranscriptEntry struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
 	At   string `json:"at"`
+	// Kind and Name are set on tool entries only; omitted keys keep user and
+	// assistant entries byte-identical for clients that predate them. Name is a
+	// pointer so a call with an empty name still carries the key.
+	Kind string  `json:"kind,omitempty"`
+	Name *string `json:"name,omitempty"`
 }
 
 // TranscriptPage is one page, oldest entry first. Cursor is null exactly when
@@ -135,15 +146,15 @@ func recordEntries(offset int64, raw []byte) []TranscriptEntry {
 		return nil
 	}
 	var out []TranscriptEntry
-	add := func(index int, role, text string) {
+	add := func(index int, role, text, kind string, name *string) {
 		if strings.TrimSpace(text) == "" {
 			return
 		}
-		out = append(out, TranscriptEntry{ID: strconv.FormatInt(offset, 10) + "." + strconv.Itoa(index), Role: role, Text: capEntryText(text), At: rec.Timestamp})
+		out = append(out, TranscriptEntry{ID: strconv.FormatInt(offset, 10) + "." + strconv.Itoa(index), Role: role, Text: capEntryText(text), At: rec.Timestamp, Kind: kind, Name: name})
 	}
 	var str string
 	if rec.Type == "user" && json.Unmarshal(rec.Message.Content, &str) == nil {
-		add(0, "user", str)
+		add(0, "user", str, "", nil)
 		return out
 	}
 	var blocks []transcriptBlock
@@ -153,22 +164,23 @@ func recordEntries(offset int64, raw []byte) []TranscriptEntry {
 	for index, b := range blocks {
 		switch {
 		case rec.Type == "user" && b.Type == "text":
-			add(index, "user", b.Text)
+			add(index, "user", b.Text, "", nil)
 		case rec.Type == "user" && b.Type == "tool_result":
 			text := toolResultText(b.Content)
 			if strings.TrimSpace(text) != "" && b.IsError {
 				text = "Error: " + text
 			}
-			add(index, "tool", text)
+			add(index, "tool", text, TranscriptKindResult, nil)
 		case rec.Type == "assistant" && b.Type == "text":
-			add(index, "assistant", b.Text)
+			add(index, "assistant", b.Text, "", nil)
 		case rec.Type == "assistant" && b.Type == "tool_use":
 			text := b.Name
 			var compact bytes.Buffer
 			if len(b.Input) > 0 && json.Compact(&compact, b.Input) == nil {
 				text += " " + compact.String()
 			}
-			add(index, "tool", text)
+			name := capEntryText(b.Name)
+			add(index, "tool", text, TranscriptKindCall, &name)
 		}
 	}
 	return out
