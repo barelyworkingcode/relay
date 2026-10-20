@@ -82,8 +82,11 @@ type LaunchRequest struct {
 	// ClaudeToken is the token relay read from claude_token_file for this
 	// launch. Set only for a sandboxed claude launch or a sandboxed pty launch
 	// of the claude-code template. Never logged and never in an error message.
-	ClaudeToken    string          `json:"claude_token,omitempty"`
-	SessionRequest json.RawMessage `json:"session_request,omitempty"`
+	ClaudeToken string `json:"claude_token,omitempty"`
+	// ClaudeEnv holds the claude_env_passthrough values relay resolved for this
+	// launch. Local claude launches only; every name is re-checked here.
+	ClaudeEnv      map[string]string `json:"claude_env,omitempty"`
+	SessionRequest json.RawMessage   `json:"session_request,omitempty"`
 	// DropInFor names the held agent session this pty terminal takes over
 	// (pty only). When the terminal exits, that session is handed back.
 	DropInFor string `json:"drop_in_for,omitempty"`

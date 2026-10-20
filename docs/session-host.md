@@ -1325,6 +1325,24 @@ API answer. The limit: the Claude process that receives the token, and every
 tool it runs, can read it; the sandbox protects other sessions and projects, not
 the session that holds it.
 
+**`claude_env_passthrough` re-adds chosen `CLAUDE_CODE_*` names to a local
+`claude` session.** `settings.json` lists names, never values. At each launch and
+resume relay reads each listed name from its own environment with
+`os.LookupEnv` and sends the set in the launch request (`claude_env`); a name
+relay's environment does not set is skipped. The host applies them after the
+scrub and before relay's own values, so relay's win. The list is empty by
+default. A name passes only when it matches `CLAUDE_CODE_[A-Z0-9_]+`, none of
+its `_`-separated parts after the prefix is `TOKEN`, `KEY`, `APIKEY`, `SECRET`,
+`PASSWORD`, `PASSPHRASE`, `CREDENTIAL`, `CREDENTIALS`, `AUTH`, `OAUTH`,
+`COOKIE`, `DESCRIPTOR` or `FD`, and it is not
+`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` or `CLAUDE_CODE_SANDBOXED`. The match
+is on whole parts, so `CLAUDE_CODE_MAX_OUTPUT_TOKENS` passes. One bad entry
+refuses every local `claude` launch with 400 `invalid_claude_env`, before the
+model key mint and the profile write; the host re-checks every name and refuses
+`claude_env` on any launch that is not a local `claude` launch. Terminals
+(including the `claude-code` template, which has `env_passthrough`), pi, codex,
+chat and SSH host sessions do not change.
+
 ## CLI doors
 
 `relay session start|list|message|stop|resume|mode` and `relay terminal start|list|log|stop|persistent-list|persistent-kill` reach the same cores the HTTP routes reach. Each is an operator-only `admin_op`, so a session or a sandboxed process is refused (`docs/cli.md`).

@@ -303,7 +303,7 @@ stopping are forwarded to the session host (section 3).
   |---|---|
   | `403` | `caller_not_authorized`, `project_required`, `project_not_available`, `template_not_allowed`, `provider_not_available_on_host`, `model_not_allowed`, `model_system_only`, `directory_outside_project`, `read_only_local_only`, `session_id_not_allowed`, `session_not_resumable`, `persist_session_invalid`, `tmux_not_available` |
   | `404` | `entry_not_found` |
-  | `400` | `invalid_kind`, `invalid_request`, `invalid_settings`, `model_required`, `model_or_entry`, `entry_invalid`, `model_not_offered`, `read_only_needs_claude`, `host_unavailable`, `model_endpoint_unavailable`, `model_key_mint_failed`, `sandbox_unavailable`, `internal` |
+  | `400` | `invalid_kind`, `invalid_request`, `invalid_settings`, `model_required`, `model_or_entry`, `entry_invalid`, `model_not_offered`, `read_only_needs_claude`, `host_unavailable`, `model_endpoint_unavailable`, `model_key_mint_failed`, `sandbox_unavailable`, `invalid_claude_env`, `internal` |
   | `502` | `persist_list_failed` |
   | `503` | `models_unavailable` |
 
@@ -312,6 +312,10 @@ stopping are forwarded to the session host (section 3).
   non-regular file. A value that is not absolute or `~/`-prefixed, or a deny
   that hits a linked path, refuses every sandboxed launch, a shell terminal
   included. The message names the path and never the file's content.
+
+  `invalid_claude_env` refuses a local `claude` launch or resume when an entry
+  of `claude_env_passthrough` fails the name rule. The message names the entry
+  and the failed clause, never a value.
 
   A launch needs the kind's template in the project's `allowed_templates`
   (`["*"]` covers all): `claude-code` for a Claude model, `pi`, `codex`, or
