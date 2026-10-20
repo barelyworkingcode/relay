@@ -1,6 +1,7 @@
 package adopt
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -158,7 +159,7 @@ func (a *claudeAdopter) Check(ctx context.Context, c Candidate) (Readiness, erro
 	if err != nil {
 		return Readiness{}, err
 	}
-	data, err := readTail(path)
+	data, whole, err := readTail(path)
 	if err != nil {
 		return Readiness{}, err
 	}
@@ -173,11 +174,9 @@ func (a *claudeAdopter) Check(ctx context.Context, c Candidate) (Readiness, erro
 	case tail.OpenTool != nil:
 		veto = VetoOpenToolCall
 	default:
-		busy, err := a.hasWorkingChild(ctx, c, data)
-		if err != nil {
-			return Readiness{}, err
-		}
-		if busy {
+		// Deliberate: a failed boundary scan or process-table read is a veto,
+		// never an idle verdict.
+		if a.hasWorkingChild(ctx, c, path, data, whole) {
 			veto = VetoChildProcess
 		}
 	}
@@ -187,22 +186,89 @@ func (a *claudeAdopter) Check(ctx context.Context, c Candidate) (Readiness, erro
 // hasWorkingChild reports a child of the Claude process that started at or
 // after the first prompt of this run. An idle Claude keeps its MCP servers from
 // its start, so only children that began with work count. With no prompt in
-// the tail there is no work to find.
-func (a *claudeAdopter) hasWorkingChild(ctx context.Context, c Candidate, tail []byte) (bool, error) {
-	since := firstUserAfter(tail, c.ProcStart)
+// the transcript there is no work to find. It answers true when it cannot tell.
+// The boundary comes from the tail when the tail is the whole file; otherwise
+// the first prompt of the run may lie before the tail, so the file is scanned
+// from its start.
+func (a *claudeAdopter) hasWorkingChild(ctx context.Context, c Candidate, path string, tail []byte, whole bool) bool {
+	// The registry records the start to the second, and a prompt stamped in the
+	// start's own second counts as after it.
+	started := c.ProcStart.Truncate(time.Second)
+	var since time.Time
+	if whole {
+		since = firstUserAfter(tail, started)
+	} else {
+		var err error
+		if since, err = scanFirstUserAfter(path, started); err != nil {
+			return true
+		}
+	}
 	if since.IsZero() {
-		return false, nil
+		return false
 	}
 	kids, err := a.children(ctx, c.PID)
 	if err != nil {
-		return false, fmt.Errorf("adopt: read process table: %w", err)
+		return true
 	}
 	for _, kid := range kids {
 		if info, ok := a.proc.Info(kid); ok && !startTime(info).Before(since) {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
+}
+
+// scanLineMax bounds one transcript line in the boundary scan; a longer line
+// fails the scan.
+const scanLineMax = 8 << 20
+
+// scanFirstUserAfter streams a transcript from its start and returns the
+// timestamp of the first user record written at or after start; the zero time
+// when there is none. Memory is bounded by one line.
+func scanFirstUserAfter(path string, start time.Time) (time.Time, error) {
+	f, _, err := openRegular(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 64<<10)
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(line)+len(chunk) > scanLineMax {
+			return time.Time{}, errors.New("adopt: transcript line too long")
+		}
+		line = append(line, chunk...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if len(line) > 0 {
+			if at, ok := userRecordAt(line, start); ok {
+				return at, nil
+			}
+			line = line[:0]
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return time.Time{}, nil
+			}
+			return time.Time{}, err
+		}
+	}
+}
+
+// userRecordAt reports a main-chain user record written at or after start.
+func userRecordAt(line []byte, start time.Time) (time.Time, bool) {
+	var rec struct {
+		Type      string `json:"type"`
+		Sidechain bool   `json:"isSidechain"`
+		Timestamp string `json:"timestamp"`
+	}
+	if json.Unmarshal(line, &rec) != nil || rec.Sidechain || rec.Type != "user" {
+		return time.Time{}, false
+	}
+	at, err := time.Parse(time.RFC3339Nano, rec.Timestamp)
+	return at, err == nil && !at.Before(start)
 }
 
 func (a *claudeAdopter) Interrupt(ctx context.Context, c Candidate) ([]Signal, error) {
@@ -219,7 +285,7 @@ func (a *claudeAdopter) TakeOver(ctx context.Context, c Candidate) (SessionSpec,
 	// The family is a convenience for a caller that has no other source; a
 	// transcript that cannot be read leaves it empty.
 	if path, err := a.TranscriptPath(c); err == nil {
-		if data, err := readTail(path); err == nil {
+		if data, _, err := readTail(path); err == nil {
 			spec.Model = ReadTail(data).ModelFamily
 		}
 	}
@@ -308,16 +374,17 @@ func readRegistry(path string) (outsidesessions.Registry, error) {
 	return reg, nil
 }
 
-// readTail reads the last tailBytes of a transcript. A missing file is an
-// empty tail: a session with no prompt has written none. A window that starts
-// inside the file drops its first, partial line.
-func readTail(path string) ([]byte, error) {
+// readTail reads the last tailBytes of a transcript. whole is true when the
+// window starts at the file's first byte. A missing file is an empty tail: a
+// session with no prompt has written none. A window that starts inside the file
+// drops its first, partial line.
+func readTail(path string) (data []byte, whole bool, err error) {
 	f, fi, err := openRegular(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, true, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer f.Close()
 	start := fi.Size() - tailBytes
@@ -326,7 +393,7 @@ func readTail(path string) ([]byte, error) {
 	}
 	buf := make([]byte, fi.Size()-start)
 	if _, err := f.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
+		return nil, false, err
 	}
 	if start > 0 {
 		if nl := bytes.IndexByte(buf, '\n'); nl >= 0 {
@@ -335,7 +402,7 @@ func readTail(path string) ([]byte, error) {
 			buf = nil
 		}
 	}
-	return buf, nil
+	return buf, start == 0, nil
 }
 
 // psChildren lists the direct children of pid from the process table.
