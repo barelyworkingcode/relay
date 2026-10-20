@@ -23,10 +23,13 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 )
 
-// controlPathBudget is sun_path's 104-byte limit on macOS minus the ~40
-// bytes OpenSSH's %C hash and separator can add to ControlPath, leaving 90
-// bytes of headroom for the directory component (docs/ssh-hosts.md).
-const controlPathBudget = 90
+// controlPathBudget is the exclusive upper bound on the control directory's
+// length. sun_path holds 104 bytes including its terminator. The socket path
+// adds "/" plus OpenSSH's 40-character %C hash (41 bytes), and ssh appends 17
+// more bytes to ControlPath while it binds the ControlMaster socket.
+// 104 - 41 - 17 = 45, so a directory of 45 bytes or more falls back
+// (docs/ssh-hosts.md).
+const controlPathBudget = 45
 
 // ControlDir returns the directory every ssh invocation shares as its
 // ControlMaster socket directory, creating it 0700 if needed. It prefers

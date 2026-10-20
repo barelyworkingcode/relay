@@ -1056,13 +1056,17 @@ Streaming forms are also read: `{"type":"assistant","index":N,"content_block":{â
 
 ### Detached on a host
 
-A claude session whose host spec carries `detach: true` (from
-`hosts[].detach_sessions`) runs its agent on the host under
+A claude session whose host spec carries `detach: true` runs its agent on the host under
 `~/.relay/agents/<session id>/<generation>/` instead of as the child of an
-`ssh -T` process (`docs/ssh-hosts.md`, "Detached sessions"). Argv comes from
+`ssh -T` process (`docs/ssh-hosts.md`, "Detached sessions"). `buildHostSpec`
+sets `detach` unless `hosts[].detach_sessions` is `false` or the host is
+Windows, so a Unix host detaches by default. Argv comes from
 `buildClaudeArgs`, as for any host session; only the transport differs.
-`SendMessage` and the `control_response` writes append one line to `in.jsonl`
-through a short ssh command. `SendMessageWithin` is `SendMessage` with the
+`SendMessage` and the `control_response` writes queue one message in the
+runner's `inbox/` through a short ssh command (`RunnerSend`: a `control_response`
+is a `.ctl` file, any other message a `.json` file that starts a turn) and
+return once the runner has moved it to `sent/`: exit 5 means the agent is not
+running, exit 7 (no receipt in 25 s) and an ambiguous ssh exit are `ErrSendUnknown`. `SendMessageWithin` is `SendMessage` with the
 longest a send waits for a lost link to return; a `control_response` does not
 wait. The wait ends on `restored`, the runner's exit, a kill, the caller's request ending or the cap (at most nine minutes), and
 the write happens once (`ErrHostLinkDown` past the cap, `ErrSendUnknown` after
@@ -1078,14 +1082,17 @@ runs at relay-sessions startup: for each persisted detached claude session it
 asks the host for the run's status and, for a live runner, calls `Create` with
 `AttachOnly`, so the provider attaches (`attachDetached`) and never starts an
 agent. The attach reads the lines after the cursor before it returns and
-holds each `control_request` that has no `control_response` in `in.jsonl`; `Create` raises them (`TakeAttach`) once the slot is published, so the board reads `asking` and viewers get the prompt, and `Release` does not deny a waiting prompt;
+holds each `control_request` that has no `control_response` in `sent/` or `inbox/`; `Create` raises them (`TakeAttach`) once the slot is published, so the board reads `asking` and viewers get the prompt, and `Release` does not deny a waiting prompt;
 `SendMessage`, `SendMessageSync`, `Wait`, `Events` and `Handoff` call the same
 attach for a detached session with no live provider. A plain resume (`ClaudeConfig.Resume`)
 asks for a running agent first and attaches to it too. `relay session stop`
 ends the agent. Idle stop, drop-in, stop and
 delete call `Kill`, which ends the agent; deleting a dormant session does the
-same through `DeleteDetachedRun`. With `detach` unset the `ssh -T` path is
-unchanged. A Windows host refuses a detached start.
+same through `DeleteDetachedRun`. With `detach` unset (`detach_sessions: false`, or a Windows host) the `ssh -T` path is
+unchanged. A runner that fails to start ends the start with an error that names
+the host and the key; there is no silent fallback. A run from before
+`runner.json` reads `legacy` from `RunnerStatus`: the first resume stops it and
+starts a new generation on the conversation.
 
 ### History on join
 
