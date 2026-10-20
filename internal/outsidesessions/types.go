@@ -40,9 +40,32 @@ type Session struct {
 	ViewReason  string  `json:"viewReason"`
 	// EndedAt is set on an ended row only: the transcript file's modification time.
 	EndedAt string `json:"endedAt,omitempty"`
-	// ClaudeSessionID is set on an ended row only: its transcript file's stem.
+	// ClaudeSessionID is the Claude conversation id: the registry sessionId or
+	// the transcript's id for a live row, the transcript file's stem for an
+	// ended one.
 	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
+	// Adoptable is true when the owner may adopt the session now or with an
+	// interrupt. Idleness is checked at the adopt door, not here.
+	Adoptable bool `json:"adoptable"`
+	// AdoptReason is the AdoptReason* code that makes the row not adoptable;
+	// absent when Adoptable.
+	AdoptReason string `json:"adoptReason,omitempty"`
 }
+
+// The codes of Session.AdoptReason, in the order they are judged: the first
+// that applies is the reason.
+const (
+	AdoptReasonEnded          = "ended"
+	AdoptReasonHost           = "host_unsupported"
+	AdoptReasonNoProject      = "no_project"
+	AdoptReasonNotRegistered  = "not_registered"
+	AdoptReasonInvalidID      = "invalid_id"
+	AdoptReasonStartMismatch  = "start_mismatch"
+	AdoptReasonNotInteractive = "not_interactive"
+	AdoptReasonNotCommandLine = "not_command_line"
+	AdoptReasonAmbiguous      = "ambiguous"
+)
+
 type MachineStatus struct {
 	HostID      *string `json:"hostId"`
 	Machine     string  `json:"machine"`
