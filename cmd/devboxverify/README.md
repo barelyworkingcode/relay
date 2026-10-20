@@ -1148,8 +1148,11 @@ started in a terminal is adopted: `POST /api/sessions/adopt` ends its process an
 resumes the same conversation as a headless relay session. In a scratch folder
 `verify-<nonce>-adopt` under Acme Corp's folder, the journey starts `claude
 --model haiku --session-id <uuid> --permission-mode default "Reply with
-exactly: verify-<nonce>-adopt-1"` in a detached tmux session and answers the
-folder-trust prompt. Like `session-detached-host`, it reads `claude_base_url`,
+exactly: verify-<nonce>-adopt-1"` in a detached tmux session on a tmux
+socket of its own (killed in cleanup), with `CLAUDE_CODE_ENTRYPOINT` and
+`CLAUDECODE` removed from its environment as a person's terminal has neither
+(set, claude registers `entrypoint: "sdk-cli"` and the door refuses
+`not_command_line`), and answers the folder-trust prompt. Like `session-detached-host`, it reads `claude_base_url`,
 `claude_model` and `claude_token_file` from `stack.json`, points the outside
 claude at that local endpoint (`ANTHROPIC_BASE_URL`,
 `ANTHROPIC_DEFAULT_HAIKU_MODEL`, and `ANTHROPIC_AUTH_TOKEN` read from the token

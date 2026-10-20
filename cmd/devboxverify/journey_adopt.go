@@ -99,9 +99,14 @@ func runAdopt(ctx context.Context, e env) result {
 	if err := writeAdoptSettings(dir); err != nil {
 		return blocked(adoptID, "scratch folder: "+err.Error())
 	}
-	line := adoptShellPrefix(baseURL, model, tokenFile) + "exec " + shellQuote(claude) +
+	line := adoptShellPrefix(baseURL, model, tokenFile) + "exec env -u CLAUDE_CODE_ENTRYPOINT -u CLAUDECODE " + shellQuote(claude) +
 		" --model haiku --session-id " + convID + " --permission-mode default " + shellQuote("Reply with exactly: "+tag+"-1")
-	if out, err := exec.CommandContext(ctx, tmux, "new-session", "-d", "-s", tag, "-x", "200", "-y", "50", "-c", dir, line).CombinedOutput(); err != nil {
+	create := adoptTmuxCmd(ctx, tmux, tag, "new-session", "-d", "-s", tag, "-x", "200", "-y", "50", "-c", dir, line)
+	// Deliberate: a person's terminal has neither variable. Inside a Claude
+	// agent session both are set, and claude then registers itself as
+	// entrypoint "sdk-cli", which the door refuses as not_command_line.
+	create.Env = adoptCleanEnv(os.Environ())
+	if out, err := create.CombinedOutput(); err != nil {
 		return blocked(adoptID, "tmux new-session: "+firstLine(string(out)))
 	}
 	sess.started = true
@@ -275,8 +280,25 @@ func adoptShellPrefix(baseURL, model, tokenFile string) string {
 		" ANTHROPIC_AUTH_TOKEN=\"$(cat " + shellQuote(tokenFile) + ")\" "
 }
 
+// adoptTmuxCmd runs tmux on the journey's own socket, so a server another run
+// left behind (and the folders it holds) is never used.
+func adoptTmuxCmd(ctx context.Context, tmux, sock string, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, tmux, append([]string{"-L", sock}, args...)...)
+}
+
+func adoptCleanEnv(env []string) []string {
+	var out []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "CLAUDE_CODE_ENTRYPOINT=") || strings.HasPrefix(kv, "CLAUDECODE=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 func adoptPane(tmux, name string) string {
-	out, _ := exec.Command(tmux, "capture-pane", "-p", "-J", "-t", name).Output()
+	out, _ := adoptTmuxCmd(context.Background(), tmux, name, "capture-pane", "-p", "-J", "-t", name).Output()
 	return string(out)
 }
 
@@ -295,11 +317,11 @@ func answerAdoptTrust(ctx context.Context, tmux, name, convID string) {
 		}
 		for _, l := range strings.Split(text, "\n") {
 			if strings.Contains(l, "❯") && strings.Contains(l, "Yes, I trust") {
-				_ = exec.Command(tmux, "send-keys", "-t", name, "Enter").Run()
+				_ = adoptTmuxCmd(ctx, tmux, name, "send-keys", "-t", name, "Enter").Run()
 				return true
 			}
 		}
-		_ = exec.Command(tmux, "send-keys", "-t", name, "Down").Run()
+		_ = adoptTmuxCmd(ctx, tmux, name, "send-keys", "-t", name, "Down").Run()
 		return false
 	})
 }
@@ -371,7 +393,7 @@ func (c *adoptCleanup) run(ctx context.Context) {
 		cliWithTimeout(ctx, c.e, 30*time.Second, "session", "stop", "--id", c.sessionID)
 	}
 	if c.started {
-		_ = exec.CommandContext(ctx, c.tmux, "kill-session", "-t", "="+c.name).Run()
+		_ = adoptTmuxCmd(ctx, c.tmux, c.name, "kill-server").Run()
 	}
 	if pid := adoptPID(ctx, c.convID); pid > 0 {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
