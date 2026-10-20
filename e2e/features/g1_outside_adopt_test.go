@@ -209,6 +209,26 @@ func (f *adFake) sync() (signals []string) {
 	}
 }
 
+// laterChild starts children until one has a kernel start second later than
+// the process's. A child that starts too early is killed before the next is
+// asked for, so at most one extra child is alive at a time. It returns the
+// signal lines seen and the kept child's start.
+func (f *adFake) laterChild() (signals []string, childStart time.Time) {
+	f.t.Helper()
+	for tries := 0; ; tries++ {
+		signals = append(signals, f.sync()...)
+		pid := f.children[len(f.children)-1]
+		if _, childStart = adLstart(f.t, pid); childStart.After(f.start) {
+			return signals, childStart
+		}
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		f.children = f.children[:len(f.children)-1]
+		if tries > 2000 {
+			f.t.Fatalf("no child of pid %d started in a later second than the process (%v)", f.pid, f.start)
+		}
+	}
+}
+
 // alive fails t when the fake has exited.
 func (f *adFake) alive() {
 	f.t.Helper()
@@ -645,17 +665,7 @@ func TestAdoptBusyRefusedWithoutInterrupt(t *testing.T) {
 	// The child must start in a later second than the process: the prompt then
 	// lies after the process start and at or before the child's. A child is
 	// started again until one does; the kernel start time is the signal.
-	var signals []string
-	var childStart time.Time
-	for tries := 0; ; tries++ {
-		signals = append(signals, f.sync()...)
-		if _, childStart = adLstart(t, f.children[len(f.children)-1]); childStart.After(f.start) {
-			break
-		}
-		if tries > 2000 {
-			t.Fatalf("no child of pid %d started in a later second than the process (%v)", f.pid, f.start)
-		}
-	}
+	signals, childStart := f.laterChild()
 	now := time.Now().UTC()
 	f.transcript(a.i.Home, f.user(childStart, adPrompt), f.answer(now, adModelSn, "acme parser done"))
 	f.register(a.i.Home, "idle", now)
@@ -679,17 +689,7 @@ func TestAdoptChildVetoInLongTranscript(t *testing.T) {
 	f := a.fake("app", "INT", "TERM")
 	body := map[string]any{"claudeSessionId": f.sid, "interrupt": false}
 
-	var signals []string
-	var childStart time.Time
-	for tries := 0; ; tries++ {
-		signals = append(signals, f.sync()...)
-		if _, childStart = adLstart(t, f.children[len(f.children)-1]); childStart.After(f.start) {
-			break
-		}
-		if tries > 2000 {
-			t.Fatalf("no child of pid %d started in a later second than the process (%v)", f.pid, f.start)
-		}
-	}
+	signals, _ := f.laterChild()
 
 	filler := strings.Repeat("acme ordinary turn ", 12)
 	lines := []string{f.user(f.start, adPrompt), f.answer(f.start, adModelSn, filler)}
