@@ -621,10 +621,26 @@ func TestHostRunnerLinesFlowUnderMawk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mawk is not installed on this machine (brew install mawk): %v", err)
 	}
-	// The host's PATH leads with hostclaude, so the link wins over the system awk.
-	if err := os.Symlink(mawk, filepath.Join(r.remote, "hostclaude", "awk")); err != nil {
+	// The stub runs every remote command with the PATH in fakessh.json, which
+	// it rereads per call and the .profile does not reach for the runner: put
+	// a directory holding awk (the mawk link) first on that PATH.
+	awkDir := filepath.Join(r.remote, "mawkbin")
+	r.mkdir(t, awkDir)
+	if err := os.Symlink(mawk, filepath.Join(awkDir, "awk")); err != nil {
 		t.Fatalf("linking awk to %s: %v", mawk, err)
 	}
+	cfgPath := filepath.Join(i.Dir, "sshstub", "fakessh.json")
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("reading the ssh stub config: %v", err)
+	}
+	var cfg map[string]string
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("decoding %s: %v", cfgPath, err)
+	}
+	cfg["path"] = awkDir + ":" + cfg["path"]
+	raw, _ = json.Marshal(cfg)
+	r.write(t, cfgPath, string(raw), 0o600)
 
 	sid := r.startSession(t, "")
 	run := r.run(t, sid, "g1")
