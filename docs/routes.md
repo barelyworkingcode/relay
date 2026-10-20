@@ -473,7 +473,9 @@ relay session in the same folder. See [Adopting a session](outside-sessions.md#a
   `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line`,
   `ambiguous`), `managed`, `busy`, `model_unknown`, `adopt_in_progress` or
   `changed`; `403`/`400` the launch refusal's own code (nothing is signalled);
-  `502` `unavailable`, `stop_failed` or `launch_failed`; `503`
+  `502` `unavailable` (relay-sessions is down, the registry or the idle check
+  could not be read, or the process could not be signalled), `stop_failed`
+  (the process outlived SIGKILL's wait) or `launch_failed`; `503`
   `audit_unavailable` (nothing is signalled).
 - **Event:** `session.adopt`. **Audit rows:** `session_adopt`,
   `session_interrupt`, `session_message` (origin `relay-recovery`), and the

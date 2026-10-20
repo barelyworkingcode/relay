@@ -221,7 +221,8 @@ Sessions on SSH hosts are not adopted.
   family alias (`haiku`, `sonnet`, `opus`) of the newest assistant record; none
   answers `model_unknown`.
 - **Recovery message.** After a takeover that sent SIGINT, relay sends one
-  message with origin `relay-recovery`, quoting at most 300 characters of the
+  message with origin `relay-recovery` (no event line of its own; the
+  `session.adopt` event covers it), quoting at most 300 characters of the
   last prompt and 500 of the open tool call's input, and asks the agent to
   check whether the call took effect.
 - **Selectors.** `outsideId` is the row's id. `claudeSessionId` is the power

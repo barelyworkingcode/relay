@@ -909,8 +909,9 @@ caller, as for drop-in):
 - `session_message` intent with origin `relay-recovery` (after a takeover that
   sent SIGINT), written before delivery like every marked send.
 - `session_adopt` completion: the intent's args plus `session_id`,
-  `interrupted`, `signals` (`INT`, `TERM`, `KILL` with `at` on relay's clock)
-  and `recovery_sent`. `outcome` is `ok` or `error`, with the refusal code in
+  `interrupted`, `signals` (what `TakeOver` sent: `TERM` and `KILL`, with `at` on
+  relay's clock; `INT` belongs to the `session_interrupt` completion alone) and `recovery_sent` (a failed recovery send does not undo the adopt).
+  `outcome` is `ok` or `error`, with the refusal code in
   `error`.
 
 The resumed launch writes its ordinary `session_launch` row. With auditing off,
