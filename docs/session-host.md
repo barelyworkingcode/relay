@@ -338,7 +338,14 @@ stack under one HOME share one login.
   a concurrent launch or a planted entry is kept. It is authored, not a copy of
   the person's file. The first start skips the theme picker, the security notes
   and the folder-trust prompt. A folder that already has a `.claude.json` is
-  never read or changed, so a later new project shows the trust prompt once.
+  never read or changed. A sandboxed `claude-code` terminal also starts with
+  `CLAUDE_CODE_SANDBOXED=1` when its folder passes the same check, so Claude
+  skips its trust check for that process and persists nothing. The process
+  then treats every folder as trusted, also one it moves to later, and the
+  sandbox profile is what confines it. This was
+  measured on Claude Code 2.1.304 and is not in Claude's public docs. The
+  `claude` session runs `--print` and gets none. A value the template's `env`
+  sets wins.
 - **Login.** Claude keeps its login in `<folder>/.credentials.json`. Claude looks
   up a different keychain item for a non-default folder, so each person logs in
   once with `/login` inside a sandboxed Claude, and every later one shares and

@@ -61,7 +61,9 @@ promoted to an issue the day it does.
   folder's `.claude.json` itself.
 - **Sandbox Claude trust seed: a home project in a different letter case.**
   The home check compares resolved strings, so `/users/<name>` is not seen as
-  home. It trusts home only if Claude matches trust keys ignoring case.
+  home. The `CLAUDE_CODE_SANDBOXED` gate then trusts it outright; the seed
+  trusts it only if Claude matches trust keys ignoring case. The operator has
+  to register home under that spelling, and the profile still confines it.
 - **Sandbox Claude trust seed: a launch that fails after the seed.** The seed
   is written before the spawn, so a launch that then fails uses the folder's
-  one seed, and the next launch shows the trust prompt once.
+  one seed.
