@@ -2,6 +2,7 @@ package features
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"syscall"
@@ -138,17 +139,28 @@ func TestOutsideEndedDetailAndWSCarryClaudeSessionID(t *testing.T) {
 	}
 }
 
-// AC3: a live outside process row never carries claudeSessionId, on the list,
-// the detail and the WS snapshot; an ended row of another session in the same
-// list does.
-func TestOutsideLiveRowHasNoClaudeSessionID(t *testing.T) {
+// osReregister rewrites p's registry entry with sid, a UUID as Claude Code
+// writes, and makes it the session p's transcript helpers use.
+func osReregister(t *testing.T, p *osProc, sid string) {
+	t.Helper()
+	p.sid = sid
+	reg, _ := json.Marshal(map[string]any{"pid": p.pid, "sessionId": sid, "cwd": p.dir, "startedAt": time.Now().UnixMilli(), "name": "Acme live"})
+	osWrite(t, filepath.Join(p.home, ".claude", "sessions", fmt.Sprintf("%d.json", p.pid)), reg)
+}
+
+// AC3 (relay#524 criterion changed): a live outside process row carries
+// claudeSessionId, the registry's session id, on the list, the detail and the
+// WS snapshot, as an ended row does.
+func TestOutsideLiveRowCarriesClaudeSessionID(t *testing.T) {
 	t.Parallel()
 	r := osStart(t, false)
 	root := t.TempDir()
 	p := r.spawn(r.i.Home, root, "live")
+	osReregister(t, p, adUUID())
 	p.transcript(t, osPrompt("acme one"), osAnswer("acme done"))
 	edir := osDir(t, root, "done")
-	r.ended(r.i.Home, edir, "acme-done-stem", 5*osEndedHour, "acme answer")
+	const endedStem = "acme-done-stem"
+	r.ended(r.i.Home, edir, endedStem, 5*osEndedHour, "acme answer")
 
 	s, frame := r.probeFrame()
 	live := s.liveAt(p.dir)
@@ -157,27 +169,29 @@ func TestOutsideLiveRowHasNoClaudeSessionID(t *testing.T) {
 	}
 	if row := osRowByID(frame, live.ID); row == nil {
 		t.Fatalf("WS frame has no live row %s", live.ID)
-	} else if _, has := row[osClaudeIDKey]; has {
-		t.Fatalf("WS live row carries %s = %v", osClaudeIDKey, row[osClaudeIDKey])
+	} else if row[osClaudeIDKey] != p.sid {
+		t.Fatalf("WS live row: %s = %v, want %q", osClaudeIDKey, row[osClaudeIDKey], p.sid)
 	}
 	if got := r.detailSession(live.ID); got["state"] == "ended" {
 		t.Fatalf("detail of the live id %s answered an ended session", live.ID)
-	} else if _, has := got[osClaudeIDKey]; has {
-		t.Fatalf("detail live session carries %s = %v", osClaudeIDKey, got[osClaudeIDKey])
+	} else if got[osClaudeIDKey] != p.sid {
+		t.Fatalf("detail live session: %s = %v, want %q", osClaudeIDKey, got[osClaudeIDKey], p.sid)
 	}
 	sawLive, sawEnded := false, false
 	for _, row := range r.endedList() {
-		_, has := row[osClaudeIDKey]
 		switch row["state"] {
 		case "ended":
 			sawEnded = true
-			if !has {
-				t.Fatalf("ended row %v has no %s", row["id"], osClaudeIDKey)
+			if row[osClaudeIDKey] != endedStem {
+				t.Fatalf("ended list row %v: %s = %v, want %q", row["id"], osClaudeIDKey, row[osClaudeIDKey], endedStem)
 			}
 		default:
+			if row["id"] != live.ID {
+				continue
+			}
 			sawLive = true
-			if has {
-				t.Fatalf("live list row %v carries %s", row["id"], osClaudeIDKey)
+			if row[osClaudeIDKey] != p.sid {
+				t.Fatalf("live list row %v: %s = %v, want %q", row["id"], osClaudeIDKey, row[osClaudeIDKey], p.sid)
 			}
 		}
 	}
@@ -186,13 +200,15 @@ func TestOutsideLiveRowHasNoClaudeSessionID(t *testing.T) {
 	}
 }
 
-// AC3: the same Claude session, ended and then resumed in a new process, shows
-// once as a live row with no claudeSessionId on any door.
-func TestOutsideResumedSessionShowsOnceWithoutClaudeSessionID(t *testing.T) {
+// AC3 (relay#524 criterion changed): the same Claude session, ended and then
+// resumed in a new process, shows once, as a live row carrying claudeSessionId
+// on every door.
+func TestOutsideResumedSessionShowsOnceWithClaudeSessionID(t *testing.T) {
 	t.Parallel()
 	r := osStart(t, false)
 	root := t.TempDir()
 	p := r.spawn(r.i.Home, root, "live")
+	osReregister(t, p, adUUID())
 	plant := func() {
 		now := r.i.Clock().Now
 		osPlantAt(t, otFile(p), osConversation(p.sid, p.dir, "acme-branch", now, "acme one", "acme done"), now)
@@ -212,7 +228,8 @@ func TestOutsideResumedSessionShowsOnceWithoutClaudeSessionID(t *testing.T) {
 		t.Fatalf("ended detail: %s = %v, want %q", osClaudeIDKey, got, p.sid)
 	}
 
-	r.spawn(r.i.Home, root, "live")
+	p2 := r.spawn(r.i.Home, root, "live")
+	osReregister(t, p2, p.sid)
 	plant()
 	s, frame := r.probeFrame()
 	live := s.liveAt(p.dir)
@@ -220,22 +237,27 @@ func TestOutsideResumedSessionShowsOnceWithoutClaudeSessionID(t *testing.T) {
 	for _, row := range frame {
 		if row["directory"] == p.dir {
 			rows++
-			if _, has := row[osClaudeIDKey]; has {
-				t.Fatalf("resumed row %v carries %s", row["id"], osClaudeIDKey)
+			if row[osClaudeIDKey] != p.sid {
+				t.Fatalf("resumed WS row %v: %s = %v, want %q", row["id"], osClaudeIDKey, row[osClaudeIDKey], p.sid)
 			}
 		}
 	}
 	if live == nil || rows != 1 {
 		t.Fatalf("after resume: live row %+v, %d WS rows for %s, want one live row", live, rows, p.dir)
 	}
+	listed := 0
 	for _, row := range r.endedList() {
 		if row["directory"] == p.dir {
-			if _, has := row[osClaudeIDKey]; has {
-				t.Fatalf("resumed list row %v carries %s", row["id"], osClaudeIDKey)
+			listed++
+			if row["state"] == "ended" || row[osClaudeIDKey] != p.sid {
+				t.Fatalf("resumed list row %v: state %v, %s = %v, want a live row with %q", row["id"], row["state"], osClaudeIDKey, row[osClaudeIDKey], p.sid)
 			}
 		}
 	}
-	if _, has := r.detailSession(live.ID)[osClaudeIDKey]; has {
-		t.Fatalf("resumed detail carries %s", osClaudeIDKey)
+	if listed != 1 {
+		t.Fatalf("the list holds %d rows for %s, want 1", listed, p.dir)
+	}
+	if got := r.detailSession(live.ID)[osClaudeIDKey]; got != p.sid {
+		t.Fatalf("resumed detail: %s = %v, want %q", osClaudeIDKey, got, p.sid)
 	}
 }

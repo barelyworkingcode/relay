@@ -22,7 +22,7 @@ import (
 // Bundle holds the absolute paths of the binaries a run builds.
 type Bundle struct {
 	Relay, Sessions, FakeMCP, FakeModelHost, FakeAgent, FakeService string
-	FakeRelay, FakeSSH                                              string
+	FakeRelay, FakeSSH, FakeOutside                                 string
 }
 
 var (
@@ -36,7 +36,7 @@ var (
 const runLockName = "run.lock"
 
 // fakeNames are the fake binaries under e2e/fakes, built into bundle/fakes.
-var fakeNames = []string{"fakemcp", "fakemodelhost", "fakeagent", "fakeservice", "fakessh"}
+var fakeNames = []string{"fakemcp", "fakemodelhost", "fakeagent", "fakeservice", "fakessh", "fakeoutside"}
 
 // Main builds the bundle, runs the tests and removes the run root unless a test
 // failed. A failed run keeps its root so the instance directories can be read;
@@ -132,6 +132,7 @@ func buildBundle() error {
 		FakeService:   filepath.Join(b, "fakes", "fakeservice"),
 		FakeRelay:     filepath.Join(b, "fakes", "fakerelay"),
 		FakeSSH:       filepath.Join(b, "fakes", "fakessh"),
+		FakeOutside:   filepath.Join(b, "fakes", "fakeoutside"),
 	}
 	e2eDir := filepath.Join(repoRoot, "e2e")
 	type job struct {
