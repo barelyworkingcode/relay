@@ -340,7 +340,9 @@ stack under one HOME share one login.
   and the folder-trust prompt. A folder that already has a `.claude.json` is
   never read or changed. A sandboxed `claude-code` terminal also starts with
   `CLAUDE_CODE_SANDBOXED=1` when its folder passes the same check, so Claude
-  skips its trust check for that process and persists nothing. This was
+  skips its trust check for that process and persists nothing. The process
+  then treats every folder as trusted, also one it moves to later, and the
+  sandbox profile is what confines it. This was
   measured on Claude Code 2.1.304 and is not in Claude's public docs. The
   `claude` session runs `--print` and gets none. A value the template's `env`
   sets wins.
