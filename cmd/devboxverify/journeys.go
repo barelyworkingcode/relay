@@ -32,6 +32,7 @@ var apiJourneys = []journey{
 	}},
 	{toolsID, []string{"mcps", "grants", "sandbox"}, []string{"project:acme"}, phaseAPI, 60 * time.Second, runToolsThroughBridge},
 	{auditedID, []string{"audit", "mcps"}, []string{"project:acme"}, phaseAPI, 60 * time.Second, runToolCallAudited},
+	{detachedHostID, []string{"sessions", "hosts"}, nil, phaseAPI, 240 * time.Second, runDetachedHost},
 }
 
 var reachNeeds = []string{"project:acme", "project:globex", "file:acme/PROJECT.md", "file:globex/PROJECT.md"}
