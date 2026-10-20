@@ -540,18 +540,52 @@ func TestOutsideEndedSubfolderCwd(t *testing.T) {
 	}
 	launch := osDir(t, t.TempDir(), "launch")
 	sub := plant(r.i.Home, launch, "acme-subfolder")
-	outside := osDir(t, filepath.Join(r.remote, "elsewhere"), "launch")
-	outsideSub := plant(r.remote, outside, "acme-host-subfolder")
+	hostLaunch := osDir(t, filepath.Join(r.remote, "boxproj"), "launch")
+	hostSub := plant(r.remote, hostLaunch, "acme-host-subfolder")
 
 	s := r.probe()
 	row := s.endedAt(launch)
 	if row == nil {
 		t.Fatalf("no ended row for the launch folder %s; snapshot %+v", launch, s)
 	}
-	if s.endedAt(sub) != nil || len(s.endedRows()) != 1 {
-		t.Fatalf("ended rows = %v, want only the launch folder %s: the subfolder %s is not the row's directory", osDirs(s.endedRows()), launch, sub)
+	hostRow := s.endedAt(hostLaunch)
+	if hostRow == nil || hostRow.HostID == nil || hostRow.ProjectID == nil {
+		t.Fatalf("host row for the launch folder %s = %+v, want a row with hostId and projectId; snapshot %+v", hostLaunch, hostRow, s)
 	}
-	if s.endedAt(outside) != nil || s.endedAt(outsideSub) != nil {
-		t.Fatalf("ended rows = %v, want none for the host folder %s outside every host project", osDirs(s.endedRows()), outside)
+	if s.endedAt(sub) != nil || s.endedAt(hostSub) != nil || len(s.endedRows()) != 2 {
+		t.Fatalf("ended rows = %v, want only the launch folders %s and %s: a subfolder is not the row's directory", osDirs(s.endedRows()), launch, hostLaunch)
+	}
+}
+
+// A file whose 16 KiB tail holds no cwd key does not use a slot of the 50-row
+// cap: the 50 newest files that do hold one are still listed.
+func TestOutsideEndedCapSkipsNoCwd(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false)
+	root := t.TempDir()
+	now := r.i.Clock().Now
+	const noCwd, good = 10, 60
+	for k := 0; k < noCwd; k++ {
+		dir := osDir(t, root, fmt.Sprintf("nocwd-%02d", k))
+		sid := fmt.Sprintf("acme-nocwd-%02d", k)
+		mtime := now.Add(-time.Duration(k+1) * time.Minute).Truncate(time.Second)
+		var lines []string
+		for _, kind := range []string{"user", "assistant"} {
+			b, _ := json.Marshal(map[string]any{"type": kind, "timestamp": mtime.UTC().Format(time.RFC3339Nano), "sessionId": sid,
+				"message": map[string]any{"role": kind, "content": "acme no folder"}})
+			lines = append(lines, string(b))
+		}
+		osPlantAt(t, osTranscriptPath(r.i.Home, dir, sid), lines, mtime)
+	}
+	want := make([]string, 0, good)
+	for k := 0; k < good; k++ {
+		name := fmt.Sprintf("good-%02d", k)
+		dir := osDir(t, root, name)
+		r.ended(r.i.Home, dir, "acme-"+name, time.Duration(k+1)*20*time.Minute, "acme answer")
+		want = append(want, dir)
+	}
+	rows := r.probe().endedRows()
+	if !slices.Equal(osDirs(rows), want[:50]) {
+		t.Fatalf("ended rows = %v\nwant the 50 newest files with a cwd, newest first: %v", osDirs(rows), want[:50])
 	}
 }
