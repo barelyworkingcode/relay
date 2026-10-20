@@ -117,6 +117,9 @@ func outsideRow(s world.OutsideFixture) map[string]any {
 	if s.EndedAt != "" {
 		row["endedAt"] = s.EndedAt
 	}
+	if s.State == "ended" && s.ClaudeSessionID != "" {
+		row["claudeSessionId"] = s.ClaudeSessionID
+	}
 	return row
 }
 

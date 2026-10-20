@@ -2128,7 +2128,8 @@ door exists. Schemas, bounds, errors and timing are in
 ### GET /api/chief-of-staff/outside-sessions
 
 The current snapshot: `sessions` and per-machine `machines` status. `sessions`
-holds the live rows, then recently ended rows (`state:"ended"`, with `endedAt`),
+holds the live rows, then recently ended rows (`state:"ended"`, with `endedAt`
+and `claudeSessionId`, the transcript file's stem; a live row has neither),
 newest first, at most 50, inside the window `outside_sessions.ended_window_days`
 (default 3 days; see [outside sessions](outside-sessions.md#ended-sessions)).
 
