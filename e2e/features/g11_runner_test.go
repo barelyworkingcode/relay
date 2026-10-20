@@ -188,6 +188,10 @@ func TestHostSessionSSHFallbackWhenDetachOff(t *testing.T) {
 	}
 }
 
+// g11rTmuxCommand matches tmux used as a command: at a command position,
+// followed by a subcommand.
+var g11rTmuxCommand = regexp.MustCompile(`(^|[\s;|&/])tmux\s+[a-z-]+`)
+
 // Criterion 6: the runner never calls tmux. A tmux on the host's PATH records
 // every call it gets; a session still runs headless and none is recorded.
 func TestHostRunnerWithoutTmux(t *testing.T) {
@@ -213,6 +217,11 @@ func TestHostRunnerWithoutTmux(t *testing.T) {
 		t.Fatalf("the host's tmux was called during a headless session: stat err = %v", err)
 	}
 	for _, c := range i.SSHCalls()[base:] {
+		// Every Unix host command travels in a base64 launcher, so the decoded
+		// script is what names a command. A comment that mentions tmux is not a call.
+		if m := g11rTmuxCommand.FindString(c.Script()); m != "" {
+			t.Fatalf("an ssh call runs tmux: %q in %.300s", m, c.Script())
+		}
 		if strings.Contains(c.Remote, "tmux") {
 			t.Fatalf("an ssh call names tmux: %.300s", c.Remote)
 		}
@@ -597,4 +606,38 @@ func readAllFrom(f *os.File) ([]byte, error) {
 	var b bytes.Buffer
 	_, err := b.ReadFrom(f)
 	return b.Bytes(), err
+}
+
+// Criterion 1 on a host whose awk is mawk (the Debian and Ubuntu default),
+// which block-buffers piped output. A runner that does not line-buffer shows no
+// reply until the agent exits, so the reply must reach the sender while the
+// agent still runs.
+func TestHostRunnerLinesFlowUnderMawk(t *testing.T) {
+	t.Parallel()
+	r := g11dStartWith(t, "")
+	i := r.i
+
+	mawk, err := exec.LookPath("mawk")
+	if err != nil {
+		t.Fatalf("mawk is not installed on this machine (brew install mawk): %v", err)
+	}
+	// The host's PATH leads with hostclaude, so the link wins over the system awk.
+	if err := os.Symlink(mawk, filepath.Join(r.remote, "hostclaude", "awk")); err != nil {
+		t.Fatalf("linking awk to %s: %v", mawk, err)
+	}
+
+	sid := r.startSession(t, "")
+	run := r.run(t, sid, "g1")
+	g1sSendText(t, i, sid, "hi", "echo: hi")
+
+	if !g11dAlive(run.PID) {
+		t.Fatalf("runner pid %d is not running: the reply came only at the agent's exit", run.PID)
+	}
+	evs := g11rParseEvents(t, r.readFile(t, sid, "g1", "events.jsonl"))
+	if got := g11rTypes(evs); strings.Join(got, ",") != "turn_started,turn_ended" {
+		t.Fatalf("events after one turn under mawk are %v, want turn_started, turn_ended", got)
+	}
+	if n := g1vAssistantCount(g1vEventsAfter(t, i, sid, "").Events, "echo: hi"); n != 1 {
+		t.Fatalf("events hold %d replies to hi, want 1", n)
+	}
 }
