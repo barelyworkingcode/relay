@@ -1106,6 +1106,43 @@ project and host are deleted after.
   answers in under 10 s or on a new connection: then nothing was proven.
   `tmux_path` is set, or the list answers 409 without running ssh.
 
+**session-detached-host** (api, so a `--stack` run drives it). A Claude session
+on a loopback host keeps its agent when the host link drops, with no
+`detach_sessions` key set. The journey writes a host `loopback-<nonce>-detach`
+(target `localhost`), a project on it, one agent entry and a `proxy`
+credential into the instance's `settings.json` (the power door, imported by relay's file watch), and removes
+them after. The entry's command is a launcher script the journey writes under
+the state folder. A host session does not inherit relay's environment, so on a
+stack the launcher reads `claude_base_url`, `claude_model` and
+`claude_token_file` from `stack.json` (beside the stack's config dir), sets
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL` and, from the token file
+at exec, `ANTHROPIC_AUTH_TOKEN`, and execs `claude`; the token goes into no
+file, log or detail. The entry's model is the `haiku` alias, never a `claude-*`
+id. Off a stack, or on a stack with no `claude_base_url`, the journey is NOTRUN
+("needs a stack's local model endpoint"): it never runs claude against a hosted
+model. The journey starts the session with `relay session start --entry`, joins it
+on `/ws`, sends a long turn with `relay session send` (which returns once
+relay holds the runner's receipt), runs `relay host disconnect`, waits for `session.host_link`
+`link=lost` then `restored`, and reads the turn with `relay session wait`. PASS when `runner.json` keeps its pid, pgid,
+start time and generation; the turn in flight returns its marker; a later
+message is answered; one generation directory exists; and `relay session stop`
+ends the process group and removes the run directory.
+- Waits: CLI exits, `/ws` frames and `session.host_link` events. `session
+  send` returns only once relay holds the receipt, so the drop never lands on
+  a send in flight (that ends `send_unknown`).
+  The settings import has no event, so the `/ws` dial and `relay session
+  start` are retried, bounded, until the import has run and `runner.json`
+  exists.
+- Lives in: `internal/sessions/runner/`, `internal/sshhost/agentrun.go`,
+  `cmd/relay/session_launch.go` (`buildHostSpec`).
+- Reached by: `relay session start|message|stop`, `relay host disconnect`,
+  `/ws` with a credential of class `proxy` the journey seeds into
+  `settings.json` and removes after (the execute credential is refused there),
+  the agents directory under the loopback
+  user's `~/.relay/agents`.
+- Traps: BLOCKED without `claude` on the login-shell PATH, with an unreadable
+  `stack.json`, or when the turn ended before the link dropped.
+
 **session-host-restart** (screen). The admin op `service.restart
 {"id":"relaysessions"}` answers without error, and within 15 s
 `relaysessions` is STATE `running` with a `relay-sessions` pid it did not

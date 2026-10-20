@@ -158,7 +158,7 @@ func TestDetachedReattachAfterRestart(t *testing.T) {
 	g1sSendText(t, i, sid, "after the restart", "echo: after the restart")
 
 	if after := r.run(t, sid, "g1"); after.PID != run.PID || after.PGID != run.PGID || after.Started != run.Started {
-		t.Fatalf("run.json went from %+v to %+v across the restart and a message", run, after)
+		t.Fatalf("runner.json went from %+v to %+v across the restart and a message", run, after)
 	}
 	r.onlyGeneration(t, sid, "g1", "after the restart and a message")
 	if got := i.Events(harness.EventQuery{Key: "session.resume"}); len(got) != 0 {
@@ -236,7 +236,7 @@ func TestDetachedResumeReattachesNoSecondAgent(t *testing.T) {
 	}
 
 	if after := r.run(t, sid, "g1"); after.PID != run.PID || after.Generation != run.Generation || !g11dAlive(run.PID) {
-		t.Fatalf("run.json went from %+v to %+v, or the agent stopped", run, after)
+		t.Fatalf("runner.json went from %+v to %+v, or the agent stopped", run, after)
 	}
 	r.onlyGeneration(t, sid, "g1", "after the resume")
 	if got := r.hostStarts(t); len(got) != base+1 {
@@ -267,12 +267,12 @@ func TestDetachedReusedPidCountsExited(t *testing.T) {
 	reaped := make(chan struct{})
 	go func() { _ = other.Wait(); close(reaped) }()
 	t.Cleanup(func() { _ = other.Process.Kill(); <-reaped })
-	stale, _ := json.Marshal(g11dRun{PID: other.Process.Pid, PGID: other.Process.Pid, Started: run.Started, Generation: "g1"})
-	r.write(t, filepath.Join(r.agentsDir(sid), "g1", "run.json"), string(stale), 0o600)
+	stale, _ := json.Marshal(g11dRun{V: 1, Session: sid, PID: other.Process.Pid, PGID: other.Process.Pid, Started: run.Started, Generation: "g1"})
+	r.write(t, filepath.Join(r.agentsDir(sid), "g1", "runner.json"), string(stale), 0o600)
 
 	r.restart(t)
 	if row := r.sessionRow(t, sid); row.Live {
-		t.Fatalf("session %s reads live though run.json names a pid that is not its agent", sid)
+		t.Fatalf("session %s reads live though runner.json names a pid that is not its agent", sid)
 	}
 
 	res := i.MustCLI("session", "resume", "--id", sid, "--json")
@@ -289,7 +289,7 @@ func TestDetachedReusedPidCountsExited(t *testing.T) {
 
 	select {
 	case <-reaped:
-		t.Fatalf("relay ended pid %d, a process that run.json named under a start time that is not its own", other.Process.Pid)
+		t.Fatalf("relay ended pid %d, a process that runner.json named under a start time that is not its own", other.Process.Pid)
 	default:
 	}
 	if !g11dAlive(other.Process.Pid) {
@@ -319,7 +319,7 @@ func TestDetachedSessionsRestartKeepsAgent(t *testing.T) {
 		t.Fatalf("agent pid %d did not outlive the session host restart", run.PID)
 	}
 	if after := r.run(t, sid, "g1"); after.PID != run.PID || after.Started != run.Started {
-		t.Fatalf("run.json went from %+v to %+v across the session host restart", run, after)
+		t.Fatalf("runner.json went from %+v to %+v across the session host restart", run, after)
 	}
 	r.onlyGeneration(t, sid, "g1", "after the session host restart")
 }
@@ -448,12 +448,8 @@ func TestDetachedPermissionReraisedAfterRestart(t *testing.T) {
 	if all := g1vEventsAfter(t, i, sid, ""); g1vAssistantCount(all.Events, "ask: allow Write") != 1 {
 		t.Fatalf("the turn did not end once with ask: allow Write: %s", g1vJoin(all.Events))
 	}
-	raw, err := os.ReadFile(filepath.Join(r.agentsDir(sid), "g1", "in.jsonl"))
-	if err != nil {
-		t.Fatalf("reading in.jsonl: %v", err)
-	}
-	if n := bytes.Count(raw, []byte(`"type":"control_response"`)); n != 1 {
-		t.Fatalf("in.jsonl holds %d control_response lines, want 1\n%s", n, raw)
+	if n := g11rSentCount(t, r.agentsDir(sid), "g1", `"type":"control_response"`); n != 1 {
+		t.Fatalf("sent/ holds %d control_response messages, want 1", n)
 	}
 }
 
@@ -499,7 +495,7 @@ func TestDetachedProjectDeleteAfterHostDownRestartEndsAgent(t *testing.T) {
 	r.restartHostDown(t, sid)
 	g1sSendText(t, i, sid, "after the restart", "echo: after the restart")
 	if after := r.run(t, sid, "g1"); after.PID != run.PID || !g11dAlive(run.PID) {
-		t.Fatalf("run.json went from %+v to %+v, or the agent stopped", run, after)
+		t.Fatalf("runner.json went from %+v to %+v, or the agent stopped", run, after)
 	}
 
 	i.MustCLI("project", "remove", "--id", r.projectID, "--json")
@@ -526,7 +522,7 @@ func TestDetachedProjectRemoveAfterHostDownRestartNoMessageEndsAgent(t *testing.
 }
 
 // A prompt that was answered and whose turn ended is not raised again by a
-// later restart, and the host's input still holds the one answer.
+// later restart, and the host's sent/ still holds the one answer.
 func TestDetachedAnsweredPromptNotRaisedAgain(t *testing.T) {
 	t.Parallel()
 	r := g11dStart(t)
@@ -580,11 +576,7 @@ func TestDetachedAnsweredPromptNotRaisedAgain(t *testing.T) {
 			break
 		}
 	}
-	raw, err := os.ReadFile(filepath.Join(r.agentsDir(sid), "g1", "in.jsonl"))
-	if err != nil {
-		t.Fatalf("reading in.jsonl: %v", err)
-	}
-	if n := bytes.Count(raw, []byte(`"type":"control_response"`)); n != 1 {
-		t.Fatalf("in.jsonl holds %d control_response lines, want 1\n%s", n, raw)
+	if n := g11rSentCount(t, r.agentsDir(sid), "g1", `"type":"control_response"`); n != 1 {
+		t.Fatalf("sent/ holds %d control_response messages, want 1", n)
 	}
 }

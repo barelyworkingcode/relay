@@ -15,7 +15,7 @@ start path, its own limits and its own way of losing the agent.
 |---|---|---|---|
 | Stream-json over a child's pipes | headless Claude, local | n/a | no |
 | Stream-json over `ssh -T` | headless Claude on a host | no | no |
-| Stream-json under a detached runner on the host | headless Claude on a Unix host with `detach_sessions` | yes | yes |
+| Stream-json under the runner on the host | headless Claude on a Unix host (default; `detach_sessions: false` gives `ssh -T`) | yes | yes |
 | A pty through the shim | terminal sessions, local | n/a | no |
 | A pty inside the host's tmux | a host terminal template with `persist` | yes | yes |
 
@@ -55,12 +55,29 @@ A runner is a small program that owns an agent's stdin and stdout. It is the
 same program for every agent. It knows no protocol.
 
 ```
-<state dir>/<session>/
-  inbox/        one file per message to deliver, in order
+<state dir>/<session>/<generation>/
+  inbox/        one file per message to deliver, in name order
   sent/         a message moves here when it is written to the agent
-  out.jsonl     every line the agent printed, appended
-  runner.json   pid, start time, generation, cursor
+  out.jsonl     every line the agent printed, appended unchanged
+  events.jsonl  one line per state change
+  runner.json   pid, start time, session, generation, last delivered id
 ```
+
+A message is `<id>.json` (starts a turn) or `<id>.ctl` (starts none: a
+`control_response`, a JSON-RPC call). A sender writes `inbox/.<id>.tmp` and
+renames it into `inbox/`; names starting with `.` are ignored. `events.jsonl`
+holds `turn_started`, `turn_ended`, `asking` and `exited`, each with the byte
+offset in `out.jsonl` of the line that caused it, appended before that line.
+The runner matches two fixed strings the provider passes at start and parses
+nothing else.
+
+**The `agent` tool.** The runner speaks the owner's `agent` tool's file
+channel: the same `inbox/` rename, name order and move to `sent/`. Relay does
+not run the Python tool, which ships in no bundle, speaks Claude only and needs
+python3, which a stock Mac host lacks. Relay's runner replaces its own
+`in.jsonl` runner, so two programs speak one protocol and there is no third. The
+runner does not use the tool's `state.json`, `meta.json`, heartbeat, `hold` or
+`stop` files: relay-sessions keeps session state and stops by process group.
 
 - `send` writes a file into `inbox/`. The runner writes it to the agent's stdin
   and moves it to `sent/`. The move is the receipt, so a send is delivered
@@ -77,7 +94,8 @@ same program for every agent. It knows no protocol.
 session a stable name, lets a person attach, and lets the pane's program change
 without losing the name. The pane runs either the runner (headless) or the
 agent's own UI (terminal). `tmux respawn-pane -k` swaps one for the other.
-Where a host has no tmux, a headless session still runs under the runner alone.
+Where a host has no tmux, a headless session still runs under the runner alone;
+the host path never calls tmux.
 
 ## Swapping the driver
 

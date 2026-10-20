@@ -1127,7 +1127,7 @@ func writeVerbError(w http.ResponseWriter, err error) {
 	case errors.Is(err, provider.ErrSendUnknown):
 		writeErr(w, http.StatusBadGateway, ErrSendUnknown, err.Error())
 	case errors.Is(err, session.ErrReplayUnavailable):
-		writeErr(w, http.StatusConflict, ErrReplayUnavailable, "this session keeps no replayable event log; only a session on a host with detach_sessions does")
+		writeErr(w, http.StatusConflict, ErrReplayUnavailable, "this session keeps no replayable event log; only a Claude session on a Unix host that runs it under the runner does (a host with detach_sessions: false, and a Windows host, do not)")
 	case errors.Is(err, session.ErrNotTracked):
 		writeErr(w, http.StatusConflict, ErrNotTracked, "this session reports no agent state")
 	default:

@@ -29,7 +29,12 @@ const (
 	g11dLinkDeadline = 30 * time.Second
 )
 
+// g11dRun is the runner.json of a generation (docs/ssh-hosts.md, "Detached
+// sessions"): the runner's pid and group, its start time and its generation.
 type g11dRun struct {
+	V          int    `json:"v"`
+	Session    string `json:"session,omitempty"`
+	Delivered  string `json:"delivered,omitempty"`
 	PID        int    `json:"pid"`
 	PGID       int    `json:"pgid"`
 	Started    string `json:"started"`
@@ -47,7 +52,14 @@ type g11dRig struct {
 // set and one host project whose claude is the fake agent.
 func g11dStart(t *testing.T) *g11dRig {
 	t.Helper()
-	seed := `[{"id":"` + g11dHostID + `","name":"testbox","target":"` + g11dTarget + `","detach_sessions":true,"created_at":"2026-01-01T00:00:00Z"}]`
+	return g11dStartWith(t, `"detach_sessions":true,`)
+}
+
+// g11dStartWith is g11dStart with the host's detach_sessions member given as
+// JSON text: `"detach_sessions":false,` or "" for a host with no such key.
+func g11dStartWith(t *testing.T, detach string) *g11dRig {
+	t.Helper()
+	seed := `[{"id":"` + g11dHostID + `","name":"testbox","target":"` + g11dTarget + `",` + detach + `"created_at":"2026-01-01T00:00:00Z"}]`
 	i := harness.Start(t, harness.Options{
 		Credentials: g1tCreds, Presence: g1tApprove, SSHStub: true,
 		Settings: map[string]json.RawMessage{"hosts": json.RawMessage(seed)},
@@ -106,22 +118,22 @@ func (r *g11dRig) startSession(t *testing.T, settings string) string {
 	return g1tStartSession(t, r.i, r.projectID, "sonnet", settings)
 }
 
-// run reads the generation's run.json. relay session start returns only after
-// run.json exists, so no wait is needed. The agent's group is killed at
+// run reads the generation's runner.json. relay session start returns only after
+// runner.json exists, so no wait is needed. The agent's group is killed at
 // cleanup so a failing test leaves nothing behind.
 func (r *g11dRig) run(t *testing.T, sid, gen string) g11dRun {
 	t.Helper()
-	path := filepath.Join(r.agentsDir(sid), gen, "run.json")
+	path := filepath.Join(r.agentsDir(sid), gen, "runner.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("the started session has no run.json: %v", err)
+		t.Fatalf("the started session has no runner.json: %v", err)
 	}
 	var run g11dRun
 	if err := json.Unmarshal(raw, &run); err != nil {
 		t.Fatalf("decoding %s: %v\n%s", path, err, raw)
 	}
 	if run.PID <= 1 || run.PGID <= 1 || run.Generation != gen {
-		t.Fatalf("run.json reads %+v, want a pid, a pgid and generation %s", run, gen)
+		t.Fatalf("runner.json reads %+v, want a pid, a pgid and generation %s", run, gen)
 	}
 	t.Cleanup(func() { _ = syscall.Kill(-run.PGID, syscall.SIGKILL) })
 	return run
@@ -440,7 +452,7 @@ func TestDetachedDropInEndsAgentGroup(t *testing.T) {
 	tty.Wait()
 }
 
-// Criterion 6: ending a detached session never signals a process that run.json
+// Criterion 6: ending a detached session never signals a process that runner.json
 // no longer describes. The record is made stale on purpose, as a recycled pid
 // leaves it: it names an unrelated process under a start time that is not its.
 func TestDetachedStopSparesUnrelatedProcess(t *testing.T) {
@@ -458,13 +470,13 @@ func TestDetachedStopSparesUnrelatedProcess(t *testing.T) {
 	go func() { _ = other.Wait(); close(reaped) }()
 	t.Cleanup(func() { _ = other.Process.Kill(); <-reaped })
 
-	stale, _ := json.Marshal(g11dRun{PID: other.Process.Pid, PGID: other.Process.Pid, Started: "stale", Generation: "g1"})
-	r.write(t, filepath.Join(r.agentsDir(sid), "g1", "run.json"), string(stale), 0o600)
+	stale, _ := json.Marshal(g11dRun{V: 1, Session: sid, PID: other.Process.Pid, PGID: other.Process.Pid, Started: "stale", Generation: "g1"})
+	r.write(t, filepath.Join(r.agentsDir(sid), "g1", "runner.json"), string(stale), 0o600)
 
 	r.i.CLI("session", "stop", "--id", sid, "--json")
 	select {
 	case <-reaped:
-		t.Fatalf("session stop killed pid %d, which run.json named under a start time that is not its own", other.Process.Pid)
+		t.Fatalf("session stop killed pid %d, which runner.json named under a start time that is not its own", other.Process.Pid)
 	default:
 	}
 	if !g11dAlive(other.Process.Pid) {

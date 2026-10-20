@@ -18,13 +18,14 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/logging"
+	"github.com/barelyworkingcode/relay/internal/sessions/runner"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
 // A detached Claude session keeps its agent on the host (docs/ssh-hosts.md,
-// "Detached sessions"). Relay's ssh link carries input to in.jsonl and reads
-// out.jsonl by byte offset, so a dropped link ends neither the agent nor the
+// "Detached sessions"). Relay's ssh link carries input to the runner's inbox
+// and reads out.jsonl by byte offset, so a dropped link ends neither the agent nor the
 // events it writes while relay is away.
 
 // Backoff bounds for reopening the link; vars so a test can shorten them.
@@ -218,6 +219,14 @@ func runHost(ctx context.Context, spec *sessionstypes.HostSpec, remote string, s
 	return out.String(), msg, err
 }
 
+// claudeRunnerPatterns are the strings the runner matches in Claude's stdout:
+// the result line ends a turn, and a can_use_tool request is a permission
+// prompt.
+var claudeRunnerPatterns = runner.Patterns{
+	TurnEnded: `"type":"result"`,
+	Asking:    `"subtype":"can_use_tool"`,
+}
+
 func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []string) error {
 	if sshhost.IsWindowsOS(host.OS) {
 		return fmt.Errorf("host %q is a Windows host: detach_sessions is not available there", host.Name)
@@ -235,23 +244,28 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 		if st.Phase == sshhost.RunAlive {
 			return p.attachDetached(host, st.Generation)
 		}
+		if st.Phase == sshhost.RunLegacy {
+			// A run from before the message runner has no inbox to send to: it
+			// is stopped once and the session resumes on its conversation.
+			stopDetachedRunner(p.session.ID, host, sshhost.RunDir{Session: p.session.ID, Generation: st.Generation})
+		}
 		if p.cfg.AttachOnly {
 			return fmt.Errorf("%w on host %q", ErrNoDetachedRun, host.Name)
 		}
 	}
 	program := p.cfg.Launcher.Program(host.ClaudePath)
 	env := map[string]string{"RELAY_SESSION_ID": p.session.ID}
-	remote := sshhost.RunnerStartIn(host.OS, p.directory, sshhost.RunDir{Session: p.session.ID}, append(slices.Clone(program), args...), env)
+	remote := sshhost.RunnerStartIn(host.OS, p.directory, sshhost.RunDir{Session: p.session.ID}, append(slices.Clone(program), args...), env, claudeRunnerPatterns)
 
 	ctx, cancel := context.WithTimeout(context.Background(), detachedStartTimeout)
 	defer cancel()
 	stdout, msg, err := runHost(ctx, host, remote, nil)
 	if err != nil {
-		return fmt.Errorf("start detached claude on host %q: %s", host.Name, msg)
+		return fmt.Errorf("start detached claude on host %q: %s (hosts[].detach_sessions: false runs this host's sessions under ssh -T)", host.Name, msg)
 	}
 	gen, err := sshhost.ParseRunStart(stdout)
 	if err != nil {
-		return fmt.Errorf("start detached claude on host %q: %w", host.Name, err)
+		return fmt.Errorf("start detached claude on host %q: %w (hosts[].detach_sessions: false runs this host's sessions under ssh -T)", host.Name, err)
 	}
 
 	p.mu.Lock()
@@ -609,16 +623,24 @@ func (p *ClaudeProvider) awaitLink(ctx context.Context, det *detachedRun, wait t
 	return nil
 }
 
-// sendDetached appends one line (data ends in a newline) to the agent's input.
-// It waits up to wait for a lost link to return, then writes once.
+// sendDetached queues one line (data ends in a newline) in the runner's inbox
+// and returns once the runner has written it to the agent. It waits up to wait
+// for a lost link to return, then sends once.
 // Deliberate: no retry after the command ran. An ssh failure after the
-// command started may still have landed the line, and a second append would
-// deliver it twice. A failure that proves ssh never connected is the one
+// command started, or a missing receipt, may still have landed the message,
+// and a second one would deliver it twice. The id is fixed per call, so the
+// one retry after an ssh connect failure reuses it. A failure that proves ssh never connected is the one
 // retry: the link is marked lost and the wait begins again.
 func (p *ClaudeProvider) sendDetached(callerCtx context.Context, det *detachedRun, data []byte, wait time.Duration) error {
 	line := bytes.TrimSuffix(data, []byte("\n"))
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
+	id := runner.NewMessageID(time.Now())
+	// A control_response answers a request and starts no turn.
+	kind := runner.MessageTurn
+	if lineType(string(line)) == "control_response" {
+		kind = runner.MessageControl
+	}
 	for {
 		if err := p.awaitLink(callerCtx, det, wait, timer); err != nil {
 			return err
@@ -629,7 +651,7 @@ func (p *ClaudeProvider) sendDetached(callerCtx context.Context, det *detachedRu
 		// Deliberate: the write itself does not follow the caller's ctx. A
 		// line already on its way cannot be recalled, so it is left to finish.
 		ctx, cancel := context.WithTimeout(det.ctx, detachedSendTimeout)
-		_, msg, err := runHost(ctx, det.spec, sshhost.RunnerSend(det.spec.OS, det.dir), bytes.NewReader(line))
+		_, msg, err := runHost(ctx, det.spec, sshhost.RunnerSend(det.spec.OS, det.dir, id, kind), bytes.NewReader(line))
 		cut := ctx.Err() != nil
 		cancel()
 		switch {
@@ -641,14 +663,32 @@ func (p *ClaudeProvider) sendDetached(callerCtx context.Context, det *detachedRu
 			}
 		case cut || sendOutcomeUnknown(err):
 			return fmt.Errorf("%w: the connection to host %q ended during the send; the message may have been delivered, so read the session's events before sending again", ErrSendUnknown, det.spec.Name)
+		case exitCodeOf(err) == runnerNotRunning:
+			return fmt.Errorf("the agent is not running on host %q", det.spec.Name)
+		case exitCodeOf(err) == runnerNoReceipt:
+			return fmt.Errorf("%w: host %q did not confirm delivery in time; the message is queued and may still be delivered, so read the session's events before sending again", ErrSendUnknown, det.spec.Name)
 		default:
 			return fmt.Errorf("send to claude on host %q: %s", det.spec.Name, msg)
 		}
 	}
 }
 
+// RunnerSend's exit codes.
+const (
+	runnerNotRunning = 5
+	runnerNoReceipt  = 7
+)
+
+func exitCodeOf(err error) int {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
 // sendOutcomeUnknown is true when the failure is ssh's own (exit 255) or the
-// command was killed, so the remote append may have run.
+// command was killed, so the remote write may have run.
 func sendOutcomeUnknown(err error) bool {
 	var ee *exec.ExitError
 	return !errors.As(err, &ee) || ee.ExitCode() == 255 || ee.ExitCode() < 0
@@ -844,10 +884,11 @@ func DetachedRunState(ctx context.Context, host *sessionstypes.HostSpec, session
 
 // attachProbeScript takes $1 session and $2 generation and prints what an
 // attach needs in one round trip, one tagged line each: "S <n>", the end of
-// the last complete line of out.jsonl; "U <n>", the user messages in
-// in.jsonl; "R <n>", the result lines in out.jsonl; "O <line>", every
-// control_request line; "I <line>", every control_response line of in.jsonl. Deliberate: a file that ends in a half-written line puts S at
-// that line's start, because a cursor must sit on a line start.
+// the last complete line of out.jsonl; "U <n>", the turn messages in sent/ and
+// inbox/; "R <n>", the result lines in out.jsonl; "O <line>", every
+// control_request line; "I <line>", every control message in sent/ and inbox/.
+// Deliberate: a file that ends in a half-written line puts S at that line's
+// start, because a cursor must sit on a line start.
 const attachProbeScript = `case "$1" in ''|*[!A-Za-z0-9_-]*) echo "relay: invalid session id" >&2; exit 2;; esac
 case "$2" in ''|*[!A-Za-z0-9_-]*) echo "relay: invalid generation" >&2; exit 2;; esac
 [ -n "$HOME" ] || { echo "relay: HOME is not set on the host" >&2; exit 2; }
@@ -859,10 +900,12 @@ if [ "$n" -gt 0 ] && [ "$(tail -c 1 "$f" | od -An -tx1 | tr -d ' \n')" != 0a ]; 
   n=$((n - $(tail -n 1 "$f" | wc -c | tr -d ' ')))
 fi
 echo "S $n"
-echo "U $( [ -f "$d/in.jsonl" ] && grep -a -c '"type":"user"' "$d/in.jsonl" || echo 0)"
+u=0
+for m in "$d"/sent/*.json "$d"/inbox/*.json; do [ -f "$m" ] && u=$((u+1)); done
+echo "U $u"
 echo "R $(grep -a -c '"type":"result"' "$f")"
 grep -a '"control_request"' "$f" | sed 's/^/O /'
-if [ -f "$d/in.jsonl" ]; then grep -a '"control_response"' "$d/in.jsonl" | sed 's/^/I /'; fi
+for m in "$d"/sent/*.ctl "$d"/inbox/*.ctl; do [ -f "$m" ] && sed 's/^/I /' "$m"; done
 exit 0
 `
 
