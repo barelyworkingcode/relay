@@ -6,6 +6,8 @@
 //	fakemodelhost --models FILE --call-log FILE
 //
 // FILE is a JSON array of /v1/models rows, or an object with a "data" array.
+// It is re-read on every GET /v1/models, so a test can change the catalogue
+// by replacing the file (write a temp file, then rename).
 package main
 
 import (
@@ -46,8 +48,7 @@ func run() error {
 	if *modelsPath == "" || *logPath == "" {
 		return errors.New("--models and --call-log are required")
 	}
-	rows, err := loadModels(*modelsPath)
-	if err != nil {
+	if _, err := loadModels(*modelsPath); err != nil {
 		return err
 	}
 	log, err := calllog.Open(*logPath)
@@ -95,7 +96,7 @@ func run() error {
 	}
 	fmt.Fprintln(os.Stderr, "fakemodelhost: registered", serviceID)
 
-	h := &host{rows: rows, log: log}
+	h := &host{modelsPath: *modelsPath, log: log}
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -183,8 +184,8 @@ func call(w io.Writer, r *bufio.Reader, req map[string]any) error {
 }
 
 type host struct {
-	rows []json.RawMessage
-	log  *calllog.Writer
+	modelsPath string
+	log        *calllog.Writer
 }
 
 func (h *host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -195,7 +196,11 @@ func (h *host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
-		rows := h.rows
+		rows, err := loadModels(h.modelsPath)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]string{"message": err.Error(), "type": "server_error"}})
+			return
+		}
 		if rows == nil {
 			rows = []json.RawMessage{}
 		}

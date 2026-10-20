@@ -125,6 +125,40 @@ func (i *Instance) modelHostRecord(h *FakeModelHostSpec) json.RawMessage {
 	return raw
 }
 
+// SetFakeModelHostModels replaces the fake model host's catalogue. The file is
+// written beside the old one and renamed over it, so the fake never reads a
+// half-written catalogue; it re-reads the file on every GET /v1/models, so the
+// next catalogue fetch sees rows. It returns once the rename is done.
+func (i *Instance) SetFakeModelHostModels(rows []json.RawMessage) {
+	t := i.t
+	t.Helper()
+	if i.modelHost == nil {
+		t.Fatalf("no fake model host was attached")
+	}
+	if rows == nil {
+		rows = []json.RawMessage{}
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("encoding the model rows: %v", err)
+	}
+	path := i.fakePath(i.modelHost.ID + ".models.json")
+	tmp, err := os.CreateTemp(filepath.Dir(path), i.modelHost.ID+".models.*.tmp")
+	if err != nil {
+		t.Fatalf("creating a temp catalogue beside %s: %v", path, err)
+	}
+	_, werr := tmp.Write(data)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp.Name())
+		t.Fatalf("writing %s: %v %v", tmp.Name(), werr, cerr)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
+		t.Fatalf("renaming %s over %s: %v", tmp.Name(), path, err)
+	}
+}
+
 func (i *Instance) stopFakes() {
 	for _, f := range i.fakeMCPs {
 		if f.proc == nil {
