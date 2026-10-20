@@ -264,6 +264,8 @@ type CreateSpec struct {
 	// sandboxed local launches). Never cached across calls, same rule as
 	// Identity; never logged.
 	ClaudeToken string
+	// ClaudeEnv is this launch's claude_env_passthrough values (claude only).
+	ClaudeEnv map[string]string
 	// SandboxProfile is this launch's own absolute SBPL profile path (C7),
 	// threaded to chat's MCP tool child. "" runs it unsandboxed.
 	SandboxProfile string
@@ -679,6 +681,7 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 		ccfg := m.cfg.Claude
 		ccfg.Identity = spec.Identity
 		ccfg.ClaudeToken = spec.ClaudeToken
+		ccfg.PassthroughEnv = spec.ClaudeEnv
 		ccfg.SandboxProfile = spec.SandboxProfile
 		ccfg.Launcher = spec.Launcher
 		ccfg.DefaultModel = spec.Entry != "" && spec.Model == ""

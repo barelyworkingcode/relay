@@ -86,6 +86,11 @@ type ClaudeConfig struct {
 	// calls, same rule as Identity, and never logged.
 	ClaudeToken string
 
+	// PassthroughEnv is claude_env's values, applied after the scrub and before
+	// relay's own values, so relay's win. Every name was checked by
+	// childenv.CheckClaudeEnvName; never logged.
+	PassthroughEnv map[string]string
+
 	// Launcher runs in place of the claude binary, with the kind's own
 	// arguments after its args. nil runs Binary.
 	Launcher *sessionstypes.Launcher
@@ -427,7 +432,7 @@ func (p *ClaudeProvider) buildClaudeEnv(base []string) ([]string, error) {
 	if p.cfg.ClaudeToken != "" {
 		add[childenv.EnvClaudeTokenFD] = strconv.Itoa(shim.TokenFD)
 	}
-	return mergeEnv(base, add), nil
+	return mergeEnv(mergeEnv(base, p.cfg.PassthroughEnv), add), nil
 }
 
 // buildHostExec assembles argv to run Claude on a host: relay's ssh_argv

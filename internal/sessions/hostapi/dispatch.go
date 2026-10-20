@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
@@ -110,6 +111,9 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 	}
 	spec.ModelKey = req.ModelKey
 	spec.ClaudeToken = req.ClaudeToken
+	if len(req.ClaudeEnv) > 0 {
+		return terminal.CreateSpec{}, errors.New("hostapi: claude_env applies only to a local claude launch")
+	}
 	return spec, nil
 }
 
@@ -160,6 +164,10 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		return session.CreateSpec{}, errors.New("hostapi: claude token requires a sandboxed local claude launch")
 	}
 
+	if err := checkClaudeEnv(req, host); err != nil {
+		return session.CreateSpec{}, err
+	}
+
 	var projectID string
 	if len(req.Project) > 0 {
 		var p projectRef
@@ -189,6 +197,7 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		Launcher:       req.Launcher,
 		Entry:          sr.Entry,
 		ClaudeToken:    req.ClaudeToken,
+		ClaudeEnv:      req.ClaudeEnv,
 	}
 	// session.CreateSpec has no validate() of its own to lean on the way
 	// terminal.CreateSpec does (buildTerminalSpec's own comment): an empty
@@ -241,4 +250,21 @@ func sessionLaunchStatus(err error) (int, string) {
 		return 502, ErrIdentityRefused
 	}
 	return 500, ErrSpawnFailed
+}
+
+// checkClaudeEnv refuses claude_env on anything but a local claude launch and
+// any name that fails the name rule. Names only in the message, never values.
+func checkClaudeEnv(req LaunchRequest, host *sessionstypes.HostSpec) error {
+	if len(req.ClaudeEnv) == 0 {
+		return nil
+	}
+	if req.Kind != session.KindClaude || host != nil {
+		return errors.New("hostapi: claude_env applies only to a local claude launch")
+	}
+	for name := range req.ClaudeEnv {
+		if err := childenv.CheckClaudeEnvName(name); err != nil {
+			return fmt.Errorf("hostapi: claude_env: %w", err)
+		}
+	}
+	return nil
 }

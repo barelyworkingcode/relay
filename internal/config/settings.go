@@ -89,6 +89,12 @@ type Settings struct {
 	// an install that never sets it byte-identical.
 	ClaudeTokenFile string `json:"claude_token_file,omitempty"`
 
+	// ClaudeEnvPassthrough lists CLAUDE_CODE_* variable names (never values)
+	// that a local claude session takes from relay's own environment at each
+	// launch and resume. Empty: nothing passes. omitempty keeps an install that
+	// never sets it byte-identical.
+	ClaudeEnvPassthrough []string `json:"claude_env_passthrough,omitempty"`
+
 	// APICredentials are the bearer credentials the control-plane API
 	// accepts, each naming its own capability classes (ADR-015 decision 3).
 	// omitempty, like Enrolments and Audit: an install that never mints one

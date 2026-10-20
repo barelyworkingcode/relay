@@ -557,6 +557,16 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		}
 	}
 
+	var claudeEnv map[string]string
+	if req.Kind == KindClaude && !(proj != nil && proj.IsHosted()) {
+		// Same place as the token read: before the model key mint and the
+		// profile write, so a refusal leaves nothing behind.
+		var err error
+		if claudeEnv, err = resolveClaudeEnvPassthrough(settings); err != nil {
+			return nil, invalidRequest("invalid_claude_env", err.Error(), baseFields)
+		}
+	}
+
 	sessionRequest, refusal := buildSessionRequest(req, proj, directory, baseFields)
 	if refusal != nil {
 		return nil, refusal
@@ -579,6 +589,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		IdleTimeoutSec: 86400,
 		SessionRequest: sessionRequest,
 		ClaudeToken:    claudeToken,
+		ClaudeEnv:      claudeEnv,
 		Origin:         req.Origin,
 	}
 	if entry != nil && entry.Command != "" {
