@@ -70,6 +70,10 @@ func (a *api) outsideTranscript(w http.ResponseWriter, r *http.Request) {
 		cosError(w, 404, "outside_session_not_found", "outside session not found")
 		return
 	}
+	if found.State == "ended" {
+		cosError(w, 404, "outside_session_not_found", "outside session not found")
+		return
+	}
 	if found.MachineStatus == "unreachable" {
 		cosError(w, 502, "outside_status_unavailable", "outside transcript could not be read")
 		return
@@ -104,8 +108,16 @@ func (a *api) outsideTranscript(w http.ResponseWriter, r *http.Request) {
 	}
 	ok(w, map[string]any{"entries": entries, "cursor": cursor, "hasMore": first > 0})
 }
+
+// outsideEndedMax is relay's cap on ended rows across all machines.
+const outsideEndedMax = 50
+
 func outsideRow(s world.OutsideFixture) map[string]any {
-	return map[string]any{"id": s.ID, "name": s.Name, "projectId": s.ProjectID, "hostId": s.HostID, "machine": s.Machine, "directory": s.Directory, "branch": s.Branch, "state": s.State, "since": s.Since, "updatedAt": s.UpdatedAt, "source": s.Source, "outside": true, "readOnly": true, "tmuxSession": s.TmuxSession, "viewable": s.Viewable, "viewReason": s.ViewReason}
+	row := map[string]any{"id": s.ID, "name": s.Name, "projectId": s.ProjectID, "hostId": s.HostID, "machine": s.Machine, "directory": s.Directory, "branch": s.Branch, "state": s.State, "since": s.Since, "updatedAt": s.UpdatedAt, "source": s.Source, "outside": true, "readOnly": true, "tmuxSession": s.TmuxSession, "viewable": s.Viewable, "viewReason": s.ViewReason}
+	if s.EndedAt != "" {
+		row["endedAt"] = s.EndedAt
+	}
+	return row
 }
 
 // outsideSnapshot lists every probed machine the way relay does: the console,
@@ -115,6 +127,7 @@ func outsideRow(s world.OutsideFixture) map[string]any {
 // stage one without a host.
 func (a *api) outsideSnapshot() map[string]any {
 	rows := []map[string]any{}
+	var ended []world.OutsideFixture
 	type machine struct {
 		hostID *string
 		name   string
@@ -146,7 +159,11 @@ func (a *api) outsideSnapshot() map[string]any {
 			if unsupported[key] {
 				continue
 			}
-			rows = append(rows, outsideRow(s))
+			if s.State == "ended" {
+				ended = append(ended, s)
+			} else {
+				rows = append(rows, outsideRow(s))
+			}
 			mc := byKey[key]
 			if mc == nil {
 				mc = &machine{hostID: s.HostID, name: s.Machine, status: "reachable"}
@@ -157,6 +174,19 @@ func (a *api) outsideSnapshot() map[string]any {
 			}
 		}
 	})
+	// Ended rows follow the live rows, newest endedAt first, ties by id.
+	sort.SliceStable(ended, func(i, j int) bool {
+		if ended[i].EndedAt != ended[j].EndedAt {
+			return ended[i].EndedAt > ended[j].EndedAt
+		}
+		return ended[i].ID < ended[j].ID
+	})
+	if len(ended) > outsideEndedMax {
+		ended = ended[:outsideEndedMax]
+	}
+	for _, s := range ended {
+		rows = append(rows, outsideRow(s))
+	}
 	machines := []map[string]any{}
 	list := make([]*machine, 0, len(byKey))
 	for _, mc := range byKey {

@@ -38,6 +38,8 @@ type Session struct {
 	TmuxSession *string `json:"tmuxSession"`
 	Viewable    bool    `json:"viewable"`
 	ViewReason  string  `json:"viewReason"`
+	// EndedAt is set on an ended row only: the transcript file's modification time.
+	EndedAt string `json:"endedAt,omitempty"`
 }
 type MachineStatus struct {
 	HostID      *string `json:"hostId"`
@@ -79,6 +81,10 @@ type Observation struct {
 type ProbeResult struct {
 	Observations []Observation
 	SawSpool     bool
+	// Held holds the Claude session ids a live process or relay-sessions
+	// holds: every observed id before project filtering, managed ids, and
+	// registry session ids whose pid is a live process.
+	Held map[string]bool
 }
 type Machine struct {
 	Key     string
@@ -91,10 +97,16 @@ type Machine struct {
 	// transcript, at most max of them. end < 0 means the file's size. A missing
 	// file answers an empty window.
 	ReadRange func(ctx context.Context, o Observation, end, max int64) (window []byte, start int64, err error)
+	// Ended lists transcripts modified at or after cutoff, at most
+	// EndedRowsMax, skipping held stems. A file that cannot be read is skipped,
+	// never an error.
+	Ended func(ctx context.Context, held map[string]bool, cutoff time.Time) ([]Observation, error)
 }
 type Options struct {
 	Clock    Clock
 	Machines func() []Machine
+	// EndedWindow is how long an ended session stays listed; nil or 0 lists none.
+	EndedWindow func() time.Duration
 }
 type realClock struct{}
 

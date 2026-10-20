@@ -322,6 +322,9 @@ type OutsideFixture struct {
 	ViewReason    string      `json:"view_reason"`
 	LatestTurn    OutsideTurn `json:"latest_turn"`
 	MachineStatus string      `json:"machine_status,omitempty"`
+	// EndedAt is the transcript file's modification time. It is set on an
+	// "ended" row and only there.
+	EndedAt string `json:"ended_at,omitempty"`
 	// Transcript is the conversation the transcript route pages, oldest first.
 	Transcript []OutsideTranscriptEntry `json:"transcript"`
 }

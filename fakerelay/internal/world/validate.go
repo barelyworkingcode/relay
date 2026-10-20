@@ -380,8 +380,11 @@ func ValidateOutside(rows []OutsideFixture) error {
 			return bad(path+".id", "must be a unique outside identity")
 		}
 		seen[o.ID] = true
-		if o.State != "running" && o.State != "asking" && o.State != "idle" {
+		if o.State != "running" && o.State != "asking" && o.State != "idle" && o.State != "ended" {
 			return bad(path+".state", "invalid state")
+		}
+		if (o.State == "ended") != (o.EndedAt != "") {
+			return bad(path+".ended_at", "must be set exactly when state is ended")
 		}
 		if o.Source != "probe" && o.Source != "hook" {
 			return bad(path+".source", "invalid source")

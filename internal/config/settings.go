@@ -37,6 +37,8 @@ type Settings struct {
 	// ChiefOfStaff is where eve's Chief of Staff runs. nil: relay has no setting,
 	// and eve uses its own data/settings.json.
 	ChiefOfStaff *ChiefOfStaffConfig `json:"chief_of_staff,omitempty"`
+	// OutsideSessions tunes the outside-session list. nil: every default.
+	OutsideSessions *OutsideSessionsConfig `json:"outside_sessions,omitempty"`
 	// AdminSecret is sealed (§4.1): it is a plaintext bearer the bridge
 	// accepts for a handful of admin ops, not a value relay only checks.
 	AdminSecret Secret `json:"admin_secret,omitempty"`

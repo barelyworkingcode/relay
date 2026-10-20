@@ -352,21 +352,33 @@ func TestOutsideTranscriptLargeFileServesTail(t *testing.T) {
 	}
 }
 
-// AC6: an unknown id and an ended session answer 404.
+// AC6: an unknown id, an ended session and its ended row answer 404.
 func TestOutsideTranscriptUnknownOrEndedIs404(t *testing.T) {
 	t.Parallel()
 	r := osStart(t, false)
 	otRefusal(t, r.transcriptGet("outside:unknown", ""), 404, "outside_session_not_found")
-	p, row := otSession(t, r, "ending", osPrompt("acme one"), osAnswer("acme done"))
+	// The transcript carries the identity fields an ended row is read from.
+	p := r.spawn(r.i.Home, t.TempDir(), "ending")
+	osPlantAt(t, otFile(p), osConversation(p.sid, p.dir, "acme-branch", r.i.Clock().Now, "acme one", "acme done"), r.i.Clock().Now)
+	row := r.probe().liveAt(p.dir)
+	if row == nil {
+		t.Fatalf("no row for %s", p.dir)
+	}
 	r.transcriptPage(row.ID, "") // the same id answers while the session lives
 	if err := syscall.Kill(p.pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("ending the process: %v", err)
 	}
 	<-p.exit
-	if r.probe().at(p.dir) != nil {
-		t.Fatalf("row for %s survived the probe after its process ended", p.dir)
+	s := r.probe()
+	if s.liveAt(p.dir) != nil {
+		t.Fatalf("live row for %s survived the probe after its process ended", p.dir)
 	}
 	otRefusal(t, r.transcriptGet(row.ID, ""), 404, "outside_session_not_found")
+	ended := s.endedAt(p.dir)
+	if ended == nil {
+		t.Fatalf("no ended row for %s; snapshot %+v", p.dir, s)
+	}
+	otRefusal(t, r.transcriptGet(ended.ID, ""), 404, "outside_session_not_found")
 }
 
 // AC7: the Chief of Staff scope and a read-class credential cannot reach the route.
