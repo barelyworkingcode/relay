@@ -32,6 +32,7 @@ const (
 	adoptIdleWait   = 60 * time.Second
 	adoptCLIWait    = 180 * time.Second
 	adoptDoorWait   = 60 * time.Second
+	adoptDownGap    = 1500 * time.Millisecond
 )
 
 var adoptJourneys = []journey{
@@ -303,13 +304,15 @@ func adoptPane(tmux, name string) string {
 }
 
 // answerAdoptTrust confirms Claude's folder-trust prompt. The prompt starts on
-// "No, exit". Deliberate: Down is sent once and Enter once, because the
-// terminal redraw lags the keys and a repeated Down can move the selection off
-// "Yes, I trust" or wrap it before Enter lands. After Enter the poll waits,
+// "No, exit". Deliberate: the terminal ignores keys sent before it accepts
+// input and its redraw lags them, so a Down is repeated only while ❯ still
+// shows on "No, exit" and adoptDownGap has passed since the last one, and
+// Enter is sent once, when ❯ is on "Yes, I trust". After Enter the poll waits,
 // until the conversation's transcript exists or the bound passes, so the bound
 // covers the redraw.
 func answerAdoptTrust(ctx context.Context, tmux, name, convID string) {
-	var down, entered bool
+	var lastDown time.Time
+	var entered bool
 	pollUntil(ctx, adoptTrustWait, func() bool {
 		if len(adoptTranscripts(convID)) > 0 {
 			return true
@@ -328,9 +331,12 @@ func answerAdoptTrust(ctx context.Context, tmux, name, convID string) {
 				return false
 			}
 		}
-		if !down {
-			_ = adoptTmuxCmd(ctx, tmux, name, "send-keys", "-t", name, "Down").Run()
-			down = true
+		for _, l := range strings.Split(text, "\n") {
+			if strings.Contains(l, "❯") && strings.Contains(l, "No, exit") && time.Since(lastDown) >= adoptDownGap {
+				_ = adoptTmuxCmd(ctx, tmux, name, "send-keys", "-t", name, "Down").Run()
+				lastDown = time.Now()
+				break
+			}
 		}
 		return false
 	})
