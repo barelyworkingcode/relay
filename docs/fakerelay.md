@@ -2251,11 +2251,20 @@ Shapes agreed with the e2e fakes:
 World `outside_sessions` is separate from managed `sessions`. Each row uses
 snake_case counterparts of the [outside session](outside-sessions.md) fields,
 plus `latest_turn:{text,at,complete}` and optional `machine_status`. IDs use
-`outside:`; states are `running`, `asking`, `idle`; sources are `probe`, `hook`.
+`outside:`; states are `running`, `asking`, `idle`, `ended`; sources are `probe`, `hook`.
 The product list/detail/scoped WebSocket contracts match Relay, including
 8192-character latest text and 500-character excerpts. Unreachable detail
 answers 502. Control-only `PUT /v1/outside-sessions` replaces fixture rows and
 emits a replacement snapshot. It is not a product mutation door.
+
+An `ended` row carries `ended_at` (RFC 3339 UTC, the transcript file's
+modification time), and only an `ended` row may; else the replace is refused as
+an invalid outside fixture. The row's wire form adds `endedAt`, and live rows
+stay unchanged. The snapshot lists the live rows in fixture order, then the
+ended rows newest `ended_at` first (ties by `id`), at most 50 across all
+machines. Detail serves an ended row like a live one. The transcript route
+answers 404 `outside_session_not_found` for it. fakerelay applies no window and
+no dedupe: the fixture states which rows are ended.
 
 Each row may carry `transcript`: `[{role,text,at}]`, oldest first, at most 5000
 entries, `role` `user`, `assistant` or `tool`, `text` at most 8192 characters;

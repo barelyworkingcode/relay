@@ -40,6 +40,7 @@ type osRow struct {
 	Source    string  `json:"source"`
 	Outside   bool    `json:"outside"`
 	ReadOnly  bool    `json:"readOnly"`
+	EndedAt   string  `json:"endedAt"`
 
 	TmuxSession *string `json:"tmuxSession"`
 	Viewable    bool    `json:"viewable"`
@@ -478,10 +479,11 @@ func TestOutsideHooklessChangeAtNextProbe(t *testing.T) {
 	}
 }
 
-// AC6: an ended session leaves the list.
+// AC6: an ended session leaves the list. The window is off, so only the live
+// probe decides.
 func TestOutsideEndedSessionLeavesList(t *testing.T) {
 	t.Parallel()
-	r := osStart(t, false)
+	r := osStart(t, false, osEndedWindow(0))
 	p := r.spawn(r.i.Home, t.TempDir(), "ending")
 	p.transcript(t, osPrompt("acme one"), osAnswer("acme done"))
 	if r.probe().at(p.dir) == nil {
@@ -727,3 +729,99 @@ func TestOutsideReportSpoolIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// osEndedWindow sets outside_sessions.ended_window_days at boot.
+func osEndedWindow(days int) func(*harness.Options) {
+	return func(o *harness.Options) {
+		if o.Settings == nil {
+			o.Settings = map[string]json.RawMessage{}
+		}
+		o.Settings["outside_sessions"] = json.RawMessage(fmt.Sprintf(`{"ended_window_days":%d}`, days))
+	}
+}
+
+// osRec is one transcript record with the identity fields Claude Code writes.
+func osRec(kind string, message map[string]any, sid, cwd, branch string, at time.Time) string {
+	b, _ := json.Marshal(map[string]any{"type": kind, "timestamp": at.UTC().Format(time.RFC3339Nano), "sessionId": sid, "cwd": cwd, "gitBranch": branch, "message": message})
+	return string(b)
+}
+
+// osConversation is a prompt and an answer, one minute apart and ending at end.
+func osConversation(sid, cwd, branch string, end time.Time, prompt, answer string) []string {
+	return []string{
+		osRec("user", map[string]any{"role": "user", "content": prompt}, sid, cwd, branch, end.Add(-2*time.Minute)),
+		osRec("assistant", map[string]any{"role": "assistant", "stop_reason": "end_turn", "content": []any{map[string]any{"type": "text", "text": answer}}}, sid, cwd, branch, end.Add(-time.Minute)),
+	}
+}
+
+// osTranscriptPath is where Claude Code keeps session sid of folder cwd under home.
+func osTranscriptPath(home, cwd, sid string) string {
+	return filepath.Join(home, ".claude", "projects", regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(cwd, "-"), sid+".jsonl")
+}
+
+// osDir creates the folder root/name and returns its resolved path.
+func osDir(t *testing.T, root, name string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("creating %s: %v", dir, err)
+	}
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("resolving %s: %v", dir, err)
+	}
+	return dir
+}
+
+// osPlantAt writes lines to path and sets its modification time.
+func osPlantAt(t *testing.T, path string, lines []string, mtime time.Time) {
+	t.Helper()
+	osWrite(t, path, []byte(strings.Join(lines, "\n")+"\n"))
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatalf("setting the time of %s: %v", path, err)
+	}
+}
+
+// ended writes a transcript for session sid of folder cwd under home whose file
+// was last modified age before the instance clock. It returns the file path
+// and the modification time.
+func (r *osRig) ended(home, cwd, sid string, age time.Duration, answer string) (string, time.Time) {
+	r.t.Helper()
+	mtime := r.i.Clock().Now.Add(-age).Truncate(time.Second)
+	path := osTranscriptPath(home, cwd, sid)
+	osPlantAt(r.t, path, osConversation(sid, cwd, "acme-branch", mtime, "acme prompt "+sid, answer), mtime)
+	return path, mtime
+}
+
+// endedRows are the ended rows of the snapshot, in list order.
+func (s osSnap) endedRows() []osRow {
+	var out []osRow
+	for _, row := range s.Sessions {
+		if row.State == "ended" {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// endedAt returns the ended row for dir, or nil.
+func (s osSnap) endedAt(dir string) *osRow {
+	for k := range s.Sessions {
+		if s.Sessions[k].Directory == dir && s.Sessions[k].State == "ended" {
+			return &s.Sessions[k]
+		}
+	}
+	return nil
+}
+
+// liveAt returns the row for dir whose state is not ended, or nil.
+func (s osSnap) liveAt(dir string) *osRow {
+	for k := range s.Sessions {
+		if s.Sessions[k].Directory == dir && s.Sessions[k].State != "ended" {
+			return &s.Sessions[k]
+		}
+	}
+	return nil
+}
+
+func scopeHeader() harness.ReqOpts { return harness.ReqOpts{Header: g1tScope} }

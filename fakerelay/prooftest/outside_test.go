@@ -142,3 +142,64 @@ func TestOutsideFixtureTranscriptPages(t *testing.T) {
 		}
 	}
 }
+
+func outsideEnded(id, endedAt string) J {
+	r := outsideFixture("last words")
+	r["id"] = id
+	r["directory"] = "/work/" + strings.TrimPrefix(id, "outside:")
+	r["state"] = "ended"
+	r["ended_at"] = endedAt
+	return r
+}
+
+// Regression: ended fixture rows lose endedAt, leak onto live rows, ignore the order or the cap of 50,
+// or open the live-only transcript route.
+func TestOutsideFixtureEndedRows(t *testing.T) {
+	liveB, liveA := outsideFixture(""), outsideFixture("")
+	liveB["id"], liveB["directory"] = "outside:live-b", "/work/live-b"
+	liveA["id"], liveA["directory"] = "outside:live-a", "/work/live-a"
+	rows := []J{outsideEnded("outside:old", "2026-01-01T01:00:00Z"), liveB, outsideEnded("outside:new", "2026-01-01T03:00:00Z"), liveA}
+	in := outsideFake(t, rows, nil)
+	c := in.ws(t, "/ws/outside-sessions", opsTok, "X-Relay-Scope", "chief-of-staff")
+	s := until(t, c, isType("outside_sessions"))[0]
+	var ids []string
+	for _, v := range s["sessions"].([]any) {
+		row := v.(map[string]any)
+		ids = append(ids, row["id"].(string))
+		_, has := row["endedAt"]
+		if (row["state"] == "ended") != has {
+			t.Fatalf("row %v: state %v with endedAt present %v, want endedAt on ended rows only", row["id"], row["state"], has)
+		}
+		if has {
+			eq[any](t, row["readOnly"], true, "ended row readOnly")
+			eq[any](t, row["outside"], true, "ended row outside")
+		}
+	}
+	eq[any](t, strings.Join(ids, ","), "outside:live-b,outside:live-a,outside:new,outside:old", "live rows in fixture order, then ended newest first")
+	first := s["sessions"].([]any)[2].(map[string]any)
+	eq[any](t, first["endedAt"], "2026-01-01T03:00:00Z", "endedAt")
+
+	d := outsideScoped(in, t, "GET", outsideAPI+"/outside:new", nil).is(t, 200).obj(t)
+	eq[any](t, d["session"].(map[string]any)["state"], "ended", "detail state")
+	eq[any](t, d["lastTurn"].(map[string]any)["text"], "last words", "detail last turn")
+	eq[any](t, in.api(t, "GET", "/api/outside-sessions/outside:new/transcript", nil).is(t, 404).obj(t)["error"], "outside_session_not_found", "ended transcript route")
+
+	var many []J
+	for k := 0; k < 52; k++ {
+		many = append(many, outsideEnded(fmt.Sprintf("outside:e%02d", k), fmt.Sprintf("2026-01-01T%02d:%02d:00Z", k/60, k%60)))
+	}
+	before := s["revision"].(float64)
+	in.ctl(t, "PUT", "/v1/outside-sessions", many).is(t, 200)
+	frames := until(t, c, func(f J) bool { return f["type"] == "outside_sessions" && f["revision"].(float64) > before })
+	list := frames[len(frames)-1]["sessions"].([]any)
+	eq[any](t, len(list), 50, "ended cap")
+	eq[any](t, list[0].(map[string]any)["id"], "outside:e51", "newest ended first")
+	eq[any](t, list[49].(map[string]any)["id"], "outside:e02", "oldest kept")
+
+	bad := outsideFixture("")
+	bad["ended_at"] = "2026-01-01T00:00:00Z"
+	in.ctl(t, "PUT", "/v1/outside-sessions", []J{bad}).is(t, 400)
+	noStamp := outsideEnded("outside:nostamp", "")
+	delete(noStamp, "ended_at")
+	in.ctl(t, "PUT", "/v1/outside-sessions", []J{noStamp}).is(t, 400)
+}
