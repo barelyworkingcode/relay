@@ -888,10 +888,34 @@ answers.
   the cause in `error`: `already_processing`, `resume_required`, `dropped_in`,
   `send_failed` or `session_host_unavailable`.
 - A message the person types is not a `session_message` row.
+- The `relay-recovery` origin marks the one message relay sends after an
+  adopt that interrupted a turn (`POST /api/sessions/adopt`).
 
 ```
 relay audit --event session_message                # every Chief of Staff send; DETAIL reads session=<id> origin=chief-of-staff <phase>
 ```
+
+### Session adopt
+
+`POST /api/sessions/adopt` writes, in order, durable `intent` rows before any
+signal and `completion` rows after (each pair shares an `id`; actor is the
+caller, as for drop-in):
+
+- `session_adopt` intent: `args` `outside_id`, `claude_session_id`,
+  `project_id`, `directory`, `interrupt`, `model`; `outcome: pending`.
+- `session_interrupt` intent (a busy session only): `outside_id`,
+  `claude_session_id`, `project_id`. Its completion adds `signals` (`signal`
+  `INT`, `at`) and `exited`.
+- `session_message` intent with origin `relay-recovery` (after a takeover that
+  sent SIGINT), written before delivery like every marked send.
+- `session_adopt` completion: the intent's args plus `session_id`,
+  `interrupted`, `signals` (`INT`, `TERM`, `KILL` with `at` on relay's clock)
+  and `recovery_sent`. `outcome` is `ok` or `error`, with the refusal code in
+  `error`.
+
+The resumed launch writes its ordinary `session_launch` row. With auditing off,
+or when an intent row cannot be written, the door answers 503
+`audit_unavailable` and signals nothing.
 
 ### Chief of Staff starts
 

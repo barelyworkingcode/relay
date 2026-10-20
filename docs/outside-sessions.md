@@ -24,8 +24,11 @@ Rows contain `id`, `name`, nullable `projectId` and `hostId`, `machine`,
 `directory`, `branch`, `state`, `since`, `updatedAt`, `source`, `outside:true`,
 `readOnly:true`, nullable `tmuxSession`, `viewable` and `viewReason`.
 States are `running`, `asking`, `idle` and `ended`; sources are `probe` and `hook`.
-An `ended` row also carries `endedAt` and `claudeSessionId` (see
-[Ended sessions](#ended-sessions)); live rows never carry either field.
+Every row also carries `claudeSessionId` (the registry `sessionId` of a live
+row, or the transcript's id when the process has no registry entry; an ended
+row's transcript stem), `adoptable` and, when not adoptable, `adoptReason` (see
+[Adopting a session](#adopting-a-session)). An `ended` row also carries
+`endedAt` (see [Ended sessions](#ended-sessions)).
 `viewable` is true when a tmux pane's process ancestry ties the Claude process
 to a tmux session and the machine is the console or a host with
 `show_all_tmux_sessions` on. Otherwise `viewReason` is `not_in_tmux` (no pane
@@ -131,9 +134,9 @@ scan time. `name` is `Claude — <folder name>`.
 
 `claudeSessionId` is the transcript file's stem, the Claude conversation id. It
 matches `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, so it never starts with `-`; relay
-does not require a UUID. List, detail and the WebSocket snapshot all carry it on
-an ended row, and a live row has no such key. It opens no route: the scope has
-no terminal start and no resume.
+does not require a UUID. List, detail and the WebSocket snapshot all carry it,
+on live rows too. It opens no route in the scope: the scope has no terminal
+start and no resume.
 
 - **Window.** 3 days. `settings.json` `outside_sessions.ended_window_days`
   sets it: 0 to 30 whole days, and 0 turns ended rows off. Any other number
@@ -174,6 +177,55 @@ no terminal start and no resume.
 
 Transcript text stays untrusted display data. The transcript page route does not
 serve ended ids.
+
+## Adopting a session
+
+`POST /api/sessions/adopt` (class `execute`, socket only, absent from the
+`chief-of-staff` scope) is the one door that acts on an outside session. It
+ends the process of an interactive Claude the owner started in a terminal on
+this Mac and resumes the same conversation as an ordinary headless relay
+session, in the same folder, in the registered local project that holds it.
+Sessions on SSH hosts are not adopted.
+
+- **Eligibility** is static and shown on the row: `adoptable`, else
+  `adoptReason`, the first that applies of `ended`, `host_unsupported`,
+  `no_project`, `not_registered` (no registry entry), `invalid_id` (the
+  `sessionId` is not a UUID), `start_mismatch`, `not_interactive`,
+  `not_command_line`, `ambiguous` (two live entries hold one `sessionId`).
+  Relay reads `~/.claude/sessions/<pid>.json` in Go: at most 512 regular files
+  of at most 64 KiB, no symlink on the file or its two parent folders. A
+  candidate needs a live pid whose kernel start time, to the second, equals the
+  entry's `procStart` (UTC), `kind` `interactive` and `entrypoint` `cli`. The
+  registry never names a path; the transcript path is derived. Raw pids, start
+  times, `kind` and `entrypoint` never leave relay.
+- **Idle check**, at request time: the entry's `status` is `idle`; its
+  `statusUpdatedAt` is at most 2 s older than the newest transcript record;
+  the 256 KiB transcript tail holds no `tool_use` without a `tool_result`; and
+  the Claude process has no child that started at or after the first prompt of
+  this run (an idle Claude keeps its MCP servers from its start). A busy
+  session is refused with `busy` unless the body sets `interrupt`.
+- **The ladder.** Interrupt sends SIGINT and waits for exit, at most 5 s.
+  Takeover then sends SIGTERM if the process lives, waits 5 s, sends SIGKILL,
+  waits 5 s, else answers `stop_failed`. Each wait runs on the injected clock
+  and is armed before its signal. Before each signal relay re-reads the pid's
+  start time; a mismatch sends nothing and answers `changed`. SIGINT on an
+  interactive Claude is undocumented, so the ladder does not depend on it.
+- **Order.** Audit ready, row, fresh registry match, project, managed list,
+  idle check, model, `AuthorizeLaunch`, the `session_adopt` intent row (and the
+  `session_interrupt` intent for a busy session), the signals, the launch, the
+  recovery message, the completion row. Every refusal up to the intent leaves
+  the process untouched; with auditing off nothing is signalled.
+- **The resumed session** runs `settings {"headless":true,"agent":true}` under
+  the project's sandbox, allowed models and permission policy, with
+  `--resume <claudeSessionId>`. The model is the body's `model`, else the
+  family alias (`haiku`, `sonnet`, `opus`) of the newest assistant record; none
+  answers `model_unknown`.
+- **Recovery message.** After a takeover that sent SIGINT, relay sends one
+  message with origin `relay-recovery`, quoting at most 300 characters of the
+  last prompt and 500 of the open tool call's input, and asks the agent to
+  check whether the call took effect.
+- **Selectors.** `outsideId` is the row's id. `claudeSessionId` is the power
+  path; with no live console row for it relay runs one console probe first.
 
 ## Optional hooks
 

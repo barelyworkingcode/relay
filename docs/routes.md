@@ -454,6 +454,31 @@ conversation.
 - **Event:** `session.drop_in`. **Audit row:** `session_launch`.
 - **CLI equivalent:** `relay drop-in` (needs an interactive terminal).
 
+### POST /api/sessions/adopt
+
+Ends an idle (or, with `interrupt`, a busy) Claude session the owner started
+in a terminal on this Mac, and resumes the same conversation as a headless
+relay session in the same folder. See [Adopting a session](outside-sessions.md#adopting-a-session).
+
+- **Listeners:** socket. **Credential:** `execute`. **Gate:** none. Inside the
+  `chief-of-staff` scope it answers `403`.
+- **Request:** body of at most 4 KiB, unknown fields refused: exactly one of
+  `outsideId` (`outside:<32 hex>`) and `claudeSessionId` (a UUID), plus
+  optional `interrupt` (default false) and `model`.
+- **Response `201`:** `sessionId`, `claudeSessionId`, `interrupted`,
+  `recoverySent`.
+- **Errors:** `{"error": "<code>", "message": "<text>"}`. `400` `invalid_body`;
+  `413` `body_too_large`; `404` `outside_session_not_found`; `409` a reason
+  code (`ended`, `host_unsupported`, `no_project`, `not_registered`,
+  `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line`,
+  `ambiguous`), `managed`, `busy`, `model_unknown`, `adopt_in_progress` or
+  `changed`; `403`/`400` the launch refusal's own code (nothing is signalled);
+  `502` `unavailable`, `stop_failed` or `launch_failed`; `503`
+  `audit_unavailable` (nothing is signalled).
+- **Event:** `session.adopt`. **Audit rows:** `session_adopt`,
+  `session_interrupt`, `session_message` (origin `relay-recovery`), and the
+  launch's own `session_launch`.
+
 ### GET /api/sessions
 
 - **Listeners:** socket. **Credential:** `proxy`. **Gate:** none.
