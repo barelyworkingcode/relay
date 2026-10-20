@@ -67,3 +67,17 @@ promoted to an issue the day it does.
 - **Sandbox Claude trust seed: a launch that fails after the seed.** The seed
   is written before the spawn, so a launch that then fails uses the folder's
   one seed.
+- **Adopt: a recycled pid between the exit watch and the signal.** The ladder
+  arms its exit watch, then signals. If the Claude process exits and the kernel
+  hands its pid to another process in that gap, the signal could reach the new
+  one. The pid's start time is re-read before each signal and the watch checks
+  it again at registration; the window is microseconds.
+- **Adopt: a session adopted before its first prompt.** Such a session has no
+  transcript file. The door answers 201 and the resume finds nothing to
+  continue, so the resumed session starts empty. Nothing is lost.
+- **Adopt: a sandboxed agent that can write Claude's session registry.** An
+  agent with write access to `~/.claude/sessions` could rewrite `sessionId`,
+  `kind` or `entrypoint` in an entry. The checks still bound the effect to a
+  real, live outside Claude process whose kernel start time matches the entry,
+  in a registered project folder, so the worst case is adopting a session the
+  owner could already adopt.
