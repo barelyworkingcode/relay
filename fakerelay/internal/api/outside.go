@@ -89,7 +89,14 @@ func (a *api) outsideTranscript(w http.ResponseWriter, r *http.Request) {
 	entries := []map[string]any{}
 	for k := first; k < end; k++ {
 		t := found.Transcript[k]
-		entries = append(entries, map[string]any{"id": "e" + strconv.Itoa(k), "role": t.Role, "text": t.Text, "at": t.At})
+		entry := map[string]any{"id": "e" + strconv.Itoa(k), "role": t.Role, "text": t.Text, "at": t.At}
+		if t.Kind != "" {
+			entry["kind"] = t.Kind
+		}
+		if t.Name != nil {
+			entry["name"] = *t.Name
+		}
+		entries = append(entries, entry)
 	}
 	var cursor any
 	if first > 0 {

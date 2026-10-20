@@ -399,6 +399,22 @@ func ValidateOutside(rows []OutsideFixture) error {
 			if utf8.RuneCountInString(t.Text) > 8192 {
 				return bad(fmt.Sprintf("%s.transcript[%d].text", path, j), "at most 8192 characters")
 			}
+			tpath := fmt.Sprintf("%s.transcript[%d]", path, j)
+			if t.Kind != "" && t.Kind != "call" && t.Kind != "result" {
+				return bad(tpath+".kind", "must be call or result")
+			}
+			if t.Kind != "" && t.Role != "tool" {
+				return bad(tpath+".kind", "requires role tool")
+			}
+			if t.Kind == "call" && t.Name == nil {
+				return bad(tpath+".name", "a call requires name")
+			}
+			if t.Name != nil && t.Kind != "call" {
+				return bad(tpath+".name", "requires kind call")
+			}
+			if t.Name != nil && utf8.RuneCountInString(*t.Name) > 8192 {
+				return bad(tpath+".name", "at most 8192 characters")
+			}
 		}
 	}
 	return nil

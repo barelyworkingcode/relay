@@ -331,6 +331,10 @@ type OutsideTranscriptEntry struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
 	At   string `json:"at"`
+	// Kind and Name mirror relay's tool entry tags. Name is a pointer so a call
+	// with an empty name still carries the key.
+	Kind string  `json:"kind,omitempty"`
+	Name *string `json:"name,omitempty"`
 }
 type OutsideTurn struct {
 	Text     string `json:"text"`
