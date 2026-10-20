@@ -155,6 +155,12 @@ func setUpDetachedFixture(ctx context.Context, e env) (*detachedFixture, error) 
 	host := map[string]any{
 		"id": fx.hostID, "name": dropInHostPrefix + e.Nonce + "-detach", "target": dropInHostTarget,
 		"tmux_path": "/usr/bin/tmux", "created_at": now,
+		// A hosted project launches the host's own templates; the probe
+		// seeds them on a host added through the API, and this host is not.
+		"terminal_templates": []map[string]string{
+			{"id": "shell", "name": "Shell"},
+			{"id": "claude-code", "name": "Claude Code", "command": claude},
+		},
 	}
 	project := map[string]any{
 		"id": fx.projectID, "name": dropInProjectName + e.Nonce + " detach", "path": fx.projectDir, "host_id": fx.hostID,
