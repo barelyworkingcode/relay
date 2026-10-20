@@ -2266,9 +2266,13 @@ machines. Detail serves an ended row like a live one. The transcript route
 answers 404 `outside_session_not_found` for it. fakerelay applies no window and
 no dedupe: the fixture states which rows are ended.
 
-Each row may carry `transcript`: `[{role,text,at}]`, oldest first, at most 5000
-entries, `role` `user`, `assistant` or `tool`, `text` at most 8192 characters;
-else the replace is refused as an invalid outside fixture. It serves
+Each row may carry `transcript`: `[{role,text,at,kind?,name?}]`, oldest first,
+at most 5000 entries, `role` `user`, `assistant` or `tool`, `text` at most 8192
+characters. `kind` is `call` or `result` and needs `role` `tool`; `kind` `call`
+requires `name` (it may be `""`); `name` needs `kind` `call` and is at most 8192
+characters; else the replace is refused as an invalid outside fixture. A `tool`
+entry without `kind` is valid and is served without `kind`, as an older relay
+answers it. It serves
 `GET /api/outside-sessions/{id}/transcript` (class `execute`) with relay's
 checks, codes and 200 shape, paged by entry: the newest `limit` entries, `id`
 `e<index>`, `cursor` the decimal index of the oldest returned entry and `null`
