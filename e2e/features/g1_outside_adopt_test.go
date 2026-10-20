@@ -416,15 +416,18 @@ func adSessions(t *testing.T, i *harness.Instance) []adSession {
 	return out.Sessions
 }
 
-// adStartLine returns the argv of the fake agent's first start line.
-func adStartLine(t *testing.T, i *harness.Instance) []string {
+// adStartLine sends one turn to the adopted session sid and returns the argv
+// of its start line. The agent writes the start line before the first reply,
+// so the reply is the ready signal.
+func adStartLine(t *testing.T, i *harness.Instance, sid, text string) []string {
 	t.Helper()
+	g1sSendText(t, i, sid, text, "echo: "+text)
 	for _, c := range i.FakeAgentCalls("claude") {
-		if c.Event == "start" {
+		if c.Event == "start" && c.Env["RELAY_SESSION_ID"] == sid {
 			return c.Argv
 		}
 	}
-	t.Fatalf("the fake agent logged no start line")
+	t.Fatalf("no claude start line carries RELAY_SESSION_ID %s", sid)
 	return nil
 }
 
@@ -593,11 +596,10 @@ func TestAdoptIdleResumesSameConversation(t *testing.T) {
 	if sess.Name != name {
 		t.Fatalf("session name %q, want the row's name %q", sess.Name, name)
 	}
-	argv := adStartLine(t, a.i)
+	argv := adStartLine(t, a.i, res.SessionID, "acme next")
 	if !adHasFlag(argv, "--resume", f.sid) || !adHasFlag(argv, "--model", "sonnet") {
 		t.Fatalf("start line argv = %v, want --resume %s and --model sonnet", argv, f.sid)
 	}
-	g1sSendText(t, a.i, res.SessionID, "acme next", "echo: acme next")
 	if in := adInputs(a.i); len(in) != 1 || in[0].Text != "acme next" {
 		t.Fatalf("the agent's inputs = %+v, want only the owner's message: an idle adopt sends none", in)
 	}
@@ -620,7 +622,7 @@ func TestAdoptByClaudeSessionID(t *testing.T) {
 		f.idle(a.i.Home, adModelSn)
 		res := adCreated(t, a.adopt(map[string]any{"claudeSessionId": f.sid, "interrupt": false, "model": "haiku"}))
 		f.gone()
-		argv := adStartLine(t, a.i)
+		argv := adStartLine(t, a.i, res.SessionID, "hi")
 		if res.ClaudeSessionID != f.sid || !adHasFlag(argv, "--resume", f.sid) || !adHasFlag(argv, "--model", "haiku") {
 			t.Fatalf("result %+v, argv %v, want --resume %s and --model haiku", res, argv, f.sid)
 		}
@@ -629,9 +631,9 @@ func TestAdoptByClaudeSessionID(t *testing.T) {
 		a := adStart(t)
 		f := a.fake("app")
 		f.idle(a.i.Home, adModelSn)
-		adCreated(t, a.adopt(map[string]any{"claudeSessionId": f.sid, "interrupt": false}))
+		res := adCreated(t, a.adopt(map[string]any{"claudeSessionId": f.sid, "interrupt": false}))
 		f.gone()
-		if argv := adStartLine(t, a.i); !adHasFlag(argv, "--model", "sonnet") {
+		if argv := adStartLine(t, a.i, res.SessionID, "hi"); !adHasFlag(argv, "--model", "sonnet") {
 			t.Fatalf("argv = %v, want --model sonnet from a claude-sonnet transcript", argv)
 		}
 	})
