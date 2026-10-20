@@ -104,6 +104,11 @@ const (
 	// Staff) sent into a session through relay: an intent row before
 	// delivery and a completion row after, sharing one id.
 	AuditEventSessionMessage = "session_message"
+
+	// SessionSwap records a change of driver: a headless session taken over
+	// by a drop-in terminal, or handed back and resumed. An intent row before
+	// the act and a completion row after, sharing one id.
+	AuditEventSessionSwap = "session_swap"
 )
 
 // Denied means a known credential was refused a tool it may not use;

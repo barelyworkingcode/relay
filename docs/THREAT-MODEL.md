@@ -56,8 +56,8 @@ outside it is not a relay bug, however real.
    template of that project, in a registered project, local or on an SSH host, in
    the project root or a folder inside it (symlinks resolved for a local
    project; a hosted project's folder is checked as text, as for any hosted
-   launch). A remote (mTLS) project is refused, and so is a terminal start on
-   a host. It goes through `AuthorizeLaunch`, so
+   launch). A remote (mTLS) project is refused. The scope starts no terminal: a
+   `mode: terminal` request runs the same headless start. It goes through `AuthorizeLaunch`, so
    the project's policy, allowed models and templates and the sandbox apply.
    A headless agent runs `bypassPermissions` as every headless agent does, so
    its reach is what its sandbox and project grant allow. On an SSH host it

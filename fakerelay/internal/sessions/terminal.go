@@ -321,19 +321,29 @@ func (s *svc) exitTerminal(t *terminal, code int) {
 	s.releaseHold(t)
 }
 
-// releaseHold hands a held session back when its drop-in terminal ends. The
-// session stays dormant; only its state returns to idle.
+// releaseHold hands a held session back when its drop-in terminal ends and
+// resumes it, as relay does: the session is live and idle again with no
+// message needed.
 func (s *svc) releaseHold(t *terminal) {
 	s.mu.Lock()
 	sid := t.dropIn
 	t.dropIn = ""
 	x := s.sessions[sid]
+	hostName := "console"
 	if x != nil {
 		x.held = false
+		x.live, x.exit = true, nil
+		if x.host != nil {
+			if n, _ := x.host["name"].(string); n != "" {
+				hostName = n
+			}
+		}
 	}
 	s.mu.Unlock()
 	if x != nil {
 		s.setState(x, "idle")
+		s.Events.Begin(context.Background(), "session.hand_back").
+			Set("session_id", sid).Set("terminal_id", t.id).Set("host", hostName).End("ok", "", nil)
 	}
 }
 

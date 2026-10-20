@@ -58,6 +58,8 @@ func (r *appRouter) SessionExited(ctx context.Context, req bridge.SessionExitedR
 		}
 	}
 
+	r.sessionDeps.startHandBack(req.SessionID)
+
 	r.recordSessionExited(req)
 	return nil
 }

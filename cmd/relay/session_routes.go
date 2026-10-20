@@ -182,6 +182,7 @@ type sessionRouteDeps struct {
 	auditor     *audit.AuditRecorder
 	accounting  *sessionAccounting
 	resumeGuard *resumeGuard
+	swaps       *swapTable
 
 	// systemModel reports whether a model id is reserved for system use; nil
 	// means no check.

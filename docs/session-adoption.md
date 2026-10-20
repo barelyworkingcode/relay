@@ -112,8 +112,19 @@ Terminal to headless is the reverse. The UI exits, the hold clears, the runner
 starts, and the agent resumes from the transcript. This is what hand-back does
 today, except the resume happens at once and not at the next message.
 
+What relay does today, before the pane: the swap uses the drop-in terminal, a
+pty that runs `claude --resume <conversation id>`, local and on a host. Closing
+it hands the session back and relay resumes it at once, on the drop-in
+caller's behalf, through the ordinary resume. Each direction writes a
+`session_swap` intent row before it acts; with auditing off the swap is
+refused and nothing resumes. Relay never swaps on its own after a start: the
+owner's Drop in, or Take over after this turn, is the act. A relay restart
+while a terminal holds a session drops the link, and the session needs a
+Resume as before.
+
 A session starts headless with a known conversation id. The Chief of Staff has
-one start path. "Start in a terminal" becomes "start, then swap".
+one start path. "Start in a terminal" becomes "start, then swap": a start with
+`mode: terminal` runs the headless start and the answer says `headless`.
 
 ## Reading a session
 
