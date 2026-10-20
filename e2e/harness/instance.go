@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -550,6 +552,7 @@ func (i *Instance) cleanup() {
 	i.Stop()
 	i.scanRaces()
 	i.stopFakes()
+	i.reapRunners()
 	for _, p := range killUnder(i.Dir) {
 		i.t.Errorf("process still running under %s after cleanup: %s", i.Dir, p)
 	}
@@ -559,4 +562,77 @@ func (i *Instance) cleanup() {
 		return
 	}
 	_ = os.RemoveAll(i.Dir)
+}
+
+// reapRunners ends every local-session runner tree the instance left behind.
+// A runner is its own session leader and outlives relay by design, so its
+// session (sid == runner pid) holds the agent tree. A pid whose start time
+// differs from runner.json is a reused pid and is never signalled. Failures
+// are logged, never test failures.
+func (i *Instance) reapRunners() {
+	files, _ := filepath.Glob(filepath.Join(i.ConfigDir, "sessions", "runners", "*", "*", "runner.json"))
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var rec struct {
+			Pid     int    `json:"pid"`
+			Started string `json:"started"`
+		}
+		if json.Unmarshal(data, &rec) != nil || rec.Pid <= 1 || rec.Started == "" {
+			continue
+		}
+		out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(rec.Pid)).Output()
+		if err != nil || strings.Join(strings.Fields(string(out)), " ") != strings.Join(strings.Fields(rec.Started), " ") {
+			continue
+		}
+		if sid, err := syscall.Getsid(rec.Pid); err != nil || sid != rec.Pid {
+			continue
+		}
+		i.killSession(rec.Pid, syscall.SIGTERM, 5*time.Second)
+		if len(sessionMembers(rec.Pid)) > 0 {
+			i.killSession(rec.Pid, syscall.SIGKILL, 10*time.Second)
+		}
+		if left := sessionMembers(rec.Pid); len(left) > 0 {
+			i.t.Logf("runner session %d still has processes %v after cleanup", rec.Pid, left)
+		}
+	}
+}
+
+// sessionMembers lists the live pids whose session id is sid. macOS ps has no
+// usable session column and pgrep has no -s, so it asks getsid(2) of each pid.
+func sessionMembers(sid int) []int {
+	out, err := exec.Command("ps", "-A", "-o", "pid=").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, f := range strings.Fields(string(out)) {
+		pid, err := strconv.Atoi(f)
+		if err != nil {
+			continue
+		}
+		if got, err := syscall.Getsid(pid); err == nil && got == sid {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+func (i *Instance) killSession(sid int, sig syscall.Signal, wait time.Duration) {
+	deadline := time.Now().Add(wait)
+	for {
+		members := sessionMembers(sid)
+		if len(members) == 0 {
+			return
+		}
+		for _, pid := range members {
+			_ = syscall.Kill(pid, sig)
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
