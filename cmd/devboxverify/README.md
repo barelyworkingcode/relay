@@ -774,20 +774,27 @@ whatever the outcome.
   budget. Codex signs in with its own login, so a missing `codex` binary or
   login shows as a launch failure or a missing model row.
 
-**session-drop-in** (screen). A headless agent session in Acme Corp (model
+**session-drop-in** (screen). A headless agent session in a scratch local project
+`Drop-in Local <nonce>` on a new folder (model
 `haiku`, settings `{"headless":true,"agent":true}`) runs one turn, "Reply with
 exactly: verify-<nonce>-done", and is taken over through the CLI's door:
 `DropInAttach` on `relay.sock`. PASS when a `running` frame and the
 agent's `process_exited` frame follow the answer, the list row has `live` false,
-the marker appears in the resumed terminal's output (a folder-trust prompt is
-answered with Enter), `/exit` ends the terminal (no exit frame in 15 s: the
+the marker appears in the resumed terminal's output, the terminal never shows
+Claude's folder-trust prompt (FAIL if it does; a prompt that appears is still
+answered, and every key sent is listed in the detail as `trust answers:`), `/exit` ends the terminal (no exit frame in 15 s: the
 connection is closed instead, and the detail says so), an `idle` frame follows,
 `<configdir>/logs/relay.log` has exactly one `op=session.drop_in` line with
 `status` ok and `host` console, the audit has a `session_end` row for the agent
 with reason `closed` and a `session_launch` row for the terminal. The session
-and terminal are deleted whatever the outcome. BLOCKED when `system/init` does
-not report `claude-haiku-5-5`. The HTTP door on a host is
-session-drop-in-host.
+and terminal are deleted whatever the outcome, with the scratch project and its folder. BLOCKED
+when `system/init` does not report `claude-haiku-5-5` or the scratch project
+cannot be set up.
+- Traps: the folder is new each run because Claude's trust check walks parents,
+  so a folder under one the sandbox Claude folder already trusts (Acme Corp's)
+  never shows the prompt. The seed trusts no home folder or parent of the
+  scratch folder. The project folder is `grant-dropin-local-<nonce>` under the
+  state folder. The HTTP door on a host is session-drop-in-host.
 - Lives in: `cmd/relay/session_dropin.go`, `internal/bridge/dropin.go`,
   `internal/sessions/session/dropin.go`, `internal/sessions/hostapi`.
 - Reached by: `POST /api/sessions` with P4, the message route with the run
@@ -801,7 +808,8 @@ end `idle`. `POST /api/sessions/{id}/drop-in` answers 201 with a
 frame follows and its list row has `live` false; within 20 s the host's process
 table (`ssh -o BatchMode=yes localhost ps`) holds a `claude` command with
 `--resume <that uuid>`, and the first turn's marker shows in the terminal
-within 60 s, a folder-trust prompt answered Yes. `/exit` is sent to the terminal; with no `terminal_exit`
+within 60 s, a folder-trust prompt answered Yes (expected on this unsandboxed
+launch; the keys sent are listed in the detail as `trust answers:`). `/exit` is sent to the terminal; with no `terminal_exit`
 in 15 s the terminal is deleted instead. An `idle` frame follows, and the log
 has exactly one `op=session.drop_in` line with `status` ok, `host`
 `loopback-<nonce>` and the terminal's id. The session, terminal, project and

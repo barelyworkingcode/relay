@@ -34,6 +34,7 @@ const (
 	dropInHostPrefix       = "loopback-"
 	dropInHostTarget       = "localhost"
 	dropInProjectName      = "Drop-in Host "
+	dropInLocalName        = "Drop-in Local "
 	dropInStateDirName     = "grant-dropin-" // matched by verify-fixtures-removed's grant-* sweep
 	dropInMarkerWait       = 60 * time.Second
 	dropInToolWait         = 60 * time.Second
@@ -202,13 +203,31 @@ var (
 	trustNoSelected  = regexp.MustCompile(`^❯\s*No,?\s*exit`)
 )
 
+// trustLog is what a drop-in terminal showed of Claude's folder-trust prompt.
+type trustLog struct {
+	Shown   bool     // trustPrompt matched the terminal's accumulated text
+	Answers []string // each key sent to the prompt, in send order: "down" or "enter"
+}
+
+func (t trustLog) String() string {
+	if len(t.Answers) == 0 {
+		return "none"
+	}
+	return strings.Join(t.Answers, ", ")
+}
+
 // awaitMarker reads text until it holds marker, answering a folder-trust
-// prompt with Yes.
-func awaitMarker(ctx context.Context, marker string, text func() string, send func(string)) bool {
+// prompt with Yes and recording that it appeared and what it was answered
+// with. The text is cumulative, so a prompt drawn and answered before the
+// marker still counts as shown.
+func awaitMarker(ctx context.Context, marker string, text func() string, send func(string)) (seen bool, trust trustLog) {
 	var last time.Time
 	keys := 0
-	return pollUntil(ctx, dropInMarkerWait, func() bool {
+	seen = pollUntil(ctx, dropInMarkerWait, func() bool {
 		t := text()
+		if trustPrompt.MatchString(t) {
+			trust.Shown = true
+		}
 		if strings.Contains(t, marker) {
 			return true
 		}
@@ -216,15 +235,17 @@ func awaitMarker(ctx context.Context, marker string, text func() string, send fu
 		if keys >= trustKeyLimit || time.Since(last) < trustKeyGap || row == "" || !trustPrompt.MatchString(t) {
 			return false
 		}
-		key := keyDown
+		key, name := keyDown, "down"
 		if row == "yes" {
-			key = keyEnter
+			key, name = keyEnter, "enter"
 		}
 		send(key)
+		trust.Answers = append(trust.Answers, name)
 		keys++
 		last = time.Now()
 		return false
 	})
+	return seen, trust
 }
 
 // trustRow is the trust prompt's selected row in the last redraw: "yes",
@@ -411,9 +432,11 @@ type dropInLeg struct {
 	HeldFound      bool
 	HeldLive       *bool
 	MarkerSeen     bool
-	ScreenTail     string // the last of the terminal's text when the marker never came
-	ExitSeen       bool   // exit frame or terminal_exit after /exit
-	ClosedConn     bool   // local: no exit frame in 15 s, the connection was closed instead
+	CheckTrust     bool     // local leg: the sandboxed terminal must not show the folder-trust prompt
+	Trust          trustLog // the folder-trust prompt as the terminal showed it
+	ScreenTail     string   // the last of the terminal's text when the marker never came
+	ExitSeen       bool     // exit frame or terminal_exit after /exit
+	ClosedConn     bool     // local: no exit frame in 15 s, the connection was closed instead
 	IdleAfter      bool
 	LogLines       []dropInLogLine
 	LogErr         string
@@ -424,8 +447,10 @@ type dropInLeg struct {
 }
 
 type dropInRun struct {
-	Project string
-	Local   dropInLeg
+	Setup    string // the scratch project could not be set up
+	Project  string // the scratch project's name
+	Local    dropInLeg
+	Teardown string
 }
 
 type dropInHostRun struct {
@@ -439,13 +464,48 @@ func runDropIn(ctx context.Context, e env) result {
 	if !ok {
 		return res
 	}
-	acme, acmeID, err := grantedAcme(ctx, e)
-	if err != nil {
-		return blocked(dropInID, err.Error())
-	}
-	r := dropInRun{Project: acme.Name}
-	r.Local = driveDropInLeg(ctx, e, launch, run, acmeID, "verify-"+e.Nonce+"-dropin", "verify-"+e.Nonce+"-done", dropInLocalHost, attachLocal(e, run))
+	r := dropInRun{Project: dropInLocalName + e.Nonce}
+	r.Setup, r.Teardown = withLocalDropInProject(ctx, e, run, func(projectID string) {
+		r.Local = driveDropInLeg(ctx, e, launch, run, projectID, "verify-"+e.Nonce+"-dropin", "verify-"+e.Nonce+"-done", dropInLocalHost, attachLocal(e, run))
+		r.Local.CheckTrust = true
+	})
 	return classifyDropIn(r)
+}
+
+// withLocalDropInProject creates a new folder and a local project on it, calls
+// fn with the project id, then deletes the project and the folder whatever fn
+// did. setup is non-empty when fn never ran. The folder is new each run on
+// purpose: Claude's trust check walks parents, so a folder under one the
+// sandbox Claude folder already trusts would never show the prompt.
+func withLocalDropInProject(ctx context.Context, e env, run string, fn func(projectID string)) (setup, teardown string) {
+	dir := filepath.Join(gateStateDir(), dropInStateDirName+"local-"+e.Nonce)
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			teardown += "; teardown: cannot remove the project folder"
+		}
+	}()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "cannot create the project folder: " + err.Error(), ""
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	projName := dropInLocalName + e.Nonce
+	projResp, d := gatedFrontend(ctx, e, run, http.MethodPost, "/api/projects", jsonBody(map[string]any{
+		"name": projName, "path": dir, "allowed_templates": []string{"claude-code"},
+	}), fmt.Sprintf("%q", projName))
+	projectID, errText := createdID("POST /api/projects", projResp)
+	if projectID == "" {
+		return fmt.Sprintf("%s (prompt: %s %s)", errText, d.Outcome, d.Detail), ""
+	}
+	defer func() {
+		st := frontendDo(context.WithoutCancel(ctx), e, run, http.MethodDelete, "/api/projects/"+projectID, nil).Status
+		if st != http.StatusNoContent && st != http.StatusNotFound {
+			teardown = fmt.Sprintf("; teardown: DELETE project status %d", st) + teardown
+		}
+	}()
+	fn(projectID)
+	return "", ""
 }
 
 func runDropInHost(ctx context.Context, e env) result {
@@ -660,7 +720,7 @@ func attachLocal(e env, run string) attachFunc {
 			_ = json.NewEncoder(conn).Encode(bridge.StreamFrame{Type: bridge.StreamInput, Data: []byte(s)})
 		}
 		observeHold(ctx, e, run, l, log)
-		if l.MarkerSeen = awaitMarker(ctx, l.Marker, out.text, send); !l.MarkerSeen {
+		if l.MarkerSeen, l.Trust = awaitMarker(ctx, l.Marker, out.text, send); !l.MarkerSeen {
 			l.ScreenTail = tail(out.text(), 300)
 			return
 		}
@@ -711,7 +771,7 @@ func attachHost(e env, launch, run string) attachFunc {
 			send := func(k string) {
 				_ = wsSend(conn, map[string]string{"type": "terminal_input", "terminalId": tid, "data": base64.StdEncoding.EncodeToString([]byte(k))})
 			}
-			if l.MarkerSeen = awaitMarker(ctx, l.Marker, text, send); !l.MarkerSeen {
+			if l.MarkerSeen, l.Trust = awaitMarker(ctx, l.Marker, text, send); !l.MarkerSeen {
 				l.ScreenTail = tail(text(), 300)
 			}
 		}
@@ -793,6 +853,16 @@ func rowReason(row *audit.AuditEvent) string {
 // legProblem is nil when the leg held every promise. A refusal that says the
 // world is not as expected reads BLOCKED; anything else is a FAIL.
 func legProblem(l dropInLeg, local bool) *result {
+	p := legProblemBare(l, local)
+	if p != nil && l.TerminalID != "" {
+		p.Detail += trustSuffix(l)
+	}
+	return p
+}
+
+func trustSuffix(l dropInLeg) string { return "; trust answers: " + l.Trust.String() }
+
+func legProblemBare(l dropInLeg, local bool) *result {
 	id := dropInHostID
 	if local {
 		id = dropInID
@@ -853,6 +923,8 @@ func legProblem(l dropInLeg, local bool) *result {
 		return fail("the host's transcript for claudeSessionId %s does not hold the first turn's prompt (%s)", l.ClaudeID, l.TranscriptErr)
 	case !local && !l.ResumeSeen:
 		return fail("no claude --resume %s in the host's process table within 20 s (%s)", l.ClaudeID, l.ResumeErr)
+	case l.CheckTrust && l.Trust.Shown:
+		return fail("the sandboxed Claude terminal showed the folder-trust prompt")
 	case !l.MarkerSeen:
 		return fail("the first turn's marker %q never appeared in the resumed terminal; it ended with %q", l.Marker, l.ScreenTail)
 	case !local && !l.ExitSeen:
@@ -887,15 +959,22 @@ func legProblem(l dropInLeg, local bool) *result {
 }
 
 func classifyDropIn(r dropInRun) result {
+	if r.Setup != "" {
+		return blocked(dropInID, "scratch project not set up: "+r.Setup+r.Teardown)
+	}
 	if p := legProblem(r.Local, true); p != nil {
+		p.Detail += r.Teardown
 		return *p
+	}
+	if r.Teardown != "" {
+		return result{dropInID, stateFail, "local leg passed" + r.Teardown}
 	}
 	path := "/exit ended the terminal"
 	if r.Local.ClosedConn {
 		path = "no exit frame within 15 s of /exit, so the connection was closed and the hold ended"
 	}
-	return result{dropInID, statePass, fmt.Sprintf("headless Haiku agent in %s taken over through the bridge (host console): hold, marker in the resumed terminal, %s, idle again, one ok log line, session_end closed, session_launch ok",
-		r.Project, path)}
+	return result{dropInID, statePass, fmt.Sprintf("headless Haiku agent in %s taken over through the bridge (host console): hold, marker in the resumed terminal, %s, idle again, one ok log line, session_end closed, session_launch ok, no folder-trust prompt%s",
+		r.Project, path, trustSuffix(r.Local))}
 }
 
 func classifyDropInHost(r dropInHostRun) result {
@@ -913,8 +992,8 @@ func classifyDropInHost(r dropInHostRun) result {
 	if r.Leg.Deleted {
 		end = "no terminal_exit after /exit, terminal deleted instead"
 	}
-	return result{dropInHostID, statePass, fmt.Sprintf("agent on host %s taken over through the HTTP door: 201 with a claudeSessionId equal to the session's conversation id, headless process stopped and row live false, claude --resume <that id> in the host's process table, the first turn's marker in the resumed terminal, idle again, one ok log line; first turn ended idle; %s",
-		r.Leg.Host, end)}
+	return result{dropInHostID, statePass, fmt.Sprintf("agent on host %s taken over through the HTTP door: 201 with a claudeSessionId equal to the session's conversation id, headless process stopped and row live false, claude --resume <that id> in the host's process table, the first turn's marker in the resumed terminal, idle again, one ok log line; first turn ended idle; %s%s",
+		r.Leg.Host, end, trustSuffix(r.Leg))}
 }
 
 // ---- session-drop-in-tool-refused ----
