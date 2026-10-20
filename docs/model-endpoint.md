@@ -339,7 +339,7 @@ Relay talks to the host over its router socket as plain HTTP/1.1, one connection
 | `target` | Only on an `anthropic-map` row: the router id the key rewrites to. |
 | `system` | `true` hides the row from chat pickers and marks it system-only. |
 | `context_length` | The window size to assume; absent or 0 means unknown. |
-| `endpoint_offline` | The name of the endpoint whose last probe failed; absent or empty means available. Set on each last-known model of that endpoint and on a model-map key that targets one. Listings hide such rows. |
+| `endpoint_offline` | The name of the endpoint whose last probe failed; absent or empty means available. Set on each last-known model of that endpoint and on a model-map key that targets one. `/v1/models` and `/models` hide such rows. The pi and chat agent model offer reads the unfiltered snapshot and keeps them on purpose, so a session's model is not rejected during a short outage. |
 
 Other fields are ignored. Any status other than `200`, or a body that is not this document, makes the host unavailable (503 to the caller). The body is read up to a fixed cap. The catalog is fetched at most once per cache period and again on a miss ([Catalog cache](#catalog-cache)).
 

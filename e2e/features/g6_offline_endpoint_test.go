@@ -175,6 +175,14 @@ func TestModelAbsentEverywhere404(t *testing.T) {
 	if same.Status != 404 || !bytes.Equal(resp.Body, same.Body) {
 		t.Fatalf("absent-model 404 bodies differ between callers (%d):\n%s\n%s", same.Status, resp.Body, same.Body)
 	}
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(resp.Body, &errBody); err != nil || errBody.Error.Code != "model_not_found" {
+		t.Fatalf("absent-model 404 error.code = %q (decode err %v), want model_not_found: %s", errBody.Error.Code, err, resp.Body)
+	}
 	if n := g6ForwardedPosts(i); n != 0 {
 		t.Fatalf("the fake model host logged %d forwarded POSTs, want 0", n)
 	}
