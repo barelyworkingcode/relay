@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 
 	"github.com/barelyworkingcode/relay/internal/cmdlookup"
 )
@@ -194,18 +195,23 @@ func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res res
 		return blockedf("%v", err)
 	}
 
-	conn, status, err := dialFrontendWS(ctx, e, fx.projectToken)
-	if err != nil {
+	// Waits: none possible for the settings import; relay's file watch emits
+	// no event. The project's own token opens /ws only once the import has
+	// run, so a refused dial is retried, bounded.
+	var conn *websocket.Conn
+	var status int
+	if !pollUntil(ctx, detachedStartTries, func() bool {
+		conn, status, err = dialFrontendWS(ctx, e, fx.projectToken)
+		return err == nil
+	}) {
 		return blockedf("GET /ws status %d: %v", status, err)
 	}
 	defer func() { _ = conn.Close() }()
 	log := &dropLog{}
 	collectFrames(conn, log)
 
-	// Waits: none possible for the settings import; relay's file watch emits
-	// no event. A detached start returns only once runner.json exists, so a
-	// start that failed or left no run directory ran before the import: stop
-	// it and start again, bounded.
+	// A detached start returns only once runner.json exists, so a start that
+	// left no run directory is stopped and started again, bounded.
 	var sid string
 	var first detachedRunFile
 	started := pollUntil(ctx, detachedStartTries, func() bool {
