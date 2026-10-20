@@ -1125,9 +1125,12 @@ turn, runs `relay host disconnect`, and waits for `session.host_link`
 start time and generation; the turn in flight returns its marker; a later
 message is answered; one generation directory exists; and `relay session stop`
 ends the process group and removes the run directory.
-- Waits: CLI exits, `/ws` frames and `session.host_link` events. The settings
-  import has no event, so `relay session start` is retried, bounded, until
-  `runner.json` exists.
+- Waits: CLI exits, `/ws` frames, `session.host_link` events and the runner's
+  receipt in the run directory's `sent/` (the `running` frame comes before the
+  runner has the message, and a drop in that window ends the send unknown).
+  The settings import has no event, so the `/ws` dial and `relay session
+  start` are retried, bounded, until the import has run and `runner.json`
+  exists.
 - Lives in: `internal/sessions/runner/`, `internal/sshhost/agentrun.go`,
   `cmd/relay/session_launch.go` (`buildHostSpec`).
 - Reached by: `relay session start|message|stop`, `relay host disconnect`,

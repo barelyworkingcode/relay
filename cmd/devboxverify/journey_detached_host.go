@@ -282,6 +282,13 @@ func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res res
 	if !log.waitFor(ctx, agentFrameWait, stateSeq(sid, mark, "running")) {
 		return fail("the session never reported running after relay session message")
 	}
+	// The running frame comes when relay submits the message, before the
+	// runner has written it to the agent; a drop in that window ends the send
+	// unknown. The file in sent/ is the runner's receipt that the agent has
+	// the message, so the turn is open on the host.
+	if !pollUntil(ctx, agentFrameWait, func() bool { return runnerReceipt(agentsRoot, sid, "g1") }) {
+		return fail("the runner moved no message to sent/ after relay session message")
+	}
 	if stateSeq(sid, mark, "running", "idle")(log.snapshot()) {
 		return blockedf("the turn ended before the link was dropped; nothing was in flight")
 	}
@@ -368,6 +375,12 @@ func readRunFile(root, sid, gen string) (detachedRunFile, error) {
 		return f, fmt.Errorf("runner.json is not JSON: %w", err)
 	}
 	return f, nil
+}
+
+// runnerReceipt reports whether the generation's sent/ holds a message.
+func runnerReceipt(root, sid, gen string) bool {
+	ents, err := os.ReadDir(filepath.Join(root, sid, gen, "sent"))
+	return err == nil && len(ents) > 0
 }
 
 func pidAlive(pid int) bool {
