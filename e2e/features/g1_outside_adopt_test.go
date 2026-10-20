@@ -689,13 +689,16 @@ func TestAdoptChildVetoInLongTranscript(t *testing.T) {
 	f := a.fake("app", "INT", "TERM")
 	body := map[string]any{"claudeSessionId": f.sid, "interrupt": false}
 
-	signals, _ := f.laterChild()
+	signals, childStart := f.laterChild()
 
 	filler := strings.Repeat("acme ordinary turn ", 12)
+	// The first prompt precedes the child; every other record, the oldest in
+	// the tail included, follows the child's start.
 	lines := []string{f.user(f.start, adPrompt), f.answer(f.start, adModelSn, filler)}
 	size := len(lines[0]) + len(lines[1])
+	after := childStart.Add(time.Second)
 	for size <= 300<<10 {
-		u, r := f.user(f.start, filler), f.answer(f.start, adModelSn, filler)
+		u, r := f.user(after, filler), f.answer(after, adModelSn, filler)
 		lines = append(lines, u, r)
 		size += len(u) + len(r) + 2
 	}
