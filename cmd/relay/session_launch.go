@@ -658,6 +658,16 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 					env[k] = v
 				}
 			}
+			// Deliberate: Claude skips its folder-trust check under this
+			// variable, which is safe only because the sandbox profile
+			// confines the process. A folder that sandboxClaudeTrustDir
+			// refuses (home, a parent of it, "/") gets no variable, the
+			// same rule as the seed, so Claude still asks there.
+			if sandboxClaudeTrustDir(directory) != "" {
+				if _, set := env[childenv.EnvClaudeSandboxed]; !set {
+					env[childenv.EnvClaudeSandboxed] = "1"
+				}
+			}
 		}
 		spec.Env = env
 		spec.TemplateID = tmpl.ID
