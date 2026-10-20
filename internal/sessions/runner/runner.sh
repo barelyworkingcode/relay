@@ -3,6 +3,10 @@
 # Arguments: run directory, the umask the agent runs under, relay session id,
 # generation, turn-ended string, asking string. POSIX sh plus awk, tail, mkfifo,
 # ps and base64; no tmux, perl, python or setsid(1).
+# Deliberate: a local start hands the runner the shim's descriptors 3, 4 and 5
+# (identity, status, token). Only the agent's subshell keeps them; every other
+# process the runner starts gets them closed, and the runner closes its own
+# once the agent is started. The runner never reads them.
 trap '' HUP
 dir=$1; agent_umask=$2; session=$3; gen=$4; turn_ended=$5; asking=$6
 cd "$dir" || exit 1
@@ -12,9 +16,11 @@ if [ "${LC_ALL+set}" = set ]; then orig_lc_all=$LC_ALL; orig_lc_set=1; else orig
 LC_ALL=C; export LC_ALL
 
 pid=$$
-pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
-if [ "$pgid" != "$pid" ]; then : > norun; exit 1; fi
-started=$(ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' ' ' | sed 's/^ //;s/ $//')
+{
+  pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
+  if [ "$pgid" != "$pid" ]; then : > norun; exit 1; fi
+  started=$(ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' ' ' | sed 's/^ //;s/ $//')
+} 3<&- 4<&- 5<&-
 
 write_state() {
   printf '{"v":1,"pid":%s,"pgid":%s,"started":"%s","session":"%s","generation":"%s","delivered":"%s"}\n' \
@@ -31,13 +37,16 @@ event() {
 
 out_size() { wc -c < out.jsonl | tr -d ' '; }
 
-mkfifo in.pipe || { : > norun; exit 1; }
-write_state ""
+{
+  mkfifo in.pipe || { : > norun; exit 1; }
+  write_state ""
+} 3<&- 4<&- 5<&-
 
 # The writer holds the agent's stdin open and delivers inbox files in name
 # order. Deliberate: the move to sent/ follows the write and is the receipt, and
 # turn_started precedes both, so a reader that saw the reply finds its event.
 (
+  exec 4<&- 5<&-
   exec 3> in.pipe
   delivered=""
   while [ ! -f agent.code ]; do
@@ -48,9 +57,19 @@ write_state ""
         .*) continue;;
         *.json) kind=json;;
         *.ctl) kind=ctl;;
+        *.evt) kind=evt;;
         *) continue;;
       esac
       id=${name%.*}
+      if [ "$kind" = evt ]; then
+        # An event request: relay says something happened that the output does
+        # not show. It reaches no agent and is not a delivery.
+        case $(cat "$f") in
+          *'"type":"asking"'*) event asking "$(out_size)";;
+        esac
+        mv "$f" "sent/$name" || exit 1
+        continue
+      fi
       [ "$kind" = json ] && event turn_started "$(out_size)" ",\"msg\":\"$id\""
       cat "$f" >&3 || exit 1
       [ -z "$(tail -c 1 "$f")" ] || printf '\n' >&3
@@ -72,13 +91,14 @@ trap 'termed=1' TERM
 # printed, which is what puts the event first. Deliberate: mawk block-buffers
 # its piped input (fflush covers output only), so it runs with -W interactive.
 awk_opts=
-case $(awk -W version 2>/dev/null | head -n 1) in mawk*) awk_opts="-W interactive";; esac
+{ case $(awk -W version 2>/dev/null | head -n 1) in mawk*) awk_opts="-W interactive";; esac; } 3<&- 4<&- 5<&-
 (
   umask "$agent_umask"
   trap 'true' TERM
   if [ -n "$orig_lc_set" ]; then LC_ALL=$orig_lc_all; else unset LC_ALL; fi
   sh agent.sh < in.pipe 2>> stderr.log
   c=$?
+  exec 3<&- 4<&- 5<&-
   umask 077
   echo "$c" > agent.code.tmp && mv agent.code.tmp agent.code
 ) | (
@@ -98,8 +118,13 @@ case $(awk -W version 2>/dev/null | head -n 1) in mawk*) awk_opts="-W interactiv
       print $0
       fflush()
       off += length($0) + 1
-    }' >> out.jsonl
-)
+    }' 3<&- 4<&- 5<&- >> out.jsonl
+) &
+pipeline=$!
+exec 3<&- 4<&- 5<&-
+# Deliberate: wait again after a trapped TERM, which ends the first wait early.
+wait "$pipeline"
+while kill -0 "$pipeline" 2>/dev/null; do wait "$pipeline"; done
 
 kill "$writer" 2>/dev/null
 code=$(cat agent.code 2>/dev/null)

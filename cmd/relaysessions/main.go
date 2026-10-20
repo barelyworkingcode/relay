@@ -204,8 +204,8 @@ func runService(args []string) int {
 		}
 	}
 
-	// A detached host agent outlives this process, so a start finds the ones
-	// that still run and follows them again.
+	// A detached host agent and a local runner session outlive this process,
+	// so a start finds the ones that still run and follows them again.
 	go sessions.ReattachDetached()
 
 	sigCh := make(chan os.Signal, 1)
@@ -226,6 +226,7 @@ func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
 			ModelSocket:     cfg.modelSocket,
 			ShimBinary:      shimBinary,
 			RelayMCPCommand: cfg.relayMCPCommand,
+			RunnerBase:      filepath.Join(cfg.dataDir, "runners"),
 		},
 		Pi: provider.PiConfig{
 			Binary:       cfg.piCommand,
