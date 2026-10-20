@@ -120,21 +120,6 @@ func modelFamily(model string) string {
 	return ""
 }
 
-// firstUserAfter is the timestamp of the first user record written at or after
-// start; the zero time when the tail holds none.
-func firstUserAfter(data []byte, start time.Time) time.Time {
-	var first time.Time
-	parseTailRecords(data, func(rec tailRecord, _ []tailBlock, _ string) {
-		if rec.Type != "user" || !first.IsZero() {
-			return
-		}
-		if at, err := time.Parse(time.RFC3339Nano, rec.Timestamp); err == nil && !at.Before(start) {
-			first = at
-		}
-	})
-	return first
-}
-
 // RecoveryText is the one message relay sends into a session it took over in
 // the middle of a turn. It quotes the session's own transcript, cut and on one
 // line each, so that text cannot add lines to the message.

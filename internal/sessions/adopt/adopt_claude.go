@@ -52,7 +52,7 @@ type claudeAdopter struct {
 	clock    Clock
 	proc     membership.Source
 	ladder   ladder
-	children func(ctx context.Context, pid int) ([]int, error)
+	children func(ctx context.Context, pid int) ([]child, error)
 }
 
 type realClock struct{}
@@ -183,23 +183,36 @@ func (a *claudeAdopter) Check(ctx context.Context, c Candidate) (Readiness, erro
 	return Readiness{Idle: veto == "", Veto: veto, Tail: tail}, nil
 }
 
+// turnHelperExe is the one child a turn starts and an idle Claude keeps for
+// minutes: it holds the machine awake and does no work for the session. It is
+// matched by its full executable path, never by name, so a program that only
+// calls itself caffeinate is still a veto.
+const turnHelperExe = "/usr/bin/caffeinate"
+
+// child is one row of the process table.
+type child struct {
+	pid int
+	exe string
+}
+
 // hasWorkingChild reports a child of the Claude process that started at or
-// after the first prompt of this run. An idle Claude keeps its MCP servers from
-// its start, so only children that began with work count. With no prompt in
-// the transcript there is no work to find. It answers true when it cannot tell.
-// The boundary comes from the tail when the tail is the whole file; otherwise
-// the first prompt of the run may lie before the tail, so the file is scanned
-// from its start.
+// after the first assistant record of this run, other than the turn helper. An
+// idle Claude keeps its MCP servers from its start, so only children that began
+// with work count; a child a tool starts follows the assistant record that
+// holds its tool call. With no assistant record in the transcript there is no
+// work to find. It answers true when it cannot tell. The boundary comes from
+// the tail when the tail is the whole file; otherwise the first record of the
+// run may lie before the tail, so the file is scanned from its start.
 func (a *claudeAdopter) hasWorkingChild(ctx context.Context, c Candidate, path string, tail []byte, whole bool) bool {
-	// The registry records the start to the second, and a prompt stamped in the
+	// The registry records the start to the second, and a record stamped in the
 	// start's own second counts as after it.
 	started := c.ProcStart.Truncate(time.Second)
 	var since time.Time
 	if whole {
-		since = firstUserAfter(tail, started)
+		since = firstAssistantAfter(tail, started)
 	} else {
 		var err error
-		if since, err = scanFirstUserAfter(path, started); err != nil {
+		if since, err = scanFirstAssistantAfter(path, started); err != nil {
 			return true
 		}
 	}
@@ -211,21 +224,35 @@ func (a *claudeAdopter) hasWorkingChild(ctx context.Context, c Candidate, path s
 		return true
 	}
 	for _, kid := range kids {
-		if info, ok := a.proc.Info(kid); ok && !startTime(info).Before(since) {
+		if kid.exe == turnHelperExe {
+			continue
+		}
+		if info, ok := a.proc.Info(kid.pid); ok && !startTime(info).Before(since) {
 			return true
 		}
 	}
 	return false
 }
 
+// firstAssistantAfter is the timestamp of the first assistant record in data
+// written at or after start; the zero time when there is none.
+func firstAssistantAfter(data []byte, start time.Time) time.Time {
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if at, ok := assistantRecordAt(line, start); ok {
+			return at
+		}
+	}
+	return time.Time{}
+}
+
 // scanLineMax bounds one transcript line in the boundary scan; a longer line
 // fails the scan.
 const scanLineMax = 8 << 20
 
-// scanFirstUserAfter streams a transcript from its start and returns the
-// timestamp of the first user record written at or after start; the zero time
+// scanFirstAssistantAfter streams a transcript from its start and returns the
+// timestamp of the first assistant record written at or after start; the zero time
 // when there is none. Memory is bounded by one line.
-func scanFirstUserAfter(path string, start time.Time) (time.Time, error) {
+func scanFirstAssistantAfter(path string, start time.Time) (time.Time, error) {
 	f, _, err := openRegular(path)
 	if err != nil {
 		return time.Time{}, err
@@ -243,7 +270,7 @@ func scanFirstUserAfter(path string, start time.Time) (time.Time, error) {
 			continue
 		}
 		if len(line) > 0 {
-			if at, ok := userRecordAt(line, start); ok {
+			if at, ok := assistantRecordAt(line, start); ok {
 				return at, nil
 			}
 			line = line[:0]
@@ -257,14 +284,15 @@ func scanFirstUserAfter(path string, start time.Time) (time.Time, error) {
 	}
 }
 
-// userRecordAt reports a main-chain user record written at or after start.
-func userRecordAt(line []byte, start time.Time) (time.Time, bool) {
+// assistantRecordAt reports a main-chain assistant record written at or after
+// start. It is the one decoder of the boundary, for the tail and the scan.
+func assistantRecordAt(line []byte, start time.Time) (time.Time, bool) {
 	var rec struct {
 		Type      string `json:"type"`
 		Sidechain bool   `json:"isSidechain"`
 		Timestamp string `json:"timestamp"`
 	}
-	if json.Unmarshal(line, &rec) != nil || rec.Sidechain || rec.Type != "user" {
+	if json.Unmarshal(line, &rec) != nil || rec.Sidechain || rec.Type != "assistant" {
 		return time.Time{}, false
 	}
 	at, err := time.Parse(time.RFC3339Nano, rec.Timestamp)
@@ -405,24 +433,28 @@ func readTail(path string) (data []byte, whole bool, err error) {
 	return buf, start == 0, nil
 }
 
-// psChildren lists the direct children of pid from the process table.
-func psChildren(ctx context.Context, pid int) ([]int, error) {
+// psChildren lists the direct children of pid from the process table, each
+// with its full executable path (comm).
+func psChildren(ctx context.Context, pid int) ([]child, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "/bin/ps", "-axo", "pid=,ppid=").Output()
+	out, err := exec.CommandContext(ctx, "/bin/ps", "-axo", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return nil, err
 	}
-	var kids []int
+	var kids []child
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
-		if len(f) != 2 {
+		if len(f) < 2 {
 			continue
 		}
-		child, err1 := strconv.Atoi(f[0])
+		kid, err1 := strconv.Atoi(f[0])
 		parent, err2 := strconv.Atoi(f[1])
 		if err1 == nil && err2 == nil && parent == pid {
-			kids = append(kids, child)
+			// comm is the rest of the line and may hold spaces.
+			rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), f[0]))
+			rest = strings.TrimSpace(strings.TrimPrefix(rest, f[1]))
+			kids = append(kids, child{pid: kid, exe: rest})
 		}
 	}
 	return kids, nil

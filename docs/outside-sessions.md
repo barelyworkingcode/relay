@@ -201,9 +201,15 @@ Sessions on SSH hosts are not adopted.
 - **Idle check**, at request time: the entry's `status` is `idle`; its
   `statusUpdatedAt` is at most 2 s older than the newest transcript record;
   the 256 KiB transcript tail holds no `tool_use` without a `tool_result`; and
-  the Claude process has no child that started at or after the first prompt of
-  this run (an idle Claude keeps its MCP servers from its start). A busy
-  session is refused with `busy` unless the body sets `interrupt`.
+  the Claude process has no child that started at or after the first
+  `assistant` record written after the process started (an idle Claude keeps
+  its MCP servers from its start and can start them in the second of the first
+  prompt; a child a tool starts follows the assistant record that holds its
+  tool call). A child whose executable is exactly `/usr/bin/caffeinate`, which
+  Claude starts at a turn and keeps for minutes, never counts. When the 256 KiB
+  tail does not reach the file's start, relay finds the boundary by scanning
+  the file forward; a failed transcript or process-table read counts as a
+  child. A busy session is refused with `busy` unless the body sets `interrupt`.
 - **The ladder.** Interrupt sends SIGINT and waits for exit, at most 5 s.
   Takeover then sends SIGTERM if the process lives, waits 5 s, sends SIGKILL,
   waits 5 s, else answers `stop_failed`. Each wait runs on the injected clock
