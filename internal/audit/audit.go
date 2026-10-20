@@ -104,6 +104,13 @@ const (
 	// Staff) sent into a session through relay: an intent row before
 	// delivery and a completion row after, sharing one id.
 	AuditEventSessionMessage = "session_message"
+
+	// SessionAdopt records an owner-initiated takeover of an outside Claude
+	// session: an intent row before any signal, a completion row after.
+	// SessionInterrupt records the interrupt step of a takeover of a busy
+	// session, on its own intent and completion pair.
+	AuditEventSessionAdopt     = "session_adopt"
+	AuditEventSessionInterrupt = "session_interrupt"
 )
 
 // Denied means a known credential was refused a tool it may not use;

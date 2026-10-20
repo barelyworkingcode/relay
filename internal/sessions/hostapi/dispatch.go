@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/barelyworkingcode/relay/internal/sessions/childenv"
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
@@ -74,6 +76,9 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 	}
 	if req.Launcher != nil {
 		return terminal.CreateSpec{}, errors.New("hostapi: a launcher applies only to a claude, codex or pi session")
+	}
+	if req.ResumeConversation != "" {
+		return terminal.CreateSpec{}, errors.New("hostapi: resume_conversation applies only to a claude session")
 	}
 	host, err := decodeHostSpec(req.Host)
 	if err != nil {
@@ -163,6 +168,9 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 	if req.ClaudeToken != "" && (req.Kind != session.KindClaude || req.Sandbox == nil || host != nil) {
 		return session.CreateSpec{}, errors.New("hostapi: claude token requires a sandboxed local claude launch")
 	}
+	if err := checkResumeConversation(req, host); err != nil {
+		return session.CreateSpec{}, err
+	}
 
 	if err := checkClaudeEnv(req, host); err != nil {
 		return session.CreateSpec{}, err
@@ -198,6 +206,8 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		Entry:          sr.Entry,
 		ClaudeToken:    req.ClaudeToken,
 		ClaudeEnv:      req.ClaudeEnv,
+
+		ResumeConversation: req.ResumeConversation,
 	}
 	// session.CreateSpec has no validate() of its own to lean on the way
 	// terminal.CreateSpec does (buildTerminalSpec's own comment): an empty
@@ -250,6 +260,22 @@ func sessionLaunchStatus(err error) (int, string) {
 		return 502, ErrIdentityRefused
 	}
 	return 500, ErrSpawnFailed
+}
+
+// checkResumeConversation allows resume_conversation on a fresh, local claude
+// launch only, and only as a canonical UUID: the value becomes claude's
+// --resume argument and a transcript file name.
+func checkResumeConversation(req LaunchRequest, host *sessionstypes.HostSpec) error {
+	if req.ResumeConversation == "" {
+		return nil
+	}
+	if req.Kind != session.KindClaude || req.Resume || host != nil {
+		return errors.New("hostapi: resume_conversation applies only to a fresh local claude launch")
+	}
+	if _, err := uuid.Parse(req.ResumeConversation); err != nil || len(req.ResumeConversation) != 36 {
+		return errors.New("hostapi: resume_conversation is not a UUID")
+	}
+	return nil
 }
 
 // checkClaudeEnv refuses claude_env on anything but a local claude launch and
