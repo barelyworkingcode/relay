@@ -476,10 +476,20 @@ func (p *ClaudeProvider) finishDetached(det *detachedRun, spawn *claudeSpawnStat
 	var tail []string
 	if code != 0 {
 		if out, err := det.conn.StderrTail(ctx); err == nil {
-			tail = stderrTailOf(out)
+			tail = p.redactTail(stderrTailOf(out))
 		}
 	}
 	return code, tail
+}
+
+// redactTail masks the launch's secrets in each tail line. The secrets are
+// empty after a relay restart; the shape-based masks still apply then.
+func (p *ClaudeProvider) redactTail(lines []string) []string {
+	secrets := []string{p.identitySecret(), p.cfg.ClaudeToken}
+	for i, l := range lines {
+		lines[i] = redactStderrLine(l, secrets)
+	}
+	return lines
 }
 
 func stderrTailOf(text string) []string {
@@ -1180,7 +1190,7 @@ func (p *ClaudeProvider) startLocal(spawn *claudeSpawnState) error {
 	}
 	started = true
 
-	root := p.pinRoot(st.PID)
+	root := p.pinRoot(st.PID) // st.PID is the pid cmd.Start returned
 	p.mu.Lock()
 	p.restoredRun, p.runnerRoot = nil, root
 	p.mu.Unlock()

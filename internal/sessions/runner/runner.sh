@@ -103,6 +103,7 @@ awk_opts=
   echo "$c" > agent.code.tmp && mv agent.code.tmp agent.code
 ) | (
   trap '' TERM
+  exec 3<&- 4<&- 5<&-
   RELAY_SESSION=$session RELAY_GEN=$gen RELAY_TURN_ENDED=$turn_ended RELAY_ASKING=$asking exec awk $awk_opts '
     function event(type, o,    cmd, ts) {
       cmd = "date -u +%Y-%m-%dT%H:%M:%SZ"
@@ -118,7 +119,7 @@ awk_opts=
       print $0
       fflush()
       off += length($0) + 1
-    }' 3<&- 4<&- 5<&- >> out.jsonl
+    }' >> out.jsonl
 ) &
 pipeline=$!
 exec 3<&- 4<&- 5<&-

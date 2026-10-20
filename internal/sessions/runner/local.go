@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/membership"
 )
 
 // Phase is what LocalStatus reports about a generation.
@@ -210,6 +212,9 @@ func (r LocalRun) Start(spec LocalSpec) (State, error) {
 	defer tick.Stop()
 	for {
 		if st, ok := readState(dir); ok {
+			// The runner is the process cmd.Start returned: it is not forked
+			// from, so runner.json's pid and this one are the same.
+			st.PID = cmd.Process.Pid
 			return st, nil
 		}
 		select {
@@ -237,6 +242,12 @@ func readState(dir string) (State, bool) {
 
 // startTime is ps's start time of pid in the form the runner records.
 func startTime(pid int) string {
+	// Same form as the runner's `ps -o lstart=` with runs of blanks squeezed,
+	// read without forking: lstart prints the kernel's start second in the
+	// local zone.
+	if info, ok := membership.NewSource().Info(pid); ok {
+		return time.Unix(info.StartSec, 0).Format("Mon Jan 2 15:04:05 2006")
+	}
 	cmd := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid))
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.Output()
@@ -367,6 +378,9 @@ func (r LocalRun) SendEvent(ctx context.Context, typ string) error {
 
 // Open opens out.jsonl positioned at offset, a line start.
 func (r LocalRun) Open(offset int64) (*os.File, error) {
+	if err := checkID("generation", r.Generation); err != nil {
+		return nil, err
+	}
 	f, err := os.Open(filepath.Join(r.Dir(), OutFile))
 	if err != nil {
 		return nil, err

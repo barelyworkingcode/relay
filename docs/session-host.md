@@ -541,7 +541,8 @@ root and never run the hook:
 - A local claude session's root is the runner: the pid `cmd.Start` returned
   for `/bin/sh runner.sh`, with its start time read from the kernel at once
   and persisted as `runnerRoot`. The walk goes hook, `claude`, `sandbox-exec`,
-  shim, runner. After a relay-sessions restart the provider records the root
+  shim, agent subshell, runner. The agent subshell is a fork of the runner; it
+  holds fds 3 to 5 until the agent exits. After a relay-sessions restart the provider records the root
   only when `runner.json`'s pid and the kernel's start time of that pid both
   match `runnerRoot`; otherwise there is no root and the hook is denied.
 - The root's start time is read immediately after `cmd.Start()` returns, and
@@ -1300,7 +1301,7 @@ themselves and close stdout unread.
 
 ## What a child inherits
 
-A local Claude session's runner gets the same environment and descriptors. The Claude token (fd 5) passes through the runner to the shim; the runner never reads it.
+A local Claude session's runner gets the same environment and descriptors. The Claude token (fd 5) passes through the runner to the shim; the runner never reads it. The agent subshell (a fork of the runner) holds fds 3 to 5 until the agent exits; the runner closes its own copies once the pipeline starts, and the output filter never inherits them.
 
 A terminal, a claude or pi session and an MCP server child each start from
 `relay-sessions`' own environment, minus two sets:
