@@ -303,13 +303,19 @@ func adoptPane(tmux, name string) string {
 }
 
 // answerAdoptTrust confirms Claude's folder-trust prompt. The prompt starts on
-// "Yes, I trust"; the loop moves the cursor there if it is not. It ends when
-// the prompt is answered, when the conversation's transcript exists (no prompt
-// is coming), or at the bound.
+// "No, exit". Deliberate: Down is sent once and Enter once, because the
+// terminal redraw lags the keys and a repeated Down can move the selection off
+// "Yes, I trust" or wrap it before Enter lands. After Enter the poll waits,
+// until the conversation's transcript exists or the bound passes, so the bound
+// covers the redraw.
 func answerAdoptTrust(ctx context.Context, tmux, name, convID string) {
+	var down, entered bool
 	pollUntil(ctx, adoptTrustWait, func() bool {
 		if len(adoptTranscripts(convID)) > 0 {
 			return true
+		}
+		if entered {
+			return false
 		}
 		text := adoptPane(tmux, name)
 		if !adoptTrustPrompt.MatchString(text) {
@@ -318,10 +324,14 @@ func answerAdoptTrust(ctx context.Context, tmux, name, convID string) {
 		for _, l := range strings.Split(text, "\n") {
 			if strings.Contains(l, "❯") && strings.Contains(l, "Yes, I trust") {
 				_ = adoptTmuxCmd(ctx, tmux, name, "send-keys", "-t", name, "Enter").Run()
-				return true
+				entered = true
+				return false
 			}
 		}
-		_ = adoptTmuxCmd(ctx, tmux, name, "send-keys", "-t", name, "Down").Run()
+		if !down {
+			_ = adoptTmuxCmd(ctx, tmux, name, "send-keys", "-t", name, "Down").Run()
+			down = true
+		}
 		return false
 	})
 }
