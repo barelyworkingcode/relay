@@ -187,10 +187,8 @@ func TestBug181SandboxClaudeDirSeeded(t *testing.T) {
 			t.Fatalf("link target %s is not a directory: %v", n, err)
 		}
 	}
-	for _, n := range []string{".credentials.json", ".claude.json"} {
-		if _, err := os.Lstat(filepath.Join(w, n)); err == nil {
-			t.Fatalf("the sandbox Claude folder holds %s, want it absent", n)
-		}
+	if _, err := os.Lstat(filepath.Join(w, ".credentials.json")); err == nil {
+		t.Fatalf("the sandbox Claude folder holds .credentials.json, want it absent")
 	}
 	entries, err := os.ReadDir(w)
 	if err != nil {
@@ -200,6 +198,7 @@ func TestBug181SandboxClaudeDirSeeded(t *testing.T) {
 	for _, n := range b181Links {
 		allowed[n] = true
 	}
+	allowed[".claude.json"] = true
 	for _, e := range entries {
 		if !allowed[e.Name()] {
 			t.Fatalf("unexpected entry %q in the sandbox Claude folder", e.Name())

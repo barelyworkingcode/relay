@@ -325,8 +325,20 @@ stack under one HOME share one login.
   `sessions` are created in `~/.claude` when absent, because relay reads history
   and the outside-session probe reads the pid registry there. The other links
   exist only when their target does. Relay never reads or copies a file in
-  `~/.claude`; `.credentials.json` and `.claude.json` are never linked, and
-  plugins are not linked. An entry already in the folder, link or not, is kept.
+  `~/.claude`; `.credentials.json` and `.claude.json` are never linked or
+  copied, and plugins are not linked. An entry already in the folder, link or
+  not, is kept. Relay writes one file it authors, `.claude.json` (0600), only when
+  the folder has no `.claude.json` entry. It holds `hasCompletedOnboarding` and
+  one trust entry, `hasTrustDialogAccepted`, for the directory the launch runs
+  in with symlinks resolved, because Claude compares the resolved path. Relay
+  pre-trusts only that folder: the session is sandboxed and the person added the
+  project on purpose. There is no entry for `/`, the home folder, a parent of
+  it, or a path that cannot be resolved; the seed is then just
+  `{"hasCompletedOnboarding":true}`. The file is published with a hard link, so
+  a concurrent launch or a planted entry is kept. It is authored, not a copy of
+  the person's file. The first start skips the theme picker, the security notes
+  and the folder-trust prompt. A folder that already has a `.claude.json` is
+  never read or changed, so a later new project shows the trust prompt once.
 - **Login.** Claude keeps its login in `<folder>/.credentials.json`. Claude looks
   up a different keychain item for a non-default folder, so each person logs in
   once with `/login` inside a sandboxed Claude, and every later one shares and

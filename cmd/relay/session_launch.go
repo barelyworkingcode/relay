@@ -546,7 +546,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	var claudeDir, claudeToken string
 	if sandbox && isClaudeLaunch(req.Kind, tmpl) {
 		var err error
-		if claudeDir, err = ensureSandboxClaudeDir(); err != nil {
+		if claudeDir, err = ensureSandboxClaudeDir(directory); err != nil {
 			return nil, invalidRequest("sandbox_unavailable", err.Error(), baseFields)
 		}
 		// Read at every launch and resume, so a changed file reaches the next
