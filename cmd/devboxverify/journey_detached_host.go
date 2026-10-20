@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -51,15 +50,11 @@ type detachedRunFile struct {
 // power door), which relay's file watch imports.
 func runDetachedHost(ctx context.Context, e env) result {
 	const id = detachedHostID
-	token, err := readCredential(e.CredentialFile)
-	if err != nil {
-		return blocked(id, "execute credential unreadable: "+err.Error())
-	}
 	fx, err := setUpDetachedFixture(ctx, e)
 	if err != nil {
 		return blocked(id, "fixture host or project: "+err.Error())
 	}
-	res := driveDetachedHost(ctx, e, token, fx)
+	res := driveDetachedHost(ctx, e, fx)
 	res.Detail += fx.tearDown()
 	return res
 }
@@ -69,6 +64,7 @@ func runDetachedHost(ctx context.Context, e env) result {
 // launcher script that entry runs.
 type detachedFixture struct {
 	configDir                string
+	projectToken             string // the /ws bearer: the execute credential is refused there; never printed
 	hostID, projectID, entry string
 	projectDir, launcher     string
 }
@@ -144,6 +140,7 @@ func setUpDetachedFixture(ctx context.Context, e env) (*detachedFixture, error) 
 		return nil, err
 	}
 	projectToken := hex.EncodeToString(secret)
+	fx.projectToken = projectToken
 	tokenHash := sha256.Sum256([]byte(projectToken))
 	now := time.Now().UTC().Format(time.RFC3339)
 	host := map[string]any{
@@ -186,7 +183,7 @@ func (fx *detachedFixture) tearDown() (problem string) {
 	return problem
 }
 
-func driveDetachedHost(ctx context.Context, e env, run string, fx *detachedFixture) (res result) {
+func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res result) {
 	const id = detachedHostID
 	fail := func(f string, a ...any) result { return result{id, stateFail, fmt.Sprintf(f, a...)} }
 	blockedf := func(f string, a ...any) result { return blocked(id, fmt.Sprintf(f, a...)) }
@@ -197,7 +194,7 @@ func driveDetachedHost(ctx context.Context, e env, run string, fx *detachedFixtu
 		return blockedf("%v", err)
 	}
 
-	conn, status, err := dialFrontendWS(ctx, e, run)
+	conn, status, err := dialFrontendWS(ctx, e, fx.projectToken)
 	if err != nil {
 		return blockedf("GET /ws status %d: %v", status, err)
 	}
@@ -228,7 +225,6 @@ func driveDetachedHost(ctx context.Context, e env, run string, fx *detachedFixtu
 		defer func() {
 			cleanup := context.WithoutCancel(ctx)
 			cliStopSession(cleanup, e, sid)
-			frontendDo(cleanup, e, run, http.MethodDelete, "/api/sessions/"+sid, nil)
 			if first.PGID > 1 && groupAlive(first.PGID) { // only our own agent's group, read from its runner.json
 				_ = syscall.Kill(-first.PGID, syscall.SIGKILL)
 			}

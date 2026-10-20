@@ -1131,7 +1131,8 @@ ends the process group and removes the run directory.
 - Lives in: `internal/sessions/runner/`, `internal/sshhost/agentrun.go`,
   `cmd/relay/session_launch.go` (`buildHostSpec`).
 - Reached by: `relay session start|message|stop`, `relay host disconnect`,
-  `/ws` with the execute credential, the agents directory under the loopback
+  `/ws` with the seeded project's own token (the execute credential is
+  refused there), the agents directory under the loopback
   user's `~/.relay/agents`.
 - Traps: BLOCKED without `claude` on the login-shell PATH, with an unreadable
   `stack.json`, or when the turn ended before the link dropped.
