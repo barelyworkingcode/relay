@@ -583,7 +583,9 @@ func (i *Instance) reapRunners() {
 		if json.Unmarshal(data, &rec) != nil || rec.Pid <= 1 || rec.Started == "" {
 			continue
 		}
-		out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(rec.Pid)).Output()
+		psCmd := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(rec.Pid))
+		psCmd.Env = append(os.Environ(), "LC_ALL=C")
+		out, err := psCmd.Output()
 		if err != nil || strings.Join(strings.Fields(string(out)), " ") != strings.Join(strings.Fields(rec.Started), " ") {
 			continue
 		}
@@ -620,19 +622,55 @@ func sessionMembers(sid int) []int {
 	return pids
 }
 
+// killSession signals every member of the session and waits for their exits
+// on a kqueue (EVFILT_PROC, NOTE_EXIT), which works for processes that are not
+// our children. The kevent timeout is the deadline. Members are listed again
+// after each wake because one may have forked; a pid already gone when it is
+// registered counts as exited.
 func (i *Instance) killSession(sid int, sig syscall.Signal, wait time.Duration) {
+	kq, err := syscall.Kqueue()
+	if err != nil {
+		i.t.Logf("runner reap: kqueue: %v", err)
+		return
+	}
+	defer syscall.Close(kq)
 	deadline := time.Now().Add(wait)
+	seen := map[int]bool{}
+	pending := 0
 	for {
-		members := sessionMembers(sid)
-		if len(members) == 0 {
-			return
-		}
-		for _, pid := range members {
+		for _, pid := range sessionMembers(sid) {
+			if seen[pid] {
+				continue
+			}
+			seen[pid] = true
+			ev := syscall.Kevent_t{
+				Ident:  uint64(pid),
+				Filter: syscall.EVFILT_PROC,
+				Flags:  syscall.EV_ADD | syscall.EV_ONESHOT,
+				Fflags: syscall.NOTE_EXIT,
+			}
+			if _, err := syscall.Kevent(kq, []syscall.Kevent_t{ev}, nil, nil); err != nil {
+				if err != syscall.ESRCH {
+					i.t.Logf("runner reap: watch %d: %v", pid, err)
+				}
+				continue
+			}
+			pending++
 			_ = syscall.Kill(pid, sig)
 		}
-		if time.Now().After(deadline) {
+		remaining := time.Until(deadline)
+		if pending == 0 || remaining <= 0 {
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		ts := syscall.NsecToTimespec(remaining.Nanoseconds())
+		events := make([]syscall.Kevent_t, 16)
+		n, err := syscall.Kevent(kq, nil, events, &ts)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil || n == 0 {
+			return
+		}
+		pending -= n
 	}
 }

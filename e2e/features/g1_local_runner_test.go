@@ -431,7 +431,7 @@ func TestLocalRunnerHookRootAfterRestart(t *testing.T) {
 	}
 }
 
-// localEventLine is one line of events.jsonl.
+// g1lEventLine is one line of events.jsonl.
 type g1lEventLine struct {
 	V          int    `json:"v"`
 	Type       string `json:"type"`
