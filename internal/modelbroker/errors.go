@@ -1,5 +1,10 @@
 package modelbroker
 
+import (
+	"encoding/json"
+	"strconv"
+)
+
 // ErrorBody is a pre-rendered error response: the exact status and bytes to
 // write, per spec §2.4. Reason is never sent on the wire — it is what the
 // caller audits (spec §7's outcome field), so that a disallowed and an
@@ -92,4 +97,21 @@ func TooManyRequestsError(shape Shape) ErrorBody {
 		body = anthropicTooManyRequests
 	}
 	return ErrorBody{Status: 429, Body: []byte(body), Reason: "rate_limited"}
+}
+
+// EndpointUnavailableError is the 503 for a granted model whose endpoint the
+// host lists as offline.
+func EndpointUnavailableError(shape Shape, endpoint string) ErrorBody {
+	message := "model endpoint " + strconv.Quote(endpoint) + " unavailable"
+	var v any
+	if shape == ShapeAnthropic {
+		v = map[string]any{"type": "error", "error": map[string]string{"type": "api_error", "message": message}}
+	} else {
+		v = map[string]any{"error": map[string]string{"message": message, "type": "server_error", "code": "endpoint_unavailable"}}
+	}
+	body, err := json.Marshal(v)
+	if err != nil {
+		return HostUnavailableError(shape)
+	}
+	return ErrorBody{Status: 503, Body: body, Reason: "host_unavailable"}
 }

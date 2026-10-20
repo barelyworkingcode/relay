@@ -1744,6 +1744,7 @@ byte-identical to a model that does not exist.
 | `400` | `request does not name a model` / `request body is not a single JSON value` | |
 | `429` | `too many concurrent requests` | Relay is already holding its body budget |
 | `503` | `model host unavailable` | No registered model host, or unreachable |
+| `503` | `model endpoint "<name>" unavailable` | A granted model whose endpoint the model host lists as offline |
 
 **Event and audit.** Every call writes `model.request` (`method`, `path`,
 `http_status`, `transport`, `caller_kind`, `caller`, `session_id`, `model`;
@@ -1821,7 +1822,9 @@ a model relay manages is served locally under the rules above. A Claude model
 relay does not manage is **passed through**: relay needs no credential of its
 own, forwards the client's credential and bytes untouched, and strips relay's.
 A model that neither branch claims is `401` for a caller with no relay
-credential and `404` otherwise. A catalog that cannot be read is `503`.
+credential and `404` otherwise. A catalog that cannot be read is `503`, and
+so is a granted model whose endpoint the host lists as offline
+(`model endpoint "<name>" unavailable`).
 
 ### model:POST /v1/messages/count_tokens
 

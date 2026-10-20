@@ -254,6 +254,7 @@ func (m *ModelEndpointServer) fetchCatalog(ctx context.Context) ([]modelbroker.R
 			Target        string `json:"target,omitempty"`
 			System        bool   `json:"system,omitempty"`
 			ContextLength int64  `json:"context_length,omitempty"`
+			Offline       string `json:"endpoint_offline,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, modelbroker.JSONBodyCap)).Decode(&body); err != nil {
@@ -261,7 +262,7 @@ func (m *ModelEndpointServer) fetchCatalog(ctx context.Context) ([]modelbroker.R
 	}
 	rows := make([]modelbroker.Row, 0, len(body.Data))
 	for _, d := range body.Data {
-		rows = append(rows, modelbroker.Row{ID: d.ID, OwnedBy: d.OwnedBy, Target: d.Target, System: d.System, ContextLength: d.ContextLength})
+		rows = append(rows, modelbroker.Row{ID: d.ID, OwnedBy: d.OwnedBy, Target: d.Target, System: d.System, ContextLength: d.ContextLength, OfflineEndpoint: d.Offline})
 	}
 	return rows, nil
 }
@@ -1094,6 +1095,14 @@ func (m *ModelEndpointServer) serveLocal(w http.ResponseWriter, r *http.Request,
 		eb := modelbroker.ModelNotFoundError(route.Shape, reason)
 		m.writeError(w, eb)
 		m.audit(m.auditFor(caller, transport, r, eb.Status, reason, start, requested, canonical))
+		return
+	}
+	// After the grant check, so a caller outside the grant never learns an
+	// endpoint is offline.
+	if endpoint, offline := modelbroker.OfflineEndpoint(rows, canonical); offline {
+		eb := modelbroker.EndpointUnavailableError(route.Shape, endpoint)
+		m.writeError(w, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, "host_unavailable", start, requested, canonical))
 		return
 	}
 
