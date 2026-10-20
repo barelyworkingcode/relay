@@ -6,6 +6,9 @@
 trap '' HUP
 dir=$1; agent_umask=$2; session=$3; gen=$4; turn_ended=$5; asking=$6
 cd "$dir" || exit 1
+# Deliberate: C locale is the runner's own; the agent gets the original LC_ALL
+# back (unset if it was unset).
+if [ "${LC_ALL+set}" = set ]; then orig_lc_all=$LC_ALL; orig_lc_set=1; else orig_lc_set=; fi
 LC_ALL=C; export LC_ALL
 
 pid=$$
@@ -66,17 +69,21 @@ trap 'termed=1' TERM
 
 # awk ignores TERM (an ignored signal survives exec) so it drains the agent's
 # last lines after a stop. Each event is appended and closed before its line is
-# printed, which is what puts the event first.
+# printed, which is what puts the event first. Deliberate: mawk block-buffers
+# its piped input (fflush covers output only), so it runs with -W interactive.
+awk_opts=
+case $(awk -W version 2>/dev/null | head -n 1) in mawk*) awk_opts="-W interactive";; esac
 (
   umask "$agent_umask"
   trap 'true' TERM
+  if [ -n "$orig_lc_set" ]; then LC_ALL=$orig_lc_all; else unset LC_ALL; fi
   sh agent.sh < in.pipe 2>> stderr.log
   c=$?
   umask 077
   echo "$c" > agent.code.tmp && mv agent.code.tmp agent.code
 ) | (
   trap '' TERM
-  RELAY_SESSION=$session RELAY_GEN=$gen RELAY_TURN_ENDED=$turn_ended RELAY_ASKING=$asking exec awk '
+  RELAY_SESSION=$session RELAY_GEN=$gen RELAY_TURN_ENDED=$turn_ended RELAY_ASKING=$asking exec awk $awk_opts '
     function event(type, o,    cmd, ts) {
       cmd = "date -u +%Y-%m-%dT%H:%M:%SZ"
       cmd | getline ts

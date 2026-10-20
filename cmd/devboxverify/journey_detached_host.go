@@ -51,7 +51,16 @@ type detachedRunFile struct {
 // power door), which relay's file watch imports.
 func runDetachedHost(ctx context.Context, e env) result {
 	const id = detachedHostID
-	fx, err := setUpDetachedFixture(ctx, e)
+	baseURL, model, tokenFile, err := stackClaude(e)
+	if err != nil {
+		return blocked(id, "fixture host or project: "+err.Error())
+	}
+	// Deliberate: off a stack the launcher would run claude against the
+	// machine's own login, a hosted model.
+	if baseURL == "" {
+		return result{id, stateNotRun, "needs a stack's local model endpoint (claude_base_url in stack.json)"}
+	}
+	fx, err := setUpDetachedFixture(ctx, e, baseURL, model, tokenFile)
 	if err != nil {
 		return blocked(id, "fixture host or project: "+err.Error())
 	}
@@ -112,14 +121,10 @@ func stackClaude(e env) (baseURL, model, tokenFile string, err error) {
 	return s.BaseURL, s.Model, s.TokenFile, nil
 }
 
-func setUpDetachedFixture(ctx context.Context, e env) (*detachedFixture, error) {
+func setUpDetachedFixture(ctx context.Context, e env, baseURL, model, tokenFile string) (*detachedFixture, error) {
 	claude, err := cmdlookup.Local(ctx, "claude")
 	if err != nil {
 		return nil, fmt.Errorf("no claude on this machine's login-shell PATH to launch: %w", err)
-	}
-	baseURL, model, tokenFile, err := stackClaude(e)
-	if err != nil {
-		return nil, err
 	}
 	base := filepath.Join(gateStateDir(), "grant-detached-"+e.Nonce)
 	fx := &detachedFixture{
@@ -154,7 +159,7 @@ func setUpDetachedFixture(ctx context.Context, e env) (*detachedFixture, error) 
 	now := time.Now().UTC().Format(time.RFC3339)
 	host := map[string]any{
 		"id": fx.hostID, "name": dropInHostPrefix + e.Nonce + "-detach", "target": dropInHostTarget,
-		"tmux_path": "/usr/bin/tmux", "created_at": now,
+		"created_at": now,
 		// A hosted project launches the host's own templates; the probe
 		// seeds them on a host added through the API, and this host is not.
 		"terminal_templates": []map[string]string{

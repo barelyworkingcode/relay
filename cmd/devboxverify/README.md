@@ -1118,7 +1118,9 @@ stack the launcher reads `claude_base_url`, `claude_model` and
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL` and, from the token file
 at exec, `ANTHROPIC_AUTH_TOKEN`, and execs `claude`; the token goes into no
 file, log or detail. The entry's model is the `haiku` alias, never a `claude-*`
-id. Off a stack the launcher execs `claude` as is. The journey starts the
+id. Off a stack, or on a stack with no `claude_base_url`, the journey is NOTRUN
+("needs a stack's local model endpoint"): it never runs claude against a hosted
+model. The journey starts the
 session with `relay session start --entry`, joins it on `/ws`, sends a long
 turn, runs `relay host disconnect`, and waits for `session.host_link`
 `link=lost` then `restored`. PASS when `runner.json` keeps its pid, pgid,
