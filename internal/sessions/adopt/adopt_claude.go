@@ -52,7 +52,8 @@ type claudeAdopter struct {
 	clock    Clock
 	proc     membership.Source
 	ladder   ladder
-	children func(ctx context.Context, pid int) ([]child, error)
+	children func(ctx context.Context, pid int) ([]int, error)
+	execPath func(pid int) (string, error)
 }
 
 type realClock struct{}
@@ -71,7 +72,7 @@ func NewClaude(cfg ClaudeConfig) Adopter {
 	return &claudeAdopter{
 		home: cfg.Home, clock: cfg.Clock, proc: cfg.Proc,
 		ladder:   ladder{clock: cfg.Clock, proc: cfg.Proc, watch: membership.WatchExit},
-		children: psChildren,
+		children: psChildren, execPath: execPath,
 	}
 }
 
@@ -185,15 +186,10 @@ func (a *claudeAdopter) Check(ctx context.Context, c Candidate) (Readiness, erro
 
 // turnHelperExe is the one child a turn starts and an idle Claude keeps for
 // minutes: it holds the machine awake and does no work for the session. It is
-// matched by its full executable path, never by name, so a program that only
-// calls itself caffeinate is still a veto.
+// matched by the executable path the kernel ran, never by name or by ps's comm
+// (which reflects how the program was launched), so a program that only calls
+// itself caffeinate is still a veto. A path that cannot be read is a veto too.
 const turnHelperExe = "/usr/bin/caffeinate"
-
-// child is one row of the process table.
-type child struct {
-	pid int
-	exe string
-}
 
 // hasWorkingChild reports a child of the Claude process that started at or
 // after the first assistant record of this run, other than the turn helper. An
@@ -224,10 +220,10 @@ func (a *claudeAdopter) hasWorkingChild(ctx context.Context, c Candidate, path s
 		return true
 	}
 	for _, kid := range kids {
-		if kid.exe == turnHelperExe {
+		if path, err := a.execPath(kid); err == nil && path == turnHelperExe {
 			continue
 		}
-		if info, ok := a.proc.Info(kid.pid); ok && !startTime(info).Before(since) {
+		if info, ok := a.proc.Info(kid); ok && !startTime(info).Before(since) {
 			return true
 		}
 	}
@@ -433,28 +429,24 @@ func readTail(path string) (data []byte, whole bool, err error) {
 	return buf, start == 0, nil
 }
 
-// psChildren lists the direct children of pid from the process table, each
-// with its full executable path (comm).
-func psChildren(ctx context.Context, pid int) ([]child, error) {
+// psChildren lists the direct children of pid from the process table.
+func psChildren(ctx context.Context, pid int) ([]int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "/bin/ps", "-axo", "pid=,ppid=,comm=").Output()
+	out, err := exec.CommandContext(ctx, "/bin/ps", "-axo", "pid=,ppid=").Output()
 	if err != nil {
 		return nil, err
 	}
-	var kids []child
+	var kids []int
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
-		if len(f) < 2 {
+		if len(f) != 2 {
 			continue
 		}
 		kid, err1 := strconv.Atoi(f[0])
 		parent, err2 := strconv.Atoi(f[1])
 		if err1 == nil && err2 == nil && parent == pid {
-			// comm is the rest of the line and may hold spaces.
-			rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), f[0]))
-			rest = strings.TrimSpace(strings.TrimPrefix(rest, f[1]))
-			kids = append(kids, child{pid: kid, exe: rest})
+			kids = append(kids, kid)
 		}
 	}
 	return kids, nil

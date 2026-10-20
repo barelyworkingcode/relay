@@ -205,7 +205,7 @@ Sessions on SSH hosts are not adopted.
   `assistant` record written after the process started (an idle Claude keeps
   its MCP servers from its start and can start them in the second of the first
   prompt; a child a tool starts follows the assistant record that holds its
-  tool call). A child whose executable is exactly `/usr/bin/caffeinate`, which
+  tool call). A child whose executable is exactly `/usr/bin/caffeinate` (the path the kernel ran, read from `kern.procargs2`, not `ps` comm; an unreadable path counts as a child), which
   Claude starts at a turn and keeps for minutes, never counts. When the 256 KiB
   tail does not reach the file's start, relay finds the boundary by scanning
   the file forward; a failed transcript or process-table read counts as a
