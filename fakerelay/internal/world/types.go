@@ -325,6 +325,8 @@ type OutsideFixture struct {
 	// EndedAt is the transcript file's modification time. It is set on an
 	// "ended" row and only there.
 	EndedAt string `json:"ended_at,omitempty"`
+	// ClaudeSessionID is the transcript stem relay serves on an ended row.
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 	// Transcript is the conversation the transcript route pages, oldest first.
 	Transcript []OutsideTranscriptEntry `json:"transcript"`
 }

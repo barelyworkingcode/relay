@@ -24,8 +24,8 @@ Rows contain `id`, `name`, nullable `projectId` and `hostId`, `machine`,
 `directory`, `branch`, `state`, `since`, `updatedAt`, `source`, `outside:true`,
 `readOnly:true`, nullable `tmuxSession`, `viewable` and `viewReason`.
 States are `running`, `asking`, `idle` and `ended`; sources are `probe` and `hook`.
-An `ended` row also carries `endedAt` (see [Ended sessions](#ended-sessions)); live rows
-never carry the field.
+An `ended` row also carries `endedAt` and `claudeSessionId` (see
+[Ended sessions](#ended-sessions)); live rows never carry either field.
 `viewable` is true when a tmux pane's process ancestry ties the Claude process
 to a tmux session and the machine is the console or a host with
 `show_all_tmux_sessions` on. Otherwise `viewReason` is `not_in_tmux` (no pane
@@ -128,6 +128,12 @@ it, so the row has `source:"probe"`, `outside:true`, `readOnly:true`,
 `endedAt`: the file's modification time, RFC 3339 UTC. `since` is the earliest
 timestamp in the 16 KiB tail, an estimate, else `endedAt`. `updatedAt` is the
 scan time. `name` is `Claude — <folder name>`.
+
+`claudeSessionId` is the transcript file's stem, the Claude conversation id. It
+matches `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, so it never starts with `-`; relay
+does not require a UUID. List, detail and the WebSocket snapshot all carry it on
+an ended row, and a live row has no such key. It opens no route: the scope has
+no terminal start and no resume.
 
 - **Window.** 3 days. `settings.json` `outside_sessions.ended_window_days`
   sets it: 0 to 30 whole days, and 0 turns ended rows off. Any other number

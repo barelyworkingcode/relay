@@ -40,6 +40,8 @@ type Session struct {
 	ViewReason  string  `json:"viewReason"`
 	// EndedAt is set on an ended row only: the transcript file's modification time.
 	EndedAt string `json:"endedAt,omitempty"`
+	// ClaudeSessionID is set on an ended row only: its transcript file's stem.
+	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
 }
 type MachineStatus struct {
 	HostID      *string `json:"hostId"`

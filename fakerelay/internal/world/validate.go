@@ -369,6 +369,9 @@ func ChatTemplatesOf(p Project) []ChatTemplate {
 	return out
 }
 
+// claudeSessionStem is relay's transcript-stem rule: it never starts with "-".
+var claudeSessionStem = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+
 func ValidateOutside(rows []OutsideFixture) error {
 	if len(rows) > 512 {
 		return bad("outside_sessions", "at most 512 rows")
@@ -385,6 +388,14 @@ func ValidateOutside(rows []OutsideFixture) error {
 		}
 		if (o.State == "ended") != (o.EndedAt != "") {
 			return bad(path+".ended_at", "must be set exactly when state is ended")
+		}
+		if o.ClaudeSessionID != "" {
+			if o.State != "ended" {
+				return bad(path+".claude_session_id", "set only when state is ended")
+			}
+			if !claudeSessionStem.MatchString(o.ClaudeSessionID) {
+				return bad(path+".claude_session_id", "invalid Claude session id")
+			}
 		}
 		if o.Source != "probe" && o.Source != "hook" {
 			return bad(path+".source", "invalid source")

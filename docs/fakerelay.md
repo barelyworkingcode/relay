@@ -1487,7 +1487,11 @@ sorted by `id`. Row:
 
 `DELETE /api/terminals/{id}` answers 204, or 404 with an empty body for an
 unknown id. It closes the terminal. Events: `terminal.list`, `session.launch`,
-`terminal.delete`, `terminal.log`.
+`terminal.delete`, `terminal.log`. In fakerelay only, the `session.launch`
+line also carries `template_id`, `directory` (the resolved terminal directory;
+set once the launch is authorized) and `extra_args` (always an array, `[]` when
+the body has none), so a client's tests can assert what it sent. Relay's own
+line does not carry them. A body that fails to decode carries none of the three.
 
 `GET /api/terminals/{id}/log` (class `proxy`, socket only):
 
@@ -2260,7 +2264,11 @@ emits a replacement snapshot. It is not a product mutation door.
 An `ended` row carries `ended_at` (RFC 3339 UTC, the transcript file's
 modification time), and only an `ended` row may; else the replace is refused as
 an invalid outside fixture. The row's wire form adds `endedAt`, and live rows
-stay unchanged. The snapshot lists the live rows in fixture order, then the
+stay unchanged. An `ended` row may also carry `claude_session_id`, served as
+`claudeSessionId` on list, detail and the scoped WebSocket snapshot. It matches
+`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`; a live row with it, or a bad value, is
+refused as an invalid outside fixture. An ended row without it is valid and
+serves no `claudeSessionId`. The snapshot lists the live rows in fixture order, then the
 ended rows newest `ended_at` first (ties by `id`), at most 50 across all
 machines. Detail serves an ended row like a live one. The transcript route
 answers 404 `outside_session_not_found` for it. fakerelay applies no window and

@@ -165,12 +165,17 @@ func (s *svc) createTerminal(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	ev.Set("project_id", b.ProjectID)
+	args := b.ExtraArgs
+	if args == nil {
+		args = []string{}
+	}
+	ev.Set("project_id", b.ProjectID).Set("template_id", b.TemplateID).Set("extra_args", args)
 	t, ref := s.authorize(b.ProjectID, b.Directory, "", "terminal")
 	if ref != nil {
 		deny(ref.status, ref.code, ref.msg)
 		return
 	}
+	ev.Set("directory", t.dir)
 	tpl := s.findTemplate(t, b.TemplateID)
 	switch {
 	case tpl == nil:

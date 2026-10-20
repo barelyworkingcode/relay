@@ -342,6 +342,7 @@ func (i *Inventory) replaceEndedLocked(m Machine, scan []Observation, held map[s
 		o.Session.TmuxSession = nil
 		o.Session.Viewable = false
 		o.Session.ViewReason = "not_in_tmux"
+		o.Session.ClaudeSessionID = o.ClaudeID
 		i.ended[id] = endedEntry{observation: o, machine: m, at: at}
 	}
 	var ids []string
