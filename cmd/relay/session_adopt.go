@@ -337,13 +337,15 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		return nil, refuse(http.StatusServiceUnavailable, adoptAuditOff, "the audit log could not record the adopt")
 	}
 	start := time.Now()
-	var signalsSent []adopt.Signal
+	// takeSignals is what TakeOver sent; the interrupt's SIGINT belongs to the
+	// session_interrupt row alone.
+	var takeSignals []adopt.Signal
 	complete := func(outcome, errCode string, extra map[string]any) {
 		completion := adoptIntent
 		completion.Phase = audit.AuditPhaseCompletion
 		completion.DurMs = time.Since(start).Milliseconds()
 		completion.Outcome, completion.Error = outcome, errCode
-		args := map[string]any{"interrupted": st.interrupted, "signals": signalRows(signalsSent)}
+		args := map[string]any{"interrupted": st.interrupted, "signals": signalRows(takeSignals)}
 		for k, v := range extra {
 			args[k] = v
 		}
@@ -370,8 +372,7 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		}
 		interruptStart := time.Now()
 		sent, err := a.claude.Interrupt(hold, cand)
-		signalsSent = append(signalsSent, sent...)
-		st.interrupted = len(sent) > 0
+		st.interrupted = hasSignal(sent, "INT")
 		completion := interruptIntent
 		completion.Phase = audit.AuditPhaseCompletion
 		completion.DurMs = time.Since(interruptStart).Milliseconds()
@@ -388,8 +389,7 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	}
 
 	spec, err := a.claude.TakeOver(hold, cand)
-	signalsSent = append(signalsSent, spec.Signals...)
-	st.interrupted = st.interrupted || hasSignal(signalsSent, "INT")
+	takeSignals = spec.Signals
 	if err != nil {
 		status, code, message := adoptStopRefusal(err)
 		return fail(status, code, message, nil)
@@ -410,7 +410,7 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	st.sessionID = result.SessionID
 
 	recoverySent := false
-	if hasSignal(signalsSent, "INT") {
+	if st.interrupted {
 		status, code, _, _ := d.sendOriginText(hold, actor, result.SessionID, adopt.RecoveryText(ready.Tail), sessiontypes.OriginRelayRecovery, "")
 		recoverySent = status == http.StatusAccepted
 		if !recoverySent {
