@@ -47,7 +47,7 @@ var screenJourneys = []journey{
 	{chatToolSearchID, []string{"sessions", "audit"}, nil, phaseScreen, 240 * time.Second, runChatToolSearch},
 	{agentStateID, []string{"sessions"}, []string{"project:acme"}, phaseScreen, 180 * time.Second, runAgentState},
 	{codexID, []string{"sessions"}, []string{"project:acme"}, phaseScreen, 180 * time.Second, runCodex},
-	{dropInID, []string{"sessions"}, []string{"project:acme"}, phaseScreen, 300 * time.Second, runDropIn},
+	{dropInID, []string{"sessions"}, nil, phaseScreen, 300 * time.Second, runDropIn},
 	{dropInHostID, []string{"sessions"}, nil, phaseScreen, 240 * time.Second, runDropInHost},
 	{dropInRefusedID, []string{"sessions"}, []string{"project:acme"}, phaseScreen, 180 * time.Second, runDropInToolRefused},
 	{filePlaneID, []string{"files"}, []string{"project:acme"}, phaseScreen, 240 * time.Second, runFilePlane},

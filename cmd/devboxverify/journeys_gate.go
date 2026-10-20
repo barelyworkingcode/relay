@@ -1315,7 +1315,7 @@ func withPrefix(ids []string, prefix string) []string {
 
 func verifyProjects(rs []grantRecord) (ids []string) {
 	for _, g := range rs {
-		if strings.HasPrefix(g.Name, grantNamePrefix) || strings.HasPrefix(g.Name, unreachableHostPrefix) || strings.HasPrefix(g.Name, dropInProjectName) {
+		if strings.HasPrefix(g.Name, grantNamePrefix) || strings.HasPrefix(g.Name, unreachableHostPrefix) || strings.HasPrefix(g.Name, dropInProjectName) || strings.HasPrefix(g.Name, dropInLocalName) {
 			ids = append(ids, g.ID)
 		}
 	}
@@ -1441,7 +1441,7 @@ func classifyFixturesRemoved(r fixturesRun) result {
 		left = append(left, fmt.Sprintf("%d crash service(s)", n))
 	}
 	if n := len(r.LeftProjects); n > 0 && !r.NoToken {
-		left = append(left, fmt.Sprintf("%d Verify Grant or Unreachable Host project(s)", n))
+		left = append(left, fmt.Sprintf("%d Verify Grant, Unreachable Host or Drop-in project(s)", n))
 	}
 	if n := len(r.LeftHosts); n > 0 && !r.NoToken {
 		left = append(left, fmt.Sprintf("%d blackhole host(s)", n))
