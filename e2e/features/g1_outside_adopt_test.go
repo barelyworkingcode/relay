@@ -185,8 +185,15 @@ func (f *adFake) signalAt(line, name string) time.Time {
 // is in the result; this is how a test shows that none was sent.
 func (f *adFake) sync() (signals []string) {
 	f.t.Helper()
-	if err := syscall.Kill(f.pid, syscall.SIGUSR1); err != nil {
-		f.t.Fatalf("SIGUSR1 to pid %d: %v", f.pid, err)
+	return f.syncWith(syscall.SIGUSR1)
+}
+
+// syncWith is sync with the signal that picks the child: SIGUSR1 a sleep,
+// SIGUSR2 the caffeinate helper a terminal Claude starts at a turn.
+func (f *adFake) syncWith(sig syscall.Signal) (signals []string) {
+	f.t.Helper()
+	if err := syscall.Kill(f.pid, sig); err != nil {
+		f.t.Fatalf("signal %d to pid %d: %v", sig, f.pid, err)
 	}
 	for {
 		select {
@@ -215,8 +222,14 @@ func (f *adFake) sync() (signals []string) {
 // signal lines seen and the kept child's start.
 func (f *adFake) laterChild() (signals []string, childStart time.Time) {
 	f.t.Helper()
+	return f.laterChildWith(syscall.SIGUSR1)
+}
+
+// laterChildWith is laterChild for the child that sig starts.
+func (f *adFake) laterChildWith(sig syscall.Signal) (signals []string, childStart time.Time) {
+	f.t.Helper()
 	for tries := 0; ; tries++ {
-		signals = append(signals, f.sync()...)
+		signals = append(signals, f.syncWith(sig)...)
 		pid := f.children[len(f.children)-1]
 		if _, childStart = adLstart(f.t, pid); childStart.After(f.start) {
 			return signals, childStart
@@ -669,7 +682,8 @@ func TestAdoptBusyRefusedWithoutInterrupt(t *testing.T) {
 	// started again until one does; the kernel start time is the signal.
 	signals, childStart := f.laterChild()
 	now := time.Now().UTC()
-	f.transcript(a.i.Home, f.user(childStart, adPrompt), f.answer(now, adModelSn, "acme parser done"))
+	f.transcript(a.i.Home, f.user(f.start, adPrompt), f.answer(f.start, adModelSn, "acme first answer"),
+		f.user(childStart, adPrompt), f.answer(now, adModelSn, "acme parser done"))
 	f.register(a.i.Home, "idle", now)
 	otRefusal(t, a.adopt(body), http.StatusConflict, "busy")
 	signals = append(signals, f.sync()...)
@@ -680,6 +694,27 @@ func TestAdoptBusyRefusedWithoutInterrupt(t *testing.T) {
 	if n := len(adSessions(t, a.i)); n != 0 {
 		t.Fatalf("refused adopts left %d sessions", n)
 	}
+}
+
+// AC3, decision 5: a terminal Claude's idle turn helper, /usr/bin/caffeinate,
+// started after the first assistant record, never vetoes the adopt.
+func TestAdoptIdleIgnoresTurnHelper(t *testing.T) {
+	t.Parallel()
+	a := adStart(t)
+	f := a.fake("app")
+	signals, _ := f.laterChildWith(syscall.SIGUSR2)
+	if len(signals) != 0 {
+		t.Fatalf("the fake sent signals %v before the adopt, want none", signals)
+	}
+	now := time.Now().UTC()
+	f.transcript(a.i.Home, f.user(f.start, adPrompt), f.answer(f.start, adModelSn, "acme parser done"))
+	f.register(a.i.Home, "idle", now)
+	res := adCreated(t, a.adopt(map[string]any{"claudeSessionId": f.sid, "interrupt": false}))
+	if res.ClaudeSessionID != f.sid || res.Interrupted {
+		t.Fatalf("result = %+v, want claudeSessionId %s, interrupted false", res, f.sid)
+	}
+	f.signalAt(f.expect("signal TERM"), "TERM")
+	f.gone()
 }
 
 // AC3, decision 5: the child-process veto holds when the transcript is longer

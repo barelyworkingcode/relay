@@ -6,7 +6,9 @@
 // "signal INT|TERM <unix ns>" for each such signal it receives. It exits at the
 // first INT or TERM unless that signal is named in --ignore (a comma list); a
 // KILL cannot be caught. On SIGUSR1 it starts one child (sleep) and prints
-// "child <pid>". Every line is a single write to stdout.
+// "child <pid>"; on SIGUSR2 it starts one child that execs
+// /usr/bin/caffeinate -i -t 300, as a terminal Claude does at a turn, and
+// prints "child <pid>". Every line is a single write to stdout.
 package main
 
 import (
@@ -33,13 +35,16 @@ func run() int {
 	}
 
 	sigs := make(chan os.Signal, 16)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2)
 	fmt.Fprintf(os.Stdout, "ready %d\n", os.Getpid())
 
 	for s := range sigs {
 		switch s {
-		case syscall.SIGUSR1:
+		case syscall.SIGUSR1, syscall.SIGUSR2:
 			child := exec.Command("sleep", "600")
+			if s == syscall.SIGUSR2 {
+				child = exec.Command("/usr/bin/caffeinate", "-i", "-t", "300")
+			}
 			if err := child.Start(); err != nil {
 				fmt.Fprintln(os.Stderr, "fakeoutside: child:", err)
 				continue
