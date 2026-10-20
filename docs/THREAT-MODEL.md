@@ -83,6 +83,11 @@ outside it is not a relay bug, however real.
    those under a registered project, so the scope can read the latest turn of
    any console session. That reach is intended; SSH hosts are read only
    through their host projects.
+   Ended outside sessions add no new reach: the same folders (every console
+   project folder; on a host, only folders of its projects), the same bounds
+   (no symlink, a 16 KiB tail for the list, 1 MiB for detail) and the same
+   untrusted display data. The scope can read the last turn of a console
+   session that ended inside the window, not only of a live one.
    The scope also can't change where the Chief of Staff runs: the
    `/api/chief-of-staff/config` routes are refused inside it.
    Agent output cannot add or change a launcher. The scope writes no agent

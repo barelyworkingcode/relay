@@ -18,10 +18,19 @@ type entry struct {
 	liveAt      time.Time
 	hookAt      time.Time
 }
+
+// endedEntry is one ended row. at is the transcript's modification time.
+type endedEntry struct {
+	observation Observation
+	machine     Machine
+	at          time.Time
+}
 type Inventory struct {
 	mu       sync.Mutex
 	opts     Options
 	entries  map[string]entry
+	ended    map[string]endedEntry
+	failed   map[string]bool
 	machines map[string]MachineStatus
 	spool    map[string]bool
 	revision uint64
@@ -32,7 +41,7 @@ func New(opts Options) *Inventory {
 	if opts.Clock == nil {
 		opts.Clock = realClock{}
 	}
-	return &Inventory{opts: opts, entries: map[string]entry{}, machines: map[string]MachineStatus{}, spool: map[string]bool{}, subs: map[chan Snapshot]bool{}}
+	return &Inventory{opts: opts, entries: map[string]entry{}, ended: map[string]endedEntry{}, failed: map[string]bool{}, machines: map[string]MachineStatus{}, spool: map[string]bool{}, subs: map[chan Snapshot]bool{}}
 }
 func hostIDValue(id *string) string {
 	if id == nil {
@@ -44,6 +53,29 @@ func identity(m Machine, o Observation) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%s", m.Key, o.ClaudeID, o.PID, o.Lifetime)))
 	return "outside:" + hex.EncodeToString(h[:16])
 }
+
+// endedIdentity never equals the live identity of the same session.
+func endedIdentity(m Machine, claudeID string) string {
+	h := sha256.Sum256([]byte(m.Key + "\x00" + claudeID + "\x00ended"))
+	return "outside:" + hex.EncodeToString(h[:16])
+}
+
+// liveClaudeLocked reports whether a live row holds the machine's session id.
+func (i *Inventory) liveClaudeLocked(machineKey, claudeID string) bool {
+	for _, e := range i.entries {
+		if e.machine.Key == machineKey && e.observation.ClaudeID == claudeID {
+			return true
+		}
+	}
+	return false
+}
+func (i *Inventory) clearEndedLocked(machineKey string) {
+	for id, e := range i.ended {
+		if e.machine.Key == machineKey {
+			delete(i.ended, id)
+		}
+	}
+}
 func (i *Inventory) snapshotLocked() Snapshot {
 	s := Snapshot{Type: "outside_sessions", Revision: i.revision, ProbeIntervalMs: 15000, Sessions: []Session{}, Machines: []MachineStatus{}}
 	for _, e := range i.entries {
@@ -53,6 +85,25 @@ func (i *Inventory) snapshotLocked() Snapshot {
 		s.Machines = append(s.Machines, m)
 	}
 	sort.Slice(s.Sessions, func(a, b int) bool { return s.Sessions[a].ID < s.Sessions[b].ID })
+	// A resumed session shows once, as live: the scan's held set can be a probe old.
+	var ended []endedEntry
+	for _, e := range i.ended {
+		if !i.liveClaudeLocked(e.machine.Key, e.observation.ClaudeID) {
+			ended = append(ended, e)
+		}
+	}
+	sort.Slice(ended, func(a, b int) bool {
+		if !ended[a].at.Equal(ended[b].at) {
+			return ended[a].at.After(ended[b].at)
+		}
+		return ended[a].observation.Session.ID < ended[b].observation.Session.ID
+	})
+	if len(ended) > EndedRowsMax {
+		ended = ended[:EndedRowsMax]
+	}
+	for _, e := range ended {
+		s.Sessions = append(s.Sessions, e.observation.Session)
+	}
 	sort.Slice(s.Machines, func(a, b int) bool { return s.Machines[a].Machine < s.Machines[b].Machine })
 	return s
 }
@@ -93,6 +144,7 @@ func (i *Inventory) Run(ctx context.Context) {
 	}()
 	for {
 		i.expireUnreachable()
+		i.expireEnded()
 		current := map[string]bool{}
 		for _, m := range i.opts.Machines() {
 			current[m.Key] = true
@@ -115,6 +167,8 @@ func (i *Inventory) Run(ctx context.Context) {
 						delete(i.entries, id)
 					}
 				}
+				i.clearEndedLocked(key)
+				delete(i.failed, key)
 				i.publishLocked()
 				i.mu.Unlock()
 			}
@@ -145,7 +199,7 @@ func (i *Inventory) runMachine(ctx context.Context, m Machine) {
 	defer reports.Wait()
 	for {
 		next := i.opts.Clock.After(ProbeInterval)
-		i.Probe(ctx, m)
+		i.probe(ctx, m, true)
 		select {
 		case <-ctx.Done():
 			return
@@ -155,13 +209,32 @@ func (i *Inventory) runMachine(ctx context.Context, m Machine) {
 }
 
 // Probe replaces one machine's live evidence. Failure never advertises active stale work.
-func (i *Inventory) Probe(ctx context.Context, m Machine) bool {
+func (i *Inventory) Probe(ctx context.Context, m Machine) bool { return i.probe(ctx, m, false) }
+
+// probe is Probe, and with scan also the ended scan of the same baseline. Both
+// reach the snapshot in one publish, so a reader that sees the probe's time
+// sees its ended rows.
+func (i *Inventory) probe(ctx context.Context, m Machine, scan bool) bool {
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	result, err := m.Probe(bounded)
 	observations := result.Observations
 	if ctx.Err() != nil {
 		return false
+	}
+	var ended []Observation
+	var endedErr error
+	scanned := false
+	if scan && err == nil && m.Ended != nil && i.opts.EndedWindow != nil {
+		if window := i.opts.EndedWindow(); window > 0 {
+			scanned = true
+			endedCtx, endedCancel := context.WithTimeout(ctx, 10*time.Second)
+			ended, endedErr = m.Ended(endedCtx, result.Held, i.opts.Clock.Now().Add(-window))
+			endedCancel()
+			if ctx.Err() != nil {
+				return false
+			}
+		}
 	}
 	now := i.opts.Clock.Now()
 	i.mu.Lock()
@@ -215,6 +288,23 @@ func (i *Inventory) Probe(ctx context.Context, m Machine) bool {
 			}
 		}
 	}
+	switch {
+	case errors.Is(err, ErrUnsupported):
+		i.clearEndedLocked(m.Key)
+		delete(i.failed, m.Key)
+	case err == nil && scan && !scanned:
+		i.clearEndedLocked(m.Key)
+		delete(i.failed, m.Key)
+	case err == nil && scanned && endedErr != nil:
+		// The rows stay as they were; only a change is logged.
+		if !i.failed[m.Key] {
+			slog.Log(ctx, slog.LevelWarn, "outside ended scan failed", "machine", m.Name, "host_id", hostIDValue(m.HostID))
+		}
+		i.failed[m.Key] = true
+	case err == nil && scanned:
+		delete(i.failed, m.Key)
+		i.replaceEndedLocked(m, ended, result.Held, now)
+	}
 	if previous, known := i.machines[m.Key]; !known || previous.Status != status.Status {
 		// Only a change is logged: the probe repeats every few seconds.
 		level := slog.LevelInfo
@@ -226,6 +316,67 @@ func (i *Inventory) Probe(ctx context.Context, m Machine) bool {
 	i.machines[m.Key] = status
 	i.publishLocked()
 	return err == nil
+}
+
+// replaceEndedLocked swaps one machine's ended rows for a completed scan. The
+// scan is untrusted input: a row with a held, invalid or unparsable identity is dropped.
+func (i *Inventory) replaceEndedLocked(m Machine, scan []Observation, held map[string]bool, now time.Time) {
+	i.clearEndedLocked(m.Key)
+	for _, o := range scan {
+		at, err := time.Parse(time.RFC3339Nano, o.Session.EndedAt)
+		if err != nil || !sessionIdentity.MatchString(o.ClaudeID) || held[o.ClaudeID] {
+			continue
+		}
+		id := endedIdentity(m, o.ClaudeID)
+		if previous, ok := i.ended[id]; ok && !at.After(previous.at) {
+			continue
+		}
+		o.Session.ID = id
+		o.Session.State = "ended"
+		o.Session.Outside = true
+		o.Session.ReadOnly = true
+		o.Session.HostID = m.HostID
+		o.Session.Machine = m.Name
+		o.Session.Source = "probe"
+		o.Session.UpdatedAt = stamp(now)
+		o.Session.TmuxSession = nil
+		o.Session.Viewable = false
+		o.Session.ViewReason = "not_in_tmux"
+		i.ended[id] = endedEntry{observation: o, machine: m, at: at}
+	}
+	var ids []string
+	for id, e := range i.ended {
+		if e.machine.Key == m.Key {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) > EndedRowsMax {
+		sort.Slice(ids, func(a, b int) bool { return i.ended[ids[a]].at.After(i.ended[ids[b]].at) })
+		for _, id := range ids[EndedRowsMax:] {
+			delete(i.ended, id)
+		}
+	}
+}
+
+// expireEnded drops ended rows older than the window, by the injected clock.
+func (i *Inventory) expireEnded() {
+	window := time.Duration(0)
+	if i.opts.EndedWindow != nil {
+		window = i.opts.EndedWindow()
+	}
+	cutoff := i.opts.Clock.Now().Add(-window)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	changed := false
+	for id, e := range i.ended {
+		if window <= 0 || e.at.Before(cutoff) {
+			delete(i.ended, id)
+			changed = true
+		}
+	}
+	if changed {
+		i.publishLocked()
+	}
 }
 
 // shouldDrain is true only for a reachable machine whose last good probe saw
@@ -246,7 +397,14 @@ func (i *Inventory) shouldDrain(m Machine) bool {
 func (i *Inventory) Detail(ctx context.Context, id string) (Detail, error) {
 	i.mu.Lock()
 	e, ok := i.entries[id]
+	ended, isEnded := i.ended[id]
+	if isEnded && i.liveClaudeLocked(ended.machine.Key, ended.observation.ClaudeID) {
+		isEnded = false
+	}
 	i.mu.Unlock()
+	if !ok && isEnded {
+		return i.endedDetail(ctx, ended)
+	}
 	if !ok {
 		return Detail{}, ErrNotFound
 	}
@@ -287,6 +445,23 @@ func (i *Inventory) Detail(ctx context.Context, id string) (Detail, error) {
 		s.Source = "hook"
 		s.State = e.observation.Session.State
 	}
+	s.UpdatedAt = stamp(i.opts.Clock.Now())
+	return Detail{Session: s, LastTurn: turn, LastExcerpt: tailCharacters(turn.Text, 500)}, nil
+}
+
+// endedDetail reads the ended row's derived transcript; it runs no probe.
+func (i *Inventory) endedDetail(ctx context.Context, e endedEntry) (Detail, error) {
+	if e.machine.Read == nil {
+		return Detail{}, ErrUnavailable
+	}
+	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	data, err := e.machine.Read(bounded, e.observation)
+	if err != nil {
+		return Detail{}, ErrUnavailable
+	}
+	turn := LatestTurn(data)
+	s := e.observation.Session
 	s.UpdatedAt = stamp(i.opts.Clock.Now())
 	return Detail{Session: s, LastTurn: turn, LastExcerpt: tailCharacters(turn.Text, 500)}, nil
 }

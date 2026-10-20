@@ -17,12 +17,15 @@ Each requires the existing `X-Relay-Scope: chief-of-staff` request scope and
 its normal caller authorization. No credential or listener is added. The
 WebSocket sends replacement snapshots and closes with 1008 on a client data
 frame. The wire snapshot is `{type:"outside_sessions",revision,
-probeIntervalMs:15000,sessions,machines}`.
+probeIntervalMs:15000,sessions,machines}`. `sessions` lists the live rows
+sorted by `id`, then the ended rows, newest `endedAt` first, at most 50.
 
 Rows contain `id`, `name`, nullable `projectId` and `hostId`, `machine`,
 `directory`, `branch`, `state`, `since`, `updatedAt`, `source`, `outside:true`,
 `readOnly:true`, nullable `tmuxSession`, `viewable` and `viewReason`.
-States are `running`, `asking` and `idle`; sources are `probe` and `hook`.
+States are `running`, `asking`, `idle` and `ended`; sources are `probe` and `hook`.
+An `ended` row also carries `endedAt` (see [Ended sessions](#ended-sessions)); live rows
+never carry the field.
 `viewable` is true when a tmux pane's process ancestry ties the Claude process
 to a tmux session and the machine is the console or a host with
 `show_all_tmux_sessions` on. Otherwise `viewReason` is `not_in_tmux` (no pane
@@ -40,8 +43,9 @@ time. Text joins visible assistant blocks after the latest genuine user
 prompt, excluding tool-result boundaries, and keeps the last 8192 characters.
 The excerpt is the last 500 characters of that same text. Partial output is
 available; missing latest text is empty, never a cached previous answer.
-Unknown or exited identities answer 404 `outside_session_not_found`; failed
-live observation or transcript reads answer 502 `outside_status_unavailable`.
+An ended id answers the same shape from the 1 MiB transcript tail, with no new
+probe. Unknown identities answer 404 `outside_session_not_found`; failed live
+observation or transcript reads answer 502 `outside_status_unavailable`.
 
 ### Transcript page
 
@@ -50,7 +54,8 @@ live observation or transcript reads answer 502 `outside_status_unavailable`.
 from the Chief of Staff scope, which reads only the latest turn. It takes no
 body and writes nothing. `{id}` is looked up in the live inventory map; the
 file is the path the last probe derived, so no request field names a path. An
-ended session leaves the map at the next probe (15 seconds) and answers 404.
+ended session leaves the map at the next probe (15 seconds) and answers 404; an
+ended row's id answers 404 too, because the route reads live entries only.
 
 The window is bytes `[start, end)` of the file: `end` is `before`, or the
 size; `start` is `max(0, end - 262144)`. A first partial line is dropped when
@@ -98,8 +103,9 @@ excluded using the selected `RELAY_SESSION_ID`, process ancestry and the Claude
 identities session-host returns from its internal `GET /managed-identities`
 (`{claude_session_ids:[string]}`, beside `/launch`, off the manifest); Relay IDs are never treated as Claude UUIDs.
 
-A successful probe replaces membership. A confirmed exit disappears on the
-next baseline. Failed probes mark the machine unreachable, clear active state
+A successful probe replaces membership. A confirmed exit leaves the live rows on
+the next baseline and moves to ended when its transcript file is inside the
+window. Failed probes mark the machine unreachable, clear active state
 and viewing, and evict rows by one minute since their last live observation.
 Reports and detail reads cannot extend an exited identity's lifetime.
 
@@ -108,6 +114,53 @@ A paused tool request estimates asking; hooks identify permission prompts exactl
 Transcript and report text is untrusted display data and cannot confer action
 or read authority. Transcript paths are derived from home/cwd/session identity;
 a reported `transcript_path` never chooses a file to read.
+
+## Ended sessions
+
+An outside session that ended inside the window stays listed as a row with
+`state:"ended"`, read from its transcript file. No process evidence exists for
+it, so the row has `source:"probe"`, `outside:true`, `readOnly:true`,
+`tmuxSession:null`, `viewable:false` and `viewReason:"not_in_tmux"`, plus
+`endedAt`: the file's modification time, RFC 3339 UTC. `since` is the earliest
+timestamp in the 16 KiB tail, an estimate, else `endedAt`. `updatedAt` is the
+scan time. `name` is `Claude — <folder name>`.
+
+- **Window.** 3 days. `settings.json` `outside_sessions.ended_window_days`
+  sets it: 0 to 30 whole days, and 0 turns ended rows off. Any other number
+  lists none (fail closed) and logs a warning when the value changes. A hand edit
+  applies through the settings-file watch. There is no CLI verb or screen.
+  Rows older than the window drop every two seconds, by the clock.
+- **Order and cap.** At most 50 ended rows across all machines, newest first,
+  ties by `id`. One row per machine and Claude session id; the newest file wins.
+- **Identity.** `outside:` plus the first 16 bytes, hex, of
+  sha256(machine key, NUL, Claude session id, NUL, `ended`). It is stable across
+  probes and never equals the session's live identity. It grants nothing.
+- **Scan.** Each baseline runs one scan per machine after a successful probe, in
+  the same shell path as the probe, and publishes once with the probe. A
+  drain-triggered probe runs no scan. A failed scan keeps the machine's earlier
+  ended rows and logs `outside ended scan failed` on change; an unsupported or
+  removed machine loses its ended rows. The scan lists regular files
+  `~/.claude/projects/<folder>/<id>.jsonl` modified inside the window, newest
+  first, at most 50, and reads a 16 KiB tail of each. It refuses a symlink on
+  the file, its folder, `~/.claude/projects` and `~/.claude`, and writes nothing.
+  An unreadable or missing file drops its row, never the list.
+- **Scope.** The console scans every folder under its own
+  `~/.claude/projects/`. A host scans only folders whose name starts with the
+  mangled stored or resolved path of a project on that host, and keeps a row only
+  when its directory lies inside such a project, as live rows do.
+- **Directory.** The `cwd` of the newest tail record whose `sessionId` is the
+  file's name and whose `cwd` maps back to this very file under the machine's
+  home. No such record: no row. A forged `cwd` cannot point at another file.
+- **Never both.** A file is not listed when its session id is held: seen on a
+  live process (before project filtering), in the managed list, or in a registry
+  entry whose pid is a live process. The snapshot checks again, so a resumed
+  session shows once, as live. A deleted managed session no longer on the
+  managed list can show as ended; the row is display data only.
+- **Last turn.** The detail of an ended id reads the 1 MiB tail and keeps the
+  last 8192 characters, as for a live row. A read failure answers 502.
+
+Transcript text stays untrusted display data. The transcript page route does not
+serve ended ids.
 
 ## Optional hooks
 

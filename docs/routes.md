@@ -2120,14 +2120,18 @@ door exists. Schemas, bounds, errors and timing are in
 
 ### GET /api/chief-of-staff/outside-sessions
 
-The current snapshot: `sessions` and per-machine `machines` status.
+The current snapshot: `sessions` and per-machine `machines` status. `sessions`
+holds the live rows, then recently ended rows (`state:"ended"`, with `endedAt`),
+newest first, at most 50, inside the window `outside_sessions.ended_window_days`
+(default 3 days; see [outside sessions](outside-sessions.md#ended-sessions)).
 
 - **Listeners:** socket. **Credential:** `chief_of_staff`. **Gate:** none.
 
 ### GET /api/chief-of-staff/outside-sessions/{id}
 
-One outside session with a freshly read latest turn. An unknown or ended id
-is `404`; an unreadable machine is `502`.
+One outside session with a freshly read latest turn. An ended row's id reads its
+transcript tail without a new probe. An unknown id is `404`; an unreadable
+machine or transcript is `502`.
 
 - **Listeners:** socket. **Credential:** `chief_of_staff`. **Gate:** none.
 
@@ -2152,7 +2156,7 @@ ended); `502` `outside_status_unavailable`. Records and paging rules:
 
 ### GET /ws/outside-sessions
 
-A WebSocket that sends a snapshot on connect and on each change. A client data
-frame closes the socket with `1008`.
+A WebSocket that sends a snapshot on connect and on each change, with the same
+live then ended rows as the list. A client data frame closes the socket with `1008`.
 
 - **Listeners:** socket. **Credential:** `chief_of_staff`. **Gate:** none.

@@ -21,6 +21,7 @@ func (s *Settings) Clone() *Settings {
 		c := *s.ChiefOfStaff
 		cp.ChiefOfStaff = &c
 	}
+	cp.OutsideSessions = cloneOutsideSessionsConfig(s.OutsideSessions)
 	cp.Enrolments = cloneEnrolments(s.Enrolments)
 	cp.Audit = cloneAuditConfig(s.Audit)
 	cp.Remote = cloneRemoteConfig(s.Remote)
@@ -363,4 +364,16 @@ func clonePasskeys(s []Passkey) []Passkey {
 		out[i] = clonePasskey(p)
 	}
 	return out
+}
+
+func cloneOutsideSessionsConfig(c *OutsideSessionsConfig) *OutsideSessionsConfig {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	if c.EndedWindowDays != nil {
+		d := *c.EndedWindowDays
+		cp.EndedWindowDays = &d
+	}
+	return &cp
 }

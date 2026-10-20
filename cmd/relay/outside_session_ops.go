@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,7 +78,30 @@ func newOutsideInventory(store config.SettingsStore, clock serverClock, deps ses
 		slog.Warn("outside sessions: console spool disabled, "+outsideSpoolEnv+" is not an absolute clean path",
 			"env", outsideSpoolEnv, "value", os.Getenv(outsideSpoolEnv))
 	}
-	return outsidesessions.New(outsidesessions.Options{Clock: clock, Machines: func() []outsidesessions.Machine {
+	var windowMu sync.Mutex
+	var warnedDays *int
+	endedWindow := func() time.Duration {
+		s := config.FreshSettings(store)
+		d := s.OutsideEndedWindow()
+		var days *int
+		if s.OutsideSessions != nil {
+			days = s.OutsideSessions.EndedWindowDays
+		}
+		invalid := days != nil && (*days < 0 || *days > config.OutsideEndedWindowMaxDays)
+		windowMu.Lock()
+		defer windowMu.Unlock()
+		switch {
+		case !invalid && warnedDays != nil:
+			warnedDays = nil
+		case invalid && (warnedDays == nil || *warnedDays != *days):
+			v := *days
+			warnedDays = &v
+			slog.Warn("outside sessions: ended_window_days is out of range, no ended rows are listed",
+				"value", v, "max", config.OutsideEndedWindowMaxDays)
+		}
+		return d
+	}
+	return outsidesessions.New(outsidesessions.Options{Clock: clock, EndedWindow: endedWindow, Machines: func() []outsidesessions.Machine {
 		s := config.FreshSettings(store)
 		machines := []outsidesessions.Machine{outsideMachine(store, deps, nil, console)}
 		for _, h := range s.Hosts {
@@ -150,21 +174,7 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 		settings := config.FreshSettings(store)
 		resolved := resolveOutsideProjectPaths(ctx, h, settings.Projects)
 		for _, o := range observed {
-			var project *config.Project
-			best := 0
-			for j := range settings.Projects {
-				p := &settings.Projects[j]
-				if p.IsRemote() || p.HostID != hostKey(h) {
-					continue
-				}
-				// The probe reports a resolved working folder, so a project
-				// registered through a symlink matches by its resolved path too.
-				for _, root := range []string{p.Path, resolved[j]} {
-					if outsidesessions.Contains(root, o.Session.Directory) && (project == nil || len(root) > best) {
-						project, best = p, len(root)
-					}
-				}
-			}
+			project := matchOutsideProject(settings.Projects, resolved, h, o.Session.Directory)
 			if h != nil && project == nil {
 				continue
 			}
@@ -182,7 +192,64 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			}
 			out = append(out, o)
 		}
-		return outsidesessions.ProbeResult{Observations: out, SawSpool: native.SawSpool}, nil
+		held := map[string]bool{}
+		for id := range managed {
+			held[id] = true
+		}
+		for _, o := range observed {
+			held[o.ClaudeID] = true
+		}
+		for _, r := range native.Registries {
+			if proc, ok := native.Processes[r.PID]; ok && proc.Lifetime != "" {
+				held[r.SessionID] = true
+			}
+		}
+		return outsidesessions.ProbeResult{Observations: out, SawSpool: native.SawSpool, Held: held}, nil
+	}
+	m.Ended = func(ctx context.Context, held map[string]bool, cutoff time.Time) ([]outsidesessions.Observation, error) {
+		h, err := freshOutsideHost(store, h)
+		if err != nil {
+			return nil, err
+		}
+		settings := config.FreshSettings(store)
+		resolved := resolveOutsideProjectPaths(ctx, h, settings.Projects)
+		// The console scans every folder it has; a host only the folders of its projects.
+		var prefixes []string
+		if h != nil {
+			prefixes = []string{}
+			for j, p := range settings.Projects {
+				if p.IsRemote() || p.HostID != hostKey(h) {
+					continue
+				}
+				for _, root := range []string{p.Path, resolved[j]} {
+					if root != "" {
+						prefixes = append(prefixes, outsidesessions.FolderName(root))
+					}
+				}
+			}
+		}
+		ids := make([]string, 0, len(held))
+		for id := range held {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		data, err := outsideRun(ctx, h, outsidesessions.EndedScanScript(cutoff.Unix(), prefixes, ids))
+		if err != nil {
+			return nil, err
+		}
+		out := []outsidesessions.Observation{}
+		for _, o := range outsidesessions.ParseEnded(data, "") {
+			project := matchOutsideProject(settings.Projects, resolved, h, o.Session.Directory)
+			if h != nil && project == nil {
+				continue
+			}
+			if project != nil {
+				id := project.ID
+				o.Session.ProjectID = &id
+			}
+			out = append(out, o)
+		}
+		return out, nil
 	}
 	m.Read = func(ctx context.Context, o outsidesessions.Observation) ([]byte, error) {
 		h, err := freshOutsideHost(store, h)
@@ -285,6 +352,26 @@ func resolveOutsideProjectPaths(ctx context.Context, h *config.Host, projects []
 		}
 	}
 	return out
+}
+
+// matchOutsideProject is the longest registered project root on h's machine
+// that holds dir, matched as stored and as resolved: the probe reports a
+// resolved working folder. resolved is index-aligned with projects.
+func matchOutsideProject(projects []config.Project, resolved []string, h *config.Host, dir string) *config.Project {
+	var project *config.Project
+	best := 0
+	for j := range projects {
+		p := &projects[j]
+		if p.IsRemote() || p.HostID != hostKey(h) {
+			continue
+		}
+		for _, root := range []string{p.Path, resolved[j]} {
+			if outsidesessions.Contains(root, dir) && (project == nil || len(root) > best) {
+				project, best = p, len(root)
+			}
+		}
+	}
+	return project
 }
 
 func hostKey(h *config.Host) string {
