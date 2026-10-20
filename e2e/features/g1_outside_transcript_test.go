@@ -22,10 +22,12 @@ import (
 // tests call it with the unscoped "cos" credential, which holds execute.
 
 type otEntry struct {
-	ID   string `json:"id"`
-	Role string `json:"role"`
-	Text string `json:"text"`
-	At   string `json:"at"`
+	ID   string  `json:"id"`
+	Role string  `json:"role"`
+	Text string  `json:"text"`
+	At   string  `json:"at"`
+	Kind string  `json:"kind"`
+	Name *string `json:"name"`
 }
 
 type otPage struct {
@@ -166,6 +168,7 @@ func TestOutsideTranscriptEntryMapping(t *testing.T) {
 	}
 	text := func(s string) map[string]any { return map[string]any{"type": "text", "text": s} }
 	long := strings.Repeat("界", 9000)
+	longName := strings.Repeat("名", 9000)
 	lines := []string{
 		otRaw("user", ts, "acme prompt", nil),
 		otRaw("user", ts, blocks(text("acme block prompt")), nil),
@@ -189,20 +192,24 @@ func TestOutsideTranscriptEntryMapping(t *testing.T) {
 		otRaw("user", ts, "   ", nil),
 		otRaw("user", ts, blocks(text(" \n")), nil),
 		otRaw("assistant", ts, "acme plain assistant string", nil),
+		otRaw("assistant", ts, blocks(map[string]any{"type": "tool_use", "id": "t5", "name": longName, "input": json.RawMessage(`{"n":1}`)}), nil),
 		otRaw("user", ts, long, nil),
 	}
 	_, row := otSession(t, r, "mapping", lines...)
 	page := r.transcriptPage(row.ID, "")
 	capped := string([]rune(long)[:8191]) + "…"
+	cappedName := string([]rune(longName)[:8191]) + "…"
+	bash := "Bash"
 	want := []otEntry{
 		{Role: "user", Text: "acme prompt", At: ts},
 		{Role: "user", Text: "acme block prompt", At: ts},
-		{Role: "tool", Text: "acme output", At: ts},
-		{Role: "tool", Text: "acme one\n[image]\nacme two", At: ts},
-		{Role: "tool", Text: "Error: acme boom", At: ts},
+		{Role: "tool", Text: "acme output", At: ts, Kind: "result"},
+		{Role: "tool", Text: "acme one\n[image]\nacme two", At: ts, Kind: "result"},
+		{Role: "tool", Text: "Error: acme boom", At: ts, Kind: "result"},
 		{Role: "assistant", Text: "acme answer", At: ts},
-		{Role: "tool", Text: `Bash {"command":"ls","n":1}`, At: ts},
+		{Role: "tool", Text: `Bash {"command":"ls","n":1}`, At: ts, Kind: "call", Name: &bash},
 		{Role: "assistant", Text: "acme no stamp", At: ""},
+		{Role: "tool", Text: string([]rune(longName + ` {"n":1}`)[:8191]) + "…", At: ts, Kind: "call", Name: &cappedName},
 		{Role: "user", Text: capped, At: ts},
 	}
 	if len(page.Entries) != len(want) {
@@ -217,6 +224,12 @@ func TestOutsideTranscriptEntryMapping(t *testing.T) {
 		if e.Role != want[k].Role || e.Text != want[k].Text || e.At != want[k].At {
 			t.Fatalf("entry %d = {%s %.80q %q}, want {%s %.80q %q}", k, e.Role, e.Text, e.At, want[k].Role, want[k].Text, want[k].At)
 		}
+		if e.Kind != want[k].Kind || (e.Name == nil) != (want[k].Name == nil) || (e.Name != nil && *e.Name != *want[k].Name) {
+			t.Fatalf("entry %d kind %q name %v, want kind %q name %v", k, e.Kind, e.Name, want[k].Kind, want[k].Name)
+		}
+	}
+	if n := utf8.RuneCountInString(deref(page.Entries[8].Name)); n != 8192 || !strings.HasSuffix(deref(page.Entries[8].Name), "…") {
+		t.Fatalf("capped name has %d characters, want 8192 ending with …", n)
 	}
 	last := page.Entries[len(page.Entries)-1].Text
 	if n := utf8.RuneCountInString(last); n != 8192 || !strings.HasSuffix(last, "…") {
@@ -540,4 +553,71 @@ func TestOutsideTranscriptMalformedQueryIsInvalidRequest(t *testing.T) {
 	for _, q := range []string{"limit=%zz", "before=5;x=1"} {
 		otRefusal(t, r.transcriptGet(row.ID, q), 400, "invalid_request")
 	}
+}
+
+// AC1, AC2, AC3: tool entries carry kind and name, other entries gain no key, and text keeps its form.
+func TestOutsideTranscriptToolEntryFields(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false)
+	const ts = "2026-10-13T10:00:00.000Z"
+	use := func(name, input string) string {
+		block := map[string]any{"type": "tool_use", "id": "t1", "name": name, "input": json.RawMessage(input)}
+		return otRaw("assistant", ts, []any{block}, nil)
+	}
+	lines := []string{
+		otRaw("user", ts, "acme prompt", nil),
+		otRaw("assistant", ts, []any{map[string]any{"type": "text", "text": "acme answer"}}, nil),
+		use("Bash", `{ "command": "ls" }`),
+		use("mcp__acme__search", `{ "q": "acme", "n": 2 }`),
+		otRaw("user", ts, []any{map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "acme output"}}, nil),
+	}
+	_, row := otSession(t, r, "toolfields", lines...)
+	resp := r.transcriptGet(row.ID, "")
+	if resp.Status != http.StatusOK {
+		t.Fatalf("GET answered %d, want 200: %s", resp.Status, resp.Body)
+	}
+	var page struct {
+		Entries []map[string]any `json:"entries"`
+	}
+	resp.JSON(t, &page)
+	keys := func(e map[string]any) []string {
+		var ks []string
+		for k := range e {
+			ks = append(ks, k)
+		}
+		slices.Sort(ks)
+		return ks
+	}
+	plain := []string{"at", "id", "role", "text"}
+	call := []string{"at", "id", "kind", "name", "role", "text"}
+	result := []string{"at", "id", "kind", "role", "text"}
+	want := []struct {
+		role, text, kind, name string
+		keys                   []string
+	}{
+		{"user", "acme prompt", "", "", plain},
+		{"assistant", "acme answer", "", "", plain},
+		{"tool", `Bash {"command":"ls"}`, "call", "Bash", call},
+		{"tool", `mcp__acme__search {"q":"acme","n":2}`, "call", "mcp__acme__search", call},
+		{"tool", "acme output", "result", "", result},
+	}
+	if len(page.Entries) != len(want) {
+		t.Fatalf("got %d entries, want %d: %s", len(page.Entries), len(want), resp.Body)
+	}
+	for k, e := range page.Entries {
+		w := want[k]
+		if !slices.Equal(keys(e), w.keys) {
+			t.Fatalf("entry %d keys = %v, want %v", k, keys(e), w.keys)
+		}
+		if e["role"] != w.role || e["text"] != w.text || e["kind"] != nilIfEmpty(w.kind) || e["name"] != nilIfEmpty(w.name) {
+			t.Fatalf("entry %d = %v, want role %s text %q kind %q name %q", k, e, w.role, w.text, w.kind, w.name)
+		}
+	}
+}
+
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

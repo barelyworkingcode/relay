@@ -3,6 +3,7 @@ package prooftest
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -134,6 +135,52 @@ func TestOutsideFixtureTranscriptPages(t *testing.T) {
 	for name, bad := range map[string]J{
 		"unknown role":  {"role": "system", "text": "x", "at": ""},
 		"text too long": {"role": "user", "text": strings.Repeat("界", 8193), "at": ""},
+	} {
+		r := outsideFixture("")
+		r["transcript"] = []J{bad}
+		if got := in.ctl(t, "PUT", "/v1/outside-sessions", []J{r}); got.Status != 400 {
+			t.Fatalf("%s: fixture replace answered %d, want 400: %s", name, got.Status, got.Body)
+		}
+	}
+}
+
+// Regression: the fixture transcript drops or invents kind and name, tags an entry an older relay
+// would not, or accepts a tool tag the contract refuses.
+func TestOutsideFixtureTranscriptToolKinds(t *testing.T) {
+	const at = "2026-01-01T00:00:00Z"
+	row := outsideFixture("")
+	row["transcript"] = []J{
+		{"role": "user", "text": "acme prompt", "at": at},
+		{"role": "tool", "text": "Bash ls", "at": at, "kind": "call", "name": "Bash"},
+		{"role": "tool", "text": "unnamed", "at": at, "kind": "call", "name": ""},
+		{"role": "tool", "text": "acme output", "at": at, "kind": "result"},
+		{"role": "tool", "text": "old shape", "at": at},
+	}
+	in := outsideFake(t, []J{row}, nil)
+	page := in.api(t, "GET", "/api/outside-sessions/outside:acme/transcript", nil).is(t, 200).obj(t)
+	entries := page["entries"].([]any)
+	eq(t, len(entries), 5, "entries")
+	wantKeys := [][]string{{"at", "id", "role", "text"}, {"at", "id", "kind", "name", "role", "text"}, {"at", "id", "kind", "name", "role", "text"}, {"at", "id", "kind", "role", "text"}, {"at", "id", "role", "text"}}
+	for n, e := range entries {
+		m := e.(map[string]any)
+		var keys []string
+		for k := range m {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		eq(t, keys, wantKeys[n], fmt.Sprintf("entry %d keys", n))
+	}
+	eq[any](t, entries[1].(map[string]any)["kind"], "call", "call kind")
+	eq[any](t, entries[1].(map[string]any)["name"], "Bash", "call name")
+	eq[any](t, entries[2].(map[string]any)["name"], "", "empty call name")
+	eq[any](t, entries[3].(map[string]any)["kind"], "result", "result kind")
+
+	for name, bad := range map[string]J{
+		"kind on a user entry": {"role": "user", "text": "x", "at": at, "kind": "call", "name": "Bash"},
+		"unknown kind":         {"role": "tool", "text": "x", "at": at, "kind": "other"},
+		"name on a result":     {"role": "tool", "text": "x", "at": at, "kind": "result", "name": "Bash"},
+		"call without name":    {"role": "tool", "text": "x", "at": at, "kind": "call"},
+		"name too long":        {"role": "tool", "text": "x", "at": at, "kind": "call", "name": strings.Repeat("界", 8193)},
 	} {
 		r := outsideFixture("")
 		r["transcript"] = []J{bad}
