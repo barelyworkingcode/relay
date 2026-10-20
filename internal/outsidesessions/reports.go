@@ -48,7 +48,7 @@ func (i *Inventory) drain(ctx context.Context, m Machine) {
 	if err != nil || len(reports) == 0 {
 		return
 	} // Reports never seed an identity: independently refresh live evidence first.
-	if !i.Probe(bounded, m) {
+	if !i.Probe(ctx, m) {
 		return
 	}
 	i.mu.Lock()
