@@ -244,6 +244,11 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 		if st.Phase == sshhost.RunAlive {
 			return p.attachDetached(host, st.Generation)
 		}
+		if st.Phase == sshhost.RunLegacy {
+			// A run from before the message runner has no inbox to send to: it
+			// is stopped once and the session resumes on its conversation.
+			stopDetachedRunner(p.session.ID, host, sshhost.RunDir{Session: p.session.ID, Generation: st.Generation})
+		}
 		if p.cfg.AttachOnly {
 			return fmt.Errorf("%w on host %q", ErrNoDetachedRun, host.Name)
 		}
