@@ -97,6 +97,8 @@ func ensureSandboxClaudeDir(launchDir string) (string, error) {
 }
 
 // sandboxClaudeTrustDir returns the path the seed trusts, or "" for none.
+// The terminal launch also reads it to decide whether to set
+// CLAUDE_CODE_SANDBOXED.
 // Deliberate: it resolves symlinks itself because Claude compares the resolved
 // path, and realpath falls back to Clean when resolution fails. A trust on the
 // home folder or a parent of it is refused, since Claude's trust check walks

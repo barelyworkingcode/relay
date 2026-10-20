@@ -71,6 +71,10 @@ func SandboxClaudeDir() (string, error) {
 	return filepath.Join(base, "relay", "sandbox-claude"), nil
 }
 
+// EnvClaudeSandboxed is the Claude Code variable that says the process runs
+// inside an external sandbox; Claude then skips its folder-trust check.
+const EnvClaudeSandboxed = "CLAUDE_CODE_SANDBOXED"
+
 // SandboxedClaude is the environment a sandboxed Claude Code launch carries.
 //
 // Deliberate: the sandbox grants the Claude install directory read-only, so
@@ -81,6 +85,10 @@ func SandboxClaudeDir() (string, error) {
 // Deliberate: the sandbox refuses the login keychain write that a token
 // refresh needs, so Claude keeps its login in configDir, a folder the profile
 // grants read-write, instead.
+//
+// Deliberate: EnvClaudeSandboxed is not here. The `claude` session kind runs
+// --print, which shows no trust prompt, and the variable would change which
+// project config a headless session loads. Only the terminal launch sets it.
 func SandboxedClaude(configDir string) map[string]string {
 	return map[string]string{EnvDisableAutoUpdater: "1", EnvClaudeConfigDir: configDir}
 }
