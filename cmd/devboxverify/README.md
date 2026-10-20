@@ -1109,8 +1109,8 @@ project and host are deleted after.
 **session-detached-host** (api, so a `--stack` run drives it). A Claude session
 on a loopback host keeps its agent when the host link drops, with no
 `detach_sessions` key set. The journey writes a host `loopback-<nonce>-detach`
-(target `localhost`), a project on it and one agent entry into the instance's
-`settings.json` (the power door, imported by relay's file watch), and removes
+(target `localhost`), a project on it, one agent entry and a `proxy`
+credential into the instance's `settings.json` (the power door, imported by relay's file watch), and removes
 them after. The entry's command is a launcher script the journey writes under
 the state folder. A host session does not inherit relay's environment, so on a
 stack the launcher reads `claude_base_url`, `claude_model` and
@@ -1131,8 +1131,9 @@ ends the process group and removes the run directory.
 - Lives in: `internal/sessions/runner/`, `internal/sshhost/agentrun.go`,
   `cmd/relay/session_launch.go` (`buildHostSpec`).
 - Reached by: `relay session start|message|stop`, `relay host disconnect`,
-  `/ws` with the seeded project's own token (the execute credential is
-  refused there), the agents directory under the loopback
+  `/ws` with a credential of class `proxy` the journey seeds into
+  `settings.json` and removes after (the execute credential is refused there),
+  the agents directory under the loopback
   user's `~/.relay/agents`.
 - Traps: BLOCKED without `claude` on the login-shell PATH, with an unreadable
   `stack.json`, or when the turn ended before the link dropped.

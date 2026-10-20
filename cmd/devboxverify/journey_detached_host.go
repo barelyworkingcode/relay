@@ -65,7 +65,8 @@ func runDetachedHost(ctx context.Context, e env) result {
 // launcher script that entry runs.
 type detachedFixture struct {
 	configDir                string
-	projectToken             string // the /ws bearer: the execute credential is refused there; never printed
+	wsToken                  string // the /ws bearer, a seeded credential of class proxy (the execute credential is refused there); never printed
+	credentialID             string
 	hostID, projectID, entry string
 	projectDir, launcher     string
 }
@@ -141,8 +142,15 @@ func setUpDetachedFixture(ctx context.Context, e env) (*detachedFixture, error) 
 		return nil, err
 	}
 	projectToken := hex.EncodeToString(secret)
-	fx.projectToken = projectToken
 	tokenHash := sha256.Sum256([]byte(projectToken))
+	wsSecret := make([]byte, 32)
+	if _, err := rand.Read(wsSecret); err != nil {
+		fx.tearDown()
+		return nil, err
+	}
+	fx.wsToken = hex.EncodeToString(wsSecret)
+	wsHash := sha256.Sum256([]byte(fx.wsToken))
+	fx.credentialID = uuid.NewString()
 	now := time.Now().UTC().Format(time.RFC3339)
 	host := map[string]any{
 		"id": fx.hostID, "name": dropInHostPrefix + e.Nonce + "-detach", "target": dropInHostTarget,
@@ -154,8 +162,12 @@ func setUpDetachedFixture(ctx context.Context, e env) (*detachedFixture, error) 
 		"token": projectToken, "token_hash": hex.EncodeToString(tokenHash[:]), "created_at": now,
 		"agents": []map[string]string{{"name": fx.entry, "kind": "claude", "model": agentModel, "command": fx.launcher}},
 	}
+	credential := map[string]any{
+		"id": fx.credentialID, "name": "verify-" + e.Nonce + "-detached-ws", "hash": hex.EncodeToString(wsHash[:]),
+		"classes": []string{"proxy"}, "created": now, "expires": time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}
 	if err := editSettings(e.ConfigDir, func(top map[string]json.RawMessage) error {
-		return appendRecords(top, map[string]any{"hosts": host, "projects": project})
+		return appendRecords(top, map[string]any{"hosts": host, "projects": project, "api_credentials": credential})
 	}); err != nil {
 		fx.tearDown()
 		return nil, err
@@ -170,6 +182,7 @@ func (fx *detachedFixture) tearDown() (problem string) {
 		if err := editSettings(fx.configDir, func(top map[string]json.RawMessage) error {
 			dropRecords(top, "hosts", fx.hostID)
 			dropRecords(top, "projects", fx.projectID)
+			dropRecords(top, "api_credentials", fx.credentialID)
 			return nil
 		}); err != nil {
 			problem += "; teardown: " + err.Error()
@@ -196,12 +209,12 @@ func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res res
 	}
 
 	// Waits: none possible for the settings import; relay's file watch emits
-	// no event. The project's own token opens /ws only once the import has
-	// run, so a refused dial is retried, bounded.
+	// no event. The seeded credential opens /ws only once the import has run,
+	// so a refused dial is retried, bounded.
 	var conn *websocket.Conn
 	var status int
 	if !pollUntil(ctx, detachedStartTries, func() bool {
-		conn, status, err = dialFrontendWS(ctx, e, fx.projectToken)
+		conn, status, err = dialFrontendWS(ctx, e, fx.wsToken)
 		return err == nil
 	}) {
 		return blockedf("GET /ws status %d: %v", status, err)
