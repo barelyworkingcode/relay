@@ -25,7 +25,8 @@ func FolderName(cwd string) string { return folderMangle.ReplaceAllString(cwd, "
 // mtime in base64. nil folderPrefixes scans every project folder; a non-nil
 // slice scans only folders whose name starts with one of them. A symlink on
 // the file, its folder, ~/.claude/projects or ~/.claude is refused. It writes
-// nothing. A file that cannot be read is skipped.
+// nothing. A file that cannot be read, or whose tail holds no "cwd" key, is
+// skipped and does not count toward the cap.
 //
 // The cutoff is an integer and every prefix and held id passes a charset check
 // here, so none of them can carry shell syntax.
@@ -70,7 +71,7 @@ while read -r mt f; do
  d=${f%/*}; base=${d##*/}; file=${f##*/}; stem=${file%.jsonl}
  case "$stem" in ''|*[!A-Za-z0-9_-]*) continue;; esac
 ` + filter + heldCase + ` [ -f "$f" ] && [ ! -L "$f" ] && [ ! -L "$d" ] || continue
- tail -c ` + strconv.Itoa(EndedListTailBytes) + ` "$f" >/dev/null 2>&1 || continue
+ tail -c ` + strconv.Itoa(EndedListTailBytes) + ` "$f" 2>/dev/null | grep -aqF '"cwd"' || continue
  printf 'E\t'; printf '%s' "$f" | b64; printf '\t%s\t' "$mt"; tail -c ` + strconv.Itoa(EndedListTailBytes) + ` "$f" 2>/dev/null | b64; printf '\n'
  n=$((n+1))
 done
@@ -80,8 +81,9 @@ done
 
 // ParseEnded turns EndedScanScript output into ended observations, newest
 // first, at most EndedRowsMax. A row needs a record in the tail whose session
-// id is the file's stem and whose cwd maps back to this very file under home;
-// the file name alone, and the folder name, never decide the working folder.
+// id is the file's stem and whose cwd, or the nearest parent of it, maps back to
+// this very file under home; the file name alone, and the folder name, never
+// decide the working folder. The row's directory is that mapped folder.
 // Empty home takes the script's own H line. Transcript text is display data.
 func ParseEnded(data []byte, home string) []Observation {
 	type file struct {
@@ -150,8 +152,10 @@ func endedObservation(path, stem string, at time.Time, tail []byte, home string)
 		if t, err := time.Parse(time.RFC3339Nano, rec.Timestamp); err == nil && (since.IsZero() || t.Before(since)) {
 			since = t
 		}
-		if cwd == "" && rec.SessionID == stem && rec.Cwd != "" && TranscriptPath(home, rec.Cwd, stem) == path {
-			cwd, branch = rec.Cwd, rec.GitBranch
+		if cwd == "" && rec.SessionID == stem && rec.Cwd != "" {
+			if dir, ok := launchFolder(home, rec.Cwd, stem, path); ok {
+				cwd, branch = dir, rec.GitBranch
+			}
 		}
 	}
 	if cwd == "" {
@@ -166,4 +170,21 @@ func endedObservation(path, stem string, at time.Time, tail []byte, home string)
 		ViewReason: "not_in_tmux", EndedAt: stamp(at),
 	}
 	return Observation{Session: s, ClaudeID: stem, Transcript: path, StatusAt: at}, true
+}
+
+// launchFolder returns the nearest folder, cwd or a parent of it, whose project
+// folder name is the transcript's own. A session that changed into a subfolder
+// keeps its transcript under the launch folder's name.
+func launchFolder(home, cwd, stem, path string) (string, bool) {
+	if !strings.HasPrefix(cwd, "/") {
+		return "", false
+	}
+	for dir := cwd; ; dir = filepath.Dir(dir) {
+		if TranscriptPath(home, dir, stem) == path {
+			return dir, true
+		}
+		if dir == "/" || dir == "." {
+			return "", false
+		}
+	}
 }

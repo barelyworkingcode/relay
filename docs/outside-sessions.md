@@ -143,6 +143,9 @@ scan time. `name` is `Claude — <folder name>`.
   `~/.claude/projects/<folder>/<id>.jsonl` modified inside the window, newest
   first, at most 50, and reads a 16 KiB tail of each. It refuses a symlink on
   the file, its folder, `~/.claude/projects` and `~/.claude`, and writes nothing.
+  A file counts toward the 50 only when its tail holds a `"cwd"` key. When a
+  record's `cwd` is a subfolder of the launch folder, the row's directory is the
+  nearest parent whose folder name is the transcript's own; none matches, no row.
   An unreadable or missing file drops its row, never the list.
 - **Scope.** The console scans every folder under its own
   `~/.claude/projects/`. A host scans only folders whose name starts with the

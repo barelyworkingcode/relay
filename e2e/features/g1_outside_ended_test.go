@@ -476,7 +476,8 @@ func TestOutsideEndedBadFileDropsRow(t *testing.T) {
 }
 
 // AC10: transcript text confers no authority. A forged cwd cannot point a row
-// at another file, and an ended id is refused every action.
+// at another file, and an ended id grants no action: a message is refused,
+// resume and message answer 404, and DELETE answers 204 as an accepted no-op.
 func TestOutsideEndedRowGrantsNoAuthority(t *testing.T) {
 	t.Parallel()
 	r := osStart(t, false)
@@ -521,5 +522,36 @@ func TestOutsideEndedRowGrantsNoAuthority(t *testing.T) {
 	after, err := os.ReadFile(targetPath)
 	if err != nil || string(after) != string(before) {
 		t.Fatalf("the target transcript changed or vanished after the refused requests: %v", err)
+	}
+}
+
+// A session that changed into a subfolder keeps its transcript under the
+// launch folder's name; its row lists the launch folder.
+func TestOutsideEndedSubfolderCwd(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, true)
+	mtime := r.i.Clock().Now.Add(-osEndedHour).Truncate(time.Second)
+	plant := func(home, launch, sid string) string {
+		sub := osDir(t, launch, "deeper/inner")
+		// Every record in the tail names the subfolder, so only the walk-up finds the launch folder.
+		lines := osConversation(sid, sub, "acme-branch", mtime, "acme one", "acme two")
+		osPlantAt(t, osTranscriptPath(home, launch, sid), lines, mtime)
+		return sub
+	}
+	launch := osDir(t, t.TempDir(), "launch")
+	sub := plant(r.i.Home, launch, "acme-subfolder")
+	outside := osDir(t, filepath.Join(r.remote, "elsewhere"), "launch")
+	outsideSub := plant(r.remote, outside, "acme-host-subfolder")
+
+	s := r.probe()
+	row := s.endedAt(launch)
+	if row == nil {
+		t.Fatalf("no ended row for the launch folder %s; snapshot %+v", launch, s)
+	}
+	if s.endedAt(sub) != nil || len(s.endedRows()) != 1 {
+		t.Fatalf("ended rows = %v, want only the launch folder %s: the subfolder %s is not the row's directory", osDirs(s.endedRows()), launch, sub)
+	}
+	if s.endedAt(outside) != nil || s.endedAt(outsideSub) != nil {
+		t.Fatalf("ended rows = %v, want none for the host folder %s outside every host project", osDirs(s.endedRows()), outside)
 	}
 }
