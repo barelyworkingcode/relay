@@ -91,6 +91,13 @@ the byte-identical 404 — a project must not be able to enumerate models
 outside its grant by the shape of the error. The distinction is carried only
 to the audit hook (see below), never onto the wire.
 
+A granted model whose row carries `endpoint_offline` is not served: the
+caller gets `503` with `model endpoint "<name>" unavailable`, audited as
+`host_unavailable`, and nothing is forwarded. The check runs after the grant
+check, so a caller outside the grant sees the 404 above and never the 503.
+For a model-map key the message names the target's endpoint, not the target
+id. Without the field, behaviour is as before.
+
 A caller's spelling is canonicalised before the grant check and before
 forwarding (`internal/modelbroker/normalise.go`'s `canonicalize`, this
 package's `RewriteJSONModel`/`RewriteMultipartModel`): relayLLM's router
@@ -332,6 +339,7 @@ Relay talks to the host over its router socket as plain HTTP/1.1, one connection
 | `target` | Only on an `anthropic-map` row: the router id the key rewrites to. |
 | `system` | `true` hides the row from chat pickers and marks it system-only. |
 | `context_length` | The window size to assume; absent or 0 means unknown. |
+| `endpoint_offline` | The name of the endpoint whose last probe failed; absent or empty means available. Set on each last-known model of that endpoint and on a model-map key that targets one. Listings hide such rows. |
 
 Other fields are ignored. Any status other than `200`, or a body that is not this document, makes the host unavailable (503 to the caller). The body is read up to a fixed cap. The catalog is fetched at most once per cache period and again on a miss ([Catalog cache](#catalog-cache)).
 
@@ -353,7 +361,9 @@ fetch. `Snapshot` fetches whenever the cache was never filled or is expired;
 `Resolve` makes at most one fetch per call — the same expiry fetch
 `Snapshot` would make, plus, only if it hasn't already fetched this call, one
 more on a miss, so a model added upstream since the last fetch is still
-found by name rather than reported missing. A miss that survives its own
+found by name rather than reported missing. A hit on a row flagged `endpoint_offline` counts as a miss for that one
+extra fetch, so an offline mark the host has already cleared is not held for
+the TTL. A miss that survives its own
 fetch is a real miss. A failed refresh is an error (503), and the prior rows
 and fetch time are kept as they were so the next call retries; a stale
 snapshot is never served in a fetch's place. `GET /api/models` reaches this

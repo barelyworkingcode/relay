@@ -28,6 +28,20 @@ type Row struct {
 	// context-window size a client should assume. Zero means unknown, and
 	// is never emitted as 0 on a listing.
 	ContextLength int64
+	// OfflineEndpoint is relayLLM's endpoint_offline: the endpoint whose last
+	// probe failed. "" means available.
+	OfflineEndpoint string
+}
+
+// OfflineEndpoint reports whether the row with id canonical is flagged
+// offline, and names its endpoint.
+func OfflineEndpoint(rows []Row, canonical string) (endpoint string, offline bool) {
+	for _, row := range rows {
+		if row.ID == canonical && row.OfflineEndpoint != "" {
+			return row.OfflineEndpoint, true
+		}
+	}
+	return "", false
 }
 
 // FetchFunc retrieves a fresh catalog snapshot, e.g. by calling relayLLM's
@@ -124,7 +138,9 @@ func (c *Cache) Resolve(ctx context.Context, id string) ([]Row, error) {
 		}
 		fetchedThisCall = true
 	}
-	if _, ok := c.index[id]; !ok && !fetchedThisCall {
+	// An offline hit refetches like a miss: the host may have cleared the
+	// flag since this cache last fetched.
+	if i, ok := c.index[id]; (!ok || c.rows[i].OfflineEndpoint != "") && !fetchedThisCall {
 		if err := c.refetchLocked(ctx); err != nil {
 			return nil, err
 		}
@@ -140,6 +156,9 @@ func (c *Cache) Resolve(ctx context.Context, id string) ([]Row, error) {
 func Filter(rows []Row, grant []string) []Row {
 	out := make([]Row, 0, len(rows))
 	for _, row := range rows {
+		if row.OfflineEndpoint != "" {
+			continue
+		}
 		if _, ok, _ := Allowed(row.ID, grant, rows); ok {
 			out = append(out, Row{ID: row.ID, OwnedBy: row.OwnedBy, System: row.System, ContextLength: row.ContextLength})
 		}
