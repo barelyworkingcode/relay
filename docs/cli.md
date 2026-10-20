@@ -2709,7 +2709,10 @@ provider reports them. The text form is the reply text alone.
 | `--json` | Print the answer as JSON. |
 
 It returns once the message is written, before the turn ends; read the reply
-with `session wait`. `--json` prints `session_id` (string) and `at` (string, RFC
+with `session wait`. On a detached host session the write is complete when the
+runner has moved the message to `sent/`, which is the receipt; no receipt in 25 s
+exits `1` with `send_unknown`, and the message stays queued. Do not send it again
+before reading `session events`. `--json` prints `session_id` (string) and `at` (string, RFC
 3339 with milliseconds). Text form: `sent to session ID at TIME`. Errors are
 those of `session message`: `host_link_down`, `send_unknown`,
 `already_processing`, `resume_required`, `dropped_in`, `session_not_found`.

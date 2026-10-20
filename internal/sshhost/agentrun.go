@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	runnerfiles "github.com/barelyworkingcode/relay/internal/sessions/runner"
 )
 
 // A detached agent runs under ~/.relay/agents/<session>/<generation>/ on a
@@ -29,6 +30,9 @@ const (
 	RunAlive  RunPhase = "alive"  // the runner is running
 	RunExited RunPhase = "exited" // the agent exited; Code is its exit code
 	RunDead   RunPhase = "dead"   // the runner is gone and wrote no exit file
+	// RunLegacy is a live runner from before runner.json: it reads its input
+	// from in.jsonl and has no inbox. Relay stops it and resumes the session.
+	RunLegacy RunPhase = "legacy"
 )
 
 // RunState is RunnerStatus's parsed answer.
@@ -66,42 +70,23 @@ resolve() {
   dir="$base/$gen"
   [ -d "$dir" ]
 }
+state_file() {
+  if [ -f "$dir/runner.json" ]; then state="$dir/runner.json"; elif [ -f "$dir/run.json" ]; then state="$dir/run.json"; else return 1; fi
+}
 runner_alive() {
-  [ -f "$dir/run.json" ] || return 1
-  pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$dir/run.json")
-  started=$(sed -n 's/.*"started":"\([^"]*\)".*/\1/p' "$dir/run.json")
+  state_file || return 1
+  pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$state")
+  started=$(sed -n 's/.*"started":"\([^"]*\)".*/\1/p' "$state")
   [ -n "$pid" ] && [ -n "$started" ] || return 1
   [ "$(lstart "$pid")" = "$started" ]
 }
 `
 
-// agentRunnerScript is the long-lived runner. It leads its own process group
-// (the start script arranges that and the runner refuses to run otherwise),
-// ignores HUP, feeds the agent's stdin from in.jsonl through a fifo so it
-// owns the reader's pid, and writes exit when the agent ends.
-const agentRunnerScript = `trap '' HUP
-dir=$1
-cd "$dir" || exit 1
-lstart() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' ' ' | sed 's/^ //;s/ $//'; }
-pid=$$
-pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
-if [ "$pgid" != "$pid" ]; then : > norun; exit 1; fi
-started=$(lstart "$pid")
-printf '{"pid":%s,"pgid":%s,"started":"%s","generation":"%s"}\n' "$pid" "$pgid" "$started" "${dir##*/}" > run.json.tmp && mv run.json.tmp run.json
-tail -n +1 -f in.jsonl > in.pipe &
-tailpid=$!
-umask "$2"
-sh agent.sh < in.pipe >> out.jsonl 2>> stderr.log
-code=$?
-umask 077
-kill "$tailpid" 2>/dev/null
-printf '{"code":%s,"at":"%s"}\n' "$code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > exit.tmp && mv exit.tmp exit
-`
-
-// agentStartScript takes $1 session, $2 generation (empty: allocate the next)
-// and $3 the base64 of the agent's own launch script. It returns only after
-// run.json exists, which is the completion handle a caller waits on.
-const agentStartScript = agentPrelude + `
+// agentStartScript takes $1 session, $2 generation (empty: allocate the next),
+// $3 the base64 of the agent's own launch script, and $4 and $5 the runner's
+// turn-ended and asking strings. It returns only after runner.json exists,
+// which is the completion handle a caller waits on.
+var agentStartScript = agentPrelude + `
 mkdir -p "$base" 2>/dev/null || { echo "relay: cannot create run directory $base" >&2; exit 3; }
 if [ -n "$2" ]; then
   gen="$2"; dir="$base/$gen"
@@ -117,21 +102,21 @@ else
   done
 fi
 cd "$dir" || exit 3
-: > in.jsonl; : > out.jsonl; : > stderr.log
-mkfifo in.pipe || { echo "relay: cannot create input pipe in $dir" >&2; exit 3; }
+: > out.jsonl; : > events.jsonl; : > stderr.log
+mkdir inbox sent || { echo "relay: cannot create message directories in $dir" >&2; exit 3; }
 printf %s "$3" | base64 -d > agent.sh || { echo "relay: cannot write agent script in $dir" >&2; exit 3; }
 cat > runner.sh <<'RELAY_RUNNER_EOF'
-` + agentRunnerScript + `RELAY_RUNNER_EOF
+` + runnerfiles.Script + `RELAY_RUNNER_EOF
 if command -v setsid >/dev/null 2>&1; then
-  setsid sh "$dir/runner.sh" "$dir" "$oldumask" </dev/null >/dev/null 2>&1 &
+  setsid sh "$dir/runner.sh" "$dir" "$oldumask" "$1" "$gen" "$4" "$5" </dev/null >/dev/null 2>&1 &
 else
   set -m
-  sh "$dir/runner.sh" "$dir" "$oldumask" </dev/null >/dev/null 2>&1 &
+  sh "$dir/runner.sh" "$dir" "$oldumask" "$1" "$gen" "$4" "$5" </dev/null >/dev/null 2>&1 &
   set +m
 fi
 rpid=$!
 i=0
-while [ ! -f "$dir/run.json" ]; do
+while [ ! -f "$dir/runner.json" ]; do
   i=$((i+1))
   if [ -f "$dir/norun" ] || [ "$i" -gt 100 ]; then
     kill "$rpid" 2>/dev/null
@@ -150,19 +135,46 @@ if [ -f "$dir/exit" ]; then
   echo "@@RELAY_RUN@@ exited $gen ${code:-1}"
   exit 0
 fi
-if runner_alive; then echo "@@RELAY_RUN@@ alive $gen"; else echo "@@RELAY_RUN@@ dead $gen"; fi
+if runner_alive; then
+  if [ -f "$dir/runner.json" ]; then echo "@@RELAY_RUN@@ alive $gen"; else echo "@@RELAY_RUN@@ legacy $gen"; fi
+else
+  echo "@@RELAY_RUN@@ dead $gen"
+fi
 `
 
-// agentSendBody appends one line from stdin to in.jsonl. The refusal when the
-// runner is gone is deliberate: an append to a file nobody reads must not
-// report delivery.
-const agentSendBody = `resolve "$@" || { echo "relay: no agent run for this session" >&2; exit 5; }
+// agentSendScript takes $1 session, $2 generation, $3 message id, $4 kind. It
+// writes stdin's line as inbox/<id>.<kind> by temp file and rename, then waits
+// for the runner to move it to sent/: that move is the receipt. Exit 5: no run,
+// or the runner is gone, and the file is removed. Exit 7: no receipt within 25
+// seconds while the runner lives; the file stays queued and may still be
+// delivered, so a caller must not send it again.
+const agentSendScript = agentPrelude + `
+case "$3" in ''|*[!0-9a-f-]*) echo "relay: invalid message id" >&2; exit 2;; esac
+case "$4" in json|ctl) ;; *) echo "relay: invalid message kind" >&2; exit 2;; esac
+resolve "$@" || { echo "relay: no agent run for this session" >&2; exit 5; }
 if [ -f "$dir/exit" ] || ! runner_alive; then echo "relay: the agent is not running" >&2; exit 5; fi
+[ -d "$dir/inbox" ] || { echo "relay: the agent is not running under a message runner" >&2; exit 5; }
+name="$3.$4"
 line=$(cat)
-printf '%s\n' "$line" >> "$dir/in.jsonl" || exit 6
+printf '%s\n' "$line" > "$dir/inbox/.$3.tmp" || exit 6
+mv "$dir/inbox/.$3.tmp" "$dir/inbox/$name" || { rm -f "$dir/inbox/.$3.tmp"; exit 6; }
+if sleep 0.1 2>/dev/null; then tick=0.1; max=250; else tick=1; max=25; fi
+i=0
+while [ "$i" -lt "$max" ]; do
+  [ -f "$dir/sent/$name" ] && exit 0
+  if [ -f "$dir/exit" ] || ! runner_alive; then
+    [ -f "$dir/sent/$name" ] && exit 0
+    rm -f "$dir/inbox/$name"
+    echo "relay: the agent is not running" >&2
+    exit 5
+  fi
+  sleep "$tick"
+  i=$((i+1))
+done
+[ -f "$dir/sent/$name" ] && exit 0
+echo "relay: the runner did not take the message in time" >&2
+exit 7
 `
-
-const agentSendScript = agentPrelude + agentSendBody
 
 // agentReadScript takes $3, the byte offset of a line start. When the runner
 // is already gone it prints the rest and ends. Otherwise it follows out.jsonl
@@ -202,16 +214,17 @@ exec tail -c +"$((off+1))" "$dir/out.jsonl"
 
 // agentStopScript ends the runner's process group, TERM then KILL, and
 // returns once the group is gone. Deliberate: it kills only while the leader
-// is alive with the start time run.json recorded. A dead leader, a different
+// is alive with the start time the state file (runner.json, or run.json of a
+// legacy run) recorded. A dead leader, a different
 // start time or an exit file means the group is gone or no longer ours, and
 // nothing is signalled.
 const agentStopScript = agentPrelude + `
 resolve "$@" || exit 0
 [ ! -f "$dir/exit" ] || exit 0
-[ -f "$dir/run.json" ] || exit 0
-pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$dir/run.json")
-pgid=$(sed -n 's/.*"pgid":\([0-9][0-9]*\).*/\1/p' "$dir/run.json")
-started=$(sed -n 's/.*"started":"\([^"]*\)".*/\1/p' "$dir/run.json")
+state_file || exit 0
+pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$state")
+pgid=$(sed -n 's/.*"pgid":\([0-9][0-9]*\).*/\1/p' "$state")
+started=$(sed -n 's/.*"started":"\([^"]*\)".*/\1/p' "$state")
 [ -n "$pid" ] && [ "$pid" = "$pgid" ] || exit 0
 cur=$(lstart "$pid")
 [ -n "$cur" ] && [ "$cur" = "$started" ] || exit 0
@@ -244,26 +257,28 @@ func agentCommand(hostOS, script string, args ...string) string {
 
 // RunnerStart is RunnerStartIn with the agent's working directory left to the
 // host's login directory.
-func RunnerStart(hostOS string, d RunDir, argv []string, env map[string]string) string {
-	return RunnerStartIn(hostOS, "", d, argv, env)
+func RunnerStart(hostOS string, d RunDir, argv []string, env map[string]string, p runnerfiles.Patterns) string {
+	return RunnerStartIn(hostOS, "", d, argv, env, p)
 }
 
 // RunnerStartIn creates the run directory, starts argv under dir as a detached
-// agent and returns after run.json exists. It prints "@@RELAY_RUN@@ <generation>".
+// agent and returns after runner.json exists. It prints "@@RELAY_RUN@@ <generation>".
 // An empty d.Generation allocates the next one; a given one is refused if its
-// directory exists. env goes to the agent only.
-func RunnerStartIn(hostOS, dir string, d RunDir, argv []string, env map[string]string) string {
+// directory exists. env goes to the agent only. p holds the strings the runner
+// matches to write event lines.
+func RunnerStartIn(hostOS, dir string, d RunDir, argv []string, env map[string]string, p runnerfiles.Patterns) string {
 	script := base64.StdEncoding.EncodeToString([]byte(buildScript(dir, argv, env)))
-	return agentCommand(hostOS, agentStartScript, d.Session, d.Generation, script)
+	return agentCommand(hostOS, agentStartScript, d.Session, d.Generation, script, p.TurnEnded, p.Asking)
 }
 
-// RunnerSend appends the line on its stdin as one complete line to in.jsonl.
-// The line travels on stdin so no other account sees it in a process listing.
-// It fails, and so reports no delivery, when the append fails or the agent is
-// gone. A caller must not retry on an ambiguous ssh exit: the append may have
-// landed.
-func RunnerSend(hostOS string, d RunDir) string {
-	return agentCommand(hostOS, agentSendScript, d.Session, d.Generation)
+// RunnerSend writes the line on its stdin as inbox/<id>.<kind> and exits 0 only
+// once the runner has moved it to sent/. The line travels on stdin so no other
+// account sees it in a process listing. Exit 5: no run, or the runner is gone
+// (the file is removed). Exit 7: no receipt within 25 s while the runner lives;
+// the file stays queued. A caller must not retry on exit 7 or an ambiguous ssh
+// exit: the message may still be delivered.
+func RunnerSend(hostOS string, d RunDir, id string, kind runnerfiles.MessageKind) string {
+	return agentCommand(hostOS, agentSendScript, d.Session, d.Generation, id, string(kind))
 }
 
 // RunnerRead follows out.jsonl from a byte offset and ends when the runner is
@@ -284,7 +299,7 @@ func RunnerStop(hostOS string, d RunDir) string {
 }
 
 // RunnerStatus prints "none", "alive <gen>", "exited <gen> <code>" or
-// "dead <gen>" for the generation, the latest when d.Generation is empty.
+// "dead <gen>" or "legacy <gen>" for the generation, the latest when d.Generation is empty.
 func RunnerStatus(hostOS string, d RunDir) string {
 	return agentCommand(hostOS, agentStatusScript, d.Session, d.Generation)
 }
@@ -332,7 +347,7 @@ func ParseRunState(out string) (RunState, error) {
 	switch RunPhase(f[0]) {
 	case RunNone:
 		return RunState{Phase: RunNone}, nil
-	case RunAlive, RunDead:
+	case RunAlive, RunDead, RunLegacy:
 		if len(f) == 2 {
 			return RunState{Phase: RunPhase(f[0]), Generation: f[1]}, nil
 		}
