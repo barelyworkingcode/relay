@@ -124,9 +124,11 @@ outside it is not a relay bug, however real.
    reads the window size to follow it and sets nothing on the owner's
    session. Being listed by tmux confers no managed-session authority.
 3d. **A caller reading an outside transcript.** A frontend holding `execute` on the socket reads one page of an outside session's transcript through `GET /api/outside-sessions/{id}/transcript`. The id resolves only to a live inventory entry. The file is the one the probe derived from the machine's home, the process's working folder and a validated session id; no request field names a path. The read refuses a symbolic link on the file or its three parent folders, reads at most 256 KiB per request and writes nothing. On an SSH host it runs over the host's ssh as the host account, as the probe does. No `read` credential and no TCP caller reaches the route, and neither does the Chief of Staff scope, which still reads only the latest turn. Transcript text is untrusted display data and grants no action authority.
-3e. **Other code running as the host account on a detached session's host.**
+3e. **Other code running as the host account on a detached session's host, or as the user on this Mac.**
    A detached session's agent reads `~/.relay/agents/<session id>/<generation>/inbox/`
-   on the host. Any process running as that account can write a file there and
+   on the host; a local Claude session's runner reads the same layout under
+   `<config dir>/sessions/runners/<session id>/<generation>/` on this Mac.
+   No sandbox profile grants that directory, so attacker 1 cannot reach it. Any process running as that account can write a file there and
    forge a user message or a `control_response` that allows a tool call. This
    grants no new reach: a host session already runs unconfined as that
    account, so such a process can do what the agent can do. It is a new way

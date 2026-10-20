@@ -2752,12 +2752,12 @@ reports no agent state exits `1` with `not_tracked`.
 | `--after` | The cursor an earlier call printed. Empty starts at the beginning of the current run. |
 | `--json` | Print the answer as JSON. |
 
-It prints the events a detached host session's agent wrote after the cursor,
+It prints the events a detached host session's or a local runner session's agent wrote after the cursor,
 in order, up to 200 per call. `--json` prints `session_id` (string), `events`
 (array of the agent's stream-json lines) and `next` (string, the cursor for
 the next call; unchanged when nothing is new). Text form: one event per line,
-then `next CURSOR`. A malformed cursor exits `1`. A session that is not a live
-detached host session exits `1` with `replay_unavailable`.
+then `next CURSOR`. A malformed cursor exits `1`. A chat session, an `ssh -T` session, or any session without a runner exits `1`
+with `replay_unavailable`.
 
 ### `session stop`
 

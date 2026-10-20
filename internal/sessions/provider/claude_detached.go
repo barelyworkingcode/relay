@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/logging"
+	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/sessions/runner"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
@@ -47,10 +49,14 @@ const (
 )
 
 type detachedRun struct {
-	spec   *sessionstypes.HostSpec
-	dir    sshhost.RunDir
-	ctx    context.Context
-	cancel context.CancelFunc
+	// host is nil for a run on this machine.
+	host *sessionstypes.HostSpec
+	gen  string
+	// conn reaches the run directory; connFor reaches another generation's.
+	conn    runConn
+	connFor func(gen string) runConn
+	ctx     context.Context
+	cancel  context.CancelFunc
 
 	// offset is the byte offset of the next line start to consume. Only whole
 	// lines advance it, which is what makes a reopened read deliver each event
@@ -83,6 +89,14 @@ type detachedRun struct {
 	// of a killed spawn waits on it so the exit follows the real end.
 	stopped chan struct{}
 	done    chan struct{}
+}
+
+// where names the machine the agent runs on, for messages.
+func (d *detachedRun) where() string {
+	if d.host == nil {
+		return "this machine"
+	}
+	return fmt.Sprintf("host %q", d.host.Name)
 }
 
 // markLost marks the link lost and reports whether this call did it.
@@ -242,12 +256,12 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 			return fmt.Errorf("ask host %q whether the agent runs: %w", host.Name, err)
 		}
 		if st.Phase == sshhost.RunAlive {
-			return p.attachDetached(host, st.Generation)
+			return p.attachRun(host, hostConnFor(host, p.session.ID), st.Generation)
 		}
 		if st.Phase == sshhost.RunLegacy {
 			// A run from before the message runner has no inbox to send to: it
 			// is stopped once and the session resumes on its conversation.
-			stopDetachedRunner(p.session.ID, host, sshhost.RunDir{Session: p.session.ID, Generation: st.Generation})
+			stopRun(p.session.ID, fmt.Sprintf("host %q", host.Name), hostConnFor(host, p.session.ID)(st.Generation))
 		}
 		if p.cfg.AttachOnly {
 			return fmt.Errorf("%w on host %q", ErrNoDetachedRun, host.Name)
@@ -271,7 +285,7 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 	p.mu.Lock()
 	p.restoredRun = nil
 	p.mu.Unlock()
-	det, spawn, spawnGen := p.beginDetached(host, sshhost.RunDir{Session: p.session.ID, Generation: gen})
+	det, spawn, spawnGen := p.beginDetached(host, hostConnFor(host, p.session.ID), gen)
 	p.runDetached(det, spawn, spawnGen)
 	slog.Info("claude detached agent started", "session", p.session.ID, "host", host.ID, "generation", gen)
 	return nil
@@ -280,11 +294,13 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 // beginDetached installs the state of a spawn that follows det's run and
 // marks the provider alive. It starts no goroutine: runDetached does, so an
 // attach can read what the agent wrote while relay was away first.
-func (p *ClaudeProvider) beginDetached(host *sessionstypes.HostSpec, dir sshhost.RunDir) (*detachedRun, *claudeSpawnState, uint64) {
+func (p *ClaudeProvider) beginDetached(host *sessionstypes.HostSpec, connFor func(gen string) runConn, gen string) (*detachedRun, *claudeSpawnState, uint64) {
 	runCtx, runCancel := context.WithCancel(context.Background())
 	det := &detachedRun{
-		spec:    host,
-		dir:     dir,
+		host:    host,
+		gen:     gen,
+		conn:    connFor(gen),
+		connFor: connFor,
 		ctx:     runCtx,
 		cancel:  runCancel,
 		stopped: make(chan struct{}),
@@ -377,7 +393,7 @@ func (p *ClaudeProvider) pumpDetached(det *detachedRun, spawn *claudeSpawnState)
 		}
 
 		st, err := p.detachedStatus(det)
-		for err == nil && st.Phase == sshhost.RunAlive || err != nil {
+		for err == nil && st.Phase == runner.PhaseAlive || err != nil {
 			if det.markLost() {
 				p.emitHostLink(det, "lost")
 			}
@@ -390,7 +406,7 @@ func (p *ClaudeProvider) pumpDetached(det *detachedRun, spawn *claudeSpawnState)
 			}
 			st, err = p.detachedStatus(det)
 		}
-		if err == nil && st.Phase != sshhost.RunAlive {
+		if err == nil && st.Phase != runner.PhaseAlive {
 			if det.markRestored() {
 				p.emitHostLink(det, "restored")
 			}
@@ -432,39 +448,48 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 }
 
 func (p *ClaudeProvider) emitHostLink(det *detachedRun, link string) {
+	if det.host == nil {
+		return
+	}
 	logging.BeginEvent(context.Background(), "session.host_link").
-		Set("session_id", p.session.ID).Set("host_id", det.spec.ID).Set("link", link).
+		Set("session_id", p.session.ID).Set("host_id", det.host.ID).Set("link", link).
 		End(logging.OutcomeOK, "", nil)
 }
 
-func (p *ClaudeProvider) detachedStatus(det *detachedRun) (sshhost.RunState, error) {
+func (p *ClaudeProvider) detachedStatus(det *detachedRun) (runner.Status, error) {
 	ctx, cancel := context.WithTimeout(det.ctx, detachedSendTimeout)
 	defer cancel()
-	stdout, msg, err := runHost(ctx, det.spec, sshhost.RunnerStatus(det.spec.OS, det.dir), nil)
-	if err != nil {
-		return sshhost.RunState{}, errors.New(msg)
-	}
-	return sshhost.ParseRunState(stdout)
+	return det.conn.Status(ctx)
 }
 
 // finishDetached delivers what the agent wrote last, then reports its exit.
-func (p *ClaudeProvider) finishDetached(det *detachedRun, spawn *claudeSpawnState, st sshhost.RunState) (int, []string) {
+func (p *ClaudeProvider) finishDetached(det *detachedRun, spawn *claudeSpawnState, st runner.Status) (int, []string) {
 	det.finished.Store(true)
 	ctx, cancel := context.WithTimeout(det.ctx, detachedSendTimeout)
 	defer cancel()
-	p.consumeLines(ctx, det, spawn, hostExec(ctx, det.spec, sshhost.RunnerReadOnce(det.spec.OS, det.dir, det.offset.Load())))
+	p.consumeLines(ctx, det, spawn, false)
 
 	code := -1
-	if st.Phase == sshhost.RunExited {
+	if st.Phase == runner.PhaseExited {
 		code = st.Code
 	}
 	var tail []string
 	if code != 0 {
-		if out, _, err := runHost(ctx, det.spec, sshhost.RunnerStderrTail(det.spec.OS, det.dir), nil); err == nil {
-			tail = stderrTailOf(out)
+		if out, err := det.conn.StderrTail(ctx); err == nil {
+			tail = p.redactTail(stderrTailOf(out))
 		}
 	}
 	return code, tail
+}
+
+// redactTail masks the launch's secrets in each tail line. The secrets are
+// empty after a relay restart; the shape-based masks still apply then.
+func (p *ClaudeProvider) redactTail(lines []string) []string {
+	secrets := []string{p.identitySecret(), p.cfg.ClaudeToken}
+	for i, l := range lines {
+		lines[i] = redactStderrLine(l, secrets)
+	}
+	return lines
 }
 
 func stderrTailOf(text string) []string {
@@ -482,8 +507,7 @@ func stderrTailOf(text string) []string {
 }
 
 func (p *ClaudeProvider) readDetached(det *detachedRun, spawn *claudeSpawnState) {
-	cmd := hostExec(det.ctx, det.spec, sshhost.RunnerRead(det.spec.OS, det.dir, det.offset.Load()))
-	p.consumeLines(det.ctx, det, spawn, cmd)
+	p.consumeLines(det.ctx, det, spawn, true)
 }
 
 // closeOnDone closes r when ctx ends, so a read blocked on a pipe that a
@@ -501,15 +525,13 @@ func closeOnDone(ctx context.Context, r io.Closer) func() {
 	return func() { close(stop) }
 }
 
-// consumeLines runs cmd and feeds each complete line of its stdout to
+// consumeLines reads the output from the saved offset, following it while the
+// runner lives when follow is set, and feeds each complete line to
 // processLine. A partial last line is dropped: the offset stays at its start,
 // so the next read begins there.
-func (p *ClaudeProvider) consumeLines(ctx context.Context, det *detachedRun, spawn *claudeSpawnState, cmd *exec.Cmd) {
-	stdout, err := cmd.StdoutPipe()
+func (p *ClaudeProvider) consumeLines(ctx context.Context, det *detachedRun, spawn *claudeSpawnState, follow bool) {
+	stdout, err := det.conn.Read(ctx, det.offset.Load(), follow)
 	if err != nil {
-		return
-	}
-	if err := cmd.Start(); err != nil {
 		slog.Warn("claude: detached read did not start", "session", p.session.ID, "error", err)
 		return
 	}
@@ -537,8 +559,7 @@ func (p *ClaudeProvider) consumeLines(ctx context.Context, det *detachedRun, spa
 		default:
 		}
 	}
-	_ = cmd.Process.Kill()
-	_ = cmd.Wait()
+	_ = stdout.Close()
 }
 
 // DefaultLinkWait is how long a send waits for a lost host link to return.
@@ -596,7 +617,7 @@ func sshConnectFailure(msg string) bool {
 // timer fires, the caller's ctx ends, the runner is gone or the spawn is
 // killed. A caller that has left gets ErrHostLinkDown and nothing is written.
 func (p *ClaudeProvider) awaitLink(ctx context.Context, det *detachedRun, wait time.Duration, timer *time.Timer) error {
-	down := fmt.Errorf("%w: the message was not sent; retry when host %q is reachable", ErrHostLinkDown, det.spec.Name)
+	down := fmt.Errorf("%w: the message was not sent; retry when %s is reachable", ErrHostLinkDown, det.where())
 	if ctx.Err() != nil {
 		return down
 	}
@@ -615,9 +636,9 @@ func (p *ClaudeProvider) awaitLink(ctx context.Context, det *detachedRun, wait t
 		case <-ctx.Done():
 			return down
 		case <-det.done:
-			return fmt.Errorf("claude on host %q has exited", det.spec.Name)
+			return fmt.Errorf("claude on %s has exited", det.where())
 		case <-det.ctx.Done():
-			return fmt.Errorf("the session on host %q was stopped", det.spec.Name)
+			return fmt.Errorf("the session on %s was stopped", det.where())
 		}
 	}
 	return nil
@@ -626,16 +647,14 @@ func (p *ClaudeProvider) awaitLink(ctx context.Context, det *detachedRun, wait t
 // sendDetached queues one line (data ends in a newline) in the runner's inbox
 // and returns once the runner has written it to the agent. It waits up to wait
 // for a lost link to return, then sends once.
-// Deliberate: no retry after the command ran. An ssh failure after the
-// command started, or a missing receipt, may still have landed the message,
-// and a second one would deliver it twice. The id is fixed per call, so the
-// one retry after an ssh connect failure reuses it. A failure that proves ssh never connected is the one
-// retry: the link is marked lost and the wait begins again.
+// Deliberate: no retry after the command ran. A failure after the command
+// started, or a missing receipt, may still have landed the message, and a
+// second one would deliver it twice. Only a failure that proves ssh never
+// connected is retried: the link is marked lost and the wait begins again.
 func (p *ClaudeProvider) sendDetached(callerCtx context.Context, det *detachedRun, data []byte, wait time.Duration) error {
 	line := bytes.TrimSuffix(data, []byte("\n"))
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
-	id := runner.NewMessageID(time.Now())
 	// A control_response answers a request and starts no turn.
 	kind := runner.MessageTurn
 	if lineType(string(line)) == "control_response" {
@@ -646,29 +665,24 @@ func (p *ClaudeProvider) sendDetached(callerCtx context.Context, det *detachedRu
 			return err
 		}
 		if callerCtx.Err() != nil {
-			return fmt.Errorf("%w: the message was not sent; retry when host %q is reachable", ErrHostLinkDown, det.spec.Name)
+			return fmt.Errorf("%w: the message was not sent; retry when %s is reachable", ErrHostLinkDown, det.where())
 		}
-		// Deliberate: the write itself does not follow the caller's ctx. A
-		// line already on its way cannot be recalled, so it is left to finish.
-		ctx, cancel := context.WithTimeout(det.ctx, detachedSendTimeout)
-		_, msg, err := runHost(ctx, det.spec, sshhost.RunnerSend(det.spec.OS, det.dir, id, kind), bytes.NewReader(line))
-		cut := ctx.Err() != nil
-		cancel()
+		err := det.conn.Send(det.ctx, kind, line)
 		switch {
 		case err == nil:
 			return nil
-		case sshConnectFailure(msg):
+		case errors.Is(err, errNoConnect):
 			if det.markLost() {
 				p.emitHostLink(det, "lost")
 			}
-		case cut || sendOutcomeUnknown(err):
-			return fmt.Errorf("%w: the connection to host %q ended during the send; the message may have been delivered, so read the session's events before sending again", ErrSendUnknown, det.spec.Name)
-		case exitCodeOf(err) == runnerNotRunning:
-			return fmt.Errorf("the agent is not running on host %q", det.spec.Name)
-		case exitCodeOf(err) == runnerNoReceipt:
-			return fmt.Errorf("%w: host %q did not confirm delivery in time; the message is queued and may still be delivered, so read the session's events before sending again", ErrSendUnknown, det.spec.Name)
+		case errors.Is(err, errSendUnknown):
+			return fmt.Errorf("%w: the connection to %s ended during the send; the message may have been delivered, so read the session's events before sending again", ErrSendUnknown, det.where())
+		case errors.Is(err, runner.ErrNotRunning):
+			return fmt.Errorf("the agent is not running on %s", det.where())
+		case errors.Is(err, runner.ErrNoReceipt):
+			return fmt.Errorf("%w: %s did not confirm delivery in time; the message is queued and may still be delivered, so read the session's events before sending again", ErrSendUnknown, det.where())
 		default:
-			return fmt.Errorf("send to claude on host %q: %s", det.spec.Name, msg)
+			return fmt.Errorf("send to claude on %s: %w", det.where(), err)
 		}
 	}
 }
@@ -725,7 +739,7 @@ func (p *ClaudeProvider) killDetached(det *detachedRun, stopAgent bool) {
 		}
 		det.cancel()
 		if stopAgent && !det.finished.Load() {
-			stopDetachedRunner(p.session.ID, det.spec, det.dir)
+			stopRun(p.session.ID, det.where(), det.conn)
 		}
 		close(det.stopped)
 	})
@@ -736,30 +750,47 @@ func (p *ClaudeProvider) killDetached(det *detachedRun, stopAgent bool) {
 	slog.Info("claude process killed", "session", p.session.ID)
 }
 
-// stopRunner asks the host to end the agent's process group. A host that
-// cannot be reached leaves the agent running; that is logged, since nothing
-// else will tell the operator.
-func stopDetachedRunner(session string, spec *sessionstypes.HostSpec, dir sshhost.RunDir) {
-	var msg string
+// hostConnFor reaches generations of session's run directory on host.
+func hostConnFor(host *sessionstypes.HostSpec, session string) func(gen string) runConn {
+	return func(gen string) runConn {
+		return sshConn{host: host, dir: sshhost.RunDir{Session: session, Generation: gen}}
+	}
+}
+
+// localConnFor reaches generations of session's run directory under base.
+func localConnFor(base, session string) func(gen string) runConn {
+	return func(gen string) runConn {
+		return localConn{run: runner.LocalRun{Base: base, Session: session, Generation: gen}}
+	}
+}
+
+// stopRun asks the runner to end the agent. An agent that cannot be reached
+// keeps running; that is logged, since nothing else will tell the operator.
+func stopRun(session, where string, conn runConn) {
+	var err error
 	for i := 0; i < detachedStopTries; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), detachedStopTimeout)
-		_, m, err := runHost(ctx, spec, sshhost.RunnerStop(spec.OS, dir), nil)
+		err = conn.Stop(ctx)
 		cancel()
 		if err == nil {
 			return
 		}
-		msg = m
 		time.Sleep(time.Second)
 	}
-	slog.Warn("claude: detached agent could not be stopped; it may still run on the host", "session", session, "host", spec.ID, "error", msg)
+	slog.Warn("claude: detached agent could not be stopped; it may still run", "session", session, "where", where, "error", err)
 }
 
 // StopDetachedRun ends the latest agent of a detached session without
 // deleting its run directories. It needs no live provider.
 func StopDetachedRun(session string, host *sessionstypes.HostSpec) {
 	if DetachedHost(host) {
-		stopDetachedRunner(session, host, sshhost.RunDir{Session: session})
+		stopRun(session, fmt.Sprintf("host %q", host.Name), hostConnFor(host, session)(""))
 	}
+}
+
+// StopLocalRun is StopDetachedRun for a run on this machine.
+func StopLocalRun(base, session string) {
+	stopRun(session, "this machine", localConnFor(base, session)(""))
 }
 
 // removeDetachedRun ends the agent and deletes its run directories, which
@@ -777,11 +808,19 @@ func DeleteDetachedRun(session string, host *sessionstypes.HostSpec) {
 	if host == nil || !host.Detach || len(host.SSHArgv) == 0 || sshhost.IsWindowsOS(host.OS) {
 		return
 	}
-	stopDetachedRunner(session, host, sshhost.RunDir{Session: session})
+	StopDetachedRun(session, host)
 	ctx, cancel := context.WithTimeout(context.Background(), detachedStopTimeout)
 	defer cancel()
-	if _, msg, err := runHost(ctx, host, sshhost.RunnerRemove(host.OS, session), nil); err != nil {
-		slog.Warn("claude: detached run directory not removed", "session", session, "host", host.ID, "error", msg)
+	if err := hostConnFor(host, session)("").Remove(ctx); err != nil {
+		slog.Warn("claude: detached run directory not removed", "session", session, "host", host.ID, "error", err)
+	}
+}
+
+// DeleteLocalRun is DeleteDetachedRun for a run on this machine.
+func DeleteLocalRun(base, session string) {
+	StopLocalRun(base, session)
+	if err := runner.RemoveLocal(base, session); err != nil {
+		slog.Warn("claude: local run directory not removed", "session", session, "error", err)
 	}
 }
 
@@ -793,15 +832,15 @@ func (p *ClaudeProvider) Events(ctx context.Context, after string, max int) (lin
 	if det == nil {
 		return nil, "", ErrNotDetached
 	}
-	d := det.dir
+	gen := det.gen
 	var offset int64
 	if after != "" {
-		gen, off, ok := strings.Cut(after, ":")
+		g, off, ok := strings.Cut(after, ":")
 		n, perr := strconv.ParseInt(off, 10, 64)
-		if !ok || gen == "" || perr != nil || n < 0 {
+		if !ok || g == "" || perr != nil || n < 0 {
 			return nil, "", fmt.Errorf("%w %q", ErrInvalidCursor, after)
 		}
-		d.Generation, offset = gen, n
+		gen, offset = g, n
 	}
 	if max <= 0 || max > detachedEventsMax {
 		max = detachedEventsMax
@@ -809,13 +848,9 @@ func (p *ClaudeProvider) Events(ctx context.Context, after string, max int) (lin
 
 	rctx, cancel := context.WithTimeout(ctx, detachedEventsWait)
 	defer cancel()
-	cmd := hostExec(rctx, det.spec, sshhost.RunnerReadOnce(det.spec.OS, d, offset))
-	stdout, perr := cmd.StdoutPipe()
+	stdout, perr := det.connFor(gen).Read(rctx, offset, false)
 	if perr != nil {
-		return nil, "", perr
-	}
-	if perr = cmd.Start(); perr != nil {
-		return nil, "", fmt.Errorf("read events on host %q: %w", det.spec.Name, perr)
+		return nil, "", fmt.Errorf("read events on %s: %w", det.where(), perr)
 	}
 	defer closeOnDone(rctx, stdout)()
 	br := bufio.NewReaderSize(stdout, 64*1024)
@@ -830,16 +865,13 @@ func (p *ClaudeProvider) Events(ctx context.Context, after string, max int) (lin
 			lines = append(lines, json.RawMessage(body))
 		}
 	}
-	if rerr != io.EOF {
-		_ = cmd.Process.Kill()
-	}
-	if werr := cmd.Wait(); werr != nil && rerr == io.EOF && len(lines) == 0 {
-		return nil, "", fmt.Errorf("read events on host %q: %w", det.spec.Name, werr)
+	if werr := stdout.Close(); werr != nil && rerr == io.EOF && len(lines) == 0 {
+		return nil, "", fmt.Errorf("read events on %s: %w", det.where(), werr)
 	}
 	if rctx.Err() != nil && len(lines) == 0 {
-		return nil, "", fmt.Errorf("read events on host %q: %w", det.spec.Name, rctx.Err())
+		return nil, "", fmt.Errorf("read events on %s: %w", det.where(), rctx.Err())
 	}
-	return lines, d.Generation + ":" + strconv.FormatInt(offset, 10), nil
+	return lines, gen + ":" + strconv.FormatInt(offset, 10), nil
 }
 
 // TakeAttach returns, once, whether the attach found a turn in progress and
@@ -972,18 +1004,20 @@ func firstLineOf(s string) string {
 	return line
 }
 
-// attachDetached follows the agent already running in generation gen. It
+// attachRun follows the agent already running in generation gen. It
 // reads, before it returns, what the agent wrote since the saved cursor, so a
 // message sent next meets only its own reply, and it raises the permission
 // requests nobody answered: the agent is blocked on each. A cursor that is
 // absent, from another generation or past the output starts at the end of the
 // output.
-func (p *ClaudeProvider) attachDetached(host *sessionstypes.HostSpec, gen string) error {
-	dir := sshhost.RunDir{Session: p.session.ID, Generation: gen}
+func (p *ClaudeProvider) attachRun(host *sessionstypes.HostSpec, connFor func(gen string) runConn, gen string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), detachedStartTimeout)
 	defer cancel()
-	probe, err := probeAttach(ctx, host, dir)
+	probe, err := connFor(gen).Probe(ctx)
 	if err != nil {
+		if host == nil {
+			return fmt.Errorf("attach to the local agent: %w", err)
+		}
 		return fmt.Errorf("attach to the agent on host %q: %w", host.Name, err)
 	}
 
@@ -995,7 +1029,7 @@ func (p *ClaudeProvider) attachDetached(host *sessionstypes.HostSpec, gen string
 		offset = saved.Offset
 	}
 
-	det, spawn, spawnGen := p.beginDetached(host, dir)
+	det, spawn, spawnGen := p.beginDetached(host, connFor, gen)
 	det.offset.Store(offset)
 	for _, id := range probe.answered {
 		det.claimRequestID(id)
@@ -1007,7 +1041,7 @@ func (p *ClaudeProvider) attachDetached(host *sessionstypes.HostSpec, gen string
 			det.deferred = append(det.deferred, raw)
 		}
 	}
-	p.consumeLines(ctx, det, spawn, hostExec(ctx, host, sshhost.RunnerReadOnce(host.OS, dir, offset)))
+	p.consumeLines(ctx, det, spawn, false)
 	// Results the read delivered from past the probe end a turn the probe
 	// counted as open; older ones it replayed from the cursor do not count.
 	turnOpen := probe.users > probe.results+int(spawn.resultsSeen.Load())
@@ -1017,6 +1051,215 @@ func (p *ClaudeProvider) attachDetached(host *sessionstypes.HostSpec, gen string
 	p.mu.Unlock()
 	p.runDetached(det, spawn, spawnGen)
 
-	slog.Info("claude detached agent attached", "session", p.session.ID, "host", host.ID, "generation", gen, "cursor", offset)
+	slog.Info("claude detached agent attached", "session", p.session.ID, "where", det.where(), "generation", gen, "cursor", offset)
 	return nil
+}
+
+// startLocal runs the agent on this machine under the runner, so it outlives
+// relay-sessions. A resume or attach finds a runner that still lives first and
+// follows it: a second agent must never share the conversation.
+func (p *ClaudeProvider) startLocal(spawn *claudeSpawnState) error {
+	base := p.cfg.RunnerBase
+	if base == "" {
+		return errors.New("claude: no runner directory is configured for local sessions")
+	}
+	if p.cfg.Resume || p.cfg.AttachOnly {
+		st, err := runner.LocalStatus(base, p.session.ID, "")
+		if err != nil {
+			return fmt.Errorf("read the local runner state: %w", err)
+		}
+		if st.Phase == runner.PhaseAlive {
+			return p.attachLocal(st)
+		}
+		if p.cfg.AttachOnly {
+			return fmt.Errorf("%w on this machine", ErrNoDetachedRun)
+		}
+	}
+	if err := p.ensureHookConfig(); err != nil {
+		slog.Warn("claude: hook config write failed", "session", p.session.ID, "directory", p.directory, "error", err)
+	}
+
+	run, err := runner.AllocLocal(base, p.session.ID)
+	if err != nil {
+		return err
+	}
+	started := false
+	defer func() {
+		if !started {
+			_ = os.RemoveAll(run.Dir())
+		}
+	}()
+
+	// Deliberate: a sandboxed agent reads these files from inside its sandbox,
+	// and no profile grants the runner directory, so its files stay in the temp
+	// directory the profile does grant. An unsandboxed agent keeps them in its
+	// run directory, which removes them with the session.
+	fileDir, tracked := run.Dir(), false
+	if p.cfg.SandboxProfile != "" {
+		fileDir, tracked = os.TempDir(), true
+	}
+	writeFile := func(pattern string, data []byte) (string, error) {
+		path, err := writeSpawnFile(fileDir, pattern, data)
+		if err == nil && tracked {
+			p.addSpawnFile(path)
+		}
+		return path, err
+	}
+	var mcpConfigPath, sysPromptPath string
+	if cfg := p.relayMCPConfig(); cfg != nil {
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			return fmt.Errorf("marshal mcp config: %w", err)
+		}
+		if mcpConfigPath, err = writeFile("claude-mcp-*.json", data); err != nil {
+			return fmt.Errorf("write mcp config: %w", err)
+		}
+		spawn.relayMCPWritten = true
+	} else if useRelayTools(p.session.Settings) {
+		warnRelayToolsUnavailable(p.session.ID, "claude", "relay_mcp_command_unset")
+	}
+	if p.session.SystemPrompt != "" {
+		var err error
+		if sysPromptPath, err = writeFile("claude-sysprompt-*.txt", []byte(p.session.SystemPrompt)); err != nil {
+			return fmt.Errorf("write system prompt: %w", err)
+		}
+	}
+
+	args := p.buildClaudeArgs(mcpConfigPath, sysPromptPath)
+	program := p.cfg.Launcher.Program(resolveClaudePath(p.cfg.Binary))
+	shimmed := shimSpec{
+		Binary:         p.cfg.ShimBinary,
+		SessionID:      p.session.ID,
+		BridgeSocket:   p.cfg.BridgeSocket,
+		SandboxProfile: p.cfg.SandboxProfile,
+		Identity:       p.cfg.Identity,
+		ClaudeToken:    p.cfg.ClaudeToken,
+	}
+	fds := &spawnFDs{}
+	defer fds.closeUnlessStarted()
+	var argv []string
+	switch {
+	case shimmed.ClaudeToken != "" && !shimmed.wanted():
+		return errors.New("claude token requires the shim")
+	case shimmed.wanted() && shimmed.Binary == "":
+		return ErrShimRequired
+	case shimmed.Identity != nil && shimmed.BridgeSocket == "":
+		return ErrNoBridgeSocket
+	case shimmed.wanted():
+		cmd, statusR, extraFiles, berr := buildShimCmd(shimmed, program[0], append(slices.Clone(program[1:]), args...))
+		if berr != nil {
+			return berr
+		}
+		argv, fds.statusR, fds.extraFiles = cmd.Args, statusR, extraFiles
+	default:
+		if _, err := exec.LookPath(program[0]); err != nil {
+			return fmt.Errorf("failed to start claude: %w", err)
+		}
+		argv = append(slices.Clone(program), args...)
+	}
+	env, err := p.buildClaudeEnv(ensurePath(childBaseEnv()))
+	if err != nil {
+		return err
+	}
+
+	st, err := run.Start(runner.LocalSpec{Argv: argv, Env: env, Dir: p.directory, ExtraFiles: fds.extraFiles, Patterns: claudeRunnerPatterns})
+	if err != nil {
+		return fmt.Errorf("failed to start claude: %w", err)
+	}
+	fds.started = true
+	// Load-bearing: without closing the parent's own copies, the status pipe
+	// (and, when present, the identity secret pipe) never reaches EOF.
+	for _, f := range fds.extraFiles {
+		_ = f.Close()
+	}
+	if fds.statusR != nil {
+		outcome, _ := readShimStatus(fds.statusR)
+		_ = fds.statusR.Close()
+		var failure error
+		switch {
+		case outcome.identityRefused:
+			failure = fmt.Errorf("%w: session %s", ErrIdentityRefused, p.session.ID)
+		case !outcome.started || outcome.spawnFailed:
+			failure = fmt.Errorf("%w: errno=%d", ErrSpawnFailed, outcome.spawnErrno)
+		}
+		if failure != nil {
+			p.logRefusedStart(run)
+			stopRun(p.session.ID, "this machine", localConn{run: run})
+			return failure
+		}
+	}
+	started = true
+
+	root := p.pinRoot(st.PID) // st.PID is the pid cmd.Start returned
+	p.mu.Lock()
+	p.restoredRun, p.runnerRoot = nil, root
+	p.mu.Unlock()
+	p.root.Store(root)
+	det, state, spawnGen := p.beginDetached(nil, localConnFor(base, p.session.ID), run.Generation)
+	state.relayMCPWritten = spawn.relayMCPWritten
+	p.runDetached(det, state, spawnGen)
+	slog.Info("claude process started", "session", p.session.ID, "model", p.model, "runner", st.PID, "generation", run.Generation)
+	return nil
+}
+
+// logRefusedStart logs what the agent wrote to stderr before the shim refused
+// it, with the launch's secrets masked.
+func (p *ClaudeProvider) logRefusedStart(run runner.LocalRun) {
+	tail, err := localConn{run: run}.StderrTail(context.Background())
+	if err != nil || tail == "" {
+		return
+	}
+	var sawStdout atomic.Bool
+	logProviderStderr(io.NopCloser(strings.NewReader(tail)), p.session.ID, "claude", &sawStdout, p.identitySecret(), p.cfg.ClaudeToken)
+}
+
+// pinRoot pins pid's start time as the permission-hook root: the runner is the
+// ancestor of the shim and every process under it. It returns nil when the
+// start time is unreadable, and the hook then denies.
+func (p *ClaudeProvider) pinRoot(pid int) *sessionstypes.ProcessRoot {
+	info, ok := membership.NewSource().Info(pid)
+	if !ok {
+		slog.Warn("claude: process start time unreadable; session has no process root", "session", p.session.ID, "pid", pid)
+		return nil
+	}
+	return &sessionstypes.ProcessRoot{PID: pid, StartSec: info.StartSec, StartUsec: info.StartUsec}
+}
+
+// attachLocal follows the runner that still lives. It records the process root
+// only when runner.json's pid and the kernel's start time of that pid both
+// match the root saved when the runner started: a recycled pid, or a runner
+// nobody saved, leaves the session without a root and the hook denies.
+func (p *ClaudeProvider) attachLocal(st runner.Status) error {
+	p.mu.Lock()
+	saved := p.restoredRoot
+	p.mu.Unlock()
+	var root *sessionstypes.ProcessRoot
+	if saved != nil && saved.PID == st.State.PID {
+		if pinned := p.pinRoot(st.State.PID); pinned != nil && *pinned == *saved {
+			root = pinned
+		}
+	}
+	if root == nil {
+		slog.Warn("claude: local runner does not match the saved process root; session has no process root", "session", p.session.ID, "runner", st.State.PID)
+	}
+	p.mu.Lock()
+	p.runnerRoot = root
+	p.mu.Unlock()
+	p.root.Store(root)
+	if err := p.attachRun(nil, localConnFor(p.cfg.RunnerBase, p.session.ID), st.Generation); err != nil {
+		p.root.Store(nil)
+		return err
+	}
+	return nil
+}
+
+// SendEvent tells the runner something happened that the agent's output does
+// not show. Only "asking" is defined, and a host session answers nil: its
+// asks arrive on stdout.
+func (p *ClaudeProvider) SendEvent(ctx context.Context, typ string) error {
+	det := p.det
+	if det == nil {
+		return nil
+	}
+	return det.conn.SendEvent(ctx, typ)
 }

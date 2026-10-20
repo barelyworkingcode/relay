@@ -467,8 +467,10 @@ func TestSessionResume(t *testing.T) {
 		t.Fatalf("session list holds no %s before the restart", id)
 	}
 
-	// Every session is dormant after a relay restart. Wait for the session host
-	// to register again: the earlier registration line is already in the log.
+	// A session whose agent is not running is dormant after a relay restart:
+	// the agent ends while relay is down. Wait for the session host to register
+	// again: the earlier registration line is already in the log.
+	g1lEndAgentWhileDown(t, i, id)
 	since := time.Now()
 	i.Restart()
 	i.WaitEvent(harness.EventQuery{Key: "service.manifest.register", Since: since,
@@ -480,7 +482,7 @@ func TestSessionResume(t *testing.T) {
 		t.Fatalf("session list holds no %s after the restart", id)
 	}
 	if row.Live {
-		t.Fatalf("a session is live after a relay restart")
+		t.Fatalf("a session whose agent ended is live after a relay restart")
 	}
 
 	res := i.MustCLI("session", "resume", "--id", id, "--json")

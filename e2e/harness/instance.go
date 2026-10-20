@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -550,6 +552,7 @@ func (i *Instance) cleanup() {
 	i.Stop()
 	i.scanRaces()
 	i.stopFakes()
+	i.reapRunners()
 	for _, p := range killUnder(i.Dir) {
 		i.t.Errorf("process still running under %s after cleanup: %s", i.Dir, p)
 	}
@@ -559,4 +562,115 @@ func (i *Instance) cleanup() {
 		return
 	}
 	_ = os.RemoveAll(i.Dir)
+}
+
+// reapRunners ends every local-session runner tree the instance left behind.
+// A runner is its own session leader and outlives relay by design, so its
+// session (sid == runner pid) holds the agent tree. A pid whose start time
+// differs from runner.json is a reused pid and is never signalled. Failures
+// are logged, never test failures.
+func (i *Instance) reapRunners() {
+	files, _ := filepath.Glob(filepath.Join(i.ConfigDir, "sessions", "runners", "*", "*", "runner.json"))
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var rec struct {
+			Pid     int    `json:"pid"`
+			Started string `json:"started"`
+		}
+		if json.Unmarshal(data, &rec) != nil || rec.Pid <= 1 || rec.Started == "" {
+			continue
+		}
+		psCmd := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(rec.Pid))
+		psCmd.Env = append(os.Environ(), "LC_ALL=C")
+		out, err := psCmd.Output()
+		if err != nil || strings.Join(strings.Fields(string(out)), " ") != strings.Join(strings.Fields(rec.Started), " ") {
+			continue
+		}
+		if sid, err := syscall.Getsid(rec.Pid); err != nil || sid != rec.Pid {
+			continue
+		}
+		i.killSession(rec.Pid, syscall.SIGTERM, 5*time.Second)
+		if len(sessionMembers(rec.Pid)) > 0 {
+			i.killSession(rec.Pid, syscall.SIGKILL, 10*time.Second)
+		}
+		if left := sessionMembers(rec.Pid); len(left) > 0 {
+			i.t.Logf("runner session %d still has processes %v after cleanup", rec.Pid, left)
+		}
+	}
+}
+
+// sessionMembers lists the live pids whose session id is sid. macOS ps has no
+// usable session column and pgrep has no -s, so it asks getsid(2) of each pid.
+func sessionMembers(sid int) []int {
+	out, err := exec.Command("ps", "-A", "-o", "pid=").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, f := range strings.Fields(string(out)) {
+		pid, err := strconv.Atoi(f)
+		if err != nil {
+			continue
+		}
+		if got, err := syscall.Getsid(pid); err == nil && got == sid {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// killSession signals every member of the session and waits for their exits
+// on a kqueue (EVFILT_PROC, NOTE_EXIT), which works for processes that are not
+// our children. The kevent timeout is the deadline. Members are listed again
+// after each wake because one may have forked; a pid already gone when it is
+// registered counts as exited.
+func (i *Instance) killSession(sid int, sig syscall.Signal, wait time.Duration) {
+	kq, err := syscall.Kqueue()
+	if err != nil {
+		i.t.Logf("runner reap: kqueue: %v", err)
+		return
+	}
+	defer syscall.Close(kq)
+	deadline := time.Now().Add(wait)
+	seen := map[int]bool{}
+	pending := 0
+	for {
+		for _, pid := range sessionMembers(sid) {
+			if seen[pid] {
+				continue
+			}
+			seen[pid] = true
+			ev := syscall.Kevent_t{
+				Ident:  uint64(pid),
+				Filter: syscall.EVFILT_PROC,
+				Flags:  syscall.EV_ADD | syscall.EV_ONESHOT,
+				Fflags: syscall.NOTE_EXIT,
+			}
+			if _, err := syscall.Kevent(kq, []syscall.Kevent_t{ev}, nil, nil); err != nil {
+				if err != syscall.ESRCH {
+					i.t.Logf("runner reap: watch %d: %v", pid, err)
+				}
+				continue
+			}
+			pending++
+			_ = syscall.Kill(pid, sig)
+		}
+		remaining := time.Until(deadline)
+		if pending == 0 || remaining <= 0 {
+			return
+		}
+		ts := syscall.NsecToTimespec(remaining.Nanoseconds())
+		events := make([]syscall.Kevent_t, 16)
+		n, err := syscall.Kevent(kq, nil, events, &ts)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil || n == 0 {
+			return
+		}
+		pending -= n
+	}
 }

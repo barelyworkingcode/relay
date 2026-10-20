@@ -538,10 +538,13 @@ shim](#the-shim-relay-sessions-exec)). A provider-hosted session has no
 request**. Only claude sessions have one; pi and chat sessions report no
 root and never run the hook:
 
-- A local claude session's root is the pid the provider actually spawned:
-  `relay-sessions exec`'s own pid when the session runs shimmed (every
-  production local launch that carries a sandbox profile or a launch
-  identity), or `claude` itself when the launch has neither.
+- A local claude session's root is the runner: the pid `cmd.Start` returned
+  for `/bin/sh runner.sh`, with its start time read from the kernel at once
+  and persisted as `runnerRoot`. The walk goes hook, `claude`, `sandbox-exec`,
+  shim, agent subshell, runner. The agent subshell is a fork of the runner; it
+  holds fds 3 to 5 until the agent exits. After a relay-sessions restart the provider records the root
+  only when `runner.json`'s pid and the kernel's start time of that pid both
+  match `runnerRoot`; otherwise there is no root and the hook is denied.
 - The root's start time is read immediately after `cmd.Start()` returns, and
   the walk requires an exact match on pid *and* start time — a bare pid
   match would also match whatever unrelated process the kernel later
@@ -1013,6 +1016,7 @@ A machine that has a real CLI under `/usr/local/bin` or `/opt/homebrew/bin` ther
 
 ### What every spawn has in common
 
+- A local Claude session starts under the runner (`/bin/sh runner.sh`, own session) in `<config dir>/sessions/runners/<session id>/<generation>/`, mode `0700`; the runner owns the agent's stdin and stdout and keeps `out.jsonl`, `events.jsonl` and `runner.json`. Codex and pi, and a host session under `ssh -T`, start as below.
 - The child starts in the session directory, with stdin and stdout as pipes. Stderr is a third pipe, read line by line into the service log ([Provider stderr](#provider-stderr)).
 - The environment is the `relay-sessions` environment minus every relay credential variable, plus `RELAY_SESSION_ID`, and `RELAY_BRIDGE_SOCKET` and `RELAY_MODEL_SOCKET` when those sockets exist. No token is ever added.
 - A sandboxed launch runs the binary under the shim ([The shim](#the-shim-relay-sessions-exec)); the binary sees the same argv, stdin and stdout.
@@ -1023,6 +1027,8 @@ A machine that has a real CLI under `/usr/local/bin` or `/opt/homebrew/bin` ther
 - A session idle for 15 minutes with no stdin or stdout line is killed.
 
 ### claude
+
+A local session runs under the runner: relay-sessions starts the runner with the shim's descriptors 3 (identity), 4 (status) and 5 (token). The runner starts the shim with them and closes its own copies before it starts any other process; it never reads descriptor 5. The system prompt and MCP config go in the run directory, except for a sandboxed launch, whose profile grants only the temp directory, so they stay there. Relay-sessions shutdown releases the session and leaves the agent running; a start attaches every persisted local runner session whose runner lives. A stop signals every process in the runner's session (its id is the runner pid): TERM, then KILL. When the pending permissions of a session rise above zero, relay-sessions queues `inbox/<id>.evt` holding `{"type":"asking"}`; the runner appends an `asking` event and writes nothing to the agent.
 
 Argv, in this order. Flags in brackets appear only when the condition holds.
 
@@ -1294,6 +1300,8 @@ The early-failure paths (identity refused, spawn failed) drain stderr
 themselves and close stdout unread.
 
 ## What a child inherits
+
+A local Claude session's runner gets the same environment and descriptors. The Claude token (fd 5) passes through the runner to the shim; the runner never reads it. The agent subshell (a fork of the runner) holds fds 3 to 5 until the agent exits; the runner closes its own copies once the pipeline starts, and the output filter never inherits them.
 
 A terminal, a claude or pi session and an MCP server child each start from
 `relay-sessions`' own environment, minus two sets:
@@ -1794,6 +1802,8 @@ Warn. So a refused launch can log two lines.
 
 ## Host data directory layout
 
+`runners/` holds one directory per local Claude session, then one per generation (see the runner above). Delete removes `runners/<session id>/`; `SessionExited` for a session relay holds no account for removes `profiles/<session id>.sb`.
+
 Everything relay-sessions owns lives under one directory, resolved from the
 already-resolved `RELAY_BRIDGE_SOCKET` path rather than re-derived from
 `os.UserConfigDir()` — the latter would silently drop a `relay --config-dir`
@@ -1901,6 +1911,8 @@ See [`docs/audit-log.md`](audit-log.md#session-host-events) for the exact
 record shape.
 
 ## Resume (user action only) — SH-6
+
+A local Claude session whose runner still lives is attached, never started a second time; after a relay restart its relay tools fail closed until it is stopped and resumed. A session whose agent exited reads dormant and resumes on its conversation.
 
 A project-bound provider session (claude/pi/chat) never respawns itself when its provider process dies.
 `internal/sessions/session.Manager.SendMessage` returns `ErrResumeRequired`
