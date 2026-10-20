@@ -670,6 +670,51 @@ func TestAdoptBusyRefusedWithoutInterrupt(t *testing.T) {
 	}
 }
 
+// AC3, decision 5: the child-process veto holds when the transcript is longer
+// than the tail the idle check reads, so the first prompt written after the
+// process started lies at the file's start, far from the newest record.
+func TestAdoptChildVetoInLongTranscript(t *testing.T) {
+	t.Parallel()
+	a := adStart(t)
+	f := a.fake("app", "INT", "TERM")
+	body := map[string]any{"claudeSessionId": f.sid, "interrupt": false}
+
+	var signals []string
+	var childStart time.Time
+	for tries := 0; ; tries++ {
+		signals = append(signals, f.sync()...)
+		if _, childStart = adLstart(t, f.children[len(f.children)-1]); childStart.After(f.start) {
+			break
+		}
+		if tries > 2000 {
+			t.Fatalf("no child of pid %d started in a later second than the process (%v)", f.pid, f.start)
+		}
+	}
+
+	filler := strings.Repeat("acme ordinary turn ", 12)
+	lines := []string{f.user(f.start, adPrompt), f.answer(f.start, adModelSn, filler)}
+	size := len(lines[0]) + len(lines[1])
+	for size <= 300<<10 {
+		u, r := f.user(f.start, filler), f.answer(f.start, adModelSn, filler)
+		lines = append(lines, u, r)
+		size += len(u) + len(r) + 2
+	}
+	now := time.Now().UTC()
+	lines = append(lines, f.user(now, adPrompt), f.answer(now, adModelSn, "acme parser done"))
+	f.transcript(a.i.Home, lines...)
+	f.register(a.i.Home, "idle", now)
+
+	otRefusal(t, a.adopt(body), http.StatusConflict, "busy")
+	signals = append(signals, f.sync()...)
+	if len(signals) != 0 {
+		t.Fatalf("the fake was sent signals %v by a refused adopt, want none", signals)
+	}
+	f.alive()
+	if n := len(adSessions(t, a.i)); n != 0 {
+		t.Fatalf("a refused adopt left %d sessions", n)
+	}
+}
+
 type adSignal struct {
 	Signal string `json:"signal"`
 	At     string `json:"at"`

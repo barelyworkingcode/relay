@@ -148,7 +148,7 @@ func osReregister(t *testing.T, p *osProc, sid string) {
 	osWrite(t, filepath.Join(p.home, ".claude", "sessions", fmt.Sprintf("%d.json", p.pid)), reg)
 }
 
-// AC3 (relay#524 criterion changed): a live outside process row carries
+// AC3: a live outside process row carries
 // claudeSessionId, the registry's session id, on the list, the detail and the
 // WS snapshot, as an ended row does.
 func TestOutsideLiveRowCarriesClaudeSessionID(t *testing.T) {
@@ -200,7 +200,7 @@ func TestOutsideLiveRowCarriesClaudeSessionID(t *testing.T) {
 	}
 }
 
-// AC3 (relay#524 criterion changed): the same Claude session, ended and then
+// AC3: the same Claude session, ended and then
 // resumed in a new process, shows once, as a live row carrying claudeSessionId
 // on every door.
 func TestOutsideResumedSessionShowsOnceWithClaudeSessionID(t *testing.T) {
