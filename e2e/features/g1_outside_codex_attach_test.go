@@ -545,6 +545,8 @@ func TestCodexAttachRowEnvironmentsWin(t *testing.T) {
 	th.TopDir = osDir(t, r.root, "stale-start-folder")
 	d.add(th)
 	ccFolderRow(t, r, th)
+	// The resume reply names the same folder, so the folder check passes.
+	r.attached(th)
 }
 
 func TestCodexAttachNoTurnNoRow(t *testing.T) {
@@ -803,7 +805,10 @@ func ccNotAdoptable(t *testing.T) {
 	r := ccStart(t)
 	d := r.daemon()
 	control := r.thread("control")
+	cli := r.thread("cli-source")
+	cli.Source = "cli"
 	cases := map[string]ccThread{}
+	reasons := map[string]string{"subagent": "not_interactive", "subagent-source": "not_interactive", "exec": "not_command_line"}
 	sub := r.thread("subagent")
 	sub.Parent = adUUID()
 	cases["subagent"] = sub
@@ -822,6 +827,7 @@ func ccNotAdoptable(t *testing.T) {
 	bad.ID = "not-a-uuid"
 	cases["bad-id"] = bad
 	d.add(control)
+	d.add(cli)
 	for _, th := range cases {
 		d.add(th)
 	}
@@ -835,10 +841,21 @@ func ccNotAdoptable(t *testing.T) {
 	if listed[control.ID]["adoptable"] != true {
 		t.Fatalf("the control thread is not adoptable: %v", listed)
 	}
+	if listed[cli.ID]["adoptable"] != true {
+		t.Fatalf("the cli-source thread is not adoptable: %v", listed[cli.ID])
+	}
 	for name, th := range cases {
-		if row, ok := listed[th.ID]; ok {
+		reason, mustList := reasons[name]
+		row, ok := listed[th.ID]
+		if mustList && !ok {
+			t.Fatalf("%s thread has no row: %v", name, listed)
+		}
+		if ok {
 			if row["adoptable"] == true {
 				t.Fatalf("%s thread is adoptable: %v", name, row)
+			}
+			if mustList && row["adoptReason"] != reason {
+				t.Fatalf("%s thread adoptReason = %v, want %s", name, row["adoptReason"], reason)
 			}
 			if resp := r.attach(row["id"].(string)); resp.Status == http.StatusCreated {
 				t.Fatalf("%s thread attached: %s", name, resp.Body)

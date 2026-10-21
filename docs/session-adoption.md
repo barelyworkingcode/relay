@@ -355,7 +355,7 @@ back; relay never starts its own codex for it.
 
 **Not covered.** A custom `CODEX_HOME`, a terminal UI running its own embedded
 server (every terminal started with codex 0.162.1), SSH hosts, `codex exec`,
-MCP and subagent threads. A codex terminal
+MCP and subagent threads, ephemeral threads, and every thread source other than `cli` and `vscode`. A codex terminal
 UI opened inside a relay terminal session that joins the daemon lists like any
 daemon thread. After attach, Eve shows turns from the attach on.
 
