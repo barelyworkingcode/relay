@@ -369,6 +369,105 @@ func ChatTemplatesOf(p Project) []ChatTemplate {
 	return out
 }
 
+// claudeSessionStem is relay's transcript-stem rule: it never starts with "-".
+var claudeSessionStem = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+
+var (
+	outsideIDShape   = regexp.MustCompile(`^outside:[0-9a-f]{32}$`)
+	conversationUUID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+)
+
+// IsConversationUUID reports whether s is a UUID in relay's conversation-id form.
+func IsConversationUUID(s string) bool { return conversationUUID.MatchString(s) }
+
+// IsOutsideID reports whether s has the shape of a probed outside row id.
+func IsOutsideID(s string) bool { return outsideIDShape.MatchString(s) }
+
+var (
+	adoptReasonsOther  = map[string]bool{"not_registered": true, "invalid_id": true, "start_mismatch": true, "not_interactive": true, "not_command_line": true, "ambiguous": true}
+	adoptBusyVetoes    = map[string]bool{"registry_busy": true, "status_stale": true, "open_tool_call": true, "child_process": true}
+	adoptModelFamilies = map[string]bool{"haiku": true, "sonnet": true, "opus": true}
+	adoptRefusals      = map[string]bool{"audit_unavailable": true, "unavailable": true, "adopt_in_progress": true, "changed": true, "stop_failed": true, "launch_failed": true}
+)
+
+// derivedAdoptReason is the first of relay's reasons that applies to the
+// row's own state, or "" when none does.
+func derivedAdoptReason(o OutsideFixture) string {
+	switch {
+	case o.State == "ended":
+		return "ended"
+	case o.HostID != nil:
+		return "host_unsupported"
+	case o.ProjectID == nil:
+		return "no_project"
+	}
+	return ""
+}
+
+// OutsideAdoptReason is the adoptReason a row is served with: "" when the row
+// is adoptable, its own reason when it names one, else the first rule that
+// applies.
+func OutsideAdoptReason(o OutsideFixture) string {
+	if o.Adoptable {
+		return ""
+	}
+	if o.AdoptReason != "" {
+		return o.AdoptReason
+	}
+	if d := derivedAdoptReason(o); d != "" {
+		return d
+	}
+	return "not_registered"
+}
+
+func validateOutsideAdopt(path string, o OutsideFixture) error {
+	if o.Adoptable {
+		switch {
+		case o.State == "ended":
+			return bad(path+".adoptable", "an ended row is not adoptable")
+		case o.HostID != nil:
+			return bad(path+".adoptable", "a host row is not adoptable")
+		case o.ProjectID == nil:
+			return bad(path+".adoptable", "requires project_id")
+		case !outsideIDShape.MatchString(o.ID):
+			return bad(path+".adoptable", "requires an id of outside: and 32 hex digits")
+		case !conversationUUID.MatchString(o.ClaudeSessionID):
+			return bad(path+".adoptable", "requires claude_session_id to be a UUID")
+		case o.AdoptReason != "":
+			return bad(path+".adopt_reason", "only when adoptable is false")
+		}
+		if o.Adopt != nil {
+			a := o.Adopt
+			if a.Busy != "" && !adoptBusyVetoes[a.Busy] {
+				return bad(path+".adopt.busy", "invalid veto")
+			}
+			if a.ModelFamily != "" && !adoptModelFamilies[a.ModelFamily] {
+				return bad(path+".adopt.model_family", "invalid model family")
+			}
+			if a.Refuse != "" && !adoptRefusals[a.Refuse] {
+				return bad(path+".adopt.refuse", "invalid refusal")
+			}
+		}
+		return nil
+	}
+	if o.Adopt != nil {
+		return bad(path+".adopt", "only when adoptable is true")
+	}
+	if o.AdoptReason == "" {
+		return nil
+	}
+	if d := derivedAdoptReason(o); d != "" {
+		if o.AdoptReason != d {
+			return bad(path+".adopt_reason", "must be %s for this row", d)
+		}
+		return nil
+	}
+	if !adoptReasonsOther[o.AdoptReason] {
+		return bad(path+".adopt_reason", "invalid reason")
+	}
+	return nil
+}
+
 func ValidateOutside(rows []OutsideFixture) error {
 	if len(rows) > 512 {
 		return bad("outside_sessions", "at most 512 rows")
@@ -385,6 +484,12 @@ func ValidateOutside(rows []OutsideFixture) error {
 		}
 		if (o.State == "ended") != (o.EndedAt != "") {
 			return bad(path+".ended_at", "must be set exactly when state is ended")
+		}
+		if o.ClaudeSessionID != "" && !claudeSessionStem.MatchString(o.ClaudeSessionID) {
+			return bad(path+".claude_session_id", "invalid Claude session id")
+		}
+		if err := validateOutsideAdopt(path, o); err != nil {
+			return err
 		}
 		if o.Source != "probe" && o.Source != "hook" {
 			return bad(path+".source", "invalid source")

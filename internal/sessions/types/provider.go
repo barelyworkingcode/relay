@@ -63,6 +63,11 @@ type Message struct {
 // relay's own scoped route.
 const OriginChiefOfStaff = "chief-of-staff"
 
+// OriginRelayRecovery marks the one message relay sends into a session it took
+// over from a terminal in the middle of a turn. relay-sessions accepts it on
+// /send only; no decoder reads it from a request body.
+const OriginRelayRecovery = "relay-recovery"
+
 // SessionStats tracks token usage and cost.
 type SessionStats struct {
 	InputTokens          int     `json:"inputTokens"`

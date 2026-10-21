@@ -23,7 +23,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	"github.com/barelyworkingcode/relay/internal/sessions/hook"
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
@@ -104,6 +103,11 @@ type ClaudeConfig struct {
 	// AttachOnly makes Start of a detached host session attach to a running
 	// agent and fail with ErrNoDetachedRun rather than start one.
 	AttachOnly bool
+
+	// RunnerBase is the directory local sessions' run directories live under
+	// (<config dir>/sessions/runners). Every local Claude session runs under
+	// the runner there; Start refuses a local session when it is empty.
+	RunnerBase string
 }
 
 // ClaudeProvider manages a persistent Claude CLI process and translates its
@@ -131,10 +135,22 @@ type ClaudeProvider struct {
 
 	// det is the detached agent a host session with detach_sessions runs; nil
 	// for every other spawn. cmd and stdin are nil while it is set.
-	det *detachedRun
+	det *runFollower
+	// holding is set while an attach holds new control requests in held instead
+	// of raising them: nothing can show a prompt until the manager has
+	// published the session. Guarded by holdMu.
+	holdMu  sync.Mutex
+	holding bool
+	held    []json.RawMessage
 	// restoredRun is the detached run and cursor the saved state named; Start
 	// attaches from it when that run is still alive.
 	restoredRun *detachedCursor
+	// runnerRoot is the local runner this provider started or attached to. It
+	// outlives Release so the saved state keeps it; guarded by mu.
+	runnerRoot *sessionstypes.ProcessRoot
+	// restoredRoot is the runnerRoot the saved state named; an attach records
+	// it as the process root only when the runner still matches. Guarded by mu.
+	restoredRoot *sessionstypes.ProcessRoot
 	// released is set by Release, which leaves the agent running.
 	released atomic.Bool
 	// attachedTurnOpen is what an attach found and left for TakeAttach;
@@ -156,9 +172,10 @@ type ClaudeProvider struct {
 	directory       string
 
 	// spawnFiles holds every 0600 temp file (mcp-config, system prompt)
-	// written for the current/most recent spawn, removed on Kill — neither
-	// carries a bearer today, but both can carry project-specific text no
-	// process outside this session needs to keep reading after it ends.
+	// written for the current/most recent sandboxed spawn, removed on Kill —
+	// neither carries a bearer today, but both can carry project-specific text
+	// no process outside this session needs to keep reading after it ends. An
+	// unsandboxed spawn keeps them in its run directory instead.
 	spawnFiles []string
 	// spawnFilesMu guards spawnFiles: Kill can run twice at once (a stop,
 	// then shutdown).
@@ -461,112 +478,48 @@ func (p *ClaudeProvider) Start() error {
 	}
 	spawn := &claudeSpawnState{}
 
-	var cmd *exec.Cmd
-	var statusR *os.File
-	var extraFiles []*os.File
-
-	if host := p.session.GetHost(); host != nil {
-		if useRelayTools(p.session.Settings) {
-			// v1 carries no relay MCPs onto a host at all (buildClaudeArgs
-			// never emits --mcp-config there), regardless of RelayMCPCommand.
-			warnRelayToolsUnavailable(p.session.ID, "claude", "host_session")
-		}
-		if p.cfg.SandboxProfile != "" || p.cfg.Identity != nil {
-			// relay's own launch authorization never mints a sandbox profile
-			// or launch identity for a hosted project (needsIdentity), so
-			// this should be unreachable in practice. Warn and ignore rather
-			// than refuse: refusing here would break every SSH-hosted
-			// session outright if that guarantee ever drifted, which is
-			// strictly worse than silently ignoring two fields that ought
-			// to already be empty.
-			slog.Warn("claude: sandbox/identity requested for a host session; ignoring", "session", p.session.ID)
-		}
-		if host.ClaudePath == "" && p.cfg.Launcher == nil {
-			return fmt.Errorf("host %q has no claude: run a probe", host.Name)
-		}
-		args := p.buildClaudeArgs("", "")
-		if p.session.SystemPrompt != "" {
-			// A host session's system prompt still needs to reach Claude, but
-			// there is no local file the remote process could read — fall
-			// back to the argv flag for this branch only (host argv is not
-			// visible via KERN_PROCARGS2 on this machine at all; it never
-			// executes locally).
-			args = append(args, "--append-system-prompt", p.session.SystemPrompt)
-		}
-		if host.Detach {
-			return p.startDetached(host, args)
-		}
-		name, argv, err := buildHostExec(host, p.cfg.Launcher.Program(host.ClaudePath), p.directory, args, p.session.ID)
-		if err != nil {
-			return err
-		}
-		cmd = exec.Command(name, argv...)
-		cmd.Env = childBaseEnv()
-	} else {
-		if err := p.ensureHookConfig(); err != nil {
-			slog.Warn("claude: hook config write failed", "session", p.session.ID, "directory", p.directory, "error", err)
-		}
-
-		var mcpConfigPath, sysPromptPath string
-		if cfg := p.relayMCPConfig(); cfg != nil {
-			data, err := json.Marshal(cfg)
-			if err != nil {
-				return fmt.Errorf("marshal mcp config: %w", err)
-			}
-			path, err := writeSpawnFile(os.TempDir(), "claude-mcp-*.json", data)
-			if err != nil {
-				return fmt.Errorf("write mcp config: %w", err)
-			}
-			mcpConfigPath = path
-			p.addSpawnFile(path)
-			spawn.relayMCPWritten = true
-		} else if useRelayTools(p.session.Settings) {
-			warnRelayToolsUnavailable(p.session.ID, "claude", "relay_mcp_command_unset")
-		}
-		if p.session.SystemPrompt != "" {
-			path, err := writeSpawnFile(os.TempDir(), "claude-sysprompt-*.txt", []byte(p.session.SystemPrompt))
-			if err != nil {
-				return fmt.Errorf("write system prompt: %w", err)
-			}
-			sysPromptPath = path
-			p.addSpawnFile(path)
-		}
-
-		args := p.buildClaudeArgs(mcpConfigPath, sysPromptPath)
-		program := p.cfg.Launcher.Program(resolveClaudePath(p.cfg.Binary))
-
-		spec := shimSpec{
-			Binary:         p.cfg.ShimBinary,
-			SessionID:      p.session.ID,
-			BridgeSocket:   p.cfg.BridgeSocket,
-			SandboxProfile: p.cfg.SandboxProfile,
-			Identity:       p.cfg.Identity,
-			ClaudeToken:    p.cfg.ClaudeToken,
-		}
-		switch {
-		case spec.ClaudeToken != "" && !spec.wanted():
-			return errors.New("claude token requires the shim")
-		case spec.wanted() && spec.Binary == "":
-			return ErrShimRequired
-		case spec.Identity != nil && spec.BridgeSocket == "":
-			return ErrNoBridgeSocket
-		case spec.wanted():
-			var berr error
-			cmd, statusR, extraFiles, berr = buildShimCmd(spec, program[0], append(program[1:], args...))
-			if berr != nil {
-				return berr
-			}
-		default:
-			cmd = exec.Command(program[0], append(program[1:], args...)...) // unchanged direct spawn
-		}
-		cmd.Dir = p.directory
-		env, err := p.buildClaudeEnv(ensurePath(childBaseEnv()))
-		if err != nil {
-			return err
-		}
-		cmd.Env = env
+	host := p.session.GetHost()
+	if host == nil {
+		return p.startLocal(spawn)
 	}
-	fds := &spawnFDs{statusR: statusR, extraFiles: extraFiles}
+	if useRelayTools(p.session.Settings) {
+		// v1 carries no relay MCPs onto a host at all (buildClaudeArgs
+		// never emits --mcp-config there), regardless of RelayMCPCommand.
+		warnRelayToolsUnavailable(p.session.ID, "claude", "host_session")
+	}
+	if p.cfg.SandboxProfile != "" || p.cfg.Identity != nil {
+		// relay's own launch authorization never mints a sandbox profile
+		// or launch identity for a hosted project (needsIdentity), so
+		// this should be unreachable in practice. Warn and ignore rather
+		// than refuse: refusing here would break every SSH-hosted
+		// session outright if that guarantee ever drifted, which is
+		// strictly worse than silently ignoring two fields that ought
+		// to already be empty.
+		slog.Warn("claude: sandbox/identity requested for a host session; ignoring", "session", p.session.ID)
+	}
+	if host.ClaudePath == "" && p.cfg.Launcher == nil {
+		return fmt.Errorf("host %q has no claude: run a probe", host.Name)
+	}
+	args := p.buildClaudeArgs("", "")
+	if p.session.SystemPrompt != "" {
+		// A host session's system prompt still needs to reach Claude, but
+		// there is no local file the remote process could read — fall
+		// back to the argv flag for this branch only (host argv is not
+		// visible via KERN_PROCARGS2 on this machine at all; it never
+		// executes locally).
+		args = append(args, "--append-system-prompt", p.session.SystemPrompt)
+	}
+	if host.Detach {
+		return p.startDetached(host, args)
+	}
+	name, argv, err := buildHostExec(host, p.cfg.Launcher.Program(host.ClaudePath), p.directory, args, p.session.ID)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(name, argv...)
+	cmd.Env = childBaseEnv()
+
+	fds := &spawnFDs{}
 	defer fds.closeUnlessStarted()
 
 	stdoutR, stdoutW, err := newStdoutPipe(cmd)
@@ -595,46 +548,9 @@ func (p *ClaudeProvider) Start() error {
 	fds.started = true
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
-	logStderr := func() []string {
-		return logProviderStderr(stderrR, p.session.ID, "claude", &spawn.sawStdout, p.identitySecret(), p.cfg.ClaudeToken)
-	}
-	root := p.readProcessRoot(cmd.Process.Pid)
-	// drainStderr reads what the target wrote before the shim refused it.
-	// The deadline is deliberate: a target forked with Setpgid can outlive
-	// the Kill and keep the write end open, and Start must not wait on it.
-	drainStderr := func() {
-		_ = stdoutR.Close()
-		_ = stderrR.SetReadDeadline(time.Now().Add(time.Second))
-		logStderr()
-	}
-	// Load-bearing: without closing the parent's own copies, the status pipe
-	// (and, when present, the identity secret pipe) never reaches EOF.
-	for _, f := range extraFiles {
-		_ = f.Close()
-	}
-
-	if statusR != nil {
-		outcome, _ := readShimStatus(statusR)
-		_ = statusR.Close()
-		switch {
-		case outcome.identityRefused:
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			drainStderr()
-			return fmt.Errorf("%w: session %s", ErrIdentityRefused, p.session.ID)
-		case !outcome.started || outcome.spawnFailed:
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			drainStderr()
-			return fmt.Errorf("%w: errno=%d", ErrSpawnFailed, outcome.spawnErrno)
-		default:
-			p.targetPID = outcome.targetPID
-		}
-	}
 
 	p.cmd = cmd
 	p.stdin = stdin
-	p.root.Store(root)
 	p.exitMu.Lock()
 	p.spawnGen++
 	gen := p.spawnGen
@@ -650,31 +566,18 @@ func (p *ClaudeProvider) Start() error {
 
 	out := newSpawnOutput(stdoutR, stderrR)
 	go p.readStdout(stdoutR, spawn, out.stdoutDone)
-	go func() { out.stderrTail <- logStderr() }()
+	go func() {
+		out.stderrTail <- logProviderStderr(stderrR, p.session.ID, "claude", &spawn.sawStdout)
+	}()
 	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, p.exit, gen)
 	go p.idleWatcher(p.stopIdle)
 
-	slog.Info("claude process started", "session", p.session.ID, "model", p.model, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
+	slog.Info("claude process started", "session", p.session.ID, "model", p.model, "pid", cmd.Process.Pid)
 	return nil
 }
 
-// readProcessRoot pins pid's start time. It returns nil for an SSH-hosted
-// session, whose local process is ssh rather than anything that dials the
-// host, and when the start time is unreadable.
-func (p *ClaudeProvider) readProcessRoot(pid int) *sessionstypes.ProcessRoot {
-	if p.session.GetHost() != nil {
-		return nil
-	}
-	info, ok := membership.NewSource().Info(pid)
-	if !ok {
-		slog.Warn("claude: process start time unreadable; session has no process root", "session", p.session.ID, "pid", pid)
-		return nil
-	}
-	return &sessionstypes.ProcessRoot{PID: pid, StartSec: info.StartSec, StartUsec: info.StartUsec}
-}
-
-// ProcessRoot reports the live local process this provider spawned: the
-// shim when shimmed, otherwise claude itself.
+// ProcessRoot reports the live local process every process of this session
+// descends from: the runner.
 func (p *ClaudeProvider) ProcessRoot() (sessionstypes.ProcessRoot, bool) {
 	root := p.root.Load()
 	if root == nil || !p.alive.Load() {
@@ -788,7 +691,7 @@ func (p *ClaudeProvider) processLine(raw json.RawMessage, spawn *claudeSpawnStat
 	case events.EvtResult:
 		p.translateResult(raw)
 	case "control_request":
-		if det := p.det; det != nil && (!det.claimRequest(raw) || det.deferRaise(raw)) {
+		if det := p.det; det != nil && (!claimRequest(det, raw) || p.deferRaise(raw)) {
 			return
 		}
 		p.handleControlRequest(raw)
@@ -1425,6 +1328,9 @@ func (p *ClaudeProvider) Kill() {
 	p.root.Store(nil)
 
 	if det := p.det; det != nil {
+		p.mu.Lock()
+		p.runnerRoot = nil
+		p.mu.Unlock()
 		p.killDetached(det, true)
 		return
 	}
@@ -1535,6 +1441,9 @@ func (p *ClaudeProvider) emitSupersededExit(exit *spawnExit) {
 func (p *ClaudeProvider) DeleteSession() error {
 	if host := p.session.GetHost(); host != nil && host.Detach {
 		p.removeDetachedRun(host)
+	} else if host == nil && p.cfg.RunnerBase != "" {
+		p.Kill()
+		DeleteLocalRun(p.cfg.RunnerBase, p.session.ID)
 	}
 	p.mu.Lock()
 	sid := p.claudeSessionID
@@ -1574,8 +1483,13 @@ func (p *ClaudeProvider) GetState() json.RawMessage {
 	p.mu.Unlock()
 	state := map[string]interface{}{"claudeSessionId": sid}
 	if det := p.det; det != nil {
-		state["detached"] = detachedCursor{Generation: det.dir.Generation, Offset: det.offset.Load()}
+		state["detached"] = det.Cursor()
 	}
+	p.mu.Lock()
+	if p.runnerRoot != nil {
+		state["runnerRoot"] = p.runnerRoot
+	}
+	p.mu.Unlock()
 	data, _ := json.Marshal(state)
 	return data
 }
@@ -1585,13 +1499,15 @@ func (p *ClaudeProvider) RestoreState(state json.RawMessage) {
 		return
 	}
 	var s struct {
-		ClaudeSessionID string          `json:"claudeSessionId"`
-		Detached        *detachedCursor `json:"detached"`
+		ClaudeSessionID string                     `json:"claudeSessionId"`
+		Detached        *detachedCursor            `json:"detached"`
+		RunnerRoot      *sessionstypes.ProcessRoot `json:"runnerRoot"`
 	}
 	if err := json.Unmarshal(state, &s); err == nil {
 		p.mu.Lock()
 		p.claudeSessionID = s.ClaudeSessionID
 		p.restoredRun = s.Detached
+		p.restoredRoot = s.RunnerRoot
 		p.mu.Unlock()
 	}
 }

@@ -16,6 +16,9 @@ type HostSpec struct {
 	// Detach runs a Claude session's agent on the host, outliving relay's ssh
 	// link (docs/ssh-hosts.md, "Detached sessions").
 	Detach bool `json:"detach,omitempty"`
+	// TmuxPath is the host's tmux, set only with Detach: the agent then runs
+	// as the pane of a tmux session. Empty runs the runner alone.
+	TmuxPath string `json:"tmux_path,omitempty"`
 }
 
 // Chip returns the {id, name} summary a terminal event carries — never the

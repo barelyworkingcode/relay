@@ -325,8 +325,26 @@ type OutsideFixture struct {
 	// EndedAt is the transcript file's modification time. It is set on an
 	// "ended" row and only there.
 	EndedAt string `json:"ended_at,omitempty"`
+	// ClaudeSessionID is the conversation id relay serves on a row that has one.
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
+	// Adoptable is whether the row can be adopted; an absent key fails closed.
+	Adoptable bool `json:"adoptable,omitempty"`
+	// AdoptReason is the served adoptReason of a row that is not adoptable.
+	AdoptReason string `json:"adopt_reason,omitempty"`
+	// Adopt scripts the outcome of an adopt; fakerelay runs no process.
+	Adopt *OutsideAdopt `json:"adopt,omitempty"`
 	// Transcript is the conversation the transcript route pages, oldest first.
 	Transcript []OutsideTranscriptEntry `json:"transcript"`
+}
+
+// OutsideAdopt says what an adopt of an adoptable row does.
+type OutsideAdopt struct {
+	// Busy is the idle check's veto. Absent: the session is idle.
+	Busy string `json:"busy,omitempty"`
+	// ModelFamily is the family the transcript names. Absent: none.
+	ModelFamily string `json:"model_family,omitempty"`
+	// Refuse is the refusal relay would reach from process or host state.
+	Refuse string `json:"refuse,omitempty"`
 }
 
 // OutsideTranscriptEntry is one conversation line of an outside fixture.

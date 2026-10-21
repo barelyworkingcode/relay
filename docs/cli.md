@@ -645,7 +645,7 @@ relay audit [--tail N] [--project ID] [--mcp ID] [--outcome OUTCOME]
 | `--mcp` | Filter by MCP id. |
 | `--outcome` | `ok`, `error`, `tool_error`, `denied`, `unauthorized`, `throttled`, `pending`. `scope_violation` is also accepted here even though it is a *field*, not an outcome — it selects `tool_error` rows the MCP itself marked as a resource-scope refusal. |
 | `--kind` | Actor kind: `project`, `service`, `remote`, `relay`, `control`, `operator`, `project_session`, `unknown`. |
-| `--event` | `call_tool`, `list_tools`, `list_skills`, `mcp_down`, `mcp_up`, `control_decision`, `credential_issued`, `credential_revoked`, `model_call`, `model_list`, `session_message`. |
+| `--event` | `call_tool`, `list_tools`, `list_skills`, `mcp_down`, `mcp_up`, `control_decision`, `credential_issued`, `credential_revoked`, `model_call`, `model_list`, `session_message`, `session_swap` (DETAIL reads `session=<id> <direction> <phase>`). |
 | `--grep` | Substring match over tool, MCP, error, project/profile, caller, args, and an issuance record's kind/identifier/name/grants. |
 | `--json` | Emit raw JSONL (oldest first) instead of a table. |
 | `--path` | Print the log file's path and exit. |
@@ -2709,7 +2709,10 @@ provider reports them. The text form is the reply text alone.
 | `--json` | Print the answer as JSON. |
 
 It returns once the message is written, before the turn ends; read the reply
-with `session wait`. `--json` prints `session_id` (string) and `at` (string, RFC
+with `session wait`. On a detached host session the write is complete when the
+runner has moved the message to `sent/`, which is the receipt; no receipt in 25 s
+exits `1` with `send_unknown`, and the message stays queued. Do not send it again
+before reading `session events`. `--json` prints `session_id` (string) and `at` (string, RFC
 3339 with milliseconds). Text form: `sent to session ID at TIME`. Errors are
 those of `session message`: `host_link_down`, `send_unknown`,
 `already_processing`, `resume_required`, `dropped_in`, `session_not_found`.
@@ -2749,12 +2752,12 @@ reports no agent state exits `1` with `not_tracked`.
 | `--after` | The cursor an earlier call printed. Empty starts at the beginning of the current run. |
 | `--json` | Print the answer as JSON. |
 
-It prints the events a detached host session's agent wrote after the cursor,
+It prints the events a detached host session's or a local runner session's agent wrote after the cursor,
 in order, up to 200 per call. `--json` prints `session_id` (string), `events`
 (array of the agent's stream-json lines) and `next` (string, the cursor for
 the next call; unchanged when nothing is new). Text form: one event per line,
-then `next CURSOR`. A malformed cursor exits `1`. A session that is not a live
-detached host session exits `1` with `replay_unavailable`.
+then `next CURSOR`. A malformed cursor exits `1`. A chat session, an `ssh -T` session, or any session without a runner exits `1`
+with `replay_unavailable`.
 
 ### `session stop`
 
@@ -3069,10 +3072,13 @@ There are no flags. Before relay answers, it prints
 `relay: handing over <id>; waiting up to 60 s for the current turn to end` on
 stderr; on exit it prints `relay: handed back <id>`. The exit status is
 Claude's. Ending the terminal, by quitting Claude, closing the window or
-SIGHUP, hands the session back as idle. The hand-back finishes after the
-CLI exits, when relay-sessions sees the terminal end: wait for the session's
-`attention.state` to read `idle` (`relay session list`, or the `/ws`
-`session_state` frame) before a resume or a message. It is not gated: there is no presence
+SIGHUP, hands the session back and relay resumes it headless on the same
+conversation, with no further message and no `relay session resume`. The
+resume finishes after the CLI exits, when relay sees the terminal end: wait
+for the `session.hand_back` event (`relay logs --follow --event
+session.hand_back`) before a message. Each swap writes `session_swap` audit
+rows (`relay audit --event session_swap`); with auditing off the drop-in is
+refused (`audit_unavailable`) and a hand back resumes nothing. It is not gated: there is no presence
 prompt, as for `relay sandbox`. The same drop-in is `POST
 /api/sessions/{id}/drop-in` (class `execute`), which answers with the new
 terminal for a client to join.
@@ -3082,6 +3088,11 @@ the stop ends the agent's process group on the host, and the terminal resumes
 the conversation there with its full history. After a relay restart relay
 attaches the still-running agent first, so the stop reaches it and the agent
 and the terminal never run on one conversation together.
+
+On a host with tmux 3.0 or later, the terminal shows the session's tmux pane
+`relay-agent-<id>`: the pane swaps from the runner to Claude and back, and the
+session keeps one name. `tmux attach -t relay-agent-<id>` on the host shows the
+same pane. Closing the terminal swaps the pane back to the runner.
 
 No JSON form: the terminal belongs to Claude. Exit codes: Claude's own exit
 status after a hand-over; `1` for any refusal below (`error: relay drop-in needs
@@ -3093,7 +3104,8 @@ session; stdin or stdout is not a terminal; relay is not running; no id is
 given; the session does not exist, is not a Claude session, is not headless or
 has not run a turn yet; a tool is running (the message names it) or the turn
 does not end within 60 s; a terminal already has the session; or the
-project's authorization refuses a `claude-code` terminal. A refusal stops
+project's authorization refuses a `claude-code` terminal, or auditing cannot
+record the swap. A refusal stops
 nothing: the session keeps running.
 
 ## `relay mcpExec`

@@ -226,10 +226,12 @@ func (s *Server) onTerminalExit(id string, exitCode int) {
 	if s.consumeTerminating(id) {
 		reason = "closed"
 	}
-	s.reportExit(id, rootPID, exitCode, reason)
+	// Deliberate: the hold clears before relay hears of the exit, so the
+	// resume relay starts on that report is not refused as held.
 	if agentID, ok := s.takeDropIn(id); ok {
 		s.sessions.HandBack(agentID)
 	}
+	s.reportExit(id, rootPID, exitCode, reason)
 	// Both fire on every terminal exit: reportExit is the bridge-facing
 	// SessionExited report, BroadcastExit is the WS-facing terminal_exit
 	// frame a joined eve viewer needs. See New's own comment on why this is
@@ -1127,7 +1129,7 @@ func writeVerbError(w http.ResponseWriter, err error) {
 	case errors.Is(err, provider.ErrSendUnknown):
 		writeErr(w, http.StatusBadGateway, ErrSendUnknown, err.Error())
 	case errors.Is(err, session.ErrReplayUnavailable):
-		writeErr(w, http.StatusConflict, ErrReplayUnavailable, "this session keeps no replayable event log; only a session on a host with detach_sessions does")
+		writeErr(w, http.StatusConflict, ErrReplayUnavailable, "this session keeps no replayable event log; only a Claude session on a Unix host that runs it under the runner does (a host with detach_sessions: false, and a Windows host, do not)")
 	case errors.Is(err, session.ErrNotTracked):
 		writeErr(w, http.StatusConflict, ErrNotTracked, "this session reports no agent state")
 	default:

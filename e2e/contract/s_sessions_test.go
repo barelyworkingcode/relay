@@ -169,6 +169,7 @@ func TestSessionsDropIn(t *testing.T) {
 			ws.Expect("error", func(f wsMessage) bool { return frameField(f, "code") == "dropped_in" })
 			r.HTTP("ops", "POST", "/api/sessions/"+id+"/drop-in", map[string]any{})
 			r.HTTP("ops", "DELETE", "/api/terminals/"+tid, nil)
+			r.Event(harness.EventQuery{Key: "session.hand_back", Fields: map[string]any{"session_id": id}})
 			ws.Expect("session_state", func(f wsMessage) bool { return frameField(f, "state") == "idle" })
 			r.HTTP("ops", "GET", "/api/sessions", nil)
 		},

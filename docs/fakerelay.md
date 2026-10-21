@@ -101,7 +101,7 @@ Wire reference.
 | Persistent terminals | `GET /api/projects/{id}/persistent-sessions` | read |
 | Persistent terminals | `DELETE /api/projects/{id}/persistent-sessions/{name}` | configure |
 | Files | every `/api/projects/{id}/files/*` route, `POST /api/hosts/{id}/pastetmp`, `GET /ws/files` | execute |
-| Sessions | `POST /api/sessions`, `POST /api/sessions/{id}/resume`, `POST /api/sessions/{id}/drop-in` | execute |
+| Sessions | `POST /api/sessions`, `POST /api/sessions/adopt`, `POST /api/sessions/{id}/resume`, `POST /api/sessions/{id}/drop-in` | execute |
 | Sessions | `GET /api/sessions` | proxy |
 | Terminals | `POST /api/terminals` | execute |
 | Terminals | `GET /api/terminals`, `GET /api/terminals/{id}/log` | proxy |
@@ -628,17 +628,19 @@ The delivered text appears on the session as a `user_message` frame with
 
 - Request: `{"projectId","folder"?,"prompt","model"?,"entry"?,"mode"?}`, at
   most 64 KiB. The prompt is trimmed. Exactly one of `model` and `entry` is
-  sent. `mode` is `headless` (default) or `terminal`.
+  sent. `mode` is empty, `headless` or `terminal`; `terminal` runs the same
+  headless start.
 - Success: 201
-  `{"sessionId","name","projectId","directory","mode","kind","origin":"chief-of-staff","at"}`.
+  `{"sessionId","name","projectId","directory","mode","kind","origin":"chief-of-staff","at"}`, with `mode` always
+  `"headless"`.
   `name` is the prompt's first line with whitespace collapsed, cut to 60
   characters. An entry start adds `"entry"` (the stored spelling) and
   `"entryType":"agent"|"chat"`.
 - Errors, coded with message, checked in this order: `invalid_body`,
   `project_id_required`, `prompt_required`, `prompt_too_long` (over 8000
   characters), `model_or_entry` (`send model or entry, not both`, or `send
-  model or entry`), `mode_invalid` (a mode that is neither value, or `an entry
-  start is headless only`), `folder_invalid`, `body_too_large`. A launch
+  model or entry`), `mode_invalid` (a mode that is not empty, `headless` or
+  `terminal`), `folder_invalid`, `body_too_large`. A launch
   refusal uses the launch refusal code and text (see Sessions), still in this
   family, with `project_unavailable` and `directory_outside` renamed
   `project_not_available` and `directory_outside_project`. `502 launch_failed`
@@ -1178,15 +1180,95 @@ headless Claude session over for an echo terminal. Optional body
   second drop-in gets 409 `dropped_in`.
 - When the drop-in terminal ends (exit, `terminal_close`, or
   `DELETE /api/terminals/{id}`), the hold clears and a tracked session
-  broadcasts `session_state` `idle` with a new `since`. The session stays
-  dormant, so the next send gets `resume_required`.
+  broadcasts `session_state` `idle` with a new `since`. The session is
+  live and idle, as relay resumes it on the drop-in caller's behalf, so the
+  next send is answered with no resume. The fake writes the event
+  `session.hand_back` (`session_id`, `terminal_id`, `host`, `console` for a
+  console project) after the state returns. No audit row is written.
 - Event `session.drop_in` (in `relay.log`): `session_id`, `host` (host name or
   `console`), `terminal_id` (`""` on refusal). A 4xx refusal is `denied` with
   the code as `reason`; a 5xx is `error`. No audit row is written.
 
 Events: `session.list`, `session.launch`, `session.resume`, `session.delete`,
-`session.drop_in`.
+`session.drop_in`, `session.adopt`, `session.hand_back`.
 Session host events go to `relaysessions.log`.
+
+### Adopt (G9)
+
+`POST /api/sessions/adopt` (class `execute`, socket only; the Chief of Staff
+scope gets 403 `Forbidden` as on any other route) takes an outside Claude row
+over as a managed headless session. The body is at most 4096 bytes, one JSON
+value, unknown fields refused:
+`{"outsideId" or "claudeSessionId", "interrupt"?, "model"?}`. Every refusal is
+`{"error":"<code>","message":"<text>"}`. fakerelay runs no process; the row's
+`adopt` object (see Outside fixture sessions) says what happens. The first
+match answers, and nothing changes before step 11:
+
+| # | Case | Status | `error` | `message` |
+|---|---|---|---|---|
+| 1 | body over the cap | 413 | `body_too_large` | `request body is larger than 4 KiB` |
+| 1 | not JSON, unknown field, wrong type, data after the value | 400 | `invalid_body` | `body must be JSON {"outsideId" or "claudeSessionId", "interrupt", "model"}` |
+| 1 | both selectors or neither | 400 | `invalid_body` | `send outsideId or claudeSessionId, not both and not neither` |
+| 1 | `outsideId` is not `outside:` and 32 lowercase hex digits | 400 | `invalid_body` | `outsideId is not an outside session id` |
+| 1 | `claudeSessionId` is not a UUID | 400 | `invalid_body` | `claudeSessionId is not a UUID` |
+| 1 | `model` over 200 characters, invalid UTF-8 or holds a control character | 400 | `invalid_body` | `model is not a model name` |
+| 2 | `outsideId` names no row | 404 | `outside_session_not_found` | `no live outside session matches` |
+| 2 | the selector names an ended row (a `claudeSessionId` only when no live console row holds it) | 409 | `ended` | `the session has ended; there is no process to adopt` |
+| 2 | `claudeSessionId` matches no row | 404 | `outside_session_not_found` | `no live outside session matches` |
+| 2 | two or more live console rows hold the `claudeSessionId` | 409 | `ambiguous` | `more than one live process holds this conversation` |
+| 3 | the row has a `host_id` | 409 | `host_unsupported` | `sessions on an SSH host cannot be adopted` |
+| 3 | the row is not adoptable | 409 | the row's `adoptReason` | `the session cannot be adopted: <adoptReason>` |
+| 4 | `adopt.refuse` `audit_unavailable` | 503 | `audit_unavailable` | `auditing is off; no session can be adopted` |
+| 4 | `adopt.refuse` `unavailable` | 502 | `unavailable` | `the session host is not available` |
+| 4 | `adopt.refuse` `adopt_in_progress` | 409 | `adopt_in_progress` | `an adopt of this conversation is already running` |
+| 4 | `adopt.refuse` `changed` | 409 | `changed` | `the process or its registry entry changed` |
+| 5 | `project_id` names no world project, or a host or remote project | 409 | `no_project` | `the session is not in a registered local project` |
+| 6 | an earlier adopt made a session that holds the conversation id | 409 | `managed` | `relay already holds this conversation` |
+| 7 | `adopt.busy` is set and `interrupt` is not true | 409 | `busy` | `the session is not idle (<veto>); ask to interrupt to take it over anyway` |
+| 8 | no `model` in the body and no `adopt.model_family` | 409 | `model_unknown` | `the model of the session is unknown; send model` |
+| 9 | launch authorization refuses (project, directory, model) | the launch status | `project_not_available`, `directory_outside_project` or `model_not_allowed` | the launch text |
+| 10 | `adopt.refuse` `stop_failed`; the row stays | 502 | `stop_failed` | `the process did not exit after SIGKILL; nothing was launched` |
+| 10 | `adopt.refuse` `launch_failed`; the row becomes `ended` | 502 | `launch_failed` | `the process ended but relay could not start the session; the conversation is intact and can be resumed` |
+
+Step 9 uses `authorize(project, row directory, model, "claude")`, with the
+codes renamed as the Chief of Staff start renames them. A `launch_failed` row
+keeps `state:"ended"`, `ended_at` (the instance clock's now, RFC 3339 UTC,
+seconds) and its `claude_session_id`, loses `adopt` and reads
+`adoptable:false`, `adoptReason:"ended"`.
+
+Success (step 11), in this order:
+
+1. The row leaves the snapshot. `revision` goes up by one, every
+   `/ws/outside-sessions` reader gets the replacement snapshot, and
+   `outside_sessions.changed` is written.
+2. A session launches as `POST /api/sessions` would with `projectId`, the
+   row's `directory` and `name`, the model of step 8 and settings
+   `{"headless":true,"agent":true}`. It is kind `claude`, has no origin, is
+   listed, is attended (`attention.state` `idle`) and can be dropped into. It
+   holds the row's conversation id, which is what step 6 reads.
+3. `interrupted` is true when `adopt.busy` was set. An idle row with
+   `interrupt:true` is not interrupted. When interrupted, the recovery text is
+   sent as a turn with origin `relay-recovery`: the turn is recorded before the
+   answer and runs after it. `recoverySent` is true when the turn was accepted.
+4. The answer is 201 `{"sessionId","claudeSessionId","interrupted","recoverySent"}`,
+   exactly these four keys.
+
+The recovery text is relay's, filled from the row's `transcript`. The prompt
+is the newest `user` entry's text. The open call is the newest `tool` entry
+with `kind` `call` that no later `result` entry follows: its name is `name`,
+its id is `e<index>` (the transcript route's entry id), and its input is the
+entry's `text` compacted as JSON, or `null` when the text is not JSON. Each
+value is joined to one line and cut to 300 (prompt), 128 (name, id) and 500
+(input) characters, the last one `…` when cut. With no open call the message
+carries relay's two no-call lines.
+
+Event `session.adopt` (in `relay.log`), one per request, written before the
+answer. A parse refusal (step 1) writes it with no keys. Every later answer
+writes `outside_id`, `claude_session_id`, `project_id`, `session_id` and
+`interrupted`; `outside_id` and `claude_session_id` hold the request's values
+until the row resolves, `project_id` is set from step 5, and `session_id` only
+on success. Outcome `ok`; a refusal's reason is its code, outcome `denied`
+below 500 and `error` at or above. No audit row is written.
 
 ### /ws frames (G3)
 
@@ -1487,7 +1569,11 @@ sorted by `id`. Row:
 
 `DELETE /api/terminals/{id}` answers 204, or 404 with an empty body for an
 unknown id. It closes the terminal. Events: `terminal.list`, `session.launch`,
-`terminal.delete`, `terminal.log`.
+`terminal.delete`, `terminal.log`. In fakerelay only, the `session.launch`
+line also carries `template_id`, `directory` (the resolved terminal directory;
+set once the launch is authorized) and `extra_args` (always an array, `[]` when
+the body has none), so a client's tests can assert what it sent. Relay's own
+line does not carry them. A body that fails to decode carries none of the three.
 
 `GET /api/terminals/{id}/log` (class `proxy`, socket only):
 
@@ -1750,6 +1836,7 @@ checked against relay at `59cdf9e` (G7).
 | G6 | presence refusal body | the project routes' gate error mapping | yes, `59cdf9e` |
 | G7 | `relay grant --json` | the grant command | yes, `59cdf9e` |
 | G8 | the terminal log route, how an echo terminal ends, the session-host 404 for unmatched paths, drop-in and the headless/agent launch settings | `routes.md`, `session-host.md` and `events.md` for the doors; the planner's check of relay for the bodies and messages the docs leave out | yes, `5af6c45` |
+| G9 | the adopt door's messages, judging order and event keys | `routes.md` and `outside-sessions.md` for the codes; the planner's check of relay for the texts and order | yes, `552a068` |
 
 Other entries marked "checked against relay" (projects, hosts, Chief of
 Staff, door refusals, MCP tools, persistent sessions) fill smaller holes the
@@ -2178,6 +2265,10 @@ Where fakerelay differs from relay on purpose:
 - **Class and scope refusals** answer the plain text `Forbidden` or
   `Unauthorized`. The reason is only in the audit row (D1, D2).
 - **`already_processing` on `/ws`** is an `error` frame with no `code` (D4).
+- **Adopt's outcome comes from the fixture.** `adopt.refuse` codes are judged
+  after the row resolves; in relay `audit_unavailable` and `unavailable` come
+  first. The recovery text's call id is `e<index>`, the transcript route's
+  entry id.
 - **Audit rows** are `file_op` rows, presence-refusal `control_decision` rows
   and the world's seeded rows. Nothing else is written.
 
@@ -2196,6 +2287,10 @@ Where fakerelay differs from relay on purpose:
   write and the `chat_template` row of a chat template add;
 - `useRelayTools` and `appendClaudeMd` on a chat template start: a fake chat
   session ignores both, as it ignores the template's system prompt;
+- the adopt door's signal ladder and its waits, the registry and transcript
+  reads, the console probe a `claudeSessionId` selector runs, and the
+  `session_adopt`, `session_interrupt`, `session_message` and `session_launch`
+  audit rows;
 - the login-shell lookup of an agent command (builtins, aliases and shell
   functions): fakerelay walks a `PATH` list instead.
 
@@ -2260,11 +2355,35 @@ emits a replacement snapshot. It is not a product mutation door.
 An `ended` row carries `ended_at` (RFC 3339 UTC, the transcript file's
 modification time), and only an `ended` row may; else the replace is refused as
 an invalid outside fixture. The row's wire form adds `endedAt`, and live rows
-stay unchanged. The snapshot lists the live rows in fixture order, then the
+stay unchanged. A row may carry `claude_session_id` (`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`),
+live or ended; it is served as `claudeSessionId` on list, detail and the scoped
+WebSocket snapshot. A bad value is refused as an invalid outside fixture. A row
+without it serves no `claudeSessionId`. The snapshot lists the live rows in fixture order, then the
 ended rows newest `ended_at` first (ties by `id`), at most 50 across all
 machines. Detail serves an ended row like a live one. The transcript route
 answers 404 `outside_session_not_found` for it. fakerelay applies no window and
 no dedupe: the fixture states which rows are ended.
+
+Every row is served with `adoptable` and, when it is not adoptable,
+`adoptReason`. These keys steer
+[`POST /api/sessions/adopt`](#adopt-g9) and the row fields; a violation is
+refused as an invalid outside fixture (`PUT` 400; a world file fails the load at
+`outside_sessions[i].<key>`).
+
+| Key | Shape | Rule |
+|---|---|---|
+| `adoptable` | bool, default `false` | `true` needs: `state` not `ended`; `host_id` null; `project_id` set; `id` matching `^outside:[0-9a-f]{32}$`; `claude_session_id` a UUID; no `adopt_reason` |
+| `adopt_reason` | `ended`, `host_unsupported`, `no_project`, `not_registered`, `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line` or `ambiguous` | only when `adoptable` is false. Where the row is ended, has a `host_id` or has no `project_id` (in that order) it must equal that code; otherwise one of the last six. Absent: that first rule, else `not_registered` |
+| `adopt` | `{busy?, model_family?, refuse?}`, unknown keys refused | only with `adoptable: true` |
+| `adopt.busy` | `registry_busy`, `status_stale`, `open_tool_call` or `child_process` | the idle check's veto. Absent: idle |
+| `adopt.model_family` | `haiku`, `sonnet` or `opus` | the family relay derives from the transcript. Absent: none derivable |
+| `adopt.refuse` | `audit_unavailable`, `unavailable`, `adopt_in_progress`, `changed`, `stop_failed` or `launch_failed` | the refusal relay would reach from process or host state. Absent: the adopt succeeds |
+
+A fixture row with none of these keys reads `adoptable:false` with the first
+rule that applies as its reason, so existing fixtures stay valid. A test
+changes an outcome mid-run with `PUT /v1/outside-sessions`; there is no `ctl`
+verb. A successful adopt removes the row, and `launch_failed` ends it (see
+Adopt).
 
 Each row may carry `transcript`: `[{role,text,at,kind?,name?}]`, oldest first,
 at most 5000 entries, `role` `user`, `assistant` or `tool`, `text` at most 8192

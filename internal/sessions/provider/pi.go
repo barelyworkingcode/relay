@@ -1,19 +1,16 @@
 package provider
 
 import (
-	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +18,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/pioverlay"
+	"github.com/barelyworkingcode/relay/internal/sessions/runner"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
@@ -62,7 +60,18 @@ type PiConfig struct {
 	// shim to relay's bridge socket — never by the pi child itself, and never
 	// in argv. nil for a launch with no identity to mint.
 	Identity *sessionsmcp.IdentitySpec
+
+	// RunnerBase is the directory local sessions' run directories live under.
+	// Every pi session runs under the runner there; Start refuses a session when
+	// it is empty. A pi runner ends when relay-sessions shuts down.
+	RunnerBase string
 }
+
+// piRunnerPatterns are the strings the runner matches in pi's stdout. The
+// agent_settled line ends a turn: pi writes it after agent_end, and an agent_end
+// with willRetry set is followed by a retry turn. Pi has no question path, so
+// Asking stays empty and never matches.
+var piRunnerPatterns = runner.Patterns{TurnEnded: `"type":"agent_settled"`}
 
 // PiProvider manages a persistent pi CLI process in `--mode rpc`. The wire
 // format is JSONL: commands written to stdin one per line, responses +
@@ -73,16 +82,11 @@ type PiProvider struct {
 	handler sessionstypes.EventHandler
 	cfg     PiConfig
 
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
 	mu    sync.Mutex
 	alive atomic.Bool
 
-	// targetPID is the shim's own child (the real pi process) when this
-	// launch went through the shim — 0 on a direct spawn. Used by Kill's
-	// hard-kill fallback to reach the target's whole process group, not just
-	// the shim.
-	targetPID int
+	// det follows the agent under the runner; nil before Start.
+	det atomic.Pointer[runFollower]
 
 	piSessionID   string
 	modelID       string
@@ -258,6 +262,7 @@ func piBrokerModelID(model string) string {
 func (p *PiProvider) Start() (err error) {
 	p.cleanupSpawnFiles()
 	p.closeModelProxyAndOverlay()
+	p.det.Store(nil)
 
 	defer func() {
 		if err != nil {
@@ -265,6 +270,10 @@ func (p *PiProvider) Start() (err error) {
 		}
 	}()
 
+	base := p.cfg.RunnerBase
+	if base == "" {
+		return errors.New("pi: no runner directory is configured for local sessions")
+	}
 	sessionDir := p.sessionDir()
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		return fmt.Errorf("create pi session dir: %w", err)
@@ -284,33 +293,6 @@ func (p *PiProvider) Start() (err error) {
 
 	program := p.cfg.Launcher.Program(resolvePiPath(p.cfg.Binary))
 
-	spec := shimSpec{
-		Binary:         p.cfg.ShimBinary,
-		SessionID:      p.session.ID,
-		BridgeSocket:   p.cfg.BridgeSocket,
-		SandboxProfile: p.cfg.SandboxProfile,
-		Identity:       p.cfg.Identity,
-	}
-	var cmd *exec.Cmd
-	var statusR *os.File
-	var extraFiles []*os.File
-	switch {
-	case spec.wanted() && spec.Binary == "":
-		return ErrShimRequired
-	case spec.Identity != nil && spec.BridgeSocket == "":
-		return ErrNoBridgeSocket
-	case spec.wanted():
-		var berr error
-		cmd, statusR, extraFiles, berr = buildShimCmd(spec, program[0], append(program[1:], args...))
-		if berr != nil {
-			return berr
-		}
-	default:
-		cmd = exec.Command(program[0], append(program[1:], args...)...) // unchanged direct spawn
-	}
-	fds := &spawnFDs{statusR: statusR, extraFiles: extraFiles}
-	defer fds.closeUnlessStarted()
-	cmd.Dir = p.directory
 	env := ensurePath(childBaseEnv())
 	env = append(env, "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1")
 
@@ -345,101 +327,77 @@ func (p *PiProvider) Start() (err error) {
 			}
 		}
 	}
-	cmd.Env = env
 
-	stdoutR, stdoutW, err := newStdoutPipe(cmd)
-	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
-	fds.pipes = append(fds.pipes, stdoutR, stdoutW)
-
-	stderrR, stderrW, err := newStderrPipe(cmd)
-	if err != nil {
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
-	fds.pipes = append(fds.pipes, stderrR, stderrW)
-
-	// Deliberate: StdinPipe is last so no return sits between it and Start;
-	// the Cmd holds its read end until Start, and Start closes both ends if
-	// it fails.
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("stdin pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start pi: %w", err)
-	}
-	fds.started = true
-	_ = stdoutW.Close()
-	_ = stderrW.Close()
-	sawStdout := &atomic.Bool{}
 	identitySecret := ""
 	if p.cfg.Identity != nil {
 		identitySecret = p.cfg.Identity.Secret
 	}
-	logStderr := func() []string {
-		return logProviderStderr(stderrR, p.session.ID, "pi", sawStdout, p.cfg.ModelKey, identitySecret)
-	}
-	// drainStderr reads what the target wrote before the shim refused it.
-	// The deadline is deliberate: a target forked with Setpgid can outlive
-	// the Kill and keep the write end open, and Start must not wait on it.
-	drainStderr := func() {
-		_ = stdoutR.Close()
-		_ = stderrR.SetReadDeadline(time.Now().Add(time.Second))
-		logStderr()
-	}
-	// Load-bearing: without closing the parent's own copies, the status pipe
-	// (and, when present, the identity secret pipe) never reaches EOF.
-	for _, f := range extraFiles {
-		_ = f.Close()
+	run, st, err := startLocalRun("pi", base, p.directory, shimSpec{
+		Binary:         p.cfg.ShimBinary,
+		SessionID:      p.session.ID,
+		BridgeSocket:   p.cfg.BridgeSocket,
+		SandboxProfile: p.cfg.SandboxProfile,
+		Identity:       p.cfg.Identity,
+	}, program, args, env, piRunnerPatterns, p.cfg.ModelKey, identitySecret)
+	if err != nil {
+		return err
 	}
 
-	if statusR != nil {
-		outcome, _ := readShimStatus(statusR)
-		_ = statusR.Close()
-		switch {
-		case outcome.identityRefused:
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			drainStderr()
-			return fmt.Errorf("%w: session %s", ErrIdentityRefused, p.session.ID)
-		case !outcome.started || outcome.spawnFailed:
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			drainStderr()
-			return fmt.Errorf("%w: errno=%d", ErrSpawnFailed, outcome.spawnErrno)
-		default:
-			p.targetPID = outcome.targetPID
-		}
-	}
-
-	p.cmd = cmd
-	p.stdin = stdin
-	p.exitMu.Lock()
-	p.spawnGen++
-	gen := p.spawnGen
-	p.exitMu.Unlock()
-	p.alive.Store(true)
-	p.stopIdle = make(chan struct{})
-	p.stopIdleOnce = sync.Once{}
-	p.waitDone = make(chan struct{})
-	p.exit = &spawnExit{done: make(chan struct{})}
-	p.drainTimeout = providerDrainTimeout
-	p.killed = &atomic.Bool{}
-	p.touchActivity()
-
-	out := newSpawnOutput(stdoutR, stderrR)
-	go p.readStdout(stdoutR, sawStdout, out.stdoutDone)
-	go func() { out.stderrTail <- logStderr() }()
-	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, p.exit, gen)
+	det := p.beginRun(localConnFor(base, p.session.ID), run.Generation)
+	det.Run()
 	go p.idleWatcher(p.stopIdle)
 
-	slog.Info("pi process started", "session", p.session.ID, "model", p.modelID, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
+	slog.Info("pi process started", "session", p.session.ID, "model", p.modelID, "runner", st.PID, "generation", run.Generation)
 
 	go p.fetchInitialState()
 
 	return nil
+}
+
+// beginRun installs the state of a spawn that follows a run from its start and
+// marks the provider alive. Pi never attaches: a pi agent ends with the
+// relay-sessions that started it, so every spawn starts a run and reads it from
+// byte zero.
+func (p *PiProvider) beginRun(connFor func(gen string) runConn, gen string) *runFollower {
+	p.exitMu.Lock()
+	p.spawnGen++
+	spawnGen := p.spawnGen
+	p.exitMu.Unlock()
+	p.alive.Store(true)
+	p.stopIdle = make(chan struct{})
+	p.stopIdleOnce = sync.Once{}
+	waitDone := make(chan struct{})
+	p.waitDone = waitDone
+	p.drainTimeout = providerDrainTimeout
+	killed := &atomic.Bool{}
+	p.killed = killed
+	exit := &spawnExit{done: make(chan struct{})}
+	p.exit = exit
+	p.touchActivity()
+
+	det := newRunFollower(nil, connFor, gen, 0, runHooks{
+		Kind:    "pi",
+		Session: p.session.ID,
+		Line:    func(body json.RawMessage, _ int64) { p.processLine(body) },
+		Exited: func(code int, tail []string, _ bool) {
+			p.runExited(spawnGen, killed, exit, waitDone, code, tail)
+		},
+		Redact: p.redactTail,
+	})
+	p.det.Store(det)
+	return det
+}
+
+// redactTail masks the launch's secrets in each tail line.
+func (p *PiProvider) redactTail(lines []string) []string {
+	secrets := []string{p.cfg.ModelKey}
+	if p.cfg.Identity != nil {
+		secrets = append(secrets, p.cfg.Identity.Secret)
+	}
+	for i, l := range lines {
+		lines[i] = redactStderrLine(l, secrets)
+	}
+	return lines
 }
 
 func (p *PiProvider) cleanupSpawnFiles() {
@@ -485,57 +443,28 @@ func (p *PiProvider) fetchInitialState() {
 	}
 }
 
-func (p *PiProvider) readStdout(r io.ReadCloser, sawStdout *atomic.Bool, done chan<- struct{}) {
-	defer close(done)
-	defer func() { _ = r.Close() }()
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		sawStdout.Store(true)
-		p.processLine(json.RawMessage(append([]byte(nil), line...)))
-	}
-
-	if err := scanner.Err(); err != nil {
-		logStdoutReadError(p.session.ID, "pi", err)
-	}
-}
-
-// idleWatcher and waitForExit take their spawn's own cmd and channels as
-// arguments: after Kill then Start, a goroutine re-reading the fields would
-// race the next Start and could close that spawn's waitDone.
-func (p *PiProvider) waitForExit(cmd *exec.Cmd, waitDone chan struct{}, out *spawnOutput, drainTimeout time.Duration, killed *atomic.Bool, exit *spawnExit, gen uint64) {
+// runExited delivers process_exited once the runner is gone or Stop ran. Its
+// spawn's own channels arrive as arguments: after Kill then Start, a goroutine
+// re-reading the fields would race the next Start.
+func (p *PiProvider) runExited(gen uint64, killed *atomic.Bool, exit *spawnExit, waitDone chan struct{}, code int, tail []string) {
 	defer close(exit.done)
-	err := cmd.Wait()
 	p.alive.Store(false)
+	exit.code = code
 	close(waitDone)
 
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-	}
-
-	tail := out.drain(drainTimeout)
 	p.exitMu.Lock()
 	defer p.exitMu.Unlock()
 	if p.spawnGen != gen {
-		slog.Debug("provider exit from a superseded spawn dropped", "session", p.session.ID, "kind", "pi", "exitCode", exitCode)
+		slog.Debug("provider exit from a superseded spawn dropped", "session", p.session.ID, "kind", "pi", "exitCode", code)
 		return
 	}
-	slog.Info("pi process exited", "session", p.session.ID, "exitCode", exitCode)
+	slog.Info("pi process exited", "session", p.session.ID, "exitCode", code)
 	wasKilled := killed.Load()
 	if !wasKilled {
-		warnProviderExit(p.session.ID, "pi", exitCode, tail)
+		warnProviderExit(p.session.ID, "pi", code, tail)
 	}
 
-	data := providerExitData(exitCode, tail, wasKilled)
+	data := providerExitData(code, tail, wasKilled)
 	p.handler("process_exited", data)
 }
 
@@ -1077,17 +1006,15 @@ func (p *PiProvider) sendRPC(cmd map[string]interface{}) (json.RawMessage, error
 		cleanup()
 		return nil, fmt.Errorf("marshal rpc: %w", err)
 	}
-	data = append(data, '\n')
 
-	p.mu.Lock()
-	if !p.alive.Load() || p.stdin == nil {
-		p.mu.Unlock()
+	det := p.det.Load()
+	if !p.alive.Load() || det == nil {
 		cleanup()
 		return nil, fmt.Errorf("pi process not running")
 	}
-	_, err = p.stdin.Write(data)
-	p.mu.Unlock()
-	if err != nil {
+	// Every RPC relay makes besides a prompt is a control message: get_state and
+	// set_thinking_level start no turn.
+	if err := det.Send(context.Background(), runner.MessageControl, data, 0); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("write rpc: %w", err)
 	}
@@ -1105,7 +1032,8 @@ func (p *PiProvider) sendRPC(cmd map[string]interface{}) (json.RawMessage, error
 }
 
 func (p *PiProvider) SendMessage(text string, files []sessionstypes.FileAttachment) error {
-	if !p.alive.Load() || p.stdin == nil {
+	det := p.det.Load()
+	if !p.alive.Load() || det == nil {
 		return fmt.Errorf("pi process not running")
 	}
 
@@ -1132,41 +1060,38 @@ func (p *PiProvider) SendMessage(text string, files []sessionstypes.FileAttachme
 	if err != nil {
 		return fmt.Errorf("marshal prompt: %w", err)
 	}
-	data = append(data, '\n')
 
 	p.msgStartNano.Store(time.Now().UnixNano())
 	p.firstTokenNano.Store(0)
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if _, err := p.stdin.Write(data); err != nil {
-		return fmt.Errorf("write to stdin: %w", err)
+	// Returns once the runner has written the prompt to pi.
+	if err := det.Send(context.Background(), runner.MessageTurn, data, 0); err != nil {
+		return fmt.Errorf("send to pi: %w", err)
 	}
 	return nil
 }
 
 func (p *PiProvider) StopGeneration() {
-	if !p.alive.Load() || p.stdin == nil {
+	det := p.det.Load()
+	if !p.alive.Load() || det == nil {
 		return
 	}
-	cmd := map[string]interface{}{"type": "abort"}
-	data, _ := json.Marshal(cmd)
-	data = append(data, '\n')
-
-	p.mu.Lock()
-	_, err := p.stdin.Write(data)
-	p.mu.Unlock()
-	if err != nil {
-		slog.Warn("pi abort write failed, killing", "session", p.session.ID, "error", err)
+	data, _ := json.Marshal(map[string]interface{}{"type": "abort"})
+	if err := det.Send(context.Background(), runner.MessageControl, data, 0); err != nil {
+		slog.Warn("pi abort not sent, killing", "session", p.session.ID, "error", err)
 		p.Kill()
 	}
 }
 
+// Kill ends the agent and its runner. Pi has no Release: a pi agent's model
+// key is bound to the launch that ends with relay-sessions, so a shutdown ends
+// the agent too.
 func (p *PiProvider) Kill() {
 	p.closeModelProxyAndOverlay()
 	p.cleanupSpawnFiles()
 
-	if p.cmd == nil || p.cmd.Process == nil {
+	det := p.det.Load()
+	if det == nil {
 		return
 	}
 
@@ -1187,31 +1112,25 @@ func (p *PiProvider) Kill() {
 	}
 	p.rpcMu.Unlock()
 
-	if p.stdin != nil {
-		_ = p.stdin.Close()
-	}
-
-	_ = p.cmd.Process.Signal(os.Interrupt)
-
-	select {
-	case <-p.waitDone:
-	case <-time.After(3 * time.Second):
-		// Target group first, then the shim, so the shim's own Wait can
-		// return and emit its final exit status. p.targetPID stays 0 on a
-		// direct spawn, so that behavior here is unchanged.
-		if p.targetPID > 0 {
-			_ = syscall.Kill(-p.targetPID, syscall.SIGKILL)
-		}
-		_ = p.cmd.Process.Kill()
-		<-p.waitDone
-	}
-	// waitDone means reaped; the exit is delivered or dropped only once the
-	// drain and the handler finish. The handler must not call Kill.
+	det.Stop(true)
+	// The exit is delivered or dropped only once the handler finishes. The
+	// handler must not call Kill.
 	if exit != nil {
 		<-exit.done
 	}
 
 	slog.Info("pi process killed", "session", p.session.ID)
+}
+
+// Events returns up to max complete events the agent wrote after the cursor
+// and the cursor to pass next. The cursor is "<generation>:<byte offset of a
+// line start>"; "" starts at the current generation's beginning.
+func (p *PiProvider) Events(ctx context.Context, after string, max int) ([]json.RawMessage, string, error) {
+	det := p.det.Load()
+	if det == nil {
+		return nil, "", ErrNotDetached
+	}
+	return det.Events(ctx, after, max)
 }
 
 func (p *PiProvider) Alive() bool {
@@ -1257,6 +1176,10 @@ func (p *PiProvider) SetThinkingLevel(level string) error {
 }
 
 func (p *PiProvider) DeleteSession() error {
+	if p.cfg.RunnerBase != "" {
+		p.Kill()
+		DeleteLocalAgent("pi", p.cfg.RunnerBase, p.session.ID)
+	}
 	p.mu.Lock()
 	sid := p.piSessionID
 	p.mu.Unlock()

@@ -69,6 +69,31 @@ func (i *Inventory) liveClaudeLocked(machineKey, claudeID string) bool {
 	}
 	return false
 }
+
+// Live returns the live row's private evidence and its machine's key. Ended
+// rows are not live and answer false.
+func (i *Inventory) Live(id string) (Observation, string, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	e, ok := i.entries[id]
+	return e.observation, e.machine.Key, ok
+}
+
+// LiveByClaudeID returns every live row of one machine that holds the Claude
+// conversation id, sorted by row id. Two or more is an ambiguous match.
+func (i *Inventory) LiveByClaudeID(machineKey, claudeID string) []Observation {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	var out []Observation
+	for _, e := range i.entries {
+		if e.machine.Key == machineKey && e.observation.ClaudeID == claudeID {
+			out = append(out, e.observation)
+		}
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Session.ID < out[b].Session.ID })
+	return out
+}
+
 func (i *Inventory) clearEndedLocked(machineKey string) {
 	for id, e := range i.ended {
 		if e.machine.Key == machineKey {
@@ -342,6 +367,9 @@ func (i *Inventory) replaceEndedLocked(m Machine, scan []Observation, held map[s
 		o.Session.TmuxSession = nil
 		o.Session.Viewable = false
 		o.Session.ViewReason = "not_in_tmux"
+		o.Session.ClaudeSessionID = o.ClaudeID
+		o.Session.Adoptable = false
+		o.Session.AdoptReason = AdoptReasonEnded
 		i.ended[id] = endedEntry{observation: o, machine: m, at: at}
 	}
 	var ids []string

@@ -285,7 +285,8 @@ stopping are forwarded to the session host (section 3).
   The body is at most 1 MiB.
 - **Response `201`:** the session object: `sessionId`, `projectId`, `name`,
   `directory`, `model`, `providerType`, `createdAt`, `messages`, `stats`, and
-  `headless`, `agent`, `origin`, `host` when set.
+  `headless`, `agent`, `origin`, `host` when set. It carries no provider state:
+  the runner's pid and start time stay inside relay.
 - **Errors:**
   - `400` malformed JSON or an invalid field;
   - `403` the project is not available for a launch, the model or directory is
@@ -441,7 +442,8 @@ The trailing-slash form of `POST /api/terminals`: same contract.
 ### POST /api/sessions/{id}/drop-in
 
 Stops a headless Claude session and starts a terminal that resumes its
-conversation.
+conversation. When the terminal ends, relay resumes the session headless on
+that conversation, on the drop-in caller's behalf, with no further message.
 
 - **Listeners:** socket. **Credential:** `execute`. **Gate:** none.
 - **Request:** path `id`; optional body `{"cols": <number>, "rows": <number>}`
@@ -450,9 +452,40 @@ conversation.
   host), `terminal` (the terminal object of `POST /api/terminals`).
 - **Errors:** `{"error": "<code>", "message": "<text>"}` with `404`
   `session_not_found`, `409` `not_claude` or a handoff conflict, `502`
-  `unavailable`, or the launch refusal's own status.
-- **Event:** `session.drop_in`. **Audit row:** `session_launch`.
+  `unavailable`, `503` `audit_unavailable` (auditing is off or cannot record;
+  nothing was stopped), or the launch refusal's own status.
+- **Event:** `session.drop_in`; `session.hand_back` when the terminal ends
+  (background). **Audit rows:** `session_launch`, and `session_swap` (an
+  intent row before the session stops, then a completion row; a second pair
+  for the hand back).
 - **CLI equivalent:** `relay drop-in` (needs an interactive terminal).
+
+### POST /api/sessions/adopt
+
+Ends an idle (or, with `interrupt`, a busy) Claude session the owner started
+in a terminal on this Mac, and resumes the same conversation as a headless
+relay session in the same folder. See [Adopting a session](outside-sessions.md#adopting-a-session).
+
+- **Listeners:** socket. **Credential:** `execute`. **Gate:** none. Inside the
+  `chief-of-staff` scope it answers `403`.
+- **Request:** body of at most 4 KiB, unknown fields refused: exactly one of
+  `outsideId` (`outside:<32 hex>`) and `claudeSessionId` (a UUID), plus
+  optional `interrupt` (default false) and `model`.
+- **Response `201`:** `sessionId`, `claudeSessionId`, `interrupted`,
+  `recoverySent`.
+- **Errors:** `{"error": "<code>", "message": "<text>"}`. `400` `invalid_body`;
+  `413` `body_too_large`; `404` `outside_session_not_found`; `409` a reason
+  code (`ended`, `host_unsupported`, `no_project`, `not_registered`,
+  `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line`,
+  `ambiguous`), `managed`, `busy`, `model_unknown`, `adopt_in_progress` or
+  `changed`; `403`/`400` the launch refusal's own code (nothing is signalled);
+  `502` `unavailable` (relay-sessions is down, the registry or the idle check
+  could not be read, or the process could not be signalled), `stop_failed`
+  (the process outlived SIGKILL's wait) or `launch_failed`; `503`
+  `audit_unavailable` (nothing is signalled).
+- **Event:** `session.adopt`. **Audit rows:** `session_adopt`,
+  `session_interrupt`, `session_message` (origin `relay-recovery`), and the
+  launch's own `session_launch`.
 
 ### GET /api/sessions
 
@@ -499,7 +532,7 @@ by relay; a body cannot set it.
 
 ### POST /api/chief-of-staff/sessions
 
-Starts a headless agent or a Claude terminal on the Chief of Staff's behalf.
+Starts a headless agent on the Chief of Staff's behalf. There is one start path; the owner opens a terminal on it later by Drop in.
 
 - **Listeners:** socket. **Credential:** `chief_of_staff` (needs
   `X-Relay-Scope: chief-of-staff` and a credential holding `proxy`), and the
@@ -514,18 +547,18 @@ Starts a headless agent or a Claude terminal on the Chief of Staff's behalf.
   | `folder` | string | Relative folder inside the project; no `..`, not absolute |
   | `prompt` | string | First prompt (required, at most 8000 characters) |
   | `model` | string | Model ID. Send exactly one of `model` and `entry` |
-  | `entry` | string | The name of an agent entry or chat template of the project, matched without regard to case. An agent runs its kind, model and command; a chat runs its model. Headless only |
-  | `mode` | string | `"headless"` (default) or `"terminal"` (a Claude model only; refused with `entry`) |
+  | `entry` | string | The name of an agent entry or chat template of the project, matched without regard to case. An agent runs its kind, model and command; a chat runs its model |
+  | `mode` | string | `""`, `"headless"` or `"terminal"`. `"terminal"` runs the same headless start, and the prompt goes through the send door in both. Any other value answers `400` `mode_invalid` |
 
 - **Response `201`:** `sessionId`, `name`, `projectId`, `directory`, `mode`,
-  `kind`, `origin` (`"chief-of-staff"`), `at`, and for an entry start `entry`
+  `kind`, `origin` (`"chief-of-staff"`), `at`, `mode` (always `"headless"`), and for an entry start `entry`
   (the stored spelling) and `entryType` (`"agent"` or `"chat"`). A chat is
   named `<project> - <chat>`; its `mode` and voice settings are ignored.
 - **Errors** (`{"error": "<code>", "message": "<text>"}`, plus `choices`, the
   names the caller could have used, when there are any): `400`
   `invalid_body`, `project_id_required`, `prompt_required`, `prompt_too_long`,
   `model_or_entry`, `mode_invalid`, `folder_invalid`, `folder_not_found`,
-  `terminal_on_host`, `terminal_needs_claude`, `entry_invalid` (a chat with
+  `entry_invalid` (a chat with
   no model, or an agent entry the launch refuses); `403` `project_not_available`
   (unknown or remote project), `model_not_allowed`, `directory_outside_project`;
   `404` `entry_not_found` (the message lists the project's choices); `409`
@@ -2053,6 +2086,18 @@ must hold `model_host`, and register under its own service id. Reply: `OK`;
 `-32602` for a missing field or a relative path; `-32001` otherwise. See
 [`model-endpoint.md`](model-endpoint.md).
 
+### bridge:SessionRebind
+
+`{"type":"SessionRebind","arguments":{"session_id","runner_pid","runner_start_sec","runner_start_usec"}}`.
+No `token`: the caller's launch identity must be the bound `relaysessions`
+service holding `sessions`. Binds a surviving local Claude session's recorded
+root to a fresh launch identity after a relay restart. Reply: `OK`; `-32602`
+for an empty `session_id` or a `runner_pid` that is not a process; `-32001` for
+a caller that is not relay-sessions, and `-32001` "session rebind refused" for
+every other refusal (the reason is in the `session.rebind` event and the
+`session_rebind` audit row). A test sends it only from outside the agent's tree
+to check the refusal. See [`session-host.md`](session-host.md#relay-tools-after-a-relay-restart).
+
 ### bridge:admin frames
 
 `ReloadExternalMcp` (`name` is the MCP id), `ReconcileExternalMcps` (no
@@ -2128,7 +2173,8 @@ door exists. Schemas, bounds, errors and timing are in
 ### GET /api/chief-of-staff/outside-sessions
 
 The current snapshot: `sessions` and per-machine `machines` status. `sessions`
-holds the live rows, then recently ended rows (`state:"ended"`, with `endedAt`),
+holds the live rows, then recently ended rows (`state:"ended"`, with `endedAt`
+and `claudeSessionId`, the transcript file's stem; a live row has neither),
 newest first, at most 50, inside the window `outside_sessions.ended_window_days`
 (default 3 days; see [outside sessions](outside-sessions.md#ended-sessions)).
 

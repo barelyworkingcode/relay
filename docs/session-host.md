@@ -157,7 +157,10 @@ chief-of-staff send. relay's handler for `POST /api/chief-of-staff/messages`
 writes the intent audit row, then calls `sessionHostClient.Send`, which posts
 `{session_id, text, origin}`. The host checks the peer as it does for
 `/launch`, and `/send` is in `sessionHostReservedRoutes`, so no manifest can
-declare it. Only listed sessions can receive: an unlisted session answers
+declare it. The accepted origins are `chief-of-staff` and `relay-recovery`,
+the latter used once by the adopt door after an interrupted takeover (a
+`session_message` intent row precedes it like any marked send). Only listed
+sessions can receive: an unlisted session answers
 `not_found`. A turn already running answers `already_processing`, and a session
 that is not live answers `resume_required`. A session a drop-in terminal holds
 answers `dropped_in` (409); relay's route passes it through as 409
@@ -196,24 +199,23 @@ template of the project, without regard to case: an agent starts through
 `AuthorizeLaunch` with its kind, model and launcher, and a chat starts as a
 headless session on the chat's model, named `<project> - <chat>`, with
 `useRelayTools` and the append-CLAUDE.md option on for a kind other than
-claude. An entry start is headless only; a chat's `mode` and voice are
-ignored. `mode` is
-`headless` (the default: a `claude`, `pi`, `codex` or `chat` session chosen by
-the model, with relay-built settings `{"headless":true,"agent":true}` so it
-shows in the session list and on the board) or `terminal` (a `pty` session on
-the `claude-code` template with `--model <model> -- <prompt>`, Claude models
-only). `folder` is relative to the project and is resolved through symlinks;
+claude. A chat's `mode` and voice are ignored. A start has one path: a
+headless `claude`, `pi`, `codex` or `chat` session chosen by the model, with
+relay-built settings `{"headless":true,"agent":true}` so it shows in the
+session list and on the board. `mode` accepts `""`, `headless` and `terminal`;
+`terminal` runs the same headless start, and the answer's `mode` is always
+`headless`. Any other value answers 400 `mode_invalid`. The owner moves a
+started session to a terminal by Drop in (see [Drop-in](#drop-in)); relay
+never swaps on its own. `folder` is relative to the project and is resolved through symlinks;
 a path that leaves the project root is refused. A project on an SSH host is
-accepted for a headless start only: its path is on the host, so the folder is
+accepted: its path is on the host, so the folder is
 joined and checked as text (no symlink resolution, no existence check, and a
 folder that is missing on the host fails when the session starts), and the
-launch carries the project's host as for any hosted session. A terminal start
-there is refused with 400 `terminal_on_host`. A remote (mTLS) project stays
-refused. Headless delivers the prompt through the same core as the messages
+launch carries the project's host as for any hosted session. A remote (mTLS)
+project stays refused. The prompt goes through the same core as the messages
 route; if delivery fails the session is terminated with reason
 `chief_of_staff_start_failed` and the route answers 502 `prompt_not_delivered`.
-A terminal start appears in `GET /api/terminals` with its origin and does not
-join the Chief of Staff roster, which tracks agent sessions only. Success is
+Success is
 201 `{sessionId, name, projectId, directory, mode, kind, origin, at}`, plus
 `entry` and `entryType` for an entry start.
 
@@ -538,10 +540,13 @@ shim](#the-shim-relay-sessions-exec)). A provider-hosted session has no
 request**. Only claude sessions have one; pi and chat sessions report no
 root and never run the hook:
 
-- A local claude session's root is the pid the provider actually spawned:
-  `relay-sessions exec`'s own pid when the session runs shimmed (every
-  production local launch that carries a sandbox profile or a launch
-  identity), or `claude` itself when the launch has neither.
+- A local claude session's root is the runner: the pid `cmd.Start` returned
+  for `/bin/sh runner.sh`, with its start time read from the kernel at once
+  and persisted as `runnerRoot`. The walk goes hook, `claude`, `sandbox-exec`,
+  shim, agent subshell, runner. The agent subshell is a fork of the runner; it
+  holds fds 3 to 5 until the agent exits. After a relay-sessions restart the provider records the root
+  only when `runner.json`'s pid and the kernel's start time of that pid both
+  match `runnerRoot`; otherwise there is no root and the hook is denied.
 - The root's start time is read immediately after `cmd.Start()` returns, and
   the walk requires an exact match on pid *and* start time — a bare pid
   match would also match whatever unrelated process the kernel later
@@ -565,6 +570,43 @@ entry goes stale the moment a provider restarts a process outside `/launch` —
 kernel may since have reused. Reading `session.Manager` fresh on each request
 means a restarted provider's new pid is what the walk actually sees, and a
 torn-down session reports no root instead of a dangling one.
+
+### Relay tools after a relay restart
+
+A local session's relay tools run as a descendant of the shim, which is the
+`project_session` root. The shim's launch identity lived in relay's memory, so a
+relay restart dropped it and the tools failed closed. Relay now keeps the root
+in the ledger record (`root`: pid, pidversion, kernel start time, copied from
+the shim's Hello bind; a resume writes the new shim's). After relay-sessions
+attaches a local runner session whose provider reports its runner, it sends
+`SessionRebind` (session id and runner pid and start time) over the bridge,
+at boot and at a lazy attach alike. Relay's gate runs in this order, and the
+first failure stops it:
+
+1. The caller is the bound `relaysessions` identity holding `sessions`;
+   otherwise `unauthorized`, with one audit row and no intent row.
+2. The intent row is written durably; with auditing off or a failed write the
+   rebind is refused (`audit_unavailable`) and nothing is bound.
+3. `not_live`: no `live` local `claude` record, or the record is detached.
+4. `project_gone`: the project is missing, remote or hosted (read fresh).
+5. `no_root_record`: the record has no `root`.
+6. `runner_mismatch`: the runner is not alive, its pid is not the claimed one,
+   or the kernel's start time for it is not the claimed one.
+7. `root_gone`: the root's start time is unreadable or differs from the record.
+8. `root_not_in_tree`: the ancestry walk, with the claimed runner as its only
+   root, does not place the root under the runner.
+9. `already_bound`: a live launch for the session exists, or the root holds an
+   identity.
+10. `bind_failed`: `Launches.Rebind` failed in any other way.
+
+Every refusal after the first answers the bridge `-32001` "session rebind
+refused"; the reason goes to the `session.rebind` event and the audit row only.
+A refusal or a failed call is logged at Warn and leaves the tools closed; there
+is no retry. A second restart takes the same path and writes a new pair. A
+session started before relay kept the root is refused `no_root_record` until
+one stop and resume. A restart of relay-sessions alone ends the session's
+identities with it, and the same attach rebinds them. The session list shows
+nothing when a rebind is refused.
 
 ### Decision order
 
@@ -931,9 +973,9 @@ A session whose model is `codex/<slug>` runs `codex app-server` and speaks its n
 
 ### Launch
 
-On this machine the child is `<codex> app-server` under the shim, with the sandbox profile and launch identity, like pi. Its working directory is the session directory. Its environment is the shared base plus `ensurePath`, `RELAY_SESSION_ID` and `RELAY_BRIDGE_SOCKET`; no relay credential and no `CODEX_*` variable is added. No model key is minted: Codex brings its own login and relay never reads, moves or supplies it. The binary is `CodexConfig.Binary` (the `codex` template's absolute `command`, see [Finding the binary](#finding-the-binary)), else the first hit of `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, then `PATH`.
+On this machine `<codex> app-server` runs under the runner ([Under the runner](#codex-under-the-runner)), behind the shim, with the sandbox profile and launch identity, like pi. Its working directory is the session directory. Its environment is the shared base plus `ensurePath`, `RELAY_SESSION_ID` and `RELAY_BRIDGE_SOCKET`; no relay credential and no `CODEX_*` variable is added. No model key is minted: Codex brings its own login and relay never reads, moves or supplies it. The binary is `CodexConfig.Binary` (the `codex` template's absolute `command`, see [Finding the binary](#finding-the-binary)), else the first hit of `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, then `PATH`.
 
-On an SSH host the provider runs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir, [codex_path, "app-server"], {RELAY_SESSION_ID})]`. `codex_path` is `HostSpec.CodexPath`, which `buildHostSpec` copies from the `command` of the host's `codex` template. An empty path fails `Start` with `host "<id>" has no codex path: set its codex template's command`. A host session is not sandboxed and gets no identity ([ssh-hosts.md](ssh-hosts.md#codex-on-a-host)).
+On a Unix host with `detach` set (`hosts[].detach_sessions` absent or `true`) the agent runs under the runner on the host, never in a tmux pane ([Under the runner](#codex-under-the-runner)). On a host with `detach_sessions: false`, and on a Windows host, the provider runs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir, [codex_path, "app-server"], {RELAY_SESSION_ID})]`. `codex_path` is `HostSpec.CodexPath`, which `buildHostSpec` copies from the `command` of the host's `codex` template. An empty path fails `Start` with `host "<id>" has no codex path: set its codex template's command`. A host session is not sandboxed and gets no identity ([ssh-hosts.md](ssh-hosts.md#codex-on-a-host)).
 
 The gate is the kind template `codex`: a console project needs `codex` in `allowed_templates`; a host project needs a valid `codex` host template. Relay tools do not reach Codex: with `useRelayTools` on, the provider logs a warning and starts anyway. Project tool policy (`deniedTools`) does not apply, as for pi; the seatbelt profile is the file and socket boundary. `headless` and `agent` behave as for every kind, and there are no Codex-specific settings.
 
@@ -943,7 +985,27 @@ The gate is the kind template `codex`: a console project needs `codex` in `allow
 2. `thread/start` with `cwd`, `model` (the slug), `approvalPolicy: "never"`, `sandbox: "danger-full-access"` and `developerInstructions` (the system prompt, omitted when empty). When the session state holds a thread id, `thread/resume` with `threadId` and the same params runs instead.
 3. Each message is `turn/start` with `threadId` and one text input; the reply's `turn.id` is kept. `StopGeneration` sends `turn/interrupt` for that turn. A JSON-RPC error reply to `turn/start` emits `error`, then `message_complete`.
 
-`approvalPolicy: "never"` and `danger-full-access` are deliberate: relay's sandbox is the boundary, and Codex's own prompts would have nobody to answer them. `GetState` returns `{"threadId": "…"}`. `DeleteSession` does nothing; Codex's transcripts stay where Codex keeps them. Attachments are ignored with a warning, and the text is sent alone.
+`approvalPolicy: "never"` and `danger-full-access` are deliberate: relay's sandbox is the boundary, and Codex's own prompts would have nobody to answer them. `GetState` returns `{"threadId": "…", "detached": {"generation": "g1", "cursor": N}}`; a piped session has no `detached` key. `DeleteSession` ends the agent and deletes its run directories, which hold its output; Codex's transcripts stay where Codex keeps them. Attachments are ignored with a warning, and the text is sent alone.
+
+### Codex under the runner
+
+A local session, and a session on a host with `detach` set, runs `codex app-server` under the runner ([ssh-hosts.md](ssh-hosts.md#detached-sessions); the runner knows no protocol and only moves lines). Codex holds no relay credential and brings its own login, so the agent outlives relay-sessions: a shutdown calls `Release`, which stops the reader and leaves the agent running, and a start attaches every persisted codex session whose runner lives. `Kill`, a stop, an idle end and a delete end the agent. `Events(ctx, after, max)` answers `relay session events` from `out.jsonl`.
+
+The runner's patterns: `"method":"turn/completed"` ends a turn, and `Asking` is empty (codex has no question path, and relay answers every server request at once). Codex 0.162.1 ends a turn with one compact line:
+
+```
+{"method":"turn/completed","params":{"threadId":"…","turn":{"id":"…","status":"completed",…}}}
+```
+
+The runner therefore writes `turn_started` when it writes a `.json` message to the agent, `turn_ended` on that line, and `exited` when the agent ends.
+
+Message kinds. `turn/start` is a `.json` message and starts a turn. `initialize`, `initialized`, `thread/start`, `thread/resume`, `turn/interrupt` and every answer to a server request are `.ctl`. A send returns once the runner has moved the message to `sent/`; a send on a host waits up to the caller's wait for a lost link, as for Claude. A `turn/interrupt` and an answer do not wait, and a failed interrupt leaves the agent running.
+
+Client request ids are strings: `relay-<8 hex>-<n>`, the prefix fresh for each spawn and each attach. Codex accepts a string id and echoes it. A reply that the output holds from before an attach therefore never matches a request made after it.
+
+An attach (`CodexConfig.Resume` or `AttachOnly` found the runner alive) sends no `initialize`, `initialized`, `thread/start` or `thread/resume`: the agent's stdio connection is already initialized, and a second `initialize` is an error to it. It takes the thread id and the cursor from the saved state (`threadId`, `detached`), and learns a missing thread id from the `threadId` of a replayed `turn/started`. It reads the lines after the cursor before it returns, and answers a server request in them only when no `.ctl` line in `sent/` or `inbox/` already answers its id. A turn counts as open when the `.json` messages in `sent/` and `inbox/` outnumber the `turn/completed` lines, which `TakeAttach` reports so the board reads the turn. The manager saves the state right after `Start`, so a cursor always exists. An agent keeps no relay identity across a restart: codex has no relay tools.
+
+A piped session (host with `detach_sessions: false`, a Windows host) keeps the pipes and the handshake as before.
 
 ### Model catalog
 
@@ -1013,16 +1075,19 @@ A machine that has a real CLI under `/usr/local/bin` or `/opt/homebrew/bin` ther
 
 ### What every spawn has in common
 
-- The child starts in the session directory, with stdin and stdout as pipes. Stderr is a third pipe, read line by line into the service log ([Provider stderr](#provider-stderr)).
+- A local Claude session starts under the runner (`/bin/sh runner.sh`, own session) in `<config dir>/sessions/runners/<session id>/<generation>/`, mode `0700`; the runner owns the agent's stdin and stdout and keeps `out.jsonl`, `events.jsonl` and `runner.json`. A local codex session and a local pi session start the same way, and so does a codex session on a Unix host with `detach` set. Only a host session under `ssh -T` starts as below.
+- The child starts in the session directory, with stdin and stdout as pipes (under the runner, the runner's pipes). Stderr is a third pipe, read line by line into the service log ([Provider stderr](#provider-stderr)); under the runner it goes to `stderr.log`, and relay reads its tail when the agent exits.
 - The environment is the `relay-sessions` environment minus every relay credential variable, plus `RELAY_SESSION_ID`, and `RELAY_BRIDGE_SOCKET` and `RELAY_MODEL_SOCKET` when those sockets exist. No token is ever added.
 - A sandboxed launch runs the binary under the shim ([The shim](#the-shim-relay-sessions-exec)); the binary sees the same argv, stdin and stdout.
 - Both protocols are one JSON object per line, newline-terminated, in each direction. Blank lines are skipped. A line longer than 10 MiB ends reading. A stdout line that is not JSON is passed on as `raw_output` and does not stop the session.
 - Relay writes nothing to stdin until a user sends a message. It does not wait for any output at start-up: the spawn counts as started when the process exists.
-- Relay ends a child by closing its stdin, sending `SIGINT`, and after 3 s killing it. The CLI is expected to exit on stdin EOF or `SIGINT`.
+- Relay ends a child by closing its stdin, sending `SIGINT`, and after 3 s killing it. The CLI is expected to exit on stdin EOF or `SIGINT`. Under the runner, a stop signals every process in the runner's session: `TERM`, then `KILL`.
 - Exit is read from the process status. Exit 0 is a quiet end. A non-zero code logs a warning with the stderr tail. In both cases relay emits `process_exited` with `{"exitCode": N}` (a non-zero exit relay did not cause adds `"failed": true` and `"stderrTail": [...]`), unless it killed the child itself, or a newer spawn of the same session has replaced it.
 - A session idle for 15 minutes with no stdin or stdout line is killed.
 
 ### claude
+
+A local session runs under the runner: relay-sessions starts the runner with the shim's descriptors 3 (identity), 4 (status) and 5 (token). The runner starts the shim with them and closes its own copies before it starts any other process; it never reads descriptor 5. The system prompt and MCP config go in the run directory, except for a sandboxed launch, whose profile grants only the temp directory, so they stay there. Relay-sessions shutdown releases the session and leaves the agent running; a start attaches every persisted local runner session whose runner lives. A stop signals every process in the runner's session (its id is the runner pid): TERM, then KILL. When the pending permissions of a session rise above zero, relay-sessions queues `inbox/<id>.evt` holding `{"type":"asking"}`; the runner appends an `asking` event and writes nothing to the agent.
 
 Argv, in this order. Flags in brackets appear only when the condition holds.
 
@@ -1056,13 +1121,17 @@ Streaming forms are also read: `{"type":"assistant","index":N,"content_block":{�
 
 ### Detached on a host
 
-A claude session whose host spec carries `detach: true` (from
-`hosts[].detach_sessions`) runs its agent on the host under
+A claude session whose host spec carries `detach: true` runs its agent on the host under
 `~/.relay/agents/<session id>/<generation>/` instead of as the child of an
-`ssh -T` process (`docs/ssh-hosts.md`, "Detached sessions"). Argv comes from
+`ssh -T` process (`docs/ssh-hosts.md`, "Detached sessions"). `buildHostSpec`
+sets `detach` unless `hosts[].detach_sessions` is `false` or the host is
+Windows, so a Unix host detaches by default. Argv comes from
 `buildClaudeArgs`, as for any host session; only the transport differs.
-`SendMessage` and the `control_response` writes append one line to `in.jsonl`
-through a short ssh command. `SendMessageWithin` is `SendMessage` with the
+`SendMessage` and the `control_response` writes queue one message in the
+runner's `inbox/` through a short ssh command (`RunnerSend`: a `control_response`
+is a `.ctl` file, any other message a `.json` file that starts a turn) and
+return once the runner has moved it to `sent/`: exit 5 means the agent is not
+running, exit 7 (no receipt in 25 s) and an ambiguous ssh exit are `ErrSendUnknown`. `SendMessageWithin` is `SendMessage` with the
 longest a send waits for a lost link to return; a `control_response` does not
 wait. The wait ends on `restored`, the runner's exit, a kill, the caller's request ending or the cap (at most nine minutes), and
 the write happens once (`ErrHostLinkDown` past the cap, `ErrSendUnknown` after
@@ -1078,14 +1147,23 @@ runs at relay-sessions startup: for each persisted detached claude session it
 asks the host for the run's status and, for a live runner, calls `Create` with
 `AttachOnly`, so the provider attaches (`attachDetached`) and never starts an
 agent. The attach reads the lines after the cursor before it returns and
-holds each `control_request` that has no `control_response` in `in.jsonl`; `Create` raises them (`TakeAttach`) once the slot is published, so the board reads `asking` and viewers get the prompt, and `Release` does not deny a waiting prompt;
+holds each `control_request` that has no `control_response` in `sent/` or `inbox/`; `Create` raises them (`TakeAttach`) once the slot is published, so the board reads `asking` and viewers get the prompt, and `Release` does not deny a waiting prompt;
 `SendMessage`, `SendMessageSync`, `Wait`, `Events` and `Handoff` call the same
 attach for a detached session with no live provider. A plain resume (`ClaudeConfig.Resume`)
 asks for a running agent first and attaches to it too. `relay session stop`
 ends the agent. Idle stop, drop-in, stop and
 delete call `Kill`, which ends the agent; deleting a dormant session does the
-same through `DeleteDetachedRun`. With `detach` unset the `ssh -T` path is
-unchanged. A Windows host refuses a detached start.
+same through `DeleteDetachedRun`. With `detach` unset (`detach_sessions: false`, or a Windows host) the `ssh -T` path is
+unchanged. A runner that fails to start ends the start with an error that names
+the host and the key; there is no silent fallback. A run from before
+`runner.json` reads `legacy` from `RunnerStatus`: the first resume stops it and
+starts a new generation on the conversation.
+
+`host.tmux_path` (set by `buildHostSpec` only with `detach`) makes the start
+`RunnerStartInPane`: the runner is the pane of the tmux session
+`relay-agent-<session id>` (`docs/ssh-hosts.md`, "Detached sessions"). The
+connection's `Remove` also ends that tmux session, after the run directory.
+Without `tmux_path`, or below tmux 3.0, the runner starts alone.
 
 ### History on join
 
@@ -1123,6 +1201,10 @@ unchanged. A Windows host refuses a detached start.
 
 ### pi
 
+A pi session runs under the runner, on this machine only (pi has no host form). The runner's `TurnEnded` pattern is `"type":"agent_settled"`, and `Asking` is empty. Pi 1.0.0 writes `{"type":"agent_end","messages":[…],"willRetry":false}` and then `{"type":"agent_settled"}`; an `agent_end` with `willRetry` true is followed by a retry turn, so the runner ends the turn on the settled line. The provider still completes the message at `agent_end` and ignores `agent_settled`. `prompt` is a `.json` message and starts a turn; `get_state`, `abort` and `set_thinking_level` are `.ctl`. A send returns once the runner has moved the message to `sent/`. Stopping a turn sends `abort` and does not end the runner.
+
+Pi has no `Release` and no attach. A pi agent's model key is bound to its launch ([launch-identity.md](launch-identity.md)), the model proxy it uses runs inside relay-sessions, and both end with relay-sessions, so a relay-sessions shutdown ends the pi runner with `Kill`. A restart reads the session dormant and resumes it from its transcript, as before. At startup, relay-sessions stops a pi runner that still lives (a crash left it) and leaves its session dormant. `Events` answers `relay session events` from the run's `out.jsonl`, and a delete removes the run directory.
+
 Argv: `--mode rpc [--provider relay-router --model <id>] [--thinking <level>] [--session <id>] --session-dir <dir> [--append-system-prompt <path>] [--skill <dir>] [<extra args>]`. The environment adds `PI_OFFLINE=1` and `PI_SKIP_VERSION_CHECK=1`, and `PI_CODING_AGENT_DIR` when the session is brokered.
 
 **stdin.** Relay sends commands, one JSON object per line:
@@ -1137,7 +1219,7 @@ For one turn relay needs:
 
 1. `{"type":"agent_start"}`. It opens the turn.
 2. `{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}`, then `text_delta` with `"delta":"…"`, then `text_end`. `thinking_*` and `toolcall_*` are the same shape.
-3. `{"type":"agent_end"}`. It ends the turn (`message_complete`). Usage is read from it when present.
+3. `{"type":"agent_end"}`. It ends the turn (`message_complete`). Usage is read from it when present. Pi then writes `{"type":"agent_settled"}`, which the runner matches for `turn_ended`.
 
 `message_start`, `message_end`, `turn_start`, `turn_end` and `agent_settled` are accepted and ignored. Any other `type` is passed on as `raw_output`, with one warning per type per spawn.
 
@@ -1174,11 +1256,11 @@ Body `{session_id}`. Internal peer only, like `/launch`. Answers `200 {session_i
 
 A session with no live process can be taken over; it loads from disk first. If a turn is in flight and no tool is open, the request waits for the turn to end, a tool to open, the timeout or the caller to go away. It does not poll. A tool call opens on an assistant `content_block_stop` of a `tool_use` block and closes on its `tool_result`; `message_complete`, `error`, `process_exited`, `StopGeneration` and `ClearSession` clear them all. Waiting through a tool could last without bound, and stopping mid-tool leaves a half-finished call, so a running tool refuses at once.
 
-On success the manager sets the hold under its lock, marks the id terminating (relay's `session_end` reads `closed`), signals `DroppedIn` and kills the process. The provider and slot stay in place, so `process_exited` still reaches relay, which ends the identity and profile and marks the ledger `dormant`.
+On success the manager sets the hold under its lock, marks the id terminating (relay's `session_end` reads `closed`), signals `DroppedIn` and kills the process. A session under the runner has its runner stopped too, and the stop waits until the runner and its agent are gone. The provider and slot stay in place, so `process_exited` still reaches relay, which ends the identity and profile and marks the ledger `dormant`.
 
 ### `POST /handback`
 
-Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears the hold and signals `HandedBack`, so the session reads `idle`. A later message needs a resume, as for any session whose process is gone.
+Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears the hold and signals `HandedBack`, so the session reads `idle`. The handoff stopped the process, so a later message needs a resume; relay resumes at once ([The hand-back resume](#the-hand-back-resume)).
 
 ### `GET /managed-identities`
 
@@ -1186,7 +1268,15 @@ Answers `200 {"claude_session_ids":[string]}`: the Claude conversation id of eve
 
 ### The terminal
 
-`LaunchRequest.drop_in_for` (pty only) names the held session the terminal takes over. `/launch` answers `409 not_held` unless that session is held and no other terminal already has it. The link from terminal id to session id is recorded before the terminal starts, and removed if the start fails. When the terminal exits, `onTerminalExit` calls `HandBack`, so closing the window or a killed client never leaves a session held. The hold is in memory: a relay-sessions restart drops it.
+`LaunchRequest.resume_conversation` (a fresh local `claude` launch only) names the Claude conversation to resume: a canonical UUID, refused with `invalid_spec` on a pty, a resume, a host launch or any other value. The host seeds the new session's provider state with it, so claude starts with `--resume <id>`. Relay's adopt door sets it; see [Outside sessions](outside-sessions.md#adopting-a-session).
+
+`LaunchRequest.drop_in_for` (pty only) names the held session the terminal takes over. `/launch` answers `409 not_held` unless that session is held and no other terminal already has it. The link from terminal id to session id is recorded before the terminal starts, and removed if the start fails. When the terminal exits, `onTerminalExit` calls `HandBack` first and `reportExit` second, so the hold is clear when relay's resume reaches `/launch`. Closing the window or a killed client never leaves a session held. The hold is in memory: a relay-sessions restart drops it.
+
+#### The hand-back resume
+
+Relay keeps an in-memory swap table keyed by terminal id (`cmd/relay/session_swap.go`). `dropIn` adds a link after the terminal launch commits, and in each failure path after the handoff succeeded. `appRouter.SessionExited` reports each exit to the table. The resume starts once the terminal's report has arrived **and** the held session's ledger record reads dormant, in either order, in its own goroutine. It is `resumeSession` with the drop-in's caller: `AuthorizeLaunch` with `Resume`, the current project policy, a fresh launch identity and model key, and `--resume <conversation id>`. A detached host session starts a new generation, and so does a local session, whose runner the handoff stopped; the hand back always starts and never attaches. Each hand back writes a `session_swap` pair (`to_headless`) and one `session.hand_back` event. With auditing off, nothing is resumed and the session stays dormant. A relay restart drops the table: the session then reads dormant and needs a Resume, as before.
+
+On a detached host session whose host has tmux 3.0 or later, the terminal is the same tmux pane: its remote command respawns the dead pane with Claude's UI and attaches (`sshhost.PaneDropInArgv`), and the pane command detaches every client when the UI exits. A local session, and a host without tmux 3.0, keep this terminal as a pty; there is no refusal.
 
 ### While held
 
@@ -1287,6 +1377,10 @@ The early-failure paths (identity refused, spawn failed) drain stderr
 themselves and close stdout unread.
 
 ## What a child inherits
+
+A local Claude session's runner gets the same environment and descriptors. The Claude token (fd 5) passes through the runner to the shim; the runner never reads it. The agent subshell (a fork of the runner) holds fds 3 to 5 until the agent exits; the runner closes its own copies once the pipeline starts, and the output filter never inherits them.
+
+The agent's stderr is an anonymous pipe. A copier (`cat >> stderr.log`, descriptors 3 to 6 closed, TERM ignored) moves it to `stderr.log` and ends at end of file, after the agent and every process holding its stderr are gone; the runner writes `exit` only after that. Deliberate: Node aborts when its stdout or stderr is a descriptor its sandbox profile does not let it stat, so the agent never holds `stderr.log` or a named FIFO in the run directory, and no profile grants either.
 
 A terminal, a claude or pi session and an MCP server child each start from
 `relay-sessions`' own environment, minus two sets:
@@ -1787,6 +1881,8 @@ Warn. So a refused launch can log two lines.
 
 ## Host data directory layout
 
+`runners/` holds one directory per local Claude session, then one per generation (see the runner above). Delete removes `runners/<session id>/`; `SessionExited` for a session relay holds no account for removes `profiles/<session id>.sb`.
+
 Everything relay-sessions owns lives under one directory, resolved from the
 already-resolved `RELAY_BRIDGE_SOCKET` path rather than re-derived from
 `os.UserConfigDir()` — the latter would silently drop a `relay --config-dir`
@@ -1894,6 +1990,10 @@ See [`docs/audit-log.md`](audit-log.md#session-host-events) for the exact
 record shape.
 
 ## Resume (user action only) — SH-6
+
+A local Claude session whose runner still lives is attached, never started a second time; after a relay restart its relay tools come back on their own (see [Relay tools after a relay restart](#relay-tools-after-a-relay-restart)); a session started before relay recorded its root keeps them closed until it is stopped and resumed. A session whose agent exited reads dormant and resumes on its conversation.
+
+A hand back is also a resume: when a drop-in terminal ends, relay resumes the held session on the drop-in caller's behalf, through the same path ([The hand-back resume](#the-hand-back-resume)). No further user action is needed.
 
 A project-bound provider session (claude/pi/chat) never respawns itself when its provider process dies.
 `internal/sessions/session.Manager.SendMessage` returns `ErrResumeRequired`

@@ -198,10 +198,10 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 		return
 	}
 	prompt := strings.TrimSpace(body.Prompt)
-	mode := body.Mode
-	if mode == "" {
-		mode = chiefOfStaffModeHeadless
-	}
+	// Deliberate: "terminal" is accepted for older callers and runs the same
+	// headless start; the owner swaps to a terminal by Drop in.
+	mode := chiefOfStaffModeHeadless
+	requestedMode := body.Mode
 	switch {
 	case body.ProjectID == "":
 		writeChiefOfStaffError(w, http.StatusBadRequest, "project_id_required", "projectId is required")
@@ -218,11 +218,8 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 	case body.Model == "" && body.Entry == "":
 		writeChiefOfStaffError(w, http.StatusBadRequest, "model_or_entry", "send model or entry")
 		return
-	case mode != chiefOfStaffModeHeadless && mode != chiefOfStaffModeTerminal:
+	case requestedMode != "" && requestedMode != chiefOfStaffModeHeadless && requestedMode != chiefOfStaffModeTerminal:
 		writeChiefOfStaffError(w, http.StatusBadRequest, "mode_invalid", `mode must be "headless" or "terminal"`)
-		return
-	case body.Entry != "" && mode == chiefOfStaffModeTerminal:
-		writeChiefOfStaffError(w, http.StatusBadRequest, "mode_invalid", "an entry start is headless only")
 		return
 	case !folderSyntaxOK(body.Folder):
 		writeChiefOfStaffError(w, http.StatusBadRequest, "folder_invalid", "folder must be a relative path with no .. segment")
@@ -239,10 +236,8 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 	kind := ""
 	switch {
 	case body.Entry != "":
-	case mode == chiefOfStaffModeHeadless:
-		kind = deriveSessionKind(body.Model)
 	default:
-		kind = KindPTY
+		kind = deriveSessionKind(body.Model)
 	}
 	ev.Set("project_id", body.ProjectID)
 	if kind != "" {
@@ -303,28 +298,8 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 			req = chatTemplateLaunch(req, proj, target.Chat)
 		}
 		ev.Set("entry", capAuditText(entryName, maxRefusalNameRunes)).Set("entry_type", entryType)
-	} else if mode == chiefOfStaffModeHeadless {
-		req.ClientSettings = json.RawMessage(`{"headless":true,"agent":true}`)
 	} else {
-		// A terminal session cannot run on a host (checkTerminalExtraArgs
-		// refuses extra args there), so refuse before anything else.
-		if proj.IsHosted() {
-			deny(http.StatusBadRequest, "terminal_on_host", "a terminal start is not available in a project on an SSH host; start a headless agent")
-			return
-		}
-		// The terminal runs Claude Code, the only program that takes --model
-		// and a prompt argument.
-		if deriveSessionKind(body.Model) != KindClaude {
-			deny(http.StatusBadRequest, "terminal_needs_claude", "a terminal start needs a Claude model")
-			return
-		}
-		if !modelAllowedForProject(d.store, body.ProjectID, body.Model) {
-			deny(http.StatusForbidden, "model_not_allowed", "model is not allowed for this project")
-			return
-		}
-		req.TemplateID = "claude-code"
-		req.Model = ""
-		req.ExtraArgs = []string{"--model", body.Model, "--", prompt}
+		req.ClientSettings = json.RawMessage(`{"headless":true,"agent":true}`)
 	}
 
 	result, resp, refusal, err := d.launch(r.Context(), req)
@@ -338,17 +313,14 @@ func (d sessionRouteDeps) handleChiefOfStaffStart(w http.ResponseWriter, r *http
 		return
 	}
 
-	if mode == chiefOfStaffModeHeadless {
-		status, _, _ := d.deliverChiefOfStaffText(r.Context(), fields.Actor, result.SessionID, prompt)
-		if status != http.StatusAccepted {
-			message := "the session started but the prompt could not be delivered; it was ended"
-			if err := d.host().Terminate(context.WithoutCancel(r.Context()), result.SessionID, "chief_of_staff_start_failed"); err != nil {
-				slog.ErrorContext(r.Context(), "chief of staff start: terminate after undelivered prompt failed", "session", result.SessionID, "error", err)
-				message = "the session started but the prompt could not be delivered; it could not be ended and may still be running"
-			}
-			writeChiefOfStaffError(w, http.StatusBadGateway, "prompt_not_delivered", message)
-			return
+	if status, _, _ := d.deliverChiefOfStaffText(r.Context(), fields.Actor, result.SessionID, prompt); status != http.StatusAccepted {
+		message := "the session started but the prompt could not be delivered; it was ended"
+		if err := d.host().Terminate(context.WithoutCancel(r.Context()), result.SessionID, "chief_of_staff_start_failed"); err != nil {
+			slog.ErrorContext(r.Context(), "chief of staff start: terminate after undelivered prompt failed", "session", result.SessionID, "error", err)
+			message = "the session started but the prompt could not be delivered; it could not be ended and may still be running"
 		}
+		writeChiefOfStaffError(w, http.StatusBadGateway, "prompt_not_delivered", message)
+		return
 	}
 
 	ev.Set("session_id", result.SessionID).Set("kind", result.Spec.Kind)

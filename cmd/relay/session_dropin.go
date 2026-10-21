@@ -15,6 +15,8 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/sandbox"
+	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
+	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
 // dropInTemplateID is the terminal template a drop-in launches: the project's
@@ -32,6 +34,7 @@ const (
 	dropInNotClaude       = "not_claude"
 	dropInUnavailable     = "unavailable"
 	dropInLaunchFailed    = "launch_failed"
+	dropInAuditOff        = "audit_unavailable"
 )
 
 type DropInRequest struct {
@@ -67,7 +70,7 @@ func (r *DropInRefusal) Error() string { return r.Message }
 // host holds the session, every failure hands it back.
 func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *DropInResult, refusal *DropInRefusal) {
 	ev := logging.BeginEvent(ctx, "session.drop_in")
-	host, terminalID := "", ""
+	host, hostID, terminalID := "", "", ""
 	defer func() {
 		endDropInEvent(ev, req.SessionID, host, terminalID, refusal)
 	}()
@@ -86,6 +89,7 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	if proj, _ := config.FindProjectByID(config.FreshSettings(d.store), rec.ProjectID); proj != nil && proj.IsHosted() {
 		if h, _ := config.FindHostByID(config.FreshSettings(d.store), proj.HostID); h != nil {
 			host = h.Name
+			hostID = h.ID
 		}
 	}
 
@@ -114,6 +118,20 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	}
 	terminalID = result.SessionID
 
+	// The intent row is durable before anything stops; a swap relay cannot
+	// record does not start.
+	actor := callerAuditActor(req.Caller)
+	swapID, err := d.swapIntent(actor, swapToTerminal, req.SessionID, rec.ProjectID, hostID)
+	if err != nil {
+		d.discardLaunch(result)
+		return nil, &DropInRefusal{Status: http.StatusServiceUnavailable, Code: dropInAuditOff,
+			Message: "auditing is off or cannot record; the session was not taken over"}
+	}
+	complete := func(outcome, code string) {
+		d.swapCompletion(swapID, swapToTerminal, req.SessionID, terminalID, outcome, code)
+	}
+	link := swapLink{SessionID: req.SessionID, TerminalID: terminalID, Host: host, Caller: req.Caller}
+
 	// Deliberate: past this point relay-sessions completes the work whatever
 	// happens to the request ctx, and a cancelled request must still hand the
 	// session back. Only the handoff's own wait follows ctx.
@@ -123,6 +141,7 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	case hr != nil:
 		d.discardLaunch(result)
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeDenied, hr.Message))
+		complete(audit.AuditOutcomeDenied, hr.Error)
 		status := http.StatusConflict
 		if hr.Error == dropInSessionNotFound {
 			status = http.StatusNotFound
@@ -132,6 +151,7 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 		d.discardLaunch(result)
 		d.handBack(hold, req.SessionID)
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error()))
+		complete(audit.AuditOutcomeError, dropInUnavailable)
 		return nil, &DropInRefusal{Status: http.StatusBadGateway, Code: dropInUnavailable, Message: "the session host is not available"}
 	}
 
@@ -139,9 +159,17 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 		d.discardLaunch(result)
 		d.handBack(hold, req.SessionID)
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "host returned a conversation id that is not a UUID"))
+		complete(audit.AuditOutcomeError, dropInLaunchFailed)
+		link.TerminalGone = true
+		d.armSwap(link)
 		return nil, &DropInRefusal{Status: http.StatusBadGateway, Code: dropInLaunchFailed, Message: "relay could not start the terminal; the session is idle again"}
 	}
-	result.Spec.Argv = append(result.Spec.Argv, "--resume", claudeID)
+	if argv, ok := d.paneDropInArgv(req.SessionID, rec.ProjectID, result, claudeID); ok {
+		result.Spec.Argv = argv
+		result.Spec.Name = launchReq.Name
+	} else {
+		result.Spec.Argv = append(result.Spec.Argv, "--resume", claudeID)
+	}
 	result.Spec.DropInFor = req.SessionID
 
 	resp, err := d.launchOnHost(hold, result)
@@ -153,13 +181,46 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	if err != nil {
 		d.handBack(hold, req.SessionID)
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error()))
+		complete(audit.AuditOutcomeError, dropInLaunchFailed)
+		link.TerminalGone = true
+		d.armSwap(link)
 		return nil, &DropInRefusal{Status: http.StatusBadGateway, Code: dropInLaunchFailed, Message: "relay could not start the terminal; the session is idle again"}
 	}
 	d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, ""))
+	complete(audit.AuditOutcomeOK, "")
+	d.armSwap(link)
 	return &DropInResult{
 		SessionID: req.SessionID, ClaudeSessionID: claudeID, Host: host,
 		ProjectName: result.AuditFields.ProjectName, Launch: result, TerminalBody: resp.Body,
 	}, nil
+}
+
+// paneDropInArgv is the terminal's argv on a host whose detached agent runs as
+// a tmux pane: the pane swaps to Claude's UI and the terminal attaches to it.
+// It is false when the host has no tmux path or the template has no command,
+// and the terminal then launches as it does without a pane. Deliberate: the UI
+// is the template's command and args, never its persist wrapper, because the
+// pane is already the tmux session.
+func (d sessionRouteDeps) paneDropInArgv(sessionID, projectID string, result *LaunchResult, claudeID string) ([]string, bool) {
+	var host sessiontypes.HostSpec
+	if len(result.Spec.Host) == 0 || json.Unmarshal(result.Spec.Host, &host) != nil || !host.Detach || host.TmuxPath == "" {
+		return nil, false
+	}
+	settings := config.FreshSettings(d.store)
+	proj, _ := config.FindProjectByID(settings, projectID)
+	if proj == nil || !proj.IsHosted() {
+		return nil, false
+	}
+	tmpl, ok := findTemplate(settings, proj, dropInTemplateID)
+	if !ok {
+		return nil, false
+	}
+	ui := resolveHostArgv(tmpl, proj.Path, projectID)
+	if len(ui) == 0 {
+		return nil, false
+	}
+	ui = append(ui, "--resume", claudeID)
+	return sshhost.PaneDropInArgv(host.TmuxPath, sshhost.AgentPaneName(sessionID), result.Spec.Directory, ui, result.Spec.Env), true
 }
 
 // discardLaunch undoes what AuthorizeLaunch minted for a launch that never
@@ -195,6 +256,9 @@ func endDropInEvent(ev *logging.Event, sessionID, host, terminalID string, refus
 		return
 	}
 	outcome, reason := refusalOutcome(refusal.Status, refusal.Code)
+	if refusal.Code == dropInAuditOff {
+		outcome = logging.OutcomeDenied
+	}
 	ev.End(outcome, reason, errors.New(refusal.Code))
 }
 

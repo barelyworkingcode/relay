@@ -3,15 +3,26 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+
+	"github.com/barelyworkingcode/relay/internal/cmdlookup"
 )
 
 const (
@@ -22,8 +33,9 @@ const (
 	detachedCLIWait    = 30 * time.Second
 )
 
-// detachedRunFile is run.json, written by the runner on the host once the
-// agent leads its own process group.
+// detachedRunFile is the identity part of runner.json, written by the runner
+// on the host once the agent leads its own process group. The file also
+// carries "delivered", which moves with every message and is not identity.
 type detachedRunFile struct {
 	PID        int    `json:"pid"`
 	PGID       int    `json:"pgid"`
@@ -31,66 +43,349 @@ type detachedRunFile struct {
 	Generation string `json:"generation"`
 }
 
-// runDetachedHost drives a Claude session on a loopback host with
-// detach_sessions set: a turn is in flight when the host link is dropped, the
-// turn still completes, a later message is answered with no resume, and a
-// stop ends the agent's process group and removes its run directory. The
-// loopback host is this machine and its login user is this user, so the
-// agent's run directory is read as a local path.
+// runDetachedHost drives a Claude session on a loopback host with no
+// detach_sessions key, so it runs under the runner: a turn is in flight when
+// the host link is dropped, the turn still completes, a later message is
+// answered with no resume, and a stop ends the agent's process group and
+// removes its run directory. The loopback host is this machine and its login
+// user is this user, so the agent's run directory is read as a local path.
+//
+// It runs in the api phase, so it has no run credential and no prompt: the
+// host, its project and the agent entry are written into settings.json (the
+// power door), which relay's file watch imports.
 func runDetachedHost(ctx context.Context, e env) result {
 	const id = detachedHostID
-	_, run, res, ok := screenCreds(e, id)
-	if !ok {
-		return res
+	baseURL, model, tokenFile, err := stackClaude(e)
+	if err != nil {
+		return blocked(id, "fixture host or project: "+err.Error())
 	}
-	var out result
-	setup, teardown := withLoopbackHostProject(ctx, e, run, func(projectID, hostName, _ string) {
-		out = driveDetachedHost(ctx, e, run, projectID, hostName)
-	})
-	if setup != "" {
-		return blocked(id, "fixture host or project: "+setup)
+	// Deliberate: off a stack the launcher would run claude against the
+	// machine's own login, a hosted model.
+	if baseURL == "" {
+		return result{id, stateNotRun, "needs a stack's local model endpoint (claude_base_url in stack.json)"}
 	}
-	out.Detail += teardown
-	return out
+	// Deliberate: the journey borrows SIGINT and SIGTERM only to clean up. A
+	// signal cancels the journey's context, the sweep and the teardown run
+	// (both ignore the cancellation), and the signal is then delivered again so
+	// the process still ends as the sender meant.
+	// A launcher that ignores SIGINT keeps ignoring it.
+	sigs := make(chan os.Signal, 2)
+	watched := []os.Signal{syscall.SIGTERM}
+	if !signal.Ignored(os.Interrupt) {
+		watched = append(watched, os.Interrupt)
+	}
+	signal.Notify(sigs, watched...)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var caught os.Signal // written only before done closes
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case caught = <-sigs:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	var res result
+	fx, err := setUpDetachedFixture(ctx, e, baseURL, model, tokenFile)
+	if err != nil {
+		res = blocked(id, "fixture host or project: "+err.Error())
+	} else {
+		res = driveDetachedHost(ctx, e, fx)
+		res.Detail += fx.tearDown()
+	}
+
+	signal.Stop(sigs)
+	cancel()
+	<-done
+	if caught == nil {
+		select {
+		case caught = <-sigs:
+		default:
+		}
+	}
+	if caught != nil {
+		res.Detail += "; " + caught.String() + " received during the journey; cleanup ran"
+		if sig, ok := caught.(syscall.Signal); ok {
+			_ = syscall.Kill(os.Getpid(), sig)
+		}
+	}
+	return res
 }
 
-func driveDetachedHost(ctx context.Context, e env, run, projectID, hostName string) (res result) {
+// detachedFixture is what the journey seeds into settings.json and the
+// machine: a loopback host, a project on it, one agent entry and the
+// launcher script that entry runs.
+type detachedFixture struct {
+	configDir                string
+	wsToken                  string // the /ws bearer, a seeded credential of class proxy (the execute credential is refused there); never printed
+	credentialID             string
+	hostID, projectID, entry string
+	projectDir, launcher     string
+}
+
+// detachedLauncher is the entry's command. A host session does not inherit
+// relay's environment, so the script points claude at the stack's model
+// endpoint itself. The token is read from its file at exec and goes into no
+// file, log or detail. Without a stack baseURL is empty and claude uses the
+// machine's own login.
+func detachedLauncher(claudePath, baseURL, model, tokenFile string) string {
+	script := "#!/bin/sh\n"
+	if baseURL != "" {
+		script += "ANTHROPIC_BASE_URL=" + shellQuote(baseURL) + "\n" +
+			"ANTHROPIC_DEFAULT_HAIKU_MODEL=" + shellQuote(model) + "\n" +
+			"ANTHROPIC_AUTH_TOKEN=$(cat " + shellQuote(tokenFile) + ") || exit 1\n" +
+			"export ANTHROPIC_BASE_URL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_AUTH_TOKEN\n"
+	}
+	return script + "exec " + shellQuote(claudePath) + " \"$@\"\n"
+}
+
+// stackClaude reads claude_base_url, claude_model and claude_token_file from
+// the stack's stack.json, which sits beside the stack's config dir. All three
+// are empty outside a stack and on a stack that runs real Claude.
+func stackClaude(e env) (baseURL, model, tokenFile string, err error) {
+	if !e.Stack {
+		return "", "", "", nil
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(e.ConfigDir), "stack.json"))
+	if err != nil {
+		return "", "", "", errors.New("stack.json is not readable beside the stack's config dir")
+	}
+	var s struct {
+		BaseURL   string `json:"claude_base_url"`
+		Model     string `json:"claude_model"`
+		TokenFile string `json:"claude_token_file"`
+	}
+	if json.Unmarshal(raw, &s) != nil {
+		return "", "", "", errors.New("stack.json is not valid JSON")
+	}
+	if s.BaseURL != "" && (s.Model == "" || !filepath.IsAbs(s.TokenFile)) {
+		return "", "", "", errors.New("stack.json names claude_base_url without claude_model and an absolute claude_token_file")
+	}
+	return s.BaseURL, s.Model, s.TokenFile, nil
+}
+
+func setUpDetachedFixture(ctx context.Context, e env, baseURL, model, tokenFile string) (*detachedFixture, error) {
+	claude, err := cmdlookup.Local(ctx, "claude")
+	if err != nil {
+		return nil, fmt.Errorf("no claude on this machine's login-shell PATH to launch: %w", err)
+	}
+	base := filepath.Join(gateStateDir(), "grant-detached-"+e.Nonce)
+	fx := &detachedFixture{
+		configDir: e.ConfigDir, hostID: uuid.NewString(), projectID: uuid.NewString(), entry: "verify-" + e.Nonce + "-detached",
+		projectDir: base, launcher: base + ".sh",
+	}
+	if err := os.MkdirAll(fx.projectDir, 0o755); err != nil {
+		return nil, fmt.Errorf("cannot create the project folder: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(fx.projectDir); err == nil {
+		fx.projectDir = resolved
+	}
+	if err := os.WriteFile(fx.launcher, []byte(detachedLauncher(claude, baseURL, model, tokenFile)), 0o700); err != nil {
+		fx.tearDown()
+		return nil, fmt.Errorf("cannot write the launcher: %w", err)
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		fx.tearDown()
+		return nil, err
+	}
+	projectToken := hex.EncodeToString(secret)
+	tokenHash := sha256.Sum256([]byte(projectToken))
+	wsSecret := make([]byte, 32)
+	if _, err := rand.Read(wsSecret); err != nil {
+		fx.tearDown()
+		return nil, err
+	}
+	fx.wsToken = hex.EncodeToString(wsSecret)
+	wsHash := sha256.Sum256([]byte(fx.wsToken))
+	fx.credentialID = uuid.NewString()
+	now := time.Now().UTC().Format(time.RFC3339)
+	host := map[string]any{
+		"id": fx.hostID, "name": dropInHostPrefix + e.Nonce + "-detach", "target": dropInHostTarget,
+		"created_at": now,
+		// A hosted project launches the host's own templates; the probe
+		// seeds them on a host added through the API, and this host is not.
+		"terminal_templates": []map[string]string{
+			{"id": "shell", "name": "Shell"},
+			{"id": "claude-code", "name": "Claude Code", "command": claude},
+		},
+	}
+	project := map[string]any{
+		"id": fx.projectID, "name": dropInProjectName + e.Nonce + " detach", "path": fx.projectDir, "host_id": fx.hostID,
+		"allowed_mcp_ids": []string{}, "allowed_models": []string{"*"}, "allowed_templates": []string{"claude-code"},
+		"token": projectToken, "token_hash": hex.EncodeToString(tokenHash[:]), "created_at": now,
+		"agents": []map[string]string{{"name": fx.entry, "kind": "claude", "model": agentModel, "command": fx.launcher}},
+	}
+	credential := map[string]any{
+		"id": fx.credentialID, "name": "verify-" + e.Nonce + "-detached-ws", "hash": hex.EncodeToString(wsHash[:]),
+		"classes": []string{"proxy"}, "created": now, "expires": time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}
+	if err := editSettings(e.ConfigDir, func(top map[string]json.RawMessage) error {
+		return appendRecords(top, map[string]any{"hosts": host, "projects": project, "api_credentials": credential})
+	}); err != nil {
+		fx.tearDown()
+		return nil, err
+	}
+	return fx, nil
+}
+
+// tearDown removes the seeded records and files, whatever the journey did.
+// It returns text for the result detail, empty when all went well.
+func (fx *detachedFixture) tearDown() (problem string) {
+	if fx.hostID != "" {
+		if err := editSettings(fx.configDir, func(top map[string]json.RawMessage) error {
+			dropRecords(top, "hosts", fx.hostID)
+			dropRecords(top, "projects", fx.projectID)
+			dropRecords(top, "api_credentials", fx.credentialID)
+			return nil
+		}); err != nil {
+			problem += "; teardown: " + err.Error()
+		}
+	}
+	if err := os.RemoveAll(fx.projectDir); err != nil {
+		problem += "; teardown: cannot remove the project folder"
+	}
+	if err := os.Remove(fx.launcher); err != nil && !errors.Is(err, os.ErrNotExist) {
+		problem += "; teardown: cannot remove the launcher"
+	}
+	return problem
+}
+
+// detachedSweep ends everything this run started: every session id (including
+// those the start retry loop abandoned), the agent's process group and the
+// runner processes. It touches only the run directories of its own sessions.
+type detachedSweep struct {
+	agentsRoot string
+	sids       []string
+	pgid       int // the first runner.json's group, 0 until known
+}
+
+func (w *detachedSweep) runDir(sid string) string { return filepath.Join(w.agentsRoot, sid) }
+
+// holders returns the pids whose command line names one of the swept run
+// directories. Deliberate: the runner leads its own process group and is
+// reparented to init, so its run-directory path is the only handle on it. The
+// match is the full directory path with a trailing slash, never a bare id.
+func (w *detachedSweep) holders(ctx context.Context) ([]int, error) {
+	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("ps: %w", err)
+	}
+	var pids []int
+	for _, line := range strings.Split(string(out), "\n") {
+		pidText, cmd, ok := strings.Cut(strings.TrimSpace(line), " ")
+		pid, perr := strconv.Atoi(pidText)
+		if !ok || perr != nil || pid == os.Getpid() {
+			continue
+		}
+		for _, sid := range w.sids {
+			if strings.Contains(cmd, w.runDir(sid)+string(filepath.Separator)) {
+				pids = append(pids, pid)
+				break
+			}
+		}
+	}
+	return pids, nil
+}
+
+func (w *detachedSweep) run(ctx context.Context, e env) {
+	ctx = context.WithoutCancel(ctx)
+	for _, sid := range w.sids {
+		cliStopSession(ctx, e, sid)
+	}
+	if w.pgid > 1 && groupAlive(w.pgid) {
+		_ = syscall.Kill(-w.pgid, syscall.SIGKILL)
+	}
+	signalAll := func(sig syscall.Signal) {
+		pids, _ := w.holders(ctx)
+		for _, pid := range pids {
+			_ = syscall.Kill(pid, sig)
+		}
+	}
+	signalAll(syscall.SIGTERM)
+	// Waits: process exit after a signal has no event; polled, bounded.
+	gone := func() bool {
+		pids, err := w.holders(ctx)
+		return err != nil || len(pids) == 0
+	}
+	if !pollUntil(ctx, 5*time.Second, gone) {
+		signalAll(syscall.SIGKILL)
+		pollUntil(ctx, 2*time.Second, gone)
+	}
+	for _, sid := range w.sids {
+		_ = os.RemoveAll(w.runDir(sid))
+	}
+}
+
+// finish runs the sweep, then turns res into FAIL when a process still names a
+// swept run directory, or when the process list cannot be read to check. A
+// result that was not FAIL keeps its state and detail in the new detail; a FAIL
+// gets the note appended.
+func (w *detachedSweep) finish(ctx context.Context, e env, res result) result {
+	if len(w.sids) == 0 {
+		return res
+	}
+	w.run(ctx, e)
+	left, err := w.holders(context.WithoutCancel(ctx))
+	var note string
+	switch {
+	case err != nil:
+		note = "cleanup: the leftover check could not run: " + err.Error()
+	case len(left) > 0:
+		note = fmt.Sprintf("cleanup: pids %v still name a started session's run directory", left)
+	default:
+		return res
+	}
+	if res.State == stateFail {
+		res.Detail += "; " + note
+		return res
+	}
+	return result{res.ID, stateFail, note + "; was " + string(res.State) + ": " + res.Detail}
+}
+
+func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res result) {
 	const id = detachedHostID
+	agentsRoot, rootErr := hostAgentsRoot()
+	sweep := &detachedSweep{agentsRoot: agentsRoot}
+	defer func() { res = sweep.finish(ctx, e, res) }()
 	fail := func(f string, a ...any) result { return result{id, stateFail, fmt.Sprintf(f, a...)} }
 	blockedf := func(f string, a ...any) result { return blocked(id, fmt.Sprintf(f, a...)) }
 
-	hostID, err := hostIDByName(ctx, e, run, hostName)
-	if err != nil {
-		return blockedf("%v", err)
+	hostID, projectID := fx.hostID, fx.projectID
+	if rootErr != nil {
+		return blockedf("%v", rootErr)
 	}
-	if err := setHostDetach(e.ConfigDir, hostID); err != nil {
-		return blockedf("detach_sessions could not be set: %v", err)
-	}
-	agentsRoot, err := hostAgentsRoot()
-	if err != nil {
-		return blockedf("%v", err)
-	}
+	var err error
 
-	conn, status, err := dialFrontendWS(ctx, e, run)
-	if err != nil {
+	// Waits: none possible for the settings import; relay's file watch emits
+	// no event. The seeded credential opens /ws only once the import has run,
+	// so a refused dial is retried, bounded.
+	var conn *websocket.Conn
+	var status int
+	if !pollUntil(ctx, detachedStartTries, func() bool {
+		conn, status, err = dialFrontendWS(ctx, e, fx.wsToken)
+		return err == nil
+	}) {
 		return blockedf("GET /ws status %d: %v", status, err)
 	}
 	defer func() { _ = conn.Close() }()
 	log := &dropLog{}
 	collectFrames(conn, log)
 
-	// The settings.json edit is imported by relay's file watch, which gives no
-	// reply. A detached start returns only once run.json exists, so a start
-	// that left no run directory ran before the import: stop it and start
-	// again.
+	// A detached start returns only once runner.json exists, so a start that
+	// left no run directory is stopped and started again, bounded.
 	var sid string
 	var first detachedRunFile
 	started := pollUntil(ctx, detachedStartTries, func() bool {
 		var s string
-		s, err = startHostSession(ctx, e, projectID)
+		s, err = startHostSession(ctx, e, projectID, fx.entry)
 		if err != nil {
 			return false
 		}
+		sweep.sids = append(sweep.sids, s)
 		if f, rerr := readRunFile(agentsRoot, s, "g1"); rerr == nil {
 			sid, first = s, f
 			return true
@@ -98,24 +393,15 @@ func driveDetachedHost(ctx context.Context, e env, run, projectID, hostName stri
 		cliStopSession(ctx, e, s)
 		return false
 	})
-	if sid != "" {
-		defer func() {
-			cleanup := context.WithoutCancel(ctx)
-			cliStopSession(cleanup, e, sid)
-			frontendDo(cleanup, e, run, http.MethodDelete, "/api/sessions/"+sid, nil)
-			if first.PGID > 1 && groupAlive(first.PGID) { // only our own agent's group, read from its run.json
-				_ = syscall.Kill(-first.PGID, syscall.SIGKILL)
-			}
-		}()
-	}
+	sweep.pgid = first.PGID
 	if !started {
 		if err != nil {
 			return fail("relay session start: %v", err)
 		}
-		return fail("a session on a host with detach_sessions set left no run.json under the agents directory")
+		return fail("a session on a host with no detach_sessions key left no runner.json under the agents directory")
 	}
 	if first.PID <= 1 || first.PGID <= 1 || first.Started == "" || !pidAlive(first.PID) {
-		return fail("run.json after start reads %+v, or its pid is not alive", first)
+		return fail("runner.json after start reads %+v, or its pid is not alive", first)
 	}
 
 	_ = wsSend(conn, map[string]string{"type": "join_session", "sessionId": sid})
@@ -124,16 +410,18 @@ func driveDetachedHost(ctx context.Context, e env, run, projectID, hostName stri
 	}
 	mark := len(log.snapshot())
 
-	// The long answer keeps the turn open across the drop; the running frame
-	// is the signal that it has started.
+	// The long answer keeps the turn open across the drop. session send
+	// returns once relay holds the runner's receipt, so the drop never lands
+	// on a send still in flight (that ends unknown); the answer is read with
+	// session wait after the link returns.
 	marker1 := "verify-" + e.Nonce + "-turn"
-	turn := make(chan cliResult, 1)
-	go func() {
-		turn <- cliWithTimeout(ctx, e, detachedTurnWait, "session", "message", "--id", sid, "--json", "--text",
-			"Count from 1 to 150, one number per line, then on a last line write exactly: "+marker1)
-	}()
+	send := cliWithTimeout(ctx, e, detachedCLIWait, "session", "send", "--id", sid, "--json", "--text",
+		"Count from 1 to 150, one number per line, then on a last line write exactly: "+marker1)
+	if send.Exit != 0 {
+		return fail("relay session send exited %d: %s", send.Exit, firstLine(send.Stderr))
+	}
 	if !log.waitFor(ctx, agentFrameWait, stateSeq(sid, mark, "running")) {
-		return fail("the session never reported running after relay session message")
+		return fail("the session never reported running after relay session send")
 	}
 	if stateSeq(sid, mark, "running", "idle")(log.snapshot()) {
 		return blockedf("the turn ended before the link was dropped; nothing was in flight")
@@ -150,17 +438,14 @@ func driveDetachedHost(ctx context.Context, e env, run, projectID, hostName stri
 		return fail("no session.host_link link=restored event within %s", detachedLinkWait)
 	}
 
-	select {
-	case r := <-turn:
-		var reply struct {
-			Text string `json:"text"`
-		}
-		_ = json.Unmarshal([]byte(r.Stdout), &reply)
-		if r.Exit != 0 || !bytes.Contains([]byte(reply.Text), []byte(marker1)) {
-			return fail("the turn in flight across the drop did not return its answer: exit %d, stderr %q, reply %q", r.Exit, firstLine(r.Stderr), tail(reply.Text, 80))
-		}
-	case <-ctx.Done():
-		return fail("the turn in flight across the drop never returned")
+	wait := cliWithTimeout(ctx, e, detachedTurnWait, "session", "wait", "--id", sid, "--json")
+	var turnReply struct {
+		State   string `json:"state"`
+		Excerpt string `json:"excerpt"`
+	}
+	_ = json.Unmarshal([]byte(wait.Stdout), &turnReply)
+	if wait.Exit != 0 || !bytes.Contains([]byte(turnReply.Excerpt), []byte(marker1)) {
+		return fail("the turn in flight across the drop did not return its answer: exit %d, state %q, stderr %q, reply %q", wait.Exit, turnReply.State, firstLine(wait.Stderr), tail(turnReply.Excerpt, 80))
 	}
 	if !log.waitFor(ctx, agentFrameWait, stateSeq(sid, mark, "running", "idle")) {
 		return fail("the session never returned to idle after the turn")
@@ -178,10 +463,10 @@ func driveDetachedHost(ctx context.Context, e env, run, projectID, hostName stri
 
 	after, err := readRunFile(agentsRoot, sid, "g1")
 	if err != nil {
-		return fail("run.json unreadable after the drop: %v", err)
+		return fail("runner.json unreadable after the drop: %v", err)
 	}
 	if after != first {
-		return fail("run.json changed across the drop: before %+v, after %+v", first, after)
+		return fail("runner.json changed across the drop: before %+v, after %+v", first, after)
 	}
 	if !pidAlive(after.PID) {
 		return fail("agent pid %d is not alive after the drop", after.PID)
@@ -213,12 +498,12 @@ func hostAgentsRoot() (string, error) {
 
 func readRunFile(root, sid, gen string) (detachedRunFile, error) {
 	var f detachedRunFile
-	raw, err := os.ReadFile(filepath.Join(root, sid, gen, "run.json"))
+	raw, err := os.ReadFile(filepath.Join(root, sid, gen, "runner.json"))
 	if err != nil {
 		return f, err
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return f, fmt.Errorf("run.json is not JSON: %w", err)
+		return f, fmt.Errorf("runner.json is not JSON: %w", err)
 	}
 	return f, nil
 }
@@ -244,9 +529,9 @@ func firstLine(s string) string {
 	return string(line)
 }
 
-// startHostSession is relay session start on the host project.
-func startHostSession(ctx context.Context, e env, projectID string) (string, error) {
-	r := cliWithTimeout(ctx, e, 60*time.Second, "session", "start", "--project", projectID, "--model", agentModel,
+// startHostSession is relay session start by the project's agent entry.
+func startHostSession(ctx context.Context, e env, projectID, entry string) (string, error) {
+	r := cliWithTimeout(ctx, e, 60*time.Second, "session", "start", "--project", projectID, "--entry", entry,
 		"--settings", `{"headless":true,"agent":true}`, "--json")
 	if r.Exit != 0 {
 		return "", fmt.Errorf("exit %d: %s", r.Exit, firstLine(r.Stderr))
@@ -264,39 +549,10 @@ func cliStopSession(ctx context.Context, e env, sid string) {
 	cliWithTimeout(ctx, e, detachedCLIWait, "session", "stop", "--id", sid)
 }
 
-func hostIDByName(ctx context.Context, e env, token, name string) (string, error) {
-	resp := frontendDo(ctx, e, token, http.MethodGet, "/api/hosts", nil)
-	if resp.Status != http.StatusOK {
-		return "", fmt.Errorf("GET /api/hosts status %d", resp.Status)
-	}
-	var hosts []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
-	if json.Unmarshal(resp.Body, &hosts) != nil {
-		var wrapped struct {
-			Hosts []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"hosts"`
-		}
-		if json.Unmarshal(resp.Body, &wrapped) != nil {
-			return "", errors.New("GET /api/hosts body is not a host list")
-		}
-		hosts = wrapped.Hosts
-	}
-	for _, h := range hosts {
-		if h.Name == name {
-			return h.ID, nil
-		}
-	}
-	return "", fmt.Errorf("host %s is not in GET /api/hosts", name)
-}
-
-// setHostDetach sets hosts[].detach_sessions on one host in settings.json.
-// This is the power-user door: no API route carries the field. The file is
-// replaced by rename, which relay's file watch imports.
-func setHostDetach(dir, hostID string) error {
+// editSettings rewrites settings.json by temp file and rename, which relay's
+// file watch imports. This is the power-user door: the host's own fields have
+// no API route.
+func editSettings(dir string, edit func(top map[string]json.RawMessage) error) error {
 	path := filepath.Join(dir, "settings.json")
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -310,22 +566,9 @@ func setHostDetach(dir, hostID string) error {
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return fmt.Errorf("settings.json is not readable JSON: %w", err)
 	}
-	var hosts []map[string]json.RawMessage
-	if err := json.Unmarshal(top["hosts"], &hosts); err != nil {
-		return fmt.Errorf("settings.json hosts: %w", err)
+	if err := edit(top); err != nil {
+		return err
 	}
-	found := false
-	for _, h := range hosts {
-		var hid string
-		if json.Unmarshal(h["id"], &hid) == nil && hid == hostID {
-			h["detach_sessions"] = json.RawMessage("true")
-			found = true
-		}
-	}
-	if !found {
-		return fmt.Errorf("host %s is not in settings.json", hostID)
-	}
-	top["hosts"], _ = json.Marshal(hosts)
 	next, err := json.MarshalIndent(top, "", "  ")
 	if err != nil {
 		return err
@@ -346,6 +589,43 @@ func setHostDetach(dir, hostID string) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// appendRecords adds one record to each named top-level array.
+func appendRecords(top map[string]json.RawMessage, add map[string]any) error {
+	for key, rec := range add {
+		var list []json.RawMessage
+		if raw := top[key]; len(raw) > 0 && string(raw) != "null" {
+			if err := json.Unmarshal(raw, &list); err != nil {
+				return fmt.Errorf("settings.json %s: %w", key, err)
+			}
+		}
+		b, err := json.Marshal(rec)
+		if err != nil {
+			return err
+		}
+		top[key], _ = json.Marshal(append(list, b))
+	}
+	return nil
+}
+
+// dropRecords removes the record with this id from a top-level array.
+func dropRecords(top map[string]json.RawMessage, key, id string) {
+	var list []json.RawMessage
+	if json.Unmarshal(top[key], &list) != nil {
+		return
+	}
+	kept := list[:0]
+	for _, rec := range list {
+		var r struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(rec, &r) == nil && r.ID == id {
+			continue
+		}
+		kept = append(kept, rec)
+	}
+	top[key], _ = json.Marshal(kept)
 }
 
 // hostLinkSeen reports whether relay-sessions logged op=session.host_link for

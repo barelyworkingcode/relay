@@ -40,7 +40,32 @@ type Session struct {
 	ViewReason  string  `json:"viewReason"`
 	// EndedAt is set on an ended row only: the transcript file's modification time.
 	EndedAt string `json:"endedAt,omitempty"`
+	// ClaudeSessionID is the Claude conversation id: the registry sessionId or
+	// the transcript's id for a live row, the transcript file's stem for an
+	// ended one.
+	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
+	// Adoptable is true when the owner may adopt the session now or with an
+	// interrupt. Idleness is checked at the adopt door, not here.
+	Adoptable bool `json:"adoptable"`
+	// AdoptReason is the AdoptReason* code that makes the row not adoptable;
+	// absent when Adoptable.
+	AdoptReason string `json:"adoptReason,omitempty"`
 }
+
+// The codes of Session.AdoptReason, in the order they are judged: the first
+// that applies is the reason.
+const (
+	AdoptReasonEnded          = "ended"
+	AdoptReasonHost           = "host_unsupported"
+	AdoptReasonNoProject      = "no_project"
+	AdoptReasonNotRegistered  = "not_registered"
+	AdoptReasonInvalidID      = "invalid_id"
+	AdoptReasonStartMismatch  = "start_mismatch"
+	AdoptReasonNotInteractive = "not_interactive"
+	AdoptReasonNotCommandLine = "not_command_line"
+	AdoptReasonAmbiguous      = "ambiguous"
+)
+
 type MachineStatus struct {
 	HostID      *string `json:"hostId"`
 	Machine     string  `json:"machine"`
@@ -92,7 +117,11 @@ type Machine struct {
 	HostID  *string
 	Probe   func(context.Context) (ProbeResult, error)
 	Reports func(context.Context) ([]Report, error)
-	Read    func(context.Context, Observation) ([]byte, error)
+	// Lifetimes answers the current start time of each pid that is alive, in
+	// the probe's Lifetime format. A pid that is gone or cannot be read is
+	// absent. nil means the machine has no cheap check; the drain probes.
+	Lifetimes func(ctx context.Context, pids []int) (map[int]string, error)
+	Read      func(context.Context, Observation) ([]byte, error)
 	// ReadRange returns the file bytes [start, end) of the observation's
 	// transcript, at most max of them. end < 0 means the file's size. A missing
 	// file answers an empty window.

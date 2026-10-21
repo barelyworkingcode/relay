@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -124,8 +125,9 @@ func (r *osRig) hostProject() string {
 }
 
 type osSub struct {
-	t  *testing.T
-	ws *harness.WSConn
+	t    *testing.T
+	ws   *harness.WSConn
+	last []byte // the raw frame the last until call read
 }
 
 func osSubscribe(t *testing.T, i *harness.Instance) *osSub {
@@ -140,7 +142,8 @@ func (s *osSub) until(bound time.Duration, f func(osSnap) bool) osSnap {
 	end := time.Now().Add(bound)
 	for {
 		var snap osSnap
-		if err := json.Unmarshal(s.ws.Next(time.Until(end)), &snap); err != nil {
+		s.last = s.ws.Next(time.Until(end))
+		if err := json.Unmarshal(s.last, &snap); err != nil {
 			s.t.Fatalf("decoding a snapshot: %v", err)
 		}
 		if f(snap) {
@@ -162,20 +165,43 @@ func (s osSnap) at(dir string) *osRow {
 // machine has completed a probe after the move.
 func (r *osRig) probe() osSnap {
 	r.t.Helper()
+	snap, _ := r.probeRaw()
+	return snap
+}
+
+// probeRaw is probe() that also returns the raw frame. A probe that missed its
+// own bound moves lastProbeAt too and leaves the machine unreachable with the
+// rows unread; such a frame is not a result, so the clock moves again and the
+// next probe is awaited, all within one osBound.
+func (r *osRig) probeRaw() (osSnap, []byte) {
+	r.t.Helper()
 	sub := osSubscribe(r.t, r.i)
 	before := map[string]string{}
 	for _, m := range sub.until(osBound, func(osSnap) bool { return true }).Machines { // the snapshot on open, before the move
 		before[m.Machine] = m.LastProbeAt
 	}
 	r.i.ClockAdvance(osProbeStep)
-	return sub.until(osBound, func(s osSnap) bool {
+	end := time.Now().Add(osBound)
+	snap := sub.until(time.Until(end), func(s osSnap) bool {
+		moved, failed := true, false
 		for _, m := range s.Machines {
 			if m.LastProbeAt == before[m.Machine] {
-				return false
+				moved = false
+			}
+			if m.Status == "unreachable" {
+				failed = true
 			}
 		}
-		return true
+		if moved && failed {
+			for _, m := range s.Machines {
+				before[m.Machine] = m.LastProbeAt
+			}
+			r.i.ClockAdvance(osProbeStep)
+			return false
+		}
+		return moved
 	})
+	return snap, sub.last
 }
 
 type osProc struct {
@@ -387,6 +413,137 @@ func TestOutsideHookReportUpdatesSnapshot(t *testing.T) {
 	sub.until(osHookBound, func(s osSnap) bool {
 		row := s.at(p.dir)
 		return row != nil && row.State == "asking" && row.Source == "hook"
+	})
+}
+
+// osSpool creates the report spool, which must exist at the probe that finds
+// the first row: only then is it drained.
+func osSpool(t *testing.T, r *osRig) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(r.i.Home, ".claude", "relay-outside-reports"), 0o700); err != nil {
+		t.Fatalf("creating the spool: %v", err)
+	}
+}
+
+// osSlowProbe installs a tmux shim that sleeps 5 s, so every full probe runs
+// past the drain's 3 s read bound while staying under the probe's own 10 s
+// bound, and returns once a probe that started after the shim has completed.
+func osSlowProbe(t *testing.T, r *osRig) {
+	t.Helper()
+	shim := filepath.Join(r.i.Home, ".local", "bin", "tmux")
+	osWrite(t, shim, []byte("#!/bin/sh\nsleep 5\nexit 0\n"))
+	if err := os.Chmod(shim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.probe()
+}
+
+// osRawRow returns the raw JSON object of the row for dir in the frame.
+func osRawRow(t *testing.T, frame []byte, dir string) map[string]any {
+	t.Helper()
+	var f struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(frame, &f); err != nil {
+		t.Fatalf("decoding a snapshot: %v", err)
+	}
+	for _, row := range f.Sessions {
+		if row["directory"] == dir {
+			return row
+		}
+	}
+	return nil
+}
+
+// The five-second hook promise holds under a slow probe: the report shows
+// within five seconds while every full probe takes five seconds, and it
+// changes only the row's state, source and update time.
+func TestOutsideHookReportSurvivesSlowProbe(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false)
+	osSpool(t, r)
+	p := r.spawn(r.i.Home, t.TempDir(), "slowprobe")
+	p.transcript(t, osPrompt("acme one"), osAnswer("acme done"))
+	if row := r.probe().at(p.dir); row == nil || row.State != "idle" {
+		t.Fatalf("row before the report = %+v, want idle", row)
+	}
+	// A probe that completes with the shim in place makes the next one slow.
+	osSlowProbe(t, r)
+
+	sub := osSubscribe(t, r.i)
+	sub.until(osBound, func(s osSnap) bool { return s.at(p.dir) != nil })
+	before := osRawRow(t, sub.last, p.dir)
+	osReport(t, r.i.Home, map[string]any{"hook_event_name": "PermissionRequest", "session_id": p.sid, "cwd": p.dir}, "RELAY_OUTSIDE_SPOOL=")
+	// The promise under test is osHookBound: the report is on the wire within
+	// five seconds of the hook exiting.
+	sub.until(osHookBound, func(s osSnap) bool {
+		row := s.at(p.dir)
+		return row != nil && row.State == "asking" && row.Source == "hook"
+	})
+	after := osRawRow(t, sub.last, p.dir)
+	for _, k := range []string{"state", "source", "updatedAt"} {
+		delete(before, k)
+		delete(after, k)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("the report changed more than state, source and updatedAt:\nbefore %v\nafter  %v", before, after)
+	}
+}
+
+// A report for a process that has exited never shows its state, and its row
+// leaves the snapshot within the hook promise. Every probe takes five seconds
+// from before the kill, so no probe that could see the process gone finishes
+// within the bound: the drain removes the row.
+func TestOutsideReportForExitedProcessRemovesRow(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false)
+	osSpool(t, r)
+	p := r.spawn(r.i.Home, t.TempDir(), "exited")
+	p.transcript(t, osPrompt("acme one"), osAnswer("acme done"))
+	if row := r.probe().at(p.dir); row == nil || row.State != "idle" {
+		t.Fatalf("row before the report = %+v, want idle", row)
+	}
+	osSlowProbe(t, r)
+	if err := syscall.Kill(p.pid, syscall.SIGKILL); err != nil {
+		t.Fatalf("ending the process: %v", err)
+	}
+	<-p.exit
+
+	sub := osSubscribe(t, r.i)
+	if row := sub.until(osBound, func(osSnap) bool { return true }).at(p.dir); row == nil {
+		t.Fatalf("the first frame after the exit no longer lists %s; a probe, not the drain, removed it", p.dir)
+	}
+	osReport(t, r.i.Home, map[string]any{"hook_event_name": "PermissionRequest", "session_id": p.sid, "cwd": p.dir}, "RELAY_OUTSIDE_SPOOL=")
+	sub.until(osHookBound, func(s osSnap) bool {
+		row := s.at(p.dir)
+		if row != nil && row.Source == "hook" {
+			t.Fatalf("a frame shows the exited process's row with source hook: %+v", row)
+		}
+		return row == nil
+	})
+}
+
+// A report for a session no probe has listed is not lost when the probe that
+// discovers it runs past the drain's read bound.
+func TestOutsideReportForUnlistedSessionProbesFirst(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false)
+	osSpool(t, r)
+	listed := r.spawn(r.i.Home, t.TempDir(), "listed")
+	listed.transcript(t, osPrompt("acme one"), osAnswer("acme done"))
+	if row := r.probe().at(listed.dir); row == nil {
+		t.Fatalf("no row for %s", listed.dir)
+	}
+	osSlowProbe(t, r)
+
+	// Spawned after the last probe, so no snapshot lists it.
+	late := r.spawn(r.i.Home, t.TempDir(), "unlisted")
+	late.transcript(t, osPrompt("acme two"))
+	sub := osSubscribe(t, r.i)
+	osReport(t, r.i.Home, map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": late.sid, "cwd": late.dir}, "RELAY_OUTSIDE_SPOOL=")
+	sub.until(osBound, func(s osSnap) bool {
+		row := s.at(late.dir)
+		return row != nil && row.State == "running" && row.Source == "hook"
 	})
 }
 

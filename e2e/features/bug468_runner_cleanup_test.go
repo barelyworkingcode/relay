@@ -20,12 +20,12 @@ func TestInstanceCleanupEndsHostAgentRunner(t *testing.T) {
 		r := g11dStart(t)
 		instDir = r.i.Dir
 		sid := r.startSession(t, "")
-		// session start returns only after the generation's run.json exists,
+		// session start returns only after the generation's runner.json exists,
 		// so the runner is up. The session is left running on purpose, and
 		// r.run is not called because it kills the group at cleanup.
-		runner := filepath.Join(r.agentsDir(sid), "g1", "runner.sh")
-		if _, err := os.Stat(runner); err != nil {
-			t.Fatalf("the started host session has no runner script: %v", err)
+		state := filepath.Join(r.agentsDir(sid), "g1", "runner.json")
+		if _, err := os.Stat(state); err != nil {
+			t.Fatalf("the started host session has no runner.json: %v", err)
 		}
 	})
 	if instDir == "" {

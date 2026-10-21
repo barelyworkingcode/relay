@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/server"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/state"
 	"github.com/barelyworkingcode/relay/fakerelay/internal/world"
@@ -116,6 +117,13 @@ func outsideRow(s world.OutsideFixture) map[string]any {
 	row := map[string]any{"id": s.ID, "name": s.Name, "projectId": s.ProjectID, "hostId": s.HostID, "machine": s.Machine, "directory": s.Directory, "branch": s.Branch, "state": s.State, "since": s.Since, "updatedAt": s.UpdatedAt, "source": s.Source, "outside": true, "readOnly": true, "tmuxSession": s.TmuxSession, "viewable": s.Viewable, "viewReason": s.ViewReason}
 	if s.EndedAt != "" {
 		row["endedAt"] = s.EndedAt
+	}
+	if s.ClaudeSessionID != "" {
+		row["claudeSessionId"] = s.ClaudeSessionID
+	}
+	row["adoptable"] = s.Adoptable
+	if reason := world.OutsideAdoptReason(s); reason != "" {
+		row["adoptReason"] = reason
 	}
 	return row
 }
@@ -254,20 +262,67 @@ func (a *api) outsideRoutes(r server.Registrar) {
 		a.outsideMu.Lock()
 		defer a.outsideMu.Unlock()
 		_ = a.State.Write(func(m *state.Model) error { m.OutsideSessions = rows; return nil })
-		a.outsideRevision++
-		snapshot := a.outsideSnapshot()
-		for ch := range a.outsideSubscribers {
-			select {
-			case ch <- snapshot:
-			default:
-				<-ch
-				ch <- snapshot
-			}
-		}
-		a.Events.Begin(r.Context(), "outside_sessions.changed").Set("revision", a.outsideRevision).End("ok", "", nil)
+		a.publishOutside(r.Context())
 		ok(w, map[string]any{"revision": a.outsideRevision})
 	})
 }
+
+// publishOutside bumps the revision, pushes the replacement snapshot to every
+// reader and writes the change event. The caller holds outsideMu.
+func (a *api) publishOutside(ctx context.Context) {
+	a.outsideRevision++
+	snapshot := a.outsideSnapshot()
+	for ch := range a.outsideSubscribers {
+		select {
+		case ch <- snapshot:
+		default:
+			<-ch
+			ch <- snapshot
+		}
+	}
+	a.Events.Begin(ctx, "outside_sessions.changed").Set("revision", a.outsideRevision).End("ok", "", nil)
+}
+
+// RemoveOutside drops the row and publishes the new snapshot.
+func (a *api) RemoveOutside(ctx context.Context, id string) bool {
+	return a.changeOutside(ctx, id, func(rows []world.OutsideFixture, i int) []world.OutsideFixture {
+		out := make([]world.OutsideFixture, 0, len(rows)-1)
+		return append(append(out, rows[:i]...), rows[i+1:]...)
+	})
+}
+
+// EndOutside turns the row into an ended one and publishes the new snapshot.
+// The conversation id stays; the adopt outcome does not.
+func (a *api) EndOutside(ctx context.Context, id string, endedAt time.Time) bool {
+	return a.changeOutside(ctx, id, func(rows []world.OutsideFixture, i int) []world.OutsideFixture {
+		out := append([]world.OutsideFixture(nil), rows...)
+		out[i].State = "ended"
+		out[i].EndedAt = rfc3339(endedAt)
+		out[i].Adoptable, out[i].AdoptReason, out[i].Adopt = false, "", nil
+		return out
+	})
+}
+
+func (a *api) changeOutside(ctx context.Context, id string, change func([]world.OutsideFixture, int) []world.OutsideFixture) bool {
+	a.outsideMu.Lock()
+	defer a.outsideMu.Unlock()
+	found := false
+	_ = a.State.Write(func(m *state.Model) error {
+		for i := range m.OutsideSessions {
+			if m.OutsideSessions[i].ID == id {
+				m.OutsideSessions = change(m.OutsideSessions, i)
+				found = true
+				break
+			}
+		}
+		return nil
+	})
+	if found {
+		a.publishOutside(ctx)
+	}
+	return found
+}
+
 func (a *api) outsideWS(w http.ResponseWriter, r *http.Request) {
 	c, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)
 	if err != nil {

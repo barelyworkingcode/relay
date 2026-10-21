@@ -33,7 +33,8 @@ presence prompt refused before the gated act it guards ran, see
 `session_bound` is a reserved fourth kind nothing writes yet), and — for
 records relay writes about itself rather than about a caller — `mcp_down` /
 `mcp_up` (see below). `session_message` is the record of a send in the
-chief-of-staff scope (see [below](#chief-of-staff-messages)).
+chief-of-staff scope (see [below](#chief-of-staff-messages)), and `session_swap`
+records a drop-in and its hand back (see [below](#session-swaps)).
 
 `throttled` is deliberately distinct from `denied` and `tool_error`: it is the
 only one of the three that says the grant was legitimate and the *pattern of
@@ -888,16 +889,67 @@ answers.
   the cause in `error`: `already_processing`, `resume_required`, `dropped_in`,
   `send_failed` or `session_host_unavailable`.
 - A message the person types is not a `session_message` row.
+- The `relay-recovery` origin marks the one message relay sends after an
+  adopt that interrupted a turn (`POST /api/sessions/adopt`).
 
 ```
 relay audit --event session_message                # every Chief of Staff send; DETAIL reads session=<id> origin=chief-of-staff <phase>
+```
+
+### Session adopt
+
+`POST /api/sessions/adopt` writes, in order, durable `intent` rows before any
+signal and `completion` rows after (each pair shares an `id`; actor is the
+caller, as for drop-in):
+
+- `session_adopt` intent: `args` `outside_id`, `claude_session_id`,
+  `project_id`, `directory`, `interrupt`, `model`; `outcome: pending`.
+- `session_interrupt` intent (a busy session only): `outside_id`,
+  `claude_session_id`, `project_id`. Its completion adds `signals` (`signal`
+  `INT`, `at`) and `exited`.
+- `session_message` intent with origin `relay-recovery` (after a takeover that
+  sent SIGINT), written before delivery like every marked send.
+- `session_adopt` completion: the intent's args plus `session_id`,
+  `interrupted`, `signals` (what `TakeOver` sent: `TERM` and `KILL`, with `at` on
+  relay's clock; `INT` belongs to the `session_interrupt` completion alone) and `recovery_sent` (a failed recovery send does not undo the adopt).
+  `outcome` is `ok` or `error`, with the refusal code in
+  `error`.
+
+The resumed launch writes its ordinary `session_launch` row. With auditing off,
+or when an intent row cannot be written, the door answers 503
+`audit_unavailable` and signals nothing.
+
+### Session rebind
+
+A surviving local session's relay tools are bound again after a relay restart
+(`SessionRebind`, [`docs/session-host.md`](session-host.md#relay-tools-after-a-relay-restart)).
+Relay writes a durable `intent` row before it checks the claim and a durable
+`completion` row after; the two share an `id`. The actor is the service
+`relaysessions` (`auth: none`) with the session id.
+
+- `session_rebind` intent: `args` `session_id`, `project_id`, `runner_pid` and
+  `root_pid` (from the ledger); `outcome: pending`.
+- `session_rebind` completion: the same args. `outcome` is `ok`; `denied` with
+  `error` one of `not_live`, `project_gone`, `no_root_record`, `runner_mismatch`,
+  `root_gone`, `root_not_in_tree`, `already_bound`; or `error` with `error`
+  `bind_failed`.
+- A caller that is not the bound relay-sessions identity writes one row with no
+  phase: actor `unknown`, `auth: none`, args `session_id`, `outcome:
+  unauthorized`.
+
+With auditing off, or when the intent row cannot be written, nothing is bound.
+A completion row that cannot be written is logged at Warn and the binding stays.
+
+```
+relay audit --event session_rebind
 ```
 
 ### Chief of Staff starts
 
 `POST /api/chief-of-staff/sessions` writes a `session_launch` row for every
 start that passes the body checks, allowed or refused, and a headless start
-also writes the `session_message` pair above for its prompt. The launch row's
+also writes the `session_message` pair above for its prompt; a `mode: terminal`
+request runs the same headless start and writes the same rows. The launch row's
 args gain these fields, all `omitempty`:
 
 - `args.origin`: `chief-of-staff` for a start through this route.
@@ -912,8 +964,7 @@ args gain these fields, all `omitempty`:
   the `chief_of_staff.start` event carries the chat's name instead.
 
 A refusal after the audit-ready check (unknown or remote project, an entry that is
-not found or is ambiguous, a terminal start in
-a project on a host, folder outside the project, a terminal start without a Claude model, a
+not found or is ambiguous, folder outside the project, a
 model the project does not allow, a system-only model, or a policy refusal from
 `AuthorizeLaunch`) is a `denied` row carrying the same fields. An
 `AuthorizeLaunch` refusal of the request itself or of a setup step
@@ -921,6 +972,37 @@ model the project does not allow, a system-only model, or a policy refusal from
 the like) is an `error` row carrying the same fields. With auditing off the
 route answers 503 `audit_unavailable` and starts nothing. A resume keeps the `origin` the session
 was started with.
+
+### Session swaps
+
+`session_swap` records a change of driver. A drop-in (`to_terminal`) stops the
+headless agent for a terminal; closing the terminal (`to_headless`) resumes
+the session headless. Each swap writes two rows with the same `id`: an
+`intent` row (`outcome: pending`, durable before the act) and a `completion`
+row.
+
+```json
+{"id":"5c0d…","ts":"2026-10-20T09:12:01.000Z","event":"session_swap","phase":"intent","actor":{"kind":"control","auth":"token","cred_id":"…"},"args":{"session_id":"3af1…","direction":"to_terminal","project_id":"…","host_id":"…"},"outcome":"pending"}
+{"id":"5c0d…","ts":"2026-10-20T09:12:01.012Z","dur_ms":12,"event":"session_swap","phase":"completion","args":{"session_id":"3af1…","direction":"to_terminal","terminal_id":"…"},"outcome":"ok"}
+```
+
+- **When the intent is written.** `to_terminal`: after `AuthorizeLaunch`
+  passes, before the handoff. `to_headless`: before the resume. A refusal
+  before the intent (`session_not_found`, `not_claude`, a launch refusal)
+  writes no swap row; it keeps its `session_launch` row.
+- **Actor.** The drop-in's caller, on both directions. `host_id` is present
+  for a hosted project only. `terminal_id` names the drop-in terminal on both
+  directions.
+- **Completion outcome.** `ok`; `denied` for a refusal below 500 (a handoff
+  code, a resume refusal); `error` when the terminal did not start or the
+  resume failed. `error` holds the code.
+- **Fail-closed.** With auditing off, or when the intent row cannot be
+  written, a drop-in answers 503 `audit_unavailable` and stops nothing. A hand
+  back then resumes nothing; the session stays dormant.
+
+```
+relay audit --event session_swap                   # every swap; DETAIL reads session=<id> <direction> <phase>
+```
 
 ## Issuance and revocation
 

@@ -93,6 +93,10 @@ type LaunchRequest struct {
 	// Origin names who asked for this session when it was not the person at
 	// a frontend. The host accepts only the Chief of Staff origin.
 	Origin string `json:"origin,omitempty"`
+	// ResumeConversation names the Claude conversation a fresh local claude
+	// launch resumes. The host seeds the session's provider state with it, so
+	// claude starts with --resume.
+	ResumeConversation string `json:"resume_conversation,omitempty"`
 	// Launcher replaces the program a claude, codex or pi session runs. It is
 	// omitted when the agent entry names no command; the host refuses one on a
 	// pty or chat launch.

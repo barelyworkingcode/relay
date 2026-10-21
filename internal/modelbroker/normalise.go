@@ -60,6 +60,26 @@ func findRow(rows []Row, id string) (Row, bool) {
 	return Row{}, false
 }
 
+// ModelMapKeysFor returns the modelMap keys a transcript's model id stands
+// for, in catalog order: [id] when id is itself a modelMap row (a client that
+// echoes the key it asked for), else every modelMap row whose target is id (a
+// client that echoes the routed target). Nil when nothing matches.
+func ModelMapKeysFor(rows []Row, id string) []string {
+	if id == "" {
+		return nil
+	}
+	if row, ok := findRow(rows, id); ok && classify(row) == groupModelMap {
+		return []string{id}
+	}
+	var keys []string
+	for _, row := range rows {
+		if classify(row) == groupModelMap && row.Target == id {
+			keys = append(keys, row.ID)
+		}
+	}
+	return keys
+}
+
 // canonicalize maps a requested model id to the router id relayLLM actually
 // dispatches on, accepting the spellings spec §6.2 documents in addition to
 // the bare router id itself:

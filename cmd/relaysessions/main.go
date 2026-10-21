@@ -33,6 +33,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	"github.com/barelyworkingcode/relay/internal/sessions/shim"
 	"github.com/barelyworkingcode/relay/internal/sessions/terminal"
+	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
 func main() {
@@ -204,8 +205,14 @@ func runService(args []string) int {
 		}
 	}
 
-	// A detached host agent outlives this process, so a start finds the ones
-	// that still run and follows them again.
+	// A local runner session that survived a relay restart has lost its launch
+	// identity with relay's memory; the claim asks relay to bind its root again.
+	sessions.SetRebindHandler(func(id string, runner sessionstypes.ProcessRoot) {
+		claimSessionRebind(bridgeSock, id, runner)
+	})
+
+	// A detached host agent and a local runner session outlive this process,
+	// so a start finds the ones that still run and follows them again.
 	go sessions.ReattachDetached()
 
 	sigCh := make(chan os.Signal, 1)
@@ -217,6 +224,8 @@ func runService(args []string) int {
 
 // sessionConfig is exactly the session.Config runService hands session.NewManager.
 func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
+	// Deliberate: claude, codex and pi run under the runner in one directory.
+	runnerBase := filepath.Join(cfg.dataDir, "runners")
 	return session.Config{
 		Claude: provider.ClaudeConfig{
 			Binary:          cfg.claudeCommand,
@@ -226,6 +235,7 @@ func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
 			ModelSocket:     cfg.modelSocket,
 			ShimBinary:      shimBinary,
 			RelayMCPCommand: cfg.relayMCPCommand,
+			RunnerBase:      runnerBase,
 		},
 		Pi: provider.PiConfig{
 			Binary:       cfg.piCommand,
@@ -233,11 +243,13 @@ func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
 			BridgeSocket: cfg.bridgeSocket,
 			ModelSocket:  cfg.modelSocket,
 			ShimBinary:   shimBinary,
+			RunnerBase:   runnerBase,
 		},
 		Codex: provider.CodexConfig{
 			Binary:       cfg.codexCommand,
 			ShimBinary:   shimBinary,
 			BridgeSocket: cfg.bridgeSocket,
+			RunnerBase:   runnerBase,
 		},
 		Chat: provider.ChatConfig{
 			ModelSocket:     cfg.modelSocket,
@@ -278,6 +290,23 @@ func reportSessionExited(bridgeSock string, id string, rootPID, exitCode int, re
 	})
 	if err != nil {
 		slog.Warn("relay-sessions: SessionExited report failed", "session", id, "error", err)
+	}
+}
+
+// claimSessionRebind asks relay to bind the root of a local session this
+// process just attached. A refusal or a failed call only leaves the session's
+// relay tools closed, as before the claim existed; there is no retry.
+func claimSessionRebind(bridgeSock, id string, runner sessionstypes.ProcessRoot) {
+	sock := bridgeSock
+	if sock == "" {
+		sock = bridge.SocketPath()
+	}
+	err := bridge.NewClientAt(sock, "").SessionRebind(bridge.SessionRebindRequest{
+		SessionID: id, RunnerPID: runner.PID,
+		RunnerStartSec: runner.StartSec, RunnerStartUsec: runner.StartUsec,
+	})
+	if err != nil {
+		slog.Warn("relay-sessions: SessionRebind refused or failed; the session's relay tools stay closed", "session", id, "error", err)
 	}
 }
 

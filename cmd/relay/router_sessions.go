@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
@@ -12,6 +13,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
+	"github.com/barelyworkingcode/relay/internal/sessions/sandbox"
 )
 
 // SessionExited implements the bridge.ToolRouter half of C5's advisory,
@@ -39,6 +41,15 @@ func (r *appRouter) SessionExited(ctx context.Context, req bridge.SessionExitedR
 
 	if acc, ok := r.sessionAccounts.take(req.SessionID); ok {
 		acc.end(r.modelKeys)
+	} else if r.sessions != nil {
+		// Deliberate: a session that outlived a relay restart has no account to
+		// carry its sandbox profile, so the exit report is the only trigger left
+		// to delete it. Only an id the ledger holds names a file.
+		if _, held := r.sessions.Get(req.SessionID); held {
+			if err := sandbox.Remove(filepath.Join(sessionProfilesDir(), req.SessionID+".sb")); err != nil {
+				slog.Warn("session exited: sandbox profile removal failed", "session", req.SessionID, "error", err)
+			}
+		}
 	}
 
 	if r.sessions != nil {
@@ -57,6 +68,8 @@ func (r *appRouter) SessionExited(ctx context.Context, req bridge.SessionExitedR
 			}
 		}
 	}
+
+	r.sessionDeps.startHandBack(req.SessionID)
 
 	r.recordSessionExited(req)
 	return nil
@@ -96,11 +109,15 @@ func (r *appRouter) recordSessionExited(req bridge.SessionExitedRequest) {
 	})
 }
 
-// detachedAgentStillRuns reports whether rec is a detached host session whose
-// agent runs after its provider released it, as a relay-sessions restart
-// leaves it. relay-sessions attaches that agent again as it starts, so the
-// record stays live and project-delete cleanup still finds it.
+// detachedAgentStillRuns reports whether rec is a detached host session or a
+// local runner session whose agent runs after its provider released it, as a
+// relay-sessions restart leaves it. relay-sessions attaches that agent again as
+// it starts, so the record stays live and project-delete cleanup still finds
+// it.
 func (r *appRouter) detachedAgentStillRuns(rec ledger.Record) bool {
+	if rec.Detached == nil && runnerKind(rec.Kind) {
+		return localRunnerAlive(bridge.ConfigDir(), rec.SessionID)
+	}
 	if rec.Detached == nil || r.sessionDeps.store == nil {
 		return false
 	}

@@ -18,6 +18,7 @@ import (
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
+	"github.com/barelyworkingcode/relay/internal/sessions/runner"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
@@ -144,6 +145,15 @@ type Manager struct {
 	reattachMu  sync.Mutex
 	reattaching map[string]*sync.Mutex
 
+	// onRebind is called once after each attach of a local runner session whose
+	// provider reports a process root (SetRebindHandler).
+	onRebind func(sessionID string, runner sessionstypes.ProcessRoot)
+
+	// askedMu guards asked, the sessions whose pending permissions are above
+	// zero, so only the rise from zero tells the runner.
+	askedMu sync.Mutex
+	asked   map[string]bool
+
 	// providerFactory, when non-nil, replaces the built-in claude/pi switch
 	// in startProvider. Test-only seam, mirroring relayLLM's own
 	// SessionManager.SetProviderFactory — that package's doc comment names
@@ -183,7 +193,7 @@ func NewManager(cfg Config, store *Store, perms *permission.PermissionManager) *
 		watch:      watch,
 	}
 	if perms != nil {
-		perms.SetPendingObserver(m.onPermissionPending)
+		perms.SetPendingObserver(m.permissionPending)
 	}
 	return m
 }
@@ -216,6 +226,45 @@ func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 	m.mu.Lock()
 	m.onExit = fn
 	m.mu.Unlock()
+}
+
+// SetRebindHandler installs fn. The manager calls fn once after each successful
+// attach of a local runner session whose ProcessRoot() is set.
+func (m *Manager) SetRebindHandler(fn func(sessionID string, runner sessionstypes.ProcessRoot)) {
+	m.mu.Lock()
+	m.onRebind = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) rebindHandler() func(sessionID string, runner sessionstypes.ProcessRoot) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.onRebind
+}
+
+// claimRebind hands a freshly attached local session's runner to the rebind
+// handler. It runs with the reattach lock held, so a boot attach and a lazy
+// attach of the same session claim once each, not at once.
+func (m *Manager) claimRebind(id string) {
+	fn := m.rebindHandler()
+	if fn == nil {
+		return
+	}
+	sess, ok := m.Get(id)
+	if !ok {
+		return
+	}
+	p, ok := liveProvider(sess)
+	if !ok {
+		return
+	}
+	reporter, ok := p.(sessionstypes.RootReporter)
+	if !ok {
+		return
+	}
+	if root, ok := reporter.ProcessRoot(); ok {
+		fn(id, root)
+	}
 }
 
 func (m *Manager) exitHandler() func(id string, exitCode int) {
@@ -287,6 +336,10 @@ type CreateSpec struct {
 	// running agent and fail when none runs, where a plain resume would start
 	// one.
 	AttachOnly bool
+
+	// ResumeConversation seeds a new claude session's provider state with an
+	// existing Claude conversation id, so the first start resumes it.
+	ResumeConversation string
 }
 
 func (m *Manager) providerKindSupported(kind string) bool {
@@ -487,9 +540,15 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 		mode = parsed.PermissionPolicy.DefaultMode
 	}
 
+	var providerState json.RawMessage
+	if spec.ResumeConversation != "" {
+		providerState, _ = json.Marshal(map[string]string{"claudeSessionId": spec.ResumeConversation})
+	}
+
 	return &sessionstypes.Session{
 		ID:             spec.SessionID,
 		ProjectID:      spec.ProjectID,
+		ProviderState:  providerState,
 		Name:           name,
 		Directory:      spec.Directory,
 		Model:          spec.Model,
@@ -531,7 +590,15 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) (s
 	if old := sess.SwapProvider(p); old != nil {
 		old.Kill()
 	}
-	return p, p.Start()
+	if err := p.Start(); err != nil {
+		return p, err
+	}
+	if m.attachable(sess) {
+		// The saved state names the run, its cursor and its root; a restart before
+		// the first result would otherwise find none of them.
+		m.persist(sess)
+	}
+	return p, nil
 }
 
 // newProvider constructs, but does not install or start, a provider for
@@ -701,6 +768,8 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 		cxcfg.SandboxProfile = spec.SandboxProfile
 		cxcfg.Launcher = spec.Launcher
 		cxcfg.DefaultModel = spec.Entry != "" && spec.Model == ""
+		cxcfg.Resume = spec.Resume
+		cxcfg.AttachOnly = spec.AttachOnly
 		return provider.NewCodexProvider(sess, handler, cxcfg), nil
 	case KindChat:
 		chatcfg := m.cfg.Chat
@@ -887,12 +956,16 @@ func (m *Manager) EndSession(id string) {
 	// Deliberate: a detached session with no live provider may still have an
 	// agent on its host, which relay or this host left running; ending the
 	// session ends it.
-	orphan := detachedClaude(sess) && (p == nil || !p.Alive())
+	orphan := m.runnerSession(sess) && (p == nil || !p.Alive())
 	if p != nil {
 		p.Kill()
 	}
 	if orphan {
-		provider.StopDetachedRun(sess.ID, sess.GetHost())
+		if sess.GetHost() == nil {
+			provider.StopLocalAgent(sess.ProviderType, m.runnerBase(sess.ProviderType), sess.ID)
+		} else {
+			provider.StopDetachedAgent(sess.ProviderType, sess.ID, sess.GetHost())
+		}
 	}
 	m.persist(sess)
 }
@@ -913,13 +986,15 @@ func (m *Manager) DeleteSession(id string) {
 	} else {
 		// A dormant session has no provider, but a detached host agent may
 		// still run; it must end with the session.
-		host := (*sessionstypes.HostSpec)(nil)
-		if sess != nil {
-			host = sess.GetHost()
-		} else if stored, err := m.store.Load(id); err == nil {
-			host = stored.GetHost()
+		stored := sess
+		if stored == nil {
+			stored, _ = m.store.Load(id)
 		}
-		provider.DeleteDetachedRun(id, host)
+		if stored != nil && m.runnerSession(stored) && stored.GetHost() == nil {
+			provider.DeleteLocalAgent(stored.ProviderType, m.runnerBase(stored.ProviderType), id)
+		} else if stored != nil {
+			provider.DeleteDetachedAgent(stored.ProviderType, id, stored.GetHost())
+		}
 	}
 	if m.perms != nil {
 		m.perms.RevokeHookToken(id)
@@ -933,10 +1008,13 @@ func (m *Manager) DeleteSession(id string) {
 // at once.
 const detachedMaxParallelProbes = 4
 
-// ReattachDetached attaches every persisted detached host session whose agent
-// still runs. The agent is not this process's child, so a restart of this host
-// or of relay finds it alive; a session whose agent exited stays dormant and
-// resumes with its history. It returns when every attach has finished.
+// ReattachDetached attaches every persisted detached host session and local
+// runner session whose agent still runs. The agent is not this process's
+// child, so a restart of this host or of relay finds it alive; a session whose
+// agent exited stays dormant and resumes with its history. A pi runner that
+// still runs is stopped instead: its model key was bound to the launch that
+// ended, and the model proxy it used ran inside the relay-sessions that is gone.
+// It returns when every attach has finished.
 func (m *Manager) ReattachDetached() {
 	sessions, err := m.store.LoadAll()
 	if err != nil {
@@ -946,7 +1024,11 @@ func (m *Manager) ReattachDetached() {
 	sem := make(chan struct{}, detachedMaxParallelProbes)
 	var wg sync.WaitGroup
 	for _, sess := range sessions {
-		if !detachedClaude(sess) {
+		if sess.ProviderType == KindPi && m.runnerSession(sess) {
+			m.stopStalePi(sess)
+			continue
+		}
+		if !m.attachable(sess) {
 			continue
 		}
 		wg.Add(1)
@@ -960,8 +1042,53 @@ func (m *Manager) ReattachDetached() {
 	wg.Wait()
 }
 
-func detachedClaude(sess *sessionstypes.Session) bool {
-	return sess.ProviderType == KindClaude && provider.DetachedHost(sess.GetHost())
+// runnerBase is the directory kind's local run directories live under.
+func (m *Manager) runnerBase(kind string) string {
+	switch kind {
+	case KindClaude:
+		return m.cfg.Claude.RunnerBase
+	case KindCodex:
+		return m.cfg.Codex.RunnerBase
+	case KindPi:
+		return m.cfg.Pi.RunnerBase
+	}
+	return ""
+}
+
+// runnerSession reports whether sess is a session whose agent runs under the
+// runner: a Claude or codex session on a detached host or on this machine, or a
+// pi session on this machine. Pi has no host form.
+func (m *Manager) runnerSession(sess *sessionstypes.Session) bool {
+	switch sess.ProviderType {
+	case KindClaude, KindCodex:
+		if sess.GetHost() == nil {
+			return m.runnerBase(sess.ProviderType) != ""
+		}
+		return provider.DetachedHost(sess.GetHost())
+	case KindPi:
+		return sess.GetHost() == nil && m.cfg.Pi.RunnerBase != ""
+	}
+	return false
+}
+
+// attachable reports whether sess is a runner session that outlives
+// relay-sessions, so a start finds its agent and follows it again. A pi agent
+// ends with relay-sessions and is never attached.
+func (m *Manager) attachable(sess *sessionstypes.Session) bool {
+	return sess.ProviderType != KindPi && m.runnerSession(sess)
+}
+
+// stopStalePi ends the pi runner a crashed relay-sessions left behind and
+// leaves the session dormant. A session this process already holds is a launch
+// of its own and stays.
+func (m *Manager) stopStalePi(sess *sessionstypes.Session) {
+	m.mu.Lock()
+	_, held := m.slots[sess.ID]
+	m.mu.Unlock()
+	if held {
+		return
+	}
+	provider.StopLocalAgent(KindPi, m.cfg.Pi.RunnerBase, sess.ID)
 }
 
 var (
@@ -979,7 +1106,7 @@ var (
 // say whether the agent runs, or the agent runs and could not be attached.
 func (m *Manager) reattachIfDetached(id string) error {
 	sess, ok := m.Get(id)
-	if !ok || !detachedClaude(sess) {
+	if !ok || !m.attachable(sess) {
 		return nil
 	}
 	if p := sess.Provider(); p != nil && p.Alive() {
@@ -1008,22 +1135,30 @@ func (m *Manager) reattachDetached(id string) error {
 	defer lock.Unlock()
 
 	sess, ok := m.Get(id)
-	if !ok || !detachedClaude(sess) || m.Held(id) {
+	if !ok || !m.attachable(sess) || m.Held(id) {
 		return nil
 	}
 	if p := sess.Provider(); p != nil && p.Alive() {
 		return nil
 	}
 	host := sess.GetHost()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	st, err := provider.DetachedRunState(ctx, host, id)
-	cancel()
-	if err != nil {
-		slog.Warn("session: reattach: the host did not say whether the agent runs", "session", id, "host", host.ID, "error", err)
-		return fmt.Errorf("%w: host %q: %v", ErrHostUnreachable, host.Name, err)
-	}
-	if st.Phase != sshhost.RunAlive {
-		return nil
+	var err error
+	if host == nil {
+		st, err := runner.LocalStatus(m.runnerBase(sess.ProviderType), id, "")
+		if err != nil || st.Phase != runner.PhaseAlive {
+			return nil
+		}
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		st, err := provider.DetachedRunState(ctx, host, id)
+		cancel()
+		if err != nil {
+			slog.Warn("session: reattach: the host did not say whether the agent runs", "session", id, "host", host.ID, "error", err)
+			return fmt.Errorf("%w: host %q: %v", ErrHostUnreachable, host.Name, err)
+		}
+		if st.Phase != sshhost.RunAlive {
+			return nil
+		}
 	}
 	// Deliberate: a delete that ran during the status question ended the agent
 	// and dropped the slot, and attaching now would find nothing to attach.
@@ -1035,7 +1170,7 @@ func (m *Manager) reattachDetached(id string) error {
 		return nil
 	}
 	spec := CreateSpec{
-		SessionID: id, ProjectID: sess.ProjectID, Kind: KindClaude, Directory: sess.Directory,
+		SessionID: id, ProjectID: sess.ProjectID, Kind: sess.ProviderType, Directory: sess.Directory,
 		Name: sess.Name, Model: sess.Model, Origin: sess.Origin, Settings: sess.Settings,
 		SystemPrompt: sess.SystemPrompt, Host: host, Resume: true, AttachOnly: true,
 	}
@@ -1051,10 +1186,68 @@ func (m *Manager) reattachDetached(id string) error {
 		return nil
 	}
 	if err != nil {
+		if host == nil {
+			slog.Warn("session: reattach failed", "session", id, "error", err)
+			return fmt.Errorf("%w: %v", ErrAttachFailed, err)
+		}
 		slog.Warn("session: reattach failed", "session", id, "host", host.ID, "error", err)
 		return fmt.Errorf("%w: host %q: %v", ErrAttachFailed, host.Name, err)
 	}
+	if host == nil {
+		m.claimRebind(id)
+	}
 	return nil
+}
+
+// askingWait bounds how long the Asked signal waits for the runner's receipt
+// of the asking event.
+const askingWait = 2 * time.Second
+
+// permissionPending is the permission manager's pending observer. When a
+// session's pending count rises above zero it has the runner write an asking
+// event first, and signals Asked after the receipt, so a reader that saw the
+// session ask finds the event. Deliberate: past askingWait the signal follows
+// anyway, because a stuck runner must not hide a prompt from the person.
+func (m *Manager) permissionPending(sessionID string, pending int) {
+	m.askedMu.Lock()
+	if m.asked == nil {
+		m.asked = map[string]bool{}
+	}
+	rose := pending > 0 && !m.asked[sessionID]
+	if pending > 0 {
+		m.asked[sessionID] = true
+	} else {
+		delete(m.asked, sessionID)
+	}
+	m.askedMu.Unlock()
+	if rose {
+		m.announceAsking(sessionID)
+	}
+	m.onPermissionPending(sessionID, pending)
+}
+
+func (m *Manager) announceAsking(sessionID string) {
+	m.mu.Lock()
+	slot := m.slots[sessionID]
+	var sess *sessionstypes.Session
+	if slot != nil {
+		sess = slot.sess
+	}
+	m.mu.Unlock()
+	if sess == nil {
+		return
+	}
+	src, ok := sess.Provider().(interface {
+		SendEvent(ctx context.Context, typ string) error
+	})
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), askingWait)
+	defer cancel()
+	if err := src.SendEvent(ctx, "asking"); err != nil {
+		slog.Warn("session: the runner did not confirm the asking event", "session", sessionID, "error", err)
+	}
 }
 
 // StopAll tears down every live and in-flight session. Every provider Kill

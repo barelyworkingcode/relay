@@ -59,17 +59,6 @@ func listedOrigin(body []byte, key, id string) (origin string, found bool) {
 	return "", false
 }
 
-// argvHasStart is true when one process-list line holds the terminal start's
-// argv: the alias, the end-of-options marker and the prompt as one argument.
-func argvHasStart(psOut, prompt string) bool {
-	for _, line := range strings.Split(psOut, "\n") {
-		if strings.Contains(line, "--model "+agentModel+" -- "+prompt) {
-			return true
-		}
-	}
-	return false
-}
-
 type cosStartRun struct {
 	Project, Marker, TermPrompt string
 
@@ -87,13 +76,13 @@ type cosStartRun struct {
 	RowsErr     string
 	Delete      frontendResponse
 
-	TermCreate frontendResponse
-	TermID     string
-	TermList   frontendResponse
-	TermDelete frontendResponse
-	TermRows   []audit.AuditEvent
-	PS         string
-	PSErr      string
+	// The old terminal-mode request: it starts a headless session, so the
+	// answer names a session row and no terminal row exists.
+	TermCreate   frontendResponse
+	TermID       string
+	TermSessions frontendResponse
+	TermList     frontendResponse
+	TermDelete   frontendResponse
 }
 
 func runCosStart(ctx context.Context, e env) (out result) {
@@ -121,10 +110,6 @@ func runCosStart(ctx context.Context, e env) (out result) {
 	}
 	defer func() { _ = obs.conn.Close() }()
 
-	// Learned from the terminal's Claude, for the transcript cleanup only; no classifier reads them.
-	var termPID int
-	var termClaudeID, termWhy string
-
 	// Deferred so a failed leg still removes what it started; the deletes ignore cancellation.
 	defer func() {
 		bg := context.WithoutCancel(ctx)
@@ -132,12 +117,7 @@ func runCosStart(ctx context.Context, e env) (out result) {
 			r.Delete = frontendDo(bg, e, run, http.MethodDelete, "/api/sessions/"+r.SessionID, nil)
 		}
 		if r.TermID != "" {
-			r.TermDelete = frontendDo(bg, e, run, http.MethodDelete, "/api/terminals/"+r.TermID, nil)
-			if termClaudeID == "" {
-				fmt.Fprintf(os.Stderr, "transcript %s: id unknown: %s\n", cosStartID, termWhy)
-			} else {
-				removeTranscript(cosStartID, termClaudeID, "verify-"+e.Nonce+"-", false, pidGone(termPID))
-			}
+			r.TermDelete = frontendDo(bg, e, run, http.MethodDelete, "/api/sessions/"+r.TermID, nil)
 		}
 		out = classifyCosStart(r)
 	}()
@@ -164,39 +144,9 @@ func runCosStart(ctx context.Context, e env) (out result) {
 
 	r.TermCreate = cosRequest(ctx, e, run, true, http.MethodPost, cosStartPath,
 		cosStartBody(acmeID, "", r.TermPrompt, "terminal"), 30*time.Second)
-	termWhy = fmt.Sprintf("terminal start answered %d", r.TermCreate.Status)
 	if r.TermID = parseCosStart(r.TermCreate).SessionID; r.TermCreate.Status == http.StatusCreated && r.TermID != "" {
-		// The row appearing is the signal; the process list is read once after it.
-		for deadline := time.Now().Add(cosListWait); ; {
-			r.TermList = frontendDo(ctx, e, run, http.MethodGet, "/api/terminals", nil)
-			if _, found := listedOrigin(r.TermList.Body, "terminals", r.TermID); found || time.Now().After(deadline) || ctx.Err() != nil {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-		psOut, err := exec.CommandContext(ctx, "ps", "-axwwo", "command").Output()
-		r.PS = string(psOut)
-		if err != nil {
-			r.PSErr = err.Error()
-		}
-		termWhy = "no claude process for the terminal"
-		if table, err := exec.CommandContext(ctx, "ps", "-axwwo", "pid=,command=").Output(); err != nil {
-			termWhy = "process table unreadable"
-			if ctx.Err() != nil {
-				termWhy = "cancelled before the process table was read"
-			}
-		} else {
-			if termPID = claudePIDForArgv(string(table), "--model "+agentModel+" -- "+r.TermPrompt); termPID != 0 {
-				pollUntil(ctx, cosListWait, func() bool {
-					var idErr error
-					termClaudeID, idErr = claudeSessionForPID(termPID)
-					if idErr != nil {
-						termWhy = idErr.Error()
-					}
-					return idErr == nil
-				})
-			}
-		}
+		r.TermSessions = cosRequest(ctx, e, run, true, http.MethodGet, "/api/sessions", nil, frontendRequestTimeout)
+		r.TermList = frontendDo(ctx, e, run, http.MethodGet, "/api/terminals", nil)
 	}
 	return result{}
 }
@@ -321,25 +271,25 @@ func classifyCosStartTerminal(r cosStartRun) result {
 	}
 	switch {
 	case r.TermCreate.Status != http.StatusCreated || r.TermID == "":
-		return fail("terminal start status %d, want 201: %s", r.TermCreate.Status, r.TermCreate.Error)
+		return fail("mode terminal start status %d, want 201: %s", r.TermCreate.Status, r.TermCreate.Error)
+	case r.TermSessions.Status != http.StatusOK:
+		return fail("scoped GET /api/sessions status %d, want 200", r.TermSessions.Status)
 	case r.TermList.Status != http.StatusOK:
 		return fail("GET /api/terminals status %d, want 200", r.TermList.Status)
 	case r.TermDelete.Status/100 != 2:
-		return fail("DELETE of the terminal status %d: it may still be running", r.TermDelete.Status)
-	case r.PSErr != "":
-		return fail("process list unreadable: %s", r.PSErr)
+		return fail("DELETE of the mode terminal session status %d: it may still be running", r.TermDelete.Status)
 	}
-	if s := parseCosStart(r.TermCreate); s.Origin != cosOrigin || s.Mode != "terminal" {
-		return fail("terminal start answered origin %q mode %q, want %q terminal", s.Origin, s.Mode, cosOrigin)
+	if s := parseCosStart(r.TermCreate); s.Origin != cosOrigin || s.Mode != "headless" {
+		return fail("mode terminal start answered origin %q mode %q, want %q headless", s.Origin, s.Mode, cosOrigin)
 	}
-	if o, found := listedOrigin(r.TermList.Body, "terminals", r.TermID); !found || o != cosOrigin {
-		return fail("GET /api/terminals row found=%v origin %q, want %q", found, o, cosOrigin)
+	if o, found := listedOrigin(r.TermSessions.Body, "sessions", r.TermID); !found || o != cosOrigin {
+		return fail("GET /api/sessions row for the mode terminal start found=%v origin %q, want %q", found, o, cosOrigin)
 	}
-	if !argvHasStart(r.PS, r.TermPrompt) {
-		return fail("no process with argv containing --model %s -- %s", agentModel, r.TermPrompt)
+	if _, found := listedOrigin(r.TermList.Body, "terminals", r.TermID); found {
+		return fail("GET /api/terminals lists a terminal row for the mode terminal start, want none")
 	}
-	return result{id, statePass, fmt.Sprintf("Chief of Staff started a headless Haiku agent and a terminal in %s: both rows marked %s, launch and message audit rows carry it, init model %s, terminal argv holds --model %s -- <prompt>",
-		r.Project, cosOrigin, agentModelID, agentModel)}
+	return result{id, statePass, fmt.Sprintf("Chief of Staff started a headless Haiku agent in %s: row marked %s, launch and message audit rows carry it, init model %s; a mode terminal start answered 201 mode headless with a session row and no terminal row",
+		r.Project, cosOrigin, agentModelID)}
 }
 
 type cosOutsideRun struct {

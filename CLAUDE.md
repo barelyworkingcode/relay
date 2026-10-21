@@ -74,7 +74,7 @@ service id.
 ./build.sh --release    # sign + notarize + /tmp/Relay.dmg (implies --test)
 
 go build ./... && go vet ./...        # while working
-(cd e2e && go test -race ./features/)  # the feature tests; builds the test bundle itself
+(cd e2e && go test -race -timeout 30m ./features/)  # the feature tests; builds the test bundle itself
 golangci-lint run ./...               # a ratchet, not a gate: add no new findings
 ```
 
@@ -84,7 +84,7 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 |---|---|
 | commit | `gofmt`, `go build`, `go vet` — seconds |
 | push | `go build ./...`, `go vet ./...` |
-| verification task, before `main` | `(cd e2e && go test -race ./features/)`, then `devboxverify` on the head |
+| verification task, before `main` | `(cd e2e && go test -race -timeout 30m ./features/)`, then `devboxverify` on the head |
 | by hand only (`gh workflow run ci --ref <ref>`) | `ci.yml`: the `build`, `e2e`, `fakerelay` and `contract` jobs on a clean Linux checkout. No PR or push runs it |
 
 ## House rules

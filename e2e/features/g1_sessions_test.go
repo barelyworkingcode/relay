@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -467,8 +468,10 @@ func TestSessionResume(t *testing.T) {
 		t.Fatalf("session list holds no %s before the restart", id)
 	}
 
-	// Every session is dormant after a relay restart. Wait for the session host
-	// to register again: the earlier registration line is already in the log.
+	// A session whose agent is not running is dormant after a relay restart:
+	// the agent ends while relay is down. Wait for the session host to register
+	// again: the earlier registration line is already in the log.
+	g1lEndAgentWhileDown(t, i, id)
 	since := time.Now()
 	i.Restart()
 	i.WaitEvent(harness.EventQuery{Key: "service.manifest.register", Since: since,
@@ -480,7 +483,7 @@ func TestSessionResume(t *testing.T) {
 		t.Fatalf("session list holds no %s after the restart", id)
 	}
 	if row.Live {
-		t.Fatalf("a session is live after a relay restart")
+		t.Fatalf("a session whose agent ended is live after a relay restart")
 	}
 
 	res := i.MustCLI("session", "resume", "--id", id, "--json")
@@ -568,8 +571,9 @@ func TestTerminalList(t *testing.T) {
 	projectID := g1sCreateProject(t, i, "acme-term-list", map[string]any{"allowed_templates": []string{"acme-sleep", "claude-code"}})
 	terminalID, _ := g1sStartTerminal(t, i, projectID)
 
-	// A Chief of Staff terminal carries the chief-of-staff origin in the list
-	// (docs/session-host.md, "Session origin"). Its start answers 201.
+	// A Chief of Staff start has one path: a terminal-mode request runs the
+	// headless start, so it makes a session with the chief-of-staff origin and
+	// no terminal row (docs/routes.md, POST /api/chief-of-staff/sessions).
 	cos := i.SocketHTTP(i.Credential("runner")).Do("POST", "/api/chief-of-staff/sessions",
 		map[string]any{"projectId": projectID, "prompt": "acme hello", "model": "sonnet", "mode": "terminal"},
 		harness.ReqOpts{Header: g1sScope, Trace: harness.NewTrace(t)})
@@ -586,6 +590,10 @@ func TestTerminalList(t *testing.T) {
 		} `json:"terminals"`
 	}
 	res.JSON(t, &out)
+	var started struct {
+		SessionID string `json:"sessionId"`
+	}
+	cos.JSON(t, &started)
 	found := false
 	cosRows := 0
 	for _, term := range out.Terminals {
@@ -597,16 +605,16 @@ func TestTerminalList(t *testing.T) {
 		}
 		if term.Origin == "chief-of-staff" {
 			cosRows++
-			if term.TemplateID != "claude-code" {
-				t.Fatalf("the Chief of Staff terminal row has template %q, want claude-code", term.TemplateID)
-			}
 		}
 	}
 	if !found {
 		t.Fatalf("terminal list holds %d terminals and not %s with template acme-sleep", len(out.Terminals), terminalID)
 	}
-	if cosRows != 1 {
-		t.Fatalf("terminal list holds %d rows with origin chief-of-staff, want 1", cosRows)
+	if cosRows != 0 {
+		t.Fatalf("terminal list holds %d rows with origin chief-of-staff, want none", cosRows)
+	}
+	if row := g1tSessions(t, i)[started.SessionID]; row.Origin != "chief-of-staff" {
+		t.Fatalf("the Chief of Staff start's session %s is listed with origin %q, want chief-of-staff", started.SessionID, row.Origin)
 	}
 	g1sEvent(t, i, harness.EventQuery{Key: "terminal.list", Trace: res.Trace,
 		Fields: map[string]any{"status": "ok", "count": len(out.Terminals)}})
@@ -696,8 +704,35 @@ func TestTerminalStop(t *testing.T) {
 	}
 }
 
+// g1sAssertNotOnDefaultTmux fails when the named session still runs on the
+// machine's default tmux socket. That socket is the one checked because a
+// host-tmux session started over the loopback sshd lands there, outside the
+// instance's own directories.
+func g1sAssertNotOnDefaultTmux(t *testing.T, name string) {
+	t.Helper()
+	if name == "" {
+		return
+	}
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatalf("tmux not found: %v", err)
+	}
+	cmd := exec.Command(tmux, "has-session", "-t", "="+name)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "TMUX=") && !strings.HasPrefix(kv, "TMUX_TMPDIR=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	if cmd.Run() == nil {
+		t.Errorf("tmux session %s outlived the test on the default socket", name)
+	}
+}
+
 func TestPersistentSessionList(t *testing.T) {
 	t.Parallel()
+	var found string
+	// Registered before StartSSHHost so, LIFO, it runs after sshd and the instance are gone.
+	t.Cleanup(func() { g1sAssertNotOnDefaultTmux(t, found) })
 	ssh := harness.StartSSHHost(t)
 	i := harness.Start(t, g1sOptions(harness.Options{}))
 	i.WaitSessionHost(g1sHostDeadline)
@@ -708,6 +743,7 @@ func TestPersistentSessionList(t *testing.T) {
 	i.MustCLI("terminal", "start", "--project", hostProject, "--template", "acme-tmux", "--json")
 
 	row, trace := g1sAwaitPersistent(t, i, hostProject)
+	found = row.Name
 	if row.TemplateID != "acme-tmux" || !strings.HasPrefix(row.Name, "relay-") {
 		t.Fatalf("persistent session %+v, want an acme-tmux session named relay-...", row)
 	}

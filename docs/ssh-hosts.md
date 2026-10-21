@@ -195,7 +195,7 @@ it describes anything running on this machine.
         "error": ""                 // non-empty iff ok == false
       },
       "tmux_path": "",              // optional operator override of probe.tmux_path
-      "detach_sessions": false,     // true: Claude sessions on this host outlive the ssh link
+      "detach_sessions": false,     // absent or true: Claude sessions on a Unix host outlive the ssh link; false: ssh -T
       "terminal_templates": [       // host-scoped; see Terminals on a host
         { "id": "shell", "name": "Shell" },
         { "id": "claude-code", "name": "Claude Code", "command": "/opt/homebrew/bin/claude" }
@@ -252,11 +252,11 @@ ssh
 
 Callers append `-T` or `-tt` and then `--` and the remote command. `%C` is
 OpenSSH's hash of the connection tuple, so the path stays short and unique.
-`controlDir` is `<relay data dir>/run/ssh` if that path is under 90 bytes
+`controlDir` is `<relay data dir>/run/ssh` if that path is under 45 bytes
 and contains no whitespace or quotes, else `/tmp/relay-ssh-<uid>` for the default config dir or
 `/tmp/relay-ssh-<uid>-<8 hex of sha256(config dir)>` for any other, so two
-instances never share a control socket; either is created `0700`. The 90-byte rule exists because `sun_path` is 104 bytes on
-macOS and the hash adds 40. The whitespace rule exists because ssh's `-o`
+instances never share a control socket; either is created `0700`. The 45-byte rule exists because `sun_path` is 104 bytes on
+macOS, the hash and its separator add 41, and ssh appends 17 more while it binds the ControlMaster socket. The whitespace rule exists because ssh's `-o`
 parser splits the value at a space and refuses the option, and the macOS
 data dir sits under `Application Support`, so on a Mac the `/tmp` form is
 the one actually in use.
@@ -436,7 +436,10 @@ and goes through `RemoteCommandForOS` like any other template. An empty
 `command` starts tmux's own default shell. `-A` attaches when `<name>`
 already exists, so the same argv both creates and reattaches.
 
-**Naming.** `config.PersistSessionName(projectID, templateID, n)`:
+**Naming.** The tmux sessions of detached agents are named `relay-agent-<relay
+session id>`. They are not persist names (`config.ParsePersistSessionName`
+needs a `-` after 8 characters), so the persistent-session list and kill never
+touch them. `config.PersistSessionName(projectID, templateID, n)`:
 
     relay-<first 8 of project id>-<template id>-<n>
 
@@ -562,9 +565,14 @@ template's command`.
 ]
 ```
 
-`Start()` execs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir,
-[codex_path, "app-server"], {RELAY_SESSION_ID})]` and speaks Codex's
-JSON-RPC over the pipes ([session-host.md](session-host.md#codex-sessions)).
+On a Unix host with `hosts[].detach_sessions` absent or `true`, `Start()` runs
+`[codex_path, "app-server"]` under the runner on the host
+([Detached sessions](#detached-sessions)), never in a tmux pane, and a dropped
+link or a relay restart leaves the agent running. With `detach_sessions: false`,
+and on a Windows host, `Start()` execs `ssh_argv + ["-T", "--",
+RemoteCommandForOS(os, dir, [codex_path, "app-server"], {RELAY_SESSION_ID})]`
+and speaks Codex's JSON-RPC over the pipes
+([session-host.md](session-host.md#codex-sessions)).
 The host session is not sandboxed and gets no model key or launch identity;
 Codex signs in with its own credentials on the host. Codex's approval prompts
 are off (`approvalPolicy: "never"`), so, as for Claude on a host, the host
@@ -724,37 +732,94 @@ host with no scheduler change. The cron stays on the console, which is what
 
 ## Detached sessions
 
-A Claude session on a Unix host with `detach_sessions: true` keeps its agent
-when relay's link to the host drops. An everyday user sets nothing: eve shows
-the session as it does any other. A power user sets `hosts[].detach_sessions`
-in `settings.json`. The field is read when a session starts, so it applies to
-sessions started or resumed after the change.
+A Claude or codex session on a Unix host keeps its agent when relay's link to
+the host drops, with no host setting. An everyday user sets nothing: eve shows the
+session as it does any other. A power user can turn it off per host:
+`hosts[].detach_sessions: false` in `settings.json` runs that host's sessions
+under `ssh -T`, which ends the agent with the link. An absent key or `true` is
+the default, the runner. A Windows host always uses `ssh -T`. The field is read
+when a session starts, so it applies to sessions started or resumed after the
+change.
+
+A runner that fails to start ends the start with an error that names the host
+and the key. Relay never falls back to `ssh -T` on its own, because a silent
+fallback hides the loss of survival.
 
 **On the host.** Relay starts the agent under
 `~/.relay/agents/<session id>/<generation>/` (mode `0700`; the generation is
 created with a plain `mkdir`, so one that exists is refused):
 
-| File | Holds |
+| Entry | Holds |
 |---|---|
-| `in.jsonl` | The agent's input. Relay appends one complete line per user message or `control_response`. |
-| `out.jsonl` | The agent's stdout, appended. |
+| `inbox/` | Pending messages. `<id>.json` starts a turn. `<id>.ctl` starts none (a `control_response`). Names starting with `.` are ignored. |
+| `sent/` | Each message after the runner wrote it to the agent's stdin: the receipt. |
+| `out.jsonl` | The agent's stdout, appended unchanged. |
+| `events.jsonl` | One line per state change: `turn_started`, `turn_ended`, `asking`, `exited`. |
+| `runner.json` | `{"v":1,"pid":N,"pgid":N,"started":"<process start time>","session":"<id>","generation":"g1","delivered":"<id>"}`, rewritten by temp file and rename. |
 | `stderr.log` | The agent's stderr. |
-| `run.json` | `{"pid":N,"pgid":N,"started":"<process start time>","generation":"g1"}`, written by the runner once it leads its own process group. |
 | `exit` | `{"code":N,"at":"RFC3339"}`, written by the runner when the agent ends. |
+| `agent.sh` | The agent's launch script. |
 
 Each spawn gets a new generation: `g1`, `g2`, and so on, one past the highest
 that exists. A start whose run directory cannot be created fails and names the
-directory. `relay session start` returns only after `run.json` exists.
+directory. `relay session start` returns only after `runner.json` exists.
 
-The runner is a POSIX `sh` script (`internal/sshhost/agentrun.go`) that
+The runner (`internal/sessions/runner/runner.sh`) is a POSIX `sh` script that
 `setsid(1)` or `set -m` puts in its own process group, with every file
-descriptor redirected and `HUP` ignored. It feeds the agent's stdin from
-`tail -n +1 -f in.jsonl` and kills that `tail` when the agent exits. It needs
-no perl or python. A host with neither `setsid` nor a `sh` that honours
-`set -m` without a terminal (dash, without util-linux) refuses the start with
-"agent runner did not start"; it never runs the agent in the ssh session's own
-group. Every command goes through `RemoteCommandForOS`, so decision 8's
-launcher carries it.
+descriptor redirected and `HUP` ignored. In pane mode stdin, stdout and stderr
+are the pane's pty, and tmux makes the process group. It needs `awk`, `tail`, `mkfifo`, `ps`
+and `base64` and no perl, python, tmux or `setsid(1)`: a host without tmux 3.0 runs
+headless sessions under the runner alone. A host with neither `setsid` nor a
+`sh` that honours `set -m` without a terminal (dash, without util-linux)
+refuses the start with "agent runner did not start"; it never runs the agent in
+the ssh session's own group. Every command goes through `RemoteCommandForOS`,
+so decision 8's launcher carries it.
+
+The runner knows no agent protocol. It writes inbox files to the agent's stdin
+in name order and matches two fixed strings, given at start, in each stdout
+line: for Claude, `"type":"result"` ends a turn and `"subtype":"can_use_tool"`
+is a permission prompt; for codex, `"method":"turn/completed"` ends a turn and
+there is no prompt string.
+
+**The tmux pane.** On a host with a tmux path (`hosts[].tmux_path`, else the
+probe's) the start script runs `<tmux> -V`. With tmux 3.0 or later the runner
+is the pane of the tmux session `relay-agent-<relay session id>`, made once by
+`new-session -d -s <name> -x 200 -y 50 <runner command> \; set-option -w -t =<name>: remain-on-exit on`.
+The pane command is the runner itself, so `runner.json`'s `pid` is
+`#{pane_pid}` and equals its `pgid`. `remain-on-exit` keeps the pane when the
+program ends, so a stop leaves a dead pane and the next start reuses it:
+`respawn-pane -t =<name>:` after `TERM` to the pane's group, `KILL` after 3 s
+and a wait until `#{pane_dead}` reads 1; a missing tmux session is made again.
+A host below tmux 3.0, or a tmux call that fails before the runner starts,
+runs the runner alone, as without tmux, and writes one stderr line that names
+the tmux version. `tmux ls` on the host lists one `relay-agent-<id>` session
+per such agent, and `tmux attach -t relay-agent-<id>` shows it. Deleting the
+session ends the tmux session after the run directory is removed
+(`KillAgentPane`). The host spec carries `tmux_path` only with `detach`; no
+other wire shape changes. The drop-in terminal on such a host swaps the pane
+to Claude's UI (`PaneDropInArgv`; [session-adoption.md](session-adoption.md#swapping-the-driver)).
+
+**A send.** A sender writes `inbox/.<id>.tmp` and renames it to
+`inbox/<id>.json` or `<id>.ctl`; the id is `<unix ns>-<6 hex>`. The runner
+writes the file's bytes to the agent, adds a newline when the file lacks one,
+then moves the file to `sent/`. The move is the receipt: `relay session send`
+returns success only after it. No receipt within 25 s while the runner lives
+leaves the file queued and reports `send_unknown`; a runner that is gone
+removes the file and reports that the agent is not running. The ssh command's
+own timeout stays 30 s.
+
+**Events.** The runner appends an event line before the line that causes it
+reaches `out.jsonl`: `turn_started` before the receipt, `exited` before the
+`exit` file. `out` is the byte offset in `out.jsonl` of the line that caused
+the event; for `turn_started`, the size of `out.jsonl` at the write; for
+`exited`, its final size. A runner ended by `TERM` writes `exited` with the
+agent's code; one ended by `KILL` writes none. The agent's own transcript is not
+the runner's concern.
+
+**An older run.** A generation with `run.json` and no `runner.json` reads
+`legacy`: its runner reads `in.jsonl` and has no inbox. Relay stops a live one,
+after the start-time check, at the first resume, and the session resumes on its
+conversation.
 
 **The cursor.** Events are read from `out.jsonl` by byte offset. A cursor is
 the opaque string `<generation>:<byte offset of a line start>`. Relay consumes
@@ -798,7 +863,7 @@ detached, or is dormant, exits `1` with `replay_unavailable`.
 
 **Stop.** Idle stop, drop-in and `relay session stop` end the runner's process
 group, `TERM` then `KILL`, and return when it is gone. The stop checks the
-start time in `run.json` against the live pid first: a pid that is alive with
+start time in `runner.json` against the live pid first: a pid that is alive with
 another start time is not ours and its group is left alone. Deleting a session
 also removes `~/.relay/agents/<session id>/`, which holds tool output. A host
 that cannot be reached at stop time leaves the agent running; relay logs it.
@@ -816,11 +881,11 @@ session reads live; no resume is needed). Attaching reads what the agent wrote
 while nobody was reading, from the saved cursor, before it follows the output.
 A session with no saved cursor, one from another generation, or one past the
 end of the output starts at the end of the output. A turn is read as open when the host holds more
-user messages than results. A permission prompt the agent is still waiting on
+turn messages (`sent/` and `inbox/`) than results. A permission prompt the agent is still waiting on
 is raised again, once the session is published: the session reads `asking` and
 a viewer that is joined, or that joins later, gets the `permission_request` (`join_session` sends each pending one after `session_joined`, in the order raised). A shutdown does not deny a
 waiting prompt, so it survives the restart; one whose `control_response` is
-already in `in.jsonl` is not raised. A `message`, `wait`, `events` or drop-in that meets a detached
+already in `sent/` or `inbox/` is not raised. A `message`, `wait`, `events` or drop-in that meets a detached
 session with no provider attaches it first. At startup relay asks the same
 question for each live ledger record and keeps live the ones whose agent runs
 (the record's `detached.host_id` names the host); it ages the rest to dormant,
@@ -838,7 +903,7 @@ way.
 latest generation. A running agent is attached and no second agent starts, so
 the session continues in the conversation it already has. An agent that
 exited, or a runner whose pid now names another process (the start time in
-`run.json` differs, so the run counts as exited and that process is never
+`runner.json` differs, so the run counts as exited and that process is never
 signalled), starts a new generation with `--resume`, and the conversation
 continues from Claude's own history. A host that cannot answer refuses the
 resume with `host_unavailable`.
@@ -851,8 +916,8 @@ history. A session whose host does not answer is refused (`host_unavailable`,
 answers but whose running agent cannot be attached is refused with
 `attach_failed`, and nothing is stopped either. The agent and the terminal never run on the conversation together.
 
-**Not covered.** Windows hosts: a detached start there is refused with an error
-that names the host. A host whose login manager kills a user's processes when
+**Not covered.** Windows hosts: they use `ssh -T`; a detached start there is
+refused with an error that names the host. A host whose login manager kills a user's processes when
 the last session ends (`KillUserProcesses=yes`) takes the agent with it. A
 runner killed from outside leaves its agent orphaned in the group; a stop
 leaves such an agent alone, because without a live leader relay cannot prove

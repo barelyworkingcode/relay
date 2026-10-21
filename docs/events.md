@@ -104,8 +104,8 @@ listener mints its own.
 **Error reasons** (the operation failed): `invalid`, `not_found`, `conflict`,
 `unavailable`, `upstream`, `timeout`, `cancelled`, `internal`.
 
-**Event-specific codes.** `session.launch` and `session.drop_in` use the
-refusal code of the launch or drop-in as `reason`: `denied` below status 500,
+**Event-specific codes.** `session.launch`, `session.drop_in` and
+`session.adopt` use the refusal code of the launch, drop-in or adopt as `reason`: `denied` below status 500,
 `error` at or above. A raw-model start's `models_unavailable` (a start with no entry) ends `denied`.
 
 ## 5. What has no event
@@ -413,11 +413,14 @@ prompt and an unavailable audit log use the shared `presence_*` and
 | `session.launch` | In `launchWithEvent` | `POST /api/sessions`, `POST /api/terminals`, `relay session start`, `relay terminal start` | `session_id`, `project_id`, `kind`, and when the start named an agent `entry` and `command` (the stored absolute path; absent when the entry has none). On a refusal `reason` is the launch refusal code, and `model` (the requested model, capped) is set for `model_not_offered` and `models_unavailable`, only on a start with no entry |
 | `session.resume` | In `resumeSession` | `POST /api/sessions/{id}/resume`, `relay session resume` | `session_id`, `project_id` |
 | `session.drop_in` | In `dropIn` | `POST /api/sessions/{id}/drop-in`, bridge `drop_in_attach` (`relay drop-in`) | `session_id`, `host`, `terminal_id` |
+| `session.adopt` | In `adoptOutside`, one per request | `POST /api/sessions/adopt` | `outside_id`, `claude_session_id`, `project_id`, `session_id` (set on success), `interrupted`. A refusal's `reason` is its code (`busy`, `changed`, `start_mismatch`, `audit_unavailable`, …); a body that fails to parse ends `denied` with reason `invalid_body` or `body_too_large` |
+| `session.hand_back` | When `handBackResume` returns after a drop-in terminal ends (background, relay) | none (background) | `session_id`, `terminal_id`, `host` (`console` for this Mac). The outcome is `ok`, or the resume refusal's code as `reason`; `audit_unavailable` when the swap could not be recorded and the session stays dormant |
 | `session.mode` | At the end of `adminSessionMode` | `relay session mode` | `session_id` (a `resume_required` answer from a local claude session ends the event `error` with reason `internal`) |
 | `session.outside.view` | After exact confirmation and viewer launch, or refusal | `POST /api/tmux/views` | none; transcript and session name are not logged |
 | `session.persistent.list` | Before the list is returned | `GET /api/projects/{id}/persistent-sessions`, `relay terminal persistent-list` | `project_id` |
 | `session.persistent.kill` | At the end of `PersistentSessionOps.Kill` | `DELETE /api/projects/{id}/persistent-sessions/{name}`, `relay terminal persistent-kill` | `project_id` |
 | `session.exited` | At the end of `appRouter.SessionExited` | bridge `session_exited` | `session_id` |
+| `session.rebind` | At the end of `appRouter.SessionRebind`, after the completion row is on disk | bridge `SessionRebind` | `session_id`, `project_id`. `denied` with `reason` `unauthorized` or one of `not_live`, `project_gone`, `no_root_record`, `runner_mismatch`, `root_gone`, `root_not_in_tree`, `already_bound`; `error` with `reason` `audit_unavailable` or `bind_failed` |
 | `session.delete` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message`, `relay session stop`, `relay session message` | `session_id` |
 | `session.send` | In relay-sessions `handleSessionSend` | `relay session send` | `session_id` (a link that stays down ends the event `error` with reason `send_failed`) |
 | `session.wait` | In relay-sessions `handleSessionWait` | `relay session wait` | `session_id` |
@@ -466,12 +469,14 @@ of them. A wait for one uses `relay logs --follow --event <key>`.
 
 ## 8. Background events and how to wait on them
 
-`server.ready`, `service.state`, `mcp.state`, `session.state`, `session.host_link`, `chat.turn` and
+`server.ready`, `service.state`, `mcp.state`, `session.state`, `session.host_link`, `session.hand_back`, `chat.turn` and
 `session.exited` are written when something happens, not when a caller asks.
 `server.ready` and `session.exited` carry no caller's trace.
 
 - **Events from the relay process** are written before the answer, so there is
-  nothing to wait for after the CLI exits or the response arrives.
+  nothing to wait for after the CLI exits or the response arrives. The one
+  exception is `session.hand_back`: relay writes it after the resume returns,
+  when the drop-in terminal has ended, so wait for it with the command below.
 - **Events from relay-sessions** (`session.delete`, `session.message`,
   `terminal.delete`, `terminal.log`, `model.list`, `session.ws.close`,
   `chat.turn`, `session.state`, `session.host_link`, `session.send`,

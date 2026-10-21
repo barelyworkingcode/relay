@@ -141,6 +141,25 @@ func (c *Client) SessionExited(req SessionExitedRequest) error {
 	return checkError(resp)
 }
 
+// SessionRebind sends relay-sessions' claim that a surviving local session's
+// root should hold a launch identity again. Tokenless: relay admits the caller
+// by its bound launch identity.
+func (c *Client) SessionRebind(req SessionRebindRequest) error {
+	args, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal session rebind: %w", err)
+	}
+	resp, err := c.send(BridgeRequest{
+		Type:      ReqSessionRebind,
+		Arguments: args,
+		Token:     c.token,
+	})
+	if err != nil {
+		return fmt.Errorf("session rebind: %w", err)
+	}
+	return checkError(resp)
+}
+
 // AdminOp sends one brokered admin operation by name. It carries no token
 // and no cwd: brokered mutation is gated at the operation core the tray
 // dispatches into, not by anything a caller can present at this 0600 socket

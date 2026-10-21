@@ -877,13 +877,11 @@ is ended and deleted whatever the outcome.
   scope header, which narrows the run credential for that request only. Run on
   Claude Haiku `claude-haiku-5-5`; any other model reads BLOCKED.
 
-**Transcript cleanup** (session-drop-in, session-drop-in-host, cos-start). The
+**Transcript cleanup** (session-drop-in, session-drop-in-host). The
 interactive Claudes these journeys start leave a conversation in Claude's
 session list. Each journey removes it when it ends, after its own terminal and
 session deletes and on every path, and the cleanup never changes a result. The
-id is the one the journey learned: the drop-in's `claudeSessionId`, or for the
-cos-start terminal the `sessionId` in `~/.claude/sessions/<pid>.json` of the
-`claude` process whose argv holds `--model haiku -- verify-<nonce>-term`. The
+id is the one the journey learned: the drop-in's `claudeSessionId`. The
 journey waits up to 15 s for that process to exit (on the host door each process-table read can take up to 10 s and the remove 15 s more), then deletes
 `~/.claude/projects/*/<id>.jsonl` (on the loopback host over ssh for
 session-drop-in-host) only if the id is a UUID and the file holds
@@ -1105,6 +1103,172 @@ project and host are deleted after.
   `context canceled`. BLOCKED when the slow list answers anything but 502,
   answers in under 10 s or on a new connection: then nothing was proven.
   `tmux_path` is set, or the list answers 409 without running ssh.
+
+**session-detached-host** (api, so a `--stack` run drives it). A Claude session
+on a loopback host keeps its agent when the host link drops, with no
+`detach_sessions` key set. The journey writes a host `loopback-<nonce>-detach`
+(target `localhost`), a project on it, one agent entry and a `proxy`
+credential into the instance's `settings.json` (the power door, imported by relay's file watch), and removes
+them after. The entry's command is a launcher script the journey writes under
+the state folder. A host session does not inherit relay's environment, so on a
+stack the launcher reads `claude_base_url`, `claude_model` and
+`claude_token_file` from `stack.json` (beside the stack's config dir), sets
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL` and, from the token file
+at exec, `ANTHROPIC_AUTH_TOKEN`, and execs `claude`; the token goes into no
+file, log or detail. The entry's model is the `haiku` alias, never a `claude-*`
+id. Off a stack, or on a stack with no `claude_base_url`, the journey is NOTRUN
+("needs a stack's local model endpoint"): it never runs claude against a hosted
+model. The journey starts the session with `relay session start --entry`, joins it
+on `/ws`, sends a long turn with `relay session send` (which returns once
+relay holds the runner's receipt), runs `relay host disconnect`, waits for `session.host_link`
+`link=lost` then `restored`, and reads the turn with `relay session wait`. PASS when `runner.json` keeps its pid, pgid,
+start time and generation; the turn in flight returns its marker; a later
+message is answered; one generation directory exists; and `relay session stop`
+ends the process group and removes the run directory. On every exit, the journey then
+stops each session it started (including ones the start retry loop abandoned),
+ends the agent group and every process whose command line names a started
+session's run directory, and removes those directories. A process still naming
+one, or a process list that cannot be read, turns any other state into FAIL and
+keeps the earlier state in the detail. A SIGINT or SIGTERM during the journey
+runs that cleanup before the process ends.
+- Waits: CLI exits, `/ws` frames and `session.host_link` events. `session
+  send` returns only once relay holds the receipt, so the drop never lands on
+  a send in flight (that ends `send_unknown`).
+  The settings import has no event, so the `/ws` dial and `relay session
+  start` are retried, bounded, until the import has run and `runner.json`
+  exists.
+- Lives in: `internal/sessions/runner/`, `internal/sshhost/agentrun.go`,
+  `cmd/relay/session_launch.go` (`buildHostSpec`).
+- Reached by: `relay session start|message|stop`, `relay host disconnect`,
+  `/ws` with a credential of class `proxy` the journey seeds into
+  `settings.json` and removes after (the execute credential is refused there),
+  the agents directory under the loopback
+  user's `~/.relay/agents`.
+- Traps: BLOCKED without `claude` on the login-shell PATH, with an unreadable
+  `stack.json`, or when the turn ended before the link dropped.
+
+**session-codex-host-runner** (api, so a `--stack` run drives it). A codex
+session on a loopback host keeps its agent when the host link drops, with no
+`detach_sessions` key set. The fixture is session-detached-host's (a loopback
+host, a project on it, one agent entry of kind `codex` in `settings.json`),
+without the `/ws` credential. The entry's command, and the host's `codex`
+template command, is a launcher script the journey writes under the state
+folder. It builds a scratch codex home holding only a `config.toml` that names
+one provider: the stack's `claude_base_url` plus `/v1`, `wire_api =
+"responses"`, and the bearer's environment variable as `env_key`. The scratch
+home holds no `auth.json`, so codex has no login and no credential for a hosted
+model. The launcher reads the bearer from `claude_token_file` at exec into that
+variable only; it goes into no file, log or detail. Off a stack, or on a stack
+with no `claude_base_url`, the journey is NOTRUN ("needs a stack's local model
+endpoint"). Steps: `relay session start --entry` and read `runner.json`; `relay
+host disconnect`; wait for `session.host_link` `link=lost` then `restored`;
+`relay session send` (exits 0, after relay holds the runner's receipt); `relay
+session stop`. PASS when `runner.json` keeps its pid, pgid, start time and
+generation; `events.jsonl` gains a `turn_started` line in that generation; one
+generation directory exists; and the stop ends the process group (`kill(2)`
+answers ESRCH) and removes the run directory. The journey judges no model
+output: the stack's endpoint may not serve the Responses API, and the PASS
+detail says whether the turn answered (a `turn_ended` event within 20 s). Its
+cleanup is session-detached-host's: every started session is stopped and every
+process naming a started session's run directory is ended.
+- Waits: CLI exits and `session.host_link` events. The settings import has no
+  event, so `relay session start` is retried, bounded, until `runner.json`
+  exists. The link events come from the relay-sessions log, which has no
+  wake-up, so they are polled, bounded.
+- Lives in: `internal/sessions/provider/codex.go`, `internal/sessions/runner/`,
+  `cmd/relay/session_launch.go` (`buildHostSpec`).
+- Reached by: `relay session start|send|stop`, `relay host disconnect`, the
+  agents directory under the loopback user's `~/.relay/agents`.
+- Traps: BLOCKED without `codex` on the login-shell PATH or with an unreadable
+  `stack.json`.
+
+**cos-start** (screen). The Chief of Staff starts a headless Haiku agent in
+the Acme project; the launch and message audit rows carry the origin. Its
+second leg sends the old `mode: terminal` request: relay answers 201 with
+`mode: headless`, the new session is listed by `GET /api/sessions` with the
+Chief of Staff origin, and `GET /api/terminals` lists no row for it. The leg
+deletes the session after. Every start is headless, so the leg starts no
+terminal and leaves no interactive Claude to clean up.
+- Lives in: `cmd/relay` (the Chief of Staff start path).
+- Traps: a provider rate limit ends the turn as BLOCKED (see above).
+
+**session-swap-back** (api, so a `--stack` run drives it). An owner who drops
+a headless session into a terminal and closes it gets the session back,
+headless on the same conversation, with no further message. The fixture is
+session-detached-host's (a loopback host, a project on it, one agent entry in
+`settings.json`, the launcher that points claude at the stack's local model
+endpoint, alias `haiku`). The host's `claude-code` template also runs that
+launcher, so the drop-in terminal reaches the same endpoint, and a credential
+of classes `proxy` and `execute` is seeded beside it (the drop-in route needs
+`execute`, the terminal delete `proxy`) and removed after. Off a stack, or on a
+stack with no `claude_base_url`, the journey is NOTRUN ("needs a stack's local
+model endpoint"): it never runs claude against a hosted model. Steps: `relay
+session start --entry`; one turn with a marker (`relay session message`);
+`POST /api/sessions/{id}/drop-in` answers 201; `relay session send` while held
+exits 1 with `dropped_in`; `DELETE /api/terminals/{id}`; a `session.hand_back`
+event for the session with `status` ok; a second turn on the same session
+returns its marker; `relay audit --event session_swap` holds, for each of
+`to_terminal` and `to_headless`, one `pending` intent row and one `ok`
+completion row with the same id. FAIL on any other step; the session is
+stopped after.
+  The pane leg: the journey finds tmux on the loopback host (`/opt/homebrew/bin`,
+  `/usr/local/bin`, `/usr/bin`, in that order; BLOCKED when none) and writes its
+  path as `hosts[].tmux_path` into the fixture host in `settings.json`, the power
+  door, because the hand-written host has no probe result. It then reads, over
+  `ssh localhost tmux display-message`, the pane of `relay-agent-<id>`: before
+  the drop-in its `#{pane_pid}` equals `runner.json`'s `pid` for `g1`; within 20 s
+  of the drop-in the host's process table holds `claude --resume <claudeSessionId>`
+  (read as session-drop-in-host reads it) and the pane is live; after the hand
+  back its `#{pane_pid}` equals `g2`'s `pid`. `#{session_created}` is the same
+  at all three reads. The PASS detail records `host tmux: <tmux -V> at <path>`.
+- Waits: CLI exits, HTTP answers and the `session.hand_back` event (`relay logs
+  --follow`); the UI's start in the pane has no event (tmux sends none), so the
+  process table is polled, bounded, 20 s. The settings import has no event, so the credential read
+  (`GET /api/terminals` until 200) and the first `relay session start` are
+  retried, bounded, as in session-detached-host.
+- Lives in: `cmd/relay` (`dropIn`, the swap table), `internal/sessions`.
+- Reached by: `relay session start|message|send|stop`, the frontend socket
+  with the seeded credential, `relay audit`.
+- Traps: BLOCKED without `claude` on the login-shell PATH, with an unreadable
+  `stack.json`, or when the seeded credential is not imported in time.
+
+**session-adopt** (api, so a `--stack` run drives it). An interactive Claude
+started in a terminal is adopted: `POST /api/sessions/adopt` ends its process and
+resumes the same conversation as a headless relay session. In a scratch folder
+`verify-<nonce>-adopt` under Acme Corp's folder, the journey starts `claude
+--model haiku --session-id <uuid> --permission-mode default "Reply with
+exactly: verify-<nonce>-adopt-1"` in a detached tmux session on a tmux
+socket of its own (killed in cleanup), with `CLAUDE_CODE_ENTRYPOINT` and
+`CLAUDECODE` removed from its environment as a person's terminal has neither
+(set, claude registers `entrypoint: "sdk-cli"` and the door refuses
+`not_command_line`), and answers the folder-trust prompt. Like `session-detached-host`, it reads `claude_base_url`,
+`claude_model` and `claude_token_file` from `stack.json`, points the outside
+claude at that local endpoint (`ANTHROPIC_BASE_URL`,
+`ANTHROPIC_DEFAULT_HAIKU_MODEL`, and `ANTHROPIC_AUTH_TOKEN` read from the token
+file by the shell at exec, so the token is in no argv, file or detail), and
+writes a `.claude/settings.local.json` into the folder. The model is the
+`haiku` alias, never a `claude-*` id. Off a stack, or on a stack with no
+`claude_base_url`, the journey is NOTRUN ("needs a stack's local model
+endpoint"): it never runs claude against a hosted model. When the transcript
+holds the assistant record for the marker and the registry entry reads `idle`,
+it posts `{claudeSessionId, interrupt:false, model:"haiku"}` with the run's
+execute credential. PASS when the door answers 201 for that conversation with
+`interrupted` and `recoverySent` false; the terminal's claude process is gone;
+`relay session message` gets a reply holding `verify-<nonce>-adopt-2` and that
+reply is in the same `<uuid>.jsonl`; and `relay audit --event session_adopt`
+holds the intent row and a completion with outcome `ok`.
+- Waits: no signal exists for the outside reply (model output): a bounded read
+  of the transcript for the marker record, 120 s. The registry status change to
+  `idle` is re-read, 60 s. The trust prompt is a terminal UI with no signal:
+  pane capture, 30 s. Every other step waits on an HTTP response or a CLI exit.
+- Lives in: `cmd/relay/session_adopt.go`, `internal/sessions/adopt/`.
+- Reached by: `POST /api/sessions/adopt` on the frontend socket (class
+  `execute`), `relay session message`, `relay audit`.
+- Traps: BLOCKED without `tmux` or `claude` on the login-shell PATH, when the
+  marker or the `idle` status does not arrive, or when the registry entry's
+  session id is not the one the journey set. Cleanup stops the relay session,
+  kills the tmux session, removes the transcript (only a file named for the
+  conversation id that holds the run's tag) and the folder.
 
 **session-host-restart** (screen). The admin op `service.restart
 {"id":"relaysessions"}` answers without error, and within 15 s

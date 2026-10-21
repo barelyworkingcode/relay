@@ -340,11 +340,6 @@ func TestDropInHandsOver(t *testing.T) {
 	sid := g1tStartSession(t, i, p.ID, "sonnet", `{"headless":true,"agent":true}`)
 	i.MustCLI("session", "message", "--id", sid, "--text", "hi", "--json")
 
-	// The /ws connection opens before the drop-in starts, so the hand-back's
-	// session_state frame cannot pass it by.
-	ws := i.WebSocket("/ws", i.Credential("mounter"))
-	defer ws.Close()
-	dropStart := time.Now()
 	tty := i.StartCLITTY(harness.CLIOpts{}, dir, "drop-in", sid)
 	i.WaitEvent(harness.EventQuery{Key: "session.drop_in",
 		Fields: map[string]any{"status": "ok", "session_id": sid}}, g1tEventDeadline)
@@ -353,9 +348,12 @@ func TestDropInHandsOver(t *testing.T) {
 	if _, ok := g1tSessions(t, i)[sid]; !ok {
 		t.Fatalf("session %s is not listed after the terminal closed and handed it back", sid)
 	}
-	g1tAwaitHandBack(t, ws, sid, dropStart)
+	// Relay resumes the handed-back session on its own once the terminal ends,
+	// and writes session.hand_back when the resume returns.
+	i.WaitEvent(harness.EventQuery{Key: "session.hand_back",
+		Fields: map[string]any{"status": "ok", "session_id": sid}}, g1tEventDeadline)
 
-	// A handed-back session is dormant, so a resume brings it back, and the
+	// The session is live again, so a resume has nothing to do, and the
 	// resumed session answers a message.
 	resumed := i.MustCLI("session", "resume", "--id", sid, "--json")
 	var back struct {
@@ -363,8 +361,8 @@ func TestDropInHandsOver(t *testing.T) {
 		Resumed   bool   `json:"resumed"`
 	}
 	resumed.JSON(t, &back)
-	if !back.Resumed || back.SessionID != sid {
-		t.Fatalf("resume after the hand-back printed %+v, want resumed true for %s", back, sid)
+	if back.Resumed || back.SessionID != sid {
+		t.Fatalf("resume after the hand-back printed %+v, want resumed false for %s", back, sid)
 	}
 	g1sSendText(t, i, sid, "again", "echo: again")
 
@@ -375,35 +373,6 @@ func TestDropInHandsOver(t *testing.T) {
 	}
 	g1tEvent(t, i, harness.EventQuery{Key: "session.drop_in", Trace: trace,
 		Fields: map[string]any{"status": "denied", "session_id": chat}})
-}
-
-// g1tAwaitHandBack reads /ws frames until sid's session_state reads idle with
-// a since stamp after the drop-in began. The idle that the session's last
-// message left behind is earlier than that stamp, so it does not count.
-func g1tAwaitHandBack(t *testing.T, ws *harness.WSConn, sid string, dropStart time.Time) {
-	t.Helper()
-	for n := 0; n < g1tFrameLimit; n++ {
-		var f struct {
-			Type      string `json:"type"`
-			SessionID string `json:"sessionId"`
-			State     string `json:"state"`
-			Since     string `json:"since"`
-		}
-		if err := json.Unmarshal(ws.Next(g1tFrameDeadline), &f); err != nil {
-			t.Fatalf("decoding a frame: %v", err)
-		}
-		if f.Type != "session_state" || f.SessionID != sid || f.State != "idle" {
-			continue
-		}
-		since, err := time.Parse(time.RFC3339Nano, f.Since)
-		if err != nil {
-			t.Fatalf("session_state since %q is not RFC 3339: %v", f.Since, err)
-		}
-		if since.After(dropStart) {
-			return
-		}
-	}
-	t.Fatalf("session %s did not read idle after the drop-in in %d frames", sid, g1tFrameLimit)
 }
 
 func TestLaunchAuditCapped(t *testing.T) {
@@ -771,16 +740,6 @@ func TestChiefOfStaffStart(t *testing.T) {
 		t.Fatalf("linking out of the project: %v", err)
 	}
 	remote := g1tCreate(t, i, map[string]any{"name": "acme-remote", "kind": "remote"})
-	configurer := i.SocketHTTP(i.Credential("configurer"))
-	var host struct {
-		ID string `json:"id"`
-	}
-	configurer.Do("POST", "/api/hosts", map[string]any{"name": "acme-box", "target": "acme@127.0.0.1", "port": 2222}).JSON(t, &host)
-	if host.ID == "" {
-		t.Fatalf("creating the host record printed no id")
-	}
-	hosted := g1tCreate(t, i, map[string]any{"name": "acme-hosted", "host_id": host.ID, "path": "/srv/acme-hosted", "allowed_templates": []string{"claude-code"}})
-
 	scoped := i.SocketHTTP(i.Credential("scoped"))
 	start := func(body any, trace string) harness.Response {
 		t.Helper()
@@ -828,7 +787,7 @@ func TestChiefOfStaffStart(t *testing.T) {
 	}{
 		{"a folder that links out", map[string]any{"projectId": p.ID, "folder": "escape", "prompt": "acme out", "model": "sonnet"}, 403, "denied", nil},
 		{"a remote project", map[string]any{"projectId": remote.ID, "prompt": "acme remote", "model": "sonnet"}, 403, "denied", nil},
-		{"a terminal on a host", map[string]any{"projectId": hosted.ID, "prompt": "acme host", "model": "sonnet", "mode": "terminal"}, 400, "error", map[string]any{"reason": "invalid"}},
+		{"a mode that is not headless or terminal", map[string]any{"projectId": p.ID, "prompt": "acme mode", "model": "sonnet", "mode": "acme-bogus"}, 400, "error", map[string]any{"reason": "invalid"}},
 		{"a folder with a dot-dot segment", map[string]any{"projectId": p.ID, "folder": "../escape", "prompt": "acme dots", "model": "sonnet"}, 400, "error", map[string]any{"reason": "invalid"}},
 	} {
 		trace := harness.NewTrace(t)

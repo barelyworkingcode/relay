@@ -116,9 +116,7 @@ func (s *svc) cosStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ev.Set("project_id", b.ProjectID)
-	if b.Mode == "" {
-		b.Mode = "headless"
-	}
+	modeGiven := b.Mode
 	prompt := strings.TrimSpace(b.Prompt)
 	switch {
 	case b.ProjectID == "":
@@ -136,11 +134,8 @@ func (s *svc) cosStart(w http.ResponseWriter, r *http.Request) {
 	case b.Model == "" && b.Entry == "":
 		refuse(http.StatusBadRequest, "invalid", "model_or_entry", "send model or entry")
 		return
-	case b.Mode != "headless" && b.Mode != "terminal":
+	case modeGiven != "" && modeGiven != "headless" && modeGiven != "terminal":
 		refuse(http.StatusBadRequest, "invalid", "mode_invalid", `mode must be "headless" or "terminal"`)
-		return
-	case b.Entry != "" && b.Mode == "terminal":
-		refuse(http.StatusBadRequest, "invalid", "mode_invalid", "an entry start is headless only")
 		return
 	case !folderSyntaxOK(b.Folder):
 		refuse(http.StatusBadRequest, "invalid", "folder_invalid", "folder must be a relative path with no .. segment")
@@ -157,10 +152,10 @@ func (s *svc) cosStart(w http.ResponseWriter, r *http.Request) {
 		server.WriteJSON(w, ref.status, cosRefusalBody(ref, nil))
 		return
 	}
-	x := s.launch(t, launchBody{Folder: b.Folder, Name: promptName(prompt), Model: b.Model}, kind, cosOrigin, b.Mode == "headless")
+	x := s.launch(t, launchBody{Folder: b.Folder, Name: promptName(prompt), Model: b.Model}, kind, cosOrigin, true)
 	ev.Set("session_id", x.id).Set("kind", kind).End("ok", "", nil)
 	s.cosDeliver(r, x, prompt)
-	server.WriteJSON(w, http.StatusCreated, s.cosCreated(x, b.Mode, kind, nil))
+	server.WriteJSON(w, http.StatusCreated, s.cosCreated(x, "headless", kind, nil))
 }
 
 // promptName is the prompt's first line with whitespace collapsed, cut to 60

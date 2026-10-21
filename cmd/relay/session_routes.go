@@ -182,10 +182,15 @@ type sessionRouteDeps struct {
 	auditor     *audit.AuditRecorder
 	accounting  *sessionAccounting
 	resumeGuard *resumeGuard
+	swaps       *swapTable
 
 	// systemModel reports whether a model id is reserved for system use; nil
 	// means no check.
 	systemModel func(ctx context.Context, id string) (bool, error)
+
+	// modelMapKeys lists the modelMap keys a transcript model id stands for;
+	// nil means a broker-served model never resolves.
+	modelMapKeys func(ctx context.Context, id string) ([]string, error)
 
 	// modelOffer lists the models a kind offers, for an agent entry start. nil
 	// refuses every entry start that names a model.
@@ -566,10 +571,13 @@ type resumeResponseBody struct {
 type resumeOutcome struct {
 	Status int
 	Body   any
+	// Code is the stable refusal code a hand back reports; it is not on the
+	// wire, where the body's message stays as it is.
+	Code string
 }
 
-func resumeError(status int, msg string) resumeOutcome {
-	return resumeOutcome{Status: status, Body: map[string]string{"error": msg}}
+func resumeError(status int, msg, code string) resumeOutcome {
+	return resumeOutcome{Status: status, Body: map[string]string{"error": msg}, Code: code}
 }
 
 // handleResumeSession implements POST /api/sessions/{id}/resume (C5, C11).
@@ -607,7 +615,7 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 	// full stop -- so "not found" is simply "not found".
 	if !ok {
 		d.auditResume(actor, id, "", "", audit.AuditOutcomeNotFound, "unknown session")
-		return resumeError(http.StatusNotFound, "session not found")
+		return resumeError(http.StatusNotFound, "session not found", "session_not_found")
 	}
 	ev.Set("project_id", rec.ProjectID)
 	if rec.State == ledger.StateLive {
@@ -621,14 +629,14 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 	// attempt's launch identity out from under it (or vice versa).
 	if !d.resumeGuard.tryAcquire(id) {
 		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeError, "resume already in progress")
-		return resumeError(http.StatusConflict, "a resume for this session is already in progress")
+		return resumeError(http.StatusConflict, "a resume for this session is already in progress", "resume_in_progress")
 	}
 	defer d.resumeGuard.release(id)
 
 	sessionReq, err := decodeStoredSessionRequest(rec)
 	if err != nil {
 		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeError, err.Error())
-		return resumeError(http.StatusInternalServerError, "corrupt session record")
+		return resumeError(http.StatusInternalServerError, "corrupt session record", "corrupt_record")
 	}
 
 	req := LaunchRequest{
@@ -642,20 +650,20 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 	if refusal != nil {
 		d.auditor.Record(resumeAuditEvent(refusal.Audit))
 		endEvent(ev, refusal)
-		return resumeError(refusal.Status, refusal.Message)
+		return resumeError(refusal.Status, refusal.Message, refusal.Code)
 	}
 
 	resp, err := d.launchOnHost(ctx, result)
 	if err != nil {
 		slog.Warn("session resume: relay-sessions round trip failed", "session", id, "error", err)
 		d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error())))
-		return resumeError(http.StatusBadGateway, "launch failed")
+		return resumeError(http.StatusBadGateway, "launch failed", "launch_failed")
 	}
 	_ = resp // C5's resume success body is the small envelope below, not the host's create body.
 
 	if !d.commitLaunch(ctx, result) {
 		d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "project no longer exists")))
-		return resumeError(http.StatusBadGateway, "launch failed")
+		return resumeError(http.StatusBadGateway, "launch failed", "launch_failed")
 	}
 	d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, "")))
 	return resumeOutcome{Status: http.StatusOK, Body: resumeResponseBody{SessionID: result.SessionID, Resumed: true}}
@@ -769,6 +777,18 @@ func (d sessionRouteDeps) launchOnHost(ctx context.Context, result *LaunchResult
 		d.modelKeys.BindLaunch(result.Spec.ModelKey, launch)
 	}
 
+	// Deliberate: the root is read from the launch, not the request, so the
+	// ledger names the process the kernel attested at Hello. A rebind after a
+	// relay restart binds only this process.
+	if launch != nil && result.Ledger != nil {
+		if id, ok := launch.BoundIdentity(); ok {
+			result.Ledger.Root = &ledger.RootRef{
+				PID: id.Process.PID, PIDVersion: id.Process.PIDVersion,
+				StartSec: id.RootStartSec, StartUsec: id.RootStartUsec,
+			}
+		}
+	}
+
 	acc := sessionAccount{projectID: result.AuditFields.ProjectID, modelKeyLabel: result.ModelKeyLabel, launch: launch,
 		sandboxProfile: sandboxProfilePath(result)}
 	d.accounting.track(result.SessionID, acc)
@@ -822,13 +842,27 @@ func (d sessionRouteDeps) abortLaunch(ctx context.Context, sessionID string) {
 	}
 }
 
-// createdBody is the 201 body of a create: the host's own body, or an empty
-// object when the host sent none.
+// createdBody is the 201 body of a create: the host's own body without its
+// top-level providerState, or an empty object when the host sent none. The
+// runner's pid and start time stay inside relay; every other key is forwarded
+// as the host sent it. A body that is not a JSON object passes unchanged.
 func createdBody(body json.RawMessage) json.RawMessage {
 	if len(body) == 0 {
 		return json.RawMessage("{}")
 	}
-	return body
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil || fields == nil {
+		return body
+	}
+	if _, ok := fields["providerState"]; !ok {
+		return body
+	}
+	delete(fields, "providerState")
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func writeCreatedBody(w http.ResponseWriter, body json.RawMessage) {

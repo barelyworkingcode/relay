@@ -614,7 +614,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		if hostErr != nil {
 			return nil, invalidRequest("host_unavailable", hostErr.Error(), baseFields)
 		}
-		if req.Kind == KindClaude && host.Detach && !sshhost.IsWindowsOS(host.OS) {
+		if runnerKind(req.Kind) && host.Detach && !sshhost.IsWindowsOS(host.OS) {
 			detachedHostID = host.ID
 		}
 		if req.Resume && detachedHostID != "" {
@@ -1241,7 +1241,10 @@ func buildHostSpec(settings *config.Settings, hostID string) (*sessiontypes.Host
 		spec.Shell = h.Probe.Shell
 		spec.OS = h.Probe.OS
 	}
-	spec.Detach = h.DetachSessions
+	spec.Detach = (h.DetachSessions == nil || *h.DetachSessions) && !sshhost.IsWindowsOS(spec.OS)
+	if spec.Detach {
+		spec.TmuxPath = h.EffectiveTmuxPath()
+	}
 	// Codex's path comes from the host's own codex template, not the probe; a
 	// template that fails host validation is ignored, so the launch is refused
 	// the same as when none exists.

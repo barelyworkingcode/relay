@@ -643,16 +643,18 @@ func startServerCore(opts serverOptions) (*App, error) {
 	// resume, an advisory exit report and a project delete can never observe
 	// a different ledger, launch table or accounting map than each other.
 	sessionDeps := sessionRouteDeps{
-		store:       store,
-		launches:    launches,
-		sessions:    sessLedger,
-		modelKeys:   modelKeys,
-		enhanced:    enhancedRegistry,
-		auditor:     rec,
-		accounting:  sessionAccounts,
-		resumeGuard: newResumeGuard(),
-		systemModel: app.modelEndpoint.IsSystemModel,
-		modelOffer:  newModelOffer(app.ipcCtx.ModelCatalog),
+		store:        store,
+		launches:     launches,
+		sessions:     sessLedger,
+		modelKeys:    modelKeys,
+		enhanced:     enhancedRegistry,
+		auditor:      rec,
+		accounting:   sessionAccounts,
+		resumeGuard:  newResumeGuard(),
+		swaps:        newSwapTable(),
+		systemModel:  app.modelEndpoint.IsSystemModel,
+		modelMapKeys: app.modelEndpoint.ModelMapKeys,
+		modelOffer:   newModelOffer(app.ipcCtx.ModelCatalog),
 	}
 
 	router.sessionDeps = sessionDeps
