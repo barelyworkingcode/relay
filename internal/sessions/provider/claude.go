@@ -135,7 +135,13 @@ type ClaudeProvider struct {
 
 	// det is the detached agent a host session with detach_sessions runs; nil
 	// for every other spawn. cmd and stdin are nil while it is set.
-	det *detachedRun
+	det *runFollower
+	// holding is set while an attach holds new control requests in held instead
+	// of raising them: nothing can show a prompt until the manager has
+	// published the session. Guarded by holdMu.
+	holdMu  sync.Mutex
+	holding bool
+	held    []json.RawMessage
 	// restoredRun is the detached run and cursor the saved state named; Start
 	// attaches from it when that run is still alive.
 	restoredRun *detachedCursor
@@ -685,7 +691,7 @@ func (p *ClaudeProvider) processLine(raw json.RawMessage, spawn *claudeSpawnStat
 	case events.EvtResult:
 		p.translateResult(raw)
 	case "control_request":
-		if det := p.det; det != nil && (!det.claimRequest(raw) || det.deferRaise(raw)) {
+		if det := p.det; det != nil && (!claimRequest(det, raw) || p.deferRaise(raw)) {
 			return
 		}
 		p.handleControlRequest(raw)
@@ -1477,7 +1483,7 @@ func (p *ClaudeProvider) GetState() json.RawMessage {
 	p.mu.Unlock()
 	state := map[string]interface{}{"claudeSessionId": sid}
 	if det := p.det; det != nil {
-		state["detached"] = detachedCursor{Generation: det.gen, Offset: det.offset.Load()}
+		state["detached"] = det.Cursor()
 	}
 	p.mu.Lock()
 	if p.runnerRoot != nil {

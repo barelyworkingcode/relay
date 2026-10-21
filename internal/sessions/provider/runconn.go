@@ -20,14 +20,13 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
-// runConn is one run directory, over ssh or on disk. The host and local Claude
-// paths use it now; codex and pi use it when they move under the runner.
+// runConn is one run directory, over ssh or on disk.
 type runConn interface {
 	Status(ctx context.Context) (runner.Status, error)
 	Send(ctx context.Context, kind runner.MessageKind, line []byte) error
 	SendEvent(ctx context.Context, typ string) error // a host answers nil: its asks come from stdout
 	Read(ctx context.Context, offset int64, follow bool) (io.ReadCloser, error)
-	Probe(ctx context.Context) (attachProbe, error)
+	Probe(ctx context.Context, spec probeSpec) (attachProbe, error)
 	Stop(ctx context.Context) error
 	Remove(ctx context.Context) error
 	StderrTail(ctx context.Context) (string, error)
@@ -129,8 +128,8 @@ func (r *cmdReader) Close() error {
 	return nil
 }
 
-func (c sshConn) Probe(ctx context.Context) (attachProbe, error) {
-	return probeAttach(ctx, c.host, c.dir)
+func (c sshConn) Probe(ctx context.Context, spec probeSpec) (attachProbe, error) {
+	return probeAttach(ctx, c.host, c.dir, spec)
 }
 
 func (c sshConn) Stop(ctx context.Context) error {
@@ -229,7 +228,7 @@ func (r *followReader) gone() bool {
 func (r *followReader) Close() error { return r.f.Close() }
 
 // Probe reads what attachProbeScript prints for a host, from the files.
-func (c localConn) Probe(context.Context) (attachProbe, error) {
+func (c localConn) Probe(_ context.Context, spec probeSpec) (attachProbe, error) {
 	dir := c.run.Dir()
 	f, err := os.Open(filepath.Join(dir, runner.OutFile))
 	if err != nil {
@@ -237,6 +236,7 @@ func (c localConn) Probe(context.Context) (attachProbe, error) {
 	}
 	defer f.Close()
 	var pr attachProbe
+	turnEnded, request := []byte(spec.TurnEnded), []byte(spec.Request)
 	br := bufio.NewReaderSize(f, 64*1024)
 	for {
 		line, err := br.ReadBytes('\n')
@@ -244,10 +244,10 @@ func (c localConn) Probe(context.Context) (attachProbe, error) {
 			break
 		}
 		pr.size += int64(len(line))
-		if bytes.Contains(line, []byte(`"type":"result"`)) {
+		if len(turnEnded) > 0 && bytes.Contains(line, turnEnded) {
 			pr.results++
 		}
-		if body := bytes.TrimRight(line, "\r\n"); bytes.Contains(body, []byte(`"control_request"`)) && lineType(string(body)) == "control_request" {
+		if body := bytes.TrimRight(line, "\r\n"); len(request) > 0 && bytes.Contains(body, request) {
 			pr.requests = append(pr.requests, json.RawMessage(body))
 		}
 	}
@@ -261,10 +261,8 @@ func (c localConn) Probe(context.Context) (attachProbe, error) {
 				continue
 			}
 			for _, l := range strings.Split(string(data), "\n") {
-				if lineType(l) == "control_response" {
-					if id := controlRequestID(json.RawMessage(l)); id != "" {
-						pr.answered = append(pr.answered, id)
-					}
+				if l != "" {
+					pr.controls = append(pr.controls, json.RawMessage(l))
 				}
 			}
 		}
