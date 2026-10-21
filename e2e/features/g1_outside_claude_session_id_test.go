@@ -14,7 +14,7 @@ import (
 // detail and the /ws/outside-sessions snapshot. A probe round is the signal
 // that planted transcripts were scanned: the WS subscription is opened before
 // the clock moves, and the frame read is the first one in which every
-// machine's lastProbeAt moved.
+// machine's lastProbeAt moved and no machine is unreachable.
 
 const osClaudeIDKey = "claudeSessionId"
 
@@ -22,36 +22,14 @@ const osClaudeIDKey = "claudeSessionId"
 // maps, so a test can see which keys each row carries.
 func (r *osRig) probeFrame() (osSnap, []map[string]any) {
 	r.t.Helper()
-	sub := osSubscribe(r.t, r.i)
-	before := map[string]string{}
-	for _, m := range sub.until(osBound, func(osSnap) bool { return true }).Machines {
-		before[m.Machine] = m.LastProbeAt
+	snap, frame := r.probeRaw()
+	var raw struct {
+		Sessions []map[string]any `json:"sessions"`
 	}
-	r.i.ClockAdvance(osProbeStep)
-	end := time.Now().Add(osBound)
-	for {
-		frame := sub.ws.Next(time.Until(end))
-		var snap osSnap
-		if err := json.Unmarshal(frame, &snap); err != nil {
-			r.t.Fatalf("decoding a snapshot: %v", err)
-		}
-		moved := true
-		for _, m := range snap.Machines {
-			if m.LastProbeAt == before[m.Machine] {
-				moved = false
-			}
-		}
-		if !moved {
-			continue
-		}
-		var raw struct {
-			Sessions []map[string]any `json:"sessions"`
-		}
-		if err := json.Unmarshal(frame, &raw); err != nil {
-			r.t.Fatalf("decoding snapshot rows: %v", err)
-		}
-		return snap, raw.Sessions
+	if err := json.Unmarshal(frame, &raw); err != nil {
+		r.t.Fatalf("decoding snapshot rows: %v", err)
 	}
+	return snap, raw.Sessions
 }
 
 func osRowByID(rows []map[string]any, id string) map[string]any {
