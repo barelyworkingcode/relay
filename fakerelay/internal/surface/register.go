@@ -16,8 +16,10 @@ func Register(r server.Registrar, d server.Deps) error {
 		return err
 	}
 	d.Hosts = hosts
-	if err := api.Register(r, d); err != nil {
+	outside, err := api.Register(r, d)
+	if err != nil {
 		return err
 	}
+	d.Outside = outside
 	return sessions.Register(r, d)
 }

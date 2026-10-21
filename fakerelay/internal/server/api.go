@@ -107,6 +107,17 @@ type Deps struct {
 	// Hosts is set by the file plane's registration, before the other
 	// domains register.
 	Hosts HostStatusSource
+	// Outside is set by the api domain's registration, before sessions
+	// registers.
+	Outside OutsideRows
+}
+
+// OutsideRows moves outside fixture rows. Each call bumps the revision, pushes the
+// replacement snapshot to every /ws/outside-sessions reader and writes
+// outside_sessions.changed before it returns. False: no row has that id.
+type OutsideRows interface {
+	RemoveOutside(ctx context.Context, id string) bool
+	EndOutside(ctx context.Context, id string, endedAt time.Time) bool
 }
 
 // HostStatus is a host agent's state.

@@ -53,6 +53,7 @@ func Register(r server.Registrar, d server.Deps) error {
 	r.Route(server.ClassProxy, "GET /api/models", s.listModels)
 	r.Route(server.ClassProxy, "GET /api/sessions", s.listSessions)
 	r.Route(server.ClassExecute, "POST /api/sessions", s.createSession)
+	r.Route(server.ClassExecute, "POST /api/sessions/adopt", s.adopt)
 	r.Route(server.ClassProxy, "DELETE /api/sessions/{id}", s.deleteSession)
 	r.Route(server.ClassExecute, "POST /api/sessions/{id}/resume", s.resumeSession)
 	r.Route(server.ClassProxy, "GET /api/terminals", s.listTerminals)
