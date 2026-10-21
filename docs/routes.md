@@ -285,7 +285,8 @@ stopping are forwarded to the session host (section 3).
   The body is at most 1 MiB.
 - **Response `201`:** the session object: `sessionId`, `projectId`, `name`,
   `directory`, `model`, `providerType`, `createdAt`, `messages`, `stats`, and
-  `headless`, `agent`, `origin`, `host` when set.
+  `headless`, `agent`, `origin`, `host` when set. It carries no provider state:
+  the runner's pid and start time stay inside relay.
 - **Errors:**
   - `400` malformed JSON or an invalid field;
   - `403` the project is not available for a launch, the model or directory is
