@@ -177,7 +177,7 @@ func (a *claudeAdopter) Check(ctx context.Context, c Candidate) (Readiness, erro
 	default:
 		// Deliberate: a failed boundary scan or process-table read is a veto,
 		// never an idle verdict.
-		if a.hasWorkingChild(ctx, c, path, data, whole) {
+		if a.hasWorkingChild(ctx, c, path, data, whole, tail.LastRecord) {
 			veto = VetoChildProcess
 		}
 	}
@@ -191,24 +191,25 @@ func (a *claudeAdopter) Check(ctx context.Context, c Candidate) (Readiness, erro
 // itself caffeinate is still a veto. A path that cannot be read is a veto too.
 const turnHelperExe = "/usr/bin/caffeinate"
 
-// hasWorkingChild reports a child of the Claude process that started at or
-// after the first assistant record of this run, other than the turn helper. An
-// idle Claude keeps its MCP servers from its start, so only children that began
-// with work count; a child a tool starts follows the assistant record that
-// holds its tool call. With no assistant record in the transcript there is no
-// work to find. It answers true when it cannot tell. The boundary comes from
-// the tail when the tail is the whole file; otherwise the first record of the
-// run may lie before the tail, so the file is scanned from its start.
-func (a *claudeAdopter) hasWorkingChild(ctx context.Context, c Candidate, path string, tail []byte, whole bool) bool {
+// hasWorkingChild reports a child of the Claude process that started inside the
+// last turn's tool window, other than the turn helper: at or after the first
+// assistant record that follows the last prompt of this run, and at or before
+// the newest transcript record. An idle Claude keeps its MCP servers from its
+// start or spawns them late, so only a child that began with the last turn's
+// work counts; a child a tool starts follows the assistant record that holds
+// its tool call. A child born after the newest record is no turn's work while
+// the registry says idle. With no assistant record there is no work to find. It
+// answers true when it cannot tell. The boundary comes from the tail when the
+// tail is the whole file or holds a prompt; otherwise the prompt may lie before
+// the tail, so the file is scanned from its start.
+func (a *claudeAdopter) hasWorkingChild(ctx context.Context, c Candidate, path string, tail []byte, whole bool, newest time.Time) bool {
 	// The registry records the start to the second, and a record stamped in the
 	// start's own second counts as after it.
 	started := c.ProcStart.Truncate(time.Second)
-	var since time.Time
-	if whole {
-		since = firstAssistantAfter(tail, started)
-	} else {
+	since, sawPrompt := lastTurnBoundary(tail, started)
+	if !whole && !sawPrompt {
 		var err error
-		if since, err = scanFirstAssistantAfter(path, started); err != nil {
+		if since, err = scanLastTurnBoundary(path, started); err != nil {
 			return true
 		}
 	}
@@ -219,42 +220,79 @@ func (a *claudeAdopter) hasWorkingChild(ctx context.Context, c Candidate, path s
 	if err != nil {
 		return true
 	}
+	late := false
 	for _, kid := range kids {
 		if path, err := a.execPath(kid); err == nil && path == turnHelperExe {
 			continue
 		}
-		if info, ok := a.proc.Info(kid); ok && !startTime(info).Before(since) {
+		info, ok := a.proc.Info(kid)
+		if !ok {
+			continue
+		}
+		born := startTime(info)
+		switch {
+		case born.Before(since):
+		case born.After(newest):
+			late = true
+		default:
 			return true
 		}
 	}
-	return false
+	if !late {
+		return false
+	}
+	// Deliberate: a turn that began between the transcript read and the child
+	// listing would make that child its work, so the tail is read again. Any
+	// difference, or a failed read, is a veto.
+	again, _, err := readTail(path)
+	return err != nil || !bytes.Equal(again, tail)
 }
 
-// firstAssistantAfter is the timestamp of the first assistant record in data
-// written at or after start; the zero time when there is none.
-func firstAssistantAfter(data []byte, start time.Time) time.Time {
-	for _, line := range bytes.Split(data, []byte{'\n'}) {
-		if at, ok := assistantRecordAt(line, start); ok {
-			return at
+// lastTurnBoundary returns the timestamp of the first main-chain assistant
+// record after the last prompt written at or after start; zero when none.
+// Assistant records before any prompt count too, so a transcript without a
+// prompt keeps its first assistant record as the boundary. sawPrompt reports
+// that data holds a prompt record of any age.
+func lastTurnBoundary(data []byte, start time.Time) (since time.Time, sawPrompt bool) {
+	b := boundary{start: start}
+	parseTailRecords(data, b.visit)
+	return b.since, b.sawPrompt
+}
+
+type boundary struct {
+	start     time.Time
+	since     time.Time
+	sawPrompt bool
+}
+
+func (b *boundary) visit(rec tailRecord, blocks []tailBlock, text string) {
+	at, err := time.Parse(time.RFC3339Nano, rec.Timestamp)
+	inRun := err == nil && !at.Before(b.start)
+	switch {
+	case isPrompt(rec, blocks, text):
+		b.sawPrompt = true
+		if inRun {
+			b.since = time.Time{}
 		}
+	case rec.Type == "assistant" && inRun && b.since.IsZero():
+		b.since = at
 	}
-	return time.Time{}
 }
 
 // scanLineMax bounds one transcript line in the boundary scan; a longer line
 // fails the scan.
 const scanLineMax = 8 << 20
 
-// scanFirstAssistantAfter streams a transcript from its start and returns the
-// timestamp of the first assistant record written at or after start; the zero time
-// when there is none. Memory is bounded by one line.
-func scanFirstAssistantAfter(path string, start time.Time) (time.Time, error) {
+// scanLastTurnBoundary streams a transcript from its start and returns what
+// lastTurnBoundary would for the whole file. Memory is bounded by one line.
+func scanLastTurnBoundary(path string, start time.Time) (time.Time, error) {
 	f, _, err := openRegular(path)
 	if err != nil {
 		return time.Time{}, err
 	}
 	defer f.Close()
 	r := bufio.NewReaderSize(f, 64<<10)
+	bd := boundary{start: start}
 	var line []byte
 	for {
 		chunk, err := r.ReadSlice('\n')
@@ -266,33 +304,16 @@ func scanFirstAssistantAfter(path string, start time.Time) (time.Time, error) {
 			continue
 		}
 		if len(line) > 0 {
-			if at, ok := assistantRecordAt(line, start); ok {
-				return at, nil
-			}
+			parseTailRecords(line, bd.visit)
 			line = line[:0]
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return time.Time{}, nil
+				return bd.since, nil
 			}
 			return time.Time{}, err
 		}
 	}
-}
-
-// assistantRecordAt reports a main-chain assistant record written at or after
-// start. It is the one decoder of the boundary, for the tail and the scan.
-func assistantRecordAt(line []byte, start time.Time) (time.Time, bool) {
-	var rec struct {
-		Type      string `json:"type"`
-		Sidechain bool   `json:"isSidechain"`
-		Timestamp string `json:"timestamp"`
-	}
-	if json.Unmarshal(line, &rec) != nil || rec.Sidechain || rec.Type != "assistant" {
-		return time.Time{}, false
-	}
-	at, err := time.Parse(time.RFC3339Nano, rec.Timestamp)
-	return at, err == nil && !at.Before(start)
 }
 
 func (a *claudeAdopter) Interrupt(ctx context.Context, c Candidate) ([]Signal, error) {
