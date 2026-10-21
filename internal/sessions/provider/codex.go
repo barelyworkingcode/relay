@@ -2,6 +2,8 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,11 +17,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
+	"github.com/barelyworkingcode/relay/internal/sessions/runner"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
@@ -41,7 +45,29 @@ type CodexConfig struct {
 	Launcher *sessionstypes.Launcher
 	// DefaultModel starts a thread with no model, so codex uses its own.
 	DefaultModel bool
+
+	// Resume marks a start that continues an existing conversation. A runner
+	// session looks for a running agent first and attaches to it, so a resume
+	// never starts a second agent.
+	Resume bool
+	// AttachOnly makes Start attach to a running agent and fail with
+	// ErrNoDetachedRun rather than start one.
+	AttachOnly bool
+
+	// RunnerBase is the directory local sessions' run directories live under.
+	// Every local codex session runs under the runner there; Start refuses a
+	// local session when it is empty.
+	RunnerBase string
 }
+
+// codexRunnerPatterns are the strings the runner matches in codex's stdout: a
+// turn/completed notification ends a turn. Codex has no question path, so
+// Asking stays empty and never matches.
+var codexRunnerPatterns = runner.Patterns{TurnEnded: `"method":"turn/completed"`}
+
+// codexProbe is what codex's attach probe counts: turn endings only, since
+// relay answers every server request at once and holds none for a person.
+var codexProbe = probeSpec{TurnEnded: codexRunnerPatterns.TurnEnded}
 
 // codexNotifications is codex-cli 0.160.0's ServerNotification method list.
 // A method outside it is unrecognised and warned about.
@@ -117,23 +143,37 @@ type CodexProvider struct {
 	cfg     CodexConfig
 	emitter *events.EventEmitter
 
+	// cmd and stdin are the pipes of a host session that runs under ssh -T;
+	// every other session talks to its agent through det.
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 	mu    sync.Mutex // guards stdin writes
 	alive atomic.Bool
 
-	// targetPID is the shim's child when the launch went through the shim.
-	targetPID int
+	// det follows the agent a runner session keeps under the runner; nil for
+	// a piped session.
+	det atomic.Pointer[runFollower]
+	// released is set by Release, which leaves the agent running.
+	released atomic.Bool
 
 	directory string
 	slug      string
 
-	// stateMu guards threadID, turnID and pending.
+	// stateMu guards threadID, turnID, pending, reqPrefix, restoredRun and
+	// attachedTurnOpen.
 	stateMu  sync.Mutex
 	threadID string
 	turnID   string
-	pending  map[int64]func(codexReply)
+	pending  map[string]func(codexReply)
 	nextID   atomic.Int64
+	// reqPrefix starts every client request id of one spawn. Deliberate: a reply
+	// that a run directory still holds from before an attach never matches a
+	// request made after it.
+	reqPrefix string
+	// restoredRun is the run and cursor the saved state named.
+	restoredRun *detachedCursor
+	// attachedTurnOpen is what an attach found and left for TakeAttach.
+	attachedTurnOpen bool
 
 	// Turn state, touched only by the stdout reader goroutine.
 	items      map[string]*codexItem
@@ -165,7 +205,7 @@ func NewCodexProvider(session *sessionstypes.Session, handler sessionstypes.Even
 		emitter:   events.NewEventEmitter(handler),
 		directory: session.Directory,
 		slug:      strings.TrimPrefix(session.Model, codexModelPrefix),
-		pending:   make(map[int64]func(codexReply)),
+		pending:   make(map[string]func(codexReply)),
 		items:     make(map[string]*codexItem),
 	}
 }
@@ -213,71 +253,53 @@ func buildCodexHostExec(spec *sessionstypes.HostSpec, program []string, dir, ses
 }
 
 func (p *CodexProvider) Start() (err error) {
-	if p.slug == "" && !p.cfg.DefaultModel {
+	// An attach starts no thread, so it needs no model.
+	if p.slug == "" && !p.cfg.DefaultModel && !p.cfg.AttachOnly {
 		return errors.New("codex session has no model")
 	}
 
 	p.stateMu.Lock()
-	p.pending = make(map[int64]func(codexReply))
+	p.pending = make(map[string]func(codexReply))
 	p.turnID = ""
+	p.reqPrefix = "relay-" + uuid.NewString()[:8] + "-"
 	p.stateMu.Unlock()
 	p.nextID.Store(0)
 	p.warnedMu.Lock()
 	p.warned = nil
 	p.warnedMu.Unlock()
 	p.resetTurnState()
+	p.det.Store(nil)
 
-	var cmd *exec.Cmd
-	var statusR *os.File
-	var extraFiles []*os.File
-
-	if host := p.session.GetHost(); host != nil {
-		if useRelayTools(p.session.Settings) {
-			warnRelayToolsUnavailable(p.session.ID, "codex", "host_session")
-		}
-		if p.cfg.SandboxProfile != "" || p.cfg.Identity != nil {
-			slog.Warn("codex: sandbox/identity requested for a host session; ignoring", "session", p.session.ID)
-		}
-		name, argv, herr := buildCodexHostExec(host, p.cfg.Launcher.Program(host.CodexPath), p.directory, p.session.ID)
-		if herr != nil {
-			return herr
-		}
-		cmd = exec.Command(name, argv...)
-		cmd.Env = childBaseEnv()
-	} else {
+	host := p.session.GetHost()
+	if host == nil {
 		if useRelayTools(p.session.Settings) {
 			warnRelayToolsUnavailable(p.session.ID, "codex", "unsupported_kind")
 		}
-		program := p.cfg.Launcher.Program(resolveCodexPath(p.cfg.Binary))
-		spec := shimSpec{
-			Binary:         p.cfg.ShimBinary,
-			SessionID:      p.session.ID,
-			BridgeSocket:   p.cfg.BridgeSocket,
-			SandboxProfile: p.cfg.SandboxProfile,
-			Identity:       p.cfg.Identity,
-		}
-		switch {
-		case spec.wanted() && spec.Binary == "":
-			return ErrShimRequired
-		case spec.Identity != nil && spec.BridgeSocket == "":
-			return ErrNoBridgeSocket
-		case spec.wanted():
-			var berr error
-			cmd, statusR, extraFiles, berr = buildShimCmd(spec, program[0], append(program[1:], "app-server"))
-			if berr != nil {
-				return berr
-			}
-		default:
-			cmd = exec.Command(program[0], append(program[1:], "app-server")...)
-		}
-		cmd.Dir = p.directory
-		add := map[string]string{"RELAY_SESSION_ID": p.session.ID}
-		if p.cfg.BridgeSocket != "" {
-			add["RELAY_BRIDGE_SOCKET"] = p.cfg.BridgeSocket
-		}
-		cmd.Env = mergeEnv(ensurePath(childBaseEnv()), add)
+		return p.startLocal()
 	}
-	fds := &spawnFDs{statusR: statusR, extraFiles: extraFiles}
+	if useRelayTools(p.session.Settings) {
+		warnRelayToolsUnavailable(p.session.ID, "codex", "host_session")
+	}
+	if p.cfg.SandboxProfile != "" || p.cfg.Identity != nil {
+		slog.Warn("codex: sandbox/identity requested for a host session; ignoring", "session", p.session.ID)
+	}
+	if DetachedHost(host) {
+		return p.startHost(host)
+	}
+	return p.startPiped(host)
+}
+
+// startPiped runs codex on a host under ssh -T, with its pipes as the only
+// link: the agent ends with the connection. A host with detach_sessions false
+// and a Windows host run this way.
+func (p *CodexProvider) startPiped(host *sessionstypes.HostSpec) error {
+	name, argv, herr := buildCodexHostExec(host, p.cfg.Launcher.Program(host.CodexPath), p.directory, p.session.ID)
+	if herr != nil {
+		return herr
+	}
+	cmd := exec.Command(name, argv...)
+	cmd.Env = childBaseEnv()
+	fds := &spawnFDs{}
 	defer fds.closeUnlessStarted()
 
 	stdoutR, stdoutW, err := newStdoutPipe(cmd)
@@ -305,44 +327,6 @@ func (p *CodexProvider) Start() (err error) {
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
 	sawStdout := &atomic.Bool{}
-	identitySecret := ""
-	if p.cfg.Identity != nil {
-		identitySecret = p.cfg.Identity.Secret
-	}
-	logStderr := func() []string {
-		return logProviderStderr(stderrR, p.session.ID, "codex", sawStdout, identitySecret)
-	}
-	// The deadline is deliberate: a target forked with Setpgid can outlive
-	// the Kill and keep the write end open, and Start must not wait on it.
-	drainStderr := func() {
-		_ = stdoutR.Close()
-		_ = stderrR.SetReadDeadline(time.Now().Add(time.Second))
-		logStderr()
-	}
-	// Load-bearing: without closing the parent's own copies, the status pipe
-	// (and the identity secret pipe) never reaches EOF.
-	for _, f := range extraFiles {
-		_ = f.Close()
-	}
-
-	if statusR != nil {
-		outcome, _ := readShimStatus(statusR)
-		_ = statusR.Close()
-		switch {
-		case outcome.identityRefused:
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			drainStderr()
-			return fmt.Errorf("%w: session %s", ErrIdentityRefused, p.session.ID)
-		case !outcome.started || outcome.spawnFailed:
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			drainStderr()
-			return fmt.Errorf("%w: errno=%d", ErrSpawnFailed, outcome.spawnErrno)
-		default:
-			p.targetPID = outcome.targetPID
-		}
-	}
 
 	p.cmd = cmd
 	p.stdin = stdin
@@ -358,14 +342,18 @@ func (p *CodexProvider) Start() (err error) {
 
 	out := newSpawnOutput(stdoutR, stderrR)
 	go p.readStdout(stdoutR, sawStdout, out.stdoutDone)
-	go func() { out.stderrTail <- logStderr() }()
+	go func() { out.stderrTail <- logProviderStderr(stderrR, p.session.ID, "codex", sawStdout) }()
 	go p.waitForExit(cmd, p.waitDone, out, p.drainTimeout, p.killed, p.exit, gen)
 
-	slog.Info("codex process started", "session", p.session.ID, "model", p.slug, "pid", cmd.Process.Pid, "targetPid", p.targetPID)
+	slog.Info("codex process started", "session", p.session.ID, "model", p.slug, "pid", cmd.Process.Pid)
+	return p.startThread()
+}
 
+// startThread runs the handshake. A start that fails here must not surface as
+// a live session's exit: the generation advances so the spawn's own exit stays
+// silent, and the agent ends.
+func (p *CodexProvider) startThread() error {
 	if err := p.handshake(); err != nil {
-		// A failed Start must not surface as a live session's exit: advance
-		// the generation so this spawn's waitForExit stays silent.
 		p.exitMu.Lock()
 		p.spawnGen++
 		p.exitMu.Unlock()
@@ -373,6 +361,329 @@ func (p *CodexProvider) Start() (err error) {
 		return fmt.Errorf("codex handshake: %w", err)
 	}
 	return nil
+}
+
+// startLocal runs the agent on this machine under the runner, so it outlives
+// relay-sessions. A resume or attach finds a runner that still lives first and
+// follows it: a second agent must never share the conversation.
+func (p *CodexProvider) startLocal() error {
+	base := p.cfg.RunnerBase
+	if base == "" {
+		return errors.New("codex: no runner directory is configured for local sessions")
+	}
+	if p.cfg.Resume || p.cfg.AttachOnly {
+		st, err := runner.LocalStatus(base, p.session.ID, "")
+		if err != nil {
+			return fmt.Errorf("read the local runner state: %w", err)
+		}
+		if st.Phase == runner.PhaseAlive {
+			return p.attachRun(nil, localConnFor(base, p.session.ID), st.Generation)
+		}
+		if p.cfg.AttachOnly {
+			return fmt.Errorf("%w on this machine", ErrNoDetachedRun)
+		}
+	}
+
+	program := p.cfg.Launcher.Program(resolveCodexPath(p.cfg.Binary))
+	add := map[string]string{"RELAY_SESSION_ID": p.session.ID}
+	if p.cfg.BridgeSocket != "" {
+		add["RELAY_BRIDGE_SOCKET"] = p.cfg.BridgeSocket
+	}
+	identitySecret := ""
+	if p.cfg.Identity != nil {
+		identitySecret = p.cfg.Identity.Secret
+	}
+	run, st, err := startLocalRun("codex", base, p.directory, shimSpec{
+		Binary:         p.cfg.ShimBinary,
+		SessionID:      p.session.ID,
+		BridgeSocket:   p.cfg.BridgeSocket,
+		SandboxProfile: p.cfg.SandboxProfile,
+		Identity:       p.cfg.Identity,
+	}, program, []string{"app-server"}, mergeEnv(ensurePath(childBaseEnv()), add), codexRunnerPatterns, identitySecret)
+	if err != nil {
+		return err
+	}
+	det, _ := p.beginRun(nil, localConnFor(base, p.session.ID), run.Generation, 0)
+	det.Run()
+	slog.Info("codex process started", "session", p.session.ID, "model", p.slug, "runner", st.PID, "generation", run.Generation)
+	if err := p.startThread(); err != nil {
+		// The generation never held a conversation, so its directory goes.
+		_ = os.RemoveAll(run.Dir())
+		return err
+	}
+	return nil
+}
+
+// startHost runs the agent on a Unix host under the runner, so it outlives the
+// ssh link and relay-sessions. It is never run in a tmux pane: the drop-in is
+// Claude's.
+func (p *CodexProvider) startHost(host *sessionstypes.HostSpec) error {
+	program := p.cfg.Launcher.Program(host.CodexPath)
+	if len(program) == 0 || program[0] == "" {
+		return fmt.Errorf("host %q has no codex path: set its codex template's command", host.Name)
+	}
+	if p.cfg.Resume || p.cfg.AttachOnly {
+		ctx, cancel := context.WithTimeout(context.Background(), detachedStartTimeout)
+		st, err := DetachedRunState(ctx, host, p.session.ID)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("ask host %q whether the agent runs: %w", host.Name, err)
+		}
+		if st.Phase == sshhost.RunAlive {
+			return p.attachRun(host, hostConnFor(host, p.session.ID), st.Generation)
+		}
+		if p.cfg.AttachOnly {
+			return fmt.Errorf("%w on host %q", ErrNoDetachedRun, host.Name)
+		}
+	}
+	argv := append(slices.Clone(program), "app-server")
+	env := map[string]string{"RELAY_SESSION_ID": p.session.ID}
+	remote := sshhost.RunnerStartIn(host.OS, p.directory, sshhost.RunDir{Session: p.session.ID}, argv, env, codexRunnerPatterns)
+
+	ctx, cancel := context.WithTimeout(context.Background(), detachedStartTimeout)
+	defer cancel()
+	stdout, msg, err := runHost(ctx, host, remote, nil)
+	if err != nil {
+		return fmt.Errorf("start detached codex on host %q: %s (hosts[].detach_sessions: false runs this host's sessions under ssh -T)", host.Name, msg)
+	}
+	gen, err := sshhost.ParseRunStart(stdout)
+	if err != nil {
+		return fmt.Errorf("start detached codex on host %q: %w (hosts[].detach_sessions: false runs this host's sessions under ssh -T)", host.Name, err)
+	}
+	det, _ := p.beginRun(host, hostConnFor(host, p.session.ID), gen, 0)
+	det.Run()
+	slog.Info("codex detached agent started", "session", p.session.ID, "host", host.ID, "generation", gen)
+	return p.startThread()
+}
+
+// codexSpawnState is what one runner spawn's Line hook counts.
+type codexSpawnState struct {
+	// countEndsFrom, when positive, makes the read count the turn endings it
+	// delivers from that byte offset on; an attach sets it.
+	countEndsFrom int64
+	endsSeen      atomic.Int64
+}
+
+// beginRun installs the state of a spawn that follows a run from offset and
+// marks the provider alive. It starts no goroutine: Run does, so an attach can
+// read what the agent wrote while relay was away first.
+func (p *CodexProvider) beginRun(host *sessionstypes.HostSpec, connFor func(gen string) runConn, gen string, offset int64) (*runFollower, *codexSpawnState) {
+	spawn := &codexSpawnState{}
+	p.cmd, p.stdin = nil, nil
+	p.exitMu.Lock()
+	p.spawnGen++
+	spawnGen := p.spawnGen
+	p.exitMu.Unlock()
+	p.alive.Store(true)
+	waitDone := make(chan struct{})
+	p.waitDone = waitDone
+	p.drainTimeout = providerDrainTimeout
+	killed := &atomic.Bool{}
+	p.killed = killed
+	exit := &spawnExit{done: make(chan struct{})}
+	p.exit = exit
+
+	det := newRunFollower(host, connFor, gen, offset, runHooks{
+		Kind:    "codex",
+		Session: p.session.ID,
+		Line: func(body json.RawMessage, start int64) {
+			if spawn.countEndsFrom > 0 && start >= spawn.countEndsFrom && bytes.Contains(body, []byte(codexRunnerPatterns.TurnEnded)) {
+				spawn.endsSeen.Add(1)
+			}
+			p.processLine(body)
+		},
+		Exited: func(code int, tail []string, _ bool) {
+			p.runExited(spawnGen, killed, exit, waitDone, code, tail)
+		},
+		Redact: p.redactTail,
+	})
+	p.det.Store(det)
+	return det, spawn
+}
+
+// runExited delivers process_exited the way waitForExit does.
+func (p *CodexProvider) runExited(gen uint64, killed *atomic.Bool, exit *spawnExit, waitDone chan struct{}, code int, tail []string) {
+	defer close(exit.done)
+
+	p.alive.Store(false)
+	exit.code = code
+	close(waitDone)
+
+	p.exitMu.Lock()
+	defer p.exitMu.Unlock()
+	if p.spawnGen != gen {
+		slog.Debug("provider exit from a superseded spawn dropped", "session", p.session.ID, "kind", "codex", "exitCode", code)
+		return
+	}
+	slog.Info("codex process exited", "session", p.session.ID, "exitCode", code)
+	wasKilled := killed.Load()
+	if !wasKilled {
+		warnProviderExit(p.session.ID, "codex", code, tail)
+	}
+	p.handler("process_exited", providerExitData(code, tail, wasKilled))
+}
+
+// redactTail masks the launch's secrets in each tail line. The secret is empty
+// after a relay restart; the shape-based masks still apply then.
+func (p *CodexProvider) redactTail(lines []string) []string {
+	secrets := []string{}
+	if p.cfg.Identity != nil {
+		secrets = append(secrets, p.cfg.Identity.Secret)
+	}
+	for i, l := range lines {
+		lines[i] = redactStderrLine(l, secrets)
+	}
+	return lines
+}
+
+// attachRun follows the agent already running in generation gen. It reads,
+// before it returns, what the agent wrote since the saved cursor, so a message
+// sent next meets only its own reply. It sends no initialize, initialized,
+// thread/start or thread/resume: the agent's connection is already
+// initialized, and a second initialize is an error to it. A cursor that is
+// absent, from another generation or past the output starts at the end of the
+// output.
+func (p *CodexProvider) attachRun(host *sessionstypes.HostSpec, connFor func(gen string) runConn, gen string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), detachedStartTimeout)
+	defer cancel()
+	probe, err := connFor(gen).Probe(ctx, codexProbe)
+	if err != nil {
+		if host == nil {
+			return fmt.Errorf("attach to the local agent: %w", err)
+		}
+		return fmt.Errorf("attach to the agent on host %q: %w", host.Name, err)
+	}
+
+	offset := probe.size
+	p.stateMu.Lock()
+	saved := p.restoredRun
+	p.stateMu.Unlock()
+	if saved != nil && saved.Generation == gen && saved.Offset >= 0 && saved.Offset <= probe.size {
+		offset = saved.Offset
+	}
+
+	det, spawn := p.beginRun(host, connFor, gen, offset)
+	// A request the run directory already holds an answer for is not answered
+	// again when the replay meets it.
+	for _, raw := range probe.controls {
+		if id := codexAnswerID(raw); id != "" {
+			det.Claim(id)
+		}
+	}
+	spawn.countEndsFrom = probe.size
+	det.CatchUp(ctx)
+	// Endings the read delivered from past the probe end close a turn the probe
+	// counted as open; older ones it replayed from the cursor do not count.
+	turnOpen := probe.users > probe.results+int(spawn.endsSeen.Load())
+	p.session.SetProcessing(turnOpen)
+	p.stateMu.Lock()
+	p.attachedTurnOpen = turnOpen
+	p.stateMu.Unlock()
+	det.Run()
+
+	slog.Info("codex detached agent attached", "session", p.session.ID, "where", det.where(), "generation", gen, "cursor", offset)
+	return nil
+}
+
+// codexIDKey is a JSON-RPC id compacted, so the same id compares equal whatever
+// its spacing.
+func codexIDKey(id json.RawMessage) string {
+	var buf bytes.Buffer
+	if len(id) == 0 || string(id) == "null" || json.Compact(&buf, id) != nil {
+		return ""
+	}
+	return buf.String()
+}
+
+// codexAnswerID is the id a client line answers: the id of a line that has an
+// id and no method. A request or notification relay sent answers nothing.
+func codexAnswerID(raw json.RawMessage) string {
+	var line struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+	}
+	if json.Unmarshal(raw, &line) != nil || line.Method != "" {
+		return ""
+	}
+	return codexIDKey(line.ID)
+}
+
+// startLocalRun starts an agent under the runner on this machine, behind the
+// shim when the launch needs one, and returns once runner.json exists. A
+// refused or failed start leaves no generation behind. kind names the agent in
+// errors and logs; the secrets are masked in what the agent wrote to stderr.
+func startLocalRun(kind, base, dir string, shim shimSpec, program, args, env []string, patterns runner.Patterns, secrets ...string) (runner.LocalRun, runner.State, error) {
+	run, err := runner.AllocLocal(base, shim.SessionID)
+	if err != nil {
+		return runner.LocalRun{}, runner.State{}, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			_ = os.RemoveAll(run.Dir())
+		}
+	}()
+
+	fds := &spawnFDs{}
+	defer fds.closeUnlessStarted()
+	var argv []string
+	switch {
+	case shim.wanted() && shim.Binary == "":
+		return runner.LocalRun{}, runner.State{}, ErrShimRequired
+	case shim.Identity != nil && shim.BridgeSocket == "":
+		return runner.LocalRun{}, runner.State{}, ErrNoBridgeSocket
+	case shim.wanted():
+		cmd, statusR, extraFiles, berr := buildShimCmd(shim, program[0], append(slices.Clone(program[1:]), args...))
+		if berr != nil {
+			return runner.LocalRun{}, runner.State{}, berr
+		}
+		argv, fds.statusR, fds.extraFiles = cmd.Args, statusR, extraFiles
+	default:
+		if _, err := exec.LookPath(program[0]); err != nil {
+			return runner.LocalRun{}, runner.State{}, fmt.Errorf("failed to start %s: %w", kind, err)
+		}
+		argv = append(slices.Clone(program), args...)
+	}
+
+	st, err := run.Start(runner.LocalSpec{Argv: argv, Env: env, Dir: dir, ExtraFiles: fds.extraFiles, Patterns: patterns})
+	if err != nil {
+		return runner.LocalRun{}, runner.State{}, fmt.Errorf("failed to start %s: %w", kind, err)
+	}
+	fds.started = true
+	// Load-bearing: without closing the parent's own copies, the status pipe
+	// (and, when present, the identity secret pipe) never reaches EOF.
+	for _, f := range fds.extraFiles {
+		_ = f.Close()
+	}
+	if fds.statusR != nil {
+		outcome, _ := readShimStatus(fds.statusR)
+		_ = fds.statusR.Close()
+		var failure error
+		switch {
+		case outcome.identityRefused:
+			failure = fmt.Errorf("%w: session %s", ErrIdentityRefused, shim.SessionID)
+		case !outcome.started || outcome.spawnFailed:
+			failure = fmt.Errorf("%w: errno=%d", ErrSpawnFailed, outcome.spawnErrno)
+		}
+		if failure != nil {
+			logRefusedRunStart(kind, shim.SessionID, run, secrets...)
+			stopRun(kind, shim.SessionID, "this machine", localConn{run: run})
+			return runner.LocalRun{}, runner.State{}, failure
+		}
+	}
+	started = true
+	return run, st, nil
+}
+
+// logRefusedRunStart logs what the agent wrote to stderr before the shim
+// refused it, with the launch's secrets masked.
+func logRefusedRunStart(kind, session string, run runner.LocalRun, secrets ...string) {
+	tail, err := localConn{run: run}.StderrTail(context.Background())
+	if err != nil || tail == "" {
+		return
+	}
+	var sawStdout atomic.Bool
+	logProviderStderr(io.NopCloser(strings.NewReader(tail)), session, kind, &sawStdout, secrets...)
 }
 
 // handshake runs initialize, initialized and thread/start (or thread/resume)
@@ -385,7 +696,7 @@ func (p *CodexProvider) handshake() error {
 	}, deadline); err != nil {
 		return err
 	}
-	if err := p.writeLine(map[string]any{"method": "initialized"}); err != nil {
+	if err := p.writeLine(context.Background(), map[string]any{"method": "initialized"}, runner.MessageControl, 0); err != nil {
 		return err
 	}
 
@@ -426,11 +737,11 @@ func (p *CodexProvider) handshake() error {
 	return nil
 }
 
-// call sends one request and waits for its reply, the deadline, or the
-// child's exit.
+// call sends one control request and waits for its reply, the deadline, or the
+// agent's exit.
 func (p *CodexProvider) call(method string, params any, deadline <-chan time.Time) (json.RawMessage, error) {
 	ch := make(chan codexReply, 1)
-	id, err := p.request(method, params, func(r codexReply) { ch <- r })
+	id, err := p.request(context.Background(), method, params, runner.MessageControl, 0, func(r codexReply) { ch <- r })
 	if err != nil {
 		return nil, err
 	}
@@ -450,29 +761,40 @@ func (p *CodexProvider) call(method string, params any, deadline <-chan time.Tim
 }
 
 // request writes a request and registers onReply, which runs on the stdout
-// reader goroutine.
-func (p *CodexProvider) request(method string, params any, onReply func(codexReply)) (int64, error) {
-	id := p.nextID.Add(1)
+// reader goroutine. The id is a string: a prefix that is this spawn's own, then
+// a counter.
+func (p *CodexProvider) request(ctx context.Context, method string, params any, kind runner.MessageKind, wait time.Duration, onReply func(codexReply)) (string, error) {
 	p.stateMu.Lock()
+	id := p.reqPrefix + strconv.FormatInt(p.nextID.Add(1), 10)
 	p.pending[id] = onReply
 	p.stateMu.Unlock()
-	if err := p.writeLine(map[string]any{"id": id, "method": method, "params": params}); err != nil {
+	if err := p.writeLine(ctx, map[string]any{"id": id, "method": method, "params": params}, kind, wait); err != nil {
 		p.dropPending(id)
-		return 0, err
+		return "", err
 	}
 	return id, nil
 }
 
-func (p *CodexProvider) dropPending(id int64) {
+func (p *CodexProvider) dropPending(id string) {
 	p.stateMu.Lock()
 	delete(p.pending, id)
 	p.stateMu.Unlock()
 }
 
-func (p *CodexProvider) writeLine(v any) error {
+// writeLine sends one line to the agent. A runner session queues it as kind in
+// the runner's inbox and returns once the runner has written it to the agent,
+// waiting up to wait for a lost host link to return; a piped session writes it
+// to stdin.
+func (p *CodexProvider) writeLine(ctx context.Context, v any, kind runner.MessageKind, wait time.Duration) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
+	}
+	if det := p.det.Load(); det != nil {
+		if !p.alive.Load() {
+			return errors.New("codex process not running")
+		}
+		return det.Send(ctx, kind, data, wait)
 	}
 	data = append(data, '\n')
 	p.mu.Lock()
@@ -569,8 +891,8 @@ func (p *CodexProvider) processLine(raw json.RawMessage) {
 }
 
 func (p *CodexProvider) deliverReply(env codexEnvelope) {
-	id, err := strconv.ParseInt(string(env.ID), 10, 64)
-	if err != nil {
+	var id string
+	if err := json.Unmarshal(env.ID, &id); err != nil {
 		return
 	}
 	p.stateMu.Lock()
@@ -594,6 +916,11 @@ func (p *CodexProvider) deliverReply(env codexEnvelope) {
 // turn. Approvals are declined because approvalPolicy "never" means one only
 // arrives when something outside relay forced it.
 func (p *CodexProvider) answerServerRequest(env codexEnvelope) {
+	// A request the run directory already shows an answer for, or one this
+	// provider answered already, is not answered twice.
+	if det := p.det.Load(); det != nil && !det.Claim(codexIDKey(env.ID)) {
+		return
+	}
 	var result any
 	switch env.Method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
@@ -611,7 +938,7 @@ func (p *CodexProvider) answerServerRequest(env codexEnvelope) {
 		reply["error"] = codexRPCError{Code: -32601, Message: "unsupported by relay"}
 		slog.Warn("codex: server request unsupported", "session", p.session.ID, "method", env.Method)
 	}
-	if err := p.writeLine(reply); err != nil {
+	if err := p.writeLine(context.Background(), reply, runner.MessageControl, 0); err != nil {
 		slog.Warn("codex: reply to server request failed", "session", p.session.ID, "method", env.Method, "error", err)
 	}
 }
@@ -660,13 +987,21 @@ func (p *CodexProvider) translate(method string, params, raw json.RawMessage) {
 		p.resetTurnState()
 		p.turnActive = true
 		var ev struct {
-			Turn struct {
+			ThreadID string `json:"threadId"`
+			Turn     struct {
 				ID string `json:"id"`
 			} `json:"turn"`
 		}
-		if json.Unmarshal(params, &ev) == nil && ev.Turn.ID != "" {
+		if json.Unmarshal(params, &ev) == nil {
 			p.stateMu.Lock()
-			p.turnID = ev.Turn.ID
+			if ev.Turn.ID != "" {
+				p.turnID = ev.Turn.ID
+			}
+			// An attach whose saved state lost the thread learns it from the
+			// agent's own lines.
+			if p.threadID == "" {
+				p.threadID = ev.ThreadID
+			}
 			p.stateMu.Unlock()
 		}
 		p.emitter.SystemInit(p.slug, p.directory, nil, nil)
@@ -853,7 +1188,14 @@ func nestedCodexError(s string) string {
 }
 
 func (p *CodexProvider) SendMessage(text string, files []sessionstypes.FileAttachment) error {
-	if !p.alive.Load() || p.stdin == nil {
+	return p.SendMessageWithin(context.Background(), text, files, DefaultLinkWait)
+}
+
+// SendMessageWithin is SendMessage with the longest a runner session on a host
+// waits for a lost link to return, ended early when ctx ends. A runner session
+// returns once the runner has written the message to the agent.
+func (p *CodexProvider) SendMessageWithin(ctx context.Context, text string, files []sessionstypes.FileAttachment, wait time.Duration) error {
+	if !p.alive.Load() || (p.stdin == nil && p.det.Load() == nil) {
 		return errors.New("codex process not running")
 	}
 	p.stateMu.Lock()
@@ -865,10 +1207,10 @@ func (p *CodexProvider) SendMessage(text string, files []sessionstypes.FileAttac
 	if len(files) > 0 {
 		slog.Warn("codex: attachments are not supported; sending text only", "session", p.session.ID, "files", len(files))
 	}
-	_, err := p.request("turn/start", map[string]any{
+	_, err := p.request(ctx, "turn/start", map[string]any{
 		"threadId": thread,
 		"input":    []map[string]string{{"type": "text", "text": text}},
-	}, p.onTurnStartReply)
+	}, runner.MessageTurn, wait, p.onTurnStartReply)
 	return err
 }
 
@@ -893,7 +1235,8 @@ func (p *CodexProvider) onTurnStartReply(r codexReply) {
 }
 
 func (p *CodexProvider) StopGeneration() {
-	if !p.alive.Load() || p.stdin == nil {
+	det := p.det.Load()
+	if !p.alive.Load() || (p.stdin == nil && det == nil) {
 		return
 	}
 	p.stateMu.Lock()
@@ -902,18 +1245,29 @@ func (p *CodexProvider) StopGeneration() {
 	if thread == "" || turn == "" {
 		return
 	}
-	_, err := p.request("turn/interrupt", map[string]any{"threadId": thread, "turnId": turn}, func(r codexReply) {
+	_, err := p.request(context.Background(), "turn/interrupt", map[string]any{"threadId": thread, "turnId": turn}, runner.MessageControl, 0, func(r codexReply) {
 		if r.err != "" {
 			slog.Warn("codex turn/interrupt failed", "session", p.session.ID, "error", r.err)
 		}
 	})
-	if err != nil {
-		slog.Warn("codex interrupt write failed, killing", "session", p.session.ID, "error", err)
-		p.Kill()
+	if err == nil {
+		return
 	}
+	if det != nil {
+		// Deliberate: an interrupt that did not go does not end the agent. The
+		// run keeps its conversation, and the person can stop again.
+		slog.Warn("codex interrupt not sent", "session", p.session.ID, "error", err)
+		return
+	}
+	slog.Warn("codex interrupt write failed, killing", "session", p.session.ID, "error", err)
+	p.Kill()
 }
 
 func (p *CodexProvider) Kill() {
+	if det := p.det.Load(); det != nil {
+		p.killDetached(det, true)
+		return
+	}
 	if p.cmd == nil || p.cmd.Process == nil {
 		return
 	}
@@ -931,11 +1285,6 @@ func (p *CodexProvider) Kill() {
 	select {
 	case <-p.waitDone:
 	case <-time.After(3 * time.Second):
-		// Target group first, then the shim, so the shim's own Wait can
-		// return. targetPID stays 0 on a direct spawn.
-		if p.targetPID > 0 {
-			_ = syscall.Kill(-p.targetPID, syscall.SIGKILL)
-		}
 		_ = p.cmd.Process.Kill()
 		<-p.waitDone
 	}
@@ -947,17 +1296,82 @@ func (p *CodexProvider) Kill() {
 	slog.Info("codex process killed", "session", p.session.ID)
 }
 
+// killDetached ends the follow loop. stopAgent false leaves the agent running.
+func (p *CodexProvider) killDetached(det *runFollower, stopAgent bool) {
+	if p.killed != nil {
+		p.killed.Store(true)
+	}
+	p.alive.Store(false)
+	det.Stop(stopAgent)
+	if p.exit != nil {
+		<-p.exit.done
+	}
+	slog.Info("codex process killed", "session", p.session.ID)
+}
+
+// Release detaches this provider from its agent and leaves the agent running:
+// the reader stops and process_exited follows, nothing is sent to the agent.
+// A relay-sessions shutdown uses it, because a codex agent holds no relay
+// credential and outlives relay. Kill, by contrast, ends the agent.
+func (p *CodexProvider) Release() {
+	if det := p.det.Load(); det != nil {
+		p.released.Store(true)
+		p.killDetached(det, false)
+		return
+	}
+	p.Kill()
+}
+
+// Released reports whether Release detached this provider from a running
+// agent.
+func (p *CodexProvider) Released() bool { return p.released.Load() }
+
 func (p *CodexProvider) Alive() bool { return p.alive.Load() }
 
-// DeleteSession is a no-op: Codex's own transcripts stay where Codex keeps
-// them.
-func (p *CodexProvider) DeleteSession() error { return nil }
+// Events returns up to max complete events the agent wrote after the cursor
+// and the cursor to pass next. The cursor is "<generation>:<byte offset of a
+// line start>"; "" starts at the current generation's beginning.
+func (p *CodexProvider) Events(ctx context.Context, after string, max int) ([]json.RawMessage, string, error) {
+	det := p.det.Load()
+	if det == nil {
+		return nil, "", ErrNotDetached
+	}
+	return det.Events(ctx, after, max)
+}
+
+// TakeAttach returns, once, whether the attach found a turn in progress. The
+// manager calls it after it publishes the session. Codex holds no request for
+// a person, so the func it returns raises nothing.
+func (p *CodexProvider) TakeAttach() (turnOpen bool, raise func()) {
+	p.stateMu.Lock()
+	turnOpen = p.attachedTurnOpen
+	p.attachedTurnOpen = false
+	p.stateMu.Unlock()
+	return turnOpen, func() {}
+}
+
+// DeleteSession ends the agent and deletes its run directories, which hold the
+// agent's output. Codex's own transcripts stay where Codex keeps them.
+func (p *CodexProvider) DeleteSession() error {
+	if host := p.session.GetHost(); host != nil {
+		p.Kill()
+		DeleteDetachedAgent("codex", p.session.ID, host)
+	} else if p.cfg.RunnerBase != "" {
+		p.Kill()
+		DeleteLocalAgent("codex", p.cfg.RunnerBase, p.session.ID)
+	}
+	return nil
+}
 
 func (p *CodexProvider) GetState() json.RawMessage {
 	p.stateMu.Lock()
 	tid := p.threadID
 	p.stateMu.Unlock()
-	data, _ := json.Marshal(map[string]string{"threadId": tid})
+	state := map[string]any{"threadId": tid}
+	if det := p.det.Load(); det != nil {
+		state["detached"] = det.Cursor()
+	}
+	data, _ := json.Marshal(state)
 	return data
 }
 
@@ -966,11 +1380,13 @@ func (p *CodexProvider) RestoreState(state json.RawMessage) {
 		return
 	}
 	var s struct {
-		ThreadID string `json:"threadId"`
+		ThreadID string          `json:"threadId"`
+		Detached *detachedCursor `json:"detached"`
 	}
 	if err := json.Unmarshal(state, &s); err == nil {
 		p.stateMu.Lock()
 		p.threadID = s.ThreadID
+		p.restoredRun = s.Detached
 		p.stateMu.Unlock()
 	}
 }

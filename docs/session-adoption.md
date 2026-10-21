@@ -13,10 +13,10 @@ start path, its own limits and its own way of losing the agent.
 
 | Transport | Used by | Survives a dropped link | Survives a relay restart |
 |---|---|---|---|
-| Stream-json under the runner, local | headless Claude, local (run directory under the config dir) | n/a | yes |
-| Stream-json over a child's pipes | codex and pi, local | n/a | no |
-| Stream-json over `ssh -T` | headless Claude on a host | no | no |
-| Stream-json under the runner on the host | headless Claude on a Unix host (default; `detach_sessions: false` gives `ssh -T`); the runner is the pane of a tmux session `relay-agent-<id>` when the host has tmux 3.0 or later | yes | yes |
+| Stream-json under the runner, local | headless Claude and codex, local (run directory under the config dir) | n/a | yes |
+| Stream-json under the runner, local, ended with relay-sessions | pi, local; its model key ends with the launch | n/a | no |
+| Stream-json over `ssh -T` | headless Claude and codex on a host with `detach_sessions: false` or a Windows host | no | no |
+| Stream-json under the runner on the host | headless Claude and codex on a Unix host (default; `detach_sessions: false` gives `ssh -T`); Claude's runner is the pane of a tmux session `relay-agent-<id>` when the host has tmux 3.0 or later, codex's never is | yes | yes |
 | A pty through the shim | terminal sessions, local | n/a | no |
 | A pty inside the host's tmux | a host terminal template with `persist` | yes | yes |
 

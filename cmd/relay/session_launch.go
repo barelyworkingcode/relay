@@ -614,7 +614,7 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		if hostErr != nil {
 			return nil, invalidRequest("host_unavailable", hostErr.Error(), baseFields)
 		}
-		if req.Kind == KindClaude && host.Detach && !sshhost.IsWindowsOS(host.OS) {
+		if runnerKind(req.Kind) && host.Detach && !sshhost.IsWindowsOS(host.OS) {
 			detachedHostID = host.ID
 		}
 		if req.Resume && detachedHostID != "" {

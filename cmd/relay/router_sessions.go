@@ -115,7 +115,7 @@ func (r *appRouter) recordSessionExited(req bridge.SessionExitedRequest) {
 // it starts, so the record stays live and project-delete cleanup still finds
 // it.
 func (r *appRouter) detachedAgentStillRuns(rec ledger.Record) bool {
-	if rec.Detached == nil && rec.Kind == KindClaude {
+	if rec.Detached == nil && runnerKind(rec.Kind) {
 		return localRunnerAlive(bridge.ConfigDir(), rec.SessionID)
 	}
 	if rec.Detached == nil || r.sessionDeps.store == nil {

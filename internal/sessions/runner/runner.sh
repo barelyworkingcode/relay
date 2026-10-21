@@ -98,11 +98,25 @@ awk_opts=
   umask "$agent_umask"
   trap 'true' TERM
   if [ -n "$orig_lc_set" ]; then LC_ALL=$orig_lc_all; else unset LC_ALL; fi
-  sh agent.sh < in.pipe 2>> stderr.log
-  c=$?
-  exec 3<&- 4<&- 5<&-
-  umask 077
-  echo "$c" > agent.code.tmp && mv agent.code.tmp agent.code
+  # Deliberate: the agent's stderr is an anonymous pipe, never a file and never
+  # a named FIFO. Node aborts when its stdout or stderr is a descriptor the
+  # session profile does not let it stat, and the profile grants nothing in the
+  # run directory. The copier ends at end of file, once the agent and every
+  # process holding its stderr are gone, so stderr.log is complete before the
+  # runner writes exit. TERM is ignored so it drains the last lines after a stop.
+  exec 6>&1
+  {
+    trap 'true' TERM
+    sh agent.sh < in.pipe 2>&1 1>&6 6>&-
+    c=$?
+    exec 3<&- 4<&- 5<&-
+    umask 077
+    echo "$c" > agent.code.tmp && mv agent.code.tmp agent.code
+  } | (
+    trap '' TERM
+    exec 3<&- 4<&- 5<&- 6>&-
+    exec cat >> stderr.log
+  )
 ) | (
   trap '' TERM
   exec 3<&- 4<&- 5<&-

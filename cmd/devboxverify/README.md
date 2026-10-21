@@ -1147,6 +1147,41 @@ runs that cleanup before the process ends.
 - Traps: BLOCKED without `claude` on the login-shell PATH, with an unreadable
   `stack.json`, or when the turn ended before the link dropped.
 
+**session-codex-host-runner** (api, so a `--stack` run drives it). A codex
+session on a loopback host keeps its agent when the host link drops, with no
+`detach_sessions` key set. The fixture is session-detached-host's (a loopback
+host, a project on it, one agent entry of kind `codex` in `settings.json`),
+without the `/ws` credential. The entry's command, and the host's `codex`
+template command, is a launcher script the journey writes under the state
+folder. It builds a scratch codex home holding only a `config.toml` that names
+one provider: the stack's `claude_base_url` plus `/v1`, `wire_api =
+"responses"`, and the bearer's environment variable as `env_key`. The scratch
+home holds no `auth.json`, so codex has no login and no credential for a hosted
+model. The launcher reads the bearer from `claude_token_file` at exec into that
+variable only; it goes into no file, log or detail. Off a stack, or on a stack
+with no `claude_base_url`, the journey is NOTRUN ("needs a stack's local model
+endpoint"). Steps: `relay session start --entry` and read `runner.json`; `relay
+host disconnect`; wait for `session.host_link` `link=lost` then `restored`;
+`relay session send` (exits 0, after relay holds the runner's receipt); `relay
+session stop`. PASS when `runner.json` keeps its pid, pgid, start time and
+generation; `events.jsonl` gains a `turn_started` line in that generation; one
+generation directory exists; and the stop ends the process group (`kill(2)`
+answers ESRCH) and removes the run directory. The journey judges no model
+output: the stack's endpoint may not serve the Responses API, and the PASS
+detail says whether the turn answered (a `turn_ended` event within 20 s). Its
+cleanup is session-detached-host's: every started session is stopped and every
+process naming a started session's run directory is ended.
+- Waits: CLI exits and `session.host_link` events. The settings import has no
+  event, so `relay session start` is retried, bounded, until `runner.json`
+  exists. The link events come from the relay-sessions log, which has no
+  wake-up, so they are polled, bounded.
+- Lives in: `internal/sessions/provider/codex.go`, `internal/sessions/runner/`,
+  `cmd/relay/session_launch.go` (`buildHostSpec`).
+- Reached by: `relay session start|send|stop`, `relay host disconnect`, the
+  agents directory under the loopback user's `~/.relay/agents`.
+- Traps: BLOCKED without `codex` on the login-shell PATH or with an unreadable
+  `stack.json`.
+
 **cos-start** (screen). The Chief of Staff starts a headless Haiku agent in
 the Acme project; the launch and message audit rows carry the origin. Its
 second leg sends the old `mode: terminal` request: relay answers 201 with

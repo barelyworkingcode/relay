@@ -56,7 +56,8 @@ func (a *agent) runPi() int {
 		a.emitJSON(map[string]any{"type": "message_update", "assistantMessageEvent": map[string]any{"type": "text_start", "contentIndex": 0}})
 		a.emitJSON(map[string]any{"type": "message_update", "assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": reply}})
 		a.emitJSON(map[string]any{"type": "message_update", "assistantMessageEvent": map[string]any{"type": "text_end", "contentIndex": 0, "content": reply}})
-		a.emitJSON(map[string]any{"type": "agent_end", "messages": []any{}})
+		a.emitJSON(map[string]any{"type": "agent_end", "messages": []any{}, "willRetry": false})
+		a.emitJSON(map[string]any{"type": "agent_settled"})
 	})
 	return 0
 }

@@ -47,6 +47,31 @@ type agentLine struct {
 	TokenSHA256 string `json:"token_sha256,omitempty"`
 	TokenBytes  int    `json:"token_bytes,omitempty"`
 	TokenError  string `json:"token_error,omitempty"`
+	// StderrKind is the file type of descriptor 2 at start: fifo (a pipe or
+	// FIFO), file, tty (a character device), socket or other.
+	StderrKind string `json:"stderr_kind,omitempty"`
+}
+
+// stderrProbe is the line the fake writes to stderr once, at start.
+const stderrProbe = "fakeagent: stderr probe"
+
+// stderrKind reports the file type of descriptor 2.
+func stderrKind() string {
+	var st syscall.Stat_t
+	if err := syscall.Fstat(2, &st); err != nil {
+		return "other"
+	}
+	switch st.Mode & syscall.S_IFMT {
+	case syscall.S_IFIFO:
+		return "fifo"
+	case syscall.S_IFREG:
+		return "file"
+	case syscall.S_IFCHR:
+		return "tty"
+	case syscall.S_IFSOCK:
+		return "socket"
+	}
+	return "other"
 }
 
 // watchedEnv names the variables the start line reports.
@@ -119,7 +144,11 @@ func run() int {
 	cwd, _ := os.Getwd()
 	sum, n, terr := readTokenFD()
 	a.record(agentLine{Event: "start", Argv: args, Cwd: cwd, Env: watchedEnvValues(),
-		Environ: os.Environ(), TokenSHA256: sum, TokenBytes: n, TokenError: terr})
+		Environ: os.Environ(), TokenSHA256: sum, TokenBytes: n, TokenError: terr, StderrKind: stderrKind()})
+	// A model listing parses stderr as well as stdout, so the probe stays out of it.
+	if !flagPresent(args, "--list-models") {
+		fmt.Fprintln(os.Stderr, stderrProbe)
+	}
 
 	code := a.dispatch()
 	a.record(agentLine{Event: "exit", ExitCode: &code})

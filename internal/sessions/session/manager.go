@@ -593,9 +593,9 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) (s
 	if err := p.Start(); err != nil {
 		return p, err
 	}
-	if m.runnerClaude(sess) {
-		// The saved state names the run and its root; a restart before the first
-		// result would otherwise find neither.
+	if m.attachable(sess) {
+		// The saved state names the run, its cursor and its root; a restart before
+		// the first result would otherwise find none of them.
 		m.persist(sess)
 	}
 	return p, nil
@@ -768,6 +768,8 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 		cxcfg.SandboxProfile = spec.SandboxProfile
 		cxcfg.Launcher = spec.Launcher
 		cxcfg.DefaultModel = spec.Entry != "" && spec.Model == ""
+		cxcfg.Resume = spec.Resume
+		cxcfg.AttachOnly = spec.AttachOnly
 		return provider.NewCodexProvider(sess, handler, cxcfg), nil
 	case KindChat:
 		chatcfg := m.cfg.Chat
@@ -954,15 +956,15 @@ func (m *Manager) EndSession(id string) {
 	// Deliberate: a detached session with no live provider may still have an
 	// agent on its host, which relay or this host left running; ending the
 	// session ends it.
-	orphan := m.runnerClaude(sess) && (p == nil || !p.Alive())
+	orphan := m.runnerSession(sess) && (p == nil || !p.Alive())
 	if p != nil {
 		p.Kill()
 	}
 	if orphan {
 		if sess.GetHost() == nil {
-			provider.StopLocalRun(m.cfg.Claude.RunnerBase, sess.ID)
+			provider.StopLocalAgent(sess.ProviderType, m.runnerBase(sess.ProviderType), sess.ID)
 		} else {
-			provider.StopDetachedRun(sess.ID, sess.GetHost())
+			provider.StopDetachedAgent(sess.ProviderType, sess.ID, sess.GetHost())
 		}
 	}
 	m.persist(sess)
@@ -988,10 +990,10 @@ func (m *Manager) DeleteSession(id string) {
 		if stored == nil {
 			stored, _ = m.store.Load(id)
 		}
-		if stored != nil && m.runnerClaude(stored) && stored.GetHost() == nil {
-			provider.DeleteLocalRun(m.cfg.Claude.RunnerBase, id)
+		if stored != nil && m.runnerSession(stored) && stored.GetHost() == nil {
+			provider.DeleteLocalAgent(stored.ProviderType, m.runnerBase(stored.ProviderType), id)
 		} else if stored != nil {
-			provider.DeleteDetachedRun(id, stored.GetHost())
+			provider.DeleteDetachedAgent(stored.ProviderType, id, stored.GetHost())
 		}
 	}
 	if m.perms != nil {
@@ -1009,8 +1011,10 @@ const detachedMaxParallelProbes = 4
 // ReattachDetached attaches every persisted detached host session and local
 // runner session whose agent still runs. The agent is not this process's
 // child, so a restart of this host or of relay finds it alive; a session whose
-// agent exited stays dormant and resumes with its history. It returns when
-// every attach has finished.
+// agent exited stays dormant and resumes with its history. A pi runner that
+// still runs is stopped instead: its model key was bound to the launch that
+// ended, and the model proxy it used ran inside the relay-sessions that is gone.
+// It returns when every attach has finished.
 func (m *Manager) ReattachDetached() {
 	sessions, err := m.store.LoadAll()
 	if err != nil {
@@ -1020,7 +1024,11 @@ func (m *Manager) ReattachDetached() {
 	sem := make(chan struct{}, detachedMaxParallelProbes)
 	var wg sync.WaitGroup
 	for _, sess := range sessions {
-		if !m.runnerClaude(sess) {
+		if sess.ProviderType == KindPi && m.runnerSession(sess) {
+			m.stopStalePi(sess)
+			continue
+		}
+		if !m.attachable(sess) {
 			continue
 		}
 		wg.Add(1)
@@ -1034,16 +1042,53 @@ func (m *Manager) ReattachDetached() {
 	wg.Wait()
 }
 
-// runnerClaude reports whether sess is a Claude session whose agent runs under
-// the runner: on a detached host, or on this machine.
-func (m *Manager) runnerClaude(sess *sessionstypes.Session) bool {
-	if sess.ProviderType != KindClaude {
-		return false
+// runnerBase is the directory kind's local run directories live under.
+func (m *Manager) runnerBase(kind string) string {
+	switch kind {
+	case KindClaude:
+		return m.cfg.Claude.RunnerBase
+	case KindCodex:
+		return m.cfg.Codex.RunnerBase
+	case KindPi:
+		return m.cfg.Pi.RunnerBase
 	}
-	if sess.GetHost() == nil {
-		return m.cfg.Claude.RunnerBase != ""
+	return ""
+}
+
+// runnerSession reports whether sess is a session whose agent runs under the
+// runner: a Claude or codex session on a detached host or on this machine, or a
+// pi session on this machine. Pi has no host form.
+func (m *Manager) runnerSession(sess *sessionstypes.Session) bool {
+	switch sess.ProviderType {
+	case KindClaude, KindCodex:
+		if sess.GetHost() == nil {
+			return m.runnerBase(sess.ProviderType) != ""
+		}
+		return provider.DetachedHost(sess.GetHost())
+	case KindPi:
+		return sess.GetHost() == nil && m.cfg.Pi.RunnerBase != ""
 	}
-	return provider.DetachedHost(sess.GetHost())
+	return false
+}
+
+// attachable reports whether sess is a runner session that outlives
+// relay-sessions, so a start finds its agent and follows it again. A pi agent
+// ends with relay-sessions and is never attached.
+func (m *Manager) attachable(sess *sessionstypes.Session) bool {
+	return sess.ProviderType != KindPi && m.runnerSession(sess)
+}
+
+// stopStalePi ends the pi runner a crashed relay-sessions left behind and
+// leaves the session dormant. A session this process already holds is a launch
+// of its own and stays.
+func (m *Manager) stopStalePi(sess *sessionstypes.Session) {
+	m.mu.Lock()
+	_, held := m.slots[sess.ID]
+	m.mu.Unlock()
+	if held {
+		return
+	}
+	provider.StopLocalAgent(KindPi, m.cfg.Pi.RunnerBase, sess.ID)
 }
 
 var (
@@ -1061,7 +1106,7 @@ var (
 // say whether the agent runs, or the agent runs and could not be attached.
 func (m *Manager) reattachIfDetached(id string) error {
 	sess, ok := m.Get(id)
-	if !ok || !m.runnerClaude(sess) {
+	if !ok || !m.attachable(sess) {
 		return nil
 	}
 	if p := sess.Provider(); p != nil && p.Alive() {
@@ -1090,7 +1135,7 @@ func (m *Manager) reattachDetached(id string) error {
 	defer lock.Unlock()
 
 	sess, ok := m.Get(id)
-	if !ok || !m.runnerClaude(sess) || m.Held(id) {
+	if !ok || !m.attachable(sess) || m.Held(id) {
 		return nil
 	}
 	if p := sess.Provider(); p != nil && p.Alive() {
@@ -1099,7 +1144,7 @@ func (m *Manager) reattachDetached(id string) error {
 	host := sess.GetHost()
 	var err error
 	if host == nil {
-		st, err := runner.LocalStatus(m.cfg.Claude.RunnerBase, id, "")
+		st, err := runner.LocalStatus(m.runnerBase(sess.ProviderType), id, "")
 		if err != nil || st.Phase != runner.PhaseAlive {
 			return nil
 		}
@@ -1125,7 +1170,7 @@ func (m *Manager) reattachDetached(id string) error {
 		return nil
 	}
 	spec := CreateSpec{
-		SessionID: id, ProjectID: sess.ProjectID, Kind: KindClaude, Directory: sess.Directory,
+		SessionID: id, ProjectID: sess.ProjectID, Kind: sess.ProviderType, Directory: sess.Directory,
 		Name: sess.Name, Model: sess.Model, Origin: sess.Origin, Settings: sess.Settings,
 		SystemPrompt: sess.SystemPrompt, Host: host, Resume: true, AttachOnly: true,
 	}
