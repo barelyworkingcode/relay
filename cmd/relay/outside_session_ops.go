@@ -382,25 +382,30 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 	return m
 }
 
-// codexProbeWarned holds the last codex discovery failure that was logged, so
-// a daemon that stays unreachable is one Warn and not one per probe.
+// codexProbeWarned holds the daemon identities whose discovery failure was
+// logged, so a daemon that stays unreachable is one Warn and not one per probe.
+// A failure before any daemon answered has no identity and shares the "" key.
 var codexProbeWarned struct {
 	sync.Mutex
-	last string
+	identities map[string]bool
 }
 
-func warnCodexProbeOnce(ctx context.Context, err error) {
+func warnCodexProbeOnce(ctx context.Context, identity string, err error) {
 	codexProbeWarned.Lock()
 	defer codexProbeWarned.Unlock()
-	if key := err.Error(); key != codexProbeWarned.last {
-		codexProbeWarned.last = key
-		slog.WarnContext(ctx, "outside codex discovery failed; codex rows omitted", "error", err)
+	if codexProbeWarned.identities[identity] {
+		return
 	}
+	if codexProbeWarned.identities == nil {
+		codexProbeWarned.identities = map[string]bool{}
+	}
+	codexProbeWarned.identities[identity] = true
+	slog.WarnContext(ctx, "outside codex discovery failed; codex rows omitted", "daemon", identity, "error", err)
 }
 
 func clearCodexProbeWarning() {
 	codexProbeWarned.Lock()
-	codexProbeWarned.last = ""
+	codexProbeWarned.identities = nil
 	codexProbeWarned.Unlock()
 }
 
@@ -410,7 +415,7 @@ func clearCodexProbeWarning() {
 func outsideCodexObservations(ctx context.Context, deps sessionRouteDeps) []outsidesessions.Observation {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		warnCodexProbeOnce(ctx, err)
+		warnCodexProbeOnce(ctx, "", err)
 		return nil
 	}
 	adapter := adopt.NewCodex(adopt.CodexConfig{Home: home})
@@ -421,14 +426,14 @@ func outsideCodexObservations(ctx context.Context, deps sessionRouteDeps) []outs
 		return nil
 	}
 	if err != nil {
-		warnCodexProbeOnce(ctx, err)
+		warnCodexProbeOnce(ctx, "", err)
 		return nil
 	}
 	managed, err := deps.host().ManagedCodexIdentities(ctx)
 	if err != nil {
 		// Fail closed: without the managed list a relay session could appear as
 		// an outside one.
-		warnCodexProbeOnce(ctx, fmt.Errorf("managed codex identities: %w", err))
+		warnCodexProbeOnce(ctx, candidates0(candidates), fmt.Errorf("managed codex identities: %w", err))
 		return nil
 	}
 	var rows []outsidesessions.Observation
@@ -444,7 +449,7 @@ func outsideCodexObservations(ctx context.Context, deps sessionRouteDeps) []outs
 				continue
 			}
 			if err != nil {
-				warnCodexProbeOnce(ctx, err)
+				warnCodexProbeOnce(ctx, c.Instance, err)
 				return nil
 			}
 			updated = ready.Tail.LastRecord
@@ -633,4 +638,13 @@ func outsideManagedAncestor(ctx context.Context, pid, root int) bool {
 		pid = info.PPID
 	}
 	return pid > 1
+}
+
+// candidates0 names the daemon the first candidate came from; every candidate
+// of one probe shares it. Empty when the daemon listed no thread.
+func candidates0(cs []adopt.Candidate) string {
+	if len(cs) == 0 {
+		return ""
+	}
+	return cs[0].Instance
 }

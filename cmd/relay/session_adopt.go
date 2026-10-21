@@ -389,6 +389,12 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		return nil, refuse(lr.Status, lr.Code, lr.Message)
 	}
 	if agent == "codex" {
+		// Relay claims no sandbox over an attached thread: the codex daemon runs
+		// it. The launch row must not imply confinement.
+		result.AuditFields.Sandbox = false
+		result.AuditFields.ReadOnlyProjects = false
+		result.AuditFields.ReadRoots = 0
+		result.AuditFields.GrantWarnings = nil
 		result.Spec.AttachCodexThread = conversationID
 	} else {
 		result.Spec.ResumeConversation = conversationID

@@ -1533,6 +1533,30 @@ func (m *Manager) StopGeneration(id string) error {
 	return nil
 }
 
+// ErrClearAttached refuses clear_session on a codex thread relay attached to:
+// the thread belongs to the codex daemon, and relay never starts its own codex
+// for it.
+var ErrClearAttached = errors.New("this session is attached to a codex thread and its history cannot be cleared from relay")
+
+// attachedCodex reports whether sess is an attach to a daemon-held codex
+// thread. State that cannot be read counts as not attached only when empty.
+func (m *Manager) attachedCodex(sess *sessionstypes.Session) bool {
+	sess.Lock()
+	kind := sess.ProviderType
+	raw := append(json.RawMessage(nil), sess.ProviderState...)
+	sess.Unlock()
+	if kind != KindCodex {
+		return false
+	}
+	if p := sess.Provider(); p != nil {
+		raw = p.GetState()
+	}
+	var state struct {
+		DaemonAttach bool `json:"daemonAttach"`
+	}
+	return len(raw) > 0 && json.Unmarshal(raw, &state) == nil && state.DaemonAttach
+}
+
 // ClearSession kills the provider and clears history/stats. A project-bound
 // session (ProjectID != "") is left dead afterward and returns
 // ErrResumeRequired instead of restarting — a manager-internal restart has
@@ -1547,6 +1571,13 @@ func (m *Manager) ClearSession(id string) error {
 	sess, ok := m.Get(id)
 	if !ok {
 		return ErrSessionNotFound
+	}
+	// Clearing drops ProviderState, which holds the thread id and the
+	// daemonAttach mark. Without them a later resume would start relay's own
+	// codex for an attached thread, so the clear is refused before it changes
+	// anything.
+	if m.attachedCodex(sess) {
+		return ErrClearAttached
 	}
 
 	m.signal(sess, attention.TurnStopped)

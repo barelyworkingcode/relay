@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
@@ -182,6 +183,12 @@ func readThread(ctx context.Context, conn *codexdaemon.Conn, id string) (codexTh
 	return read.Thread, &turns.Data[0], nil
 }
 
+// canonicalThreadID accepts the lowercase 36-character UUID the host demands
+// of attach_codex_thread; an uppercase one would list adoptable and then fail.
+func canonicalThreadID(id string) bool {
+	return outsidesessions.IsConversationID(id) && id == strings.ToLower(id)
+}
+
 // codexCandidate builds the candidate a thread earns. ok is false for a thread
 // that cannot be shown: its working folder is not an absolute path or its
 // start time is unreadable.
@@ -193,7 +200,7 @@ func codexCandidate(t codexThread, instance string, mentions int) (Candidate, bo
 	c := Candidate{Agent: "codex", ConversationID: t.ID, ProcStart: created, Cwd: filepath.Clean(t.Cwd), Instance: instance, Adoptable: true}
 	var source string
 	switch {
-	case !outsidesessions.IsConversationID(t.ID):
+	case !canonicalThreadID(t.ID):
 		c.Reason = ReasonInvalidID
 	case (t.ParentThreadID != nil && *t.ParentThreadID != "") || t.Ephemeral:
 		c.Reason = ReasonNotInteractive
