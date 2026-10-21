@@ -93,8 +93,11 @@ func runDetachedHost(ctx context.Context, e env) result {
 
 	signal.Stop(sigs)
 	select {
-	case sig := <-sigs: // arrived after the goroutine stopped listening
-		caught <- sig
+	case sig := <-sigs: // arrived after the goroutine stopped listening, or a second one
+		select {
+		case caught <- sig:
+		default:
+		}
 	default:
 	}
 	select {
