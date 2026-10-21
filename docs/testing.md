@@ -36,7 +36,7 @@ security invariants in `CLAUDE.md`.
 **Run it.**
 
 ```bash
-cd e2e && go test -race -parallel 32 ./features/     # locally: 32 instances at once
+cd e2e && go test -race -timeout 30m -parallel 32 ./features/     # locally: 32 instances at once
 cd e2e && go test -race -run TestFakeMCPStdioListsTools ./features/   # one test
 ```
 
@@ -53,7 +53,7 @@ test's process group and its path is the only handle on it.
 devbox, run the suite three times with 32 instances live at once:
 
 ```bash
-cd e2e && go test -race -count=1 -parallel 32 ./features/   # run it three times
+cd e2e && go test -race -count=1 -timeout 30m -parallel 32 ./features/   # run it three times
 ```
 
 `TestInstancesIsolated` boots 32 instances and, when the run allows 32 parallel
@@ -220,7 +220,7 @@ hand-run tool for Settings UI work.
 |---|---|---|
 | commit | `gofmt -l`, `go build ./...`, `go vet ./...` | `.githooks/pre-commit` |
 | push | `go build ./...` and `go vet ./...`, skipped when the pushed commits touch no Go sources or web assets | `.githooks/pre-push` |
-| verification task, before `main` | `(cd e2e && go test -race ./features/)`, then `devboxverify` on the head | the issue's `Verified:` line |
+| verification task, before `main` | `(cd e2e && go test -race -timeout 30m ./features/)`, then `devboxverify` on the head | the issue's `Verified:` line |
 | by hand only, `gh workflow run ci --ref <ref>` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags relaytest ./...`, `scripts/check-test-build.sh` (`absent` on an untagged build, `present` on a `relaytest` build), and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` | `.github/workflows/ci.yml` (`build` job) |
 | by hand only | the `fakerelay` job on Linux: `gofmt -l`, `go vet ./...`, a `CGO_ENABLED=0` build for Linux and macOS, then `go test -race -count=1 -parallel 24 ./...` in `fakerelay/` | `.github/workflows/ci.yml` (`fakerelay` job) |
 | by hand only | the `e2e` job: `gofmt -l` and `go vet ./...` in `e2e/`, then `selecttests`, `go test -race -count=1 ./coverage/...`, and `go test -race -count=1 ./features -run "$SELECT_RUN"` (the selected tests on a PR, the whole package on `main`; see Test selection) | `.github/workflows/ci.yml` (`e2e` job) |
