@@ -231,7 +231,8 @@ func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 
 var ErrInterruptAuditUnavailable = errors.New("interrupt audit unavailable")
 
-// SetInterruptHandler records permission to deliver an adopted Pi interrupt.
+// SetInterruptHandler records permission to deliver an adopted Pi or attached
+// codex interrupt.
 func (m *Manager) SetInterruptHandler(fn func(context.Context, string) error) {
 	m.mu.Lock()
 	m.onInterrupt = fn
@@ -351,6 +352,10 @@ type CreateSpec struct {
 	// existing Claude conversation id, so the first start resumes it.
 	ResumeConversation string
 	ResumeTranscript   string
+	// AttachCodexThread seeds a new codex session's provider state with a thread
+	// the codex daemon holds, so the first start attaches to it instead of
+	// running a codex of its own.
+	AttachCodexThread string
 }
 
 func (m *Manager) providerKindSupported(kind string) bool {
@@ -552,7 +557,9 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 	}
 
 	var providerState json.RawMessage
-	if spec.ResumeConversation != "" {
+	if spec.AttachCodexThread != "" {
+		providerState, _ = json.Marshal(map[string]any{"threadId": spec.AttachCodexThread, "daemonAttach": true})
+	} else if spec.ResumeConversation != "" {
 		if spec.Kind == KindPi {
 			providerState, _ = json.Marshal(map[string]string{"piSessionId": spec.ResumeConversation, "piSessionFile": spec.ResumeTranscript})
 		} else {
@@ -1482,22 +1489,23 @@ func (m *Manager) StopGeneration(id string) error {
 		return ErrSessionNotFound
 	}
 	sess.Lock()
-	adopted := sess.ProviderType == KindPi
+	kind := sess.ProviderType
 	raw := append(json.RawMessage(nil), sess.ProviderState...)
 	sess.Unlock()
-	if adopted {
+	if kind == KindPi || kind == KindCodex {
 		if p := sess.Provider(); p != nil {
 			raw = p.GetState()
 		}
 		var state struct {
-			File string `json:"piSessionFile"`
+			File         string `json:"piSessionFile"`
+			DaemonAttach bool   `json:"daemonAttach"`
 		}
-		// An ordinary Pi session has no adopted transcript and may carry no
-		// state at all; only non-empty, unreadable state is an error.
+		// An ordinary Pi or codex session has no adopted state and may carry none
+		// at all; only non-empty, unreadable state is an error.
 		if len(raw) > 0 && json.Unmarshal(raw, &state) != nil {
-			return errors.New("interrupt: invalid Pi state")
+			return errors.New("interrupt: invalid session state")
 		}
-		if state.File != "" {
+		if (kind == KindPi && state.File != "") || (kind == KindCodex && state.DaemonAttach) {
 			m.mu.Lock()
 			fn := m.onInterrupt
 			m.mu.Unlock()
@@ -1705,6 +1713,16 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 			fn(sess.ID, payload.ExitCode)
 		}
 
+	case "turn_started":
+		// A turn that no send of this manager started: a daemon-attached codex
+		// thread's terminal began it. A turn this manager's own send began has
+		// the session running already.
+		sess.SetProcessing(true)
+		if cur, ok := m.attn.Get(sess.ID); !ok || cur.State != attention.Running {
+			m.signal(sess, attention.TurnStarted)
+		}
+		return
+
 	case "raw_output":
 		m.signal(sess, attention.Activity)
 		msg = map[string]any{"type": events.WSMsgRawOutput, "sessionId": sess.ID, "text": string(data)}
@@ -1876,6 +1894,42 @@ func (m *Manager) PiSessionIDs() []string {
 		if json.Unmarshal(raw, &state) == nil && state.ID != "" && !seen[state.ID] {
 			seen[state.ID] = true
 			ids = append(ids, state.ID)
+		}
+	}
+	for _, sess := range m.liveSessions() {
+		add(sess)
+	}
+	if persisted, err := m.store.LoadAll(); err == nil {
+		for _, sess := range persisted {
+			add(sess)
+		}
+	}
+	return ids
+}
+
+// CodexThreadIDs returns the thread id of every codex session this host owns,
+// live or persisted. Relay uses it to keep managed threads out of the
+// outside-session list.
+func (m *Manager) CodexThreadIDs() []string {
+	seen := map[string]bool{}
+	ids := []string{}
+	add := func(sess *sessionstypes.Session) {
+		sess.Lock()
+		kind := sess.ProviderType
+		raw := append(json.RawMessage(nil), sess.ProviderState...)
+		sess.Unlock()
+		if kind != KindCodex {
+			return
+		}
+		if p := sess.Provider(); p != nil {
+			raw = p.GetState()
+		}
+		var state struct {
+			ThreadID string `json:"threadId"`
+		}
+		if json.Unmarshal(raw, &state) == nil && state.ThreadID != "" && !seen[state.ThreadID] {
+			seen[state.ThreadID] = true
+			ids = append(ids, state.ThreadID)
 		}
 	}
 	for _, sess := range m.liveSessions() {

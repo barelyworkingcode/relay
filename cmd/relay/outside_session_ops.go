@@ -10,6 +10,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
 	"github.com/barelyworkingcode/relay/internal/sessions/adopt"
+	"github.com/barelyworkingcode/relay/internal/sessions/codexdaemon"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 	"io"
@@ -217,6 +218,10 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			}
 		}
 
+		if h == nil && deps.ready() {
+			observed = append(observed, outsideCodexObservations(ctx, deps)...)
+		}
+
 		out := []outsidesessions.Observation{}
 		settings := config.FreshSettings(store)
 		resolved := resolveOutsideProjectPaths(ctx, h, settings.Projects)
@@ -375,6 +380,91 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 		return reports, nil
 	}
 	return m
+}
+
+// codexProbeWarned holds the last codex discovery failure that was logged, so
+// a daemon that stays unreachable is one Warn and not one per probe.
+var codexProbeWarned struct {
+	sync.Mutex
+	last string
+}
+
+func warnCodexProbeOnce(ctx context.Context, err error) {
+	codexProbeWarned.Lock()
+	defer codexProbeWarned.Unlock()
+	if key := err.Error(); key != codexProbeWarned.last {
+		codexProbeWarned.last = key
+		slog.WarnContext(ctx, "outside codex discovery failed; codex rows omitted", "error", err)
+	}
+}
+
+func clearCodexProbeWarning() {
+	codexProbeWarned.Lock()
+	codexProbeWarned.last = ""
+	codexProbeWarned.Unlock()
+}
+
+// outsideCodexObservations lists the threads the codex daemon holds. Any
+// failure (no daemon, an unsafe socket, a daemon error, an unreadable managed
+// list) gives no codex rows and leaves the Claude and Pi rows as they are.
+func outsideCodexObservations(ctx context.Context, deps sessionRouteDeps) []outsidesessions.Observation {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		warnCodexProbeOnce(ctx, err)
+		return nil
+	}
+	adapter := adopt.NewCodex(adopt.CodexConfig{Home: home})
+	candidates, err := adapter.Discover(ctx)
+	if errors.Is(err, codexdaemon.ErrNoDaemon) {
+		// Most machines run no daemon; that is no failure to report.
+		clearCodexProbeWarning()
+		return nil
+	}
+	if err != nil {
+		warnCodexProbeOnce(ctx, err)
+		return nil
+	}
+	managed, err := deps.host().ManagedCodexIdentities(ctx)
+	if err != nil {
+		// Fail closed: without the managed list a relay session could appear as
+		// an outside one.
+		warnCodexProbeOnce(ctx, fmt.Errorf("managed codex identities: %w", err))
+		return nil
+	}
+	var rows []outsidesessions.Observation
+	for _, c := range candidates {
+		if managed[c.ConversationID] {
+			continue
+		}
+		state, reason, adoptable := "running", c.Reason, false
+		var updated time.Time
+		if c.Adoptable {
+			ready, err := adapter.Check(ctx, c)
+			if errors.Is(err, adopt.ErrChanged) {
+				continue
+			}
+			if err != nil {
+				warnCodexProbeOnce(ctx, err)
+				return nil
+			}
+			updated = ready.Tail.LastRecord
+			if ready.Idle {
+				state, reason, adoptable = "idle", "", true
+			} else {
+				reason = "busy"
+			}
+		}
+		rows = append(rows, outsidesessions.Observation{
+			Agent: "codex", ConversationID: c.ConversationID, Lifetime: c.Instance, StatusAt: updated,
+			Session: outsidesessions.Session{
+				Agent: "codex", ConversationID: c.ConversationID, Name: "Codex — " + filepath.Base(c.Cwd), Directory: c.Cwd,
+				State: state, Since: c.ProcStart.UTC().Format(time.RFC3339Nano), ViewReason: "not_in_tmux",
+				Adoptable: adoptable, AdoptReason: reason,
+			},
+		})
+	}
+	clearCodexProbeWarning()
+	return rows
 }
 
 // resolveOutsideProjectPaths returns each project's path resolved on the

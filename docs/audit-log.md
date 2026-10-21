@@ -934,6 +934,22 @@ The intent acknowledges persistence only; provider delivery errors are logged
 by the existing abort path. This boundary applies to adopted Pi state with
 `piSessionFile`; it does not change ordinary Pi or Claude interrupt behavior.
 
+A codex attach writes the same `session_adopt` intent and completion with
+`agent:"codex"`, `conversation_id`, `project_id`, `directory`, `interrupt:false`,
+`model` (`codex/<thread model>`), `method:"attach"` and `relay_sandbox:false`;
+it has no `claude_session_id`. The completion adds `session_id`, or the refusal
+code in `error`. No signal is sent and no `session_interrupt` or recovery row
+belongs to an attach: a busy thread is refused with no row past the refusal.
+With auditing off, or when the intent row cannot be written, relay sends the
+daemon no `thread/resume`.
+
+After the attach, each managed `turn/interrupt` first writes a durable
+`session_interrupt` intent through the same bridge request, with `session_id`,
+`project_id`, `agent:"codex"` and `method:"turn/interrupt"`; outcome is
+`pending`. An audit write failure sends no `turn/interrupt` and leaves the turn
+running. This boundary applies to a codex session whose state holds
+`daemonAttach:true`; it does not change ordinary codex interrupts.
+
 ### Session rebind
 
 A surviving local session's relay tools are bound again after a relay restart

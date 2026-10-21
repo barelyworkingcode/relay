@@ -1,6 +1,6 @@
 # Outside sessions
 
-Relay observes Claude and console Pi sessions started outside Relay on the console and in
+Relay observes Claude, console Pi and codex daemon sessions started outside Relay on the console and in
 registered SSH host project folders. These are display data, separate from
 managed sessions. An `outside:` identity never grants input, resize, kill,
 start, permission-answer or configuration authority.
@@ -147,6 +147,27 @@ grants. Missing grants answer `409 transcript_not_granted`. Success returns
 `{sessionId,agent:"pi",conversationId,interrupted:false,recoverySent:false}`.
 The same conversation continues headless, with no automatic model turn.
 
+## Codex daemon rows
+
+A codex thread that the per-user codex daemon has loaded is a console row with
+`agent:"codex"` and `conversationId` (the thread UUID); it omits
+`claudeSessionId`. The name is "Codex — <folder>", `since` is the thread's
+creation time and `state` is `idle` or `running`. Its private identity hashes
+machine, `codex`, the thread id and the daemon's lifetime (the control socket's
+physical path, device, inode and modification time), so a restarted daemon
+makes new ids. A thread with no turn is absent. Relay reads no codex file: the
+detail's `lastTurn` is empty and the transcript page is empty, as for a missing
+file. Row text never carries thread text, only folder, state and times.
+
+One connection per probe lists the threads. Only the default control socket
+under the home folder is read, and only when this user alone owns it and no
+other account can replace it. An absent daemon, an unsafe socket or any daemon
+error gives no codex rows, one Warn, and leaves the Claude and Pi rows intact.
+Managed codex thread ids come from the private `GET /managed-identities`
+`codex_thread_ids`; when they cannot be read, no codex rows show. Only an idle
+row offers Adopt: a busy thread is `adoptable:false` with `adoptReason:"busy"`.
+See [Codex attach](session-adoption.md#codex-attach).
+
 ## Ended sessions
 
 An outside session that ended inside the window stays listed as a row with
@@ -273,6 +294,10 @@ Sessions on SSH hosts are not adopted.
   check whether the call took effect.
 - **Selectors.** `outsideId` is the row's id. `claudeSessionId` is the power
   path; with no live console row for it relay runs one console probe first.
+  A codex thread is selected by `outsideId` only: `claudeSessionId` naming a
+  codex thread and any `model` for a codex row answer `400 invalid_body`. A
+  codex adopt attaches to the daemon, ends no process and answers
+  `{sessionId,agent:"codex",conversationId,interrupted:false,recoverySent:false}`.
 
 ## Optional hooks
 

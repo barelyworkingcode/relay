@@ -82,6 +82,9 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 	if req.ResumeConversation != "" || req.ResumeTranscript != "" {
 		return terminal.CreateSpec{}, errors.New("hostapi: resume_conversation applies only to a claude session")
 	}
+	if req.AttachCodexThread != "" {
+		return terminal.CreateSpec{}, errors.New("hostapi: attach_codex_thread applies only to a codex session")
+	}
 	host, err := decodeHostSpec(req.Host)
 	if err != nil {
 		return terminal.CreateSpec{}, err
@@ -173,6 +176,9 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 	if err := checkResumeConversation(req, host); err != nil {
 		return session.CreateSpec{}, err
 	}
+	if err := checkAttachCodexThread(req, host, sr); err != nil {
+		return session.CreateSpec{}, err
+	}
 
 	if err := checkClaudeEnv(req, host); err != nil {
 		return session.CreateSpec{}, err
@@ -211,6 +217,8 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 
 		ResumeConversation: req.ResumeConversation,
 		ResumeTranscript:   req.ResumeTranscript,
+
+		AttachCodexThread: req.AttachCodexThread,
 	}
 	// session.CreateSpec has no validate() of its own to lean on the way
 	// terminal.CreateSpec does (buildTerminalSpec's own comment): an empty
@@ -303,6 +311,31 @@ func checkResumeConversation(req LaunchRequest, host *sessionstypes.HostSpec) er
 		return err
 	}
 	return adopt.ValidatePiTranscript(home, cwd, req.ResumeConversation, req.ResumeTranscript)
+}
+
+// checkAttachCodexThread allows attach_codex_thread on a fresh, local, headless
+// codex launch only, as a canonical UUID and with no other resume field: the
+// value becomes a thread id relay sends to the codex daemon.
+func checkAttachCodexThread(req LaunchRequest, host *sessionstypes.HostSpec, sr sessionRequestBody) error {
+	if req.AttachCodexThread == "" {
+		return nil
+	}
+	if req.Kind != session.KindCodex || req.Resume || host != nil {
+		return errors.New("hostapi: attach_codex_thread requires a fresh local codex launch")
+	}
+	if req.ResumeConversation != "" || req.ResumeTranscript != "" {
+		return errors.New("hostapi: attach_codex_thread excludes resume_conversation and resume_transcript")
+	}
+	if id, err := uuid.Parse(req.AttachCodexThread); err != nil || len(req.AttachCodexThread) != 36 || id.String() != req.AttachCodexThread {
+		return errors.New("hostapi: attach_codex_thread is not a UUID")
+	}
+	var settings struct {
+		Headless bool `json:"headless"`
+	}
+	if json.Unmarshal(sr.Settings, &settings) != nil || !settings.Headless {
+		return errors.New("hostapi: a codex attach requires headless")
+	}
+	return nil
 }
 
 // checkClaudeEnv refuses claude_env on anything but a local claude launch and

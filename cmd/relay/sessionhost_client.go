@@ -324,46 +324,48 @@ func (c *sessionHostClient) DialWS(ctx context.Context) (*websocket.Conn, error)
 	return conn, nil
 }
 
-// ManagedClaudeIdentities asks the host for the Claude conversation ids it
-// owns; the public session summary deliberately omits them.
-func (c *sessionHostClient) ManagedClaudeIdentities(ctx context.Context) (map[string]bool, error) {
+// managedIdentities asks the host for every id it owns, by agent.
+func (c *sessionHostClient) managedIdentities(ctx context.Context) (hostapi.ManagedIdentitiesResponse, error) {
+	var body hostapi.ManagedIdentitiesResponse
 	httpResp, err := c.do(ctx, http.MethodGet, "/managed-identities", nil)
 	if err != nil {
-		return nil, err
+		return body, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: /managed-identities returned %d", errSessionHostUnavailable, httpResp.StatusCode)
+		return body, fmt.Errorf("%w: /managed-identities returned %d", errSessionHostUnavailable, httpResp.StatusCode)
 	}
-	var body hostapi.ManagedIdentitiesResponse
 	if err := json.NewDecoder(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes)).Decode(&body); err != nil {
-		return nil, fmt.Errorf("session host: decode /managed-identities: %w", err)
+		return body, fmt.Errorf("session host: decode /managed-identities: %w", err)
 	}
-	ids := make(map[string]bool, len(body.ClaudeSessionIDs))
-	for _, id := range body.ClaudeSessionIDs {
+	return body, nil
+}
+
+func idSet(list []string) map[string]bool {
+	ids := make(map[string]bool, len(list))
+	for _, id := range list {
 		ids[id] = true
 	}
-	return ids, nil
+	return ids
+}
+
+// ManagedClaudeIdentities asks the host for the Claude conversation ids it
+// owns; the public session summary deliberately omits them.
+func (c *sessionHostClient) ManagedClaudeIdentities(ctx context.Context) (map[string]bool, error) {
+	body, err := c.managedIdentities(ctx)
+	return idSet(body.ClaudeSessionIDs), err
 }
 
 // ManagedPiIdentities asks the host for the Pi conversation ids it owns; the
 // public session summary deliberately omits them.
 func (c *sessionHostClient) ManagedPiIdentities(ctx context.Context) (map[string]bool, error) {
-	httpResp, err := c.do(ctx, http.MethodGet, "/managed-identities", nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: /managed-identities returned %d", errSessionHostUnavailable, httpResp.StatusCode)
-	}
-	var body hostapi.ManagedIdentitiesResponse
-	if err := json.NewDecoder(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes)).Decode(&body); err != nil {
-		return nil, fmt.Errorf("session host: decode /managed-identities: %w", err)
-	}
-	ids := make(map[string]bool, len(body.PiSessionIDs))
-	for _, id := range body.PiSessionIDs {
-		ids[id] = true
-	}
-	return ids, nil
+	body, err := c.managedIdentities(ctx)
+	return idSet(body.PiSessionIDs), err
+}
+
+// ManagedCodexIdentities asks the host for the codex thread ids it owns; the
+// public session summary deliberately omits them.
+func (c *sessionHostClient) ManagedCodexIdentities(ctx context.Context) (map[string]bool, error) {
+	body, err := c.managedIdentities(ctx)
+	return idSet(body.CodexThreadIDs), err
 }

@@ -904,7 +904,7 @@ func (s *Server) handleHandback(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleManagedIdentities answers the Claude conversation ids this host owns.
+// handleManagedIdentities answers the Claude, Pi and codex ids this host owns.
 // It sits beside /launch, off the manifest, so only relay reads it.
 func (s *Server) handleManagedIdentities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -916,7 +916,7 @@ func (s *Server) handleManagedIdentities(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(ManagedIdentitiesResponse{ClaudeSessionIDs: s.sessions.ClaudeSessionIDs(), PiSessionIDs: s.sessions.PiSessionIDs()})
+	_ = json.NewEncoder(w).Encode(ManagedIdentitiesResponse{ClaudeSessionIDs: s.sessions.ClaudeSessionIDs(), PiSessionIDs: s.sessions.PiSessionIDs(), CodexThreadIDs: s.sessions.CodexThreadIDs()})
 }
 
 // maxPermissionBodyBytes bounds a /permission body. A real tool_input is
