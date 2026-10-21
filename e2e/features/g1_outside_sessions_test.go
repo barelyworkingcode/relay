@@ -468,7 +468,9 @@ func TestOutsideHookReportSurvivesSlowProbe(t *testing.T) {
 }
 
 // A report for a process that has exited never shows its state, and its row
-// leaves the snapshot within the hook promise.
+// leaves the snapshot within the hook promise. Every probe takes five seconds
+// from before the kill, so no probe that could see the process gone finishes
+// within the bound: the drain removes the row.
 func TestOutsideReportForExitedProcessRemovesRow(t *testing.T) {
 	t.Parallel()
 	r := osStart(t, false)
@@ -478,12 +480,16 @@ func TestOutsideReportForExitedProcessRemovesRow(t *testing.T) {
 	if row := r.probe().at(p.dir); row == nil || row.State != "idle" {
 		t.Fatalf("row before the report = %+v, want idle", row)
 	}
+	osSlowProbe(t, r)
 	if err := syscall.Kill(p.pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("ending the process: %v", err)
 	}
 	<-p.exit
 
 	sub := osSubscribe(t, r.i)
+	if row := sub.until(osBound, func(osSnap) bool { return true }).at(p.dir); row == nil {
+		t.Fatalf("the first frame after the exit no longer lists %s; a probe, not the drain, removed it", p.dir)
+	}
 	osReport(t, r.i.Home, map[string]any{"hook_event_name": "PermissionRequest", "session_id": p.sid, "cwd": p.dir}, "RELAY_OUTSIDE_SPOOL=")
 	sub.until(osHookBound, func(s osSnap) bool {
 		row := s.at(p.dir)

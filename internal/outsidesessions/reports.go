@@ -60,8 +60,9 @@ func (i *Inventory) drain(ctx context.Context, m Machine) {
 	}
 	// Reports never seed an identity: independently refresh live evidence first.
 	// Deliberately ctx, not bounded: the read has already deleted the reports,
-	// so a probe that ran out of the read's budget would lose them.
-	if !i.Probe(ctx, m) {
+	// so a probe that ran out of the read's budget would lose them. For the
+	// same reason a failed probe waits for a later one instead of dropping them.
+	if !i.Probe(ctx, m) && !i.awaitReachable(ctx, m) {
 		return
 	}
 	i.mu.Lock()
@@ -73,15 +74,15 @@ func (i *Inventory) drain(ctx context.Context, m Machine) {
 
 // drainConfirmed applies reports to rows whose pid still has the start time
 // the probe saw, and removes rows whose pid is gone or restarted. It returns
-// the reports that matched no live row; ok is false when Lifetimes failed and
-// nothing was applied.
+// the reports that reached no confirmed row, for the full probe to rebuild and
+// apply; ok is false when Lifetimes failed and nothing was applied.
 func (i *Inventory) drainConfirmed(ctx context.Context, m Machine, reports []Report) (unmatched []Report, ok bool) {
 	type target struct {
 		pid      int
 		lifetime string
 	}
 	targets := map[string]target{}
-	matched := map[int]bool{}
+	matches := map[int][]string{}
 	i.mu.Lock()
 	for id, e := range i.entries {
 		if e.machine.Key != m.Key {
@@ -90,18 +91,13 @@ func (i *Inventory) drainConfirmed(ctx context.Context, m Machine, reports []Rep
 		for n, r := range reports {
 			if e.observation.ClaudeID == r.SessionID && e.observation.Session.Directory == r.Cwd {
 				targets[id] = target{e.observation.PID, e.observation.Lifetime}
-				matched[n] = true
+				matches[n] = append(matches[n], id)
 			}
 		}
 	}
 	i.mu.Unlock()
-	for n, r := range reports {
-		if !matched[n] {
-			unmatched = append(unmatched, r)
-		}
-	}
 	if len(targets) == 0 {
-		return unmatched, true
+		return reports, true
 	}
 	seen := map[int]bool{}
 	pids := []int{}
@@ -131,6 +127,15 @@ func (i *Inventory) drainConfirmed(ctx context.Context, m Machine, reports []Rep
 		delete(i.entries, id)
 		changed = true
 	}
+	for n, r := range reports {
+		reached := false
+		for _, id := range matches[n] {
+			reached = reached || confirmed[id]
+		}
+		if !reached {
+			unmatched = append(unmatched, r)
+		}
+	}
 	if i.applyReportsLocked(m, reports, confirmed) {
 		changed = true
 	}
@@ -138,6 +143,29 @@ func (i *Inventory) drainConfirmed(ctx context.Context, m Machine, reports []Rep
 		i.publishLocked()
 	}
 	return unmatched, true
+}
+
+// awaitReachable waits, at most a minute, for a later probe to find the
+// machine reachable again.
+func (i *Inventory) awaitReachable(ctx context.Context, m Machine) bool {
+	snapshots, cancel := i.Subscribe()
+	defer cancel()
+	deadline := i.opts.Clock.After(time.Minute)
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline:
+			return false
+		case <-snapshots:
+		}
+		i.mu.Lock()
+		reachable := i.machines[m.Key].Status == "reachable"
+		i.mu.Unlock()
+		if reachable {
+			return true
+		}
+	}
 }
 
 // applyReportsLocked writes state, source, update time and hookAt, and nothing
