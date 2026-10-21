@@ -54,6 +54,7 @@ func TestBug319ResumeStoppedDormantSessionIsNotFound(t *testing.T) {
 	})
 	i.WaitSessionHost(b319Deadline)
 	id := startAgentSession(t, i, "claude-code", "sonnet")
+	g1lEndAgentWhileDown(t, i, id)
 	i.Restart()
 	i.WaitSessionHost(b319Deadline)
 	if r := i.CLI("session", "stop", "--id", id, "--json"); r.Code != 0 {
@@ -78,6 +79,7 @@ func TestBug319ResumeHTTPDeletedDormantSessionIsNotFound(t *testing.T) {
 	})
 	i.WaitSessionHost(b319Deadline)
 	id := startAgentSession(t, i, "claude-code", "sonnet")
+	g1lEndAgentWhileDown(t, i, id)
 	i.Restart()
 	i.WaitSessionHost(b319Deadline)
 	del := i.SocketHTTP(i.Credential("proxier")).Do("DELETE", "/api/sessions/"+id, nil)

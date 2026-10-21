@@ -11,7 +11,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,12 +64,54 @@ func runDetachedHost(ctx context.Context, e env) result {
 	if baseURL == "" {
 		return result{id, stateNotRun, "needs a stack's local model endpoint (claude_base_url in stack.json)"}
 	}
+	// Deliberate: the journey borrows SIGINT and SIGTERM only to clean up. A
+	// signal cancels the journey's context, the sweep and the teardown run
+	// (both ignore the cancellation), and the signal is then delivered again so
+	// the process still ends as the sender meant.
+	// A launcher that ignores SIGINT keeps ignoring it.
+	sigs := make(chan os.Signal, 2)
+	watched := []os.Signal{syscall.SIGTERM}
+	if !signal.Ignored(os.Interrupt) {
+		watched = append(watched, os.Interrupt)
+	}
+	signal.Notify(sigs, watched...)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var caught os.Signal // written only before done closes
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case caught = <-sigs:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	var res result
 	fx, err := setUpDetachedFixture(ctx, e, baseURL, model, tokenFile)
 	if err != nil {
-		return blocked(id, "fixture host or project: "+err.Error())
+		res = blocked(id, "fixture host or project: "+err.Error())
+	} else {
+		res = driveDetachedHost(ctx, e, fx)
+		res.Detail += fx.tearDown()
 	}
-	res := driveDetachedHost(ctx, e, fx)
-	res.Detail += fx.tearDown()
+
+	signal.Stop(sigs)
+	cancel()
+	<-done
+	if caught == nil {
+		select {
+		case caught = <-sigs:
+		default:
+		}
+	}
+	if caught != nil {
+		res.Detail += "; " + caught.String() + " received during the journey; cleanup ran"
+		if sig, ok := caught.(syscall.Signal); ok {
+			_ = syscall.Kill(os.Getpid(), sig)
+		}
+	}
 	return res
 }
 
@@ -208,16 +254,111 @@ func (fx *detachedFixture) tearDown() (problem string) {
 	return problem
 }
 
+// detachedSweep ends everything this run started: every session id (including
+// those the start retry loop abandoned), the agent's process group and the
+// runner processes. It touches only the run directories of its own sessions.
+type detachedSweep struct {
+	agentsRoot string
+	sids       []string
+	pgid       int // the first runner.json's group, 0 until known
+}
+
+func (w *detachedSweep) runDir(sid string) string { return filepath.Join(w.agentsRoot, sid) }
+
+// holders returns the pids whose command line names one of the swept run
+// directories. Deliberate: the runner leads its own process group and is
+// reparented to init, so its run-directory path is the only handle on it. The
+// match is the full directory path with a trailing slash, never a bare id.
+func (w *detachedSweep) holders(ctx context.Context) ([]int, error) {
+	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("ps: %w", err)
+	}
+	var pids []int
+	for _, line := range strings.Split(string(out), "\n") {
+		pidText, cmd, ok := strings.Cut(strings.TrimSpace(line), " ")
+		pid, perr := strconv.Atoi(pidText)
+		if !ok || perr != nil || pid == os.Getpid() {
+			continue
+		}
+		for _, sid := range w.sids {
+			if strings.Contains(cmd, w.runDir(sid)+string(filepath.Separator)) {
+				pids = append(pids, pid)
+				break
+			}
+		}
+	}
+	return pids, nil
+}
+
+func (w *detachedSweep) run(ctx context.Context, e env) {
+	ctx = context.WithoutCancel(ctx)
+	for _, sid := range w.sids {
+		cliStopSession(ctx, e, sid)
+	}
+	if w.pgid > 1 && groupAlive(w.pgid) {
+		_ = syscall.Kill(-w.pgid, syscall.SIGKILL)
+	}
+	signalAll := func(sig syscall.Signal) {
+		pids, _ := w.holders(ctx)
+		for _, pid := range pids {
+			_ = syscall.Kill(pid, sig)
+		}
+	}
+	signalAll(syscall.SIGTERM)
+	// Waits: process exit after a signal has no event; polled, bounded.
+	gone := func() bool {
+		pids, err := w.holders(ctx)
+		return err != nil || len(pids) == 0
+	}
+	if !pollUntil(ctx, 5*time.Second, gone) {
+		signalAll(syscall.SIGKILL)
+		pollUntil(ctx, 2*time.Second, gone)
+	}
+	for _, sid := range w.sids {
+		_ = os.RemoveAll(w.runDir(sid))
+	}
+}
+
+// finish runs the sweep, then turns res into FAIL when a process still names a
+// swept run directory, or when the process list cannot be read to check. A
+// result that was not FAIL keeps its state and detail in the new detail; a FAIL
+// gets the note appended.
+func (w *detachedSweep) finish(ctx context.Context, e env, res result) result {
+	if len(w.sids) == 0 {
+		return res
+	}
+	w.run(ctx, e)
+	left, err := w.holders(context.WithoutCancel(ctx))
+	var note string
+	switch {
+	case err != nil:
+		note = "cleanup: the leftover check could not run: " + err.Error()
+	case len(left) > 0:
+		note = fmt.Sprintf("cleanup: pids %v still name a started session's run directory", left)
+	default:
+		return res
+	}
+	if res.State == stateFail {
+		res.Detail += "; " + note
+		return res
+	}
+	return result{res.ID, stateFail, note + "; was " + string(res.State) + ": " + res.Detail}
+}
+
 func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res result) {
 	const id = detachedHostID
+	agentsRoot, rootErr := hostAgentsRoot()
+	sweep := &detachedSweep{agentsRoot: agentsRoot}
+	defer func() { res = sweep.finish(ctx, e, res) }()
 	fail := func(f string, a ...any) result { return result{id, stateFail, fmt.Sprintf(f, a...)} }
 	blockedf := func(f string, a ...any) result { return blocked(id, fmt.Sprintf(f, a...)) }
 
 	hostID, projectID := fx.hostID, fx.projectID
-	agentsRoot, err := hostAgentsRoot()
-	if err != nil {
-		return blockedf("%v", err)
+	if rootErr != nil {
+		return blockedf("%v", rootErr)
 	}
+	var err error
 
 	// Waits: none possible for the settings import; relay's file watch emits
 	// no event. The seeded credential opens /ws only once the import has run,
@@ -244,6 +385,7 @@ func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res res
 		if err != nil {
 			return false
 		}
+		sweep.sids = append(sweep.sids, s)
 		if f, rerr := readRunFile(agentsRoot, s, "g1"); rerr == nil {
 			sid, first = s, f
 			return true
@@ -251,15 +393,7 @@ func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res res
 		cliStopSession(ctx, e, s)
 		return false
 	})
-	if sid != "" {
-		defer func() {
-			cleanup := context.WithoutCancel(ctx)
-			cliStopSession(cleanup, e, sid)
-			if first.PGID > 1 && groupAlive(first.PGID) { // only our own agent's group, read from its runner.json
-				_ = syscall.Kill(-first.PGID, syscall.SIGKILL)
-			}
-		}()
-	}
+	sweep.pgid = first.PGID
 	if !started {
 		if err != nil {
 			return fail("relay session start: %v", err)

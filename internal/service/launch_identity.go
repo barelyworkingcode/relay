@@ -93,6 +93,15 @@ const LaunchSecretHexLen = 64
 // a caller cannot learn which launches exist or whether its guess was close.
 var ErrHelloRefused = errors.New("hello refused")
 
+// ErrRebindRefused is the one error every refused Rebind returns; the reason is
+// wrapped for relay's own log and audit row.
+var ErrRebindRefused = errors.New("rebind refused")
+
+// ErrRebindAlreadyBound is wrapped beside ErrRebindRefused when a launch named
+// for the session is live, or the root process already holds an identity, so
+// the caller can tell that refusal from any other.
+var ErrRebindAlreadyBound = errors.New("already bound")
+
 // Launches is the table of live launches and the identities bound to them.
 // The service registry begins and ends launches, the bridge binds them at
 // Hello, and both the bridge router and the frontend server look callers up
@@ -416,6 +425,75 @@ func (t *Launches) BindKind(name, secret string, peer peertoken.Token, wantKind 
 	l.rootWatchCancel = cancel
 	t.bound[proc] = l
 	return l.id, nil
+}
+
+// Rebind records a live, bound project_session launch for a root process that
+// outlived the relay that first bound it. It takes no secret; the caller has
+// checked the claim. It refuses (ErrRebindRefused, wrapped with the reason) when
+// id.Kind is not project_session, a launch named id.Name is live, proc already
+// holds an identity, the kernel's start time for proc.PID is not
+// (startSec, startUsec), or the exit watch cannot be registered (ErrExited included).
+//
+// This is deliberate: the start time is read here, under the table lock, and
+// the exit watch is registered against that same reading, so the process
+// bound is the one the caller named even if its pid is recycled meanwhile.
+func (t *Launches) Rebind(id Identity, proc peertoken.Process, startSec int64, startUsec int32) (*Launch, error) {
+	if id.Kind != IdentityKindProjectSession {
+		return nil, fmt.Errorf("%w: kind %q is not %q", ErrRebindRefused, id.Kind, IdentityKindProjectSession)
+	}
+	if id.Name == "" {
+		return nil, fmt.Errorf("%w: empty name", ErrRebindRefused)
+	}
+	if proc.PID <= 1 {
+		return nil, fmt.Errorf("%w: no root process", ErrRebindRefused)
+	}
+	if id.SessionID == "" {
+		id.SessionID = id.Name
+	}
+	id.Capabilities = nil
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.reapExpiredLocked(t.clock())
+
+	if t.byName[id.Name] != nil {
+		return nil, fmt.Errorf("%w: %w: a launch named %q is live", ErrRebindRefused, ErrRebindAlreadyBound, id.Name)
+	}
+	if other := t.bound[proc]; other != nil {
+		return nil, fmt.Errorf("%w: %w: process %d already holds identity %q", ErrRebindRefused, ErrRebindAlreadyBound, proc.PID, other.id.Name)
+	}
+	info, ok := t.rootSource.Info(int(proc.PID))
+	if !ok || info.StartSec != startSec || info.StartUsec != startUsec {
+		return nil, fmt.Errorf("%w: process %d is not the recorded root", ErrRebindRefused, proc.PID)
+	}
+	l := &Launch{table: t, id: id}
+	cancel, err := t.watchRoot(int(proc.PID), info, func() { l.End() })
+	if err != nil {
+		return nil, fmt.Errorf("%w: root process ancestry watch: %w", ErrRebindRefused, err)
+	}
+	l.spent = true
+	l.id.Process = proc
+	l.id.RootStartSec = info.StartSec
+	l.id.RootStartUsec = info.StartUsec
+	l.rootWatchCancel = cancel
+	t.byName[id.Name] = l
+	t.bound[proc] = l
+	return l, nil
+}
+
+// BoundIdentity returns the identity Hello or Rebind bound to this launch,
+// and whether it is bound and live.
+func (l *Launch) BoundIdentity() (Identity, bool) {
+	if l == nil {
+		return Identity{}, false
+	}
+	l.table.mu.Lock()
+	defer l.table.mu.Unlock()
+	l.table.reapExpiredLocked(l.table.clock())
+	if !l.spent || l.ended {
+		return Identity{}, false
+	}
+	return l.id, true
 }
 
 // Lookup returns the identity bound to the process peer names, if any.

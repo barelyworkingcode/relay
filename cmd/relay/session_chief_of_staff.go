@@ -95,9 +95,19 @@ func (d sessionRouteDeps) deliverChiefOfStaffText(ctx context.Context, actor aud
 }
 
 func (d sessionRouteDeps) sendChiefOfStaffText(ctx context.Context, actor audit.AuditActor, sessionID, text string) (status int, wireCode, message, at string) {
-	const origin = sessiontypes.OriginChiefOfStaff
+	return d.sendOriginText(ctx, actor, sessionID, text, sessiontypes.OriginChiefOfStaff, "chief_of_staff.send")
+}
+
+// sendOriginText delivers text marked with origin: the intent row is durable
+// before the send, the completion row best effort. eventKey names the event
+// the send writes; "" writes none, for a caller whose own event covers it.
+// The caller has already checked that auditing is ready.
+func (d sessionRouteDeps) sendOriginText(ctx context.Context, actor audit.AuditActor, sessionID, text, origin, eventKey string) (status int, wireCode, message, at string) {
 	start := time.Now()
-	ev := logging.BeginEvent(ctx, "chief_of_staff.send").Set("session_id", sessionID).Set("origin", origin)
+	var ev *logging.Event
+	if eventKey != "" {
+		ev = logging.BeginEvent(ctx, eventKey).Set("session_id", sessionID).Set("origin", origin)
+	}
 
 	id := audit.NewAuditID()
 	intent := audit.AuditEvent{

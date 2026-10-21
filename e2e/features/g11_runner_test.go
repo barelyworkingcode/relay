@@ -192,6 +192,11 @@ func TestHostSessionSSHFallbackWhenDetachOff(t *testing.T) {
 // followed by a subcommand.
 var g11rTmuxCommand = regexp.MustCompile(`(^|[\s;|&/])tmux\s+[a-z-]+`)
 
+// g11rInventoryProbe is a fragment only the outside-sessions inventory probe sends.
+// Deliberate: that probe runs on its own 15 s timer and lists tmux panes; it is
+// not the session's runner, so the scan below skips its calls.
+const g11rInventoryProbe = `relay-outside-reports" ]`
+
 // Criterion 6: the runner never calls tmux. A tmux on the host's PATH records
 // every call it gets; a session still runs headless and none is recorded.
 func TestHostRunnerWithoutTmux(t *testing.T) {
@@ -217,6 +222,9 @@ func TestHostRunnerWithoutTmux(t *testing.T) {
 		t.Fatalf("the host's tmux was called during a headless session: stat err = %v", err)
 	}
 	for _, c := range i.SSHCalls()[base:] {
+		if strings.Contains(c.Script(), g11rInventoryProbe) {
+			continue
+		}
 		// Every Unix host command travels in a base64 launcher, so the decoded
 		// script is what names a command. A comment that mentions tmux is not a call.
 		if m := g11rTmuxCommand.FindString(c.Script()); m != "" {

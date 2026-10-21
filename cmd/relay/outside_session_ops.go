@@ -116,6 +116,10 @@ func newOutsideInventory(store config.SettingsStore, clock serverClock, deps ses
 		return machines
 	}})
 }
+
+// outsideLifetime is the one format of a process start time, shared by the
+// probe and Lifetimes so a drain compare cannot drift from the row's string.
+func outsideLifetime(sec int64, usec int32) string { return fmt.Sprintf("%d.%06d", sec, usec) }
 func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config.Host, spool outsideSpool) outsidesessions.Machine {
 	key, name := "console", "Console"
 	var hostID *string
@@ -161,7 +165,7 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			for pid, proc := range native.Processes {
 				if proc.Lifetime != "" {
 					if info, ok := membership.NewSource().Info(pid); ok {
-						proc.Lifetime = fmt.Sprintf("%d.%06d", info.StartSec, info.StartUsec)
+						proc.Lifetime = outsideLifetime(info.StartSec, info.StartUsec)
 						native.Processes[pid] = proc
 					} else {
 						delete(native.Processes, pid)
@@ -182,6 +186,7 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 				id := project.ID
 				o.Session.ProjectID = &id
 			}
+			outsidesessions.GateAdoption(&o.Session, h != nil, project != nil)
 			if o.Session.TmuxSession != nil {
 				if h == nil || h.ShowAllTmuxSessions {
 					o.Session.Viewable = true
@@ -205,6 +210,20 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			}
 		}
 		return outsidesessions.ProbeResult{Observations: out, SawSpool: native.SawSpool, Held: held}, nil
+	}
+	if h == nil && runtime.GOOS == "darwin" {
+		// Only where the probe rewrites Lifetime from the kernel; a pid the
+		// kernel cannot read is absent, never an error.
+		m.Lifetimes = func(_ context.Context, pids []int) (map[int]string, error) {
+			out := make(map[int]string, len(pids))
+			src := membership.NewSource()
+			for _, pid := range pids {
+				if info, ok := src.Info(pid); ok {
+					out[pid] = outsideLifetime(info.StartSec, info.StartUsec)
+				}
+			}
+			return out, nil
+		}
 	}
 	m.Ended = func(ctx context.Context, held map[string]bool, cutoff time.Time) ([]outsidesessions.Observation, error) {
 		h, err := freshOutsideHost(store, h)

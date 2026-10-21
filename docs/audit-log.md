@@ -889,9 +889,59 @@ answers.
   the cause in `error`: `already_processing`, `resume_required`, `dropped_in`,
   `send_failed` or `session_host_unavailable`.
 - A message the person types is not a `session_message` row.
+- The `relay-recovery` origin marks the one message relay sends after an
+  adopt that interrupted a turn (`POST /api/sessions/adopt`).
 
 ```
 relay audit --event session_message                # every Chief of Staff send; DETAIL reads session=<id> origin=chief-of-staff <phase>
+```
+
+### Session adopt
+
+`POST /api/sessions/adopt` writes, in order, durable `intent` rows before any
+signal and `completion` rows after (each pair shares an `id`; actor is the
+caller, as for drop-in):
+
+- `session_adopt` intent: `args` `outside_id`, `claude_session_id`,
+  `project_id`, `directory`, `interrupt`, `model`; `outcome: pending`.
+- `session_interrupt` intent (a busy session only): `outside_id`,
+  `claude_session_id`, `project_id`. Its completion adds `signals` (`signal`
+  `INT`, `at`) and `exited`.
+- `session_message` intent with origin `relay-recovery` (after a takeover that
+  sent SIGINT), written before delivery like every marked send.
+- `session_adopt` completion: the intent's args plus `session_id`,
+  `interrupted`, `signals` (what `TakeOver` sent: `TERM` and `KILL`, with `at` on
+  relay's clock; `INT` belongs to the `session_interrupt` completion alone) and `recovery_sent` (a failed recovery send does not undo the adopt).
+  `outcome` is `ok` or `error`, with the refusal code in
+  `error`.
+
+The resumed launch writes its ordinary `session_launch` row. With auditing off,
+or when an intent row cannot be written, the door answers 503
+`audit_unavailable` and signals nothing.
+
+### Session rebind
+
+A surviving local session's relay tools are bound again after a relay restart
+(`SessionRebind`, [`docs/session-host.md`](session-host.md#relay-tools-after-a-relay-restart)).
+Relay writes a durable `intent` row before it checks the claim and a durable
+`completion` row after; the two share an `id`. The actor is the service
+`relaysessions` (`auth: none`) with the session id.
+
+- `session_rebind` intent: `args` `session_id`, `project_id`, `runner_pid` and
+  `root_pid` (from the ledger); `outcome: pending`.
+- `session_rebind` completion: the same args. `outcome` is `ok`; `denied` with
+  `error` one of `not_live`, `project_gone`, `no_root_record`, `runner_mismatch`,
+  `root_gone`, `root_not_in_tree`, `already_bound`; or `error` with `error`
+  `bind_failed`.
+- A caller that is not the bound relay-sessions identity writes one row with no
+  phase: actor `unknown`, `auth: none`, args `session_id`, `outcome:
+  unauthorized`.
+
+With auditing off, or when the intent row cannot be written, nothing is bound.
+A completion row that cannot be written is logged at Warn and the binding stays.
+
+```
+relay audit --event session_rebind
 ```
 
 ### Chief of Staff starts

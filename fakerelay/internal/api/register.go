@@ -34,11 +34,12 @@ type api struct {
 	outsideSubscribers map[chan map[string]any]bool
 }
 
-// Register installs the doors and verbs.
-func Register(r server.Registrar, d server.Deps) error {
+// Register installs the doors and verbs. The returned seam moves outside
+// fixture rows for the session door.
+func Register(r server.Registrar, d server.Deps) (server.OutsideRows, error) {
 	a := &api{Deps: d, started: d.Clock.Now(), calls: fakes.NewCallLog(d.Dir), extra: map[string]map[string]json.RawMessage{}, outsideSubscribers: map[chan map[string]any]bool{}, probeAt: map[string]time.Time{}}
 	if err := a.openSeededWindow(); err != nil {
-		return err
+		return nil, err
 	}
 	a.projectRoutes(r)
 	a.agentRoutes(r)
@@ -51,7 +52,7 @@ func Register(r server.Registrar, d server.Deps) error {
 	a.eveRoutes(r)
 	a.auditRoutes(r)
 	a.verbs(r)
-	return nil
+	return a, nil
 }
 
 func (a *api) now() time.Time { return a.Clock.Now().UTC() }

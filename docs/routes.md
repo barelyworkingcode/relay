@@ -285,7 +285,8 @@ stopping are forwarded to the session host (section 3).
   The body is at most 1 MiB.
 - **Response `201`:** the session object: `sessionId`, `projectId`, `name`,
   `directory`, `model`, `providerType`, `createdAt`, `messages`, `stats`, and
-  `headless`, `agent`, `origin`, `host` when set.
+  `headless`, `agent`, `origin`, `host` when set. It carries no provider state:
+  the runner's pid and start time stay inside relay.
 - **Errors:**
   - `400` malformed JSON or an invalid field;
   - `403` the project is not available for a launch, the model or directory is
@@ -458,6 +459,33 @@ that conversation, on the drop-in caller's behalf, with no further message.
   intent row before the session stops, then a completion row; a second pair
   for the hand back).
 - **CLI equivalent:** `relay drop-in` (needs an interactive terminal).
+
+### POST /api/sessions/adopt
+
+Ends an idle (or, with `interrupt`, a busy) Claude session the owner started
+in a terminal on this Mac, and resumes the same conversation as a headless
+relay session in the same folder. See [Adopting a session](outside-sessions.md#adopting-a-session).
+
+- **Listeners:** socket. **Credential:** `execute`. **Gate:** none. Inside the
+  `chief-of-staff` scope it answers `403`.
+- **Request:** body of at most 4 KiB, unknown fields refused: exactly one of
+  `outsideId` (`outside:<32 hex>`) and `claudeSessionId` (a UUID), plus
+  optional `interrupt` (default false) and `model`.
+- **Response `201`:** `sessionId`, `claudeSessionId`, `interrupted`,
+  `recoverySent`.
+- **Errors:** `{"error": "<code>", "message": "<text>"}`. `400` `invalid_body`;
+  `413` `body_too_large`; `404` `outside_session_not_found`; `409` a reason
+  code (`ended`, `host_unsupported`, `no_project`, `not_registered`,
+  `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line`,
+  `ambiguous`), `managed`, `busy`, `model_unknown`, `adopt_in_progress` or
+  `changed`; `403`/`400` the launch refusal's own code (nothing is signalled);
+  `502` `unavailable` (relay-sessions is down, the registry or the idle check
+  could not be read, or the process could not be signalled), `stop_failed`
+  (the process outlived SIGKILL's wait) or `launch_failed`; `503`
+  `audit_unavailable` (nothing is signalled).
+- **Event:** `session.adopt`. **Audit rows:** `session_adopt`,
+  `session_interrupt`, `session_message` (origin `relay-recovery`), and the
+  launch's own `session_launch`.
 
 ### GET /api/sessions
 
@@ -2057,6 +2085,18 @@ See [`service-manifest.md`](service-manifest.md).
 must hold `model_host`, and register under its own service id. Reply: `OK`;
 `-32602` for a missing field or a relative path; `-32001` otherwise. See
 [`model-endpoint.md`](model-endpoint.md).
+
+### bridge:SessionRebind
+
+`{"type":"SessionRebind","arguments":{"session_id","runner_pid","runner_start_sec","runner_start_usec"}}`.
+No `token`: the caller's launch identity must be the bound `relaysessions`
+service holding `sessions`. Binds a surviving local Claude session's recorded
+root to a fresh launch identity after a relay restart. Reply: `OK`; `-32602`
+for an empty `session_id` or a `runner_pid` that is not a process; `-32001` for
+a caller that is not relay-sessions, and `-32001` "session rebind refused" for
+every other refusal (the reason is in the `session.rebind` event and the
+`session_rebind` audit row). A test sends it only from outside the agent's tree
+to check the refusal. See [`session-host.md`](session-host.md#relay-tools-after-a-relay-restart).
 
 ### bridge:admin frames
 

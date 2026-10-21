@@ -157,7 +157,10 @@ chief-of-staff send. relay's handler for `POST /api/chief-of-staff/messages`
 writes the intent audit row, then calls `sessionHostClient.Send`, which posts
 `{session_id, text, origin}`. The host checks the peer as it does for
 `/launch`, and `/send` is in `sessionHostReservedRoutes`, so no manifest can
-declare it. Only listed sessions can receive: an unlisted session answers
+declare it. The accepted origins are `chief-of-staff` and `relay-recovery`,
+the latter used once by the adopt door after an interrupted takeover (a
+`session_message` intent row precedes it like any marked send). Only listed
+sessions can receive: an unlisted session answers
 `not_found`. A turn already running answers `already_processing`, and a session
 that is not live answers `resume_required`. A session a drop-in terminal holds
 answers `dropped_in` (409); relay's route passes it through as 409
@@ -537,10 +540,13 @@ shim](#the-shim-relay-sessions-exec)). A provider-hosted session has no
 request**. Only claude sessions have one; pi and chat sessions report no
 root and never run the hook:
 
-- A local claude session's root is the pid the provider actually spawned:
-  `relay-sessions exec`'s own pid when the session runs shimmed (every
-  production local launch that carries a sandbox profile or a launch
-  identity), or `claude` itself when the launch has neither.
+- A local claude session's root is the runner: the pid `cmd.Start` returned
+  for `/bin/sh runner.sh`, with its start time read from the kernel at once
+  and persisted as `runnerRoot`. The walk goes hook, `claude`, `sandbox-exec`,
+  shim, agent subshell, runner. The agent subshell is a fork of the runner; it
+  holds fds 3 to 5 until the agent exits. After a relay-sessions restart the provider records the root
+  only when `runner.json`'s pid and the kernel's start time of that pid both
+  match `runnerRoot`; otherwise there is no root and the hook is denied.
 - The root's start time is read immediately after `cmd.Start()` returns, and
   the walk requires an exact match on pid *and* start time — a bare pid
   match would also match whatever unrelated process the kernel later
@@ -564,6 +570,43 @@ entry goes stale the moment a provider restarts a process outside `/launch` —
 kernel may since have reused. Reading `session.Manager` fresh on each request
 means a restarted provider's new pid is what the walk actually sees, and a
 torn-down session reports no root instead of a dangling one.
+
+### Relay tools after a relay restart
+
+A local session's relay tools run as a descendant of the shim, which is the
+`project_session` root. The shim's launch identity lived in relay's memory, so a
+relay restart dropped it and the tools failed closed. Relay now keeps the root
+in the ledger record (`root`: pid, pidversion, kernel start time, copied from
+the shim's Hello bind; a resume writes the new shim's). After relay-sessions
+attaches a local runner session whose provider reports its runner, it sends
+`SessionRebind` (session id and runner pid and start time) over the bridge,
+at boot and at a lazy attach alike. Relay's gate runs in this order, and the
+first failure stops it:
+
+1. The caller is the bound `relaysessions` identity holding `sessions`;
+   otherwise `unauthorized`, with one audit row and no intent row.
+2. The intent row is written durably; with auditing off or a failed write the
+   rebind is refused (`audit_unavailable`) and nothing is bound.
+3. `not_live`: no `live` local `claude` record, or the record is detached.
+4. `project_gone`: the project is missing, remote or hosted (read fresh).
+5. `no_root_record`: the record has no `root`.
+6. `runner_mismatch`: the runner is not alive, its pid is not the claimed one,
+   or the kernel's start time for it is not the claimed one.
+7. `root_gone`: the root's start time is unreadable or differs from the record.
+8. `root_not_in_tree`: the ancestry walk, with the claimed runner as its only
+   root, does not place the root under the runner.
+9. `already_bound`: a live launch for the session exists, or the root holds an
+   identity.
+10. `bind_failed`: `Launches.Rebind` failed in any other way.
+
+Every refusal after the first answers the bridge `-32001` "session rebind
+refused"; the reason goes to the `session.rebind` event and the audit row only.
+A refusal or a failed call is logged at Warn and leaves the tools closed; there
+is no retry. A second restart takes the same path and writes a new pair. A
+session started before relay kept the root is refused `no_root_record` until
+one stop and resume. A restart of relay-sessions alone ends the session's
+identities with it, and the same attach rebinds them. The session list shows
+nothing when a rebind is refused.
 
 ### Decision order
 
@@ -1012,6 +1055,7 @@ A machine that has a real CLI under `/usr/local/bin` or `/opt/homebrew/bin` ther
 
 ### What every spawn has in common
 
+- A local Claude session starts under the runner (`/bin/sh runner.sh`, own session) in `<config dir>/sessions/runners/<session id>/<generation>/`, mode `0700`; the runner owns the agent's stdin and stdout and keeps `out.jsonl`, `events.jsonl` and `runner.json`. Codex and pi, and a host session under `ssh -T`, start as below.
 - The child starts in the session directory, with stdin and stdout as pipes. Stderr is a third pipe, read line by line into the service log ([Provider stderr](#provider-stderr)).
 - The environment is the `relay-sessions` environment minus every relay credential variable, plus `RELAY_SESSION_ID`, and `RELAY_BRIDGE_SOCKET` and `RELAY_MODEL_SOCKET` when those sockets exist. No token is ever added.
 - A sandboxed launch runs the binary under the shim ([The shim](#the-shim-relay-sessions-exec)); the binary sees the same argv, stdin and stdout.
@@ -1022,6 +1066,8 @@ A machine that has a real CLI under `/usr/local/bin` or `/opt/homebrew/bin` ther
 - A session idle for 15 minutes with no stdin or stdout line is killed.
 
 ### claude
+
+A local session runs under the runner: relay-sessions starts the runner with the shim's descriptors 3 (identity), 4 (status) and 5 (token). The runner starts the shim with them and closes its own copies before it starts any other process; it never reads descriptor 5. The system prompt and MCP config go in the run directory, except for a sandboxed launch, whose profile grants only the temp directory, so they stay there. Relay-sessions shutdown releases the session and leaves the agent running; a start attaches every persisted local runner session whose runner lives. A stop signals every process in the runner's session (its id is the runner pid): TERM, then KILL. When the pending permissions of a session rise above zero, relay-sessions queues `inbox/<id>.evt` holding `{"type":"asking"}`; the runner appends an `asking` event and writes nothing to the agent.
 
 Argv, in this order. Flags in brackets appear only when the condition holds.
 
@@ -1192,6 +1238,8 @@ Answers `200 {"claude_session_ids":[string]}`: the Claude conversation id of eve
 
 ### The terminal
 
+`LaunchRequest.resume_conversation` (a fresh local `claude` launch only) names the Claude conversation to resume: a canonical UUID, refused with `invalid_spec` on a pty, a resume, a host launch or any other value. The host seeds the new session's provider state with it, so claude starts with `--resume <id>`. Relay's adopt door sets it; see [Outside sessions](outside-sessions.md#adopting-a-session).
+
 `LaunchRequest.drop_in_for` (pty only) names the held session the terminal takes over. `/launch` answers `409 not_held` unless that session is held and no other terminal already has it. The link from terminal id to session id is recorded before the terminal starts, and removed if the start fails. When the terminal exits, `onTerminalExit` calls `HandBack` first and `reportExit` second, so the hold is clear when relay's resume reaches `/launch`. Closing the window or a killed client never leaves a session held. The hold is in memory: a relay-sessions restart drops it.
 
 #### The hand-back resume
@@ -1299,6 +1347,8 @@ The early-failure paths (identity refused, spawn failed) drain stderr
 themselves and close stdout unread.
 
 ## What a child inherits
+
+A local Claude session's runner gets the same environment and descriptors. The Claude token (fd 5) passes through the runner to the shim; the runner never reads it. The agent subshell (a fork of the runner) holds fds 3 to 5 until the agent exits; the runner closes its own copies once the pipeline starts, and the output filter never inherits them.
 
 A terminal, a claude or pi session and an MCP server child each start from
 `relay-sessions`' own environment, minus two sets:
@@ -1799,6 +1849,8 @@ Warn. So a refused launch can log two lines.
 
 ## Host data directory layout
 
+`runners/` holds one directory per local Claude session, then one per generation (see the runner above). Delete removes `runners/<session id>/`; `SessionExited` for a session relay holds no account for removes `profiles/<session id>.sb`.
+
 Everything relay-sessions owns lives under one directory, resolved from the
 already-resolved `RELAY_BRIDGE_SOCKET` path rather than re-derived from
 `os.UserConfigDir()` — the latter would silently drop a `relay --config-dir`
@@ -1906,6 +1958,8 @@ See [`docs/audit-log.md`](audit-log.md#session-host-events) for the exact
 record shape.
 
 ## Resume (user action only) — SH-6
+
+A local Claude session whose runner still lives is attached, never started a second time; after a relay restart its relay tools come back on their own (see [Relay tools after a relay restart](#relay-tools-after-a-relay-restart)); a session started before relay recorded its root keeps them closed until it is stopped and resumed. A session whose agent exited reads dormant and resumes on its conversation.
 
 A hand back is also a resume: when a drop-in terminal ends, relay resumes the held session on the drop-in caller's behalf, through the same path ([The hand-back resume](#the-hand-back-resume)). No further user action is needed.
 

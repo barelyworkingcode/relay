@@ -99,6 +99,11 @@ any earlier launch under the same name. Matching on pidversion as well as pid
 means a recycled pid never inherits an identity. The table lives only in
 relay's memory.
 
+A `project_session` identity is the one exception to "a restart is a new
+launch": when relay restarts and the session's root outlives it, relay builds
+the identity again from the session's ledger record, with no secret. See
+[`project_session`](#project_session-the-session-host-identity-kind).
+
 This holds identically whether the restart is an operator's (`relay service
 restart`, Settings, tray relaunch) or relay's own, after a service exits on
 its own and relay's supervision restarts it (`docs/service-manifest.md#restart-supervision`):
@@ -303,6 +308,22 @@ injected as before. A session-host-launched `pty` instead relies on its
 bound `project_session` identity, or C3 membership if it is a descendant
 rather than the root — no project token is injected into a session-host
 child's environment at all.
+
+**A surviving session's identity is rebuilt, not re-bound.** The ledger record
+keeps the root's process identity (pid, pidversion, kernel start time) from the
+Hello that bound it. A process identity is not a credential: holding it grants
+nothing, and the kernel attests the match. After a relay restart,
+relay-sessions attaches the session's runner again and sends the bridge request
+`SessionRebind` with the runner's pid and start time. Relay admits only the
+bound `relaysessions` identity holding `sessions`, writes the intent row, and
+then requires the runner to be alive and to match the claim, the recorded root
+to have its recorded start time, and the root to sit in the runner's process
+tree. `Launches.Rebind` then records a live, bound launch for that process with
+the same identity `launchOnHost` begins, so its authority is the project's live
+grant, as before the restart. Nothing is minted, written to an fd or stored.
+The exit watch ends the launch when the root exits. A session started before
+relay kept the root has no record to rebind and keeps its tools closed until a
+stop and a resume. Design and gate order: [`docs/session-host.md`](session-host.md#identity-whose-call-is-this).
 
 **This does not hold for a `claude`/`pi` launch.** Neither
 `provider.ClaudeConfig` nor `provider.PiConfig` (`internal/sessions/provider`)

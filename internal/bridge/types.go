@@ -57,6 +57,11 @@ const (
 	// config restricts to the built-in relay-sessions service.
 	ReqSessionExited = "SessionExited"
 
+	// ReqSessionRebind is relay-sessions' claim that a local session's runner
+	// outlived a relay restart and its root should hold a launch identity
+	// again. Requires the sessions capability; relay decides the claim.
+	ReqSessionRebind = "SessionRebind"
+
 	// ReqMountAttach is the mount plane's one request type: the single
 	// preamble line a relay-9p/1 connection sends before the 9P stream
 	// begins. It is deliberately absent from BOTH of remote_server.go's
@@ -189,6 +194,27 @@ type SessionExitedRequest struct {
 func (r *SessionExitedRequest) Validate() error {
 	if r.SessionID == "" {
 		return fmt.Errorf("session_exited: session_id is empty")
+	}
+	return nil
+}
+
+// SessionRebindRequest is the Arguments payload for a ReqSessionRebind claim:
+// the session and the local runner (pid and kernel start time) relay-sessions
+// attached. It carries no secret and names no project or root; relay reads
+// those from its own ledger.
+type SessionRebindRequest struct {
+	SessionID       string `json:"session_id"`
+	RunnerPID       int    `json:"runner_pid"`
+	RunnerStartSec  int64  `json:"runner_start_sec"`
+	RunnerStartUsec int32  `json:"runner_start_usec"`
+}
+
+func (r *SessionRebindRequest) Validate() error {
+	if r.SessionID == "" {
+		return fmt.Errorf("session_rebind: session_id is empty")
+	}
+	if r.RunnerPID <= 1 {
+		return fmt.Errorf("session_rebind: runner_pid is not a process")
 	}
 	return nil
 }
@@ -355,6 +381,10 @@ type ToolRouter interface {
 	// Requires a launch identity holding the sessions capability; token is
 	// always empty on this wire (tokenless, like RegisterModelHost).
 	SessionExited(ctx context.Context, req SessionExitedRequest, token string) error
+	// SessionRebind handles relay-sessions' claim that a surviving local
+	// session's root should be bound to a fresh launch identity. Requires a
+	// launch identity holding the sessions capability; token is always empty.
+	SessionRebind(ctx context.Context, req SessionRebindRequest, token string) error
 }
 
 func NewScanner(r io.Reader) *bufio.Scanner {

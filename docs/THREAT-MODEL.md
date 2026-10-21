@@ -88,9 +88,10 @@ outside it is not a relay bug, however real.
    (no symlink, a 16 KiB tail for the list, 1 MiB for detail) and the same
    untrusted display data. The scope can read the last turn of a console
    session that ended inside the window, not only of a live one.
-   An ended row also carries `claudeSessionId`, the name of the transcript file
-   the scope already reads; it opens no door in the scope, which has no terminal
-   start and no resume.
+   Every row carries `claudeSessionId`: an ended row's is the name of the
+   transcript file the scope already reads, a live row's is the registry's or the
+   transcript's id. It opens no door in the scope, which has no terminal start,
+   no resume and no adopt.
    The scope also can't change where the Chief of Staff runs: the
    `/api/chief-of-staff/config` routes are refused inside it.
    Agent output cannot add or change a launcher. The scope writes no agent
@@ -124,15 +125,39 @@ outside it is not a relay bug, however real.
    reads the window size to follow it and sets nothing on the owner's
    session. Being listed by tmux confers no managed-session authority.
 3d. **A caller reading an outside transcript.** A frontend holding `execute` on the socket reads one page of an outside session's transcript through `GET /api/outside-sessions/{id}/transcript`. The id resolves only to a live inventory entry. The file is the one the probe derived from the machine's home, the process's working folder and a validated session id; no request field names a path. The read refuses a symbolic link on the file or its three parent folders, reads at most 256 KiB per request and writes nothing. On an SSH host it runs over the host's ssh as the host account, as the probe does. No `read` credential and no TCP caller reaches the route, and neither does the Chief of Staff scope, which still reads only the latest turn. Transcript text is untrusted display data and grants no action authority.
-3e. **Other code running as the host account on a detached session's host.**
+3e. **Other code running as the host account on a detached session's host, or as the user on this Mac.**
    A detached session's agent reads `~/.relay/agents/<session id>/<generation>/inbox/`
-   on the host. Any process running as that account can write a file there and
+   on the host; a local Claude session's runner reads the same layout under
+   `<config dir>/sessions/runners/<session id>/<generation>/` on this Mac.
+   No sandbox profile grants that directory, so attacker 1 cannot reach it. Any process running as that account can write a file there and
    forge a user message or a `control_response` that allows a tool call. This
    grants no new reach: a host session already runs unconfined as that
    account, so such a process can do what the agent can do. It is a new way
    around relay's audit and origin marking: a forged line carries no origin
    and no audit row. Relay promises neither against it. The run directory is
-   `0700`, which keeps out other accounts, and nothing else.
+   `0700`, which keeps out other accounts, and nothing else. The same process can
+   write a local session's ledger `root`, a run directory and relay-sessions'
+   session state, and so make relay bind a process of its own as a session root
+   at the next restart. This gains it no reach: it can already start a session in
+   any project from the operator socket. Every rebind writes a durable
+   `session_rebind` pair that names the root pid.
+3f. **A caller adopting an outside Claude session.** A caller holding `execute`
+   on the socket can end a console Claude process a person started in a
+   terminal and resume its conversation under relay, through
+   `POST /api/sessions/adopt`. Only an eligible entry is adopted: an
+   interactive, command-line Claude with a UUID `sessionId` whose registry
+   `procStart` equals the process's kernel start time, in a registered local
+   project. An ambiguous match (two live entries, one `sessionId`), a session
+   relay already manages and a session on an SSH host are never adopted. Relay
+   writes a durable intent row before any signal and signals nothing with
+   auditing off; before each signal it re-reads the pid's start time and
+   sends nothing on a mismatch. The registry and the transcript choose no
+   path and grant nothing: the transcript path is derived and symlinks are
+   refused. The resumed session gets the project's sandbox, allowed models and
+   permission policy and the ordinary launch identity and token path. The
+   recovery message after an interrupt quotes at most 300 characters of the
+   session's own last prompt and 500 of the open tool call's input, under the
+   `relay-recovery` origin. The chief-of-staff scope cannot reach the door.
 4. **A peer on the network or in the browser** (a machine that can reach a
    relay listener, or a web page open on this Mac reaching relay's localhost
    ports). It gets nothing without a credential: no tool call, no config

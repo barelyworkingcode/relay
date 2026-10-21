@@ -32,6 +32,10 @@ const (
 	// itself — R-S4b adds the bridge request type, the handler, and the
 	// ledger/model-key/identity cleanup it drives.
 	OpSessionExited Operation = "SessionExited"
+	// OpSessionRebind is relay-sessions' claim that a local session's root
+	// outlived a relay restart. Relay's own gate decides the claim; this
+	// only admits the caller.
+	OpSessionRebind Operation = "SessionRebind"
 
 	// OpProjectTools is ListTools/CallTool for a project_session identity —
 	// root or C3 member alike (plan-broker-and-sessions.md §2 C1's
@@ -50,7 +54,7 @@ const (
 // Operations is every Operation Allowed decides.
 var Operations = []Operation{
 	OpHello, OpFrontendSocket, OpRegisterManifest,
-	OpRegisterModelHost, OpModelCall, OpModelList, OpSessionExited,
+	OpRegisterModelHost, OpModelCall, OpModelList, OpSessionExited, OpSessionRebind,
 	OpProjectTools, OpProjectDescribe, OpProjectListSkills,
 }
 
@@ -65,6 +69,7 @@ var serviceOperationCapability = map[Operation]config.ServiceCapability{
 	OpRegisterModelHost: config.ServiceCapabilityModelHost,
 	OpModelCall:         config.ServiceCapabilityModels,
 	OpSessionExited:     config.ServiceCapabilitySessions,
+	OpSessionRebind:     config.ServiceCapabilitySessions,
 }
 
 // projectSessionOperations is every operation a project_session identity may

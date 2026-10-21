@@ -244,6 +244,10 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqRegisterModelHost:     {credential: "launch_identity", handle: handleRegisterModelHost},
 	ReqHello:                 {credential: "launch_secret", handle: handleHello},
 	ReqSessionExited:         {credential: "launch_identity", handle: handleSessionExited},
+	// This is deliberate: a new local dispatch entry. The gate is relay's own
+	// (appRouter.SessionRebind), which admits only the bound relaysessions
+	// identity and then checks the claim against the ledger and the kernel.
+	ReqSessionRebind: {credential: "launch_identity", handle: handleSessionRebind},
 
 	// This is deliberate: ungated and carrying no bearer, like admin_op. The
 	// guard is handleSandboxAttach's kernel-attested membership refusal and
@@ -428,6 +432,23 @@ func handleSessionExited(ctx context.Context, req *BridgeRequest, router ToolRou
 		return bridgeError(jsonrpc.CodeInvalidParams, err.Error())
 	}
 	if err := router.SessionExited(ctx, r, req.Token); err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespOK}
+}
+
+func handleSessionRebind(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	if len(req.Arguments) == 0 {
+		return bridgeError(jsonrpc.CodeInvalidParams, "session_rebind: missing arguments")
+	}
+	var r SessionRebindRequest
+	if err := json.Unmarshal(req.Arguments, &r); err != nil {
+		return bridgeError(jsonrpc.CodeParseError, "session_rebind: "+err.Error())
+	}
+	if err := r.Validate(); err != nil {
+		return bridgeError(jsonrpc.CodeInvalidParams, err.Error())
+	}
+	if err := router.SessionRebind(ctx, r, req.Token); err != nil {
 		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespOK}
