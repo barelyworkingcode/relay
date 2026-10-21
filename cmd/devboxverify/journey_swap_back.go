@@ -110,7 +110,7 @@ type swapBody struct {
 	SessionID       string `json:"sessionId"`
 	ClaudeSessionID string `json:"claudeSessionId"`
 	Terminal        struct {
-		ID string `json:"id"`
+		ID string `json:"terminalId"`
 	} `json:"terminal"`
 }
 
