@@ -512,6 +512,10 @@ The point: Claude Code, Codex and pi run with one base URL, a model relay
 manages is served by the broker (scoped to the project, audited), and a
 provider's own model reaches that provider with the client's own credential.
 
+The adopt door (`POST /api/sessions/adopt`) also reads the modelMap, through
+the same cache, to turn a broker-served transcript model into a Claude alias;
+it never shows the target to a caller.
+
 **Two credentials, two headers.** The client's own token stays in
 `Authorization` (or `x-api-key`), untouched. Relay's per-session key travels in
 `X-Relay-Key`. A subscription login sends one credential, its OAuth token, on

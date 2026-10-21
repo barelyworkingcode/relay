@@ -71,6 +71,9 @@ func ReadTail(data []byte) Tail {
 		}
 		switch rec.Type {
 		case "assistant":
+			if m := rec.Message.Model; m != "" && m != "<synthetic>" {
+				t.Model = m
+			}
 			if family := modelFamily(rec.Message.Model); family != "" {
 				t.ModelFamily = family
 			}

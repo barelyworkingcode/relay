@@ -224,8 +224,15 @@ Sessions on SSH hosts are not adopted.
 - **The resumed session** runs `settings {"headless":true,"agent":true}` under
   the project's sandbox, allowed models and permission policy, with
   `--resume <claudeSessionId>`. The model is the body's `model`, else the
-  family alias (`haiku`, `sonnet`, `opus`) of the newest assistant record; none
-  answers `model_unknown`.
+  family alias (`haiku`, `sonnet`, `opus`) of the newest assistant record, else
+  the alias for a broker-served model. The newest assistant record's model id
+  stands for its modelMap key (the id itself when it is a key, else every key
+  whose target it is), read from a fresh catalog through the model endpoint's
+  cache. A key maps to an alias when relay's environment sets
+  `ANTHROPIC_DEFAULT_<ALIAS>_MODEL` to it. Exactly one distinct alias is the
+  model, and the session starts with the alias, never the key or the target.
+  Otherwise, or with an unreadable catalog, the door answers `model_unknown`
+  before anything is signalled.
 - **Recovery message.** After a takeover that sent SIGINT, relay sends one
   message with origin `relay-recovery` (no event line of its own; the
   `session.adopt` event covers it), quoting at most 300 characters of the

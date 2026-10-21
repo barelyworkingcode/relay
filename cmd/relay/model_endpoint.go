@@ -918,6 +918,17 @@ func (m *ModelEndpointServer) IsSystemModel(ctx context.Context, id string) (boo
 	return false, nil
 }
 
+// ModelMapKeys returns the modelMap keys that id stands for, from a catalog
+// read through the same cache the proxy classifies with. An unreadable catalog
+// is an error, never an empty answer.
+func (m *ModelEndpointServer) ModelMapKeys(ctx context.Context, id string) ([]string, error) {
+	rows, err := m.catalog.Resolve(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return modelbroker.ModelMapKeysFor(rows, id), nil
+}
+
 // routerStatus adds status.value to each entry, for GET /models only: that
 // path is the llama.cpp router dialect, and a client such as pi's llama.cpp
 // provider rejects the whole catalog when one entry lacks it. Every row is
