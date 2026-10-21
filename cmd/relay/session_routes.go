@@ -822,13 +822,27 @@ func (d sessionRouteDeps) abortLaunch(ctx context.Context, sessionID string) {
 	}
 }
 
-// createdBody is the 201 body of a create: the host's own body, or an empty
-// object when the host sent none.
+// createdBody is the 201 body of a create: the host's own body without its
+// top-level providerState, or an empty object when the host sent none. The
+// runner's pid and start time stay inside relay; every other key is forwarded
+// as the host sent it. A body that is not a JSON object passes unchanged.
 func createdBody(body json.RawMessage) json.RawMessage {
 	if len(body) == 0 {
 		return json.RawMessage("{}")
 	}
-	return body
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil || fields == nil {
+		return body
+	}
+	if _, ok := fields["providerState"]; !ok {
+		return body
+	}
+	delete(fields, "providerState")
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func writeCreatedBody(w http.ResponseWriter, body json.RawMessage) {
