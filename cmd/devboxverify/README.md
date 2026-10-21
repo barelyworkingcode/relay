@@ -1129,7 +1129,7 @@ message is answered; one generation directory exists; and `relay session stop`
 ends the process group and removes the run directory. On every exit, the journey then
 stops each session it started (including ones the start retry loop abandoned), ends the
 agent group and every process whose command line names a started session's run directory,
-and removes those directories; a process still naming one turns the result into FAIL.
+and removes those directories; a process still naming one turns the result into FAIL. A SIGINT or SIGTERM during the journey runs that cleanup before the process ends.
 - Waits: CLI exits, `/ws` frames and `session.host_link` events. `session
   send` returns only once relay holds the receipt, so the drop never lands on
   a send in flight (that ends `send_unknown`).

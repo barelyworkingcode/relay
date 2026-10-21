@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -63,12 +64,47 @@ func runDetachedHost(ctx context.Context, e env) result {
 	if baseURL == "" {
 		return result{id, stateNotRun, "needs a stack's local model endpoint (claude_base_url in stack.json)"}
 	}
+	// Deliberate: the journey borrows SIGINT and SIGTERM only to clean up. A
+	// signal cancels the journey's context, the sweep and the teardown run
+	// (both ignore the cancellation), and the signal is then delivered again so
+	// the process still ends as the sender meant.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	caught := make(chan os.Signal, 1)
+	go func() {
+		select {
+		case sig := <-sigs:
+			caught <- sig
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	var res result
 	fx, err := setUpDetachedFixture(ctx, e, baseURL, model, tokenFile)
 	if err != nil {
-		return blocked(id, "fixture host or project: "+err.Error())
+		res = blocked(id, "fixture host or project: "+err.Error())
+	} else {
+		res = driveDetachedHost(ctx, e, fx)
+		res.Detail += fx.tearDown()
 	}
-	res := driveDetachedHost(ctx, e, fx)
-	res.Detail += fx.tearDown()
+
+	signal.Stop(sigs)
+	select {
+	case sig := <-sigs: // arrived after the goroutine stopped listening
+		caught <- sig
+	default:
+	}
+	select {
+	case sig := <-caught:
+		res.Detail += "; " + sig.String() + " received during the journey; cleanup ran"
+		if s, ok := sig.(syscall.Signal); ok {
+			_ = syscall.Kill(os.Getpid(), s)
+		}
+	default:
+	}
 	return res
 }
 
