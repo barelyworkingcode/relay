@@ -1126,7 +1126,10 @@ relay holds the runner's receipt), runs `relay host disconnect`, waits for `sess
 `link=lost` then `restored`, and reads the turn with `relay session wait`. PASS when `runner.json` keeps its pid, pgid,
 start time and generation; the turn in flight returns its marker; a later
 message is answered; one generation directory exists; and `relay session stop`
-ends the process group and removes the run directory.
+ends the process group and removes the run directory. On every exit, the journey then
+stops each session it started (including ones the start retry loop abandoned), ends the
+agent group and every process whose command line names a started session's run directory,
+and removes those directories; a process still naming one turns the result into FAIL.
 - Waits: CLI exits, `/ws` frames and `session.host_link` events. `session
   send` returns only once relay holds the receipt, so the drop never lands on
   a send in flight (that ends `send_unknown`).
