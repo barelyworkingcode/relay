@@ -267,6 +267,9 @@ func sessionLaunchStatus(err error) (int, string) {
 	if errors.Is(err, session.ErrDroppedIn) {
 		return 409, "dropped_in"
 	}
+	if errors.Is(err, session.ErrAttachRequired) {
+		return 400, ErrInvalidSpec
+	}
 	if errors.Is(err, provider.ErrIdentityRefused) {
 		return 502, ErrIdentityRefused
 	}
@@ -313,21 +316,27 @@ func checkResumeConversation(req LaunchRequest, host *sessionstypes.HostSpec) er
 	return adopt.ValidatePiTranscript(home, cwd, req.ResumeConversation, req.ResumeTranscript)
 }
 
-// checkAttachCodexThread allows attach_codex_thread on a fresh, local, headless
-// codex launch only, as a canonical UUID and with no other resume field: the
-// value becomes a thread id relay sends to the codex daemon.
+// checkAttachCodexThread allows attach_codex_thread on a local, headless codex
+// launch only (fresh, or a resume the session manager matches to the stored
+// attach), as a canonical UUID and with no other resume field: the value becomes
+// a thread id relay sends to the codex daemon.
 func checkAttachCodexThread(req LaunchRequest, host *sessionstypes.HostSpec, sr sessionRequestBody) error {
 	if req.AttachCodexThread == "" {
 		return nil
 	}
-	if req.Kind != session.KindCodex || req.Resume || host != nil {
-		return errors.New("hostapi: attach_codex_thread requires a fresh local codex launch")
+	if req.Kind != session.KindCodex || host != nil {
+		return errors.New("hostapi: attach_codex_thread requires a local codex launch")
 	}
 	if req.ResumeConversation != "" || req.ResumeTranscript != "" {
 		return errors.New("hostapi: attach_codex_thread excludes resume_conversation and resume_transcript")
 	}
 	if id, err := uuid.Parse(req.AttachCodexThread); err != nil || len(req.AttachCodexThread) != 36 || id.String() != req.AttachCodexThread {
 		return errors.New("hostapi: attach_codex_thread is not a UUID")
+	}
+	if req.Resume {
+		// The stored session is headless or it is not an attach: Manager.Create
+		// reads it.
+		return nil
 	}
 	var settings struct {
 		Headless bool `json:"headless"`

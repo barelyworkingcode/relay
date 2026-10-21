@@ -910,6 +910,10 @@ func TestCodexAttachAuditBeforeAttach(t *testing.T) {
 	if at := ccTime(t, intent["ts"]); at.After(receipt) {
 		t.Fatalf("the adopt intent at %v follows the daemon's receipt at %v", at, receipt)
 	}
+	launch := ccSessionRow(t, r, "session_launch", sid)
+	if ccArg(launch, "sandbox") != false {
+		t.Fatalf("the attach's session_launch row says sandbox %v, want false: %v", ccArg(launch, "sandbox"), launch)
+	}
 	if ccTime(t, completion["ts"]).Before(ccTime(t, intent["ts"])) {
 		t.Fatal("the completion precedes its intent")
 	}
@@ -1005,8 +1009,8 @@ func TestCodexAttachInterruptAuditFailureKeepsTurn(t *testing.T) {
 		t.Fatalf("the refused interrupt changed the session: %+v", row)
 	}
 	// The recorder keeps its first write error: restore, then restart, its
-	// lifecycle boundary. The session reads dormant and a resume attaches again
-	// to the thread, whose turn is still open.
+	// lifecycle boundary. The session reads dormant. A resume attaches again
+	// only to an idle thread, so the terminal ends the open turn first.
 	restore()
 	ws.Close()
 	r.restart()
@@ -1014,12 +1018,10 @@ func TestCodexAttachInterruptAuditFailureKeepsTurn(t *testing.T) {
 	if row, ok := g1sFindSession(list, sid); !ok || row.Live {
 		t.Fatalf("session after the restart: listed %v, %+v, want dormant", ok, row)
 	}
+	d.do(map[string]any{"cmd": "complete_turn", "id": th.ID})
 	r.i.MustCLI("session", "resume", "--id", sid, "--json")
-	list, _ = g1sListSessions(t, r.i)
-	if row, ok := g1sFindSession(list, sid); !ok || row.Attention == nil || row.Attention.State != "running" {
-		t.Fatalf("the resumed session does not show the open turn: %+v", row)
-	}
 	ws = r.join(sid)
+	r.hold(d, ws, sid)
 	r.stop(ws, sid)
 	d.until("the interrupt at the daemon after audit recovery", ccRelayReq("turn/interrupt"))
 	g1aNext(t, ws, g1tFrameDeadline, ccState(sid, "idle"))
@@ -1037,15 +1039,21 @@ func TestCodexAttachStateFollowsStatus(t *testing.T) {
 	ui := r.terminal(th)
 	sid := r.attached(th)
 	ws := r.join(sid)
-	// The terminal starts a turn: Relay did not send it, only the status shows it.
-	ack := d.do(map[string]any{"cmd": "start_turn", "id": th.ID})
+	// Only the thread's status changes: no turn/started and no turn/completed
+	// reaches Relay, so the state can follow nothing but thread/status/changed.
+	d.do(map[string]any{"cmd": "set_status", "id": th.ID, "status": "active"})
 	g1aNext(t, ws, g1tFrameDeadline, ccState(sid, "running"))
-	ui.until("the terminal UI sees the turn", func(l map[string]any) bool {
-		turn, _ := ccParams(l)["turn"].(map[string]any)
-		return l["method"] == "turn/started" && turn["id"] == ack["turn"]
+	ui.until("the terminal UI sees the status", func(l map[string]any) bool {
+		status, _ := ccParams(l)["status"].(map[string]any)
+		return l["method"] == "thread/status/changed" && status["type"] == "active"
 	})
-	d.do(map[string]any{"cmd": "complete_turn", "id": th.ID})
+	d.do(map[string]any{"cmd": "set_status", "id": th.ID, "status": "idle"})
 	g1aNext(t, ws, g1tFrameDeadline, ccState(sid, "idle"))
+	for _, l := range ui.snapshot() {
+		if l["method"] == "turn/started" || l["method"] == "turn/completed" {
+			t.Fatalf("the test sent a turn notification: %v", l)
+		}
+	}
 	if m := d.mutations(); !slices.Equal(m, []string{"thread/resume"}) {
 		t.Fatalf("Relay sent %v, want only the attach", m)
 	}
@@ -1073,7 +1081,7 @@ func TestCodexAttachApprovalsDeclined(t *testing.T) {
 		rid := ack["rid"]
 		resp := d.until("Relay's answer to "+method, func(l map[string]any) bool { return l["event"] == "response" && l["id"] == rid })
 		if resp["error"] != nil {
-			continue
+			t.Fatalf("%s got an error reply, want a decline result: %v", method, resp)
 		}
 		result, _ := resp["result"].(map[string]any)
 		if got := fmt.Sprint(result[field]); got != "decline" && got != "denied" {
@@ -1148,11 +1156,15 @@ func TestCodexAttachDormantReattaches(t *testing.T) {
 	if row, ok := g1sFindSession(list, sid); !ok || row.Live {
 		t.Fatalf("session after the daemon died: listed %v, %+v, want dormant", ok, row)
 	}
-	// With no daemon the resume refuses; Relay starts no codex of its own.
+	// With no daemon the resume refuses and writes no intent; Relay starts no
+	// codex of its own.
 	if res := r.i.CLI("session", "resume", "--id", sid, "--json"); res.Code == 0 {
 		t.Fatalf("resume with the daemon down succeeded: %s", res.Stdout)
 	}
 	ccNoCodexProgram(t, r.i)
+	if got := ccReattachRows(t, r, th, "intent"); len(got) != 0 {
+		t.Fatalf("a resume with the daemon down wrote a re-attach intent: %v", got)
+	}
 	list, _ = g1sListSessions(t, r.i)
 	if row, ok := g1sFindSession(list, sid); !ok || row.Live {
 		t.Fatalf("a refused resume made the session live: %+v", row)
@@ -1161,8 +1173,256 @@ func TestCodexAttachDormantReattaches(t *testing.T) {
 	d2.add(th)
 	r.i.MustCLI("session", "resume", "--id", sid, "--json")
 	g1sSendText(t, r.i, sid, "Acme after the restart", "echo: Acme after the restart")
+	receipt := ccTime(t, d2.until("the re-attach at the restarted daemon", ccRelayReq("thread/resume"))["ts"])
 	if got := ccMethods(d2.relayCalls("thread/resume")); len(got) != 1 {
 		t.Fatalf("the restarted daemon saw %d attaches, want one", len(got))
+	}
+	intents := ccReattachRows(t, r, th, "intent")
+	completions := ccReattachRows(t, r, th, "completion")
+	if len(intents) != 1 || len(completions) != 1 {
+		t.Fatalf("re-attach rows: intents %v, completions %v", intents, completions)
+	}
+	intent, completion := intents[0], completions[0]
+	for key, want := range map[string]any{"session_id": sid, "method": "reattach", "relay_sandbox": false, "agent": "codex",
+		"conversation_id": th.ID, "project_id": r.project, "directory": th.Dir, "interrupt": false} {
+		if ccArg(intent, key) != want {
+			t.Fatalf("re-attach intent arg %s = %v, want %v: %v", key, ccArg(intent, key), want, intent)
+		}
+	}
+	if intent["outcome"] != "pending" || completion["outcome"] != "ok" {
+		t.Fatalf("re-attach outcomes: intent %v, completion %v", intent["outcome"], completion["outcome"])
+	}
+	if at := ccTime(t, intent["ts"]); at.After(receipt) {
+		t.Fatalf("the re-attach intent at %v follows the daemon's receipt at %v", at, receipt)
+	}
+	var resumed map[string]any
+	for _, row := range g4Wait(t, r.i, g4Has(func(row g4Row) bool {
+		return ccArg(row, "session_id") == sid && row.str("outcome") == "ok"
+	}), "--event", "session_resume") {
+		if ccArg(row, "session_id") == sid && row["outcome"] == "ok" {
+			resumed = row
+		}
+	}
+	if ccArg(resumed, "sandbox") != false {
+		t.Fatalf("the session_resume row says sandbox %v, want false: %v", ccArg(resumed, "sandbox"), resumed)
+	}
+	ccNoCodexProgram(t, r.i)
+}
+
+// ccAuditRows returns the audit rows of one event.
+func ccAuditRows(t *testing.T, r *ccRig, event string) []g4Row {
+	t.Helper()
+	res := r.i.CLI("audit", "--tail", "100000", "--json", "--event", event)
+	if res.Code != 0 {
+		t.Fatalf("relay audit --event %s exited %d: %s", event, res.Code, res.Stderr)
+	}
+	return g4Parse(t, res.Stdout)
+}
+
+// ccSessionRow returns the one row of event that names the session.
+func ccSessionRow(t *testing.T, r *ccRig, event, sid string) g4Row {
+	t.Helper()
+	rows := g4Wait(t, r.i, g4Has(func(row g4Row) bool { return ccArg(row, "session_id") == sid }), "--event", event)
+	for _, row := range rows {
+		if ccArg(row, "session_id") == sid {
+			return row
+		}
+	}
+	t.Fatalf("no %s row for session %s", event, sid)
+	return nil
+}
+
+// ccReattachRows returns the session_adopt rows of the thread with method
+// "reattach" in one phase.
+func ccReattachRows(t *testing.T, r *ccRig, th ccThread, phase string) []g4Row {
+	t.Helper()
+	var out []g4Row
+	for _, row := range ccAuditRows(t, r, "session_adopt") {
+		if ccArg(row, "conversation_id") == th.ID && ccArg(row, "method") == "reattach" && row["phase"] == phase {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func (r *ccRig) resume(sid string) harness.Response {
+	r.t.Helper()
+	return r.i.SocketHTTP(r.i.Credential("cos")).Do("POST", "/api/sessions/"+sid+"/resume", nil)
+}
+
+// dormant ends the daemon and returns once the session reads dormant.
+func (r *ccRig) dormant(d *ccProc, sid string) {
+	r.t.Helper()
+	d.kill()
+	r.i.WaitEvent(harness.EventQuery{Key: "session.exited", Fields: map[string]any{"session_id": sid}}, g1sHostDeadline)
+	r.stillDormant(sid)
+}
+
+func (r *ccRig) stillDormant(sid string) {
+	r.t.Helper()
+	list, _ := g1sListSessions(r.t, r.i)
+	if row, ok := g1sFindSession(list, sid); !ok || row.Live {
+		r.t.Fatalf("session %s: listed %v, %+v, want dormant", sid, ok, row)
+	}
+}
+
+func TestCodexAttachResumeRefused(t *testing.T) {
+	t.Parallel()
+	// Managed is not reachable here: the only session on the thread is the
+	// dormant one being resumed.
+	for _, kind := range []string{"busy", "changed", "ended", "ambiguous"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			r := ccStart(t)
+			d := r.daemon()
+			th := r.thread("resume-" + kind)
+			d.add(th)
+			sid := r.attached(th)
+			r.dormant(d, sid)
+			d2 := r.daemon()
+			now := th
+			switch kind {
+			case "busy":
+				now.Turns = []string{"completed", "inProgress"}
+			case "changed":
+				now.Dir = osDir(t, r.root, "elsewhere")
+			}
+			if kind != "ended" {
+				d2.add(now)
+			}
+			if kind == "ambiguous" {
+				d2.do(map[string]any{"cmd": "dup", "id": th.ID})
+			}
+			if resp := r.resume(sid); resp.Status != http.StatusConflict {
+				t.Fatalf("resume answered %d, want 409: %s", resp.Status, resp.Body)
+			}
+			d2.barrier()
+			if m := d2.mutations(); len(m) != 0 {
+				t.Fatalf("Relay sent the daemon %v after a refused resume", m)
+			}
+			r.stillDormant(sid)
+			ccNoCodexProgram(t, r.i)
+			// The route's body carries no code: the refusal code is the error of the
+			// session_resume audit row.
+			rows := g4Wait(t, r.i, g4Has(func(row g4Row) bool { return row.str("error") == kind }), "--event", "session_resume")
+			for _, row := range rows {
+				if row["error"] == kind && row["outcome"] == "ok" {
+					t.Fatalf("a refused resume row says ok: %v", row)
+				}
+			}
+			// Positive control: with the thread as it was, the same resume attaches.
+			// add_thread replaces the thread, its busy turn and its duplicate flag.
+			d2.add(th)
+			r.i.MustCLI("session", "resume", "--id", sid, "--json")
+			g1sSendText(t, r.i, sid, "Acme after the refusal", "echo: Acme after the refusal")
+		})
+	}
+}
+
+func TestCodexAttachResumeAuditFailureSendsNothing(t *testing.T) {
+	t.Parallel()
+	r := ccStart(t, paLowAudit)
+	d := r.daemon()
+	th := r.thread("resume-audit-failure")
+	d.add(th)
+	sid := r.attached(th)
+	r.dormant(d, sid)
+	d2 := r.daemon()
+	d2.add(th)
+	restore := paBlockAuditWrites(t, &paRig{osRig: r.osRig})
+	if resp := r.resume(sid); resp.Status != http.StatusServiceUnavailable {
+		t.Fatalf("resume answered %d, want 503: %s", resp.Status, resp.Body)
+	}
+	d2.barrier()
+	if m := d2.mutations(); len(m) != 0 {
+		t.Fatalf("an audit refusal still sent the daemon %v", m)
+	}
+	r.stillDormant(sid)
+	ccNoCodexProgram(t, r.i)
+	// The recorder keeps its first write error: restore, then restart, its
+	// lifecycle boundary. Then the same resume attaches, with one thread/resume.
+	restore()
+	r.restart()
+	r.i.MustCLI("session", "resume", "--id", sid, "--json")
+	g1sSendText(t, r.i, sid, "Acme after audit recovery", "echo: Acme after audit recovery")
+	if n := len(d2.relayCalls("thread/resume")); n != 1 {
+		t.Fatalf("the daemon got %d thread/resume requests, want one", n)
+	}
+}
+
+func TestCodexAttachTerminalTurnApprovalUnanswered(t *testing.T) {
+	t.Parallel()
+	r := ccStart(t)
+	d := r.daemon()
+	th := r.thread("terminal-approval")
+	d.add(th)
+	ui := r.terminal(th)
+	sid := r.attached(th)
+	ws := r.join(sid)
+	receiver := func(ack map[string]any, client string) any {
+		recs, _ := ack["receivers"].([]any)
+		for _, rec := range recs {
+			if m, _ := rec.(map[string]any); m["client"] == client {
+				return m["rid"]
+			}
+		}
+		t.Fatalf("approval receivers %v hold no %s", ack["receivers"], client)
+		return nil
+	}
+	// A turn the terminal UI started: the request goes to every subscriber.
+	d.do(map[string]any{"cmd": "start_turn", "id": th.ID})
+	g1aNext(t, ws, g1tFrameDeadline, ccState(sid, "running"))
+	first := d.do(map[string]any{"cmd": "approval", "id": th.ID, "method": "item/commandExecution/requestApproval", "to": "all"})
+	relayFirst, uiFirst := receiver(first, "relay"), receiver(first, "terminal-ui")
+	ui.until("the terminal's own request", func(l map[string]any) bool { return l["event"] == "server_request" && l["id"] == uiFirst })
+	ui.do(map[string]any{"cmd": "answer", "id": uiFirst, "result": map[string]any{"decision": "accept"}})
+	d.until("the terminal's answer at the daemon", func(l map[string]any) bool {
+		return l["event"] == "response" && l["client"] == "terminal-ui" && l["id"] == uiFirst
+	})
+	d.do(map[string]any{"cmd": "complete_turn", "id": th.ID})
+	g1aNext(t, ws, g1tFrameDeadline, ccState(sid, "idle"))
+	// A turn Relay started: its request is declined.
+	r.hold(d, ws, sid)
+	second := d.do(map[string]any{"cmd": "approval", "id": th.ID, "method": "item/commandExecution/requestApproval", "to": "all"})
+	relaySecond := receiver(second, "relay")
+	decline := d.until("Relay's answer to the request on its own turn", func(l map[string]any) bool {
+		return l["event"] == "response" && l["client"] == "relay" && l["id"] == relaySecond
+	})
+	result, _ := decline["result"].(map[string]any)
+	if decline["error"] != nil || fmt.Sprint(result["decision"]) != "decline" {
+		t.Fatalf("Relay's answer on its own turn: %v, want a decline", decline)
+	}
+	d.barrier()
+	for _, l := range d.snapshot() {
+		if l["event"] == "response" && l["client"] == "relay" && l["id"] == relayFirst {
+			t.Fatalf("Relay answered a request for a turn it did not start: %v", l)
+		}
+	}
+}
+
+func TestCodexAttachClearRefused(t *testing.T) {
+	t.Parallel()
+	r := ccStart(t)
+	d := r.daemon()
+	th := r.thread("clear")
+	d.add(th)
+	sid := r.attached(th)
+	g1sSendText(t, r.i, sid, "Acme before the clear", "echo: Acme before the clear")
+	ws := r.join(sid)
+	ws.Send(map[string]any{"type": "clear_session", "sessionId": sid})
+	// The refusal is a plain error frame without a session id.
+	g1aNext(t, ws, g1tFrameDeadline, func(v map[string]any) bool { return v["type"] == "error" })
+	list, _ := g1sListSessions(t, r.i)
+	if row, ok := g1sFindSession(list, sid); !ok || !row.Live {
+		t.Fatalf("the refused clear changed the session: listed %v, %+v", ok, row)
+	}
+	// A following resume starts no codex program, and the session keeps working.
+	_ = r.resume(sid)
+	ccNoCodexProgram(t, r.i)
+	g1sSendText(t, r.i, sid, "Acme after the clear", "echo: Acme after the clear")
+	d.barrier()
+	if m := d.mutations(); !slices.Equal(m, []string{"thread/resume", "turn/start", "turn/start"}) {
+		t.Fatalf("Relay sent %v, want the attach and the two turns", m)
 	}
 	ccNoCodexProgram(t, r.i)
 }

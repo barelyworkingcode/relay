@@ -323,3 +323,26 @@ func (p *CodexProvider) detachDaemon(conn *codexdaemon.Conn, released bool) {
 	}
 	slog.Info("codex daemon attachment ended", "session", p.session.ID)
 }
+
+// ownTurnRequest reports whether a server request is for the turn this provider
+// started on its thread. Any other request, a terminal's turn included, belongs
+// to the person at that terminal: relay sends no answer, so codex's own prompt
+// stays open. A request that names no turn counts only while relay's turn is the
+// open one. A request that names no thread, or another one, is never answered.
+func (p *CodexProvider) ownTurnRequest(env codexEnvelope) bool {
+	var req struct {
+		ThreadID       string `json:"threadId"`
+		ConversationID string `json:"conversationId"`
+		TurnID         string `json:"turnId"`
+	}
+	_ = json.Unmarshal(env.Params, &req)
+	p.stateMu.Lock()
+	thread, mine := p.threadID, p.relayTurn
+	p.stateMu.Unlock()
+	named := firstNonEmpty(req.ThreadID, req.ConversationID)
+	own := mine != "" && thread != "" && named == thread && (req.TurnID == "" || req.TurnID == mine)
+	if !own {
+		slog.Info("codex: server request left for the terminal", "session", p.session.ID, "method", env.Method, "turn", req.TurnID)
+	}
+	return own
+}

@@ -941,7 +941,16 @@ it has no `claude_session_id`. The completion adds `session_id`, or the refusal
 code in `error`. No signal is sent and no `session_interrupt` or recovery row
 belongs to an attach: a busy thread is refused with no row past the refusal.
 With auditing off, or when the intent row cannot be written, relay sends the
-daemon no `thread/resume`.
+daemon no `thread/resume`. Each audit row of an attach, the `session_launch`
+row included, records `sandbox:false`.
+
+A resume of a dormant attached codex session writes the same intent and
+completion with `method:"reattach"` and `session_id` in the args, before
+`thread/resume` goes to the daemon. A refusal before the intent (`409 busy`,
+`changed`, `ended`, `ambiguous`, `managed`, `no_project`, `model_unknown`,
+`502 unavailable`) writes a `session_resume` row with the code in `error` and no
+intent; `503 audit_unavailable` writes nothing. The `session_resume` row of the
+re-attach records `sandbox:false`.
 
 After the attach, each managed `turn/interrupt` first writes a durable
 `session_interrupt` intent through the same bridge request, with `session_id`,

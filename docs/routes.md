@@ -435,6 +435,11 @@ The trailing-slash form of `POST /api/terminals`: same contract.
   `resumed` is `false` when the session was already live.
 - **Errors:** `404` unknown session; `409` a resume of the same session is in
   progress; `403` or `400` the launch is refused; `502` the session host failed.
+  A dormant session attached to a codex thread resumes only by attaching again:
+  the route runs the adopt checks and answers `409 busy|changed|ended|ambiguous|managed|no_project|model_unknown`,
+  `502 unavailable` (before the audit intent), `502 launch_failed` (after it) or
+  `503 audit_unavailable`, each as `{"error":"<message>"}`. See
+  [Codex attach](session-adoption.md#codex-attach).
 - **Event:** `session.resume` (`session_id`, `project_id`).
 - **Audit row:** `session_resume`.
 - **CLI equivalent:** `relay session resume`.
@@ -503,7 +508,8 @@ with `interrupt:true`, and relay sends the daemon nothing that changes it. A
 failed attach after the intent row answers `502 launch_failed`: "relay could
 not attach to the codex thread; nothing in codex changed". `502 unavailable`
 means the daemon or the host could not be reached before the intent. No public
-request can set the private `attach_codex_thread` host field. See
+request can set the private `attach_codex_thread` host field. The session host
+refuses to resume an attached codex session without it (`400 invalid_spec`). See
 [Codex attach](session-adoption.md#codex-attach).
 
 The private bridge `SessionInterrupt` request is `{session_id}`. Only the

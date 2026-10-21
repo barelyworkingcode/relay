@@ -379,6 +379,9 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 	if m.getProviderFactory() == nil && !m.providerKindSupported(spec.Kind) {
 		return nil, fmt.Errorf("session: kind %q has no provider wired (claude/pi/codex/chat only)", spec.Kind)
 	}
+	if err := m.checkAttachResume(spec); err != nil {
+		return nil, err
+	}
 
 	m.mu.Lock()
 	existing, exists := m.slots[spec.SessionID]
@@ -1538,23 +1541,63 @@ func (m *Manager) StopGeneration(id string) error {
 // for it.
 var ErrClearAttached = errors.New("this session is attached to a codex thread and its history cannot be cleared from relay")
 
-// attachedCodex reports whether sess is an attach to a daemon-held codex
-// thread. State that cannot be read counts as not attached only when empty.
-func (m *Manager) attachedCodex(sess *sessionstypes.Session) bool {
+// attachedCodexThread returns the daemon thread sess is attached to. State that
+// cannot be read counts as not attached only when empty.
+func (m *Manager) attachedCodexThread(sess *sessionstypes.Session) (string, bool) {
 	sess.Lock()
 	kind := sess.ProviderType
 	raw := append(json.RawMessage(nil), sess.ProviderState...)
 	sess.Unlock()
 	if kind != KindCodex {
-		return false
+		return "", false
 	}
 	if p := sess.Provider(); p != nil {
 		raw = p.GetState()
 	}
 	var state struct {
-		DaemonAttach bool `json:"daemonAttach"`
+		ThreadID     string `json:"threadId"`
+		DaemonAttach bool   `json:"daemonAttach"`
 	}
-	return len(raw) > 0 && json.Unmarshal(raw, &state) == nil && state.DaemonAttach
+	if len(raw) == 0 || json.Unmarshal(raw, &state) != nil || !state.DaemonAttach {
+		return "", false
+	}
+	return state.ThreadID, true
+}
+
+// attachedCodex reports whether sess is an attach to a daemon-held codex
+// thread.
+func (m *Manager) attachedCodex(sess *sessionstypes.Session) bool {
+	_, attached := m.attachedCodexThread(sess)
+	return attached
+}
+
+// ErrAttachRequired refuses a resume that would start a provider for an
+// attached codex thread outside relay's attach checks.
+var ErrAttachRequired = errors.New("session: an attached codex session resumes only through relay's attach checks")
+
+// checkAttachResume holds the attach checks' door shut: a stored attach resumes
+// only for a request that names its own thread, and only a stored attach of that
+// thread takes such a request.
+func (m *Manager) checkAttachResume(spec CreateSpec) error {
+	if !spec.Resume {
+		return nil
+	}
+	var thread string
+	var attached bool
+	if sess, ok := m.Get(spec.SessionID); ok {
+		thread, attached = m.attachedCodexThread(sess)
+		sess.Lock()
+		headless := sess.Headless
+		sess.Unlock()
+		attached = attached && (headless || spec.AttachCodexThread == "")
+	}
+	if attached && spec.AttachCodexThread != thread {
+		return ErrAttachRequired
+	}
+	if spec.AttachCodexThread != "" && !attached {
+		return ErrAttachRequired
+	}
+	return nil
 }
 
 // ClearSession kills the provider and clears history/stats. A project-bound

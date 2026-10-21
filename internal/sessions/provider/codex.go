@@ -172,8 +172,12 @@ type CodexProvider struct {
 	stateMu  sync.Mutex
 	threadID string
 	turnID   string
-	pending  map[string]func(codexReply)
-	nextID   atomic.Int64
+	// relayTurn is the turn this provider's own turn/start opened on a
+	// daemon-attached thread, until that turn ends. Only a request for this
+	// turn is answered.
+	relayTurn string
+	pending   map[string]func(codexReply)
+	nextID    atomic.Int64
 	// reqPrefix starts every client request id of one spawn. Deliberate: a reply
 	// that a run directory still holds from before an attach never matches a
 	// request made after it.
@@ -269,6 +273,7 @@ func (p *CodexProvider) Start() (err error) {
 	p.stateMu.Lock()
 	p.pending = make(map[string]func(codexReply))
 	p.turnID = ""
+	p.relayTurn = ""
 	p.reqPrefix = "relay-" + uuid.NewString()[:8] + "-"
 	p.stateMu.Unlock()
 	p.nextID.Store(0)
@@ -937,6 +942,9 @@ func (p *CodexProvider) deliverReply(env codexEnvelope) {
 // turn. Approvals are declined because approvalPolicy "never" means one only
 // arrives when something outside relay forced it.
 func (p *CodexProvider) answerServerRequest(env codexEnvelope) {
+	if p.daemonAttach.Load() && !p.ownTurnRequest(env) {
+		return
+	}
 	// A request the run directory already shows an answer for, or one this
 	// provider answered already, is not answered twice.
 	if det := p.det.Load(); det != nil && !det.Claim(codexIDKey(env.ID)) {
@@ -1187,6 +1195,7 @@ func (p *CodexProvider) translateTurnCompleted(params json.RawMessage) {
 	p.turnActive = false
 	p.stateMu.Lock()
 	p.turnID = ""
+	p.relayTurn = ""
 	p.stateMu.Unlock()
 
 	if len(blocks) > 0 {
@@ -1270,6 +1279,9 @@ func (p *CodexProvider) onTurnStartReply(r codexReply) {
 	if json.Unmarshal(r.result, &res) == nil && res.Turn.ID != "" {
 		p.stateMu.Lock()
 		p.turnID = res.Turn.ID
+		if p.daemonAttach.Load() {
+			p.relayTurn = res.Turn.ID
+		}
 		p.stateMu.Unlock()
 	}
 }

@@ -496,6 +496,7 @@ func (s *server) command(raw []byte) map[string]any {
 		Preview   string   `json:"preview"`
 		Status    string   `json:"status"`
 		Method    string   `json:"method"`
+		To        string   `json:"to"`
 		Ephemeral bool     `json:"ephemeral"`
 		Created   int64    `json:"created"`
 		Turns     []string `json:"turns"`
@@ -553,24 +554,32 @@ func (s *server) command(raw []byte) map[string]any {
 		}
 		s.endTurn(t, tn, "completed")
 	case "approval":
+		// By default only Relay's connections get the request; "to":"all" raises
+		// it on every subscriber, the terminal UI included, and the ack lists each
+		// receiver with its request id.
 		sent := 0
 		var last string
+		receivers := []any{}
 		for sub := range t.subs {
-			if sub.client != "relay" {
+			if sub.client != "relay" && c.To != "all" {
 				continue
 			}
 			s.nextS++
-			last = fmt.Sprintf("srv-%d", s.nextS)
+			rid := fmt.Sprintf("srv-%d", s.nextS)
 			turnID := ""
 			if tn := t.inProgress(); tn != nil {
 				turnID = tn.id
 			}
-			sub.write(map[string]any{"id": last, "method": c.Method, "params": map[string]any{
+			sub.write(map[string]any{"id": rid, "method": c.Method, "params": map[string]any{
 				"threadId": t.id, "turnId": turnID, "itemId": "item-approval", "command": "touch acme-invoice.txt", "serverName": "acme", "message": "Acme"}})
-			s.line(sub, map[string]any{"event": "server_request", "id": last, "method": c.Method})
-			sent++
+			s.line(sub, map[string]any{"event": "server_request", "id": rid, "method": c.Method})
+			receivers = append(receivers, map[string]any{"client": sub.client, "rid": rid})
+			if sub.client == "relay" {
+				sent++
+				last = rid
+			}
 		}
-		ack["sent"], ack["rid"] = sent, last
+		ack["sent"], ack["rid"], ack["receivers"] = sent, last, receivers
 	case "close_thread":
 		s.notify(t, "thread/closed", map[string]any{"threadId": t.id})
 		delete(s.threads, t.id)
@@ -673,6 +682,27 @@ func runClient(home, threadID string) {
 	send(map[string]any{"id": 2, "method": "thread/resume", "params": map[string]any{"threadId": threadID}})
 	awaitReply(2)
 	emit(map[string]any{"event": "ready", "thread": threadID})
+	// The terminal answers a server request on a stdin command: {"cmd":"answer",
+	// "id":"<request id>","result":{...}}. Its ack carries the command's tag.
+	go func() {
+		sc := bufio.NewScanner(os.Stdin)
+		for sc.Scan() {
+			var c struct {
+				Cmd    string          `json:"cmd"`
+				Tag    any             `json:"tag"`
+				ID     string          `json:"id"`
+				Result json.RawMessage `json:"result"`
+			}
+			ack := map[string]any{"event": "ack", "cmd": "", "ok": true}
+			if json.Unmarshal(sc.Bytes(), &c) != nil || c.Cmd != "answer" {
+				ack["ok"], ack["error"] = false, "unknown command"
+			} else {
+				send(map[string]any{"id": c.ID, "result": c.Result})
+			}
+			ack["cmd"], ack["tag"] = c.Cmd, c.Tag
+			emit(ack)
+		}
+	}()
 	for {
 		op, payload, err := readMessage(br)
 		if err != nil || op == opClose {

@@ -292,7 +292,9 @@ same decision as a codex launch in the project, with the thread's model. Then
 the durable `session_adopt` intent row (`method:"attach"`,
 `relay_sandbox:false`), a last check, the host launch and the completion row.
 The launch carries the thread id privately to the session host, which accepts
-it only for a fresh, local, headless codex launch with a UUID. An attach that
+it only for a local, headless codex launch with a UUID, fresh or the resume
+described below. Each audit row of an attach, the launch row included, says
+`sandbox:false`. An attach that
 fails after the intent answers `502 launch_failed`: "relay could not attach to
 the codex thread; nothing in codex changed".
 
@@ -304,16 +306,40 @@ reply must name the thread and the session's folder. The state follows
 `thread/status/changed` for its thread (`active`, `idle`, `systemError`);
 other threads' notifications are ignored. `thread/closed` or a closed socket
 ends the provider, and the session reads dormant; there is no reconnect loop.
-Approval and elicitation requests are declined and none is approved.
+Relay answers a server request only when it names the session's thread and the
+turn that relay's own `turn/start` opened, while that turn is open; a request
+that names no turn counts only while relay's turn is the open one. The answer is
+a decline and none is approved. Any other request, a terminal's turn included,
+gets no answer from relay and one Info line with its method and turn id, never
+its text, so codex's own prompt stays with the terminal user.
 
 **Interrupt, delete, resume.** Stop sends `turn/interrupt` only after the
 manager's `SessionInterrupt` gate persisted a `session_interrupt` intent row
 (`method:"turn/interrupt"`); an audit failure leaves the turn running and the
 WebSocket answers `audit_unavailable`. Kill, release and delete send a
 best-effort `thread/unsubscribe` and close the connection. They send no
-`turn/interrupt`, delete no thread, archive nothing and remove no folder. A
-dormant attached session comes back only by attaching again; with the daemon
-down the resume refuses, and relay never starts its own codex for it.
+`turn/interrupt`, delete no thread, archive nothing and remove no folder.
+
+**Resume of a dormant attached session.** The ledger record keeps the thread
+(`codex_thread`). `POST /api/sessions/{id}/resume` and `relay session resume`
+run the adopt checks again, in this order: audit ready (`503 audit_unavailable`),
+host ready (`502 unavailable`), the record's project is a registered local
+project that holds its folder (`409 no_project`), a fresh discovery of exactly
+one candidate with the same thread id (none is `409 ended`, several `409
+ambiguous`) in the same folder (`409 changed`) that is adoptable, no other live
+session holding the thread (`409 managed`), an idle check on the same daemon
+(`409 busy`, or `409 changed` for another daemon or a changed thread), the
+thread's model (`409 model_unknown`) and launch authorization with `Resume:true`.
+Then the durable `session_adopt` intent (`method:"reattach"`, `session_id`,
+`relay_sandbox:false`), a last check, the host launch and the completion. A
+daemon that cannot be read before the intent is `502 unavailable` and writes no
+intent; a failure after it is `502 launch_failed`. A daemon restart does not
+block the resume: discovery and the check both see the current daemon. The
+session host refuses (`ErrAttachRequired`, `400 invalid_spec`) to resume a stored
+attached codex session unless the request carries `attach_codex_thread` for the
+same thread, so nothing resumes the thread around the intent. The row of a
+dormant session is hidden from the outside list, so the resume is the one door
+back; relay never starts its own codex for it.
 
 **Not covered.** A custom `CODEX_HOME`, a terminal UI running its own embedded
 server, SSH hosts, `codex exec`, IDE and subagent threads. A codex terminal
