@@ -187,6 +187,10 @@ type sessionRouteDeps struct {
 	// means no check.
 	systemModel func(ctx context.Context, id string) (bool, error)
 
+	// modelMapKeys lists the modelMap keys a transcript model id stands for;
+	// nil means a broker-served model never resolves.
+	modelMapKeys func(ctx context.Context, id string) ([]string, error)
+
 	// modelOffer lists the models a kind offers, for an agent entry start. nil
 	// refuses every entry start that names a model.
 	modelOffer ModelOffer

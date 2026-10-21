@@ -82,6 +82,7 @@ type Tail struct {
 	LastPrompt  string    // the newest user record's plain text
 	LastRecord  time.Time // the newest user or assistant record's timestamp
 	ModelFamily string    // "haiku", "sonnet", "opus" or ""
+	Model       string    // the newest assistant record's model id; never "" or "<synthetic>" once seen
 }
 
 // Readiness is the answer of Check. Tail is read whether or not the session is

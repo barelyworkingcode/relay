@@ -198,6 +198,36 @@ func validAdoptModel(model string) bool {
 	return !strings.ContainsFunc(model, unicode.IsControl)
 }
 
+// brokerAlias resolves a transcript model id served by relay's model broker to
+// the Claude alias whose ANTHROPIC_DEFAULT_<ALIAS>_MODEL names one of its
+// modelMap keys. Deliberate: exactly one distinct alias answers; none, several
+// or an unreadable catalog answer "" so the caller refuses before any signal.
+func (a *adoptOps) brokerAlias(ctx context.Context, outsideID, modelID string) string {
+	if modelID == "" || a.deps.modelMapKeys == nil {
+		return ""
+	}
+	keys, err := a.deps.modelMapKeys(ctx, modelID)
+	if err != nil {
+		slog.WarnContext(ctx, "session adopt: model catalog unreadable", "outside_id", outsideID, "error", err)
+		return ""
+	}
+	found := map[string]bool{}
+	for _, key := range keys {
+		for _, alias := range []string{"haiku", "sonnet", "opus"} {
+			if os.Getenv("ANTHROPIC_DEFAULT_"+strings.ToUpper(alias)+"_MODEL") == key {
+				found[alias] = true
+			}
+		}
+	}
+	if len(found) != 1 {
+		return ""
+	}
+	for alias := range found {
+		return alias
+	}
+	return ""
+}
+
 // adoptState is what the event line reports; fields fill in as the core learns
 // them.
 type adoptState struct {
@@ -289,6 +319,9 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	model := req.Model
 	if model == "" {
 		model = ready.Tail.ModelFamily
+	}
+	if model == "" {
+		model = a.brokerAlias(ctx, row.ID, ready.Tail.Model)
 	}
 	if model == "" {
 		return nil, refuse(http.StatusConflict, adoptModelUnknown, "the model of the session is unknown; send model")
