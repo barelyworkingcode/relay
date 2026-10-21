@@ -253,14 +253,16 @@ func TestOutsideFixtureEndedRows(t *testing.T) {
 
 const stemID = "0b6e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b"
 
-// Regression: the fixture drops claudeSessionId on one of its three doors, invents it on an ended
-// row that has none, or serves it on a live row.
+// Regression: the fixture drops claudeSessionId on one of its three doors, on an ended or a live
+// row that has one, or invents it on a row that has none.
 func TestOutsideFixtureClaudeSessionIDServed(t *testing.T) {
 	withID := outsideEnded("outside:with", "2026-01-01T02:00:00Z")
 	withID["claude_session_id"] = stemID
 	without := outsideEnded("outside:without", "2026-01-01T01:00:00Z")
 	live := outsideFixture("")
-	in := outsideFake(t, []J{withID, without, live}, nil)
+	liveWith := outsideFixture("")
+	liveWith["id"], liveWith["directory"], liveWith["claude_session_id"] = "outside:livewith", "/work/livewith", stemID
+	in := outsideFake(t, []J{withID, without, live, liveWith}, nil)
 	c := in.ws(t, "/ws/outside-sessions", opsTok, "X-Relay-Scope", "chief-of-staff")
 	snap := until(t, c, isType("outside_sessions"))[0]
 
@@ -273,16 +275,16 @@ func TestOutsideFixtureClaudeSessionIDServed(t *testing.T) {
 			got, ok := has(row)
 			id := row["id"].(string)
 			seen[id] = true
-			if id == "outside:with" {
+			if id == "outside:with" || id == "outside:livewith" {
 				if !ok {
-					t.Errorf("%s: ended row with the key has no claudeSessionId", door)
+					t.Errorf("%s: row %s with the key has no claudeSessionId", door, id)
 				}
 				eq[any](t, got, stemID, door+" claudeSessionId")
 			} else if ok {
 				t.Errorf("%s: row %v carries claudeSessionId %v, want none", door, id, got)
 			}
 		}
-		eq(t, len(seen), 3, door+" rows")
+		eq(t, len(seen), 4, door+" rows")
 	}
 	check("snapshot", snap["sessions"].([]any))
 	list := outsideScoped(in, t, "GET", outsideAPI, nil).is(t, 200).obj(t)
@@ -290,6 +292,7 @@ func TestOutsideFixtureClaudeSessionIDServed(t *testing.T) {
 
 	d := outsideScoped(in, t, "GET", outsideAPI+"/outside:with", nil).is(t, 200).obj(t)
 	eq[any](t, d["session"].(map[string]any)["claudeSessionId"], stemID, "detail claudeSessionId")
+	eq[any](t, outsideScoped(in, t, "GET", outsideAPI+"/outside:livewith", nil).is(t, 200).obj(t)["session"].(map[string]any)["claudeSessionId"], stemID, "live detail claudeSessionId")
 	for _, id := range []string{"outside:without", "outside:acme"} {
 		d := outsideScoped(in, t, "GET", outsideAPI+"/"+id, nil).is(t, 200).obj(t)
 		if v, ok := has(d["session"].(map[string]any)); ok {
@@ -298,18 +301,22 @@ func TestOutsideFixtureClaudeSessionIDServed(t *testing.T) {
 	}
 }
 
-// Regression: the fixture accepts a Claude session id on a live row or a value that could be read
-// as a flag or a path.
+// Regression: the fixture refuses a live row's Claude session id, or accepts a value that could be
+// read as a flag or a path on a live or an ended row.
 func TestOutsideFixtureClaudeSessionIDRefused(t *testing.T) {
 	in := outsideFake(t, nil, nil)
 	live := outsideFixture("")
 	live["claude_session_id"] = stemID
-	in.ctl(t, "PUT", "/v1/outside-sessions", []J{live}).is(t, 400)
+	in.ctl(t, "PUT", "/v1/outside-sessions", []J{live}).is(t, 200)
 	for _, bad := range []string{"-rf", "has space", "a/b", "../x", strings.Repeat("a", 129)} {
 		row := outsideEnded("outside:bad", "2026-01-01T01:00:00Z")
 		row["claude_session_id"] = bad
 		if got := in.ctl(t, "PUT", "/v1/outside-sessions", []J{row}); got.Status != 400 {
 			t.Fatalf("claude_session_id %q: fixture replace answered %d, want 400: %s", bad, got.Status, got.Body)
+		}
+		live["claude_session_id"] = bad
+		if got := in.ctl(t, "PUT", "/v1/outside-sessions", []J{live}); got.Status != 400 {
+			t.Fatalf("live claude_session_id %q: fixture replace answered %d, want 400: %s", bad, got.Status, got.Body)
 		}
 	}
 }
