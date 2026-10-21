@@ -938,9 +938,11 @@ func (p *CodexProvider) deliverReply(env codexEnvelope) {
 	cb(reply)
 }
 
-// answerServerRequest always replies: a request left waiting would hang the
-// turn. Approvals are declined because approvalPolicy "never" means one only
-// arrives when something outside relay forced it.
+// answerServerRequest replies to every request of a turn relay runs: a request
+// left waiting would hang the turn. Approvals are declined because
+// approvalPolicy "never" means one only arrives when something outside relay
+// forced it. On an attached thread it answers only for the turn relay started;
+// a request on a terminal's turn is left for the terminal user.
 func (p *CodexProvider) answerServerRequest(env codexEnvelope) {
 	if p.daemonAttach.Load() && !p.ownTurnRequest(env) {
 		return
