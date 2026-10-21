@@ -29,6 +29,10 @@ func (i *Instance) installSSHStub() {
 			t.Fatalf("creating %s: %v", d, err)
 		}
 	}
+	// The stub host's tmux server keeps its socket under <root>/tmux and ends
+	// with the test, so no session outlives it.
+	tmuxDir := filepath.Join(root, "tmux")
+	t.Cleanup(func() { killTmuxServer(tmuxDir) })
 	// The stub reads fakessh.json beside its own binary, so each instance gets
 	// its own link rather than sharing the bundle's.
 	stub := filepath.Join(i.Dir, "sshstub", "ssh")

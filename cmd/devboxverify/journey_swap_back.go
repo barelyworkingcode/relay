@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -43,15 +44,22 @@ func runSwapBack(ctx context.Context, e env) result {
 	if baseURL == "" {
 		return result{id, stateNotRun, "needs a stack's local model endpoint (claude_base_url in stack.json)"}
 	}
+	tmuxPath, tmuxVersion, err := findHostTmux(ctx)
+	if err != nil {
+		return blocked(id, "the loopback host has no tmux to run the pane: "+err.Error())
+	}
 	fx, err := setUpDetachedFixture(ctx, e, baseURL, model, tokenFile)
 	if err != nil {
 		return blocked(id, "fixture host or project: "+err.Error())
 	}
-	token, credID, err := seedSwapCredential(e, fx)
+	token, credID, err := seedSwapCredential(e, fx, tmuxPath)
 	if err != nil {
 		return blocked(id, "fixture credential: "+err.Error()+fx.tearDown())
 	}
-	res := driveSwapBack(ctx, e, fx, token)
+	res := driveSwapBack(ctx, e, fx, token, tmuxPath)
+	if res.State == statePass {
+		res.Detail += "; host tmux: " + tmuxVersion + " at " + tmuxPath
+	}
 	res.Detail += dropSwapCredential(fx, credID) + fx.tearDown()
 	return res
 }
@@ -59,7 +67,11 @@ func runSwapBack(ctx context.Context, e env) result {
 // seedSwapCredential points the host's claude-code template at the entry's
 // launcher and adds the proxy+execute credential. The token goes into no
 // file, log or detail beyond the hash settings.json keeps.
-func seedSwapCredential(e env, fx *detachedFixture) (token, credID string, err error) {
+//
+// Deliberate: the host also gets hosts[].tmux_path in settings.json, the power
+// door for a tmux the probe cannot see. The fixture host is written by hand and
+// has no probe result, so without the key the runner would start alone.
+func seedSwapCredential(e env, fx *detachedFixture, tmuxPath string) (token, credID string, err error) {
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return "", "", err
@@ -114,7 +126,7 @@ type swapBody struct {
 	} `json:"terminal"`
 }
 
-func driveSwapBack(ctx context.Context, e env, fx *detachedFixture, token string) (res result) {
+func driveSwapBack(ctx context.Context, e env, fx *detachedFixture, token, tmuxPath string) (res result) {
 	const id = swapBackID
 	fail := func(f string, a ...any) result { return result{id, stateFail, fmt.Sprintf(f, a...)} }
 
@@ -151,6 +163,23 @@ func driveSwapBack(ctx context.Context, e env, fx *detachedFixture, token string
 		return fail("first turn: %s", d)
 	}
 
+	root, err := hostAgentsRoot()
+	if err != nil {
+		return blocked(id, err.Error())
+	}
+	pane := "relay-agent-" + sid
+	run1, err := readRunFile(root, sid, "g1")
+	if err != nil {
+		return fail("runner.json of generation g1: %v", err)
+	}
+	before, d := paneState(ctx, tmuxPath, pane)
+	if d != "" {
+		return fail("before the drop-in: %s", d)
+	}
+	if before.pid != run1.PID || before.created == "" {
+		return fail("before the drop-in, tmux session %s pane pid %d (created %q), want runner.json pid %d", pane, before.pid, before.created, run1.PID)
+	}
+
 	since := time.Now()
 	drop := frontendDoTimeout(ctx, e, token, http.MethodPost, "/api/sessions/"+sid+"/drop-in", []byte(`{}`), swapDropInWait)
 	if drop.Status != http.StatusCreated {
@@ -161,6 +190,25 @@ func driveSwapBack(ctx context.Context, e env, fx *detachedFixture, token string
 	termID = body.Terminal.ID
 	if body.SessionID != sid || termID == "" {
 		return fail("drop-in answered session %q terminal %q, want session %s and a terminal id", body.SessionID, termID, sid)
+	}
+
+	// Waits: none possible; tmux gives relay no event when a pane's program
+	// starts. The host's process table is polled, bounded, as
+	// session-drop-in-host does.
+	var table []byte
+	var tableErr string
+	if !pollUntil(ctx, 20*time.Second, func() bool {
+		table, tableErr = hostProcessTable(ctx)
+		return resumeLaunched(string(table), body.ClaudeSessionID)
+	}) {
+		return fail("no claude --resume %s in the host's process table within 20 s (%s)", body.ClaudeSessionID, tableErr)
+	}
+	during, d := paneState(ctx, tmuxPath, pane)
+	if d != "" {
+		return fail("during the drop-in: %s", d)
+	}
+	if during.created != before.created || during.dead {
+		return fail("during the drop-in, tmux session %s created %q dead %v, want created %q and a live pane", pane, during.created, during.dead, before.created)
 	}
 
 	held := cliWithTimeout(ctx, e, detachedCLIWait, "session", "send", "--id", sid, "--json", "--text", "Reply with exactly: verify-"+e.Nonce+"-held")
@@ -183,6 +231,18 @@ func driveSwapBack(ctx context.Context, e env, fx *detachedFixture, token string
 		return fail("session.hand_back status %v reason %v, want ok", ev["status"], ev["reason"])
 	}
 
+	run2, err := readRunFile(root, sid, "g2")
+	if err != nil {
+		return fail("runner.json of generation g2 after the hand back: %v", err)
+	}
+	after, d := paneState(ctx, tmuxPath, pane)
+	if d != "" {
+		return fail("after the hand back: %s", d)
+	}
+	if after.pid != run2.PID || after.created != before.created || after.dead {
+		return fail("after the hand back, tmux session %s pane pid %d created %q dead %v, want runner.json pid %d, created %q and a live pane", pane, after.pid, after.created, after.dead, run2.PID, before.created)
+	}
+
 	marker2 := "verify-" + e.Nonce + "-swap-two"
 	if d := swapTurn(ctx, e, sid, marker2); d != "" {
 		return fail("second turn on the same session after the hand back: %s", d)
@@ -191,7 +251,7 @@ func driveSwapBack(ctx context.Context, e env, fx *detachedFixture, token string
 	if d := swapAuditProblem(ctx, e, sid); d != "" {
 		return fail("%s", d)
 	}
-	return result{id, statePass, "a session on a loopback host was dropped into a terminal, a send while held answered dropped_in, deleting the terminal resumed the session headless (session.hand_back ok), the next turn on the same session was answered, and four session_swap rows read pending then ok in both directions"}
+	return result{id, statePass, "a session on a loopback host was dropped into a terminal, a send while held answered dropped_in, deleting the terminal resumed the session headless (session.hand_back ok), the next turn on the same session was answered, and four session_swap rows read pending then ok in both directions; tmux session " + pane + " held the runner (pane pid = runner.json pid) before, claude --resume during, and the new generation's runner after, with one session_created"}
 }
 
 // swapTurn sends one message and reads its answer; relay session message
@@ -241,4 +301,52 @@ func swapAuditProblem(ctx context.Context, e env, sid string) string {
 		}
 	}
 	return ""
+}
+
+// hostTmuxCandidates are the places the test host's tmux lives; an ssh
+// command's PATH does not hold Homebrew's.
+const hostTmuxCandidates = "/opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux"
+
+// findHostTmux returns the first tmux on the loopback host and its -V line.
+func findHostTmux(ctx context.Context) (path, version string, err error) {
+	script := "for p in " + hostTmuxCandidates + "; do if [ -x \"$p\" ]; then echo \"$p\"; \"$p\" -V; exit 0; fi; done; exit 1"
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", dropInHostTarget, script).Output()
+	if err != nil {
+		return "", "", fmt.Errorf("looked in %s: %w", hostTmuxCandidates, err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 2 {
+		return "", "", fmt.Errorf("unexpected answer %q", tail(string(out), 80))
+	}
+	return strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1]), nil
+}
+
+// paneInfo is what tmux reports for a session's pane.
+type paneInfo struct {
+	pid     int
+	created string
+	dead    bool
+}
+
+// paneState reads the session's pane pid, #{session_created} and
+// #{pane_dead} from the host's tmux. It returns a problem text.
+func paneState(ctx context.Context, tmuxPath, pane string) (paneInfo, string) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// Deliberate quoting: ssh joins its arguments into one remote shell line,
+	// where an unquoted # starts a comment.
+	cmd := tmuxPath + " display-message -p -t '=" + pane + ":' '#{pane_pid} #{session_created} #{pane_dead}'"
+	out, err := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", dropInHostTarget, cmd).Output()
+	if err != nil {
+		return paneInfo{}, "tmux session " + pane + " is not readable: " + err.Error()
+	}
+	var info paneInfo
+	var dead int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d %s %d", &info.pid, &info.created, &dead); err != nil {
+		return paneInfo{}, fmt.Sprintf("tmux answered %q: %v", tail(string(out), 80), err)
+	}
+	info.dead = dead == 1
+	return info, ""
 }
