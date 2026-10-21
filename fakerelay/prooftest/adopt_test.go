@@ -539,6 +539,7 @@ func TestAdoptRefusals(t *testing.T) {
 		e.in.ctl(t, "POST", "/v1/clock", J{"set": "2030-01-02T03:10:00Z"}).is(t, 200)
 		got := adoptCall(t, e.in, J{"outsideId": adoptID(1)}, "adopt-failed-0001").is(t, 502).obj(t)
 		eq[any](t, got["error"], "launch_failed", "launch_failed code")
+		eq[any](t, got["message"], "the process ended but relay could not start the session; the conversation is intact and can be resumed", "launch_failed message")
 		row := detail(t, e.in, adoptID(1)).is(t, 200).obj(t)["session"].(map[string]any)
 		eq[any](t, [3]any{row["state"], row["adoptable"], row["adoptReason"]}, [3]any{"ended", false, "ended"}, "row after launch_failed")
 		eq[any](t, row["claudeSessionId"], adoptUUID(1), "claudeSessionId kept")
