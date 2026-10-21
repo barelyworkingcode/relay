@@ -304,6 +304,33 @@ func (f *adFake) toolUse(at time.Time, model string) string {
 	return osRec("assistant", m, f.sid, f.dir, "acme-branch", at)
 }
 
+// toolCall is an assistant record that holds one tool call with the given id.
+func (f *adFake) toolCall(at time.Time, model, id string) string {
+	m := map[string]any{"role": "assistant", "stop_reason": "tool_use", "content": []any{
+		map[string]any{"type": "tool_use", "id": id, "name": "Bash", "input": adToolInput},
+	}}
+	if model != "" {
+		m["model"] = model
+	}
+	return osRec("assistant", m, f.sid, f.dir, "acme-branch", at)
+}
+
+// toolResult is the user record that closes the tool call id.
+func (f *adFake) toolResult(at time.Time, id, text string) string {
+	m := map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "tool_result", "tool_use_id": id, "content": text},
+	}}
+	return osRec("user", m, f.sid, f.dir, "acme-branch", at)
+}
+
+// laterOf returns the later of a and b.
+func laterOf(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
 // idle plants a finished turn and an idle registry entry written with it.
 // The first user record carries the process start time, the earliest a
 // record written after the process started can have.
@@ -675,17 +702,17 @@ func TestAdoptBusyRefusedWithoutInterrupt(t *testing.T) {
 	otRefusal(t, a.adopt(body), http.StatusConflict, "busy")
 	f.alive()
 
-	// child_process: a child that started at or after the first prompt written
-	// after the process started. The prompt carries the child's own start second.
-	// The child must start in a later second than the process: the prompt then
-	// lies after the process start and at or before the child's. A child is
-	// started again until one does; the kernel start time is the signal.
+	// child_process: a child that started inside the last turn's tool window,
+	// at or after the first assistant record that follows the last prompt and at
+	// or before the newest record. The child must start in a later second than
+	// the process; a child is started again until one does, the kernel start time
+	// being the signal. The last turn's prompt and tool call carry the child's
+	// start second, which is no later than its kernel start.
 	signals, childStart := f.laterChild()
-	now := time.Now().UTC()
-	f.transcript(a.i.Home, f.user(f.start, adPrompt), f.answer(f.start, adModelSn, "acme first answer"),
-		f.user(childStart, adPrompt), f.answer(now, adModelSn, "acme parser done"))
+	now := laterOf(time.Now().UTC(), childStart)
+	f.transcript(a.i.Home, adToolChildTurns(f, childStart, now)...)
 	f.register(a.i.Home, "idle", now)
-	otRefusal(t, a.adopt(body), http.StatusConflict, "busy")
+	adChildVeto(t, a.adopt(body))
 	signals = append(signals, f.sync()...)
 	if len(signals) != 0 {
 		t.Fatalf("the fake was sent signals %v by refused adopts, want none", signals)
@@ -693,6 +720,92 @@ func TestAdoptBusyRefusedWithoutInterrupt(t *testing.T) {
 	f.alive()
 	if n := len(adSessions(t, a.i)); n != 0 {
 		t.Fatalf("refused adopts left %d sessions", n)
+	}
+}
+
+// adChildVeto asserts the idle check's child_process veto: 409 busy, the
+// reason named in the message.
+func adChildVeto(t *testing.T, resp harness.Response) {
+	t.Helper()
+	otRefusal(t, resp, http.StatusConflict, "busy")
+	var e struct{ Message string }
+	resp.JSON(t, &e)
+	if !strings.Contains(e.Message, "(child_process)") {
+		t.Fatalf("the busy refusal names %q, want the reason child_process", e.Message)
+	}
+}
+
+// adToolChildTurns is a transcript whose child, started at childStart, lies
+// inside the last turn's tool window: turn 1 at the process start, then a turn
+// whose prompt and tool call carry the child's start second, the tool's result
+// and a final answer at newest.
+func adToolChildTurns(f *adFake, childStart, newest time.Time) []string {
+	return []string{
+		f.user(f.start, adPrompt), f.answer(f.start, adModelSn, "acme first answer"),
+		f.user(childStart, adPrompt), f.toolCall(childStart, adModelSn, adToolID),
+		f.toolResult(newest, adToolID, "acme output"), f.answer(newest, adModelSn, "acme parser done"),
+	}
+}
+
+// A long-lived child, the stand-in for an MCP server, that starts after the
+// session's last assistant record is no turn's work: the idle session is
+// adopted without an interrupt.
+func TestAdoptIdleIgnoresLateLongLivedChild(t *testing.T) {
+	t.Parallel()
+	adopted := func(t *testing.T, a *adRig, f *adFake) {
+		t.Helper()
+		res := adCreated(t, a.adopt(map[string]any{"claudeSessionId": f.sid, "interrupt": false}))
+		if res.ClaudeSessionID != f.sid || res.Interrupted {
+			t.Fatalf("result = %+v, want claudeSessionId %s, interrupted false", res, f.sid)
+		}
+		f.signalAt(f.expect("signal TERM"), "TERM")
+		f.gone()
+	}
+	t.Run("single_turn", func(t *testing.T) {
+		t.Parallel()
+		a := adStart(t)
+		f := a.fake("app")
+		if signals, _ := f.laterChild(); len(signals) != 0 {
+			t.Fatalf("the fake sent signals %v before the adopt, want none", signals)
+		}
+		// The prompt and the reply land in the process start second, before the child.
+		f.transcript(a.i.Home, f.user(f.start, adPrompt), f.answer(f.start, adModelSn, "acme parser done"))
+		f.register(a.i.Home, "idle", time.Now().UTC())
+		adopted(t, a, f)
+	})
+	t.Run("multi_turn", func(t *testing.T) {
+		t.Parallel()
+		a := adStart(t)
+		f := a.fake("app")
+		_, childStart := f.laterChild()
+		// The last turn, prompt and reply, follows the child's start.
+		at := laterOf(time.Now().UTC(), childStart.Add(time.Second))
+		f.transcript(a.i.Home, f.user(f.start, adPrompt), f.answer(f.start, adModelSn, "acme first answer"),
+			f.user(at, adPrompt), f.answer(at, adModelSn, "acme parser done"))
+		f.register(a.i.Home, "idle", at)
+		adopted(t, a, f)
+	})
+}
+
+// A child that started after the last turn's tool call and before its newest
+// record is that turn's work: it vetoes, and nothing is signalled.
+func TestAdoptToolChildOfLastTurnVetoes(t *testing.T) {
+	t.Parallel()
+	a := adStart(t)
+	f := a.fake("app", "INT", "TERM")
+	signals, childStart := f.laterChild()
+	now := laterOf(time.Now().UTC(), childStart)
+	f.transcript(a.i.Home, adToolChildTurns(f, childStart, now)...)
+	f.register(a.i.Home, "idle", now)
+
+	adChildVeto(t, a.adopt(map[string]any{"claudeSessionId": f.sid, "interrupt": false}))
+	signals = append(signals, f.sync()...)
+	if len(signals) != 0 {
+		t.Fatalf("the fake was sent signals %v by a refused adopt, want none", signals)
+	}
+	f.alive()
+	if n := len(adSessions(t, a.i)); n != 0 {
+		t.Fatalf("a refused adopt left %d sessions", n)
 	}
 }
 
@@ -718,8 +831,8 @@ func TestAdoptIdleIgnoresTurnHelper(t *testing.T) {
 }
 
 // AC3, decision 5: the child-process veto holds when the transcript is longer
-// than the tail the idle check reads, so the first prompt written after the
-// process started lies at the file's start, far from the newest record.
+// than the tail the idle check reads, so the last turn's prompt lies at the
+// file's start, far from the newest record.
 func TestAdoptChildVetoInLongTranscript(t *testing.T) {
 	t.Parallel()
 	a := adStart(t)
@@ -729,22 +842,24 @@ func TestAdoptChildVetoInLongTranscript(t *testing.T) {
 	signals, childStart := f.laterChild()
 
 	filler := strings.Repeat("acme ordinary turn ", 12)
-	// The first prompt precedes the child; every other record, the oldest in
-	// the tail included, follows the child's start.
-	lines := []string{f.user(f.start, adPrompt), f.answer(f.start, adModelSn, filler)}
-	size := len(lines[0]) + len(lines[1])
+	// The last turn's prompt and first tool call precede the child; more than
+	// the tail's size of closed tool pairs, the oldest in the tail included,
+	// follow the child's start, and a final answer comes last.
+	lines := []string{f.user(f.start, adPrompt), f.toolCall(f.start, adModelSn, "toolu_acme_0"), f.toolResult(f.start, "toolu_acme_0", "acme output")}
+	size := len(lines[0]) + len(lines[1]) + len(lines[2])
 	after := childStart.Add(time.Second)
-	for size <= 300<<10 {
-		u, r := f.user(after, filler), f.answer(after, adModelSn, filler)
+	for n := 1; size <= 300<<10; n++ {
+		id := fmt.Sprintf("toolu_acme_%d", n)
+		u, r := f.toolCall(after, adModelSn, id), f.toolResult(after, id, filler)
 		lines = append(lines, u, r)
 		size += len(u) + len(r) + 2
 	}
-	now := time.Now().UTC()
-	lines = append(lines, f.user(now, adPrompt), f.answer(now, adModelSn, "acme parser done"))
+	now := laterOf(time.Now().UTC(), after)
+	lines = append(lines, f.answer(now, adModelSn, "acme parser done"))
 	f.transcript(a.i.Home, lines...)
 	f.register(a.i.Home, "idle", now)
 
-	otRefusal(t, a.adopt(body), http.StatusConflict, "busy")
+	adChildVeto(t, a.adopt(body))
 	signals = append(signals, f.sync()...)
 	if len(signals) != 0 {
 		t.Fatalf("the fake was sent signals %v by a refused adopt, want none", signals)
