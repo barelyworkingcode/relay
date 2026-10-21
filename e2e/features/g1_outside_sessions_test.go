@@ -390,6 +390,51 @@ func TestOutsideHookReportUpdatesSnapshot(t *testing.T) {
 	})
 }
 
+// A hook report is not lost when the probe that follows the drain runs past
+// the drain's bound.
+func TestOutsideHookReportSurvivesSlowProbe(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false)
+	if err := os.MkdirAll(filepath.Join(r.i.Home, ".claude", "relay-outside-reports"), 0o700); err != nil {
+		t.Fatalf("creating the spool: %v", err)
+	}
+	p := r.spawn(r.i.Home, t.TempDir(), "slowprobe")
+	p.transcript(t, osPrompt("acme one"), osAnswer("acme done"))
+	if row := r.probe().at(p.dir); row == nil || row.State != "idle" {
+		t.Fatalf("row before the report = %+v, want idle", row)
+	}
+
+	// The console finds tmux in the instance's ~/.local/bin. A shim that sleeps
+	// makes every probe run past the drain's 3 s bound while staying under the
+	// probe's own 10 s bound.
+	shim := filepath.Join(r.i.Home, ".local", "bin", "tmux")
+	osWrite(t, shim, []byte("#!/bin/sh\nsleep 4\nexit 0\n"))
+	if err := os.Chmod(shim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A probe that completes now has run with the shim, so the next one is slow.
+	r.probe()
+
+	sub := osSubscribe(t, r.i)
+	script, err := filepath.Abs("../../scripts/outside-session-report.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, _ := json.Marshal(map[string]any{"hook_event_name": "PermissionRequest", "session_id": p.sid, "cwd": p.dir})
+	hook := exec.Command("sh", script)
+	hook.Env = append(os.Environ(), "HOME="+r.i.Home, "RELAY_OUTSIDE_SPOOL=")
+	hook.Stdin = strings.NewReader(string(event))
+	if out, err := hook.CombinedOutput(); err != nil {
+		t.Fatalf("the report hook failed: %v\n%s", err, out)
+	}
+	// osBound, not osHookBound: under the injected slow probe the five-second
+	// promise does not apply; the claim is that the report is not lost.
+	sub.until(osBound, func(s osSnap) bool {
+		row := s.at(p.dir)
+		return row != nil && row.State == "asking" && row.Source == "hook"
+	})
+}
+
 // osReport runs the report hook with env added to HOME=home.
 func osReport(t *testing.T, home string, event map[string]any, env ...string) {
 	t.Helper()

@@ -21,10 +21,6 @@ promoted to an issue the day it does.
   with `PATH` only, so every console view would answer 409.
 - **No per-caller cap on viewers.** A `read` credential can start many
   viewers. Each one closes itself after 30 s if nobody joins it.
-- **Outside sessions: a drain can drop hook reports.** A drain deletes spool
-  files as it reads them, then runs a probe bounded at 3 s. If that probe runs
-  past the bound, the drained reports are lost and the state waits for the
-  next 15 s probe, still inside the 60 s bound.
 - **Outside sessions: a failed host path resolution drops symlinked rows.**
   Host project paths are resolved in a second SSH call per probe. If only that
   call fails, rows under a symlinked project path are removed until the next
