@@ -442,7 +442,8 @@ The trailing-slash form of `POST /api/terminals`: same contract.
 ### POST /api/sessions/{id}/drop-in
 
 Stops a headless Claude session and starts a terminal that resumes its
-conversation.
+conversation. When the terminal ends, relay resumes the session headless on
+that conversation, on the drop-in caller's behalf, with no further message.
 
 - **Listeners:** socket. **Credential:** `execute`. **Gate:** none.
 - **Request:** path `id`; optional body `{"cols": <number>, "rows": <number>}`
@@ -451,8 +452,12 @@ conversation.
   host), `terminal` (the terminal object of `POST /api/terminals`).
 - **Errors:** `{"error": "<code>", "message": "<text>"}` with `404`
   `session_not_found`, `409` `not_claude` or a handoff conflict, `502`
-  `unavailable`, or the launch refusal's own status.
-- **Event:** `session.drop_in`. **Audit row:** `session_launch`.
+  `unavailable`, `503` `audit_unavailable` (auditing is off or cannot record;
+  nothing was stopped), or the launch refusal's own status.
+- **Event:** `session.drop_in`; `session.hand_back` when the terminal ends
+  (background). **Audit rows:** `session_launch`, and `session_swap` (an
+  intent row before the session stops, then a completion row; a second pair
+  for the hand back).
 - **CLI equivalent:** `relay drop-in` (needs an interactive terminal).
 
 ### POST /api/sessions/adopt
@@ -527,7 +532,7 @@ by relay; a body cannot set it.
 
 ### POST /api/chief-of-staff/sessions
 
-Starts a headless agent or a Claude terminal on the Chief of Staff's behalf.
+Starts a headless agent on the Chief of Staff's behalf. There is one start path; the owner opens a terminal on it later by Drop in.
 
 - **Listeners:** socket. **Credential:** `chief_of_staff` (needs
   `X-Relay-Scope: chief-of-staff` and a credential holding `proxy`), and the
@@ -542,18 +547,18 @@ Starts a headless agent or a Claude terminal on the Chief of Staff's behalf.
   | `folder` | string | Relative folder inside the project; no `..`, not absolute |
   | `prompt` | string | First prompt (required, at most 8000 characters) |
   | `model` | string | Model ID. Send exactly one of `model` and `entry` |
-  | `entry` | string | The name of an agent entry or chat template of the project, matched without regard to case. An agent runs its kind, model and command; a chat runs its model. Headless only |
-  | `mode` | string | `"headless"` (default) or `"terminal"` (a Claude model only; refused with `entry`) |
+  | `entry` | string | The name of an agent entry or chat template of the project, matched without regard to case. An agent runs its kind, model and command; a chat runs its model |
+  | `mode` | string | `""`, `"headless"` or `"terminal"`. `"terminal"` runs the same headless start, and the prompt goes through the send door in both. Any other value answers `400` `mode_invalid` |
 
 - **Response `201`:** `sessionId`, `name`, `projectId`, `directory`, `mode`,
-  `kind`, `origin` (`"chief-of-staff"`), `at`, and for an entry start `entry`
+  `kind`, `origin` (`"chief-of-staff"`), `at`, `mode` (always `"headless"`), and for an entry start `entry`
   (the stored spelling) and `entryType` (`"agent"` or `"chat"`). A chat is
   named `<project> - <chat>`; its `mode` and voice settings are ignored.
 - **Errors** (`{"error": "<code>", "message": "<text>"}`, plus `choices`, the
   names the caller could have used, when there are any): `400`
   `invalid_body`, `project_id_required`, `prompt_required`, `prompt_too_long`,
   `model_or_entry`, `mode_invalid`, `folder_invalid`, `folder_not_found`,
-  `terminal_on_host`, `terminal_needs_claude`, `entry_invalid` (a chat with
+  `entry_invalid` (a chat with
   no model, or an agent entry the launch refuses); `403` `project_not_available`
   (unknown or remote project), `model_not_allowed`, `directory_outside_project`;
   `404` `entry_not_found` (the message lists the project's choices); `409`

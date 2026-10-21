@@ -226,10 +226,12 @@ func (s *Server) onTerminalExit(id string, exitCode int) {
 	if s.consumeTerminating(id) {
 		reason = "closed"
 	}
-	s.reportExit(id, rootPID, exitCode, reason)
+	// Deliberate: the hold clears before relay hears of the exit, so the
+	// resume relay starts on that report is not refused as held.
 	if agentID, ok := s.takeDropIn(id); ok {
 		s.sessions.HandBack(agentID)
 	}
+	s.reportExit(id, rootPID, exitCode, reason)
 	// Both fire on every terminal exit: reportExit is the bridge-facing
 	// SessionExited report, BroadcastExit is the WS-facing terminal_exit
 	// frame a joined eve viewer needs. See New's own comment on why this is

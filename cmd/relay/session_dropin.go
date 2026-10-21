@@ -32,6 +32,7 @@ const (
 	dropInNotClaude       = "not_claude"
 	dropInUnavailable     = "unavailable"
 	dropInLaunchFailed    = "launch_failed"
+	dropInAuditOff        = "audit_unavailable"
 )
 
 type DropInRequest struct {
@@ -67,7 +68,7 @@ func (r *DropInRefusal) Error() string { return r.Message }
 // host holds the session, every failure hands it back.
 func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *DropInResult, refusal *DropInRefusal) {
 	ev := logging.BeginEvent(ctx, "session.drop_in")
-	host, terminalID := "", ""
+	host, hostID, terminalID := "", "", ""
 	defer func() {
 		endDropInEvent(ev, req.SessionID, host, terminalID, refusal)
 	}()
@@ -86,6 +87,7 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	if proj, _ := config.FindProjectByID(config.FreshSettings(d.store), rec.ProjectID); proj != nil && proj.IsHosted() {
 		if h, _ := config.FindHostByID(config.FreshSettings(d.store), proj.HostID); h != nil {
 			host = h.Name
+			hostID = h.ID
 		}
 	}
 
@@ -114,6 +116,20 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	}
 	terminalID = result.SessionID
 
+	// The intent row is durable before anything stops; a swap relay cannot
+	// record does not start.
+	actor := callerAuditActor(req.Caller)
+	swapID, err := d.swapIntent(actor, swapToTerminal, req.SessionID, rec.ProjectID, hostID)
+	if err != nil {
+		d.discardLaunch(result)
+		return nil, &DropInRefusal{Status: http.StatusServiceUnavailable, Code: dropInAuditOff,
+			Message: "auditing is off or cannot record; the session was not taken over"}
+	}
+	complete := func(outcome, code string) {
+		d.swapCompletion(swapID, swapToTerminal, req.SessionID, terminalID, outcome, code)
+	}
+	link := swapLink{SessionID: req.SessionID, TerminalID: terminalID, Host: host, Caller: req.Caller}
+
 	// Deliberate: past this point relay-sessions completes the work whatever
 	// happens to the request ctx, and a cancelled request must still hand the
 	// session back. Only the handoff's own wait follows ctx.
@@ -123,6 +139,7 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	case hr != nil:
 		d.discardLaunch(result)
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeDenied, hr.Message))
+		complete(audit.AuditOutcomeDenied, hr.Error)
 		status := http.StatusConflict
 		if hr.Error == dropInSessionNotFound {
 			status = http.StatusNotFound
@@ -132,6 +149,7 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 		d.discardLaunch(result)
 		d.handBack(hold, req.SessionID)
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error()))
+		complete(audit.AuditOutcomeError, dropInUnavailable)
 		return nil, &DropInRefusal{Status: http.StatusBadGateway, Code: dropInUnavailable, Message: "the session host is not available"}
 	}
 
@@ -139,6 +157,9 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 		d.discardLaunch(result)
 		d.handBack(hold, req.SessionID)
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "host returned a conversation id that is not a UUID"))
+		complete(audit.AuditOutcomeError, dropInLaunchFailed)
+		link.TerminalGone = true
+		d.armSwap(link)
 		return nil, &DropInRefusal{Status: http.StatusBadGateway, Code: dropInLaunchFailed, Message: "relay could not start the terminal; the session is idle again"}
 	}
 	result.Spec.Argv = append(result.Spec.Argv, "--resume", claudeID)
@@ -153,9 +174,14 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	if err != nil {
 		d.handBack(hold, req.SessionID)
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error()))
+		complete(audit.AuditOutcomeError, dropInLaunchFailed)
+		link.TerminalGone = true
+		d.armSwap(link)
 		return nil, &DropInRefusal{Status: http.StatusBadGateway, Code: dropInLaunchFailed, Message: "relay could not start the terminal; the session is idle again"}
 	}
 	d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, ""))
+	complete(audit.AuditOutcomeOK, "")
+	d.armSwap(link)
 	return &DropInResult{
 		SessionID: req.SessionID, ClaudeSessionID: claudeID, Host: host,
 		ProjectName: result.AuditFields.ProjectName, Launch: result, TerminalBody: resp.Body,
@@ -195,6 +221,9 @@ func endDropInEvent(ev *logging.Event, sessionID, host, terminalID string, refus
 		return
 	}
 	outcome, reason := refusalOutcome(refusal.Status, refusal.Code)
+	if refusal.Code == dropInAuditOff {
+		outcome = logging.OutcomeDenied
+	}
 	ev.End(outcome, reason, errors.New(refusal.Code))
 }
 

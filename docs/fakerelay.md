@@ -628,17 +628,19 @@ The delivered text appears on the session as a `user_message` frame with
 
 - Request: `{"projectId","folder"?,"prompt","model"?,"entry"?,"mode"?}`, at
   most 64 KiB. The prompt is trimmed. Exactly one of `model` and `entry` is
-  sent. `mode` is `headless` (default) or `terminal`.
+  sent. `mode` is empty, `headless` or `terminal`; `terminal` runs the same
+  headless start.
 - Success: 201
-  `{"sessionId","name","projectId","directory","mode","kind","origin":"chief-of-staff","at"}`.
+  `{"sessionId","name","projectId","directory","mode","kind","origin":"chief-of-staff","at"}`, with `mode` always
+  `"headless"`.
   `name` is the prompt's first line with whitespace collapsed, cut to 60
   characters. An entry start adds `"entry"` (the stored spelling) and
   `"entryType":"agent"|"chat"`.
 - Errors, coded with message, checked in this order: `invalid_body`,
   `project_id_required`, `prompt_required`, `prompt_too_long` (over 8000
   characters), `model_or_entry` (`send model or entry, not both`, or `send
-  model or entry`), `mode_invalid` (a mode that is neither value, or `an entry
-  start is headless only`), `folder_invalid`, `body_too_large`. A launch
+  model or entry`), `mode_invalid` (a mode that is not empty, `headless` or
+  `terminal`), `folder_invalid`, `body_too_large`. A launch
   refusal uses the launch refusal code and text (see Sessions), still in this
   family, with `project_unavailable` and `directory_outside` renamed
   `project_not_available` and `directory_outside_project`. `502 launch_failed`
@@ -1178,14 +1180,17 @@ headless Claude session over for an echo terminal. Optional body
   second drop-in gets 409 `dropped_in`.
 - When the drop-in terminal ends (exit, `terminal_close`, or
   `DELETE /api/terminals/{id}`), the hold clears and a tracked session
-  broadcasts `session_state` `idle` with a new `since`. The session stays
-  dormant, so the next send gets `resume_required`.
+  broadcasts `session_state` `idle` with a new `since`. The session is
+  live and idle, as relay resumes it on the drop-in caller's behalf, so the
+  next send is answered with no resume. The fake writes the event
+  `session.hand_back` (`session_id`, `terminal_id`, `host`, `console` for a
+  console project) after the state returns. No audit row is written.
 - Event `session.drop_in` (in `relay.log`): `session_id`, `host` (host name or
   `console`), `terminal_id` (`""` on refusal). A 4xx refusal is `denied` with
   the code as `reason`; a 5xx is `error`. No audit row is written.
 
 Events: `session.list`, `session.launch`, `session.resume`, `session.delete`,
-`session.drop_in`, `session.adopt`.
+`session.drop_in`, `session.adopt`, `session.hand_back`.
 Session host events go to `relaysessions.log`.
 
 ### Adopt (G9)

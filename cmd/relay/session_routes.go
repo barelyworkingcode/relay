@@ -182,6 +182,7 @@ type sessionRouteDeps struct {
 	auditor     *audit.AuditRecorder
 	accounting  *sessionAccounting
 	resumeGuard *resumeGuard
+	swaps       *swapTable
 
 	// systemModel reports whether a model id is reserved for system use; nil
 	// means no check.
@@ -570,10 +571,13 @@ type resumeResponseBody struct {
 type resumeOutcome struct {
 	Status int
 	Body   any
+	// Code is the stable refusal code a hand back reports; it is not on the
+	// wire, where the body's message stays as it is.
+	Code string
 }
 
-func resumeError(status int, msg string) resumeOutcome {
-	return resumeOutcome{Status: status, Body: map[string]string{"error": msg}}
+func resumeError(status int, msg, code string) resumeOutcome {
+	return resumeOutcome{Status: status, Body: map[string]string{"error": msg}, Code: code}
 }
 
 // handleResumeSession implements POST /api/sessions/{id}/resume (C5, C11).
@@ -611,7 +615,7 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 	// full stop -- so "not found" is simply "not found".
 	if !ok {
 		d.auditResume(actor, id, "", "", audit.AuditOutcomeNotFound, "unknown session")
-		return resumeError(http.StatusNotFound, "session not found")
+		return resumeError(http.StatusNotFound, "session not found", "session_not_found")
 	}
 	ev.Set("project_id", rec.ProjectID)
 	if rec.State == ledger.StateLive {
@@ -625,14 +629,14 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 	// attempt's launch identity out from under it (or vice versa).
 	if !d.resumeGuard.tryAcquire(id) {
 		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeError, "resume already in progress")
-		return resumeError(http.StatusConflict, "a resume for this session is already in progress")
+		return resumeError(http.StatusConflict, "a resume for this session is already in progress", "resume_in_progress")
 	}
 	defer d.resumeGuard.release(id)
 
 	sessionReq, err := decodeStoredSessionRequest(rec)
 	if err != nil {
 		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeError, err.Error())
-		return resumeError(http.StatusInternalServerError, "corrupt session record")
+		return resumeError(http.StatusInternalServerError, "corrupt session record", "corrupt_record")
 	}
 
 	req := LaunchRequest{
@@ -646,20 +650,20 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 	if refusal != nil {
 		d.auditor.Record(resumeAuditEvent(refusal.Audit))
 		endEvent(ev, refusal)
-		return resumeError(refusal.Status, refusal.Message)
+		return resumeError(refusal.Status, refusal.Message, refusal.Code)
 	}
 
 	resp, err := d.launchOnHost(ctx, result)
 	if err != nil {
 		slog.Warn("session resume: relay-sessions round trip failed", "session", id, "error", err)
 		d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error())))
-		return resumeError(http.StatusBadGateway, "launch failed")
+		return resumeError(http.StatusBadGateway, "launch failed", "launch_failed")
 	}
 	_ = resp // C5's resume success body is the small envelope below, not the host's create body.
 
 	if !d.commitLaunch(ctx, result) {
 		d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "project no longer exists")))
-		return resumeError(http.StatusBadGateway, "launch failed")
+		return resumeError(http.StatusBadGateway, "launch failed", "launch_failed")
 	}
 	d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, "")))
 	return resumeOutcome{Status: http.StatusOK, Body: resumeResponseBody{SessionID: result.SessionID, Resumed: true}}

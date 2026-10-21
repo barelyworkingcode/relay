@@ -877,13 +877,11 @@ is ended and deleted whatever the outcome.
   scope header, which narrows the run credential for that request only. Run on
   Claude Haiku `claude-haiku-5-5`; any other model reads BLOCKED.
 
-**Transcript cleanup** (session-drop-in, session-drop-in-host, cos-start). The
+**Transcript cleanup** (session-drop-in, session-drop-in-host). The
 interactive Claudes these journeys start leave a conversation in Claude's
 session list. Each journey removes it when it ends, after its own terminal and
 session deletes and on every path, and the cleanup never changes a result. The
-id is the one the journey learned: the drop-in's `claudeSessionId`, or for the
-cos-start terminal the `sessionId` in `~/.claude/sessions/<pid>.json` of the
-`claude` process whose argv holds `--model haiku -- verify-<nonce>-term`. The
+id is the one the journey learned: the drop-in's `claudeSessionId`. The
 journey waits up to 15 s for that process to exit (on the host door each process-table read can take up to 10 s and the remove 15 s more), then deletes
 `~/.claude/projects/*/<id>.jsonl` (on the loopback host over ssh for
 session-drop-in-host) only if the id is a UUID and the file holds
@@ -1148,6 +1146,45 @@ runs that cleanup before the process ends.
   user's `~/.relay/agents`.
 - Traps: BLOCKED without `claude` on the login-shell PATH, with an unreadable
   `stack.json`, or when the turn ended before the link dropped.
+
+**cos-start** (screen). The Chief of Staff starts a headless Haiku agent in
+the Acme project; the launch and message audit rows carry the origin. Its
+second leg sends the old `mode: terminal` request: relay answers 201 with
+`mode: headless`, the new session is listed by `GET /api/sessions` with the
+Chief of Staff origin, and `GET /api/terminals` lists no row for it. The leg
+deletes the session after. Every start is headless, so the leg starts no
+terminal and leaves no interactive Claude to clean up.
+- Lives in: `cmd/relay` (the Chief of Staff start path).
+- Traps: a provider rate limit ends the turn as BLOCKED (see above).
+
+**session-swap-back** (api, so a `--stack` run drives it). An owner who drops
+a headless session into a terminal and closes it gets the session back,
+headless on the same conversation, with no further message. The fixture is
+session-detached-host's (a loopback host, a project on it, one agent entry in
+`settings.json`, the launcher that points claude at the stack's local model
+endpoint, alias `haiku`). The host's `claude-code` template also runs that
+launcher, so the drop-in terminal reaches the same endpoint, and a credential
+of classes `proxy` and `execute` is seeded beside it (the drop-in route needs
+`execute`, the terminal delete `proxy`) and removed after. Off a stack, or on a
+stack with no `claude_base_url`, the journey is NOTRUN ("needs a stack's local
+model endpoint"): it never runs claude against a hosted model. Steps: `relay
+session start --entry`; one turn with a marker (`relay session message`);
+`POST /api/sessions/{id}/drop-in` answers 201; `relay session send` while held
+exits 1 with `dropped_in`; `DELETE /api/terminals/{id}`; a `session.hand_back`
+event for the session with `status` ok; a second turn on the same session
+returns its marker; `relay audit --event session_swap` holds, for each of
+`to_terminal` and `to_headless`, one `pending` intent row and one `ok`
+completion row with the same id. FAIL on any other step; the session is
+stopped after.
+- Waits: CLI exits, HTTP answers and the `session.hand_back` event (`relay logs
+  --follow`). The settings import has no event, so the credential read
+  (`GET /api/terminals` until 200) and the first `relay session start` are
+  retried, bounded, as in session-detached-host.
+- Lives in: `cmd/relay` (`dropIn`, the swap table), `internal/sessions`.
+- Reached by: `relay session start|message|send|stop`, the frontend socket
+  with the seeded credential, `relay audit`.
+- Traps: BLOCKED without `claude` on the login-shell PATH, with an unreadable
+  `stack.json`, or when the seeded credential is not imported in time.
 
 **session-adopt** (api, so a `--stack` run drives it). An interactive Claude
 started in a terminal is adopted: `POST /api/sessions/adopt` ends its process and

@@ -651,6 +651,7 @@ func startServerCore(opts serverOptions) (*App, error) {
 		auditor:      rec,
 		accounting:   sessionAccounts,
 		resumeGuard:  newResumeGuard(),
+		swaps:        newSwapTable(),
 		systemModel:  app.modelEndpoint.IsSystemModel,
 		modelMapKeys: app.modelEndpoint.ModelMapKeys,
 		modelOffer:   newModelOffer(app.ipcCtx.ModelCatalog),

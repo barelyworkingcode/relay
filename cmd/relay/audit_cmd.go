@@ -29,7 +29,7 @@ func runAuditCommand(args []string) {
 		"'scope_violation' is also accepted here even though it is a FIELD, not an outcome (ADR-011 decision 7) — "+
 		"it selects tool_error records the MCP marked as a resource-scope refusal")
 	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, relay, control, operator, project_session, unknown")
-	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills, mcp_down, mcp_up, control_decision, credential_issued, credential_revoked, model_call, model_list, session_message")
+	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills, mcp_down, mcp_up, control_decision, credential_issued, credential_revoked, model_call, model_list, session_message, session_swap")
 	text := fs.String("grep", "", "substring match over tool, MCP, error, project / access profile, caller, args, "+
 		"and an issuance record's credential kind, identifier, name and grants")
 	asJSON := fs.Bool("json", false, "emit raw JSONL instead of a table")
@@ -232,6 +232,9 @@ func auditPlainDetail(ev audit.AuditEvent) string {
 	if ev.Event == audit.AuditEventSessionMessage {
 		return auditSessionMessageDetail(ev)
 	}
+	if ev.Event == audit.AuditEventSessionSwap {
+		return auditSessionSwapDetail(ev)
+	}
 	// A presence refusal is a control_decision with no route; checked before
 	// the route branch so it does not print an empty path, class and
 	// transport.
@@ -270,6 +273,21 @@ func auditSessionMessageDetail(ev audit.AuditEvent) string {
 	}
 	_ = json.Unmarshal(ev.Args, &args)
 	detail := fmt.Sprintf("session=%s origin=%s %s", args.SessionID, args.Origin, ev.Phase)
+	if ev.Error != "" {
+		detail += "  " + collapseWhitespace(ev.Error)
+	}
+	return detail
+}
+
+// auditSessionSwapDetail renders a session_swap row: which session, which
+// way, and which half of the pair.
+func auditSessionSwapDetail(ev audit.AuditEvent) string {
+	var args struct {
+		SessionID string `json:"session_id"`
+		Direction string `json:"direction"`
+	}
+	_ = json.Unmarshal(ev.Args, &args)
+	detail := fmt.Sprintf("session=%s %s %s", args.SessionID, args.Direction, ev.Phase)
 	if ev.Error != "" {
 		detail += "  " + collapseWhitespace(ev.Error)
 	}

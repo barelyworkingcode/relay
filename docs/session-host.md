@@ -199,24 +199,23 @@ template of the project, without regard to case: an agent starts through
 `AuthorizeLaunch` with its kind, model and launcher, and a chat starts as a
 headless session on the chat's model, named `<project> - <chat>`, with
 `useRelayTools` and the append-CLAUDE.md option on for a kind other than
-claude. An entry start is headless only; a chat's `mode` and voice are
-ignored. `mode` is
-`headless` (the default: a `claude`, `pi`, `codex` or `chat` session chosen by
-the model, with relay-built settings `{"headless":true,"agent":true}` so it
-shows in the session list and on the board) or `terminal` (a `pty` session on
-the `claude-code` template with `--model <model> -- <prompt>`, Claude models
-only). `folder` is relative to the project and is resolved through symlinks;
+claude. A chat's `mode` and voice are ignored. A start has one path: a
+headless `claude`, `pi`, `codex` or `chat` session chosen by the model, with
+relay-built settings `{"headless":true,"agent":true}` so it shows in the
+session list and on the board. `mode` accepts `""`, `headless` and `terminal`;
+`terminal` runs the same headless start, and the answer's `mode` is always
+`headless`. Any other value answers 400 `mode_invalid`. The owner moves a
+started session to a terminal by Drop in (see [Drop-in](#drop-in)); relay
+never swaps on its own. `folder` is relative to the project and is resolved through symlinks;
 a path that leaves the project root is refused. A project on an SSH host is
-accepted for a headless start only: its path is on the host, so the folder is
+accepted: its path is on the host, so the folder is
 joined and checked as text (no symlink resolution, no existence check, and a
 folder that is missing on the host fails when the session starts), and the
-launch carries the project's host as for any hosted session. A terminal start
-there is refused with 400 `terminal_on_host`. A remote (mTLS) project stays
-refused. Headless delivers the prompt through the same core as the messages
+launch carries the project's host as for any hosted session. A remote (mTLS)
+project stays refused. The prompt goes through the same core as the messages
 route; if delivery fails the session is terminated with reason
 `chief_of_staff_start_failed` and the route answers 502 `prompt_not_delivered`.
-A terminal start appears in `GET /api/terminals` with its origin and does not
-join the Chief of Staff roster, which tracks agent sessions only. Success is
+Success is
 201 `{sessionId, name, projectId, directory, mode, kind, origin, at}`, plus
 `entry` and `entryType` for an entry start.
 
@@ -1227,11 +1226,11 @@ Body `{session_id}`. Internal peer only, like `/launch`. Answers `200 {session_i
 
 A session with no live process can be taken over; it loads from disk first. If a turn is in flight and no tool is open, the request waits for the turn to end, a tool to open, the timeout or the caller to go away. It does not poll. A tool call opens on an assistant `content_block_stop` of a `tool_use` block and closes on its `tool_result`; `message_complete`, `error`, `process_exited`, `StopGeneration` and `ClearSession` clear them all. Waiting through a tool could last without bound, and stopping mid-tool leaves a half-finished call, so a running tool refuses at once.
 
-On success the manager sets the hold under its lock, marks the id terminating (relay's `session_end` reads `closed`), signals `DroppedIn` and kills the process. The provider and slot stay in place, so `process_exited` still reaches relay, which ends the identity and profile and marks the ledger `dormant`.
+On success the manager sets the hold under its lock, marks the id terminating (relay's `session_end` reads `closed`), signals `DroppedIn` and kills the process. A session under the runner has its runner stopped too, and the stop waits until the runner and its agent are gone. The provider and slot stay in place, so `process_exited` still reaches relay, which ends the identity and profile and marks the ledger `dormant`.
 
 ### `POST /handback`
 
-Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears the hold and signals `HandedBack`, so the session reads `idle`. A later message needs a resume, as for any session whose process is gone.
+Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears the hold and signals `HandedBack`, so the session reads `idle`. The handoff stopped the process, so a later message needs a resume; relay resumes at once ([The hand-back resume](#the-hand-back-resume)).
 
 ### `GET /managed-identities`
 
@@ -1241,7 +1240,13 @@ Answers `200 {"claude_session_ids":[string]}`: the Claude conversation id of eve
 
 `LaunchRequest.resume_conversation` (a fresh local `claude` launch only) names the Claude conversation to resume: a canonical UUID, refused with `invalid_spec` on a pty, a resume, a host launch or any other value. The host seeds the new session's provider state with it, so claude starts with `--resume <id>`. Relay's adopt door sets it; see [Outside sessions](outside-sessions.md#adopting-a-session).
 
-`LaunchRequest.drop_in_for` (pty only) names the held session the terminal takes over. `/launch` answers `409 not_held` unless that session is held and no other terminal already has it. The link from terminal id to session id is recorded before the terminal starts, and removed if the start fails. When the terminal exits, `onTerminalExit` calls `HandBack`, so closing the window or a killed client never leaves a session held. The hold is in memory: a relay-sessions restart drops it.
+`LaunchRequest.drop_in_for` (pty only) names the held session the terminal takes over. `/launch` answers `409 not_held` unless that session is held and no other terminal already has it. The link from terminal id to session id is recorded before the terminal starts, and removed if the start fails. When the terminal exits, `onTerminalExit` calls `HandBack` first and `reportExit` second, so the hold is clear when relay's resume reaches `/launch`. Closing the window or a killed client never leaves a session held. The hold is in memory: a relay-sessions restart drops it.
+
+#### The hand-back resume
+
+Relay keeps an in-memory swap table keyed by terminal id (`cmd/relay/session_swap.go`). `dropIn` adds a link after the terminal launch commits, and in each failure path after the handoff succeeded. `appRouter.SessionExited` reports each exit to the table. The resume starts once the terminal's report has arrived **and** the held session's ledger record reads dormant, in either order, in its own goroutine. It is `resumeSession` with the drop-in's caller: `AuthorizeLaunch` with `Resume`, the current project policy, a fresh launch identity and model key, and `--resume <conversation id>`. A detached host session starts a new generation, and so does a local session, whose runner the handoff stopped; the hand back always starts and never attaches. Each hand back writes a `session_swap` pair (`to_headless`) and one `session.hand_back` event. With auditing off, nothing is resumed and the session stays dormant. A relay restart drops the table: the session then reads dormant and needs a Resume, as before.
+
+A host without tmux, and a local session, keep this terminal; there is no refusal.
 
 ### While held
 
@@ -1955,6 +1960,8 @@ record shape.
 ## Resume (user action only) — SH-6
 
 A local Claude session whose runner still lives is attached, never started a second time; after a relay restart its relay tools come back on their own (see [Relay tools after a relay restart](#relay-tools-after-a-relay-restart)); a session started before relay recorded its root keeps them closed until it is stopped and resumed. A session whose agent exited reads dormant and resumes on its conversation.
+
+A hand back is also a resume: when a drop-in terminal ends, relay resumes the held session on the drop-in caller's behalf, through the same path ([The hand-back resume](#the-hand-back-resume)). No further user action is needed.
 
 A project-bound provider session (claude/pi/chat) never respawns itself when its provider process dies.
 `internal/sessions/session.Manager.SendMessage` returns `ErrResumeRequired`
