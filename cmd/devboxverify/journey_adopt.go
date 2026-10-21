@@ -303,38 +303,42 @@ func adoptPane(tmux, name string) string {
 	return string(out)
 }
 
-// answerAdoptTrust confirms Claude's folder-trust prompt. The prompt starts on
-// "No, exit". Deliberate: the terminal ignores keys sent before it accepts
-// input and its redraw lags them, so a Down is repeated only while ❯ still
-// shows on "No, exit" and adoptDownGap has passed since the last one, and
-// Enter is sent once, when ❯ is on "Yes, I trust". After Enter the poll waits,
-// until the conversation's transcript exists or the bound passes, so the bound
-// covers the redraw.
+// answerAdoptTrust confirms Claude's folder-trust prompt. Deliberate: the
+// terminal ignores keys sent before it accepts input and its redraw lags
+// them, so a key goes out only when adoptDownGap has passed since the last key
+// of any kind, chosen from where ❯ shows on the latest capture: Down on "No,
+// exit", Enter on "Yes, I trust". A queued key that moves ❯ off Yes is
+// corrected on a later poll. It ends when the transcript exists, or when the
+// prompt, once seen, is gone, or at the bound.
 func answerAdoptTrust(ctx context.Context, tmux, name, convID string) {
-	var lastDown time.Time
-	var entered bool
+	var lastKey time.Time
+	var seen bool
 	pollUntil(ctx, adoptTrustWait, func() bool {
 		if len(adoptTranscripts(convID)) > 0 {
 			return true
 		}
-		if entered {
-			return false
-		}
 		text := adoptPane(tmux, name)
 		if !adoptTrustPrompt.MatchString(text) {
+			return seen
+		}
+		seen = true
+		if time.Since(lastKey) < adoptDownGap {
 			return false
 		}
 		for _, l := range strings.Split(text, "\n") {
-			if strings.Contains(l, "❯") && strings.Contains(l, "Yes, I trust") {
-				_ = adoptTmuxCmd(ctx, tmux, name, "send-keys", "-t", name, "Enter").Run()
-				entered = true
-				return false
+			if !strings.Contains(l, "❯") {
+				continue
 			}
-		}
-		for _, l := range strings.Split(text, "\n") {
-			if strings.Contains(l, "❯") && strings.Contains(l, "No, exit") && time.Since(lastDown) >= adoptDownGap {
-				_ = adoptTmuxCmd(ctx, tmux, name, "send-keys", "-t", name, "Down").Run()
-				lastDown = time.Now()
+			key := ""
+			switch {
+			case strings.Contains(l, "Yes, I trust"):
+				key = "Enter"
+			case strings.Contains(l, "No, exit"):
+				key = "Down"
+			}
+			if key != "" {
+				_ = adoptTmuxCmd(ctx, tmux, name, "send-keys", "-t", name, key).Run()
+				lastKey = time.Now()
 				break
 			}
 		}
