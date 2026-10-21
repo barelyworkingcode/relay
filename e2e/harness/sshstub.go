@@ -32,7 +32,13 @@ func (i *Instance) installSSHStub() {
 	// The stub host's tmux server keeps its socket under <root>/tmux and ends
 	// with the test, so no session outlives it.
 	tmuxDir := filepath.Join(root, "tmux")
-	t.Cleanup(func() { killTmuxServer(tmuxDir) })
+	// The explicit -S is deliberate: with TMUX_TMPDIR alone, tmux falls back to
+	// /tmp when the dir is gone, and kill-server would end the machine's own
+	// server. A missing socket fails here and touches no other server.
+	t.Cleanup(func() {
+		sock := filepath.Join(tmuxDir, "tmux-"+strconv.Itoa(os.Getuid()), "default")
+		_ = exec.Command("tmux", "-S", sock, "kill-server").Run()
+	})
 	// The stub reads fakessh.json beside its own binary, so each instance gets
 	// its own link rather than sharing the bundle's.
 	stub := filepath.Join(i.Dir, "sshstub", "ssh")
