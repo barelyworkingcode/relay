@@ -608,9 +608,11 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) (s
 	if err := p.Start(); err != nil {
 		return p, err
 	}
-	if m.attachable(sess) {
+	if m.runnerSession(sess) {
 		// The saved state names the run, its cursor and its root; a restart before
-		// the first result would otherwise find none of them.
+		// the first result would otherwise find none of them. A pi session, which
+		// ends with relay-sessions, needs it too: its adopted transcript is the
+		// only way back to the conversation when the restart comes mid-turn.
 		m.persist(sess)
 	}
 	return p, nil

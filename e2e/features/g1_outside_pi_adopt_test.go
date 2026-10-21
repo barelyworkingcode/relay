@@ -529,6 +529,8 @@ func TestPiAdoptStaleEvidenceRefused(t *testing.T) {
 				// An unreadable session root prevents a fresh registry query;
 				// identified candidates with changed evidence still use 409.
 				otRefusal(t, resp, 502, "unavailable")
+			} else if kind == "cwd" || kind == "start" {
+				otRefusal(t, resp, 409, "changed")
 			} else if resp.Status != 409 {
 				t.Fatalf("changed %s evidence answered %d: %s", kind, resp.Status, resp.Body)
 			}
@@ -773,13 +775,15 @@ func TestPiAdoptManagedAbortAuditFailureRefused(t *testing.T) {
 	r.i.WaitEvent(harness.EventQuery{Key: "service.manifest.register", Since: since,
 		Fields: map[string]any{"service_id": "relaysessions", "status": "ok"}}, g1sHostDeadline)
 	r.i.WaitSessionHost(g1sHostDeadline)
-	// A managed Pi ends with its host, so the refused session is gone after the
-	// restart and nothing is dormant to resume. A fresh outside Pi is adopted
-	// instead, and its held turn is aborted through the revived recorder.
 	r.i.WaitModelHost(g1sHostDeadline)
-	f2 := r.fake("interrupt-audit-recovered")
-	f2.idle()
-	sid = r.adopted(f2)
+	// A managed Pi ends with its host, so the refused session reads dormant
+	// after the restart and resumes from its transcript.
+	list, _ = g1sListSessions(t, r.i)
+	row, ok = g1sFindSession(list, sid)
+	if !ok || row.Live {
+		t.Fatalf("refused session after restart: listed %v, %+v, want dormant", ok, row)
+	}
+	r.i.MustCLI("session", "resume", "--id", sid, "--json")
 	ws = paHoldNth(t, r, sid, 2)
 	ws.Send(map[string]any{"type": "stop_generation", "sessionId": sid})
 	g1aNext(t, ws, g1tFrameDeadline, func(v map[string]any) bool {
@@ -788,12 +792,12 @@ func TestPiAdoptManagedAbortAuditFailureRefused(t *testing.T) {
 	r.i.MustCLI("session", "wait", "--id", sid, "--json")
 	n = 0
 	for _, call := range r.i.FakeAgentCalls("pi") {
-		if call.Event == "pi_abort" {
+		if call.Event == "pi_abort" && call.Text == f.sid {
 			n++
 		}
 	}
 	if n != 1 {
-		t.Fatalf("abort after audit recovery delivered %d RPC abort receipts, want 1", n)
+		t.Fatalf("abort after audit recovery delivered %d RPC abort receipts for %s, want 1", n, f.sid)
 	}
 }
 
