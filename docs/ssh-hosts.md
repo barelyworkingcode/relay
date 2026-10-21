@@ -436,7 +436,10 @@ and goes through `RemoteCommandForOS` like any other template. An empty
 `command` starts tmux's own default shell. `-A` attaches when `<name>`
 already exists, so the same argv both creates and reattaches.
 
-**Naming.** `config.PersistSessionName(projectID, templateID, n)`:
+**Naming.** The tmux sessions of detached agents are named `relay-agent-<relay
+session id>`. They are not persist names (`config.ParsePersistSessionName`
+needs a `-` after 8 characters), so the persistent-session list and kill never
+touch them. `config.PersistSessionName(projectID, templateID, n)`:
 
     relay-<first 8 of project id>-<template id>-<n>
 
@@ -759,7 +762,7 @@ directory. `relay session start` returns only after `runner.json` exists.
 The runner (`internal/sessions/runner/runner.sh`) is a POSIX `sh` script that
 `setsid(1)` or `set -m` puts in its own process group, with every file
 descriptor redirected and `HUP` ignored. It needs `awk`, `tail`, `mkfifo`, `ps`
-and `base64` and no perl, python, tmux or `setsid(1)`: a host without tmux runs
+and `base64` and no perl, python, tmux or `setsid(1)`: a host without tmux 3.0 runs
 headless sessions under the runner alone. A host with neither `setsid` nor a
 `sh` that honours `set -m` without a terminal (dash, without util-linux)
 refuses the start with "agent runner did not start"; it never runs the agent in
@@ -770,6 +773,24 @@ The runner knows no agent protocol. It writes inbox files to the agent's stdin
 in name order and matches two fixed strings, given at start, in each stdout
 line: for Claude, `"type":"result"` ends a turn and `"subtype":"can_use_tool"`
 is a permission prompt.
+
+**The tmux pane.** On a host with a tmux path (`hosts[].tmux_path`, else the
+probe's) the start script runs `<tmux> -V`. With tmux 3.0 or later the runner
+is the pane of the tmux session `relay-agent-<relay session id>`, made once by
+`new-session -d -s <name> -x 200 -y 50 <runner command> \; set-option -w -t =<name>: remain-on-exit on`.
+The pane command is the runner itself, so `runner.json`'s `pid` is
+`#{pane_pid}` and equals its `pgid`. `remain-on-exit` keeps the pane when the
+program ends, so a stop leaves a dead pane and the next start reuses it:
+`respawn-pane -t =<name>:` after `TERM` to the pane's group, `KILL` after 3 s
+and a wait until `#{pane_dead}` reads 1; a missing tmux session is made again.
+A host below tmux 3.0, or a tmux call that fails before the runner starts,
+runs the runner alone, as without tmux, and writes one stderr line that names
+the tmux version. `tmux ls` on the host lists one `relay-agent-<id>` session
+per such agent, and `tmux attach -t relay-agent-<id>` shows it. Deleting the
+session ends the tmux session after the run directory is removed
+(`KillAgentPane`). The host spec carries `tmux_path` only with `detach`; no
+other wire shape changes. The drop-in terminal on such a host swaps the pane
+to Claude's UI (`PaneDropInArgv`; [session-adoption.md](session-adoption.md#swapping-the-driver)).
 
 **A send.** A sender writes `inbox/.<id>.tmp` and renames it to
 `inbox/<id>.json` or `<id>.ctl`; the id is `<unix ns>-<6 hex>`. The runner

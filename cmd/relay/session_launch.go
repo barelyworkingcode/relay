@@ -1242,6 +1242,9 @@ func buildHostSpec(settings *config.Settings, hostID string) (*sessiontypes.Host
 		spec.OS = h.Probe.OS
 	}
 	spec.Detach = (h.DetachSessions == nil || *h.DetachSessions) && !sshhost.IsWindowsOS(spec.OS)
+	if spec.Detach {
+		spec.TmuxPath = h.EffectiveTmuxPath()
+	}
 	// Codex's path comes from the host's own codex template, not the probe; a
 	// template that fails host validation is ignored, so the launch is refused
 	// the same as when none exists.

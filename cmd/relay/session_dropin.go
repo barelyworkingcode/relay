@@ -15,6 +15,8 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/sessions/sandbox"
+	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
+	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
 // dropInTemplateID is the terminal template a drop-in launches: the project's
@@ -162,7 +164,12 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 		d.armSwap(link)
 		return nil, &DropInRefusal{Status: http.StatusBadGateway, Code: dropInLaunchFailed, Message: "relay could not start the terminal; the session is idle again"}
 	}
-	result.Spec.Argv = append(result.Spec.Argv, "--resume", claudeID)
+	if argv, ok := d.paneDropInArgv(req.SessionID, rec.ProjectID, result, claudeID); ok {
+		result.Spec.Argv = argv
+		result.Spec.Name = launchReq.Name
+	} else {
+		result.Spec.Argv = append(result.Spec.Argv, "--resume", claudeID)
+	}
 	result.Spec.DropInFor = req.SessionID
 
 	resp, err := d.launchOnHost(hold, result)
@@ -186,6 +193,34 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 		SessionID: req.SessionID, ClaudeSessionID: claudeID, Host: host,
 		ProjectName: result.AuditFields.ProjectName, Launch: result, TerminalBody: resp.Body,
 	}, nil
+}
+
+// paneDropInArgv is the terminal's argv on a host whose detached agent runs as
+// a tmux pane: the pane swaps to Claude's UI and the terminal attaches to it.
+// It is false when the host has no tmux path or the template has no command,
+// and the terminal then launches as it does without a pane. Deliberate: the UI
+// is the template's command and args, never its persist wrapper, because the
+// pane is already the tmux session.
+func (d sessionRouteDeps) paneDropInArgv(sessionID, projectID string, result *LaunchResult, claudeID string) ([]string, bool) {
+	var host sessiontypes.HostSpec
+	if len(result.Spec.Host) == 0 || json.Unmarshal(result.Spec.Host, &host) != nil || !host.Detach || host.TmuxPath == "" {
+		return nil, false
+	}
+	settings := config.FreshSettings(d.store)
+	proj, _ := config.FindProjectByID(settings, projectID)
+	if proj == nil || !proj.IsHosted() {
+		return nil, false
+	}
+	tmpl, ok := findTemplate(settings, proj, dropInTemplateID)
+	if !ok {
+		return nil, false
+	}
+	ui := resolveHostArgv(tmpl, proj.Path, projectID)
+	if len(ui) == 0 {
+		return nil, false
+	}
+	ui = append(ui, "--resume", claudeID)
+	return sshhost.PaneDropInArgv(host.TmuxPath, sshhost.AgentPaneName(sessionID), result.Spec.Directory, ui, result.Spec.Env), true
 }
 
 // discardLaunch undoes what AuthorizeLaunch minted for a launch that never

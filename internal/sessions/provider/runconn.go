@@ -146,6 +146,11 @@ func (c sshConn) Remove(ctx context.Context) error {
 	if err != nil {
 		return errors.New(msg)
 	}
+	if c.host.TmuxPath != "" {
+		if _, msg, err := runHost(ctx, c.host, sshhost.KillAgentPane(c.host.OS, c.host.TmuxPath, sshhost.AgentPaneName(c.dir.Session)), nil); err != nil {
+			return errors.New(msg)
+		}
+	}
 	return nil
 }
 

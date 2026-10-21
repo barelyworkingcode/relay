@@ -82,11 +82,16 @@ runner_alive() {
 }
 `
 
+// agentStartHead and agentStartWait bracket the launch step, which differs
+// between the plain and the pane form. launch_plain is deliberate: the shell
+// function sees the script's arguments only when called with "$@".
+//
 // agentStartScript takes $1 session, $2 generation (empty: allocate the next),
 // $3 the base64 of the agent's own launch script, and $4 and $5 the runner's
-// turn-ended and asking strings. It returns only after runner.json exists,
+// turn-ended and asking strings. The pane form adds $6 the tmux path and $7
+// the pane's session name (pane.go). It returns only after runner.json exists,
 // which is the completion handle a caller waits on.
-var agentStartScript = agentPrelude + `
+var agentStartHead = agentPrelude + `
 mkdir -p "$base" 2>/dev/null || { echo "relay: cannot create run directory $base" >&2; exit 3; }
 if [ -n "$2" ]; then
   gen="$2"; dir="$base/$gen"
@@ -107,19 +112,23 @@ mkdir inbox sent || { echo "relay: cannot create message directories in $dir" >&
 printf %s "$3" | base64 -d > agent.sh || { echo "relay: cannot write agent script in $dir" >&2; exit 3; }
 cat > runner.sh <<'RELAY_RUNNER_EOF'
 ` + runnerfiles.Script + `RELAY_RUNNER_EOF
-if command -v setsid >/dev/null 2>&1; then
-  setsid sh "$dir/runner.sh" "$dir" "$oldumask" "$1" "$gen" "$4" "$5" </dev/null >/dev/null 2>&1 &
-else
-  set -m
-  sh "$dir/runner.sh" "$dir" "$oldumask" "$1" "$gen" "$4" "$5" </dev/null >/dev/null 2>&1 &
-  set +m
-fi
-rpid=$!
-i=0
+launch_plain() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid sh "$dir/runner.sh" "$dir" "$oldumask" "$1" "$gen" "$4" "$5" </dev/null >/dev/null 2>&1 &
+  else
+    set -m
+    sh "$dir/runner.sh" "$dir" "$oldumask" "$1" "$gen" "$4" "$5" </dev/null >/dev/null 2>&1 &
+    set +m
+  fi
+  rpid=$!
+}
+`
+
+const agentStartWait = `i=0
 while [ ! -f "$dir/runner.json" ]; do
   i=$((i+1))
   if [ -f "$dir/norun" ] || [ "$i" -gt 100 ]; then
-    kill "$rpid" 2>/dev/null
+    [ -z "$rpid" ] || kill "$rpid" 2>/dev/null
     echo "relay: agent runner did not start in $dir" >&2
     exit 4
   fi
@@ -127,6 +136,9 @@ while [ ! -f "$dir/runner.json" ]; do
 done
 echo "@@RELAY_RUN@@ $gen"
 `
+
+var agentStartScript = agentStartHead + `launch_plain "$@"
+` + agentStartWait
 
 const agentStatusScript = agentPrelude + `
 resolve "$@" || { echo "@@RELAY_RUN@@ none"; exit 0; }

@@ -269,7 +269,12 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 	}
 	program := p.cfg.Launcher.Program(host.ClaudePath)
 	env := map[string]string{"RELAY_SESSION_ID": p.session.ID}
-	remote := sshhost.RunnerStartIn(host.OS, p.directory, sshhost.RunDir{Session: p.session.ID}, append(slices.Clone(program), args...), env, claudeRunnerPatterns)
+	argv := append(slices.Clone(program), args...)
+	run := sshhost.RunDir{Session: p.session.ID}
+	remote := sshhost.RunnerStartIn(host.OS, p.directory, run, argv, env, claudeRunnerPatterns)
+	if host.TmuxPath != "" {
+		remote = sshhost.RunnerStartInPane(host.OS, p.directory, run, argv, env, claudeRunnerPatterns, host.TmuxPath, sshhost.AgentPaneName(p.session.ID))
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), detachedStartTimeout)
 	defer cancel()
