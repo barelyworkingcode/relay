@@ -186,7 +186,7 @@ func (a *claudeAdopter) Check(ctx context.Context, c Candidate) (Readiness, erro
 
 // turnHelperExe is the one child a turn starts and an idle Claude keeps for
 // minutes: it holds the machine awake and does no work for the session. It is
-// matched by the executable path the kernel ran, never by name or by ps's comm
+// matched by the exec path recorded in kern.procargs2, never by name or by ps's comm
 // (which reflects how the program was launched), so a program that only calls
 // itself caffeinate is still a veto. A path that cannot be read is a veto too.
 const turnHelperExe = "/usr/bin/caffeinate"

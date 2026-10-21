@@ -77,3 +77,12 @@ promoted to an issue the day it does.
   real, live outside Claude process whose kernel start time matches the entry,
   in a registered project folder, so the worst case is adopting a session the
   owner could already adopt.
+- **Adopt: a background shell that execs caffeinate.** The turn-helper
+  exclusion matches the child's exec path only. A background Bash command that
+  runs `exec /usr/bin/caffeinate -i <job>` leaves a direct child that reads as
+  the helper while its job runs, so that child never vetoes an adopt. It needs
+  an explicit `exec` in a background command.
+- **Adopt: a bash-mode child before the first assistant record.** The child
+  veto's boundary is the run's first `assistant` record. A child started by
+  `!` bash mode, which writes only `user` records, before any assistant record
+  of the run would not veto; the registry status likely reads busy then.
