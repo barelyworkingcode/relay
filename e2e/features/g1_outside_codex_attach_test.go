@@ -254,10 +254,16 @@ func ccTime(t *testing.T, v any) time.Time {
 
 // ccThread is a thread the fake daemon holds.
 type ccThread struct {
-	ID, Dir, Model, Source, Parent, Preview, Status string
-	Turns                                           []string
-	Ephemeral                                       bool
-	Created                                         int64
+	ID, Dir, Model, Parent, Preview, Status string
+	// Source is any JSON value; nil leaves the fake's default, "vscode".
+	Source any
+	// TopDir, when set, is a top-level folder that differs from Dir (environments[0].cwd).
+	TopDir string
+	// NoEnv leaves environments out of the thread's metadata.
+	NoEnv     bool
+	Turns     []string
+	Ephemeral bool
+	Created   int64
 }
 
 type ccRig struct {
@@ -315,7 +321,7 @@ func (r *ccRig) thread(name string) ccThread {
 func (d *ccProc) add(th ccThread) {
 	d.t.Helper()
 	d.do(map[string]any{"cmd": "add_thread", "id": th.ID, "cwd": th.Dir, "model": th.Model, "source": th.Source,
-		"parentThreadId": th.Parent, "preview": th.Preview, "ephemeral": th.Ephemeral, "created": th.Created,
+		"topCwd": th.TopDir, "noEnvironments": th.NoEnv, "parentThreadId": th.Parent, "preview": th.Preview, "ephemeral": th.Ephemeral, "created": th.Created,
 		"turns": th.Turns, "status": th.Status})
 }
 
@@ -505,6 +511,40 @@ func TestCodexAttachRowListsThread(t *testing.T) {
 	if page := r.transcriptPage(row["id"].(string), ""); len(page.Entries) != 0 {
 		t.Fatalf("codex transcript page is not empty: %+v", page)
 	}
+}
+
+// ccFolderRow lists one thread and checks its row's folder and project.
+func ccFolderRow(t *testing.T, r *ccRig, th ccThread) {
+	t.Helper()
+	row := r.row(th)
+	if row == nil {
+		t.Fatalf("no codex row for %s", th.ID)
+	}
+	if row["directory"] != th.Dir || row["projectId"] != r.project || row["adoptable"] != true {
+		t.Fatalf("row = %v, want directory %s", row, th.Dir)
+	}
+}
+
+// A thread with no environments lists by its top-level cwd.
+func TestCodexAttachRowNoEnvironmentsUsesCwd(t *testing.T) {
+	t.Parallel()
+	r := ccStart(t)
+	d := r.daemon()
+	th := r.thread("no-environments")
+	th.NoEnv = true
+	d.add(th)
+	ccFolderRow(t, r, th)
+}
+
+// environments[0].cwd wins when it differs from the top-level cwd.
+func TestCodexAttachRowEnvironmentsWin(t *testing.T) {
+	t.Parallel()
+	r := ccStart(t)
+	d := r.daemon()
+	th := r.thread("environments-win")
+	th.TopDir = osDir(t, r.root, "stale-start-folder")
+	d.add(th)
+	ccFolderRow(t, r, th)
 }
 
 func TestCodexAttachNoTurnNoRow(t *testing.T) {
@@ -770,9 +810,14 @@ func ccNotAdoptable(t *testing.T) {
 	eph := r.thread("ephemeral")
 	eph.Ephemeral = true
 	cases["ephemeral"] = eph
-	ide := r.thread("not-cli")
-	ide.Source = "vscode"
-	cases["not-cli"] = ide
+	sub2 := r.thread("subagent-source")
+	sub2.Parent = adUUID()
+	sub2.Source = map[string]any{"subAgent": map[string]any{"thread_spawn": map[string]any{
+		"parent_thread_id": sub2.Parent, "depth": 1}}}
+	cases["subagent-source"] = sub2
+	exec := r.thread("exec")
+	exec.Source = "exec"
+	cases["exec"] = exec
 	bad := r.thread("bad-id")
 	bad.ID = "not-a-uuid"
 	cases["bad-id"] = bad

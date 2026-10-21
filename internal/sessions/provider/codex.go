@@ -78,6 +78,7 @@ var codexNotifications = setOf(
 	"thread/attachment/updated", "thread/goal/updated", "thread/goal/cleared", "thread/queue/changed",
 	"project/changed", "thread/project/updated", "thread/environment/connected",
 	"thread/environment/disconnected", "thread/settings/updated", "thread/tokenUsage/updated",
+	"thread/readState/changed", "thread/prediction/updated",
 	"turn/started", "hook/started", "turn/completed", "hook/completed", "turn/diff/updated",
 	"turn/plan/updated", "item/started", "item/autoApprovalReview/started",
 	"item/autoApprovalReview/completed", "autoApprovalReview/strictReviewRequired", "item/completed",

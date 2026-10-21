@@ -169,11 +169,17 @@ type rpcError struct {
 type turn struct{ id, status string }
 
 type thread struct {
-	id, cwd, model, source, parent, preview, status string
-	ephemeral, dup                                  bool
-	created, updated                                int64
-	turns                                           []*turn
-	subs                                            map[*conn]bool
+	id, cwd, model, parent, preview, status string
+	// source is any JSON value, as on the wire: a string or a subAgent object.
+	source json.RawMessage
+	// topCwd, when set, is the top-level cwd that differs from the environments folder.
+	topCwd string
+	// noEnv leaves environments out of the metadata.
+	noEnv            bool
+	ephemeral, dup   bool
+	created, updated int64
+	turns            []*turn
+	subs             map[*conn]bool
 }
 
 func (t *thread) inProgress() *turn {
@@ -204,11 +210,19 @@ func (t *thread) meta(withTurns bool) map[string]any {
 			turns = append(turns, tn.json())
 		}
 	}
+	top := t.cwd
+	if t.topCwd != "" {
+		top = t.topCwd
+	}
 	m := map[string]any{
-		"id": t.id, "cwd": t.cwd, "createdAt": t.created, "updatedAt": t.updated,
+		"id": t.id, "cwd": top, "createdAt": t.created, "updatedAt": t.updated,
 		"source": t.source, "ephemeral": t.ephemeral, "status": t.statusJSON(),
 		"preview": t.preview, "name": t.preview, "model": t.model, "modelProvider": "fake",
-		"cliVersion": "0.162.1", "turns": turns,
+		"cliVersion": "0.163.0", "turns": turns,
+	}
+	if !t.noEnv {
+		m["environments"] = []any{map[string]any{"environmentId": "local", "cwd": t.cwd,
+			"runtimeWorkspaceRoots": []any{t.cwd}}}
 	}
 	if t.parent != "" {
 		m["parentThreadId"] = t.parent
@@ -486,20 +500,22 @@ func (s *server) dispatch(c *conn, m rpcMsg) (any, *rpcError, func()) {
 // command runs one stdin command. The caller holds no lock.
 func (s *server) command(raw []byte) map[string]any {
 	var c struct {
-		Cmd       string   `json:"cmd"`
-		Tag       any      `json:"tag"`
-		ID        string   `json:"id"`
-		Cwd       string   `json:"cwd"`
-		Model     string   `json:"model"`
-		Source    string   `json:"source"`
-		Parent    string   `json:"parentThreadId"`
-		Preview   string   `json:"preview"`
-		Status    string   `json:"status"`
-		Method    string   `json:"method"`
-		To        string   `json:"to"`
-		Ephemeral bool     `json:"ephemeral"`
-		Created   int64    `json:"created"`
-		Turns     []string `json:"turns"`
+		Cmd       string          `json:"cmd"`
+		Tag       any             `json:"tag"`
+		ID        string          `json:"id"`
+		Cwd       string          `json:"cwd"`
+		Model     string          `json:"model"`
+		Source    json.RawMessage `json:"source"`
+		TopCwd    string          `json:"topCwd"`
+		NoEnv     bool            `json:"noEnvironments"`
+		Parent    string          `json:"parentThreadId"`
+		Preview   string          `json:"preview"`
+		Status    string          `json:"status"`
+		Method    string          `json:"method"`
+		To        string          `json:"to"`
+		Ephemeral bool            `json:"ephemeral"`
+		Created   int64           `json:"created"`
+		Turns     []string        `json:"turns"`
 	}
 	ack := map[string]any{"event": "ack", "cmd": "", "ok": true}
 	if err := json.Unmarshal(raw, &c); err != nil {
@@ -518,10 +534,10 @@ func (s *server) command(raw []byte) map[string]any {
 	switch c.Cmd {
 	case "barrier":
 	case "add_thread":
-		nt := &thread{id: c.ID, cwd: c.Cwd, model: c.Model, source: c.Source, parent: c.Parent, preview: c.Preview,
+		nt := &thread{id: c.ID, cwd: c.Cwd, topCwd: c.TopCwd, noEnv: c.NoEnv, model: c.Model, source: c.Source, parent: c.Parent, preview: c.Preview,
 			ephemeral: c.Ephemeral, created: c.Created, updated: c.Created, status: "idle", subs: map[*conn]bool{}}
-		if nt.source == "" {
-			nt.source = "cli"
+		if len(nt.source) == 0 || string(nt.source) == "null" || string(nt.source) == `""` {
+			nt.source = json.RawMessage(`"vscode"`)
 		}
 		for _, st := range c.Turns {
 			s.nextT++
@@ -542,7 +558,7 @@ func (s *server) command(raw []byte) map[string]any {
 	case "dup":
 		t.dup = true
 	case "set_cwd":
-		t.cwd = c.Cwd
+		t.cwd, t.topCwd = c.Cwd, ""
 	case "set_status":
 		s.setStatus(t, c.Status)
 	case "start_turn":

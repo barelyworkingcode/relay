@@ -62,11 +62,26 @@ type codexThread struct {
 	CreatedAt      json.RawMessage `json:"createdAt"`
 	UpdatedAt      json.RawMessage `json:"updatedAt"`
 	Cwd            string          `json:"cwd"`
+	Environments   []codexEnv      `json:"environments"`
 	Source         json.RawMessage `json:"source"`
 	Ephemeral      bool            `json:"ephemeral"`
 	ParentThreadID *string         `json:"parentThreadId"`
 	Model          string          `json:"model"`
 	Status         json.RawMessage `json:"status"`
+}
+
+// codexEnv is one environment of a loaded thread.
+type codexEnv struct {
+	Cwd string `json:"cwd"`
+}
+
+// folder is the thread's working folder: its first environment's cwd, else the
+// top-level cwd, which codex fixes when the thread starts.
+func (t codexThread) folder() string {
+	if len(t.Environments) > 0 {
+		return t.Environments[0].Cwd
+	}
+	return t.Cwd
 }
 
 type codexTurn struct {
@@ -194,17 +209,17 @@ func canonicalThreadID(id string) bool {
 // start time is unreadable.
 func codexCandidate(t codexThread, instance string, mentions int) (Candidate, bool) {
 	created, ok := codexTime(t.CreatedAt)
-	if !ok || !filepath.IsAbs(t.Cwd) {
+	if !ok || !filepath.IsAbs(t.folder()) {
 		return Candidate{}, false
 	}
-	c := Candidate{Agent: "codex", ConversationID: t.ID, ProcStart: created, Cwd: filepath.Clean(t.Cwd), Instance: instance, Adoptable: true}
+	c := Candidate{Agent: "codex", ConversationID: t.ID, ProcStart: created, Cwd: filepath.Clean(t.folder()), Instance: instance, Adoptable: true}
 	var source string
 	switch {
 	case !canonicalThreadID(t.ID):
 		c.Reason = ReasonInvalidID
 	case (t.ParentThreadID != nil && *t.ParentThreadID != "") || t.Ephemeral:
 		c.Reason = ReasonNotInteractive
-	case json.Unmarshal(t.Source, &source) != nil || source != "cli":
+	case json.Unmarshal(t.Source, &source) != nil || (source != "cli" && source != "vscode"):
 		c.Reason = ReasonNotCommandLine
 	case mentions > 1:
 		c.Reason = ReasonAmbiguous

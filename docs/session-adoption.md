@@ -245,9 +245,21 @@ retain their existing behavior.
 
 ### Codex attach
 
-Codex 0.162.1 keeps the threads of a terminal in a per-user app-server daemon;
-the terminal UI is one client of it. Relay attaches as one more client. It
-starts no codex, ends no process and changes no setting of the thread.
+The per-user codex app-server daemon holds the threads of the codex desktop
+app and of a terminal whose codex matches the daemon's version (0.163.0
+observed); each is one client of it. Relay attaches as one more client. It
+starts no codex, ends no process and changes no setting of the thread. A
+terminal started with codex 0.162.1 runs an in-process server: its thread never
+reaches the daemon and shows no row. A desktop-app thread in a registered
+project shows Adopt, as a terminal thread does.
+
+**Rows.** The thread folder is `environments[0].cwd`; when `environments` is
+absent, null or empty, it is the top-level `cwd`. A thread with no absolute
+folder shows no row. The accepted sources are `cli` and `vscode` (the daemon
+reports `vscode` for a terminal and for the desktop app). A thread with a
+`parentThreadId` or an ephemeral thread is `not_interactive`; any other source
+(`exec`, `mcp`, a subagent object) is `not_command_line`. The `thread/resume`
+reply is checked against the session folder by the same rule.
 
 **Socket.** Relay reads only `<home>/.codex/app-server-control/app-server-control.sock`.
 No option, thread id, home or socket path reaches the door. An absent socket is
@@ -342,7 +354,8 @@ dormant session is hidden from the outside list, so the resume is the one door
 back; relay never starts its own codex for it.
 
 **Not covered.** A custom `CODEX_HOME`, a terminal UI running its own embedded
-server, SSH hosts, `codex exec`, IDE and subagent threads. A codex terminal
+server (every terminal started with codex 0.162.1), SSH hosts, `codex exec`,
+MCP and subagent threads. A codex terminal
 UI opened inside a relay terminal session that joins the daemon lists like any
 daemon thread. After attach, Eve shows turns from the attach on.
 
@@ -503,7 +516,8 @@ answer.
    [running-thread resume path, lines 4348-4397](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/request_processors/thread_processor.rs#L4348-L4397)
    retains a loaded thread's settings and ignores conflicting overrides while
    another subscriber remains. A second subscriber therefore resumes a loaded
-   thread and keeps its settings, so relay attaches, sends no setting and
+   thread and keeps its settings (the daemon of codex 0.163.0 behaves the
+   same, read-only probe, relay#575), so relay attaches, sends no setting and
    claims no project sandbox over the thread. Sources:
    [app-server](https://github.com/openai/codex/tree/main/codex-rs/app-server),
    [app-server docs](https://learn.chatgpt.com/docs/app-server.md).

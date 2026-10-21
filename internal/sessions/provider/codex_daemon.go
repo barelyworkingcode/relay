@@ -169,8 +169,11 @@ func (p *CodexProvider) seedFromResume(thread string, r codexReply) error {
 		Cwd    string `json:"cwd"`
 		Model  string `json:"model"`
 		Thread struct {
-			ID    string `json:"id"`
-			Cwd   string `json:"cwd"`
+			ID           string `json:"id"`
+			Cwd          string `json:"cwd"`
+			Environments []struct {
+				Cwd string `json:"cwd"`
+			} `json:"environments"`
 			Model string `json:"model"`
 			Turns []struct {
 				ID     string `json:"id"`
@@ -182,7 +185,12 @@ func (p *CodexProvider) seedFromResume(thread string, r codexReply) error {
 		return errors.New("thread/resume: the reply does not name the thread")
 	}
 	folders := 0
-	for _, cwd := range []string{res.Thread.Cwd, res.Cwd} {
+	// The thread folder is its first environment's folder, else its own cwd.
+	threadCwd := res.Thread.Cwd
+	if len(res.Thread.Environments) > 0 && res.Thread.Environments[0].Cwd != "" {
+		threadCwd = res.Thread.Environments[0].Cwd
+	}
+	for _, cwd := range []string{threadCwd, res.Cwd} {
 		if cwd == "" {
 			continue
 		}

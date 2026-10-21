@@ -155,7 +155,12 @@ A codex thread that the per-user codex daemon has loaded is a console row with
 creation time and `state` is `idle` or `running`. Its private identity hashes
 machine, `codex`, the thread id and the daemon's lifetime (the control socket's
 physical path, device, inode and modification time), so a restarted daemon
-makes new ids. A thread with no turn is absent. Relay reads no codex file: the
+makes new ids. The daemon holds the threads of the codex desktop app and of a terminal whose
+codex matches the daemon's version; a terminal started with codex 0.162.1 runs
+an in-process server and shows no row. The folder is `environments[0].cwd`,
+else `cwd`, and the accepted sources are `cli` and `vscode`; a desktop-app
+thread in a registered project shows Adopt, as a terminal thread does. A thread
+with no turn is absent. Relay reads no codex file: the
 detail's `lastTurn` is empty and the transcript page is empty, as for a missing
 file. Row text never carries thread text, only folder, state and times.
 
