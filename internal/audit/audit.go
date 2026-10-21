@@ -111,6 +111,11 @@ const (
 	// session, on its own intent and completion pair.
 	AuditEventSessionAdopt     = "session_adopt"
 	AuditEventSessionInterrupt = "session_interrupt"
+
+	// SessionRebind records relay binding a surviving local session's root to a
+	// fresh launch identity after a relay restart: an intent row before the
+	// bind, a completion row after.
+	AuditEventSessionRebind = "session_rebind"
 )
 
 // Denied means a known credential was refused a tool it may not use;

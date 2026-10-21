@@ -918,6 +918,31 @@ The resumed launch writes its ordinary `session_launch` row. With auditing off,
 or when an intent row cannot be written, the door answers 503
 `audit_unavailable` and signals nothing.
 
+### Session rebind
+
+A surviving local session's relay tools are bound again after a relay restart
+(`SessionRebind`, [`docs/session-host.md`](session-host.md#relay-tools-after-a-relay-restart)).
+Relay writes a durable `intent` row before it checks the claim and a durable
+`completion` row after; the two share an `id`. The actor is the service
+`relaysessions` (`auth: none`) with the session id.
+
+- `session_rebind` intent: `args` `session_id`, `project_id`, `runner_pid` and
+  `root_pid` (from the ledger); `outcome: pending`.
+- `session_rebind` completion: the same args. `outcome` is `ok`; `denied` with
+  `error` one of `not_live`, `project_gone`, `no_root_record`, `runner_mismatch`,
+  `root_gone`, `root_not_in_tree`, `already_bound`; or `error` with `error`
+  `bind_failed`.
+- A caller that is not the bound relay-sessions identity writes one row with no
+  phase: actor `unknown`, `auth: none`, args `session_id`, `outcome:
+  unauthorized`.
+
+With auditing off, or when the intent row cannot be written, nothing is bound.
+A completion row that cannot be written is logged at Warn and the binding stays.
+
+```
+relay audit --event session_rebind
+```
+
 ### Chief of Staff starts
 
 `POST /api/chief-of-staff/sessions` writes a `session_launch` row for every

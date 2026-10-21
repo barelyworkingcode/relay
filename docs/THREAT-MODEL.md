@@ -135,7 +135,12 @@ outside it is not a relay bug, however real.
    account, so such a process can do what the agent can do. It is a new way
    around relay's audit and origin marking: a forged line carries no origin
    and no audit row. Relay promises neither against it. The run directory is
-   `0700`, which keeps out other accounts, and nothing else.
+   `0700`, which keeps out other accounts, and nothing else. The same process can
+   write a local session's ledger `root`, a run directory and relay-sessions'
+   session state, and so make relay bind a process of its own as a session root
+   at the next restart. This gains it no reach: it can already start a session in
+   any project from the operator socket. Every rebind writes a durable
+   `session_rebind` pair that names the root pid.
 3f. **A caller adopting an outside Claude session.** A caller holding `execute`
    on the socket can end a console Claude process a person started in a
    terminal and resume its conversation under relay, through

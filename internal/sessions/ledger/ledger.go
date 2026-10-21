@@ -59,6 +59,20 @@ type Record struct {
 	// Detached marks a claude session whose agent runs on an SSH host,
 	// outside relay's process tree; nil for every other session.
 	Detached *DetachedRef `json:"detached,omitempty"`
+	// Root is the process the shim's Hello bound at launch: the one relay
+	// binds again after a restart. Nil for a record written before relay kept
+	// it, and for a session with no shim.
+	Root *RootRef `json:"root,omitempty"`
+}
+
+// RootRef names a process by its kernel identity. It is not a credential:
+// holding it grants nothing, and relay checks it against the kernel before any
+// use.
+type RootRef struct {
+	PID        int32 `json:"pid"`
+	PIDVersion int32 `json:"pidversion"`
+	StartSec   int64 `json:"start_sec"`
+	StartUsec  int32 `json:"start_usec"`
 }
 
 // DetachedRef names the host a detached session's agent runs on. The event

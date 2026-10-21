@@ -773,6 +773,18 @@ func (d sessionRouteDeps) launchOnHost(ctx context.Context, result *LaunchResult
 		d.modelKeys.BindLaunch(result.Spec.ModelKey, launch)
 	}
 
+	// Deliberate: the root is read from the launch, not the request, so the
+	// ledger names the process the kernel attested at Hello. A rebind after a
+	// relay restart binds only this process.
+	if launch != nil && result.Ledger != nil {
+		if id, ok := launch.BoundIdentity(); ok {
+			result.Ledger.Root = &ledger.RootRef{
+				PID: id.Process.PID, PIDVersion: id.Process.PIDVersion,
+				StartSec: id.RootStartSec, StartUsec: id.RootStartUsec,
+			}
+		}
+	}
+
 	acc := sessionAccount{projectID: result.AuditFields.ProjectID, modelKeyLabel: result.ModelKeyLabel, launch: launch,
 		sandboxProfile: sandboxProfilePath(result)}
 	d.accounting.track(result.SessionID, acc)
