@@ -1380,6 +1380,8 @@ themselves and close stdout unread.
 
 A local Claude session's runner gets the same environment and descriptors. The Claude token (fd 5) passes through the runner to the shim; the runner never reads it. The agent subshell (a fork of the runner) holds fds 3 to 5 until the agent exits; the runner closes its own copies once the pipeline starts, and the output filter never inherits them.
 
+The agent's stderr is an anonymous pipe. A copier (`cat >> stderr.log`, descriptors 3 to 5 closed, TERM ignored) moves it to `stderr.log` and ends at end of file, after the agent and every process holding its stderr are gone; the runner writes `exit` only after that. Deliberate: Node aborts when its stdout or stderr is a descriptor its sandbox profile does not let it stat, so the agent never holds `stderr.log` or a named FIFO in the run directory, and no profile grants either.
+
 A terminal, a claude or pi session and an MCP server child each start from
 `relay-sessions`' own environment, minus two sets:
 

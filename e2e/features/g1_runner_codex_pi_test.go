@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -464,5 +465,48 @@ func TestCodexRunnerNoSecondInitialize(t *testing.T) {
 	}
 	if n := g1cLocalCodexStarts(i); n != 1 {
 		t.Fatalf("the fake codex logged %d app-server starts, want 1", n)
+	}
+}
+
+// Amendment 3: the runner gives the agent a pipe for stderr and copies what it
+// writes to stderr.log, so a sandboxed agent never holds a file the session
+// profile does not grant (docs/session-host.md, "What a child inherits").
+func TestRunnerAgentStderrIsPipe(t *testing.T) {
+	t.Parallel()
+	i, sid := g1cLocal(t, g1cPi)
+	gen, _ := g1lLatest(t, i, sid)
+	stderrLog := filepath.Join(g1lRunnersDir(i, sid), gen, "stderr.log")
+
+	// The fake writes one stderr line at start; its arrival in stderr.log is
+	// the signal that the start line is in the call log.
+	g11dUntil(t, "the fake pi's stderr line in stderr.log", func() bool {
+		raw, err := os.ReadFile(stderrLog)
+		return err == nil && bytes.Contains(raw, []byte("fakeagent: stderr probe"))
+	})
+
+	var kinds []string
+	_ = filepath.WalkDir(i.Tmp, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "fakeagent-pi.jsonl" {
+			return nil
+		}
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			t.Fatalf("reading %s: %v", path, rerr)
+		}
+		for _, line := range bytes.Split(raw, []byte("\n")) {
+			var c struct {
+				Event      string   `json:"event"`
+				Argv       []string `json:"argv"`
+				StderrKind string   `json:"stderr_kind"`
+			}
+			// The model listing is a pi start too; only the rpc agent counts.
+			if json.Unmarshal(line, &c) == nil && c.Event == "start" && slices.Contains(c.Argv, "rpc") {
+				kinds = append(kinds, c.StderrKind)
+			}
+		}
+		return nil
+	})
+	if len(kinds) != 1 || kinds[0] != "fifo" {
+		t.Fatalf("the fake pi's start lines record stderr_kind %v, want exactly [fifo]", kinds)
 	}
 }
