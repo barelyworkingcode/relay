@@ -433,6 +433,9 @@ func (s *server) dispatch(c *conn, m rpcMsg) (any, *rpcError, func()) {
 		if t == nil {
 			return nil, missing, nil
 		}
+		if t.ephemeral {
+			return nil, &rpcError{Code: -32600, Message: "ephemeral threads do not support thread/turns/list"}, nil
+		}
 		data := []any{}
 		for i := len(t.turns) - 1; i >= 0; i-- {
 			if p.Limit > 0 && len(data) >= p.Limit {

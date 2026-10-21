@@ -571,6 +571,22 @@ func TestCodexAttachNoTurnNoRow(t *testing.T) {
 	}
 }
 
+func TestCodexAttachEphemeralThreadKeepsOtherRows(t *testing.T) {
+	t.Parallel()
+	r := ccStart(t)
+	d := r.daemon()
+	eph := r.thread("ephemeral")
+	eph.Ephemeral = true
+	normal := r.thread("normal")
+	d.add(eph)
+	d.add(normal)
+	// The daemon refuses turn listing on an ephemeral thread; the other thread still lists.
+	row := r.mustRow(normal)
+	if row["adoptable"] != true {
+		t.Fatalf("idle thread beside an ephemeral one is not adoptable: %v", row)
+	}
+}
+
 func TestCodexAttachIdleNoKill(t *testing.T) {
 	t.Parallel()
 	r := ccStart(t)

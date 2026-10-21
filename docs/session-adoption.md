@@ -246,11 +246,12 @@ retain their existing behavior.
 ### Codex attach
 
 The per-user codex app-server daemon holds the threads of the codex desktop
-app and of a terminal whose codex matches the daemon's version (0.163.0
+app and of a terminal started with `codex --remote unix://` (0.163.0
 observed); each is one client of it. Relay attaches as one more client. It
 starts no codex, ends no process and changes no setting of the thread. A
-terminal started with codex 0.162.1 runs an in-process server: its thread never
-reaches the daemon and shows no row. A desktop-app thread in a registered
+terminal started without `--remote` (every codex 0.162.1 terminal, and a plain
+0.163.0 one) runs an in-process server: its thread never reaches the daemon and
+shows no row. A desktop-app thread in a registered
 project shows Adopt, as a terminal thread does.
 
 **Rows.** The thread folder is `environments[0].cwd`; when `environments` is
@@ -354,7 +355,7 @@ dormant session is hidden from the outside list, so the resume is the one door
 back; relay never starts its own codex for it.
 
 **Not covered.** A custom `CODEX_HOME`, a terminal UI running its own embedded
-server (every terminal started with codex 0.162.1), SSH hosts, `codex exec`,
+server (every terminal started without `--remote unix://`), SSH hosts, `codex exec`,
 MCP and subagent threads, ephemeral threads, and every thread source other than `cli` and `vscode`. A codex terminal
 UI opened inside a relay terminal session that joins the daemon lists like any
 daemon thread. After attach, Eve shows turns from the attach on.

@@ -155,8 +155,8 @@ A codex thread that the per-user codex daemon has loaded is a console row with
 creation time and `state` is `idle` or `running`. Its private identity hashes
 machine, `codex`, the thread id and the daemon's lifetime (the control socket's
 physical path, device, inode and modification time), so a restarted daemon
-makes new ids. The daemon holds the threads of the codex desktop app and of a terminal whose
-codex matches the daemon's version; a terminal started with codex 0.162.1 runs
+makes new ids. The daemon holds the threads of the codex desktop app and of a terminal started
+with `codex --remote unix://`; a terminal started without `--remote` runs
 an in-process server and shows no row. The folder is `environments[0].cwd`,
 else `cwd`, and the accepted sources are `cli` and `vscode`; a desktop-app
 thread in a registered project shows Adopt, as a terminal thread does. A thread

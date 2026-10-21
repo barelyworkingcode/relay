@@ -182,6 +182,11 @@ func readThread(ctx context.Context, conn *codexdaemon.Conn, id string) (codexTh
 	if err := json.Unmarshal(raw, &read); err != nil || read.Thread.ID != id {
 		return codexThread{}, nil, fmt.Errorf("adopt: codex thread %q: reply does not name it", id)
 	}
+	if read.Thread.Ephemeral {
+		// The daemon refuses thread/turns/list for an ephemeral thread; one such
+		// thread must not hide every other row.
+		return read.Thread, nil, nil
+	}
 	raw, err = conn.Call(ctx, "thread/turns/list", map[string]any{"threadId": id, "limit": 1, "sortDirection": "desc"})
 	if err != nil {
 		return codexThread{}, nil, err
