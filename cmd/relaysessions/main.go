@@ -224,6 +224,8 @@ func runService(args []string) int {
 
 // sessionConfig is exactly the session.Config runService hands session.NewManager.
 func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
+	// Deliberate: claude, codex and pi run under the runner in one directory.
+	runnerBase := filepath.Join(cfg.dataDir, "runners")
 	return session.Config{
 		Claude: provider.ClaudeConfig{
 			Binary:          cfg.claudeCommand,
@@ -233,7 +235,7 @@ func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
 			ModelSocket:     cfg.modelSocket,
 			ShimBinary:      shimBinary,
 			RelayMCPCommand: cfg.relayMCPCommand,
-			RunnerBase:      filepath.Join(cfg.dataDir, "runners"),
+			RunnerBase:      runnerBase,
 		},
 		Pi: provider.PiConfig{
 			Binary:       cfg.piCommand,
@@ -241,11 +243,13 @@ func sessionConfig(cfg serviceConfig, shimBinary string) session.Config {
 			BridgeSocket: cfg.bridgeSocket,
 			ModelSocket:  cfg.modelSocket,
 			ShimBinary:   shimBinary,
+			RunnerBase:   runnerBase,
 		},
 		Codex: provider.CodexConfig{
 			Binary:       cfg.codexCommand,
 			ShimBinary:   shimBinary,
 			BridgeSocket: cfg.bridgeSocket,
+			RunnerBase:   runnerBase,
 		},
 		Chat: provider.ChatConfig{
 			ModelSocket:     cfg.modelSocket,

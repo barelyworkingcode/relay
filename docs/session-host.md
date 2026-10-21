@@ -973,9 +973,9 @@ A session whose model is `codex/<slug>` runs `codex app-server` and speaks its n
 
 ### Launch
 
-On this machine the child is `<codex> app-server` under the shim, with the sandbox profile and launch identity, like pi. Its working directory is the session directory. Its environment is the shared base plus `ensurePath`, `RELAY_SESSION_ID` and `RELAY_BRIDGE_SOCKET`; no relay credential and no `CODEX_*` variable is added. No model key is minted: Codex brings its own login and relay never reads, moves or supplies it. The binary is `CodexConfig.Binary` (the `codex` template's absolute `command`, see [Finding the binary](#finding-the-binary)), else the first hit of `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, then `PATH`.
+On this machine `<codex> app-server` runs under the runner ([Under the runner](#codex-under-the-runner)), behind the shim, with the sandbox profile and launch identity, like pi. Its working directory is the session directory. Its environment is the shared base plus `ensurePath`, `RELAY_SESSION_ID` and `RELAY_BRIDGE_SOCKET`; no relay credential and no `CODEX_*` variable is added. No model key is minted: Codex brings its own login and relay never reads, moves or supplies it. The binary is `CodexConfig.Binary` (the `codex` template's absolute `command`, see [Finding the binary](#finding-the-binary)), else the first hit of `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, then `PATH`.
 
-On an SSH host the provider runs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir, [codex_path, "app-server"], {RELAY_SESSION_ID})]`. `codex_path` is `HostSpec.CodexPath`, which `buildHostSpec` copies from the `command` of the host's `codex` template. An empty path fails `Start` with `host "<id>" has no codex path: set its codex template's command`. A host session is not sandboxed and gets no identity ([ssh-hosts.md](ssh-hosts.md#codex-on-a-host)).
+On a Unix host with `detach` set (`hosts[].detach_sessions` absent or `true`) the agent runs under the runner on the host, never in a tmux pane ([Under the runner](#codex-under-the-runner)). On a host with `detach_sessions: false`, and on a Windows host, the provider runs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir, [codex_path, "app-server"], {RELAY_SESSION_ID})]`. `codex_path` is `HostSpec.CodexPath`, which `buildHostSpec` copies from the `command` of the host's `codex` template. An empty path fails `Start` with `host "<id>" has no codex path: set its codex template's command`. A host session is not sandboxed and gets no identity ([ssh-hosts.md](ssh-hosts.md#codex-on-a-host)).
 
 The gate is the kind template `codex`: a console project needs `codex` in `allowed_templates`; a host project needs a valid `codex` host template. Relay tools do not reach Codex: with `useRelayTools` on, the provider logs a warning and starts anyway. Project tool policy (`deniedTools`) does not apply, as for pi; the seatbelt profile is the file and socket boundary. `headless` and `agent` behave as for every kind, and there are no Codex-specific settings.
 
@@ -985,7 +985,27 @@ The gate is the kind template `codex`: a console project needs `codex` in `allow
 2. `thread/start` with `cwd`, `model` (the slug), `approvalPolicy: "never"`, `sandbox: "danger-full-access"` and `developerInstructions` (the system prompt, omitted when empty). When the session state holds a thread id, `thread/resume` with `threadId` and the same params runs instead.
 3. Each message is `turn/start` with `threadId` and one text input; the reply's `turn.id` is kept. `StopGeneration` sends `turn/interrupt` for that turn. A JSON-RPC error reply to `turn/start` emits `error`, then `message_complete`.
 
-`approvalPolicy: "never"` and `danger-full-access` are deliberate: relay's sandbox is the boundary, and Codex's own prompts would have nobody to answer them. `GetState` returns `{"threadId": "…"}`. `DeleteSession` does nothing; Codex's transcripts stay where Codex keeps them. Attachments are ignored with a warning, and the text is sent alone.
+`approvalPolicy: "never"` and `danger-full-access` are deliberate: relay's sandbox is the boundary, and Codex's own prompts would have nobody to answer them. `GetState` returns `{"threadId": "…", "detached": {"generation": "g1", "cursor": N}}`; a piped session has no `detached` key. `DeleteSession` ends the agent and deletes its run directories, which hold its output; Codex's transcripts stay where Codex keeps them. Attachments are ignored with a warning, and the text is sent alone.
+
+### Codex under the runner
+
+A local session, and a session on a host with `detach` set, runs `codex app-server` under the runner ([ssh-hosts.md](ssh-hosts.md#detached-sessions); the runner knows no protocol and only moves lines). Codex holds no relay credential and brings its own login, so the agent outlives relay-sessions: a shutdown calls `Release`, which stops the reader and leaves the agent running, and a start attaches every persisted codex session whose runner lives. `Kill`, a stop, an idle end and a delete end the agent. `Events(ctx, after, max)` answers `relay session events` from `out.jsonl`.
+
+The runner's patterns: `"method":"turn/completed"` ends a turn, and `Asking` is empty (codex has no question path, and relay answers every server request at once). Codex 0.162.1 ends a turn with one compact line:
+
+```
+{"method":"turn/completed","params":{"threadId":"…","turn":{"id":"…","status":"completed",…}}}
+```
+
+The runner therefore writes `turn_started` when it writes a `.json` message to the agent, `turn_ended` on that line, and `exited` when the agent ends.
+
+Message kinds. `turn/start` is a `.json` message and starts a turn. `initialize`, `initialized`, `thread/start`, `thread/resume`, `turn/interrupt` and every answer to a server request are `.ctl`. A send returns once the runner has moved the message to `sent/`; a send on a host waits up to the caller's wait for a lost link, as for Claude. A `turn/interrupt` and an answer do not wait, and a failed interrupt leaves the agent running.
+
+Client request ids are strings: `relay-<8 hex>-<n>`, the prefix fresh for each spawn and each attach. Codex accepts a string id and echoes it. A reply that the output holds from before an attach therefore never matches a request made after it.
+
+An attach (`CodexConfig.Resume` or `AttachOnly` found the runner alive) sends no `initialize`, `initialized`, `thread/start` or `thread/resume`: the agent's stdio connection is already initialized, and a second `initialize` is an error to it. It takes the thread id and the cursor from the saved state (`threadId`, `detached`), and learns a missing thread id from the `threadId` of a replayed `turn/started`. It reads the lines after the cursor before it returns, and answers a server request in them only when no `.ctl` line in `sent/` or `inbox/` already answers its id. A turn counts as open when the `.json` messages in `sent/` and `inbox/` outnumber the `turn/completed` lines, which `TakeAttach` reports so the board reads the turn. The manager saves the state right after `Start`, so a cursor always exists. An agent keeps no relay identity across a restart: codex has no relay tools.
+
+A piped session (host with `detach_sessions: false`, a Windows host) keeps the pipes and the handshake as before.
 
 ### Model catalog
 
@@ -1055,13 +1075,13 @@ A machine that has a real CLI under `/usr/local/bin` or `/opt/homebrew/bin` ther
 
 ### What every spawn has in common
 
-- A local Claude session starts under the runner (`/bin/sh runner.sh`, own session) in `<config dir>/sessions/runners/<session id>/<generation>/`, mode `0700`; the runner owns the agent's stdin and stdout and keeps `out.jsonl`, `events.jsonl` and `runner.json`. Codex and pi, and a host session under `ssh -T`, start as below.
-- The child starts in the session directory, with stdin and stdout as pipes. Stderr is a third pipe, read line by line into the service log ([Provider stderr](#provider-stderr)).
+- A local Claude session starts under the runner (`/bin/sh runner.sh`, own session) in `<config dir>/sessions/runners/<session id>/<generation>/`, mode `0700`; the runner owns the agent's stdin and stdout and keeps `out.jsonl`, `events.jsonl` and `runner.json`. A local codex session and a local pi session start the same way, and so does a codex session on a Unix host with `detach` set. Only a host session under `ssh -T` starts as below.
+- The child starts in the session directory, with stdin and stdout as pipes (under the runner, the runner's pipes). Stderr is a third pipe, read line by line into the service log ([Provider stderr](#provider-stderr)).
 - The environment is the `relay-sessions` environment minus every relay credential variable, plus `RELAY_SESSION_ID`, and `RELAY_BRIDGE_SOCKET` and `RELAY_MODEL_SOCKET` when those sockets exist. No token is ever added.
 - A sandboxed launch runs the binary under the shim ([The shim](#the-shim-relay-sessions-exec)); the binary sees the same argv, stdin and stdout.
 - Both protocols are one JSON object per line, newline-terminated, in each direction. Blank lines are skipped. A line longer than 10 MiB ends reading. A stdout line that is not JSON is passed on as `raw_output` and does not stop the session.
 - Relay writes nothing to stdin until a user sends a message. It does not wait for any output at start-up: the spawn counts as started when the process exists.
-- Relay ends a child by closing its stdin, sending `SIGINT`, and after 3 s killing it. The CLI is expected to exit on stdin EOF or `SIGINT`.
+- Relay ends a child by closing its stdin, sending `SIGINT`, and after 3 s killing it. The CLI is expected to exit on stdin EOF or `SIGINT`. Under the runner, a stop signals every process in the runner's session: `TERM`, then `KILL`.
 - Exit is read from the process status. Exit 0 is a quiet end. A non-zero code logs a warning with the stderr tail. In both cases relay emits `process_exited` with `{"exitCode": N}` (a non-zero exit relay did not cause adds `"failed": true` and `"stderrTail": [...]`), unless it killed the child itself, or a newer spawn of the same session has replaced it.
 - A session idle for 15 minutes with no stdin or stdout line is killed.
 
@@ -1181,6 +1201,10 @@ Without `tmux_path`, or below tmux 3.0, the runner starts alone.
 
 ### pi
 
+A pi session runs under the runner, on this machine only (pi has no host form). The runner's `TurnEnded` pattern is `"type":"agent_settled"`, and `Asking` is empty. Pi 1.0.0 writes `{"type":"agent_end","messages":[…],"willRetry":false}` and then `{"type":"agent_settled"}`; an `agent_end` with `willRetry` true is followed by a retry turn, so the runner ends the turn on the settled line. The provider still completes the message at `agent_end` and ignores `agent_settled`. `prompt` is a `.json` message and starts a turn; `get_state`, `abort` and `set_thinking_level` are `.ctl`. A send returns once the runner has moved the message to `sent/`. Stopping a turn sends `abort` and does not end the runner.
+
+Pi has no `Release` and no attach. A pi agent's model key is bound to its launch ([launch-identity.md](launch-identity.md)), the model proxy it uses runs inside relay-sessions, and both end with relay-sessions, so a relay-sessions shutdown ends the pi runner with `Kill`. A restart reads the session dormant and resumes it from its transcript, as before. At startup, relay-sessions stops a pi runner that still lives (a crash left it) and leaves its session dormant. `Events` answers `relay session events` from the run's `out.jsonl`, and a delete removes the run directory.
+
 Argv: `--mode rpc [--provider relay-router --model <id>] [--thinking <level>] [--session <id>] --session-dir <dir> [--append-system-prompt <path>] [--skill <dir>] [<extra args>]`. The environment adds `PI_OFFLINE=1` and `PI_SKIP_VERSION_CHECK=1`, and `PI_CODING_AGENT_DIR` when the session is brokered.
 
 **stdin.** Relay sends commands, one JSON object per line:
@@ -1195,7 +1219,7 @@ For one turn relay needs:
 
 1. `{"type":"agent_start"}`. It opens the turn.
 2. `{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}`, then `text_delta` with `"delta":"…"`, then `text_end`. `thinking_*` and `toolcall_*` are the same shape.
-3. `{"type":"agent_end"}`. It ends the turn (`message_complete`). Usage is read from it when present.
+3. `{"type":"agent_end"}`. It ends the turn (`message_complete`). Usage is read from it when present. Pi then writes `{"type":"agent_settled"}`, which the runner matches for `turn_ended`.
 
 `message_start`, `message_end`, `turn_start`, `turn_end` and `agent_settled` are accepted and ignored. Any other `type` is passed on as `raw_output`, with one warning per type per spawn.
 

@@ -638,40 +638,57 @@ func stopRun(kind, session, where string, conn runConn) {
 	slog.Warn(kind+": detached agent could not be stopped; it may still run", "session", session, "where", where, "error", err)
 }
 
-// StopDetachedRun ends the latest agent of a detached session without
+// StopDetachedRun ends the latest agent of a detached Claude session without
 // deleting its run directories. It needs no live provider.
 func StopDetachedRun(session string, host *sessionstypes.HostSpec) {
+	StopDetachedAgent("claude", session, host)
+}
+
+// StopDetachedAgent is StopDetachedRun for an agent of any kind; kind names it
+// in logs.
+func StopDetachedAgent(kind, session string, host *sessionstypes.HostSpec) {
 	if DetachedHost(host) {
-		stopRun("claude", session, fmt.Sprintf("host %q", host.Name), hostConnFor(host, session)(""))
+		stopRun(kind, session, fmt.Sprintf("host %q", host.Name), hostConnFor(host, session)(""))
 	}
 }
 
-// StopLocalRun is StopDetachedRun for a run on this machine.
-func StopLocalRun(base, session string) {
-	stopRun("claude", session, "this machine", localConnFor(base, session)(""))
+// StopLocalRun is StopDetachedRun for a Claude run on this machine.
+func StopLocalRun(base, session string) { StopLocalAgent("claude", base, session) }
+
+// StopLocalAgent is StopDetachedAgent for a run on this machine.
+func StopLocalAgent(kind, base, session string) {
+	stopRun(kind, session, "this machine", localConnFor(base, session)(""))
 }
 
-// DeleteDetachedRun ends the latest agent of a detached session and deletes
-// its run directories on the host. It needs no live provider: a session that
-// is dormant after a restart still has an agent to end. A host that cannot be
-// reached leaves both in place; that is logged.
+// DeleteDetachedRun ends the latest agent of a detached Claude session and
+// deletes its run directories on the host. It needs no live provider: a session
+// that is dormant after a restart still has an agent to end. A host that cannot
+// be reached leaves both in place; that is logged.
 func DeleteDetachedRun(session string, host *sessionstypes.HostSpec) {
-	if host == nil || !host.Detach || len(host.SSHArgv) == 0 || sshhost.IsWindowsOS(host.OS) {
+	DeleteDetachedAgent("claude", session, host)
+}
+
+// DeleteDetachedAgent is DeleteDetachedRun for an agent of any kind.
+func DeleteDetachedAgent(kind, session string, host *sessionstypes.HostSpec) {
+	if !DetachedHost(host) {
 		return
 	}
-	StopDetachedRun(session, host)
+	StopDetachedAgent(kind, session, host)
 	ctx, cancel := context.WithTimeout(context.Background(), detachedStopTimeout)
 	defer cancel()
 	if err := hostConnFor(host, session)("").Remove(ctx); err != nil {
-		slog.Warn("claude: detached run directory not removed", "session", session, "host", host.ID, "error", err)
+		slog.Warn(kind+": detached run directory not removed", "session", session, "host", host.ID, "error", err)
 	}
 }
 
-// DeleteLocalRun is DeleteDetachedRun for a run on this machine.
-func DeleteLocalRun(base, session string) {
-	StopLocalRun(base, session)
+// DeleteLocalRun is DeleteDetachedRun for a Claude run on this machine.
+func DeleteLocalRun(base, session string) { DeleteLocalAgent("claude", base, session) }
+
+// DeleteLocalAgent is DeleteDetachedAgent for a run on this machine.
+func DeleteLocalAgent(kind, base, session string) {
+	StopLocalAgent(kind, base, session)
 	if err := runner.RemoveLocal(base, session); err != nil {
-		slog.Warn("claude: local run directory not removed", "session", session, "error", err)
+		slog.Warn(kind+": local run directory not removed", "session", session, "error", err)
 	}
 }
 

@@ -565,9 +565,14 @@ template's command`.
 ]
 ```
 
-`Start()` execs `ssh_argv + ["-T", "--", RemoteCommandForOS(os, dir,
-[codex_path, "app-server"], {RELAY_SESSION_ID})]` and speaks Codex's
-JSON-RPC over the pipes ([session-host.md](session-host.md#codex-sessions)).
+On a Unix host with `hosts[].detach_sessions` absent or `true`, `Start()` runs
+`[codex_path, "app-server"]` under the runner on the host
+([Detached sessions](#detached-sessions)), never in a tmux pane, and a dropped
+link or a relay restart leaves the agent running. With `detach_sessions: false`,
+and on a Windows host, `Start()` execs `ssh_argv + ["-T", "--",
+RemoteCommandForOS(os, dir, [codex_path, "app-server"], {RELAY_SESSION_ID})]`
+and speaks Codex's JSON-RPC over the pipes
+([session-host.md](session-host.md#codex-sessions)).
 The host session is not sandboxed and gets no model key or launch identity;
 Codex signs in with its own credentials on the host. Codex's approval prompts
 are off (`approvalPolicy: "never"`), so, as for Claude on a host, the host
@@ -727,8 +732,8 @@ host with no scheduler change. The cron stays on the console, which is what
 
 ## Detached sessions
 
-A Claude session on a Unix host keeps its agent when relay's link to the host
-drops, with no host setting. An everyday user sets nothing: eve shows the
+A Claude or codex session on a Unix host keeps its agent when relay's link to
+the host drops, with no host setting. An everyday user sets nothing: eve shows the
 session as it does any other. A power user can turn it off per host:
 `hosts[].detach_sessions: false` in `settings.json` runs that host's sessions
 under `ssh -T`, which ends the agent with the link. An absent key or `true` is
@@ -773,7 +778,8 @@ so decision 8's launcher carries it.
 The runner knows no agent protocol. It writes inbox files to the agent's stdin
 in name order and matches two fixed strings, given at start, in each stdout
 line: for Claude, `"type":"result"` ends a turn and `"subtype":"can_use_tool"`
-is a permission prompt.
+is a permission prompt; for codex, `"method":"turn/completed"` ends a turn and
+there is no prompt string.
 
 **The tmux pane.** On a host with a tmux path (`hosts[].tmux_path`, else the
 probe's) the start script runs `<tmux> -V`. With tmux 3.0 or later the runner
