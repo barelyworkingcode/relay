@@ -165,20 +165,43 @@ func (s osSnap) at(dir string) *osRow {
 // machine has completed a probe after the move.
 func (r *osRig) probe() osSnap {
 	r.t.Helper()
+	snap, _ := r.probeRaw()
+	return snap
+}
+
+// probeRaw is probe() that also returns the raw frame. A probe that missed its
+// own bound moves lastProbeAt too and leaves the machine unreachable with the
+// rows unread; such a frame is not a result, so the clock moves again and the
+// next probe is awaited, all within one osBound.
+func (r *osRig) probeRaw() (osSnap, []byte) {
+	r.t.Helper()
 	sub := osSubscribe(r.t, r.i)
 	before := map[string]string{}
 	for _, m := range sub.until(osBound, func(osSnap) bool { return true }).Machines { // the snapshot on open, before the move
 		before[m.Machine] = m.LastProbeAt
 	}
 	r.i.ClockAdvance(osProbeStep)
-	return sub.until(osBound, func(s osSnap) bool {
+	end := time.Now().Add(osBound)
+	snap := sub.until(time.Until(end), func(s osSnap) bool {
+		moved, failed := true, false
 		for _, m := range s.Machines {
 			if m.LastProbeAt == before[m.Machine] {
-				return false
+				moved = false
+			}
+			if m.Status == "unreachable" {
+				failed = true
 			}
 		}
-		return true
+		if moved && failed {
+			for _, m := range s.Machines {
+				before[m.Machine] = m.LastProbeAt
+			}
+			r.i.ClockAdvance(osProbeStep)
+			return false
+		}
+		return moved
 	})
+	return snap, sub.last
 }
 
 type osProc struct {
