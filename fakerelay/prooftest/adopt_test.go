@@ -387,7 +387,8 @@ type adoptCase struct {
 	body   func(e adoptEnv) any // a string is posted as it is
 	status int
 	code   string
-	parse  bool // a step 1 refusal: the event holds no keys
+	msg    string // relay's wire text, word for word
+	parse  bool   // a step 1 refusal: the event holds no keys
 }
 
 func (c adoptCase) run(t *testing.T) {
@@ -412,6 +413,7 @@ func (c adoptCase) run(t *testing.T) {
 	}
 	got.is(t, c.status)
 	eq[any](t, got.obj(t)["error"], c.code, "error code")
+	eq[any](t, got.obj(t)["message"], c.msg, "message")
 
 	for id, was := range before {
 		eq(t, string(detail(t, e.in, id).is(t, 200).Body), string(was), "row "+id+" after the refusal")
@@ -455,49 +457,60 @@ func TestAdoptRefusals(t *testing.T) {
 			return []J{r}
 		}
 	}
+	const (
+		msgJSON      = `body must be JSON {"outsideId" or "claudeSessionId", "interrupt", "model"}`
+		msgSelector  = "send outsideId or claudeSessionId, not both and not neither"
+		msgModel     = "model is not a model name"
+		msgNotFound  = "no live outside session matches"
+		msgEnded     = "the session has ended; there is no process to adopt"
+		msgNoProject = "the session is not in a registered local project"
+		msgChanged   = "the process or its registry entry changed"
+	)
+	busyMsg := func(veto string) string {
+		return "the session is not idle (" + veto + "); ask to interrupt to take it over anyway"
+	}
 	cases := []adoptCase{
-		{name: "not json", body: func(adoptEnv) any { return "{" }, status: 400, code: "invalid_body", parse: true},
-		{name: "unknown field", body: func(adoptEnv) any { return `{"outsideId":"` + adoptID(1) + `","bogus":1}` }, status: 400, code: "invalid_body", parse: true},
-		{name: "wrong type", body: func(adoptEnv) any { return `{"outsideId":5}` }, status: 400, code: "invalid_body", parse: true},
-		{name: "trailing data", body: func(adoptEnv) any { return `{"outsideId":"` + adoptID(1) + `"} {}` }, status: 400, code: "invalid_body", parse: true},
-		{name: "over the cap", body: func(adoptEnv) any { return `{"outsideId":"` + strings.Repeat("a", 5000) + `"}` }, status: 413, code: "body_too_large", parse: true},
-		{name: "both selectors", body: idBody(J{"claudeSessionId": adoptUUID(1)}), status: 400, code: "invalid_body", parse: true},
-		{name: "neither selector", body: func(adoptEnv) any { return J{"interrupt": true} }, status: 400, code: "invalid_body", parse: true},
-		{name: "bad outside id", body: func(adoptEnv) any { return J{"outsideId": "outside:acme"} }, status: 400, code: "invalid_body", parse: true},
-		{name: "bad uuid", body: func(adoptEnv) any { return J{"claudeSessionId": "stem-id"} }, status: 400, code: "invalid_body", parse: true},
-		{name: "model too long", body: idBody(J{"model": strings.Repeat("m", 201)}), status: 400, code: "invalid_body", parse: true},
-		{name: "model control", body: idBody(J{"model": "a\x01b"}), status: 400, code: "invalid_body", parse: true},
-		{name: "unknown outside id", body: func(adoptEnv) any { return J{"outsideId": adoptID(0xf)} }, status: 404, code: "outside_session_not_found"},
-		{name: "unknown uuid", body: func(adoptEnv) any { return J{"claudeSessionId": adoptUUID(0xf)} }, status: 404, code: "outside_session_not_found"},
-		{name: "ended by id", rows: ended(), body: idBody(nil), status: 409, code: "ended"},
-		{name: "ended by uuid", rows: ended(), body: func(adoptEnv) any { return J{"claudeSessionId": adoptUUID(1)} }, status: 409, code: "ended"},
+		{name: "not json", body: func(adoptEnv) any { return "{" }, status: 400, code: "invalid_body", msg: msgJSON, parse: true},
+		{name: "unknown field", body: func(adoptEnv) any { return `{"outsideId":"` + adoptID(1) + `","bogus":1}` }, status: 400, code: "invalid_body", msg: msgJSON, parse: true},
+		{name: "wrong type", body: func(adoptEnv) any { return `{"outsideId":5}` }, status: 400, code: "invalid_body", msg: msgJSON, parse: true},
+		{name: "trailing data", body: func(adoptEnv) any { return `{"outsideId":"` + adoptID(1) + `"} {}` }, status: 400, code: "invalid_body", msg: msgJSON, parse: true},
+		{name: "over the cap", body: func(adoptEnv) any { return `{"outsideId":"` + strings.Repeat("a", 5000) + `"}` }, status: 413, code: "body_too_large", msg: "request body is larger than 4 KiB", parse: true},
+		{name: "both selectors", body: idBody(J{"claudeSessionId": adoptUUID(1)}), status: 400, code: "invalid_body", msg: msgSelector, parse: true},
+		{name: "neither selector", body: func(adoptEnv) any { return J{"interrupt": true} }, status: 400, code: "invalid_body", msg: msgSelector, parse: true},
+		{name: "bad outside id", body: func(adoptEnv) any { return J{"outsideId": "outside:acme"} }, status: 400, code: "invalid_body", msg: "outsideId is not an outside session id", parse: true},
+		{name: "bad uuid", body: func(adoptEnv) any { return J{"claudeSessionId": "stem-id"} }, status: 400, code: "invalid_body", msg: "claudeSessionId is not a UUID", parse: true},
+		{name: "model too long", body: idBody(J{"model": strings.Repeat("m", 201)}), status: 400, code: "invalid_body", msg: msgModel, parse: true},
+		{name: "model control", body: idBody(J{"model": "a\x01b"}), status: 400, code: "invalid_body", msg: msgModel, parse: true},
+		{name: "unknown outside id", body: func(adoptEnv) any { return J{"outsideId": adoptID(0xf)} }, status: 404, code: "outside_session_not_found", msg: msgNotFound},
+		{name: "unknown uuid", body: func(adoptEnv) any { return J{"claudeSessionId": adoptUUID(0xf)} }, status: 404, code: "outside_session_not_found", msg: msgNotFound},
+		{name: "ended by id", rows: ended(), body: idBody(nil), status: 409, code: "ended", msg: msgEnded},
+		{name: "ended by uuid", rows: ended(), body: func(adoptEnv) any { return J{"claudeSessionId": adoptUUID(1)} }, status: 409, code: "ended", msg: msgEnded},
 		{name: "ambiguous", rows: func(e adoptEnv) []J {
-			twin := adoptRow(2, e.dir, "claude_session_id", adoptUUID(1), "adoptable", false, "adopt_reason", "ambiguous")
-			return []J{adoptRow(1, e.dir, "adoptable", false, "adopt_reason", "ambiguous"), twin}
-		}, body: func(adoptEnv) any { return J{"claudeSessionId": adoptUUID(1)} }, status: 409, code: "ambiguous"},
-		{name: "host", rows: oneRow("adoptable", false, "host_id", "h_box", "machine", "testbox"), body: idBody(nil), status: 409, code: "host_unsupported"},
-		{name: "no project", rows: oneRow("adoptable", false, "project_id", nil), body: idBody(nil), status: 409, code: "no_project"},
-		{name: "not registered", rows: oneRow("adoptable", false), body: idBody(nil), status: 409, code: "not_registered"},
-		{name: "audit off", rows: oneRow("adopt", J{"refuse": "audit_unavailable"}), body: idBody(nil), status: 503, code: "audit_unavailable"},
-		{name: "host down", rows: oneRow("adopt", J{"refuse": "unavailable"}), body: idBody(nil), status: 502, code: "unavailable"},
-		{name: "in progress", rows: oneRow("adopt", J{"refuse": "adopt_in_progress"}), body: idBody(nil), status: 409, code: "adopt_in_progress"},
-		{name: "changed", rows: oneRow("adopt", J{"refuse": "changed"}), body: idBody(nil), status: 409, code: "changed"},
-		{name: "refuse before project", rows: oneRow("project_id", "p_gone", "adopt", J{"refuse": "changed"}), body: idBody(nil), status: 409, code: "changed"},
-		{name: "unknown project", rows: oneRow("project_id", "p_gone", "adopt", J{"model_family": "haiku"}), body: idBody(nil), status: 409, code: "no_project"},
-		{name: "host project", rows: oneRow("project_id", "p_box", "adopt", J{"model_family": "haiku"}), body: idBody(nil), status: 409, code: "no_project"},
-		{name: "model unknown", rows: oneRow(), body: idBody(nil), status: 409, code: "model_unknown"},
-		{name: "busy before model", rows: oneRow("adopt", J{"busy": "status_stale"}), body: idBody(nil), status: 409, code: "busy"},
+			return []J{adoptRow(1, e.dir), adoptRow(2, e.dir, "claude_session_id", adoptUUID(1))}
+		}, body: func(adoptEnv) any { return J{"claudeSessionId": adoptUUID(1)} }, status: 409, code: "ambiguous", msg: "more than one live process holds this conversation"},
+		{name: "host", rows: oneRow("adoptable", false, "host_id", "h_box", "machine", "testbox"), body: idBody(nil), status: 409, code: "host_unsupported", msg: "sessions on an SSH host cannot be adopted"},
+		{name: "no project", rows: oneRow("adoptable", false, "project_id", nil), body: idBody(nil), status: 409, code: "no_project", msg: "the session cannot be adopted: no_project"},
+		{name: "not registered", rows: oneRow("adoptable", false), body: idBody(nil), status: 409, code: "not_registered", msg: "the session cannot be adopted: not_registered"},
+		{name: "audit off", rows: oneRow("adopt", J{"refuse": "audit_unavailable"}), body: idBody(nil), status: 503, code: "audit_unavailable", msg: "auditing is off; no session can be adopted"},
+		{name: "host down", rows: oneRow("adopt", J{"refuse": "unavailable"}), body: idBody(nil), status: 502, code: "unavailable", msg: "the session host is not available"},
+		{name: "in progress", rows: oneRow("adopt", J{"refuse": "adopt_in_progress"}), body: idBody(nil), status: 409, code: "adopt_in_progress", msg: "an adopt of this conversation is already running"},
+		{name: "changed", rows: oneRow("adopt", J{"refuse": "changed"}), body: idBody(nil), status: 409, code: "changed", msg: msgChanged},
+		{name: "refuse before project", rows: oneRow("project_id", "p_gone", "adopt", J{"refuse": "changed"}), body: idBody(nil), status: 409, code: "changed", msg: msgChanged},
+		{name: "unknown project", rows: oneRow("project_id", "p_gone", "adopt", J{"model_family": "haiku"}), body: idBody(nil), status: 409, code: "no_project", msg: msgNoProject},
+		{name: "host project", rows: oneRow("project_id", "p_box", "adopt", J{"model_family": "haiku"}), body: idBody(nil), status: 409, code: "no_project", msg: msgNoProject},
+		{name: "model unknown", rows: oneRow(), body: idBody(nil), status: 409, code: "model_unknown", msg: "the model of the session is unknown; send model"},
+		{name: "busy before model", rows: oneRow("adopt", J{"busy": "status_stale"}), body: idBody(nil), status: 409, code: "busy", msg: busyMsg("status_stale")},
 		{name: "model not allowed", rows: func(e adoptEnv) []J {
 			return []J{adoptRow(1, e.narrow, "project_id", "p_narrow")}
-		}, body: idBody(J{"model": "sonnet"}), status: 403, code: "model_not_allowed"},
-		{name: "directory outside", rows: oneRow("directory", "/elsewhere/acme", "adopt", J{"model_family": "haiku"}), body: idBody(nil), status: 403, code: "directory_outside_project"},
-		{name: "stop failed", rows: oneRow("adopt", J{"model_family": "haiku", "refuse": "stop_failed"}), body: idBody(nil), status: 502, code: "stop_failed"},
+		}, body: idBody(J{"model": "sonnet"}), status: 403, code: "model_not_allowed", msg: "model is not allowed for this project"},
+		{name: "directory outside", rows: oneRow("directory", "/elsewhere/acme", "adopt", J{"model_family": "haiku"}), body: idBody(nil), status: 403, code: "directory_outside_project", msg: "requested directory is outside the project"},
+		{name: "stop failed", rows: oneRow("adopt", J{"model_family": "haiku", "refuse": "stop_failed"}), body: idBody(nil), status: 502, code: "stop_failed", msg: "the process did not exit after SIGKILL; nothing was launched"},
 	}
 	for _, reason := range []string{"invalid_id", "start_mismatch", "not_interactive", "not_command_line", "ambiguous"} {
-		cases = append(cases, adoptCase{name: "reason " + reason, rows: oneRow("adoptable", false, "adopt_reason", reason), body: idBody(nil), status: 409, code: reason})
+		cases = append(cases, adoptCase{name: "reason " + reason, rows: oneRow("adoptable", false, "adopt_reason", reason), body: idBody(nil), status: 409, code: reason, msg: "the session cannot be adopted: " + reason})
 	}
 	for _, veto := range []string{"registry_busy", "status_stale", "open_tool_call", "child_process"} {
-		cases = append(cases, adoptCase{name: "busy " + veto, rows: oneRow("adopt", J{"busy": veto, "model_family": "haiku"}), body: idBody(nil), status: 409, code: "busy"})
+		cases = append(cases, adoptCase{name: "busy " + veto, rows: oneRow("adopt", J{"busy": veto, "model_family": "haiku"}), body: idBody(nil), status: 409, code: "busy", msg: busyMsg(veto)})
 	}
 	for _, c := range cases {
 		t.Run(c.name, c.run)
@@ -512,6 +525,7 @@ func TestAdoptRefusals(t *testing.T) {
 		putRows(t, e.in, row)
 		got := adoptCall(t, e.in, J{"outsideId": adoptID(1)}, "adopt-managed-0002").is(t, 409).obj(t)
 		eq[any](t, got["error"], "managed", "managed code")
+		eq[any](t, got["message"], "relay already holds this conversation", "managed message")
 		detail(t, e.in, adoptID(1)).is(t, 200)
 		eq(t, len(sessionRows(t, e.in)), 1, "sessions after the second adopt")
 		ev := adoptEvent(t, e.in, "adopt-managed-0002")
