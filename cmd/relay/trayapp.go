@@ -20,6 +20,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sealed"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
+	"github.com/barelyworkingcode/relay/internal/sessions/runner"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
@@ -223,9 +224,10 @@ func openSessionLedger(configDir string, store config.SettingsStore) *ledger.Led
 	// Deliberate: relay-sessions and every provider it hosts are children of
 	// this relay process, so no record from an earlier run can still be live.
 	// A live record left over would make resume skip the launch. The one
-	// exception is a detached host session whose agent still runs: the agent
-	// is not relay's child, and relay-sessions reattaches it as it starts.
-	running := detachedRunnersAnswering(l, store)
+	// exception is a detached host session or a local runner session whose
+	// agent still runs: the agent is not relay's child, and relay-sessions
+	// reattaches it as it starts.
+	running := detachedRunnersAnswering(l, store, configDir)
 	n, err := l.MarkLiveDormant(func(r ledger.Record) bool { return running[r.SessionID] })
 	if err != nil {
 		slog.Warn("session ledger: could not age stale live sessions to dormant", "count", n, "error", err)
@@ -267,11 +269,18 @@ func detachedRunnerAlive(settings *config.Settings, rec ledger.Record) bool {
 	return st.Phase == sshhost.RunAlive
 }
 
+// localRunnerAlive reports whether the runner of a local session's latest
+// generation lives, read from its run directory.
+func localRunnerAlive(configDir, sessionID string) bool {
+	st, err := runner.LocalStatus(filepath.Join(configDir, "sessions", "runners"), sessionID, "")
+	return err == nil && st.Phase == runner.PhaseAlive
+}
+
 // detachedRunnersAnswering asks the host of every live detached claude record
 // whether its agent's runner is alive, one ssh question per record and all at
 // once, and returns the ids that answered "alive". The runner check compares
 // the process start time with run.json, so a recycled pid reads as gone.
-func detachedRunnersAnswering(l *ledger.Ledger, store config.SettingsStore) map[string]bool {
+func detachedRunnersAnswering(l *ledger.Ledger, store config.SettingsStore, configDir string) map[string]bool {
 	var settings *config.Settings
 	if store != nil {
 		settings = store.Get()
@@ -280,7 +289,16 @@ func detachedRunnersAnswering(l *ledger.Ledger, store config.SettingsStore) map[
 	running := map[string]bool{}
 	var wg sync.WaitGroup
 	for _, rec := range l.All() {
-		if rec.State != ledger.StateLive || rec.Detached == nil || rec.Kind != KindClaude || settings == nil {
+		if rec.State != ledger.StateLive || rec.Kind != KindClaude {
+			continue
+		}
+		if rec.Detached == nil {
+			if localRunnerAlive(configDir, rec.SessionID) {
+				running[rec.SessionID] = true
+			}
+			continue
+		}
+		if settings == nil {
 			continue
 		}
 		wg.Add(1)

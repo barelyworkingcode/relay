@@ -142,9 +142,11 @@ outside it is not a relay bug, however real.
    recovery message after an interrupt quotes at most 300 characters of the
    session's own last prompt and 500 of the open tool call's input, under the
    `relay-recovery` origin. The chief-of-staff scope cannot reach the door.
-3e. **Other code running as the host account on a detached session's host.**
+3e. **Other code running as the host account on a detached session's host, or as the user on this Mac.**
    A detached session's agent reads `~/.relay/agents/<session id>/<generation>/inbox/`
-   on the host. Any process running as that account can write a file there and
+   on the host; a local Claude session's runner reads the same layout under
+   `<config dir>/sessions/runners/<session id>/<generation>/` on this Mac.
+   No sandbox profile grants that directory, so attacker 1 cannot reach it. Any process running as that account can write a file there and
    forge a user message or a `control_response` that allows a tool call. This
    grants no new reach: a host session already runs unconfined as that
    account, so such a process can do what the agent can do. It is a new way

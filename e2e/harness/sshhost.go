@@ -58,13 +58,19 @@ func StartSSHHost(t *testing.T) *SSHHost {
 		t.Fatalf("host public key %s.pub is not '<type> <key>': %q", hostKey, pub)
 	}
 	h.hostKeyPub = fields[0] + " " + fields[1]
+	tmuxDir := filepath.Join(dir, "tmux")
+	if err := os.Mkdir(tmuxDir, 0o700); err != nil {
+		t.Fatalf("creating %s: %v", tmuxDir, err)
+	}
+	// Registered before sshd's stop so, LIFO, the server dies after sshd has.
+	t.Cleanup(func() { killTmuxServer(tmuxDir) })
 	writeFile(t, filepath.Join(dir, "authorized_keys"), []byte(readFile(t, h.IdentityFile+".pub")))
 
 	var lastErr string
 	for try := 0; try < sshdStartTries; try++ {
 		port := freeLoopbackPort(t)
 		cfg := filepath.Join(dir, "sshd_config")
-		writeFile(t, cfg, []byte(sshdConfig(port, hostKey, filepath.Join(dir, "authorized_keys"), filepath.Join(dir, "sshd.pid"))))
+		writeFile(t, cfg, []byte(sshdConfig(port, hostKey, filepath.Join(dir, "authorized_keys"), filepath.Join(dir, "sshd.pid"), tmuxDir)))
 		stop, ok, why := startSSHD(t, cfg)
 		if ok {
 			h.Port = port
@@ -77,7 +83,18 @@ func StartSSHHost(t *testing.T) *SSHHost {
 	return nil
 }
 
-func sshdConfig(port int, hostKey, authorizedKeys, pidFile string) string {
+// killTmuxServer ends the tmux server on tmuxDir's socket. "No server" is the
+// normal answer when the test never started one.
+func killTmuxServer(tmuxDir string) {
+	cmd := exec.Command("tmux", "kill-server")
+	cmd.Env = []string{"TMUX_TMPDIR=" + tmuxDir, "PATH=" + os.Getenv("PATH")}
+	_ = cmd.Run()
+}
+
+// sshdConfig sets TMUX_TMPDIR for every session so a tmux the host tests start
+// over this sshd gets a socket of its own. The default socket is shared with
+// the whole machine and outlives the test run.
+func sshdConfig(port int, hostKey, authorizedKeys, pidFile, tmuxDir string) string {
 	return strings.Join([]string{
 		"ListenAddress 127.0.0.1",
 		fmt.Sprintf("Port %d", port),
@@ -89,6 +106,7 @@ func sshdConfig(port int, hostKey, authorizedKeys, pidFile string) string {
 		"PubkeyAuthentication yes",
 		"UsePAM no",
 		"StrictModes no",
+		"SetEnv TMUX_TMPDIR=" + tmuxDir,
 		"LogLevel INFO",
 		"",
 	}, "\n")

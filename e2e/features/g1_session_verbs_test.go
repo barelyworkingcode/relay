@@ -311,15 +311,19 @@ func TestSessionEventsChainedByCursor(t *testing.T) {
 	}
 }
 
-// Criterion 9: a session that is not detached has no replay.
+// Criterion 9: a session with no runner has no replay.
 func TestSessionEventsReplayUnavailable(t *testing.T) {
 	t.Parallel()
-	i, sid := g1vLocal(t)
+	i := harness.Start(t, harness.Options{Credentials: g1tCreds, Presence: g1tApprove, FakeModelHost: g1tEchoHost()})
+	i.WaitModelHost(g1tHostDeadline)
+	i.WaitSessionHost(g1tHostDeadline)
+	p := g1tProject(t, i, "acme-chat-events", map[string]any{"allowed_templates": []string{"chat"}})
+	sid := g1tStartSession(t, i, p.ID, "fake-echo", "")
 	g1sSendText(t, i, sid, "hi", "echo: hi")
 
 	res := i.CLI("session", "events", "--id", sid, "--json")
 	if res.Code != 1 || g1vErrCode(res) != "replay_unavailable" {
-		t.Fatalf("events on a session that is not detached exited %d with code %q, want 1 and replay_unavailable\nstdout: %s\nstderr: %s",
+		t.Fatalf("events on a chat session exited %d with code %q, want 1 and replay_unavailable\nstdout: %s\nstderr: %s",
 			res.Code, g1vErrCode(res), res.Stdout, res.Stderr)
 	}
 }

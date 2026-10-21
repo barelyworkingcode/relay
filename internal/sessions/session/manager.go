@@ -18,6 +18,7 @@ import (
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
+	"github.com/barelyworkingcode/relay/internal/sessions/runner"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
@@ -144,6 +145,11 @@ type Manager struct {
 	reattachMu  sync.Mutex
 	reattaching map[string]*sync.Mutex
 
+	// askedMu guards asked, the sessions whose pending permissions are above
+	// zero, so only the rise from zero tells the runner.
+	askedMu sync.Mutex
+	asked   map[string]bool
+
 	// providerFactory, when non-nil, replaces the built-in claude/pi switch
 	// in startProvider. Test-only seam, mirroring relayLLM's own
 	// SessionManager.SetProviderFactory — that package's doc comment names
@@ -183,7 +189,7 @@ func NewManager(cfg Config, store *Store, perms *permission.PermissionManager) *
 		watch:      watch,
 	}
 	if perms != nil {
-		perms.SetPendingObserver(m.onPermissionPending)
+		perms.SetPendingObserver(m.permissionPending)
 	}
 	return m
 }
@@ -541,7 +547,15 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) (s
 	if old := sess.SwapProvider(p); old != nil {
 		old.Kill()
 	}
-	return p, p.Start()
+	if err := p.Start(); err != nil {
+		return p, err
+	}
+	if m.runnerClaude(sess) {
+		// The saved state names the run and its root; a restart before the first
+		// result would otherwise find neither.
+		m.persist(sess)
+	}
+	return p, nil
 }
 
 // newProvider constructs, but does not install or start, a provider for
@@ -897,12 +911,16 @@ func (m *Manager) EndSession(id string) {
 	// Deliberate: a detached session with no live provider may still have an
 	// agent on its host, which relay or this host left running; ending the
 	// session ends it.
-	orphan := detachedClaude(sess) && (p == nil || !p.Alive())
+	orphan := m.runnerClaude(sess) && (p == nil || !p.Alive())
 	if p != nil {
 		p.Kill()
 	}
 	if orphan {
-		provider.StopDetachedRun(sess.ID, sess.GetHost())
+		if sess.GetHost() == nil {
+			provider.StopLocalRun(m.cfg.Claude.RunnerBase, sess.ID)
+		} else {
+			provider.StopDetachedRun(sess.ID, sess.GetHost())
+		}
 	}
 	m.persist(sess)
 }
@@ -923,13 +941,15 @@ func (m *Manager) DeleteSession(id string) {
 	} else {
 		// A dormant session has no provider, but a detached host agent may
 		// still run; it must end with the session.
-		host := (*sessionstypes.HostSpec)(nil)
-		if sess != nil {
-			host = sess.GetHost()
-		} else if stored, err := m.store.Load(id); err == nil {
-			host = stored.GetHost()
+		stored := sess
+		if stored == nil {
+			stored, _ = m.store.Load(id)
 		}
-		provider.DeleteDetachedRun(id, host)
+		if stored != nil && m.runnerClaude(stored) && stored.GetHost() == nil {
+			provider.DeleteLocalRun(m.cfg.Claude.RunnerBase, id)
+		} else if stored != nil {
+			provider.DeleteDetachedRun(id, stored.GetHost())
+		}
 	}
 	if m.perms != nil {
 		m.perms.RevokeHookToken(id)
@@ -943,10 +963,11 @@ func (m *Manager) DeleteSession(id string) {
 // at once.
 const detachedMaxParallelProbes = 4
 
-// ReattachDetached attaches every persisted detached host session whose agent
-// still runs. The agent is not this process's child, so a restart of this host
-// or of relay finds it alive; a session whose agent exited stays dormant and
-// resumes with its history. It returns when every attach has finished.
+// ReattachDetached attaches every persisted detached host session and local
+// runner session whose agent still runs. The agent is not this process's
+// child, so a restart of this host or of relay finds it alive; a session whose
+// agent exited stays dormant and resumes with its history. It returns when
+// every attach has finished.
 func (m *Manager) ReattachDetached() {
 	sessions, err := m.store.LoadAll()
 	if err != nil {
@@ -956,7 +977,7 @@ func (m *Manager) ReattachDetached() {
 	sem := make(chan struct{}, detachedMaxParallelProbes)
 	var wg sync.WaitGroup
 	for _, sess := range sessions {
-		if !detachedClaude(sess) {
+		if !m.runnerClaude(sess) {
 			continue
 		}
 		wg.Add(1)
@@ -970,8 +991,16 @@ func (m *Manager) ReattachDetached() {
 	wg.Wait()
 }
 
-func detachedClaude(sess *sessionstypes.Session) bool {
-	return sess.ProviderType == KindClaude && provider.DetachedHost(sess.GetHost())
+// runnerClaude reports whether sess is a Claude session whose agent runs under
+// the runner: on a detached host, or on this machine.
+func (m *Manager) runnerClaude(sess *sessionstypes.Session) bool {
+	if sess.ProviderType != KindClaude {
+		return false
+	}
+	if sess.GetHost() == nil {
+		return m.cfg.Claude.RunnerBase != ""
+	}
+	return provider.DetachedHost(sess.GetHost())
 }
 
 var (
@@ -989,7 +1018,7 @@ var (
 // say whether the agent runs, or the agent runs and could not be attached.
 func (m *Manager) reattachIfDetached(id string) error {
 	sess, ok := m.Get(id)
-	if !ok || !detachedClaude(sess) {
+	if !ok || !m.runnerClaude(sess) {
 		return nil
 	}
 	if p := sess.Provider(); p != nil && p.Alive() {
@@ -1018,22 +1047,30 @@ func (m *Manager) reattachDetached(id string) error {
 	defer lock.Unlock()
 
 	sess, ok := m.Get(id)
-	if !ok || !detachedClaude(sess) || m.Held(id) {
+	if !ok || !m.runnerClaude(sess) || m.Held(id) {
 		return nil
 	}
 	if p := sess.Provider(); p != nil && p.Alive() {
 		return nil
 	}
 	host := sess.GetHost()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	st, err := provider.DetachedRunState(ctx, host, id)
-	cancel()
-	if err != nil {
-		slog.Warn("session: reattach: the host did not say whether the agent runs", "session", id, "host", host.ID, "error", err)
-		return fmt.Errorf("%w: host %q: %v", ErrHostUnreachable, host.Name, err)
-	}
-	if st.Phase != sshhost.RunAlive {
-		return nil
+	var err error
+	if host == nil {
+		st, err := runner.LocalStatus(m.cfg.Claude.RunnerBase, id, "")
+		if err != nil || st.Phase != runner.PhaseAlive {
+			return nil
+		}
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		st, err := provider.DetachedRunState(ctx, host, id)
+		cancel()
+		if err != nil {
+			slog.Warn("session: reattach: the host did not say whether the agent runs", "session", id, "host", host.ID, "error", err)
+			return fmt.Errorf("%w: host %q: %v", ErrHostUnreachable, host.Name, err)
+		}
+		if st.Phase != sshhost.RunAlive {
+			return nil
+		}
 	}
 	// Deliberate: a delete that ran during the status question ended the agent
 	// and dropped the slot, and attaching now would find nothing to attach.
@@ -1061,10 +1098,65 @@ func (m *Manager) reattachDetached(id string) error {
 		return nil
 	}
 	if err != nil {
+		if host == nil {
+			slog.Warn("session: reattach failed", "session", id, "error", err)
+			return fmt.Errorf("%w: %v", ErrAttachFailed, err)
+		}
 		slog.Warn("session: reattach failed", "session", id, "host", host.ID, "error", err)
 		return fmt.Errorf("%w: host %q: %v", ErrAttachFailed, host.Name, err)
 	}
 	return nil
+}
+
+// askingWait bounds how long the Asked signal waits for the runner's receipt
+// of the asking event.
+const askingWait = 2 * time.Second
+
+// permissionPending is the permission manager's pending observer. When a
+// session's pending count rises above zero it has the runner write an asking
+// event first, and signals Asked after the receipt, so a reader that saw the
+// session ask finds the event. Deliberate: past askingWait the signal follows
+// anyway, because a stuck runner must not hide a prompt from the person.
+func (m *Manager) permissionPending(sessionID string, pending int) {
+	m.askedMu.Lock()
+	if m.asked == nil {
+		m.asked = map[string]bool{}
+	}
+	rose := pending > 0 && !m.asked[sessionID]
+	if pending > 0 {
+		m.asked[sessionID] = true
+	} else {
+		delete(m.asked, sessionID)
+	}
+	m.askedMu.Unlock()
+	if rose {
+		m.announceAsking(sessionID)
+	}
+	m.onPermissionPending(sessionID, pending)
+}
+
+func (m *Manager) announceAsking(sessionID string) {
+	m.mu.Lock()
+	slot := m.slots[sessionID]
+	var sess *sessionstypes.Session
+	if slot != nil {
+		sess = slot.sess
+	}
+	m.mu.Unlock()
+	if sess == nil {
+		return
+	}
+	src, ok := sess.Provider().(interface {
+		SendEvent(ctx context.Context, typ string) error
+	})
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), askingWait)
+	defer cancel()
+	if err := src.SendEvent(ctx, "asking"); err != nil {
+		slog.Warn("session: the runner did not confirm the asking event", "session", sessionID, "error", err)
+	}
 }
 
 // StopAll tears down every live and in-flight session. Every provider Kill
