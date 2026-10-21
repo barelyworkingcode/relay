@@ -84,22 +84,13 @@ func ReadTail(data []byte) Tail {
 				}
 			}
 		case "user":
-			genuine := !rec.Meta
-			var texts []string
 			for _, b := range blocks {
-				switch b.Type {
-				case "tool_result":
+				if b.Type == "tool_result" {
 					delete(open, b.ToolUseID)
-					genuine = false
-				case "text":
-					texts = append(texts, b.Text)
 				}
 			}
-			if text != "" {
-				texts = append(texts, text)
-			}
-			if genuine && len(texts) > 0 {
-				t.LastPrompt = strings.Join(texts, "\n")
+			if isPrompt(rec, blocks, text) {
+				t.LastPrompt = strings.Join(promptTexts(blocks, text), "\n")
 			}
 		}
 	})
@@ -110,6 +101,33 @@ func ReadTail(data []byte) Tail {
 		}
 	}
 	return t
+}
+
+// isPrompt is the one definition of a prompt: a non-meta user record with text
+// and no tool_result block.
+func isPrompt(rec tailRecord, blocks []tailBlock, text string) bool {
+	if rec.Type != "user" || rec.Meta {
+		return false
+	}
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			return false
+		}
+	}
+	return len(promptTexts(blocks, text)) > 0
+}
+
+func promptTexts(blocks []tailBlock, text string) []string {
+	var texts []string
+	for _, b := range blocks {
+		if b.Type == "text" {
+			texts = append(texts, b.Text)
+		}
+	}
+	if text != "" {
+		texts = append(texts, text)
+	}
+	return texts
 }
 
 // modelFamily maps a model id to the alias claude accepts for it. A synthetic

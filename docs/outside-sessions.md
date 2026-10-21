@@ -201,14 +201,22 @@ Sessions on SSH hosts are not adopted.
 - **Idle check**, at request time: the entry's `status` is `idle`; its
   `statusUpdatedAt` is at most 2 s older than the newest transcript record;
   the 256 KiB transcript tail holds no `tool_use` without a `tool_result`; and
-  the Claude process has no child that started at or after the first
-  `assistant` record written after the process started (an idle Claude keeps
-  its MCP servers from its start and can start them in the second of the first
-  prompt; a child a tool starts follows the assistant record that holds its
-  tool call). A child whose executable is exactly `/usr/bin/caffeinate` (the path the kernel ran, read from `kern.procargs2`, not `ps` comm; an unreadable path counts as a child), which
+  the Claude process has no child that started inside the last turn's tool
+  window: at or after the first `assistant` record that follows the last prompt
+  of this run, and at or before the newest transcript record (a child a tool
+  starts follows the assistant record that holds its tool call; an MCP server
+  that spawns late, after a fast reply, is born after the newest record and
+  never counts). A child that started in an earlier turn does not count, so a
+  background shell left from an earlier turn does not stop an adopt; it cannot
+  be told from an MCP server by start time or path, and the person who clicks
+  Adopt decides. A resume does not restore background shells. One false veto
+  remains: an MCP server that spawns after the first assistant record while
+  that first turn still runs; adopt with `interrupt` gets through. A child
+  skipped for starting after the newest record makes relay read the tail again;
+  a difference or a failed read counts as a child. A child whose executable is exactly `/usr/bin/caffeinate` (the path the kernel ran, read from `kern.procargs2`, not `ps` comm; an unreadable path counts as a child), which
   Claude starts at a turn and keeps for minutes, never counts. When the 256 KiB
-  tail does not reach the file's start, relay finds the boundary by scanning
-  the file forward; a failed transcript or process-table read counts as a
+  tail holds no prompt and does not reach the file's start, relay finds the
+  boundary by scanning the file forward; a failed transcript or process-table read counts as a
   child. A busy session is refused with `busy` unless the body sets `interrupt`.
 - **The ladder.** Interrupt sends SIGINT and waits for exit, at most 5 s.
   Takeover then sends SIGTERM if the process lives, waits 5 s, sends SIGKILL,

@@ -82,7 +82,7 @@ promoted to an issue the day it does.
   runs `exec /usr/bin/caffeinate -i <job>` leaves a direct child that reads as
   the helper while its job runs, so that child never vetoes an adopt. It needs
   an explicit `exec` in a background command.
-- **Adopt: a bash-mode child before the first assistant record.** The child
-  veto's boundary is the run's first `assistant` record. A child started by
-  `!` bash mode, which writes only `user` records, before any assistant record
-  of the run would not veto; the registry status likely reads busy then.
+- **Adopt: a bash-mode child before the last turn's first assistant record.**
+  The child veto's window opens at the first `assistant` record after the last
+  prompt of the run. A child started by `!` bash mode, which writes only `user`
+  records, before that record would not veto; the registry status likely reads busy then.

@@ -139,7 +139,7 @@ happened.
 | Who owns the session | the process | a shared per-user daemon; the terminal UI is a client | the process |
 | Find live sessions | `~/.claude/sessions/<pid>.json`: `sessionId`, `cwd`, `startedAt`, `procStart`, `status`, `kind`, `entrypoint` | the thread id in `~/.codex/thread-writer-locks/<id>.lock`, held open by the daemon; `threads` table in `state_5.sqlite` | none. Match the process start time and cwd to the transcript file name |
 | Transcript | `~/.claude/projects/<encoded cwd>/<id>.jsonl` | `~/.codex/sessions/YYYY/MM/DD/rollout-<created>-<id>.jsonl`, created at the first turn | `<sessions dir>/<encoded cwd>/<start UTC>_<id>.jsonl`, created at the first turn |
-| Idle | registry `status` is idle and `statusUpdatedAt` is fresh; no unmatched `tool_use`; no child process | last turn record is `task_complete` | last message is an assistant message with `stopReason: stop` |
+| Idle | registry `status` is idle and `statusUpdatedAt` is fresh; no unmatched `tool_use`; no child started in the last turn's tool window | last turn record is `task_complete` | last message is an assistant message with `stopReason: stop` |
 | Interrupt | SIGINT, then SIGTERM, then SIGKILL | `turn/interrupt` | rpc `abort`; SIGINT is undocumented (item 4) |
 | Take over | stop the process; resume under the runner with `--resume <id>` | connect to the daemon's socket and drive the thread; stop nothing (open: a second client on a thread another client has open, item 5) | stop the process; resume under the runner with `--session <id>` and `--session-dir` |
 | Not adopted | `kind` other than interactive, `entrypoint` other than the command line | a thread with a running turn and no interrupt consent | an ambiguous match |
