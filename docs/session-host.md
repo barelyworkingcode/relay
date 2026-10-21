@@ -1139,6 +1139,12 @@ the host and the key; there is no silent fallback. A run from before
 `runner.json` reads `legacy` from `RunnerStatus`: the first resume stops it and
 starts a new generation on the conversation.
 
+`host.tmux_path` (set by `buildHostSpec` only with `detach`) makes the start
+`RunnerStartInPane`: the runner is the pane of the tmux session
+`relay-agent-<session id>` (`docs/ssh-hosts.md`, "Detached sessions"). The
+connection's `Remove` also ends that tmux session, after the run directory.
+Without `tmux_path`, or below tmux 3.0, the runner starts alone.
+
 ### History on join
 
 `join_session` on `/ws` answers with `session_joined`, whose `history[]` is built from one of two sources.
@@ -1246,7 +1252,7 @@ Answers `200 {"claude_session_ids":[string]}`: the Claude conversation id of eve
 
 Relay keeps an in-memory swap table keyed by terminal id (`cmd/relay/session_swap.go`). `dropIn` adds a link after the terminal launch commits, and in each failure path after the handoff succeeded. `appRouter.SessionExited` reports each exit to the table. The resume starts once the terminal's report has arrived **and** the held session's ledger record reads dormant, in either order, in its own goroutine. It is `resumeSession` with the drop-in's caller: `AuthorizeLaunch` with `Resume`, the current project policy, a fresh launch identity and model key, and `--resume <conversation id>`. A detached host session starts a new generation, and so does a local session, whose runner the handoff stopped; the hand back always starts and never attaches. Each hand back writes a `session_swap` pair (`to_headless`) and one `session.hand_back` event. With auditing off, nothing is resumed and the session stays dormant. A relay restart drops the table: the session then reads dormant and needs a Resume, as before.
 
-A host without tmux, and a local session, keep this terminal; there is no refusal.
+On a detached host session whose host has tmux 3.0 or later, the terminal is the same tmux pane: its remote command respawns the dead pane with Claude's UI and attaches (`sshhost.PaneDropInArgv`), and the pane command detaches every client when the UI exits. A local session, and a host without tmux 3.0, keep this terminal as a pty; there is no refusal.
 
 ### While held
 

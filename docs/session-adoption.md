@@ -16,7 +16,7 @@ start path, its own limits and its own way of losing the agent.
 | Stream-json under the runner, local | headless Claude, local (run directory under the config dir) | n/a | yes |
 | Stream-json over a child's pipes | codex and pi, local | n/a | no |
 | Stream-json over `ssh -T` | headless Claude on a host | no | no |
-| Stream-json under the runner on the host | headless Claude on a Unix host (default; `detach_sessions: false` gives `ssh -T`) | yes | yes |
+| Stream-json under the runner on the host | headless Claude on a Unix host (default; `detach_sessions: false` gives `ssh -T`); the runner is the pane of a tmux session `relay-agent-<id>` when the host has tmux 3.0 or later | yes | yes |
 | A pty through the shim | terminal sessions, local | n/a | no |
 | A pty inside the host's tmux | a host terminal template with `persist` | yes | yes |
 
@@ -94,9 +94,17 @@ runner does not use the tool's `state.json`, `meta.json`, heartbeat, `hold` or
 **What tmux does.** tmux does not move files. It hosts the pane, gives the
 session a stable name, lets a person attach, and lets the pane's program change
 without losing the name. The pane runs either the runner (headless) or the
-agent's own UI (terminal). `tmux respawn-pane -k` swaps one for the other.
-Where a host has no tmux, a headless session still runs under the runner alone;
-the host path never calls tmux.
+agent's own UI (terminal). `respawn-pane` swaps one for the other.
+
+On a host with tmux 3.0 or later, a detached Claude session's runner is the
+pane of the tmux session `relay-agent-<relay session id>`. The pane command
+execs the runner, so `runner.json`'s `pid` is `#{pane_pid}` and equals its
+`pgid`, and the stop check holds unchanged. The session is made once, with
+`remain-on-exit on`, so a swap never loses it. The name never parses as a
+persist name, so the persistent-session list and kill never touch it. Where a
+host has no tmux 3.0, a headless session still runs under the runner alone and
+one stderr line names the tmux version; its drop-in opens a terminal as before.
+A delete ends the tmux session. Local sessions do not run in a pane.
 
 ## Swapping the driver
 
@@ -113,8 +121,22 @@ Terminal to headless is the reverse. The UI exits, the hold clears, the runner
 starts, and the agent resumes from the transcript. This is what hand-back does
 today, except the resume happens at once and not at the next message.
 
-What relay does today, before the pane: the swap uses the drop-in terminal, a
-pty that runs `claude --resume <conversation id>`, local and on a host. Closing
+On a host with tmux, the swap is a pane swap. The handoff stops the runner and
+the pane is dead. The drop-in terminal's remote command respawns that pane with
+Claude's UI (`claude --resume <conversation id>`, from the host's `claude-code`
+template command and args, never its `persist` wrapper, with the template's env
+passed by `-e`) and attaches to the session. When the UI exits, the pane
+command detaches every client, the terminal ends and the hand back runs. The
+hand-back resume starts a new generation through the pane start: if the pane's
+program still runs (the tab closed while Claude ran), the start sends `TERM`
+to its group, `KILL` after 3 s, waits until the pane is dead, and respawns it
+with the runner; if the tmux session is gone it makes it again. The result is
+one tmux session, one conversation and a new generation. A swap back ends
+Claude's UI, even when someone still uses it through `tmux attach` on the
+host: the drop-in terminal is the handle of the swap.
+
+Without a pane (a local session, or a host without tmux 3.0), the swap uses the
+drop-in terminal, a pty that runs `claude --resume <conversation id>`. Closing
 it hands the session back and relay resumes it at once, on the drop-in
 caller's behalf, through the ordinary resume. Each direction writes a
 `session_swap` intent row before it acts; with auditing off the swap is

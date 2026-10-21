@@ -1176,8 +1176,19 @@ returns its marker; `relay audit --event session_swap` holds, for each of
 `to_terminal` and `to_headless`, one `pending` intent row and one `ok`
 completion row with the same id. FAIL on any other step; the session is
 stopped after.
+  The pane leg: the journey finds tmux on the loopback host (`/opt/homebrew/bin`,
+  `/usr/local/bin`, `/usr/bin`, in that order; BLOCKED when none) and writes its
+  path as `hosts[].tmux_path` into the fixture host in `settings.json`, the power
+  door, because the hand-written host has no probe result. It then reads, over
+  `ssh localhost tmux display-message`, the pane of `relay-agent-<id>`: before
+  the drop-in its `#{pane_pid}` equals `runner.json`'s `pid` for `g1`; within 20 s
+  of the drop-in the host's process table holds `claude --resume <claudeSessionId>`
+  (read as session-drop-in-host reads it) and the pane is live; after the hand
+  back its `#{pane_pid}` equals `g2`'s `pid`. `#{session_created}` is the same
+  at all three reads. The PASS detail records `host tmux: <tmux -V> at <path>`.
 - Waits: CLI exits, HTTP answers and the `session.hand_back` event (`relay logs
-  --follow`). The settings import has no event, so the credential read
+  --follow`); the UI's start in the pane has no event (tmux sends none), so the
+  process table is polled, bounded, 20 s. The settings import has no event, so the credential read
   (`GET /api/terminals` until 200) and the first `relay session start` are
   retried, bounded, as in session-detached-host.
 - Lives in: `cmd/relay` (`dropIn`, the swap table), `internal/sessions`.

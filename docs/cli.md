@@ -3089,6 +3089,11 @@ the conversation there with its full history. After a relay restart relay
 attaches the still-running agent first, so the stop reaches it and the agent
 and the terminal never run on one conversation together.
 
+On a host with tmux 3.0 or later, the terminal shows the session's tmux pane
+`relay-agent-<id>`: the pane swaps from the runner to Claude and back, and the
+session keeps one name. `tmux attach -t relay-agent-<id>` on the host shows the
+same pane. Closing the terminal swaps the pane back to the runner.
+
 No JSON form: the terminal belongs to Claude. Exit codes: Claude's own exit
 status after a hand-over; `1` for any refusal below (`error: relay drop-in needs
 an interactive terminal on stdin and stdout` when stdin or stdout is not a

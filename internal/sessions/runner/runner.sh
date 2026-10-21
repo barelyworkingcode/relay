@@ -90,8 +90,10 @@ trap 'termed=1' TERM
 # last lines after a stop. Each event is appended and closed before its line is
 # printed, which is what puts the event first. Deliberate: mawk block-buffers
 # its piped input (fflush covers output only), so it runs with -W interactive.
+# The probe reads /dev/null: macOS awk treats -W version as a program and would
+# block on a pty stdin.
 awk_opts=
-{ case $(awk -W version 2>/dev/null | head -n 1) in mawk*) awk_opts="-W interactive";; esac; } 3<&- 4<&- 5<&-
+{ case $(awk -W version </dev/null 2>/dev/null | head -n 1) in mawk*) awk_opts="-W interactive";; esac; } 3<&- 4<&- 5<&-
 (
   umask "$agent_umask"
   trap 'true' TERM
