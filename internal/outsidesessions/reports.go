@@ -48,6 +48,8 @@ func (i *Inventory) drain(ctx context.Context, m Machine) {
 	if err != nil || len(reports) == 0 {
 		return
 	} // Reports never seed an identity: independently refresh live evidence first.
+	// Deliberately ctx, not bounded: the read has already deleted the reports,
+	// so a probe that ran out of the read's budget would lose them.
 	if !i.Probe(ctx, m) {
 		return
 	}
