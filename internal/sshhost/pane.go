@@ -51,10 +51,10 @@ pane_launch() {
       kill -s TERM -- "-$pgid" 2>/dev/null
       pane_wait_dead || { kill -s KILL -- "-$pgid" 2>/dev/null; pane_wait_dead; } || { pane_fallback "the pane did not end" "$@"; return; }
     fi
-    "$tmux" respawn-pane -t "=$pane:" -c "$dir" sh "$dir/runner.sh" "$dir" "$oldumask" "$1" "$gen" "$4" "$5" 2>/dev/null \
+    "$tmux" respawn-pane -t "=$pane:" sh "$dir/runner.sh" "$dir" "$oldumask" "$1" "$gen" "$4" "$5" 2>/dev/null \
       || { pane_fallback "respawn-pane failed" "$@"; return; }
   else
-    "$tmux" new-session -d -s "$pane" -x 200 -y 50 -c "$dir" sh "$dir/runner.sh" "$dir" "$oldumask" "$1" "$gen" "$4" "$5" \; \
+    "$tmux" new-session -d -s "$pane" -x 200 -y 50 sh "$dir/runner.sh" "$dir" "$oldumask" "$1" "$gen" "$4" "$5" \; \
       set-option -w -t "=$pane:" remain-on-exit on 2>/dev/null \
       || "$tmux" has-session -t "=$pane" 2>/dev/null \
       || { pane_fallback "new-session failed" "$@"; return; }
@@ -83,13 +83,16 @@ func PaneDropInArgv(tmuxPath, pane, dir string, ui []string, env map[string]stri
 	for _, a := range ui {
 		uiArgs.WriteString(" " + shQuote(a))
 	}
+	// tmux expands a -c value as a format, so a directory holding "#P" would
+	// start the UI elsewhere. The shell in the pane changes directory instead.
 	inner := `"$@"; ` + shQuote(tmuxPath) + " detach-client -s " + shQuote(target)
+	if dir != "" {
+		inner = `if cd "$1"; then shift; "$@"; else echo "relay: cannot enter $1" >&2; fi; ` +
+			shQuote(tmuxPath) + " detach-client -s " + shQuote(target)
+	}
 
 	var respawn strings.Builder
 	respawn.WriteString(shQuote(tmuxPath) + " respawn-pane -t " + shQuote(target+":"))
-	if dir != "" {
-		respawn.WriteString(" -c " + shQuote(dir))
-	}
 	keys := make([]string, 0, len(env))
 	for k := range env {
 		keys = append(keys, k)
@@ -98,9 +101,17 @@ func PaneDropInArgv(tmuxPath, pane, dir string, ui []string, env map[string]stri
 	for _, k := range keys {
 		respawn.WriteString(" -e " + shQuote(k+"="+env[k]))
 	}
-	respawn.WriteString(" sh -c " + shQuote(inner) + " relay-ui" + uiArgs.String())
+	respawn.WriteString(" sh -c " + shQuote(inner) + " relay-ui")
+	if dir != "" {
+		respawn.WriteString(" " + shQuote(dir))
+	}
+	respawn.WriteString(uiArgs.String())
 
-	script := "if " + shQuote(tmuxPath) + " has-session -t " + shQuote(target) + " 2>/dev/null; then\n" +
+	script := ""
+	if dir != "" {
+		script = "cd " + shQuote(dir) + " || exit 1\n"
+	}
+	script += "if " + shQuote(tmuxPath) + " has-session -t " + shQuote(target) + " 2>/dev/null; then\n" +
 		"  " + respawn.String() + " || exit 1\n" +
 		"  exec " + shQuote(tmuxPath) + " attach-session -t " + shQuote(target) + "\n" +
 		"fi\n" +

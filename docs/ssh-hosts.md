@@ -761,7 +761,8 @@ directory. `relay session start` returns only after `runner.json` exists.
 
 The runner (`internal/sessions/runner/runner.sh`) is a POSIX `sh` script that
 `setsid(1)` or `set -m` puts in its own process group, with every file
-descriptor redirected and `HUP` ignored. It needs `awk`, `tail`, `mkfifo`, `ps`
+descriptor redirected and `HUP` ignored. In pane mode stdin, stdout and stderr
+are the pane's pty, and tmux makes the process group. It needs `awk`, `tail`, `mkfifo`, `ps`
 and `base64` and no perl, python, tmux or `setsid(1)`: a host without tmux 3.0 runs
 headless sessions under the runner alone. A host with neither `setsid` nor a
 `sh` that honours `set -m` without a terminal (dash, without util-linux)
