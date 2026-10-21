@@ -468,7 +468,7 @@ func TestCodexRunnerNoSecondInitialize(t *testing.T) {
 	}
 }
 
-// Amendment 3: the runner gives the agent a pipe for stderr and copies what it
+// The runner gives the agent a pipe for stderr and copies what it
 // writes to stderr.log, so a sandboxed agent never holds a file the session
 // profile does not grant (docs/session-host.md, "What a child inherits").
 func TestRunnerAgentStderrIsPipe(t *testing.T) {

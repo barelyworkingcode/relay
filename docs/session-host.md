@@ -1076,7 +1076,7 @@ A machine that has a real CLI under `/usr/local/bin` or `/opt/homebrew/bin` ther
 ### What every spawn has in common
 
 - A local Claude session starts under the runner (`/bin/sh runner.sh`, own session) in `<config dir>/sessions/runners/<session id>/<generation>/`, mode `0700`; the runner owns the agent's stdin and stdout and keeps `out.jsonl`, `events.jsonl` and `runner.json`. A local codex session and a local pi session start the same way, and so does a codex session on a Unix host with `detach` set. Only a host session under `ssh -T` starts as below.
-- The child starts in the session directory, with stdin and stdout as pipes (under the runner, the runner's pipes). Stderr is a third pipe, read line by line into the service log ([Provider stderr](#provider-stderr)).
+- The child starts in the session directory, with stdin and stdout as pipes (under the runner, the runner's pipes). Stderr is a third pipe, read line by line into the service log ([Provider stderr](#provider-stderr)); under the runner it goes to `stderr.log`, and relay reads its tail when the agent exits.
 - The environment is the `relay-sessions` environment minus every relay credential variable, plus `RELAY_SESSION_ID`, and `RELAY_BRIDGE_SOCKET` and `RELAY_MODEL_SOCKET` when those sockets exist. No token is ever added.
 - A sandboxed launch runs the binary under the shim ([The shim](#the-shim-relay-sessions-exec)); the binary sees the same argv, stdin and stdout.
 - Both protocols are one JSON object per line, newline-terminated, in each direction. Blank lines are skipped. A line longer than 10 MiB ends reading. A stdout line that is not JSON is passed on as `raw_output` and does not stop the session.
@@ -1380,7 +1380,7 @@ themselves and close stdout unread.
 
 A local Claude session's runner gets the same environment and descriptors. The Claude token (fd 5) passes through the runner to the shim; the runner never reads it. The agent subshell (a fork of the runner) holds fds 3 to 5 until the agent exits; the runner closes its own copies once the pipeline starts, and the output filter never inherits them.
 
-The agent's stderr is an anonymous pipe. A copier (`cat >> stderr.log`, descriptors 3 to 5 closed, TERM ignored) moves it to `stderr.log` and ends at end of file, after the agent and every process holding its stderr are gone; the runner writes `exit` only after that. Deliberate: Node aborts when its stdout or stderr is a descriptor its sandbox profile does not let it stat, so the agent never holds `stderr.log` or a named FIFO in the run directory, and no profile grants either.
+The agent's stderr is an anonymous pipe. A copier (`cat >> stderr.log`, descriptors 3 to 6 closed, TERM ignored) moves it to `stderr.log` and ends at end of file, after the agent and every process holding its stderr are gone; the runner writes `exit` only after that. Deliberate: Node aborts when its stdout or stderr is a descriptor its sandbox profile does not let it stat, so the agent never holds `stderr.log` or a named FIFO in the run directory, and no profile grants either.
 
 A terminal, a claude or pi session and an MCP server child each start from
 `relay-sessions`' own environment, minus two sets:
