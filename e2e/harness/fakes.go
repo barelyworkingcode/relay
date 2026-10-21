@@ -303,3 +303,8 @@ func (i *Instance) CompleteOAuth(authorizationURL string) {
 	_, _ = io.Copy(io.Discard, cb.Body)
 	_ = cb.Body.Close()
 }
+
+// FakeOutsidePath is the fake outside Claude process (fakes/fakeoutside).
+// A test copies or links it under the base name claude, starts it in the
+// folder it stands for, and reads its stdout lines (see the fake's doc).
+func FakeOutsidePath() string { return bundle.FakeOutside }

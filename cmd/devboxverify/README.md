@@ -1149,6 +1149,44 @@ runs that cleanup before the process ends.
 - Traps: BLOCKED without `claude` on the login-shell PATH, with an unreadable
   `stack.json`, or when the turn ended before the link dropped.
 
+**session-adopt** (api, so a `--stack` run drives it). An interactive Claude
+started in a terminal is adopted: `POST /api/sessions/adopt` ends its process and
+resumes the same conversation as a headless relay session. In a scratch folder
+`verify-<nonce>-adopt` under Acme Corp's folder, the journey starts `claude
+--model haiku --session-id <uuid> --permission-mode default "Reply with
+exactly: verify-<nonce>-adopt-1"` in a detached tmux session on a tmux
+socket of its own (killed in cleanup), with `CLAUDE_CODE_ENTRYPOINT` and
+`CLAUDECODE` removed from its environment as a person's terminal has neither
+(set, claude registers `entrypoint: "sdk-cli"` and the door refuses
+`not_command_line`), and answers the folder-trust prompt. Like `session-detached-host`, it reads `claude_base_url`,
+`claude_model` and `claude_token_file` from `stack.json`, points the outside
+claude at that local endpoint (`ANTHROPIC_BASE_URL`,
+`ANTHROPIC_DEFAULT_HAIKU_MODEL`, and `ANTHROPIC_AUTH_TOKEN` read from the token
+file by the shell at exec, so the token is in no argv, file or detail), and
+writes a `.claude/settings.local.json` into the folder. The model is the
+`haiku` alias, never a `claude-*` id. Off a stack, or on a stack with no
+`claude_base_url`, the journey is NOTRUN ("needs a stack's local model
+endpoint"): it never runs claude against a hosted model. When the transcript
+holds the assistant record for the marker and the registry entry reads `idle`,
+it posts `{claudeSessionId, interrupt:false, model:"haiku"}` with the run's
+execute credential. PASS when the door answers 201 for that conversation with
+`interrupted` and `recoverySent` false; the terminal's claude process is gone;
+`relay session message` gets a reply holding `verify-<nonce>-adopt-2` and that
+reply is in the same `<uuid>.jsonl`; and `relay audit --event session_adopt`
+holds the intent row and a completion with outcome `ok`.
+- Waits: no signal exists for the outside reply (model output): a bounded read
+  of the transcript for the marker record, 120 s. The registry status change to
+  `idle` is re-read, 60 s. The trust prompt is a terminal UI with no signal:
+  pane capture, 30 s. Every other step waits on an HTTP response or a CLI exit.
+- Lives in: `cmd/relay/session_adopt.go`, `internal/sessions/adopt/`.
+- Reached by: `POST /api/sessions/adopt` on the frontend socket (class
+  `execute`), `relay session message`, `relay audit`.
+- Traps: BLOCKED without `tmux` or `claude` on the login-shell PATH, when the
+  marker or the `idle` status does not arrive, or when the registry entry's
+  session id is not the one the journey set. Cleanup stops the relay session,
+  kills the tmux session, removes the transcript (only a file named for the
+  conversation id that holds the run's tag) and the folder.
+
 **session-host-restart** (screen). The admin op `service.restart
 {"id":"relaysessions"}` answers without error, and within 15 s
 `relaysessions` is STATE `running` with a `relay-sessions` pid it did not

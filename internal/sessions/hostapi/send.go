@@ -14,14 +14,20 @@ import (
 	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
+// sendOriginAccepted is the closed set of origins /send stamps. Both are
+// constants relay's own code passes; a body can name neither as a new origin.
+func sendOriginAccepted(origin string) bool {
+	return origin == sessiontypes.OriginChiefOfStaff || origin == sessiontypes.OriginRelayRecovery
+}
+
 // maxSendBodyBytes bounds a /send body; relay's own route caps the text well
 // below this.
 const maxSendBodyBytes = 128 << 10
 
 // handleSend implements POST /send: deliver one user message marked with the
-// Chief of Staff origin. The origin is checked here, not trusted: the only
-// accepted value is the constant, so this route cannot stamp a person's
-// message as someone else's or invent a new origin. An unlisted session
+// Chief of Staff or relay-recovery origin. The origin is checked here, not
+// trusted: only the two constants are accepted, so this route cannot stamp a
+// person's message as someone else's or invent a new origin. An unlisted session
 // answers 404 exactly like an unknown one. The message text is never logged.
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -40,7 +46,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "malformed body")
 		return
 	}
-	if req.SessionID == "" || strings.TrimSpace(req.Text) == "" || req.Origin != sessiontypes.OriginChiefOfStaff {
+	if req.SessionID == "" || strings.TrimSpace(req.Text) == "" || !sendOriginAccepted(req.Origin) {
 		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "session_id, text and a supported origin are required")
 		return
 	}

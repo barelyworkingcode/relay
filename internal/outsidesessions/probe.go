@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // UnixProbeScript needs only the host's existing shell, ps and base64. Linux
@@ -63,6 +65,11 @@ type Registry struct {
 	Status    string `json:"status"`
 	Name      string `json:"name"`
 	Tmux      string `json:"tmux"`
+	// ProcStart, Kind and Entrypoint decide whether the session may be adopted.
+	// They are judged only; they never reach a response.
+	ProcStart  string `json:"procStart"`
+	Kind       string `json:"kind"`
+	Entrypoint string `json:"entrypoint"`
 }
 type NativeProbe struct {
 	Home       string
@@ -154,7 +161,7 @@ func (p NativeProbe) Observations(managedPID int, managedIDs map[string]bool) []
 			continue
 		}
 		seen[r.PID] = true
-		out = append(out, p.observe(proc, r))
+		out = append(out, p.observe(proc, r, true))
 	}
 	for pid, proc := range p.Processes {
 		if seen[pid] || proc.Lifetime == "" || p.managed(proc, managedPID) {
@@ -186,10 +193,69 @@ func (p NativeProbe) Observations(managedPID int, managedIDs map[string]bool) []
 			}
 		}
 		if matches == 1 {
-			out = append(out, p.observe(proc, candidate))
+			out = append(out, p.observe(proc, candidate, false))
 		}
 	}
+	markAmbiguous(out)
 	return out
+}
+
+// markAmbiguous withdraws adoption from every row whose conversation id more
+// than one live process holds: nothing says which of them to end.
+func markAmbiguous(obs []Observation) {
+	held := map[string]int{}
+	for _, o := range obs {
+		held[o.ClaudeID]++
+	}
+	for i := range obs {
+		if held[obs[i].ClaudeID] > 1 && obs[i].Session.Adoptable {
+			obs[i].Session.Adoptable = false
+			obs[i].Session.AdoptReason = AdoptReasonAmbiguous
+		}
+	}
+}
+
+// GateAdoption applies the two reasons that outrank the registry's: a session
+// on an SSH host, then one outside every registered project. A row they do not
+// touch keeps the reason observe gave it.
+func GateAdoption(s *Session, onHost, inProject bool) {
+	switch {
+	case onHost:
+		s.AdoptReason = AdoptReasonHost
+	case !inProject:
+		s.AdoptReason = AdoptReasonNoProject
+	default:
+		return
+	}
+	s.Adoptable = false
+}
+
+// AdoptReason judges the adoption tests that need only a registry entry and
+// the kernel's start time of its process; "" means they all pass. The registry
+// names a process, never a path, and its text grants nothing: each test is
+// about the entry's shape, and the start time is the process's own.
+func AdoptReason(r Registry, start time.Time) string {
+	if !IsConversationID(r.SessionID) {
+		return AdoptReasonInvalidID
+	}
+	registered, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(strings.Fields(r.ProcStart), " "), time.UTC)
+	if err != nil || !registered.Equal(start.UTC().Truncate(time.Second)) {
+		return AdoptReasonStartMismatch
+	}
+	if r.Kind != "interactive" {
+		return AdoptReasonNotInteractive
+	}
+	if r.Entrypoint != "cli" {
+		return AdoptReasonNotCommandLine
+	}
+	return ""
+}
+
+// IsConversationID reports whether id is a canonical UUID, the only shape
+// adoption accepts: the id becomes a --resume argument and a file name.
+func IsConversationID(id string) bool {
+	_, err := uuid.Parse(id)
+	return err == nil && len(id) == 36
 }
 func (p NativeProbe) managed(proc Process, root int) bool {
 	if proc.Marker != "" {
@@ -207,8 +273,8 @@ func (p NativeProbe) managed(proc Process, root int) bool {
 	}
 	return false
 }
-func (p NativeProbe) observe(proc Process, r Registry) Observation {
-	s := Session{Directory: r.Cwd, Branch: proc.Branch, State: "idle", Source: "probe", Since: stamp(sinceTime(proc.Lifetime, r.StartedAt)), ViewReason: "not_in_tmux"}
+func (p NativeProbe) observe(proc Process, r Registry, registered bool) Observation {
+	s := Session{ClaudeSessionID: r.SessionID, Directory: r.Cwd, Branch: proc.Branch, State: "idle", Source: "probe", Since: stamp(sinceTime(proc.Lifetime, r.StartedAt)), ViewReason: "not_in_tmux"}
 	s.Name = r.Name
 	if s.Name == "" {
 		s.Name = "Claude — " + filepath.Base(r.Cwd)
@@ -219,6 +285,15 @@ func (p NativeProbe) observe(proc Process, r Registry) Observation {
 	case "asking", "waiting", "permission", "waiting_for_permission", "waiting-on-permission":
 		s.State = "asking"
 	}
+	switch started, ok := lifetimeTime(proc.Lifetime); {
+	case !registered:
+		s.AdoptReason = AdoptReasonNotRegistered
+	case !ok:
+		s.AdoptReason = AdoptReasonStartMismatch
+	default:
+		s.AdoptReason = AdoptReason(r, started)
+	}
+	s.Adoptable = s.AdoptReason == ""
 	transcript := TranscriptPath(p.Home, r.Cwd, r.SessionID)
 	state, at := ProbeState(p.Files[transcript])
 	statusAt := time.UnixMilli(r.UpdatedAt)

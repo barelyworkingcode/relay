@@ -84,7 +84,7 @@ type runState struct {
 	CrashService                                       string
 }
 
-var journeys = slices.Concat(apiJourneys, gateSetupJourneys, screenJourneys, gateTeardownJourneys)
+var journeys = slices.Concat(apiJourneys, adoptJourneys, gateSetupJourneys, screenJourneys, gateTeardownJourneys)
 
 // selectJourneys keeps table order; an empty phase selects every journey.
 func selectJourneys(all []journey, p phase) []journey {

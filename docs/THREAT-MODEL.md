@@ -88,9 +88,10 @@ outside it is not a relay bug, however real.
    (no symlink, a 16 KiB tail for the list, 1 MiB for detail) and the same
    untrusted display data. The scope can read the last turn of a console
    session that ended inside the window, not only of a live one.
-   An ended row also carries `claudeSessionId`, the name of the transcript file
-   the scope already reads; it opens no door in the scope, which has no terminal
-   start and no resume.
+   Every row carries `claudeSessionId`: an ended row's is the name of the
+   transcript file the scope already reads, a live row's is the registry's or the
+   transcript's id. It opens no door in the scope, which has no terminal start,
+   no resume and no adopt.
    The scope also can't change where the Chief of Staff runs: the
    `/api/chief-of-staff/config` routes are refused inside it.
    Agent output cannot add or change a launcher. The scope writes no agent
@@ -135,6 +136,23 @@ outside it is not a relay bug, however real.
    around relay's audit and origin marking: a forged line carries no origin
    and no audit row. Relay promises neither against it. The run directory is
    `0700`, which keeps out other accounts, and nothing else.
+3f. **A caller adopting an outside Claude session.** A caller holding `execute`
+   on the socket can end a console Claude process a person started in a
+   terminal and resume its conversation under relay, through
+   `POST /api/sessions/adopt`. Only an eligible entry is adopted: an
+   interactive, command-line Claude with a UUID `sessionId` whose registry
+   `procStart` equals the process's kernel start time, in a registered local
+   project. An ambiguous match (two live entries, one `sessionId`), a session
+   relay already manages and a session on an SSH host are never adopted. Relay
+   writes a durable intent row before any signal and signals nothing with
+   auditing off; before each signal it re-reads the pid's start time and
+   sends nothing on a mismatch. The registry and the transcript choose no
+   path and grant nothing: the transcript path is derived and symlinks are
+   refused. The resumed session gets the project's sandbox, allowed models and
+   permission policy and the ordinary launch identity and token path. The
+   recovery message after an interrupt quotes at most 300 characters of the
+   session's own last prompt and 500 of the open tool call's input, under the
+   `relay-recovery` origin. The chief-of-staff scope cannot reach the door.
 4. **A peer on the network or in the browser** (a machine that can reach a
    relay listener, or a web page open on this Mac reaching relay's localhost
    ports). It gets nothing without a credential: no tool call, no config

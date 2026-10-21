@@ -293,6 +293,10 @@ type CreateSpec struct {
 	// running agent and fail when none runs, where a plain resume would start
 	// one.
 	AttachOnly bool
+
+	// ResumeConversation seeds a new claude session's provider state with an
+	// existing Claude conversation id, so the first start resumes it.
+	ResumeConversation string
 }
 
 func (m *Manager) providerKindSupported(kind string) bool {
@@ -493,9 +497,15 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 		mode = parsed.PermissionPolicy.DefaultMode
 	}
 
+	var providerState json.RawMessage
+	if spec.ResumeConversation != "" {
+		providerState, _ = json.Marshal(map[string]string{"claudeSessionId": spec.ResumeConversation})
+	}
+
 	return &sessionstypes.Session{
 		ID:             spec.SessionID,
 		ProjectID:      spec.ProjectID,
+		ProviderState:  providerState,
 		Name:           name,
 		Directory:      spec.Directory,
 		Model:          spec.Model,

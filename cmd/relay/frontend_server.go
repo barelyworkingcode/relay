@@ -230,7 +230,9 @@ func (s *FrontendServer) ServeLoopback() error {
 // can build the TCP mux later from the same ingredients, without a second
 // copy of NewFrontendServer's parameter list.
 type frontendRouteDeps struct {
-	outside           *outsidesessions.Inventory
+	outside *outsidesessions.Inventory
+	// adopt backs POST /api/sessions/adopt; nil registers no route.
+	adopt             *adoptOps
 	store             config.SettingsStore
 	mcps              McpSurfaceProvider
 	tools             MCPToolsProvider
@@ -333,6 +335,9 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 	}
 	if deps.sessionHost.ready() {
 		RegisterSessionRoutes(rr, deps.sessionHost)
+		if deps.adopt != nil {
+			rr.Handle(classFor("POST", "/api/sessions/adopt"), "POST /api/sessions/adopt", deps.adopt.handleAdopt)
+		}
 	}
 	RegisterTmuxViewRoutes(rr, &TmuxViewOps{deps: deps.sessionHost})
 	RegisterChiefOfStaffAgentRoutes(rr, deps.store, deps.sessionHost.agentLists)
@@ -493,6 +498,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		clock:           clock,
 		outside:         newOutsideInventory(store, clock, sessionHost),
 	}
+	deps.adopt = newAdoptOps(sessionHost, deps.outside, clock)
 
 	socketMux := http.NewServeMux()
 	registerFrontendRoutes(&control.RouteRegistrar{Mux: socketMux, Transport: control.TransportSocket, Authz: authz, Auditor: auditor, Reserve: deps.enhanced, CredentialID: APICredentialIDFromContext, Record: recordRoute}, deps)

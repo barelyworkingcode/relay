@@ -157,7 +157,10 @@ chief-of-staff send. relay's handler for `POST /api/chief-of-staff/messages`
 writes the intent audit row, then calls `sessionHostClient.Send`, which posts
 `{session_id, text, origin}`. The host checks the peer as it does for
 `/launch`, and `/send` is in `sessionHostReservedRoutes`, so no manifest can
-declare it. Only listed sessions can receive: an unlisted session answers
+declare it. The accepted origins are `chief-of-staff` and `relay-recovery`,
+the latter used once by the adopt door after an interrupted takeover (a
+`session_message` intent row precedes it like any marked send). Only listed
+sessions can receive: an unlisted session answers
 `not_found`. A turn already running answers `already_processing`, and a session
 that is not live answers `resume_required`. A session a drop-in terminal holds
 answers `dropped_in` (409); relay's route passes it through as 409
@@ -1198,6 +1201,8 @@ Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears
 Answers `200 {"claude_session_ids":[string]}`: the Claude conversation id of every session this host owns, live or persisted. Relay reads it to keep managed sessions out of the outside-session list. It is internal-socket only, behind the same peer check as `/handback`.
 
 ### The terminal
+
+`LaunchRequest.resume_conversation` (a fresh local `claude` launch only) names the Claude conversation to resume: a canonical UUID, refused with `invalid_spec` on a pty, a resume, a host launch or any other value. The host seeds the new session's provider state with it, so claude starts with `--resume <id>`. Relay's adopt door sets it; see [Outside sessions](outside-sessions.md#adopting-a-session).
 
 `LaunchRequest.drop_in_for` (pty only) names the held session the terminal takes over. `/launch` answers `409 not_held` unless that session is held and no other terminal already has it. The link from terminal id to session id is recorded before the terminal starts, and removed if the start fails. When the terminal exits, `onTerminalExit` calls `HandBack`, so closing the window or a killed client never leaves a session held. The hold is in memory: a relay-sessions restart drops it.
 
