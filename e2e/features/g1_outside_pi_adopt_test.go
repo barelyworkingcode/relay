@@ -106,7 +106,9 @@ func (r *paRig) fake(name string, options ...string) *paFake {
 		r.t.Fatal(err)
 	}
 	f := &paFake{t: r.t, cmd: cmd, in: in, lines: make(chan map[string]any, 32), exit: make(chan struct{}), dir: dir, sid: adUUID()}
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		defer close(f.lines)
 		sc := bufio.NewScanner(out)
 		for sc.Scan() {
@@ -116,7 +118,10 @@ func (r *paRig) fake(name string, options ...string) *paFake {
 			}
 		}
 	}()
-	go func() { _ = cmd.Wait(); close(f.exit) }()
+	// Wait closes the stdout pipe once the process exits, so it runs only after
+	// the reader has drained to EOF; otherwise a last line (the SIGTERM
+	// receipt) can be lost under load.
+	go func() { <-drained; _ = cmd.Wait(); close(f.exit) }()
 	r.t.Cleanup(func() {
 		if f.child > 0 {
 			_ = syscall.Kill(f.child, syscall.SIGKILL)

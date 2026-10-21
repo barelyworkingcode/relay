@@ -187,9 +187,12 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			}
 			node, _ := provider.ResolvePiNodeBinary(config.LocalAgentCommandsFor(config.FreshSettings(store)).Pi)
 			adapter := adopt.NewPi(adopt.PiConfig{Home: home, NodeBinary: node})
+			// A Pi discovery failure hides only Pi rows; it must not make the
+			// whole console unreachable and age out the Claude rows.
 			candidates, e := adapter.Discover(ctx)
 			if e != nil {
-				return outsidesessions.ProbeResult{}, e
+				slog.Warn("outside Pi discovery failed; Pi rows omitted", "error", e)
+				candidates = nil
 			}
 			for _, c := range candidates {
 				if managedPi[c.ConversationID] || outsideManagedAncestor(ctx, c.PID, root) {
