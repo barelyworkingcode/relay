@@ -1,6 +1,7 @@
 package features
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -325,4 +326,95 @@ func TestHostPaneDeleteEndsTmuxSession(t *testing.T) {
 	if r.hasSession(t, sid) {
 		t.Fatalf("tmux still has the session %s after the session was deleted", g11pName(sid))
 	}
+}
+
+// g11pUIPid returns the pid of the Claude UI itself under the pane's process:
+// the argv carries --resume conv and no --print, and the process is neither the
+// pane's own shell wrappers (their argv names relay-ui) nor the pane process.
+// It is 0 while no such process runs.
+func g11pUIPid(t *testing.T, panePID int, conv string) int {
+	t.Helper()
+	out, err := exec.Command("ps", "-axo", "pid=,ppid=,command=").Output()
+	if err != nil {
+		t.Fatalf("reading the process table: %v", err)
+	}
+	parent := map[int]int{}
+	var ui []int
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		pid, _ := strconv.Atoi(f[0])
+		ppid, _ := strconv.Atoi(f[1])
+		parent[pid] = ppid
+		cmd := strings.Join(f[2:], " ")
+		if pid != panePID && strings.Contains(cmd, "--resume "+conv) && !strings.Contains(cmd, "--print") && !strings.Contains(cmd, "relay-ui") {
+			ui = append(ui, pid)
+		}
+	}
+	for _, pid := range ui {
+		for p, hops := pid, 0; p > 1 && hops < 32; p, hops = parent[p], hops+1 {
+			if p == panePID {
+				return pid
+			}
+		}
+	}
+	return 0
+}
+
+// g11pCwd reads a process's working directory with lsof.
+func g11pCwd(t *testing.T, pid int) string {
+	t.Helper()
+	out, err := exec.Command("lsof", "-a", "-d", "cwd", "-p", strconv.Itoa(pid), "-Fn").Output()
+	if err != nil {
+		t.Fatalf("lsof for the cwd of pid %d: %v", pid, err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "n") {
+			return line[1:]
+		}
+	}
+	t.Fatalf("lsof printed no cwd for pid %d: %q", pid, out)
+	return ""
+}
+
+// Decision 4 (Amendment 2): the drop-in's UI starts in the project's directory
+// when that directory holds a "#". tmux reads a -c value as a format, so a
+// "C#Projects" path must not reach tmux as one.
+func TestHostPaneDropInDirWithHash(t *testing.T) {
+	t.Parallel()
+	r := g11dStart(t)
+	hashDir := filepath.Join(r.remote, "C#Projects", "boxproj")
+	r.mkdir(t, hashDir)
+	body, _ := json.Marshal(map[string]any{
+		"name": "Acme Hash Box", "path": hashDir, "host_id": g11dHostID, "allowed_templates": []string{"claude-code"},
+	})
+	res := r.i.CLIWith(harness.CLIOpts{Stdin: body}, "project", "create", "--file", "-", "--json")
+	if res.Code != 0 {
+		t.Fatalf("project create for the hash-dir host project exited %d\nstderr: %s", res.Code, res.Stderr)
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	res.JSON(t, &p)
+	r.projectID = p.ID
+
+	s := r.startedInPane(t)
+	r.dropInTTY(t, s.sid)
+
+	var ui int
+	g11dUntil(t, "the drop-in's Claude UI to run under the pane with --resume "+s.conv, func() bool {
+		ui = g11pUIPid(t, r.pane(t, s.sid).PID, s.conv)
+		return ui != 0
+	})
+	got, gerr := filepath.EvalSymlinks(g11pCwd(t, ui))
+	want, werr := filepath.EvalSymlinks(hashDir)
+	if gerr != nil || werr != nil {
+		t.Fatalf("resolving the cwd %v and the project dir %v", gerr, werr)
+	}
+	if got != want {
+		t.Fatalf("the UI's cwd is %s, want the project dir %s", got, want)
+	}
+	r.uiStarted(t, s.sid, s.conv)
 }
