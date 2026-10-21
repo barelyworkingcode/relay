@@ -192,7 +192,7 @@ func TestHostSessionSSHFallbackWhenDetachOff(t *testing.T) {
 // followed by a subcommand.
 var g11rTmuxCommand = regexp.MustCompile(`(^|[\s;|&/])tmux\s+[a-z-]+`)
 
-// g11rInventoryProbe is a line only the outside-sessions inventory probe sends.
+// g11rInventoryProbe is a fragment only the outside-sessions inventory probe sends.
 // Deliberate: that probe runs on its own 15 s timer and lists tmux panes; it is
 // not the session's runner, so the scan below skips its calls.
 const g11rInventoryProbe = `relay-outside-reports" ]`
