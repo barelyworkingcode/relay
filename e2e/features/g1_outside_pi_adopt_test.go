@@ -663,6 +663,52 @@ func paLowAudit(o *harness.Options) {
 	o.Settings["audit"] = json.RawMessage(`{"enabled":true,"max_file_bytes":1,"generations":5}`)
 }
 
+func paBlockAuditWrites(t *testing.T, r *paRig) func() {
+	t.Helper()
+	dir := filepath.Join(r.i.ConfigDir, "logs", "audit")
+	active := filepath.Join(dir, "toolcalls.jsonl")
+	info, err := os.Stat(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 1 {
+		t.Fatal("audit fault requires a regular active log above the configured rotation cap")
+	}
+	restored := false
+	restore := func() {
+		t.Helper()
+		if restored {
+			return
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(active, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		restored = true
+	}
+	t.Cleanup(restore)
+	// Rotation closes the existing descriptor; denying both the file and its
+	// directory prevents reopening the old file or creating a replacement.
+	if err := os.Chmod(active, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(active, os.O_APPEND|os.O_WRONLY, 0)
+	if err == nil {
+		_ = f.Close()
+		t.Fatal("audit fault setup allowed append-open of the active log")
+	}
+	if !os.IsPermission(err) {
+		t.Fatalf("audit fault setup failed for a reason other than permissions: %v", err)
+	}
+	t.Log("audit fault ready: active log append-open refused with permission denied")
+	return restore
+}
+
 func TestPiAdoptManagedAbortAuditFailureRefused(t *testing.T) {
 	t.Parallel()
 	r := paStart(t, nil, paLowAudit)
@@ -670,13 +716,7 @@ func TestPiAdoptManagedAbortAuditFailureRefused(t *testing.T) {
 	f.idle()
 	sid := r.adopted(f)
 	ws := paHold(t, r, sid)
-	// Force the real sink's next rotation to fail; restoring permissions also
-	// lets cleanup complete through the ordinary audited session stop path.
-	audit := filepath.Join(r.i.ConfigDir, "logs", "audit")
-	if err := os.Chmod(audit, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(audit, 0o700) })
+	restoreAudit := paBlockAuditWrites(t, r)
 	ws.Send(map[string]any{"type": "stop_generation", "sessionId": sid})
 	frames := g1aNext(t, ws, g1tFrameDeadline, func(v map[string]any) bool { return v["type"] == "error" && v["sessionId"] == sid })
 	if got := frames[len(frames)-1]["code"]; got != "audit_unavailable" {
@@ -697,14 +737,9 @@ func TestPiAdoptManagedAbortAuditFailureRefused(t *testing.T) {
 	if !ok || row.Attention == nil || row.Attention.State != "running" {
 		t.Fatalf("audit rejection ended running turn: %+v", row)
 	}
-	if err := os.Chmod(audit, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	ws.Send(map[string]any{"type": "stop_generation", "sessionId": sid})
-	g1aNext(t, ws, g1tFrameDeadline, func(v map[string]any) bool {
-		return v["type"] == "session_state" && v["sessionId"] == sid && v["state"] == "idle"
-	})
-	r.i.MustCLI("session", "wait", "--id", sid, "--json")
+	// The sink reopens only on restart, not on a permission fix, so no retry
+	// is asserted here; the restore lets cleanup's session stop write its row.
+	restoreAudit()
 }
 
 func paTool(f *paFake, id, parent string) string {
@@ -860,15 +895,7 @@ func TestPiAdoptAuditWriteFailureRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := r.row(f)["id"].(string)
-	audit := filepath.Join(r.i.ConfigDir, "logs", "audit")
-	if err := os.Chmod(audit, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := os.Chmod(audit, 0o700); err != nil {
-			t.Error(err)
-		}
-	}()
+	paBlockAuditWrites(t, r)
 	otRefusal(t, r.adopt(id, false), 503, "audit_unavailable")
 	f.untouched()
 	after, err := os.ReadFile(f.file)
