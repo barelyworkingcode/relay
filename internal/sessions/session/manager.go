@@ -1490,7 +1490,9 @@ func (m *Manager) StopGeneration(id string) error {
 		var state struct {
 			File string `json:"piSessionFile"`
 		}
-		if json.Unmarshal(raw, &state) != nil {
+		// An ordinary Pi session has no adopted transcript and may carry no
+		// state at all; only non-empty, unreadable state is an error.
+		if len(raw) > 0 && json.Unmarshal(raw, &state) != nil {
 			return errors.New("interrupt: invalid Pi state")
 		}
 		if state.File != "" {

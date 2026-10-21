@@ -57,8 +57,6 @@ var outsideIDPattern = regexp.MustCompile(`^outside:[0-9a-f]{32}$`)
 type adoptBody struct {
 	OutsideID       string `json:"outsideId"`
 	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
-	Agent           string `json:"agent,omitempty"`
-	ConversationID  string `json:"conversationId,omitempty"`
 	Interrupt       bool   `json:"interrupt"`
 	Model           string `json:"model"`
 }
@@ -106,7 +104,6 @@ type adoptOps struct {
 	deps    sessionRouteDeps
 	outside *outsidesessions.Inventory
 	claude  adopt.Adopter
-	pi      adopt.Adopter
 	clock   serverClock
 	// inflight holds the conversation ids with an adopt running; the value is
 	// unused.
@@ -125,10 +122,8 @@ func newAdoptOps(deps sessionRouteDeps, outside *outsidesessions.Inventory, cloc
 		// An empty home makes every Discover fail closed.
 		home = ""
 	}
-	node, _ := provider.ResolvePiNodeBinary(config.LocalAgentCommandsFor(config.FreshSettings(deps.store)).Pi)
 	return &adoptOps{
 		deps: deps, outside: outside, clock: clock,
-		pi:      adopt.NewPi(adopt.PiConfig{Home: home, Clock: clock, NodeBinary: node}),
 		claude:  adopt.NewClaude(adopt.ClaudeConfig{Home: home, Clock: clock}),
 		console: outsideMachine(deps.store, deps, nil, consoleOutsideSpool()),
 	}
@@ -663,7 +658,13 @@ func observationConversation(o outsidesessions.Observation) string {
 }
 func (a *adoptOps) adapter(agent string) adopt.Adopter {
 	if agent == "pi" {
-		return a.pi
+		// Built per request: the configured Pi command can change while relay runs.
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = ""
+		}
+		node, _ := provider.ResolvePiNodeBinary(config.LocalAgentCommandsFor(config.FreshSettings(a.deps.store)).Pi)
+		return adopt.NewPi(adopt.PiConfig{Home: home, Clock: a.clock, NodeBinary: node})
 	}
 	return a.claude
 }

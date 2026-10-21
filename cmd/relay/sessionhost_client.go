@@ -346,8 +346,8 @@ func (c *sessionHostClient) ManagedClaudeIdentities(ctx context.Context) (map[st
 	return ids, nil
 }
 
-// ManagedClaudeIdentities asks the host for the Claude conversation ids it
-// owns; the public session summary deliberately omits them.
+// ManagedPiIdentities asks the host for the Pi conversation ids it owns; the
+// public session summary deliberately omits them.
 func (c *sessionHostClient) ManagedPiIdentities(ctx context.Context) (map[string]bool, error) {
 	httpResp, err := c.do(ctx, http.MethodGet, "/managed-identities", nil)
 	if err != nil {

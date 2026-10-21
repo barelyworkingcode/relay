@@ -420,6 +420,12 @@ func TestPiAdoptNoFirstTurn(t *testing.T) {
 	}
 	absent.untouched()
 	header.untouched()
+	// Positive control: the same header-only transcript lists once it holds a
+	// first turn, so the absence above is the missing turn and not the rig.
+	header.idle()
+	if row := r.row(header); row["directory"] != header.dir {
+		t.Fatalf("Pi with a first turn not listed: %v", row)
+	}
 }
 
 func TestPiAdoptAmbiguousRefused(t *testing.T) {
@@ -479,8 +485,16 @@ func TestPiAdoptStaleEvidenceRefused(t *testing.T) {
 				var h map[string]any
 				lines := bytes.Split(data, []byte("\n"))
 				_ = json.Unmarshal(lines[0], &h)
-				h["timestamp"] = f.start.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+				// The header time and the file name move together, so the
+				// transcript stays well formed and only the process start
+				// window can refuse it.
+				shifted := f.start.Add(-time.Hour).UTC()
+				h["timestamp"] = shifted.Format(time.RFC3339Nano)
 				lines[0] = []byte(paJSON(h))
+				if err := os.Remove(f.file); err != nil {
+					t.Fatal(err)
+				}
+				f.file = filepath.Join(filepath.Dir(f.file), strings.NewReplacer(":", "-", ".", "-").Replace(shifted.Format("2006-01-02T15:04:05.000Z"))+"_"+f.sid+".jsonl")
 				osWrite(t, f.file, bytes.Join(lines, []byte("\n")))
 			case "partial":
 				osWrite(t, f.file, append(data, []byte(`{"type":"message"`)...))
@@ -593,6 +607,13 @@ func TestPiAdoptAuthorizationAndAuditRefused(t *testing.T) {
 
 func paHold(t *testing.T, r *paRig, sid string) *harness.WSConn {
 	t.Helper()
+	return paHoldNth(t, r, sid, 1)
+}
+
+// paHoldNth starts a held turn and waits for the nth hold receipt, so a
+// second turn on a restarted instance counts the receipts of the first.
+func paHoldNth(t *testing.T, r *paRig, sid string, nth int) *harness.WSConn {
+	t.Helper()
 	ws := r.i.WebSocket("/ws", r.i.Credential("cos"))
 	t.Cleanup(ws.Close)
 	ws.Send(map[string]any{"type": "join_session", "sessionId": sid})
@@ -608,7 +629,7 @@ func paHold(t *testing.T, r *paRig, sid string) *harness.WSConn {
 				n++
 			}
 		}
-		return n == 1
+		return n == nth
 	})
 
 	return ws
@@ -737,9 +758,38 @@ func TestPiAdoptManagedAbortAuditFailureRefused(t *testing.T) {
 	if !ok || row.Attention == nil || row.Attention.State != "running" {
 		t.Fatalf("audit rejection ended running turn: %+v", row)
 	}
-	// The sink reopens only on restart, not on a permission fix, so no retry
-	// is asserted here; the restore lets cleanup's session stop write its row.
+	// The recorder keeps its first write error, so a permission fix alone does
+	// not revive it: restore, then restart the instance, the recorder's
+	// lifecycle boundary.
 	restoreAudit()
+	ws.Close()
+	since := time.Now()
+	r.i.Restart()
+	r.i.WaitEvent(harness.EventQuery{Key: "service.manifest.register", Since: since,
+		Fields: map[string]any{"service_id": "relaysessions", "status": "ok"}}, g1sHostDeadline)
+	r.i.WaitSessionHost(g1sHostDeadline)
+	// A managed Pi ends with its host, so the refused session is gone after the
+	// restart and nothing is dormant to resume. A fresh outside Pi is adopted
+	// instead, and its held turn is aborted through the revived recorder.
+	r.i.WaitModelHost(g1sHostDeadline)
+	f2 := r.fake("interrupt-audit-recovered")
+	f2.idle()
+	sid = r.adopted(f2)
+	ws = paHoldNth(t, r, sid, 2)
+	ws.Send(map[string]any{"type": "stop_generation", "sessionId": sid})
+	g1aNext(t, ws, g1tFrameDeadline, func(v map[string]any) bool {
+		return v["type"] == "session_state" && v["sessionId"] == sid && v["state"] == "idle"
+	})
+	r.i.MustCLI("session", "wait", "--id", sid, "--json")
+	n = 0
+	for _, call := range r.i.FakeAgentCalls("pi") {
+		if call.Event == "pi_abort" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("abort after audit recovery delivered %d RPC abort receipts, want 1", n)
+	}
 }
 
 func paTool(f *paFake, id, parent string) string {
