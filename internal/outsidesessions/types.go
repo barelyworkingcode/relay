@@ -117,7 +117,11 @@ type Machine struct {
 	HostID  *string
 	Probe   func(context.Context) (ProbeResult, error)
 	Reports func(context.Context) ([]Report, error)
-	Read    func(context.Context, Observation) ([]byte, error)
+	// Lifetimes answers the current start time of each pid that is alive, in
+	// the probe's Lifetime format. A pid that is gone or cannot be read is
+	// absent. nil means the machine has no cheap check; the drain probes.
+	Lifetimes func(ctx context.Context, pids []int) (map[int]string, error)
+	Read      func(context.Context, Observation) ([]byte, error)
 	// ReadRange returns the file bytes [start, end) of the observation's
 	// transcript, at most max of them. end < 0 means the file's size. A missing
 	// file answers an empty window.

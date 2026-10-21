@@ -47,7 +47,18 @@ func (i *Inventory) drain(ctx context.Context, m Machine) {
 	reports, err := m.Reports(bounded)
 	if err != nil || len(reports) == 0 {
 		return
-	} // Reports never seed an identity: independently refresh live evidence first.
+	}
+	if m.Lifetimes != nil {
+		unmatched, ok := i.drainConfirmed(ctx, m, reports)
+		if !ok {
+			unmatched = reports
+		}
+		reports = unmatched
+		if len(reports) == 0 {
+			return
+		}
+	}
+	// Reports never seed an identity: independently refresh live evidence first.
 	// Deliberately ctx, not bounded: the read has already deleted the reports,
 	// so a probe that ran out of the read's budget would lose them.
 	if !i.Probe(ctx, m) {
@@ -55,6 +66,84 @@ func (i *Inventory) drain(ctx context.Context, m Machine) {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.applyReportsLocked(m, reports, nil) {
+		i.publishLocked()
+	}
+}
+
+// drainConfirmed applies reports to rows whose pid still has the start time
+// the probe saw, and removes rows whose pid is gone or restarted. It returns
+// the reports that matched no live row; ok is false when Lifetimes failed and
+// nothing was applied.
+func (i *Inventory) drainConfirmed(ctx context.Context, m Machine, reports []Report) (unmatched []Report, ok bool) {
+	type target struct {
+		pid      int
+		lifetime string
+	}
+	targets := map[string]target{}
+	matched := map[int]bool{}
+	i.mu.Lock()
+	for id, e := range i.entries {
+		if e.machine.Key != m.Key {
+			continue
+		}
+		for n, r := range reports {
+			if e.observation.ClaudeID == r.SessionID && e.observation.Session.Directory == r.Cwd {
+				targets[id] = target{e.observation.PID, e.observation.Lifetime}
+				matched[n] = true
+			}
+		}
+	}
+	i.mu.Unlock()
+	for n, r := range reports {
+		if !matched[n] {
+			unmatched = append(unmatched, r)
+		}
+	}
+	if len(targets) == 0 {
+		return unmatched, true
+	}
+	seen := map[int]bool{}
+	pids := []int{}
+	for _, t := range targets {
+		if !seen[t.pid] {
+			seen[t.pid] = true
+			pids = append(pids, t.pid)
+		}
+	}
+	current, err := m.Lifetimes(ctx, pids)
+	if err != nil {
+		return nil, false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	confirmed := map[string]bool{}
+	changed := false
+	for id, t := range targets {
+		e, present := i.entries[id]
+		if !present || e.observation.PID != t.pid || e.observation.Lifetime != t.lifetime {
+			continue
+		}
+		if now, alive := current[t.pid]; alive && now == t.lifetime {
+			confirmed[id] = true
+			continue
+		}
+		delete(i.entries, id)
+		changed = true
+	}
+	if i.applyReportsLocked(m, reports, confirmed) {
+		changed = true
+	}
+	if changed {
+		i.publishLocked()
+	}
+	return unmatched, true
+}
+
+// applyReportsLocked writes state, source, update time and hookAt, and nothing
+// else: a hook report grants no authority. A nil only applies to every row of
+// the machine; otherwise only to the ids in only.
+func (i *Inventory) applyReportsLocked(m Machine, reports []Report, only map[string]bool) bool {
 	changed := false
 	for _, r := range reports {
 		state := reportState(r)
@@ -62,6 +151,9 @@ func (i *Inventory) drain(ctx context.Context, m Machine) {
 			continue
 		}
 		for id, e := range i.entries {
+			if only != nil && !only[id] {
+				continue
+			}
 			if e.machine.Key != m.Key || e.observation.ClaudeID != r.SessionID || e.observation.Session.Directory != r.Cwd || r.At.Before(e.hookAt) || r.At.Before(e.liveAt.Add(-time.Minute)) || r.At.After(i.opts.Clock.Now().Add(time.Second)) {
 				continue
 			}
@@ -73,7 +165,5 @@ func (i *Inventory) drain(ctx context.Context, m Machine) {
 			changed = true
 		}
 	}
-	if changed {
-		i.publishLocked()
-	}
+	return changed
 }

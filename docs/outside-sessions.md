@@ -287,8 +287,13 @@ Native stdin includes `hook_event_name`, `session_id`, `cwd`,
 `transcript_path`, and optionally `notification_type`. Reports are drained
 every two seconds, independently of baseline probes, but only for a machine
 whose last good probe saw the spool and which has a live outside row; an
-unreachable machine is never drained. Each state update
-requires a fresh live process/session/cwd match; forged, stale or mismatched
+unreachable machine is never drained. A report applies only to a live row with
+the same session id and cwd whose process still has the pid and start time the
+probe observed; a gone or restarted pid removes the row and drops the report.
+The console checks those start times directly, without a full probe. A report
+for no live row runs one full probe first, and so does any report on an SSH
+host or after a failed start-time read. A report writes only state, source and
+update time, never adoptability or identity. Forged, stale or mismatched
 reports do not seed identities. Healthy report completion to snapshot delivery
 must fit five seconds. Hookless changes use the next completed 15-second probe.
 
