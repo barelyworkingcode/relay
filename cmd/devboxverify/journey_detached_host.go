@@ -68,15 +68,21 @@ func runDetachedHost(ctx context.Context, e env) result {
 	// signal cancels the journey's context, the sweep and the teardown run
 	// (both ignore the cancellation), and the signal is then delivered again so
 	// the process still ends as the sender meant.
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	// A launcher that ignores SIGINT keeps ignoring it.
+	sigs := make(chan os.Signal, 2)
+	watched := []os.Signal{syscall.SIGTERM}
+	if !signal.Ignored(os.Interrupt) {
+		watched = append(watched, os.Interrupt)
+	}
+	signal.Notify(sigs, watched...)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	caught := make(chan os.Signal, 1)
+	var caught os.Signal // written only before done closes
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		select {
-		case sig := <-sigs:
-			caught <- sig
+		case caught = <-sigs:
 			cancel()
 		case <-ctx.Done():
 		}
@@ -92,21 +98,19 @@ func runDetachedHost(ctx context.Context, e env) result {
 	}
 
 	signal.Stop(sigs)
-	select {
-	case sig := <-sigs: // arrived after the goroutine stopped listening, or a second one
+	cancel()
+	<-done
+	if caught == nil {
 		select {
-		case caught <- sig:
+		case caught = <-sigs:
 		default:
 		}
-	default:
 	}
-	select {
-	case sig := <-caught:
-		res.Detail += "; " + sig.String() + " received during the journey; cleanup ran"
-		if s, ok := sig.(syscall.Signal); ok {
-			_ = syscall.Kill(os.Getpid(), s)
+	if caught != nil {
+		res.Detail += "; " + caught.String() + " received during the journey; cleanup ran"
+		if sig, ok := caught.(syscall.Signal); ok {
+			_ = syscall.Kill(os.Getpid(), sig)
 		}
-	default:
 	}
 	return res
 }
@@ -265,10 +269,10 @@ func (w *detachedSweep) runDir(sid string) string { return filepath.Join(w.agent
 // directories. Deliberate: the runner leads its own process group and is
 // reparented to init, so its run-directory path is the only handle on it. The
 // match is the full directory path with a trailing slash, never a bare id.
-func (w *detachedSweep) holders(ctx context.Context) []int {
+func (w *detachedSweep) holders(ctx context.Context) ([]int, error) {
 	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("ps: %w", err)
 	}
 	var pids []int
 	for _, line := range strings.Split(string(out), "\n") {
@@ -284,7 +288,7 @@ func (w *detachedSweep) holders(ctx context.Context) []int {
 			}
 		}
 	}
-	return pids
+	return pids, nil
 }
 
 func (w *detachedSweep) run(ctx context.Context, e env) {
@@ -292,19 +296,24 @@ func (w *detachedSweep) run(ctx context.Context, e env) {
 	for _, sid := range w.sids {
 		cliStopSession(ctx, e, sid)
 	}
-	if w.pgid > 1 && groupAlive(w.pgid) { // only our own agent's group, read from its runner.json
+	if w.pgid > 1 && groupAlive(w.pgid) {
 		_ = syscall.Kill(-w.pgid, syscall.SIGKILL)
 	}
 	signalAll := func(sig syscall.Signal) {
-		for _, pid := range w.holders(ctx) {
+		pids, _ := w.holders(ctx)
+		for _, pid := range pids {
 			_ = syscall.Kill(pid, sig)
 		}
 	}
 	signalAll(syscall.SIGTERM)
 	// Waits: process exit after a signal has no event; polled, bounded.
-	if !pollUntil(ctx, 5*time.Second, func() bool { return len(w.holders(ctx)) == 0 }) {
+	gone := func() bool {
+		pids, err := w.holders(ctx)
+		return err != nil || len(pids) == 0
+	}
+	if !pollUntil(ctx, 5*time.Second, gone) {
 		signalAll(syscall.SIGKILL)
-		pollUntil(ctx, 2*time.Second, func() bool { return len(w.holders(ctx)) == 0 })
+		pollUntil(ctx, 2*time.Second, gone)
 	}
 	for _, sid := range w.sids {
 		_ = os.RemoveAll(w.runDir(sid))
@@ -312,22 +321,29 @@ func (w *detachedSweep) run(ctx context.Context, e env) {
 }
 
 // finish runs the sweep, then turns res into FAIL when a process still names a
-// swept run directory. An existing FAIL or BLOCKED keeps its state.
+// swept run directory, or when the process list cannot be read to check. A
+// result that was not FAIL keeps its state and detail in the new detail; a FAIL
+// gets the note appended.
 func (w *detachedSweep) finish(ctx context.Context, e env, res result) result {
 	if len(w.sids) == 0 {
 		return res
 	}
 	w.run(ctx, e)
-	left := w.holders(context.WithoutCancel(ctx))
-	if len(left) == 0 {
+	left, err := w.holders(context.WithoutCancel(ctx))
+	var note string
+	switch {
+	case err != nil:
+		note = "cleanup: the leftover check could not run: " + err.Error()
+	case len(left) > 0:
+		note = fmt.Sprintf("cleanup: pids %v still name a started session's run directory", left)
+	default:
 		return res
 	}
-	note := fmt.Sprintf("cleanup: pids %v still name a started session's run directory", left)
-	if res.State == statePass {
-		return result{res.ID, stateFail, note}
+	if res.State == stateFail {
+		res.Detail += "; " + note
+		return res
 	}
-	res.Detail += "; " + note
-	return res
+	return result{res.ID, stateFail, note + "; was " + string(res.State) + ": " + res.Detail}
 }
 
 func driveDetachedHost(ctx context.Context, e env, fx *detachedFixture) (res result) {

@@ -1127,9 +1127,12 @@ relay holds the runner's receipt), runs `relay host disconnect`, waits for `sess
 start time and generation; the turn in flight returns its marker; a later
 message is answered; one generation directory exists; and `relay session stop`
 ends the process group and removes the run directory. On every exit, the journey then
-stops each session it started (including ones the start retry loop abandoned), ends the
-agent group and every process whose command line names a started session's run directory,
-and removes those directories; a process still naming one turns the result into FAIL. A SIGINT or SIGTERM during the journey runs that cleanup before the process ends.
+stops each session it started (including ones the start retry loop abandoned),
+ends the agent group and every process whose command line names a started
+session's run directory, and removes those directories. A process still naming
+one, or a process list that cannot be read, turns any other state into FAIL and
+keeps the earlier state in the detail. A SIGINT or SIGTERM during the journey
+runs that cleanup before the process ends.
 - Waits: CLI exits, `/ws` frames and `session.host_link` events. `session
   send` returns only once relay holds the receipt, so the drop never lands on
   a send in flight (that ends `send_unknown`).
