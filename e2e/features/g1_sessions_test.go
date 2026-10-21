@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -698,8 +699,35 @@ func TestTerminalStop(t *testing.T) {
 	}
 }
 
+// g1sAssertNotOnDefaultTmux fails when the named session still runs on the
+// machine's default tmux socket. That socket is the one checked because a
+// host-tmux session started over the loopback sshd lands there, outside the
+// instance's own directories.
+func g1sAssertNotOnDefaultTmux(t *testing.T, name string) {
+	t.Helper()
+	if name == "" {
+		return
+	}
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatalf("tmux not found: %v", err)
+	}
+	cmd := exec.Command(tmux, "has-session", "-t", "="+name)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "TMUX=") && !strings.HasPrefix(kv, "TMUX_TMPDIR=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	if cmd.Run() == nil {
+		t.Errorf("tmux session %s outlived the test on the default socket", name)
+	}
+}
+
 func TestPersistentSessionList(t *testing.T) {
 	t.Parallel()
+	var found string
+	// Registered before StartSSHHost so, LIFO, it runs after sshd and the instance are gone.
+	t.Cleanup(func() { g1sAssertNotOnDefaultTmux(t, found) })
 	ssh := harness.StartSSHHost(t)
 	i := harness.Start(t, g1sOptions(harness.Options{}))
 	i.WaitSessionHost(g1sHostDeadline)
@@ -710,6 +738,7 @@ func TestPersistentSessionList(t *testing.T) {
 	i.MustCLI("terminal", "start", "--project", hostProject, "--template", "acme-tmux", "--json")
 
 	row, trace := g1sAwaitPersistent(t, i, hostProject)
+	found = row.Name
 	if row.TemplateID != "acme-tmux" || !strings.HasPrefix(row.Name, "relay-") {
 		t.Fatalf("persistent session %+v, want an acme-tmux session named relay-...", row)
 	}
