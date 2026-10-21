@@ -244,6 +244,7 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqRegisterModelHost:     {credential: "launch_identity", handle: handleRegisterModelHost},
 	ReqHello:                 {credential: "launch_secret", handle: handleHello},
 	ReqSessionExited:         {credential: "launch_identity", handle: handleSessionExited},
+	ReqSessionInterrupt:      {credential: "launch_identity", handle: handleSessionInterrupt},
 	// This is deliberate: a new local dispatch entry. The gate is relay's own
 	// (appRouter.SessionRebind), which admits only the bound relaysessions
 	// identity and then checks the claim against the ledger and the kernel.
@@ -415,6 +416,20 @@ func handleRegisterModelHost(ctx context.Context, req *BridgeRequest, router Too
 		return bridgeError(jsonrpc.CodeInvalidParams, err.Error())
 	}
 	if err := router.RegisterModelHost(ctx, r, req.Token); err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespOK}
+}
+
+func handleSessionInterrupt(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	var r SessionInterruptRequest
+	if err := json.Unmarshal(req.Arguments, &r); err != nil {
+		return bridgeError(jsonrpc.CodeParseError, "session_interrupt: invalid arguments")
+	}
+	if err := r.Validate(); err != nil {
+		return bridgeError(jsonrpc.CodeInvalidParams, err.Error())
+	}
+	if err := router.SessionInterrupt(ctx, r, req.Token); err != nil {
 		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespOK}

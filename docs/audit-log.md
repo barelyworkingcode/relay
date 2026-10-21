@@ -919,6 +919,21 @@ The resumed launch writes its ordinary `session_launch` row. With auditing off,
 or when an intent row cannot be written, the door answers 503
 `audit_unavailable` and signals nothing.
 
+Pi adoption replaces Claude-specific args with `agent:"pi"` and
+`conversation_id`; it retains the same `session_adopt` intent/completion and
+actual TERM/KILL signal records. Idle adoption has `interrupted:false` and
+`recovery_sent:false`, with no recovery message. The ordinary project launch
+audit remains in force.
+
+After adoption, each managed Pi interrupt first writes a durable
+`session_interrupt` intent through the built-in host's authenticated bridge
+request. Its service actor names the session host and session; args contain
+`session_id`, `project_id`, `agent:"pi"`, `method:"abort"`; outcome is `pending`.
+An audit write failure prevents the RPC input and leaves the turn running.
+The intent acknowledges persistence only; provider delivery errors are logged
+by the existing abort path. This boundary applies to adopted Pi state with
+`piSessionFile`; it does not change ordinary Pi or Claude interrupt behavior.
+
 ### Session rebind
 
 A surviving local session's relay tools are bound again after a relay restart

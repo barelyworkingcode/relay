@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/sessions/adopt"
+	"os"
 	"strings"
 	"time"
 
@@ -77,7 +79,7 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 	if req.Launcher != nil {
 		return terminal.CreateSpec{}, errors.New("hostapi: a launcher applies only to a claude, codex or pi session")
 	}
-	if req.ResumeConversation != "" {
+	if req.ResumeConversation != "" || req.ResumeTranscript != "" {
 		return terminal.CreateSpec{}, errors.New("hostapi: resume_conversation applies only to a claude session")
 	}
 	host, err := decodeHostSpec(req.Host)
@@ -208,6 +210,7 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		ClaudeEnv:      req.ClaudeEnv,
 
 		ResumeConversation: req.ResumeConversation,
+		ResumeTranscript:   req.ResumeTranscript,
 	}
 	// session.CreateSpec has no validate() of its own to lean on the way
 	// terminal.CreateSpec does (buildTerminalSpec's own comment): an empty
@@ -266,16 +269,40 @@ func sessionLaunchStatus(err error) (int, string) {
 // launch only, and only as a canonical UUID: the value becomes claude's
 // --resume argument and a transcript file name.
 func checkResumeConversation(req LaunchRequest, host *sessionstypes.HostSpec) error {
-	if req.ResumeConversation == "" {
+	if req.ResumeConversation == "" && req.ResumeTranscript == "" {
 		return nil
 	}
-	if req.Kind != session.KindClaude || req.Resume || host != nil {
-		return errors.New("hostapi: resume_conversation applies only to a fresh local claude launch")
+	if (req.Kind != session.KindClaude && req.Kind != session.KindPi) || req.Resume || host != nil {
+		return errors.New("hostapi: conversation resume requires a fresh local agent launch")
 	}
 	if _, err := uuid.Parse(req.ResumeConversation); err != nil || len(req.ResumeConversation) != 36 {
 		return errors.New("hostapi: resume_conversation is not a UUID")
 	}
-	return nil
+	if req.Kind == session.KindClaude {
+		if req.ResumeTranscript != "" {
+			return errors.New("hostapi: resume_transcript requires Pi")
+		}
+		return nil
+	}
+	var sr sessionRequestBody
+	if err := json.Unmarshal(req.SessionRequest, &sr); err != nil {
+		return err
+	}
+	var settings struct {
+		Headless bool `json:"headless"`
+	}
+	if json.Unmarshal(sr.Settings, &settings) != nil || !settings.Headless {
+		return errors.New("hostapi: Pi adoption requires headless")
+	}
+	cwd := sr.Directory
+	if cwd == "" {
+		cwd = req.Directory
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	return adopt.ValidatePiTranscript(home, cwd, req.ResumeConversation, req.ResumeTranscript)
 }
 
 // checkClaudeEnv refuses claude_env on anything but a local claude launch and

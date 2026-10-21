@@ -174,12 +174,76 @@ happened.
 | Transcript | `~/.claude/projects/<encoded cwd>/<id>.jsonl` | `~/.codex/sessions/YYYY/MM/DD/rollout-<created>-<id>.jsonl`, created at the first turn | `<sessions dir>/<encoded cwd>/<start UTC>_<id>.jsonl`, created at the first turn |
 | Idle | registry `status` is idle and `statusUpdatedAt` is fresh; no unmatched `tool_use`; no child started in the last turn's tool window | last turn record is `task_complete` | last message is an assistant message with `stopReason: stop` |
 | Interrupt | SIGINT, then SIGTERM, then SIGKILL | `turn/interrupt` | rpc `abort`; SIGINT is undocumented (item 4) |
-| Take over | stop the process; resume under the runner with `--resume <id>` | connect to the daemon's socket and drive the thread; stop nothing (open: a second client on a thread another client has open, item 5) | stop the process; resume under the runner with `--session <id>` and `--session-dir` |
-| Not adopted | `kind` other than interactive, `entrypoint` other than the command line | a thread with a running turn and no interrupt consent | an ambiguous match |
+| Take over | stop the process; resume under the runner with `--resume <id>` | connect to the daemon's socket and drive the thread; stop nothing (open: a second client on a thread another client has open, item 5) | stop an idle process; resume under the runner with `--session <exact file>` and `--session-dir <parent>` |
+| Not adopted | `kind` other than interactive, `entrypoint` other than the command line | a thread with a running turn and no interrupt consent | a busy session, ambiguous match, custom root or missing transcript grant |
 
 Observed versions: Claude Code 2.1.304, codex 0.162.1, pi 1.0.2. Pi and codex
 create their transcript at the first turn, so a session with no turn has
 nothing to adopt and nothing to lose.
+
+### Pi adoption
+
+Pi adoption is console-only and idle-only. It recognizes a kernel-reported
+executable or node script whose resolved package bin is Pi: current
+`@earendil-works/pi-coding-agent` or historical
+`@mariozechner/pi-coding-agent`. A process name or filename suffix alone is
+insufficient. The installed package metadata selects the bin, including the
+current `dist/bundle/cli.js` entry. `omp` is a separate, unsupported fork.
+Installed Pi can erase its script arguments by setting `process.title`. This
+second recognition path requires kernel argv[0] exactly `pi`, every remaining
+argument empty, and the kernel executable to be the same regular executable
+file as the privately resolved operator Node runtime. A basename or title
+alone is insufficient. Unreadable arguments and a different runtime refuse.
+The runtime pin comes from the ordinary operator-selected Pi launcher,
+including its supported Homebrew wrapper, verified package bin and Node
+shebang. An env-node shebang uses the operator PATH; an absolute shebang uses
+that exact executable even when PATH selects a different Node. Reads are
+bounded to 64 KiB and four wrapper/entry stages. Unknown or compound wrappers
+disable this recognition path; no shell text is evaluated. An empty private
+Node pin also disables title recognition.
+The same transcript, cwd, lifetime, ambiguity and managed-session checks still
+apply. These observations correlate a process; they do not attest vendor code.
+
+
+Discovery reads only `~/.pi/agent/sessions/--<encoded cwd>--/`. The header's
+UUID, cwd and timestamp must derive the exact regular filename and correlate
+with the process's kernel start (one second before through less than thirty
+seconds after). It refuses links from home through the file, duplicate
+process/file matches and custom `--session-dir` arguments. No transcript or
+first conversation message means no row. Managed UUIDs and process ancestry
+exclude Relay sessions independently; failed managed-identity reads list no
+Pi sessions. At most 512 candidate files are inspected; headers are 64 KiB,
+and streaming readiness reads bound each complete JSONL line to 8 MiB.
+
+The readiness parser follows the last persisted leaf's `id`/`parentId` chain.
+Only a last conversation message from the assistant with `stopReason: stop`,
+no unmatched tool call and no working child is idle. Malformed, incomplete or
+unreadable evidence never proves idle. Busy adoption returns `409 busy` even
+with `interrupt:true`; outside Pi's stdin belongs to the terminal, so Relay
+sends neither RPC nor SIGINT to it.
+
+Authorization and a durable `session_adopt` intent precede identity-checked
+TERM, the exit notification, and only if needed the bounded KILL escalation.
+The existing project Pi grants must allow the original transcript; a missing
+grant or explicit denial returns `409 transcript_not_granted` before stopping
+anything. No grant is added. Resume passes the exact file and its parent to
+`--session` and `--session-dir`; it does not copy, fork or truncate the file.
+The host revalidates its default-root path and header. Provider readiness
+confirms the same UUID and filename through RPC `get_state`. Adoption starts
+no turn and sends no recovery prompt. A failed launch leaves the transcript
+intact for manual resume.
+
+The private provider state retains both `piSessionId` and `piSessionFile` for
+later authorized resumes. Delete removes only that validated file. Ordinary
+Pi sessions retain their existing Relay transcript storage and state support.
+After adoption, managed interrupt uses RPC `abort`. Before delivery the
+manager asks the authenticated built-in session host's `SessionInterrupt`
+bridge door to persist an intent. An audit failure or absent handler refuses
+before any state, tool or input change; the WebSocket returns
+`{type:"error",code:"audit_unavailable",sessionId,message}`. An acknowledgement
+certifies the durable intent, not successful delivery; delivery failures use
+the provider's existing error handling. Ordinary Pi and Claude interrupts
+retain their existing behavior.
 
 ### The idle check
 
@@ -301,8 +365,10 @@ answer.
    `{"type":"abort"}` command that aborts the current operation and answers
    once the session is idle, plus `abort_retry` and `abort_bash`. Closing the
    child's stdin asks for an orderly shutdown. Pi's interrupt is therefore the
-   rpc `abort`, and a pi under the runner runs in rpc mode. Whether `--session`
-   appends to the existing file is open: `--session` opens by path, id or
+   rpc `abort`, and a pi under the runner runs in rpc mode. `--session`
+   appends to the existing file (confirmed by installed Pi 1.0.0
+   `SessionManager.open`, which sets the existing file as flushed and appends).
+   The CLI accepts a path, id or partial id: `--session` opens by path, id or
    partial id, `--session-dir` overrides storage and lookup, and only
    `--fork` is documented as making a new session. The layout is documented:
    `~/.pi/agent/sessions/--<path>--/<timestamp>_<id>.jsonl`, the path with its

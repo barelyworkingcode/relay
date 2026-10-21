@@ -10,6 +10,38 @@ built but not yet wired together. Where a piece is missing, it says so
 plainly rather than describing the design as though it were the current
 behavior — see [What is not built yet](#what-is-not-built-yet).
 
+## Adopted Pi conversations
+
+A fresh local headless Pi launch can carry the private `resume_conversation`
+UUID and `resume_transcript` exact filename. Both are required together for
+Pi; other kinds refuse `resume_transcript`. Claude retains its UUID-only
+resume field. The host validates the default Pi root, no links, regular file,
+encoded cwd, header UUID and timestamp-derived filename before launch.
+Provider state stores `{piSessionId,piSessionFile}` and ordinary resume keeps
+that filename. The provider passes `--mode rpc --session <file> --session-dir
+<parent>` and confirms the UUID and file with `get_state` before reporting a
+successful adopted launch. No turn starts on adoption. Delete validates and
+removes only that exact file; legacy Pi state and ordinary storage still work.
+
+Outside Pi discovery resolves its private Node interpreter through the same
+Pi launcher selected by `terminal_templates` id `pi` command (or the normal
+well-known lookup). A verified package bin can name absolute Node or env-node;
+only the observed constant Homebrew exec wrapper is followed. Unknown launch
+chains disable title-erased recognition without granting by process name.
+
+The internal `GET /managed-identities` responds with both
+`claude_session_ids` and `pi_session_ids`, including persisted identities.
+This route is private and absent from the service manifest.
+
+For a Pi with `piSessionFile`, `Manager.StopGeneration` requires its interrupt
+handler to succeed before state changes, tool clearing or RPC `abort`. The
+built-in host calls authenticated bridge `SessionInterrupt` with
+`{session_id}`. Relay checks the existing Pi ledger record and persists a
+`session_interrupt` intent. Audit rejection returns the existing coded
+WebSocket shape `{type:"error",code:"audit_unavailable",sessionId,message}`;
+the turn continues and no abort is delivered. Ordinary Pi and Claude retain
+their interrupt behavior. See [Pi adoption](session-adoption.md#pi-adoption).
+
 ## The binary and its three modes
 
 `cmd/relaysessions` builds one binary, `relay-sessions`, with three modes

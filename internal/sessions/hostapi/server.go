@@ -916,7 +916,7 @@ func (s *Server) handleManagedIdentities(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(ManagedIdentitiesResponse{ClaudeSessionIDs: s.sessions.ClaudeSessionIDs()})
+	_ = json.NewEncoder(w).Encode(ManagedIdentitiesResponse{ClaudeSessionIDs: s.sessions.ClaudeSessionIDs(), PiSessionIDs: s.sessions.PiSessionIDs()})
 }
 
 // maxPermissionBodyBytes bounds a /permission body. A real tool_input is

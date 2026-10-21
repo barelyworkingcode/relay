@@ -478,7 +478,7 @@ relay session in the same folder. See [Adopting a session](outside-sessions.md#a
   code (`ended`, `host_unsupported`, `no_project`, `not_registered`,
   `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line`,
   `ambiguous`), `managed`, `busy`, `model_unknown`, `adopt_in_progress` or
-  `changed`; `403`/`400` the launch refusal's own code (nothing is signalled);
+  `changed` or `transcript_not_granted`; `403`/`400` the launch refusal's own code (nothing is signalled);
   `502` `unavailable` (relay-sessions is down, the registry or the idle check
   could not be read, or the process could not be signalled), `stop_failed`
   (the process outlived SIGKILL's wait) or `launch_failed`; `503`
@@ -486,6 +486,21 @@ relay session in the same folder. See [Adopting a session](outside-sessions.md#a
 - **Event:** `session.adopt`. **Audit rows:** `session_adopt`,
   `session_interrupt`, `session_message` (origin `relay-recovery`), and the
   launch's own `session_launch`.
+
+Pi adoption uses this same door with only `outsideId` as selector. Success
+is `201 {sessionId,agent:"pi",conversationId,interrupted:false,recoverySent:false}`.
+A busy outside Pi refuses `409 busy` even with `interrupt:true`; a transcript
+outside the project's existing Pi grants refuses `409 transcript_not_granted`.
+Both refusals leave the terminal running. No public request can set the
+private `resume_conversation` or `resume_transcript` host fields.
+
+The private bridge `SessionInterrupt` request is `{session_id}`. Only the
+verified built-in session host's sessions capability reaches it. It requires
+a Pi ledger record and persists a `session_interrupt` intent before returning
+OK. The response acknowledges audit persistence, not RPC delivery. Adopted
+Pi `stop_generation` audit refusal returns
+`{type:"error",code:"audit_unavailable",sessionId,message}` with no state
+change or `abort` delivery. This adds no public HTTP route.
 
 ### GET /api/sessions
 

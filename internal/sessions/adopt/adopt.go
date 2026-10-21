@@ -59,7 +59,7 @@ var (
 
 // Candidate is one live process the agent's registry names.
 type Candidate struct {
-	Agent          string // "claude"
+	Agent          string // "claude" or "pi"
 	ConversationID string // the registry sessionId
 	PID            int    // process evidence; never on the wire
 	// ProcStart is the kernel's start time of PID. Its second equals the
@@ -102,8 +102,9 @@ type Signal struct {
 
 // SessionSpec is what a caller needs to resume the conversation under relay.
 type SessionSpec struct {
-	Kind           string // "claude"
+	Kind           string // "claude" or "pi"
 	ConversationID string
+	Transcript     string
 	Directory      string
 	Model          string   // the derived family; "" when unknown
 	Signals        []Signal // what TakeOver sent
@@ -118,8 +119,8 @@ type Adopter interface {
 	// table, and says whether the session is idle. It fails with ErrChanged when
 	// the candidate no longer matches the process or its entry.
 	Check(ctx context.Context, c Candidate) (Readiness, error)
-	// Interrupt sends SIGINT and waits for the process to exit, up to
-	// InterruptWait. It returns what it sent.
+	// Interrupt sends Claude SIGINT and waits up to InterruptWait.
+	// Outside Pi cannot be interrupted through its terminal stdin.
 	Interrupt(ctx context.Context, c Candidate) ([]Signal, error)
 	// TakeOver ends the process if it lives: SIGTERM, then SIGKILL, each after
 	// its bounded wait. It fails with ErrStopFailed when the process outlives

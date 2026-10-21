@@ -55,7 +55,8 @@ const (
 	// of its sessions is gone (plan-broker-and-sessions.md §2 C5). Requires
 	// the caller's launch identity to hold the sessions capability, which
 	// config restricts to the built-in relay-sessions service.
-	ReqSessionExited = "SessionExited"
+	ReqSessionExited    = "SessionExited"
+	ReqSessionInterrupt = "SessionInterrupt"
 
 	// ReqSessionRebind is relay-sessions' claim that a local session's runner
 	// outlived a relay restart and its root should hold a launch identity
@@ -175,6 +176,17 @@ func (r *RegisterModelHostRequest) Validate() error {
 	}
 	if !filepath.IsAbs(r.RouterSocket) {
 		return fmt.Errorf("register_model_host: router_socket must be an absolute path")
+	}
+	return nil
+}
+
+type SessionInterruptRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+func (r SessionInterruptRequest) Validate() error {
+	if r.SessionID == "" {
+		return fmt.Errorf("session_interrupt: session_id is empty")
 	}
 	return nil
 }
@@ -381,6 +393,7 @@ type ToolRouter interface {
 	// Requires a launch identity holding the sessions capability; token is
 	// always empty on this wire (tokenless, like RegisterModelHost).
 	SessionExited(ctx context.Context, req SessionExitedRequest, token string) error
+	SessionInterrupt(ctx context.Context, req SessionInterruptRequest, token string) error
 	// SessionRebind handles relay-sessions' claim that a surviving local
 	// session's root should be bound to a fresh launch identity. Requires a
 	// launch identity holding the sessions capability; token is always empty.

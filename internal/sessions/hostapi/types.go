@@ -97,6 +97,7 @@ type LaunchRequest struct {
 	// launch resumes. The host seeds the session's provider state with it, so
 	// claude starts with --resume.
 	ResumeConversation string `json:"resume_conversation,omitempty"`
+	ResumeTranscript   string `json:"resume_transcript,omitempty"`
 	// Launcher replaces the program a claude, codex or pi session runs. It is
 	// omitted when the agent entry names no command; the host refuses one on a
 	// pty or chat launch.
@@ -201,6 +202,7 @@ type HandbackRequest struct {
 // ManagedIdentitiesResponse is GET /managed-identities' 200 body.
 type ManagedIdentitiesResponse struct {
 	ClaudeSessionIDs []string `json:"claude_session_ids"`
+	PiSessionIDs     []string `json:"pi_session_ids"`
 }
 
 // TerminateRequest is C5's POST /terminate body.

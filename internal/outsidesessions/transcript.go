@@ -141,3 +141,36 @@ func ProbeState(data []byte) (string, time.Time) {
 	}
 	return state, at
 }
+
+func LatestPiTurn(data []byte) Turn {
+	var t Turn
+	found := false
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		var rec struct {
+			Type, Timestamp string
+			Message         struct{ Role, StopReason string }
+		}
+		if json.Unmarshal(line, &rec) != nil || rec.Type != "message" {
+			continue
+		}
+		if rec.Message.Role == "user" {
+			t = Turn{}
+			found = true
+			continue
+		}
+		if !found || rec.Message.Role != "assistant" {
+			continue
+		}
+		for _, e := range piRecordEntries(0, line) {
+			if e.Role == "assistant" {
+				if t.Text != "" {
+					t.Text += "\n"
+				}
+				t.Text = tailCharacters(t.Text+e.Text, 8192)
+				t.At = rec.Timestamp
+			}
+		}
+		t.Complete = rec.Message.StopReason == "stop"
+	}
+	return t
+}

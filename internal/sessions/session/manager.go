@@ -133,7 +133,8 @@ type Manager struct {
 	// same name and purpose: a later unit's SessionExited bridge hook, fired
 	// from handleProviderEvent's "process_exited" case, usually on the
 	// provider's own waitForExit goroutine (see SetExitHandler).
-	onExit func(id string, exitCode int)
+	onInterrupt func(context.Context, string) error
+	onExit      func(id string, exitCode int)
 
 	tools toolBoard
 
@@ -225,6 +226,15 @@ func (m *Manager) eventSink() sessionstypes.EventSink {
 func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 	m.mu.Lock()
 	m.onExit = fn
+	m.mu.Unlock()
+}
+
+var ErrInterruptAuditUnavailable = errors.New("interrupt audit unavailable")
+
+// SetInterruptHandler records permission to deliver an adopted Pi interrupt.
+func (m *Manager) SetInterruptHandler(fn func(context.Context, string) error) {
+	m.mu.Lock()
+	m.onInterrupt = fn
 	m.mu.Unlock()
 }
 
@@ -340,6 +350,7 @@ type CreateSpec struct {
 	// ResumeConversation seeds a new claude session's provider state with an
 	// existing Claude conversation id, so the first start resumes it.
 	ResumeConversation string
+	ResumeTranscript   string
 }
 
 func (m *Manager) providerKindSupported(kind string) bool {
@@ -542,7 +553,11 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 
 	var providerState json.RawMessage
 	if spec.ResumeConversation != "" {
-		providerState, _ = json.Marshal(map[string]string{"claudeSessionId": spec.ResumeConversation})
+		if spec.Kind == KindPi {
+			providerState, _ = json.Marshal(map[string]string{"piSessionId": spec.ResumeConversation, "piSessionFile": spec.ResumeTranscript})
+		} else {
+			providerState, _ = json.Marshal(map[string]string{"claudeSessionId": spec.ResumeConversation})
+		}
 	}
 
 	return &sessionstypes.Session{
@@ -1464,6 +1479,33 @@ func (m *Manager) StopGeneration(id string) error {
 	if !ok {
 		return ErrSessionNotFound
 	}
+	sess.Lock()
+	adopted := sess.ProviderType == KindPi
+	raw := append(json.RawMessage(nil), sess.ProviderState...)
+	sess.Unlock()
+	if adopted {
+		if p := sess.Provider(); p != nil {
+			raw = p.GetState()
+		}
+		var state struct {
+			File string `json:"piSessionFile"`
+		}
+		if json.Unmarshal(raw, &state) != nil {
+			return errors.New("interrupt: invalid Pi state")
+		}
+		if state.File != "" {
+			m.mu.Lock()
+			fn := m.onInterrupt
+			m.mu.Unlock()
+			if fn == nil {
+				return ErrInterruptAuditUnavailable
+			}
+			if err := fn(context.Background(), id); err != nil {
+				slog.Warn("session interrupt: audit refused", "session", id, "error", err)
+				return ErrInterruptAuditUnavailable
+			}
+		}
+	}
 	m.signal(sess, attention.TurnStopped)
 	m.tools.clear(id)
 	if p := sess.Provider(); p != nil {
@@ -1797,6 +1839,39 @@ func (m *Manager) ClaudeSessionIDs() []string {
 		if id := claudeConversationID(sess); id != "" && !seen[id] {
 			seen[id] = true
 			ids = append(ids, id)
+		}
+	}
+	for _, sess := range m.liveSessions() {
+		add(sess)
+	}
+	if persisted, err := m.store.LoadAll(); err == nil {
+		for _, sess := range persisted {
+			add(sess)
+		}
+	}
+	return ids
+}
+
+func (m *Manager) PiSessionIDs() []string {
+	seen := map[string]bool{}
+	ids := []string{}
+	add := func(sess *sessionstypes.Session) {
+		sess.Lock()
+		kind := sess.ProviderType
+		raw := append(json.RawMessage(nil), sess.ProviderState...)
+		sess.Unlock()
+		if kind != KindPi {
+			return
+		}
+		if p := sess.Provider(); p != nil {
+			raw = p.GetState()
+		}
+		var state struct {
+			ID string `json:"piSessionId"`
+		}
+		if json.Unmarshal(raw, &state) == nil && state.ID != "" && !seen[state.ID] {
+			seen[state.ID] = true
+			ids = append(ids, state.ID)
 		}
 	}
 	for _, sess := range m.liveSessions() {

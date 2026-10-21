@@ -158,6 +158,22 @@ outside it is not a relay bug, however real.
    recovery message after an interrupt quotes at most 300 characters of the
    session's own last prompt and 500 of the open tool call's input, under the
    `relay-recovery` origin. The chief-of-staff scope cannot reach the door.
+   The same door adopts an idle console Pi whose verified package bin,
+   kernel lifetime and actual cwd match one default-root transcript header.
+   After Pi erases its arguments, recognition requires the exact operator
+   Node executable file and kernel argv `pi` followed only by empty arguments.
+   Names, package metadata and transcripts are observations, not vendor-code
+   attestation. Same-account forgery remains within the documented boundary;
+   it cannot add project reach or bypass authorization, audit or containment.
+   Pi uses `agent`/`conversationId`, never a Claude-specific identity. Busy,
+   ambiguous, malformed and managed evidence refuses; no first message means
+   no row. The transcript's existing project grants must permit writing; no
+   grant is added. Durable adoption intent precedes TERM/KILL and the exact
+   file resumes under the ordinary project sandbox/model/permission policy.
+   After adoption, a durable `session_interrupt` intent precedes RPC `abort`;
+   audit rejection changes neither turn state nor input. Pi outside rows are
+   display data with the same scoped latest-turn and execute transcript reads
+   as Claude. They add no ended scan and no Chief of Staff adopt authority.
 4. **A peer on the network or in the browser** (a machine that can reach a
    relay listener, or a web page open on this Mac reaching relay's localhost
    ports). It gets nothing without a credential: no tool call, no config

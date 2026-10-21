@@ -9,6 +9,8 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
+	"github.com/barelyworkingcode/relay/internal/sessions/adopt"
+	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 	"io"
 	"log/slog"
@@ -174,6 +176,44 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			}
 		}
 		observed := native.Observations(root, managed)
+		if h == nil && deps.ready() {
+			managedPi, e := deps.host().ManagedPiIdentities(ctx)
+			if e != nil {
+				return outsidesessions.ProbeResult{}, e
+			}
+			home, e := os.UserHomeDir()
+			if e != nil {
+				return outsidesessions.ProbeResult{}, e
+			}
+			node, _ := provider.ResolvePiNodeBinary(config.LocalAgentCommandsFor(config.FreshSettings(store)).Pi)
+			adapter := adopt.NewPi(adopt.PiConfig{Home: home, NodeBinary: node})
+			candidates, e := adapter.Discover(ctx)
+			if e != nil {
+				return outsidesessions.ProbeResult{}, e
+			}
+			for _, c := range candidates {
+				if managedPi[c.ConversationID] || outsideManagedAncestor(ctx, c.PID, root) {
+					continue
+				}
+				path, e := adapter.TranscriptPath(c)
+				if e != nil {
+					continue
+				}
+				ready, e := adapter.Check(ctx, c)
+				state := "running"
+				if e == nil && ready.Idle {
+					state = "idle"
+				}
+				reason := c.Reason
+				adoptable := c.Adoptable
+				if !ready.Idle && reason == "" {
+					reason = "busy"
+					adoptable = false
+				}
+				observed = append(observed, outsidesessions.Observation{Agent: "pi", ConversationID: c.ConversationID, PID: c.PID, Lifetime: outsideLifetime(c.ProcStart.Unix(), int32(c.ProcStart.Nanosecond()/1000)), Transcript: path, StatusAt: ready.Tail.LastRecord, Session: outsidesessions.Session{Agent: "pi", ConversationID: c.ConversationID, Name: "Pi — " + filepath.Base(c.Cwd), Directory: c.Cwd, State: state, Since: c.ProcStart.UTC().Format(time.RFC3339Nano), ViewReason: "not_in_tmux", Adoptable: adoptable, AdoptReason: reason}})
+			}
+		}
+
 		out := []outsidesessions.Observation{}
 		settings := config.FreshSettings(store)
 		resolved := resolveOutsideProjectPaths(ctx, h, settings.Projects)
@@ -468,4 +508,36 @@ func parseOutsideRange(out []byte, end, max int64) ([]byte, int64, error) {
 		return nil, 0, outsidesessions.ErrUnavailable
 	}
 	return body, start, nil
+}
+
+func outsideManagedAncestor(ctx context.Context, pid, root int) bool {
+	if root <= 0 {
+		return true
+	}
+	source := membership.NewSource()
+	for depth := 0; pid > 1 && depth < 64; depth++ {
+		if root > 0 && pid == root {
+			return true
+		}
+		info, ok := source.Info(pid)
+		if !ok {
+			// The kernel ancestry table includes privileged terminal ancestors that
+			// proc_pidinfo refuses to this account. Do not mistake that refusal for
+			// membership in the session host; ps still reads their parent IDs.
+			raw, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "ppid=").Output()
+			parent, e := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err != nil || e != nil || parent < 0 {
+				return true
+			}
+			info.PPID = parent
+		}
+		if info.PPID <= 1 {
+			return false
+		}
+		if info.PPID == pid {
+			return true
+		}
+		pid = info.PPID
+	}
+	return pid > 1
 }
