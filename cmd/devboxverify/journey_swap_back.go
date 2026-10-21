@@ -91,6 +91,7 @@ func seedSwapCredential(e env, fx *detachedFixture, tmuxPath string) (token, cre
 		}
 		for _, h := range hosts {
 			if h["id"] == fx.hostID {
+				h["tmux_path"] = tmuxPath
 				h["terminal_templates"] = []map[string]string{
 					{"id": "shell", "name": "Shell"},
 					{"id": "claude-code", "name": "Claude Code", "command": fx.launcher},
