@@ -8,3 +8,7 @@ import "errors"
 func execPath(pid int) (string, error) {
 	return "", errors.New("adopt: exec path is read on macOS only")
 }
+
+func execArgs(pid int) ([]string, error) {
+	return nil, errors.New("adopt: kernel arguments are read on macOS only")
+}

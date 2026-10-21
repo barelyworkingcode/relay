@@ -1,6 +1,6 @@
-# Outside Claude sessions
+# Outside sessions
 
-Relay observes Claude sessions started outside Relay on the console and in
+Relay observes Claude and console Pi sessions started outside Relay on the console and in
 registered SSH host project folders. These are display data, separate from
 managed sessions. An `outside:` identity never grants input, resize, kill,
 start, permission-answer or configuration authority.
@@ -121,6 +121,31 @@ A paused tool request estimates asking; hooks identify permission prompts exactl
 Transcript and report text is untrusted display data and cannot confer action
 or read authority. Transcript paths are derived from home/cwd/session identity;
 a reported `transcript_path` never chooses a file to read.
+
+## Console Pi rows
+
+Pi rows add `agent:"pi"` and `conversationId` (the header UUID); they omit
+`claudeSessionId`. Their private identity hashes machine, `pi`, conversation
+UUID, PID and process lifetime. Claude identities remain unchanged. They use
+the same list, detail and normalized transcript-page shapes. Pi `message`
+records map user and assistant text, `toolCall` arguments and `toolResult`
+content to the existing entries. Latest-turn reads reset at user messages.
+No ended Pi scan is performed.
+
+Discovery correlates the default Pi transcript's encoded cwd and timestamp
+with a verified Pi package bin, actual process cwd and kernel start. A session
+without its first message is absent. Managed Pi UUIDs come from the private
+`GET /managed-identities` `pi_session_ids`, beside `claude_session_ids`;
+ancestry independently excludes the session host's children. No raw process
+arguments or paths supplied by a caller choose a transcript. See
+[Pi adoption](session-adoption.md#pi-adoption) for validation and read bounds.
+
+Only an idle Pi row offers Adopt. Busy rows have `adoptReason:"busy"` and
+cannot be adopted even with `interrupt:true`. An idle adoption uses only
+`outsideId`; it retains the exact transcript under the existing project Pi
+grants. Missing grants answer `409 transcript_not_granted`. Success returns
+`{sessionId,agent:"pi",conversationId,interrupted:false,recoverySent:false}`.
+The same conversation continues headless, with no automatic model turn.
 
 ## Ended sessions
 

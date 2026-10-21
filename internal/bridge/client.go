@@ -325,3 +325,15 @@ func (c *Client) sendStreaming(req BridgeRequest, onProgress func(ProgressUpdate
 	}
 	return nil, fmt.Errorf("bridge closed connection")
 }
+
+func (c *Client) SessionInterrupt(req SessionInterruptRequest) error {
+	args, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	resp, err := c.send(BridgeRequest{Type: ReqSessionInterrupt, Arguments: args, Token: c.token})
+	if err != nil {
+		return fmt.Errorf("session interrupt: %w", err)
+	}
+	return checkError(resp)
+}

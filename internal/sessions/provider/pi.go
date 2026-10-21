@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/sessions/adopt"
 	"github.com/google/uuid"
 
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
@@ -89,6 +93,7 @@ type PiProvider struct {
 	det atomic.Pointer[runFollower]
 
 	piSessionID   string
+	piSessionFile string
 	modelID       string
 	thinkingLevel string
 	directory     string
@@ -186,6 +191,9 @@ func (p *PiProvider) idleWatcher(stopIdle <-chan struct{}) {
 }
 
 func (p *PiProvider) sessionDir() string {
+	if p.piSessionFile != "" {
+		return filepath.Dir(p.piSessionFile)
+	}
 	return filepath.Join(p.cfg.DataDir, "pi-sessions")
 }
 
@@ -224,7 +232,11 @@ func (p *PiProvider) buildPiArgs(sessionDir, skillDir, sysPromptPath string) []s
 		args = append(args, "--thinking", p.thinkingLevel)
 	}
 	if p.piSessionID != "" {
-		args = append(args, "--session", p.piSessionID)
+		file := p.piSessionID
+		if p.piSessionFile != "" {
+			file = p.piSessionFile
+		}
+		args = append(args, "--session", file)
 	}
 
 	args = append(args, "--session-dir", sessionDir)
@@ -273,6 +285,15 @@ func (p *PiProvider) Start() (err error) {
 	base := p.cfg.RunnerBase
 	if base == "" {
 		return errors.New("pi: no runner directory is configured for local sessions")
+	}
+	if p.piSessionFile != "" {
+		home, e := os.UserHomeDir()
+		if e != nil {
+			return e
+		}
+		if e := adopt.ValidatePiTranscript(home, p.directory, p.piSessionID, p.piSessionFile); e != nil {
+			return fmt.Errorf("pi: invalid adopted transcript: %w", e)
+		}
 	}
 	sessionDir := p.sessionDir()
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
@@ -349,7 +370,18 @@ func (p *PiProvider) Start() (err error) {
 
 	slog.Info("pi process started", "session", p.session.ID, "model", p.modelID, "runner", st.PID, "generation", run.Generation)
 
-	go p.fetchInitialState()
+	if p.piSessionFile != "" {
+		if err := p.fetchInitialState(); err != nil {
+			p.Kill()
+			return err
+		}
+	} else {
+		go func() {
+			if err := p.fetchInitialState(); err != nil {
+				slog.Warn("pi get_state failed", "session", p.session.ID, "error", err)
+			}
+		}()
+	}
 
 	return nil
 }
@@ -424,23 +456,28 @@ func (p *PiProvider) closeModelProxyAndOverlay() {
 	}
 }
 
-func (p *PiProvider) fetchInitialState() {
+func (p *PiProvider) fetchInitialState() error {
 	resp, err := p.sendRPC(map[string]interface{}{"type": "get_state"})
 	if err != nil {
-		slog.Warn("pi get_state failed", "session", p.session.ID, "error", err)
-		return
+		return fmt.Errorf("pi get_state: %w", err)
 	}
 	var r struct {
 		Success bool `json:"success"`
 		Data    struct {
-			SessionID string `json:"sessionId"`
+			SessionID   string `json:"sessionId"`
+			SessionFile string `json:"sessionFile"`
 		} `json:"data"`
 	}
-	if json.Unmarshal(resp, &r) == nil && r.Success && r.Data.SessionID != "" {
-		p.mu.Lock()
-		p.piSessionID = r.Data.SessionID
-		p.mu.Unlock()
+	if err := json.Unmarshal(resp, &r); err != nil || !r.Success || r.Data.SessionID == "" {
+		return errors.New("pi: invalid initial state")
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.piSessionFile != "" && (r.Data.SessionID != p.piSessionID || r.Data.SessionFile != p.piSessionFile) {
+		return errors.New("pi: resumed conversation differs from the adopted transcript")
+	}
+	p.piSessionID = r.Data.SessionID
+	return nil
 }
 
 // runExited delivers process_exited once the runner is gone or Stop ran. Its
@@ -1182,11 +1219,25 @@ func (p *PiProvider) DeleteSession() error {
 	}
 	p.mu.Lock()
 	sid := p.piSessionID
+	file := p.piSessionFile
 	p.mu.Unlock()
 	if sid == "" {
 		return nil
 	}
 
+	if file != "" {
+		home, e := os.UserHomeDir()
+		if e != nil {
+			return e
+		}
+		if e := adopt.ValidatePiTranscript(home, p.directory, sid, file); e != nil {
+			if os.IsNotExist(e) {
+				return nil
+			}
+			return e
+		}
+		return os.Remove(file)
+	}
 	patterns := []string{
 		filepath.Join(p.sessionDir(), "*_"+sid+".jsonl"),
 		filepath.Join(p.sessionDir(), "*", "*_"+sid+".jsonl"),
@@ -1215,8 +1266,9 @@ func (p *PiProvider) DeleteSession() error {
 func (p *PiProvider) GetState() json.RawMessage {
 	p.mu.Lock()
 	sid := p.piSessionID
+	file := p.piSessionFile
 	p.mu.Unlock()
-	data, _ := json.Marshal(map[string]interface{}{"piSessionId": sid})
+	data, _ := json.Marshal(map[string]interface{}{"piSessionId": sid, "piSessionFile": file})
 	return data
 }
 
@@ -1225,11 +1277,124 @@ func (p *PiProvider) RestoreState(state json.RawMessage) {
 		return
 	}
 	var s struct {
-		PiSessionID string `json:"piSessionId"`
+		PiSessionID   string `json:"piSessionId"`
+		PiSessionFile string `json:"piSessionFile"`
 	}
 	if err := json.Unmarshal(state, &s); err == nil {
 		p.mu.Lock()
 		p.piSessionID = s.PiSessionID
+		p.piSessionFile = s.PiSessionFile
 		p.mu.Unlock()
 	}
+}
+
+// ResolvePiNodeBinary pins the interpreter of the operator-selected Pi launch
+// chain. Candidate argv and candidate package metadata never choose this pin.
+func ResolvePiNodeBinary(configured string) (string, error) {
+	path := resolvePiPath(configured)
+	if !filepath.IsAbs(path) {
+		return "", errors.New("pi: launcher is not absolute")
+	}
+	read := func(path string) ([]byte, error) {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, errors.New("pi: launcher metadata is not regular")
+		}
+		data, err := io.ReadAll(io.LimitReader(f, 64<<10+1))
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > 64<<10 {
+			return nil, errors.New("pi: launcher metadata exceeds 64 KiB")
+		}
+		return data, nil
+	}
+	packageBin := func(entry string) bool {
+		dir := filepath.Dir(entry)
+		for depth := 0; depth < 5; depth++ {
+			data, err := read(filepath.Join(dir, "package.json"))
+			if err == nil {
+				var pkg struct {
+					Name string            `json:"name"`
+					Bin  map[string]string `json:"bin"`
+				}
+				if json.Unmarshal(data, &pkg) == nil && (pkg.Name == "@earendil-works/pi-coding-agent" || pkg.Name == "@mariozechner/pi-coding-agent") {
+					bin := pkg.Bin["pi"]
+					if bin == "" || filepath.IsAbs(bin) {
+						return false
+					}
+					resolved, e := filepath.EvalSymlinks(filepath.Join(dir, bin))
+					return e == nil && resolved == entry
+				}
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+		return false
+	}
+	wrapper := regexp.MustCompile(`(?s)^#![ \t]*/bin/(?:bash|sh)[ \t]*\r?\n[ \t\r\n]*PI_SKIP_VERSION_CHECK="1"[ \t]+exec[ \t]+"(/[^"$\x60\\\r\n]+)"[ \t]+"\$@"[ \t\r\n]*$`)
+	seen := map[string]bool{}
+	for stage := 0; stage < 4; stage++ {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", err
+		}
+		if seen[resolved] {
+			return "", errors.New("pi: launcher loop")
+		}
+		seen[resolved] = true
+		data, err := read(resolved)
+		if err != nil {
+			return "", err
+		}
+		if !packageBin(resolved) {
+			match := wrapper.FindSubmatch(data)
+			if match == nil {
+				return "", errors.New("pi: unsupported launcher")
+			}
+			path = string(match[1])
+			continue
+		}
+		line := strings.SplitN(string(data), "\n", 2)[0]
+		line = strings.TrimSuffix(line, "\r")
+		if !strings.HasPrefix(line, "#!") {
+			return "", errors.New("pi: package bin has no interpreter")
+		}
+		interpreter := strings.Fields(strings.TrimPrefix(line, "#!"))
+		node := ""
+		if len(interpreter) == 2 && interpreter[0] == "/usr/bin/env" && interpreter[1] == "node" {
+			node, err = exec.LookPath("node")
+			if err != nil {
+				return "", err
+			}
+		} else if len(interpreter) == 1 && filepath.IsAbs(interpreter[0]) && filepath.Base(interpreter[0]) == "node" {
+			node = interpreter[0]
+		} else {
+			return "", errors.New("pi: unsupported Node interpreter")
+		}
+		if !filepath.IsAbs(node) {
+			return "", errors.New("pi: Node interpreter is not absolute")
+		}
+		node, err = filepath.EvalSymlinks(node)
+		if err != nil {
+			return "", err
+		}
+		info, err := os.Stat(node)
+		if err != nil {
+			return "", err
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			return "", errors.New("pi: Node interpreter is not executable")
+		}
+		return node, nil
+	}
+	return "", errors.New("pi: launcher chain exceeds four stages")
 }

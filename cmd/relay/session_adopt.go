@@ -21,6 +21,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
 	"github.com/barelyworkingcode/relay/internal/sessions/adopt"
+	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
@@ -55,14 +56,16 @@ var outsideIDPattern = regexp.MustCompile(`^outside:[0-9a-f]{32}$`)
 // adoptBody is the whole of what the door reads. Exactly one selector is set.
 type adoptBody struct {
 	OutsideID       string `json:"outsideId"`
-	ClaudeSessionID string `json:"claudeSessionId"`
+	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
 	Interrupt       bool   `json:"interrupt"`
 	Model           string `json:"model"`
 }
 
 type adoptResponse struct {
 	SessionID       string `json:"sessionId"`
-	ClaudeSessionID string `json:"claudeSessionId"`
+	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
+	Agent           string `json:"agent,omitempty"`
+	ConversationID  string `json:"conversationId,omitempty"`
 	Interrupted     bool   `json:"interrupted"`
 	RecoverySent    bool   `json:"recoverySent"`
 }
@@ -78,10 +81,11 @@ type AdoptRequest struct {
 }
 
 type AdoptResult struct {
-	SessionID       string
-	ClaudeSessionID string
-	Interrupted     bool
-	RecoverySent    bool
+	Agent, ConversationID string
+	SessionID             string
+	ClaudeSessionID       string
+	Interrupted           bool
+	RecoverySent          bool
 }
 
 // AdoptRefusal is an adopt the core did not carry out. Status is the HTTP
@@ -146,7 +150,7 @@ func (a *adoptOps) handleAdopt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, adoptResponse{
-		SessionID: res.SessionID, ClaudeSessionID: res.ClaudeSessionID,
+		SessionID: res.SessionID, ClaudeSessionID: res.ClaudeSessionID, Agent: res.Agent, ConversationID: res.ConversationID,
 		Interrupted: res.Interrupted, RecoverySent: res.RecoverySent,
 	})
 }
@@ -232,11 +236,17 @@ func (a *adoptOps) brokerAlias(ctx context.Context, outsideID, modelID string) s
 // them.
 type adoptState struct {
 	outsideID, claudeID, projectID, sessionID string
+	agent, conversationID                     string
 	interrupted                               bool
 }
 
 func (s *adoptState) endEvent(ev *logging.Event, refusal *AdoptRefusal) {
-	ev.Set("outside_id", s.outsideID).Set("claude_session_id", s.claudeID).
+	if s.agent == "pi" {
+		ev.Set("agent", "pi").Set("conversation_id", s.conversationID)
+	} else {
+		ev.Set("claude_session_id", s.claudeID)
+	}
+	ev.Set("outside_id", s.outsideID).
 		Set("project_id", s.projectID).Set("session_id", s.sessionID).Set("interrupted", s.interrupted)
 	if refusal == nil {
 		ev.End(logging.OutcomeOK, "", nil)
@@ -275,10 +285,14 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	}
 	row := obs.Session
 	st.outsideID, st.claudeID = row.ID, obs.ClaudeID
-	if _, taken := a.inflight.LoadOrStore(obs.ClaudeID, struct{}{}); taken {
+	agent, conversationID := observationAgent(obs), observationConversation(obs)
+	st.agent, st.conversationID = agent, conversationID
+	adapter := a.adapter(agent)
+	lockKey := agent + ":" + conversationID
+	if _, taken := a.inflight.LoadOrStore(lockKey, struct{}{}); taken {
 		return nil, refuse(http.StatusConflict, adoptInProgress, "an adopt of this conversation is already running")
 	}
-	defer a.inflight.Delete(obs.ClaudeID)
+	defer a.inflight.Delete(lockKey)
 
 	cand, refusal := a.freshCandidate(ctx, obs)
 	if refusal != nil {
@@ -294,15 +308,27 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	}
 	st.projectID = proj.ID
 
+	if agent == "pi" {
+		_, process, e := d.host().resolve()
+		if e != nil {
+			return nil, refuse(http.StatusBadGateway, adoptUnavailable, "the session host is not available")
+		}
+		if outsideManagedAncestor(ctx, cand.PID, int(process.PID)) {
+			return nil, refuse(http.StatusConflict, adoptManaged, "relay already holds this process")
+		}
+	}
 	managed, err := d.host().ManagedClaudeIdentities(ctx)
+	if agent == "pi" {
+		managed, err = d.host().ManagedPiIdentities(ctx)
+	}
 	if err != nil {
 		return nil, refuse(http.StatusBadGateway, adoptUnavailable, "the session host is not available")
 	}
-	if managed[obs.ClaudeID] {
+	if managed[conversationID] {
 		return nil, refuse(http.StatusConflict, adoptManaged, "relay already holds this conversation")
 	}
 
-	ready, err := a.claude.Check(ctx, cand)
+	ready, err := adapter.Check(ctx, cand)
 	switch {
 	case errors.Is(err, adopt.ErrChanged):
 		return nil, refuse(http.StatusConflict, adoptChanged, "the process or its registry entry changed")
@@ -311,9 +337,14 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		return nil, refuse(http.StatusBadGateway, adoptUnavailable, "the session could not be inspected")
 	}
 	busy := !ready.Idle
-	if busy && !req.Interrupt {
+	if busy && (!req.Interrupt || agent == "pi") {
 		return nil, refuse(http.StatusConflict, adoptBusy,
-			fmt.Sprintf("the session is not idle (%s); ask to interrupt to take it over anyway", ready.Veto))
+			func() string {
+				if agent == "pi" {
+					return "the Pi session must finish its turn before adoption"
+				}
+				return fmt.Sprintf("the session is not idle (%s); ask to interrupt to take it over anyway", ready.Veto)
+			}())
 	}
 
 	model := req.Model
@@ -328,15 +359,15 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	}
 
 	result, lr := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, LaunchRequest{
-		Caller: req.Caller, ProjectID: proj.ID, Kind: KindClaude, Directory: row.Directory,
-		Name: row.Name, Model: model,
+		Caller: req.Caller, ProjectID: proj.ID, Kind: agent, Directory: row.Directory,
+		Name: row.Name, Model: model, offer: d.offerFor(ctx),
 		ClientSettings: json.RawMessage(`{"headless":true,"agent":true}`),
 	})
 	if lr != nil {
 		d.auditor.Record(lr.Audit)
 		return nil, refuse(lr.Status, lr.Code, lr.Message)
 	}
-	result.Spec.ResumeConversation = obs.ClaudeID
+	result.Spec.ResumeConversation = conversationID
 	launched := false
 	defer func() {
 		if !launched {
@@ -344,9 +375,24 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		}
 	}()
 
+	if agent == "pi" {
+		path, e := adapter.TranscriptPath(cand)
+		if e != nil {
+			return nil, refuse(http.StatusConflict, adoptChanged, "the transcript changed")
+		}
+		if !piTranscriptGranted(config.FreshSettings(d.store), proj, row.Directory, path) {
+			return nil, refuse(http.StatusConflict, "transcript_not_granted", "the existing Pi launch grants do not permit this transcript")
+		}
+		result.Spec.ResumeTranscript = path
+	}
 	actor := callerAuditActor(req.Caller)
 	base := map[string]any{
 		"outside_id": row.ID, "claude_session_id": obs.ClaudeID, "project_id": proj.ID,
+	}
+	if agent == "pi" {
+		delete(base, "claude_session_id")
+		base["agent"] = "pi"
+		base["conversation_id"] = conversationID
 	}
 	adoptArgs := func(extra map[string]any) json.RawMessage {
 		args := map[string]any{}
@@ -404,7 +450,7 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 			return fail(http.StatusServiceUnavailable, adoptAuditOff, "the audit log could not record the interrupt", nil)
 		}
 		interruptStart := time.Now()
-		sent, err := a.claude.Interrupt(hold, cand)
+		sent, err := adapter.Interrupt(hold, cand)
 		st.interrupted = hasSignal(sent, "INT")
 		completion := interruptIntent
 		completion.Phase = audit.AuditPhaseCompletion
@@ -413,7 +459,7 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		if err != nil {
 			completion.Outcome, completion.Error = audit.AuditOutcomeError, adoptCodeFor(err)
 		}
-		completion.Args = mustJSON(withKeys(base, map[string]any{"signals": signalRows(sent), "exited": !a.claude.Alive(cand)}))
+		completion.Args = mustJSON(withKeys(base, map[string]any{"signals": signalRows(sent), "exited": !adapter.Alive(cand)}))
 		d.auditor.Record(completion)
 		if err != nil {
 			status, code, message := adoptStopRefusal(err)
@@ -421,7 +467,7 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		}
 	}
 
-	spec, err := a.claude.TakeOver(hold, cand)
+	spec, err := adapter.TakeOver(hold, cand)
 	takeSignals = spec.Signals
 	if err != nil {
 		status, code, message := adoptStopRefusal(err)
@@ -452,6 +498,17 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	}
 	complete(audit.AuditOutcomeOK, "", map[string]any{"session_id": result.SessionID, "recovery_sent": recoverySent})
 	return &AdoptResult{
+		Agent: func() string {
+			if agent == "pi" {
+				return agent
+			}
+			return ""
+		}(), ConversationID: func() string {
+			if agent == "pi" {
+				return conversationID
+			}
+			return ""
+		}(),
 		SessionID: result.SessionID, ClaudeSessionID: obs.ClaudeID,
 		Interrupted: st.interrupted, RecoverySent: recoverySent,
 	}, nil
@@ -518,13 +575,13 @@ func adoptableRow(obs outsidesessions.Observation, machineKey string) *AdoptRefu
 // process by pid, conversation id and kernel start time. The inventory's row
 // is up to one probe old; the process it names may not be the same one.
 func (a *adoptOps) freshCandidate(ctx context.Context, obs outsidesessions.Observation) (adopt.Candidate, *AdoptRefusal) {
-	cands, err := a.claude.Discover(ctx)
+	cands, err := a.adapter(observationAgent(obs)).Discover(ctx)
 	if err != nil {
 		slog.WarnContext(ctx, "session adopt: registry read failed", "outside_id", obs.Session.ID, "error", err)
 		return adopt.Candidate{}, &AdoptRefusal{Status: http.StatusBadGateway, Code: adoptUnavailable, Message: "the agent registry could not be read"}
 	}
 	for _, c := range cands {
-		if c.PID != obs.PID || c.ConversationID != obs.ClaudeID {
+		if c.PID != obs.PID || c.ConversationID != observationConversation(obs) {
 			continue
 		}
 		if c.Cwd != obs.Session.Directory || fmt.Sprintf("%d.%06d", c.ProcStart.Unix(), c.ProcStart.Nanosecond()/1000) != obs.Lifetime {
@@ -585,4 +642,29 @@ func withKeys(base, extra map[string]any) map[string]any {
 func mustJSON(v any) json.RawMessage {
 	raw, _ := json.Marshal(v)
 	return raw
+}
+
+func observationAgent(o outsidesessions.Observation) string {
+	if o.Agent == "pi" {
+		return "pi"
+	}
+	return "claude"
+}
+func observationConversation(o outsidesessions.Observation) string {
+	if o.Agent == "pi" {
+		return o.ConversationID
+	}
+	return o.ClaudeID
+}
+func (a *adoptOps) adapter(agent string) adopt.Adopter {
+	if agent == "pi" {
+		// Built per request: the configured Pi command can change while relay runs.
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = ""
+		}
+		node, _ := provider.ResolvePiNodeBinary(config.LocalAgentCommandsFor(config.FreshSettings(a.deps.store)).Pi)
+		return adopt.NewPi(adopt.PiConfig{Home: home, Clock: a.clock, NodeBinary: node})
+	}
+	return a.claude
 }

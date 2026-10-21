@@ -50,7 +50,11 @@ func hostIDValue(id *string) string {
 	return *id
 }
 func identity(m Machine, o Observation) string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%s", m.Key, o.ClaudeID, o.PID, o.Lifetime)))
+	key := fmt.Sprintf("%s\x00%s\x00%d\x00%s", m.Key, o.ClaudeID, o.PID, o.Lifetime)
+	if o.Agent == "pi" {
+		key = fmt.Sprintf("%s\x00pi\x00%s\x00%d\x00%s", m.Key, o.ConversationID, o.PID, o.Lifetime)
+	}
+	h := sha256.Sum256([]byte(key))
 	return "outside:" + hex.EncodeToString(h[:16])
 }
 
@@ -462,6 +466,9 @@ func (i *Inventory) Detail(ctx context.Context, id string) (Detail, error) {
 		return Detail{}, ErrUnavailable
 	}
 	turn := LatestTurn(data)
+	if live.Agent == "pi" {
+		turn = LatestPiTurn(data)
+	}
 	s := live.Session
 	s.ID = id
 	s.HostID = e.machine.HostID
@@ -520,6 +527,9 @@ func (i *Inventory) Transcript(ctx context.Context, id string, before int64, lim
 	}
 	if err != nil || start < 0 || int64(len(window)) > TranscriptPageBytes {
 		return TranscriptPage{}, ErrUnavailable
+	}
+	if e.observation.Agent == "pi" {
+		return ParsePiTranscriptPage(window, start, limit), nil
 	}
 	return ParseTranscriptPage(window, start, limit), nil
 }

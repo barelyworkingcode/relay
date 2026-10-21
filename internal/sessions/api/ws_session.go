@@ -435,7 +435,11 @@ func (sh *SessionHandlers) handleStopGeneration(c *Conn, raw []byte) {
 		return
 	}
 	if err := sh.mgr.StopGeneration(req.SessionID); err != nil {
-		sendWSError(c, err.Error())
+		if errors.Is(err, session.ErrInterruptAuditUnavailable) {
+			sendCodedError(c, "audit_unavailable", req.SessionID, err)
+		} else {
+			sendWSError(c, err.Error())
+		}
 	}
 }
 

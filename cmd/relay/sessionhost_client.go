@@ -345,3 +345,25 @@ func (c *sessionHostClient) ManagedClaudeIdentities(ctx context.Context) (map[st
 	}
 	return ids, nil
 }
+
+// ManagedPiIdentities asks the host for the Pi conversation ids it owns; the
+// public session summary deliberately omits them.
+func (c *sessionHostClient) ManagedPiIdentities(ctx context.Context) (map[string]bool, error) {
+	httpResp, err := c.do(ctx, http.MethodGet, "/managed-identities", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: /managed-identities returned %d", errSessionHostUnavailable, httpResp.StatusCode)
+	}
+	var body hostapi.ManagedIdentitiesResponse
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("session host: decode /managed-identities: %w", err)
+	}
+	ids := make(map[string]bool, len(body.PiSessionIDs))
+	for _, id := range body.PiSessionIDs {
+		ids[id] = true
+	}
+	return ids, nil
+}

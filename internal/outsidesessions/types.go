@@ -44,6 +44,8 @@ type Session struct {
 	// the transcript's id for a live row, the transcript file's stem for an
 	// ended one.
 	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
+	Agent           string `json:"agent,omitempty"`
+	ConversationID  string `json:"conversationId,omitempty"`
 	// Adoptable is true when the owner may adopt the session now or with an
 	// interrupt. Idleness is checked at the adopt door, not here.
 	Adoptable bool `json:"adoptable"`
@@ -93,12 +95,13 @@ type Detail struct {
 
 // Observation is private process evidence, never serialized to the browser.
 type Observation struct {
-	Session    Session
-	ClaudeID   string
-	PID        int
-	Lifetime   string
-	Transcript string
-	StatusAt   time.Time
+	Session               Session
+	ClaudeID              string
+	Agent, ConversationID string
+	PID                   int
+	Lifetime              string
+	Transcript            string
+	StatusAt              time.Time
 }
 
 // ProbeResult is one completed probe. SawSpool is true when the machine has a
