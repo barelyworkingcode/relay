@@ -2081,6 +2081,18 @@ must hold `model_host`, and register under its own service id. Reply: `OK`;
 `-32602` for a missing field or a relative path; `-32001` otherwise. See
 [`model-endpoint.md`](model-endpoint.md).
 
+### bridge:SessionRebind
+
+`{"type":"SessionRebind","arguments":{"session_id","runner_pid","runner_start_sec","runner_start_usec"}}`.
+No `token`: the caller's launch identity must be the bound `relaysessions`
+service holding `sessions`. Binds a surviving local Claude session's recorded
+root to a fresh launch identity after a relay restart. Reply: `OK`; `-32602`
+for an empty `session_id` or a `runner_pid` that is not a process; `-32001` for
+a caller that is not relay-sessions, and `-32001` "session rebind refused" for
+every other refusal (the reason is in the `session.rebind` event and the
+`session_rebind` audit row). A test sends it only from outside the agent's tree
+to check the refusal. See [`session-host.md`](session-host.md#relay-tools-after-a-relay-restart).
+
 ### bridge:admin frames
 
 `ReloadExternalMcp` (`name` is the MCP id), `ReconcileExternalMcps` (no

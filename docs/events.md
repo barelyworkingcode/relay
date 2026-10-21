@@ -419,6 +419,7 @@ prompt and an unavailable audit log use the shared `presence_*` and
 | `session.persistent.list` | Before the list is returned | `GET /api/projects/{id}/persistent-sessions`, `relay terminal persistent-list` | `project_id` |
 | `session.persistent.kill` | At the end of `PersistentSessionOps.Kill` | `DELETE /api/projects/{id}/persistent-sessions/{name}`, `relay terminal persistent-kill` | `project_id` |
 | `session.exited` | At the end of `appRouter.SessionExited` | bridge `session_exited` | `session_id` |
+| `session.rebind` | At the end of `appRouter.SessionRebind`, after the completion row is on disk | bridge `SessionRebind` | `session_id`, `project_id`. `denied` with `reason` `unauthorized` or one of `not_live`, `project_gone`, `no_root_record`, `runner_mismatch`, `root_gone`, `root_not_in_tree`, `already_bound`; `error` with `reason` `audit_unavailable` or `bind_failed` |
 | `session.delete` | In relay-sessions `HandleDeleteSession` / `HandleSessionMessageSync` | forwarded `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/message`, `relay session stop`, `relay session message` | `session_id` |
 | `session.send` | In relay-sessions `handleSessionSend` | `relay session send` | `session_id` (a link that stays down ends the event `error` with reason `send_failed`) |
 | `session.wait` | In relay-sessions `handleSessionWait` | `relay session wait` | `session_id` |

@@ -145,6 +145,10 @@ type Manager struct {
 	reattachMu  sync.Mutex
 	reattaching map[string]*sync.Mutex
 
+	// onRebind is called once after each attach of a local runner session whose
+	// provider reports a process root (SetRebindHandler).
+	onRebind func(sessionID string, runner sessionstypes.ProcessRoot)
+
 	// askedMu guards asked, the sessions whose pending permissions are above
 	// zero, so only the rise from zero tells the runner.
 	askedMu sync.Mutex
@@ -222,6 +226,45 @@ func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 	m.mu.Lock()
 	m.onExit = fn
 	m.mu.Unlock()
+}
+
+// SetRebindHandler installs fn. The manager calls fn once after each successful
+// attach of a local runner session whose ProcessRoot() is set.
+func (m *Manager) SetRebindHandler(fn func(sessionID string, runner sessionstypes.ProcessRoot)) {
+	m.mu.Lock()
+	m.onRebind = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) rebindHandler() func(sessionID string, runner sessionstypes.ProcessRoot) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.onRebind
+}
+
+// claimRebind hands a freshly attached local session's runner to the rebind
+// handler. It runs with the reattach lock held, so a boot attach and a lazy
+// attach of the same session claim once each, not at once.
+func (m *Manager) claimRebind(id string) {
+	fn := m.rebindHandler()
+	if fn == nil {
+		return
+	}
+	sess, ok := m.Get(id)
+	if !ok {
+		return
+	}
+	p, ok := liveProvider(sess)
+	if !ok {
+		return
+	}
+	reporter, ok := p.(sessionstypes.RootReporter)
+	if !ok {
+		return
+	}
+	if root, ok := reporter.ProcessRoot(); ok {
+		fn(id, root)
+	}
 }
 
 func (m *Manager) exitHandler() func(id string, exitCode int) {
@@ -1104,6 +1147,9 @@ func (m *Manager) reattachDetached(id string) error {
 		}
 		slog.Warn("session: reattach failed", "session", id, "host", host.ID, "error", err)
 		return fmt.Errorf("%w: host %q: %v", ErrAttachFailed, host.Name, err)
+	}
+	if host == nil {
+		m.claimRebind(id)
 	}
 	return nil
 }

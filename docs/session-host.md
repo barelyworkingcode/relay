@@ -572,6 +572,43 @@ kernel may since have reused. Reading `session.Manager` fresh on each request
 means a restarted provider's new pid is what the walk actually sees, and a
 torn-down session reports no root instead of a dangling one.
 
+### Relay tools after a relay restart
+
+A local session's relay tools run as a descendant of the shim, which is the
+`project_session` root. The shim's launch identity lived in relay's memory, so a
+relay restart dropped it and the tools failed closed. Relay now keeps the root
+in the ledger record (`root`: pid, pidversion, kernel start time, copied from
+the shim's Hello bind; a resume writes the new shim's). After relay-sessions
+attaches a local runner session whose provider reports its runner, it sends
+`SessionRebind` (session id and runner pid and start time) over the bridge,
+at boot and at a lazy attach alike. Relay's gate runs in this order, and the
+first failure stops it:
+
+1. The caller is the bound `relaysessions` identity holding `sessions`;
+   otherwise `unauthorized`, with one audit row and no intent row.
+2. The intent row is written durably; with auditing off or a failed write the
+   rebind is refused (`audit_unavailable`) and nothing is bound.
+3. `not_live`: no `live` local `claude` record, or the record is detached.
+4. `project_gone`: the project is missing, remote or hosted (read fresh).
+5. `no_root_record`: the record has no `root`.
+6. `runner_mismatch`: the runner is not alive, its pid is not the claimed one,
+   or the kernel's start time for it is not the claimed one.
+7. `root_gone`: the root's start time is unreadable or differs from the record.
+8. `root_not_in_tree`: the ancestry walk, with the claimed runner as its only
+   root, does not place the root under the runner.
+9. `already_bound`: a live launch for the session exists, or the root holds an
+   identity.
+10. `bind_failed`: `Launches.Rebind` failed in any other way.
+
+Every refusal after the first answers the bridge `-32001` "session rebind
+refused"; the reason goes to the `session.rebind` event and the audit row only.
+A refusal or a failed call is logged at Warn and leaves the tools closed; there
+is no retry. A second restart takes the same path and writes a new pair. A
+session started before relay kept the root is refused `no_root_record` until
+one stop and resume. A restart of relay-sessions alone ends the session's
+identities with it, and the same attach rebinds them. The session list shows
+nothing when a rebind is refused.
+
 ### Decision order
 
 Once the ancestry walk resolves a session id, and the decoded body's own
@@ -1917,7 +1954,7 @@ record shape.
 
 ## Resume (user action only) — SH-6
 
-A local Claude session whose runner still lives is attached, never started a second time; after a relay restart its relay tools fail closed until it is stopped and resumed. A session whose agent exited reads dormant and resumes on its conversation.
+A local Claude session whose runner still lives is attached, never started a second time; after a relay restart its relay tools come back on their own (see [Relay tools after a relay restart](#relay-tools-after-a-relay-restart)); a session started before relay recorded its root keeps them closed until it is stopped and resumed. A session whose agent exited reads dormant and resumes on its conversation.
 
 A project-bound provider session (claude/pi/chat) never respawns itself when its provider process dies.
 `internal/sessions/session.Manager.SendMessage` returns `ErrResumeRequired`
