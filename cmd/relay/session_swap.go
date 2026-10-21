@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -139,7 +140,8 @@ func (d sessionRouteDeps) swapIntent(actor audit.AuditActor, dir swapDirection, 
 	return id, nil
 }
 
-// swapCompletion writes the completion row that pairs with swapIntent's id.
+// swapCompletion writes the completion row that pairs with swapIntent's id. It
+// is durable before the caller's event ends, so a reader of the event finds it.
 func (d sessionRouteDeps) swapCompletion(auditID string, dir swapDirection, sessionID, terminalID, outcome, code string) {
 	args, _ := json.Marshal(swapArgs{SessionID: sessionID, Direction: string(dir), TerminalID: terminalID})
 	now := d.swaps.clock()
@@ -150,7 +152,9 @@ func (d sessionRouteDeps) swapCompletion(auditID string, dir swapDirection, sess
 	if start, ok := d.swaps.takeStart(auditID); ok {
 		ev.DurMs = now.Sub(start).Milliseconds()
 	}
-	d.auditor.Record(ev)
+	if err := d.auditor.RecordDurable(ev); err != nil {
+		slog.Error("session swap: completion row not recorded", "audit_id", auditID, "session", sessionID, "error", err)
+	}
 }
 
 // swapHostID is the SSH host's id for a hosted project, empty otherwise.
@@ -178,6 +182,11 @@ func (d sessionRouteDeps) armSwap(l swapLink) {
 // startHandBack reports the session half of a swap and, when that completes
 // the pair, resumes in its own goroutine.
 func (d sessionRouteDeps) startHandBack(id string) {
+	// A runner that still runs keeps the record live; its own exit report
+	// brings the session half.
+	if rec, ok := d.sessions.Get(id); ok && rec.State != ledger.StateDormant {
+		return
+	}
 	if l, ok := d.swaps.exited(id); ok {
 		go d.handBackResume(context.Background(), l)
 	}
@@ -210,10 +219,7 @@ func (d sessionRouteDeps) handBackResume(ctx context.Context, l swapLink) {
 		ev.End(logging.OutcomeOK, "", nil)
 		return
 	}
-	code := "resume_failed"
-	if body, ok := out.Body.(map[string]string); ok && body["error"] != "" {
-		code = body["error"]
-	}
+	code := out.Code
 	outcome, reason := refusalOutcome(out.Status, code)
 	auditOutcome := audit.AuditOutcomeDenied
 	if out.Status >= http.StatusInternalServerError {

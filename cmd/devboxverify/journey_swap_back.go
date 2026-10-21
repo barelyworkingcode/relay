@@ -21,7 +21,6 @@ const (
 	swapBackID       = "session-swap-back"
 	swapDropInWait   = 75 * time.Second
 	swapHandBackWait = 90 * time.Second
-	swapAuditWait    = 10 * time.Second
 )
 
 // runSwapBack drives the swap-and-back an owner does from eve: a headless
@@ -209,16 +208,10 @@ func swapTurn(ctx context.Context, e env, sid, marker string) string {
 	return ""
 }
 
-// swapAuditProblem reads the session_swap rows once the hand back event has
-// followed them. Completion rows go through relay's async audit queue, so the
-// read is retried, bounded, until all four are there.
+// swapAuditProblem reads the session_swap rows once, after session.hand_back:
+// completion rows are durable before the event ends.
 func swapAuditProblem(ctx context.Context, e env, sid string) string {
-	var rows []audit.AuditEvent
-	var err error
-	pollUntil(ctx, swapAuditWait, func() bool {
-		rows, err = auditJSONRows(ctx, e, "--event", audit.AuditEventSessionSwap, "--grep", sid, "--json", "--tail", "50")
-		return err != nil || len(rows) >= 4
-	})
+	rows, err := auditJSONRows(ctx, e, "--event", audit.AuditEventSessionSwap, "--grep", sid, "--json", "--tail", "50")
 	if err != nil {
 		return err.Error()
 	}

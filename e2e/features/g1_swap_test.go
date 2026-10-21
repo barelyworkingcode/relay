@@ -124,7 +124,7 @@ func TestSwapBackResumesAtOnce(t *testing.T) {
 	tty := i.StartCLITTY(harness.CLIOpts{}, dir, "drop-in", sid)
 	i.WaitEvent(harness.EventQuery{Key: "session.drop_in",
 		Fields: map[string]any{"status": "ok", "session_id": sid}}, g1tEventDeadline)
-	// The terminal's claude logs its start once it runs; no event marks it.
+	// Waits: none possible: relay writes no event when the terminal's claude starts, and the fake claude writes nothing to the pty.
 	g11dUntil(t, "the drop-in terminal to start claude with --resume "+conv, func() bool {
 		return g1wResumeFlags(agStartArgvs(i, "claude"), conv) == 1
 	})
@@ -168,6 +168,7 @@ func TestSwapBackHostResumesAtOnce(t *testing.T) {
 		t.Fatalf("drop-in answered %d with terminal %q and conversation %q, want 201, a terminal and %s: %s",
 			resp.Status, out.Terminal.TerminalID, out.ClaudeSessionID, conv, resp.Body)
 	}
+	// Waits: none possible: relay writes no event when the terminal's claude starts, and the fake claude writes nothing to the pty.
 	g11dUntil(t, "the drop-in terminal to start claude with --resume "+conv, func() bool {
 		return g1wResumeFlags(r.hostStarts(t), conv) == 1
 	})

@@ -1226,11 +1226,11 @@ Body `{session_id}`. Internal peer only, like `/launch`. Answers `200 {session_i
 
 A session with no live process can be taken over; it loads from disk first. If a turn is in flight and no tool is open, the request waits for the turn to end, a tool to open, the timeout or the caller to go away. It does not poll. A tool call opens on an assistant `content_block_stop` of a `tool_use` block and closes on its `tool_result`; `message_complete`, `error`, `process_exited`, `StopGeneration` and `ClearSession` clear them all. Waiting through a tool could last without bound, and stopping mid-tool leaves a half-finished call, so a running tool refuses at once.
 
-On success the manager sets the hold under its lock, marks the id terminating (relay's `session_end` reads `closed`), signals `DroppedIn` and kills the process. The provider and slot stay in place, so `process_exited` still reaches relay, which ends the identity and profile and marks the ledger `dormant`.
+On success the manager sets the hold under its lock, marks the id terminating (relay's `session_end` reads `closed`), signals `DroppedIn` and kills the process. A session under the runner has its runner stopped too, and the stop waits until the runner and its agent are gone. The provider and slot stay in place, so `process_exited` still reaches relay, which ends the identity and profile and marks the ledger `dormant`.
 
 ### `POST /handback`
 
-Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears the hold and signals `HandedBack`, so the session reads `idle`. A later message needs a resume, as for any session whose process is gone.
+Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears the hold and signals `HandedBack`, so the session reads `idle`. The handoff stopped the process, so a later message needs a resume; relay resumes at once ([The hand-back resume](#the-hand-back-resume)).
 
 ### `GET /managed-identities`
 
@@ -1244,7 +1244,7 @@ Answers `200 {"claude_session_ids":[string]}`: the Claude conversation id of eve
 
 #### The hand-back resume
 
-Relay keeps an in-memory swap table keyed by terminal id (`cmd/relay/session_swap.go`). `dropIn` adds a link after the terminal launch commits, and in each failure path after the handoff succeeded. `appRouter.SessionExited` reports each exit to the table. The resume starts once the terminal's report has arrived **and** the held session's ledger record reads dormant, in either order, in its own goroutine. It is `resumeSession` with the drop-in's caller: `AuthorizeLaunch` with `Resume`, the current project policy, a fresh launch identity and model key, and `--resume <conversation id>`. A detached host session starts a new generation. Each hand back writes a `session_swap` pair (`to_headless`) and one `session.hand_back` event. With auditing off, nothing is resumed and the session stays dormant. A relay restart drops the table: the session then reads dormant and needs a Resume, as before.
+Relay keeps an in-memory swap table keyed by terminal id (`cmd/relay/session_swap.go`). `dropIn` adds a link after the terminal launch commits, and in each failure path after the handoff succeeded. `appRouter.SessionExited` reports each exit to the table. The resume starts once the terminal's report has arrived **and** the held session's ledger record reads dormant, in either order, in its own goroutine. It is `resumeSession` with the drop-in's caller: `AuthorizeLaunch` with `Resume`, the current project policy, a fresh launch identity and model key, and `--resume <conversation id>`. A detached host session starts a new generation, and so does a local session, whose runner the handoff stopped; the hand back always starts and never attaches. Each hand back writes a `session_swap` pair (`to_headless`) and one `session.hand_back` event. With auditing off, nothing is resumed and the session stays dormant. A relay restart drops the table: the session then reads dormant and needs a Resume, as before.
 
 A host without tmux, and a local session, keep this terminal; there is no refusal.
 
