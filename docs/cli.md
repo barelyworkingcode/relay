@@ -2798,7 +2798,9 @@ permission mode through the session host. A local claude session relay
 launched answers `resume_required` for any mode, valid or not, which is exit
 `1`; the session stays live. Only a session on an SSH host changes mode in
 place, and there an unknown mode is refused. An unsandboxed session (adopted in
-no project) answers `resume_required` as well. `--json` prints:
+no project) answers `resume_required` when `claude_token_file` is set, because
+its per-launch token cannot be reused by a restart in place; with no token it
+restarts in place. `--json` prints:
 
 | Field | JSON type | Meaning |
 |---|---|---|

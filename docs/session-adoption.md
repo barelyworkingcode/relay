@@ -394,8 +394,9 @@ What an unsandboxed session has and lacks:
   names the descriptor; the token is never in the environment.
 - `bypassPermissions` on it lets every tool run and asks nothing. That is the
   owner's accepted risk.
-- `relay session mode` answers `resume_required` for it, as for a sandboxed
-  session: the token is per launch and cannot be reused by a restart in place.
+- `relay session mode` answers `resume_required` for it when `claude_token_file`
+  is set, as for a sandboxed session: the token is per launch and cannot be
+  reused by a restart in place. With no token set it restarts in place.
 
 Adopt order for such a row: audit ready (`503 audit_unavailable`), host ready,
 the row, a fresh candidate, then the folder is matched against the registered
