@@ -713,7 +713,7 @@ func (s *Server) launchTerminal(w http.ResponseWriter, req LaunchRequest) {
 			return
 		}
 	}
-	sess, err := s.terminals.Create(spec)
+	sess, err := createTerminal(s.terminals, req, spec)
 	if err != nil {
 		if req.DropInFor != "" {
 			s.takeDropIn(req.SessionID)

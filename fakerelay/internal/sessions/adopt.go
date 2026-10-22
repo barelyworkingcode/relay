@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"unicode"
@@ -102,14 +103,25 @@ func (s *svc) adopt(w http.ResponseWriter, r *http.Request) {
 
 	var project world.Project
 	var projectOK bool
-	if row.ProjectID != nil {
+	noProject := row.ProjectID == nil
+	if noProject {
+		// A row in no project is adopted unsandboxed in its own folder.
+		if s.localProjectHolds(row.Directory) {
+			late(http.StatusConflict, "changed", "a project now holds the session's folder; adopt it again")
+			return
+		}
+		if adopt.Refuse == "directory_unusable" {
+			late(http.StatusConflict, "directory_unusable", "the session's folder is not a usable directory")
+			return
+		}
+	} else {
 		s.State.Read(func(m *state.Model) { project, projectOK = lookupProject(m, *row.ProjectID) })
+		if !projectOK || project.HostID != "" || project.Kind == "remote" {
+			late(http.StatusConflict, "no_project", "the session is not in a registered local project")
+			return
+		}
+		projectID = project.ID
 	}
-	if !projectOK || project.HostID != "" || project.Kind == "remote" {
-		late(http.StatusConflict, "no_project", "the session is not in a registered local project")
-		return
-	}
-	projectID = project.ID
 
 	if s.holdsConversation(row.ClaudeSessionID) {
 		late(http.StatusConflict, "managed", "relay already holds this conversation")
@@ -127,10 +139,16 @@ func (s *svc) adopt(w http.ResponseWriter, r *http.Request) {
 		late(http.StatusConflict, "model_unknown", "the model of the session is unknown; send model")
 		return
 	}
-	t, ref := s.authorize(project.ID, row.Directory, model, "claude")
-	if ref != nil {
-		late(ref.status, cosCodeFor(ref.code), ref.msg)
-		return
+	var t launchTarget
+	if noProject {
+		t = launchTarget{dir: row.Directory, unsandboxed: true}
+	} else {
+		var ref *refusal
+		t, ref = s.authorize(project.ID, row.Directory, model, "claude")
+		if ref != nil {
+			late(ref.status, cosCodeFor(ref.code), ref.msg)
+			return
+		}
 	}
 	switch adopt.Refuse {
 	case "stop_failed":
@@ -166,6 +184,9 @@ func (s *svc) adopt(w http.ResponseWriter, r *http.Request) {
 		Set("session_id", sessionID).Set("interrupted", interrupted)
 	ev.End("ok", "", nil)
 	created := map[string]any{"sessionId": x.id, "claudeSessionId": row.ClaudeSessionID, "interrupted": interrupted, "recoverySent": recovery != nil}
+	if noProject {
+		created["unsandboxed"] = true
+	}
 	writeCreated(w, created)
 	if recovery != nil {
 		go s.runTurn(recovery, recoveryText, recoveryOrigin, events.TraceFrom(r.Context()))
@@ -267,6 +288,25 @@ func (s *svc) resolveOutside(b adoptBody) (row world.OutsideFixture, status int,
 		return ended()
 	}
 	return notFound()
+}
+
+// localProjectHolds reports whether a local world project's folder holds dir,
+// matched on the cleaned path text: fakerelay reads no disk.
+func (s *svc) localProjectHolds(dir string) bool {
+	dir = path.Clean(dir)
+	held := false
+	s.State.Read(func(m *state.Model) {
+		for _, p := range m.Projects {
+			if p.HostID != "" || p.Kind == "remote" || p.Path == "" {
+				continue
+			}
+			root := strings.TrimSuffix(path.Clean(p.Path), "/")
+			if dir == root || strings.HasPrefix(dir, root+"/") {
+				held = true
+			}
+		}
+	})
+	return held
 }
 
 // holdsConversation: a session made by an adopt carries the conversation id.

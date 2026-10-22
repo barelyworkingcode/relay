@@ -1224,7 +1224,9 @@ match answers, and nothing changes before step 11:
 | 4 | `adopt.refuse` `unavailable` | 502 | `unavailable` | `the session host is not available` |
 | 4 | `adopt.refuse` `adopt_in_progress` | 409 | `adopt_in_progress` | `an adopt of this conversation is already running` |
 | 4 | `adopt.refuse` `changed` | 409 | `changed` | `the process or its registry entry changed` |
-| 5 | `project_id` names no world project, or a host or remote project | 409 | `no_project` | `the session is not in a registered local project` |
+| 5 | `project_id` is set and names no world project, or a host or remote project | 409 | `no_project` | `the session is not in a registered local project` |
+| 5 | no `project_id` and a local world project's path holds the row's `directory` (cleaned path text; fakerelay reads no disk) | 409 | `changed` | `a project now holds the session's folder; adopt it again` |
+| 5 | no `project_id` and `adopt.refuse` `directory_unusable` | 409 | `directory_unusable` | `the session's folder is not a usable directory` |
 | 6 | an earlier adopt made a session that holds the conversation id | 409 | `managed` | `relay already holds this conversation` |
 | 7 | `adopt.busy` is set and `interrupt` is not true | 409 | `busy` | `the session is not idle (<veto>); ask to interrupt to take it over anyway` |
 | 8 | no `model` in the body and no `adopt.model_family` | 409 | `model_unknown` | `the model of the session is unknown; send model` |
@@ -1232,7 +1234,9 @@ match answers, and nothing changes before step 11:
 | 10 | `adopt.refuse` `stop_failed`; the row stays | 502 | `stop_failed` | `the process did not exit after SIGKILL; nothing was launched` |
 | 10 | `adopt.refuse` `launch_failed`; the row becomes `ended` | 502 | `launch_failed` | `the process ended but relay could not start the session; the conversation is intact and can be resumed` |
 
-Step 9 uses `authorize(project, row directory, model, "claude")`, with the
+A row with no `project_id` skips step 9: no project, directory or model check
+applies, and the launch runs unsandboxed (step 11). Step 9 otherwise uses
+`authorize(project, row directory, model, "claude")`, with the
 codes renamed as the Chief of Staff start renames them. A `launch_failed` row
 keeps `state:"ended"`, `ended_at` (the instance clock's now, RFC 3339 UTC,
 seconds) and its `claude_session_id`, loses `adopt` and reads
@@ -1253,7 +1257,14 @@ Success (step 11), in this order:
    sent as a turn with origin `relay-recovery`: the turn is recorded before the
    answer and runs after it. `recoverySent` is true when the turn was accepted.
 4. The answer is 201 `{"sessionId","claudeSessionId","interrupted","recoverySent"}`,
-   exactly these four keys.
+   exactly these four keys, plus `"unsandboxed": true` for a row with no
+   `project_id` (absent otherwise). That session has `projectId` `""` and
+   `unsandboxed: true` on its `GET /api/sessions` row, and the terminal of its
+   drop-in (the `claude-code` console template, no project allow-list) has
+   `unsandboxed: true` on its `GET /api/terminals` row. No other session or
+   terminal carries the key. A resume and a hand back keep the session as it is.
+   fakerelay checks no folder on a resume or a drop-in, so those never answer
+   `directory_unusable`.
 
 The recovery text is relay's, filled from the row's `transcript`. The prompt
 is the newest `user` entry's text. The open call is the newest `tool` entry
@@ -2374,12 +2385,12 @@ refused as an invalid outside fixture (`PUT` 400; a world file fails the load at
 
 | Key | Shape | Rule |
 |---|---|---|
-| `adoptable` | bool, default `false` | `true` needs: `state` not `ended`; `host_id` null; `project_id` set; `id` matching `^outside:[0-9a-f]{32}$`; `claude_session_id` a UUID; no `adopt_reason` |
-| `adopt_reason` | `ended`, `host_unsupported`, `no_project`, `not_registered`, `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line` or `ambiguous` | only when `adoptable` is false. Where the row is ended, has a `host_id` or has no `project_id` (in that order) it must equal that code; otherwise one of the last six. Absent: that first rule, else `not_registered` |
+| `adoptable` | bool, default `false` | `true` needs: `state` not `ended`; `host_id` null; `id` matching `^outside:[0-9a-f]{32}$`; `claude_session_id` a UUID; no `adopt_reason` |
+| `adopt_reason` | `ended`, `host_unsupported`, `not_registered`, `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line` or `ambiguous` | only when `adoptable` is false. Where the row is ended or has a `host_id` (in that order) it must equal that code; otherwise one of the last five. `no_project` is refused: it is the reason of a Pi or Codex row in no project, and a world holds only Claude rows, which are adoptable in no project. Absent: that first rule, else `not_registered` |
 | `adopt` | `{busy?, model_family?, refuse?}`, unknown keys refused | only with `adoptable: true` |
 | `adopt.busy` | `registry_busy`, `status_stale`, `open_tool_call` or `child_process` | the idle check's veto. Absent: idle |
 | `adopt.model_family` | `haiku`, `sonnet` or `opus` | the family relay derives from the transcript. Absent: none derivable |
-| `adopt.refuse` | `audit_unavailable`, `unavailable`, `adopt_in_progress`, `changed`, `stop_failed` or `launch_failed` | the refusal relay would reach from process or host state. Absent: the adopt succeeds |
+| `adopt.refuse` | `audit_unavailable`, `unavailable`, `adopt_in_progress`, `changed`, `stop_failed`, `launch_failed` or `directory_unusable` (only on a row with no `project_id`) | the refusal relay would reach from process or host state. Absent: the adopt succeeds |
 
 A fixture row with none of these keys reads `adoptable:false` with the first
 rule that applies as its reason, so existing fixtures stay valid. A test

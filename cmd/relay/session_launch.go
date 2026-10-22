@@ -276,6 +276,9 @@ type sessionLaunchAuditFields struct {
 	HostID      string
 	Entry       string
 	Command     string
+	// NoProject is set on the launch of a session that runs in no project, with
+	// no sandbox: the row says no project policy applied.
+	NoProject bool
 
 	ReadOnlyProjects bool
 	ReadRoots        int
@@ -296,6 +299,7 @@ type sessionLaunchAuditArgs struct {
 	HostID             string `json:"host_id,omitempty"`
 	Entry              string `json:"entry,omitempty"`
 	Command            string `json:"command,omitempty"`
+	NoProject          bool   `json:"no_project,omitempty"`
 	ReadOnlyProjects   bool   `json:"read_only_projects,omitempty"`
 	ReadRoots          int    `json:"read_roots,omitempty"`
 	// GrantWarnings are the template folders that reach a whole home
@@ -322,7 +326,7 @@ func newSessionLaunchAuditEvent(f sessionLaunchAuditFields, outcome, errMsg stri
 		Directory: directory, DirectoryTruncated: directory != f.Directory, Sandbox: f.Sandbox,
 		Origin: f.Origin, PromptBytes: f.PromptBytes, HostID: f.HostID,
 		Entry: capAuditText(f.Entry, maxRefusalNameRunes), Command: capAuditText(f.Command, maxAuditDirectoryRunes),
-		ReadOnlyProjects: f.ReadOnlyProjects, ReadRoots: f.ReadRoots,
+		NoProject: f.NoProject, ReadOnlyProjects: f.ReadOnlyProjects, ReadRoots: f.ReadRoots,
 		GrantWarnings: cappedAuditTexts(f.GrantWarnings, maxAuditDirectoryRunes),
 	})
 	return audit.AuditEvent{

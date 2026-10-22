@@ -80,8 +80,9 @@ type LaunchRequest struct {
 	Identity *IdentitySpec   `json:"identity"`
 	ModelKey string          `json:"model_key,omitempty"`
 	// ClaudeToken is the token relay read from claude_token_file for this
-	// launch. Set only for a sandboxed claude launch or a sandboxed pty launch
-	// of the claude-code template. Never logged and never in an error message.
+	// launch. Set only for a sandboxed or unsandboxed local claude launch, or a
+	// pty launch of the claude-code template. Never logged and never in an
+	// error message.
 	ClaudeToken string `json:"claude_token,omitempty"`
 	// ClaudeEnv holds the claude_env_passthrough values relay resolved for this
 	// launch. Local claude launches only; every name is re-checked here.
@@ -107,6 +108,10 @@ type LaunchRequest struct {
 	// omitted when the agent entry names no command; the host refuses one on a
 	// pty or chat launch.
 	Launcher *sessionstypes.Launcher `json:"launcher,omitempty"`
+	// Unsandboxed marks a local claude launch, or a pty drop-in terminal, that
+	// runs with no project, no sandbox and no identity. The host takes it on
+	// nothing else, keeps it on the session and lists it.
+	Unsandboxed bool `json:"unsandboxed,omitempty"`
 	// ViewTarget names the tmux session an outside viewer attaches to. The
 	// host builds the attach argv from it; an outside launch carries no argv.
 	ViewTarget *ViewTarget `json:"view_target,omitempty"`

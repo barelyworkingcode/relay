@@ -52,10 +52,13 @@ type shimSpec struct {
 }
 
 // wanted reports whether spec asks for a shim-wrapped launch at all — a
-// launch with neither a sandbox profile nor an identity to present has
-// nothing the shim would do differently than a direct spawn, so Start skips
-// it entirely rather than adding a needless hop.
-func (s shimSpec) wanted() bool { return s.SandboxProfile != "" || s.Identity != nil }
+// launch with no sandbox profile, no identity to present and no token to hand
+// on has nothing the shim would do differently than a direct spawn, so Start
+// skips it entirely rather than adding a needless hop. The token alone wants
+// the shim: only the shim can put it on fd 5 without the environment.
+func (s shimSpec) wanted() bool {
+	return s.SandboxProfile != "" || s.Identity != nil || s.ClaudeToken != ""
+}
 
 // buildShimCmd wraps name+args as the target argv of a `relay-sessions exec`
 // invocation, mirroring internal/sessions/mcp's buildShimCommand and

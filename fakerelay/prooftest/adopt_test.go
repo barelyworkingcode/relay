@@ -140,8 +140,7 @@ func TestAdoptRowFieldsServed(t *testing.T) {
 	ended := outsideEnded("outside:gone", "2026-01-01T01:00:00Z")
 	host := outsideFixture("")
 	host["id"], host["directory"], host["host_id"], host["machine"] = "outside:onhost", "/work/onhost", "h_box", "testbox"
-	noProject := outsideFixture("")
-	noProject["id"], noProject["directory"] = "outside:noproject", "/work/noproject"
+	noProject := adoptRow(3, "/work/noproject", "project_id", nil)
 	unregistered := outsideFixture("")
 	unregistered["id"], unregistered["directory"], unregistered["project_id"] = "outside:unreg", "/work/unreg", "p_acme"
 	reasoned := adoptRow(2, e.dir, "adoptable", false, "adopt_reason", "not_interactive")
@@ -158,12 +157,12 @@ func TestAdoptRowFieldsServed(t *testing.T) {
 		claudeID  string
 	}
 	wants := map[string]want{
-		adoptID(1):          {true, "", adoptUUID(1)},
-		"outside:gone":      {false, "ended", ""},
-		"outside:onhost":    {false, "host_unsupported", ""},
-		"outside:noproject": {false, "no_project", ""},
-		"outside:unreg":     {false, "not_registered", ""},
-		adoptID(2):          {false, "not_interactive", adoptUUID(2)},
+		adoptID(1):       {true, "", adoptUUID(1)},
+		"outside:gone":   {false, "ended", ""},
+		"outside:onhost": {false, "host_unsupported", ""},
+		adoptID(3):       {true, "", adoptUUID(3)},
+		"outside:unreg":  {false, "not_registered", ""},
+		adoptID(2):       {false, "not_interactive", adoptUUID(2)},
 	}
 	check := func(door, id string, row map[string]any) {
 		t.Helper()
@@ -209,26 +208,29 @@ func TestAdoptFixtureRefused(t *testing.T) {
 	valid := func(kv ...any) J { return adoptRow(1, e.dir, kv...) }
 	putRows(t, e.in, valid("adopt", J{"busy": "registry_busy", "model_family": "opus", "refuse": "changed"}))
 	putRows(t, e.in, valid("adoptable", false, "adopt_reason", "invalid_id"))
+	// A Claude row in no project is adoptable, and its folder may be unusable.
+	putRows(t, e.in, valid("project_id", nil, "adopt", J{"refuse": "directory_unusable"}))
 
 	cases := map[string]J{
-		"adoptable on an ended row":     valid("state", "ended", "ended_at", "2026-01-01T00:00:00Z"),
-		"adoptable on a host row":       valid("host_id", "h_box", "machine", "testbox"),
-		"adoptable without a project":   valid("project_id", nil),
-		"adoptable with a short id":     valid("id", "outside:acme"),
-		"adoptable with an upper id":    valid("id", "outside:"+strings.Repeat("A", 32)),
-		"adoptable with a stem id":      valid("claude_session_id", "stem-id"),
-		"adoptable without a stem id":   valid("claude_session_id", nil),
-		"adoptable with a reason":       valid("adopt_reason", "not_interactive"),
-		"unknown reason":                valid("adoptable", false, "adopt_reason", "bogus"),
-		"ended row with another reason": valid("adoptable", false, "state", "ended", "ended_at", "2026-01-01T00:00:00Z", "adopt_reason", "not_interactive"),
-		"host row with another reason":  valid("adoptable", false, "host_id", "h_box", "machine", "testbox", "adopt_reason", "no_project"),
-		"no project with a late reason": valid("adoptable", false, "project_id", nil, "adopt_reason", "not_registered"),
-		"first-rule reason on live row": valid("adoptable", false, "adopt_reason", "ended"),
-		"adopt without adoptable":       valid("adoptable", false, "adopt_reason", "not_interactive", "adopt", J{}),
-		"bad busy":                      valid("adopt", J{"busy": "bogus"}),
-		"bad model family":              valid("adopt", J{"model_family": "gpt"}),
-		"bad refuse":                    valid("adopt", J{"refuse": "bogus"}),
-		"unknown adopt key":             valid("adopt", J{"idle": true}),
+		"adoptable on an ended row":         valid("state", "ended", "ended_at", "2026-01-01T00:00:00Z"),
+		"adoptable on a host row":           valid("host_id", "h_box", "machine", "testbox"),
+		"no_project reason on a Claude row": valid("adoptable", false, "project_id", nil, "adopt_reason", "no_project"),
+		"no_project reason in a project":    valid("adoptable", false, "adopt_reason", "no_project"),
+		"directory_unusable in a project":   valid("adopt", J{"refuse": "directory_unusable"}),
+		"adoptable with a short id":         valid("id", "outside:acme"),
+		"adoptable with an upper id":        valid("id", "outside:"+strings.Repeat("A", 32)),
+		"adoptable with a stem id":          valid("claude_session_id", "stem-id"),
+		"adoptable without a stem id":       valid("claude_session_id", nil),
+		"adoptable with a reason":           valid("adopt_reason", "not_interactive"),
+		"unknown reason":                    valid("adoptable", false, "adopt_reason", "bogus"),
+		"ended row with another reason":     valid("adoptable", false, "state", "ended", "ended_at", "2026-01-01T00:00:00Z", "adopt_reason", "not_interactive"),
+		"host row with another reason":      valid("adoptable", false, "host_id", "h_box", "machine", "testbox", "adopt_reason", "no_project"),
+		"first-rule reason on live row":     valid("adoptable", false, "adopt_reason", "ended"),
+		"adopt without adoptable":           valid("adoptable", false, "adopt_reason", "not_interactive", "adopt", J{}),
+		"bad busy":                          valid("adopt", J{"busy": "bogus"}),
+		"bad model family":                  valid("adopt", J{"model_family": "gpt"}),
+		"bad refuse":                        valid("adopt", J{"refuse": "bogus"}),
+		"unknown adopt key":                 valid("adopt", J{"idle": true}),
 	}
 	for name, row := range cases {
 		if got := e.in.ctl(t, "PUT", "/v1/outside-sessions", []J{row}); got.Status != 400 {
@@ -489,7 +491,7 @@ func TestAdoptRefusals(t *testing.T) {
 			return []J{adoptRow(1, e.dir), adoptRow(2, e.dir, "claude_session_id", adoptUUID(1))}
 		}, body: func(adoptEnv) any { return J{"claudeSessionId": adoptUUID(1)} }, status: 409, code: "ambiguous", msg: "more than one live process holds this conversation"},
 		{name: "host", rows: oneRow("adoptable", false, "host_id", "h_box", "machine", "testbox"), body: idBody(nil), status: 409, code: "host_unsupported", msg: "sessions on an SSH host cannot be adopted"},
-		{name: "no project", rows: oneRow("adoptable", false, "project_id", nil), body: idBody(nil), status: 409, code: "no_project", msg: "the session cannot be adopted: no_project"},
+		{name: "no project row keeps its reason", rows: oneRow("adoptable", false, "project_id", nil, "adopt_reason", "not_interactive"), body: idBody(nil), status: 409, code: "not_interactive", msg: "the session cannot be adopted: not_interactive"},
 		{name: "not registered", rows: oneRow("adoptable", false), body: idBody(nil), status: 409, code: "not_registered", msg: "the session cannot be adopted: not_registered"},
 		{name: "audit off", rows: oneRow("adopt", J{"refuse": "audit_unavailable"}), body: idBody(nil), status: 503, code: "audit_unavailable", msg: "auditing is off; no session can be adopted"},
 		{name: "host down", rows: oneRow("adopt", J{"refuse": "unavailable"}), body: idBody(nil), status: 502, code: "unavailable", msg: "the session host is not available"},
@@ -566,4 +568,76 @@ func TestAdoptDoorClass(t *testing.T) {
 	tcp.is(t, http.StatusNotFound)
 	detail(t, e.in, adoptID(1)).is(t, 200)
 	eq(t, len(sessionRows(t, e.in)), 0, "sessions after the refused doors")
+}
+
+func unsandboxedWorld(string) any {
+	w := adoptWorld("").(J)
+	w["terminal_templates"] = []J{{"id": "claude-code", "name": "Claude", "command": "/bin/sh"}}
+	return w
+}
+
+// Regression: a Claude row in no project is refused, adopted with a project, or answers without the
+// unsandboxed mark; the mark leaks onto project sessions or terminals; a project that holds the folder,
+// or an unusable folder, is not refused with relay's code.
+func TestAdoptNoProjectUnsandboxed(t *testing.T) {
+	t.Parallel()
+	in := startInstance(t, unsandboxedWorld)
+	dir := in.api(t, "GET", "/api/projects/p_acme", nil).is(t, 200).obj(t)["path"].(string)
+	free := adoptRow(1, "/work/free-acme", "project_id", nil, "adopt", J{"model_family": "haiku"})
+	inside := adoptRow(2, dir+"/sub", "project_id", nil, "adopt", J{"model_family": "haiku"})
+	unusable := adoptRow(3, "/work/gone-acme", "project_id", nil, "adopt", J{"model_family": "haiku", "refuse": "directory_unusable"})
+	member := adoptRow(4, dir, "adopt", J{"model_family": "haiku"})
+	putRows(t, in, free, inside, unusable, member)
+
+	for _, id := range []int{1, 2, 3} {
+		row := detail(t, in, adoptID(id)).is(t, 200).obj(t)["session"].(map[string]any)
+		eq[any](t, row["adoptable"], true, "adoptable")
+		if r, has := row["adoptReason"]; has {
+			t.Errorf("row %d carries adoptReason %v", id, r)
+		}
+	}
+
+	changed := adoptCall(t, in, J{"outsideId": adoptID(2)}, "adopt-np-0001").is(t, 409).obj(t)
+	eq[any](t, changed["error"], "changed", "changed code")
+	gone := adoptCall(t, in, J{"outsideId": adoptID(3)}, "adopt-np-0002").is(t, 409).obj(t)
+	eq[any](t, gone["error"], "directory_unusable", "directory_unusable code")
+	eq(t, len(sessionRows(t, in)), 0, "sessions after the refusals")
+	detail(t, in, adoptID(2)).is(t, 200)
+	detail(t, in, adoptID(3)).is(t, 200)
+
+	got := adoptCall(t, in, J{"outsideId": adoptID(1)}, "adopt-np-0003").is(t, 201).obj(t)
+	eq[any](t, got["unsandboxed"], true, "adopt answer")
+	proj := adoptCall(t, in, J{"outsideId": adoptID(4)}, "adopt-np-0004").is(t, 201).obj(t)
+	if v, has := proj["unsandboxed"]; has {
+		t.Errorf("project adopt answer carries unsandboxed %v", v)
+	}
+
+	marks := map[string]any{}
+	for _, s := range sessionRows(t, in) {
+		marks[s["id"].(string)] = s["unsandboxed"]
+		if s["id"] == got["sessionId"] {
+			eq[any](t, s["projectId"], "", "projectId")
+		}
+	}
+	eq(t, marks, map[string]any{got["sessionId"].(string): true, proj["sessionId"].(string): nil}, "unsandboxed on GET /api/sessions")
+
+	held := map[string]any{}
+	for _, sid := range []any{got["sessionId"], proj["sessionId"]} {
+		d := in.api(t, "POST", "/api/sessions/"+sid.(string)+"/drop-in", nil).is(t, 201).obj(t)
+		held[d["terminal"].(map[string]any)["terminalId"].(string)] = sid
+	}
+	for _, v := range in.api(t, "GET", "/api/terminals", nil).is(t, 200).obj(t)["terminals"].([]any) {
+		row := v.(map[string]any)
+		sid, ok := held[row["id"].(string)]
+		if !ok {
+			continue
+		}
+		if sid == got["sessionId"] {
+			eq[any](t, row["unsandboxed"], true, "unsandboxed drop-in terminal")
+		} else if m, has := row["unsandboxed"]; has {
+			t.Errorf("project drop-in terminal carries unsandboxed %v", m)
+		}
+		delete(held, row["id"].(string))
+	}
+	eq(t, len(held), 0, "drop-in terminals not listed")
 }

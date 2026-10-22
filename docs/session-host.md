@@ -287,6 +287,8 @@ Error codes C5 names explicitly, each mapped from a manager error:
 | 502 | `identity_refused` | the shim's Hello did not bind |
 | 500 | `spawn_failed` | the target process could not be started (a target that starts and exits at once is not this: the launch is `201` and the exit is reported like any other) |
 
+`LaunchRequest.unsandboxed` (`"unsandboxed": true`) marks a launch that runs with no project and no sandbox. The host takes it only on a local `claude` launch, or a `pty` drop-in terminal of the `claude-code` template (`drop_in_for` set), with no project, no sandbox, no identity, no host, no launcher, no entry and no model key; any other launch that carries it is `400 invalid_spec`. A local `claude` launch with no project and no mark is `400 invalid_spec` too, so a launch that lost its project by mistake fails closed. A marked launch may carry `claude_token`, which the shim hands to the target on fd 5 with no sandbox profile. The mark is saved with the session (`unsandboxed` in the session file), so it survives a relay-sessions restart; a resume sets it from the launch. `GET /api/sessions` and `GET /api/terminals` rows carry `"unsandboxed": true` only for a marked session or drop-in terminal. A restart in place of such a launch's Claude (`SetPermissionMode`) is refused with `resume_required` when the launch carries a token, because the token pipe is spent; with no token it restarts in place.
+
 ### Launcher: an agent entry's program
 
 A start by agent entry may carry a launcher: `LaunchRequest.launcher`, JSON

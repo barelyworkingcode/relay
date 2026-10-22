@@ -235,12 +235,15 @@ serve ended ids.
 `chief-of-staff` scope) is the one door that acts on an outside session. It
 ends the process of an interactive Claude the owner started in a terminal on
 this Mac and resumes the same conversation as an ordinary headless relay
-session, in the same folder, in the registered local project that holds it.
+session, in the same folder, in the registered local project that holds it. A
+Claude in no registered project is adopted too, unsandboxed
+([A Claude session in no project](session-adoption.md#a-claude-session-in-no-project)).
 Sessions on SSH hosts are not adopted.
 
 - **Eligibility** is static and shown on the row: `adoptable`, else
   `adoptReason`, the first that applies of `ended`, `host_unsupported`,
-  `no_project`, `not_registered` (no registry entry), `invalid_id` (the
+  `no_project` (a Pi or Codex row outside every project; a Claude row there is
+  adoptable), `not_registered` (no registry entry), `invalid_id` (the
   `sessionId` is not a UUID), `start_mismatch`, `not_interactive`,
   `not_command_line`, `ambiguous` (two live entries hold one `sessionId`).
   Relay reads `~/.claude/sessions/<pid>.json` in Go: at most 512 regular files

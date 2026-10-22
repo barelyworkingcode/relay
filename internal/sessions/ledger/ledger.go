@@ -66,6 +66,9 @@ type Record struct {
 	// CodexThread is the codex daemon thread an attached session drives; a
 	// dormant session keeps it to attach again.
 	CodexThread string `json:"codex_thread,omitempty"`
+	// Unsandboxed marks a Claude session relay runs with no project and no
+	// sandbox; its ProjectID is empty. A resume carries the mark back to the host.
+	Unsandboxed bool `json:"unsandboxed,omitempty"`
 }
 
 // RootRef names a process by its kernel identity. It is not a credential:

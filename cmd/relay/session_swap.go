@@ -122,6 +122,20 @@ type swapArgs struct {
 	TerminalID string `json:"terminal_id,omitempty"`
 	// Agent is set for Pi and Codex swaps; a Claude swap's rows carry none.
 	Agent string `json:"agent,omitempty"`
+	// NoProject and RelaySandbox are set on the swap of a session that runs in no
+	// project, so the row says no project policy or sandbox applied.
+	NoProject    bool  `json:"no_project,omitempty"`
+	RelaySandbox *bool `json:"relay_sandbox,omitempty"`
+}
+
+// unsandboxedSwapArgs fills the two fields a swap row of an unsandboxed
+// session carries.
+func unsandboxedSwapArgs(a swapArgs, unsandboxed bool) swapArgs {
+	if unsandboxed {
+		off := false
+		a.NoProject, a.RelaySandbox = true, &off
+	}
+	return a
 }
 
 // swapAgent is the agent a swap row names: empty for Claude.
@@ -134,11 +148,11 @@ func swapAgent(kind string) string {
 
 // swapIntent writes the swap's intent row and answers only once it is
 // durable. A swap that cannot be recorded does not start.
-func (d sessionRouteDeps) swapIntent(actor audit.AuditActor, dir swapDirection, sessionID, projectID, hostID, agent string) (string, error) {
+func (d sessionRouteDeps) swapIntent(actor audit.AuditActor, dir swapDirection, sessionID, projectID, hostID, agent string, unsandboxed bool) (string, error) {
 	if !d.auditor.Ready() {
 		return "", errors.New(swapAuditUnavailable)
 	}
-	args, _ := json.Marshal(swapArgs{SessionID: sessionID, Direction: string(dir), ProjectID: projectID, HostID: hostID, Agent: agent})
+	args, _ := json.Marshal(unsandboxedSwapArgs(swapArgs{SessionID: sessionID, Direction: string(dir), ProjectID: projectID, HostID: hostID, Agent: agent}, unsandboxed))
 	id := audit.NewAuditID()
 	if err := d.auditor.RecordDurable(audit.AuditEvent{
 		ID: id, TS: d.swaps.clock(), Event: audit.AuditEventSessionSwap, Phase: audit.AuditPhaseIntent,
@@ -152,8 +166,8 @@ func (d sessionRouteDeps) swapIntent(actor audit.AuditActor, dir swapDirection, 
 
 // swapCompletion writes the completion row that pairs with swapIntent's id. It
 // is durable before the caller's event ends, so a reader of the event finds it.
-func (d sessionRouteDeps) swapCompletion(auditID string, dir swapDirection, sessionID, terminalID, agent, outcome, code string) {
-	args, _ := json.Marshal(swapArgs{SessionID: sessionID, Direction: string(dir), TerminalID: terminalID, Agent: agent})
+func (d sessionRouteDeps) swapCompletion(auditID string, dir swapDirection, sessionID, terminalID, agent, outcome, code string, unsandboxed bool) {
+	args, _ := json.Marshal(unsandboxedSwapArgs(swapArgs{SessionID: sessionID, Direction: string(dir), TerminalID: terminalID, Agent: agent}, unsandboxed))
 	now := d.swaps.clock()
 	ev := audit.AuditEvent{
 		ID: auditID, TS: now, Event: audit.AuditEventSessionSwap, Phase: audit.AuditPhaseCompletion,
@@ -218,14 +232,14 @@ func (d sessionRouteDeps) handBackResume(ctx context.Context, l swapLink) {
 		ev.End(logging.OutcomeDenied, "session_not_found", errors.New("session_not_found"))
 		return
 	}
-	auditID, err := d.swapIntent(callerAuditActor(l.Caller), swapToHeadless, l.SessionID, rec.ProjectID, d.swapHostID(rec.ProjectID), swapAgent(rec.Kind))
+	auditID, err := d.swapIntent(callerAuditActor(l.Caller), swapToHeadless, l.SessionID, rec.ProjectID, d.swapHostID(rec.ProjectID), swapAgent(rec.Kind), rec.Unsandboxed)
 	if err != nil {
 		ev.End(logging.OutcomeDenied, swapAuditUnavailable, err)
 		return
 	}
 	out := d.resumeSession(ctx, l.Caller, l.SessionID)
 	if out.Status == http.StatusOK {
-		d.swapCompletion(auditID, swapToHeadless, l.SessionID, l.TerminalID, swapAgent(rec.Kind), audit.AuditOutcomeOK, "")
+		d.swapCompletion(auditID, swapToHeadless, l.SessionID, l.TerminalID, swapAgent(rec.Kind), audit.AuditOutcomeOK, "", rec.Unsandboxed)
 		ev.End(logging.OutcomeOK, "", nil)
 		return
 	}
@@ -235,6 +249,6 @@ func (d sessionRouteDeps) handBackResume(ctx context.Context, l swapLink) {
 	if out.Status >= http.StatusInternalServerError {
 		auditOutcome = audit.AuditOutcomeError
 	}
-	d.swapCompletion(auditID, swapToHeadless, l.SessionID, l.TerminalID, swapAgent(rec.Kind), auditOutcome, code)
+	d.swapCompletion(auditID, swapToHeadless, l.SessionID, l.TerminalID, swapAgent(rec.Kind), auditOutcome, code, rec.Unsandboxed)
 	ev.End(outcome, reason, errors.New(code))
 }

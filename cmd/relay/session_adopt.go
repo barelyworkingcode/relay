@@ -52,6 +52,7 @@ const (
 	adoptStopFailed      = "stop_failed"
 	adoptLaunchFailed    = "launch_failed"
 	adoptAuditOff        = "audit_unavailable"
+	adoptDirectoryGone   = refusalDirectoryUnusable
 )
 
 var outsideIDPattern = regexp.MustCompile(`^outside:[0-9a-f]{32}$`)
@@ -71,6 +72,8 @@ type adoptResponse struct {
 	ConversationID  string `json:"conversationId,omitempty"`
 	Interrupted     bool   `json:"interrupted"`
 	RecoverySent    bool   `json:"recoverySent"`
+	// Unsandboxed is true for a session adopted in no project.
+	Unsandboxed bool `json:"unsandboxed,omitempty"`
 }
 
 // AdoptRequest is what the door hands the core. Caller is the resolved
@@ -89,6 +92,7 @@ type AdoptResult struct {
 	ClaudeSessionID       string
 	Interrupted           bool
 	RecoverySent          bool
+	Unsandboxed           bool
 }
 
 // AdoptRefusal is an adopt the core did not carry out. Status is the HTTP
@@ -102,7 +106,8 @@ func (r *AdoptRefusal) Error() string { return r.Message }
 
 // adoptOps is the one core behind the adopt door: it ends an outside Claude
 // process a person started in a terminal and resumes its conversation as a
-// headless relay session, under the project's sandbox and policy. An outside
+// headless relay session, under the project's sandbox and policy, or in its own
+// folder with no sandbox when it is in no project. An outside
 // codex thread is not ended: relay attaches to it through the codex daemon and
 // changes none of its settings.
 type adoptOps struct {
@@ -156,7 +161,7 @@ func (a *adoptOps) handleAdopt(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusCreated, adoptResponse{
 		SessionID: res.SessionID, ClaudeSessionID: res.ClaudeSessionID, Agent: res.Agent, ConversationID: res.ConversationID,
-		Interrupted: res.Interrupted, RecoverySent: res.RecoverySent,
+		Interrupted: res.Interrupted, RecoverySent: res.RecoverySent, Unsandboxed: res.Unsandboxed,
 	})
 }
 
@@ -262,7 +267,8 @@ func (s *adoptState) endEvent(ev *logging.Event, refusal *AdoptRefusal) {
 }
 
 // adoptOutside judges, audits, stops and resumes, in this order: audit ready,
-// the row, a fresh match of it against the agent's registry, the project, the
+// the row, a fresh match of it against the agent's registry, the project (a
+// Claude row in no project: the folder re-match and the directory check), the
 // managed list, the idle check, the model, launch authorization, the adopt
 // intent, the interrupt (when the session is busy), the stop, the launch and
 // the recovery message. Nothing is signalled before AuthorizeLaunch passed and
@@ -308,14 +314,26 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	}
 	var err error
 
+	// A Claude row in no project is adopted unsandboxed in its own folder. Pi
+	// and Codex rows need a project, and a Claude row whose project is gone or
+	// remote is not "in no project": it keeps the refusal.
+	noProject := agent == "claude" && row.ProjectID == nil
 	var proj *config.Project
-	if row.ProjectID != nil {
-		proj, _ = config.FindProjectByID(config.FreshSettings(d.store), *row.ProjectID)
+	var folder string
+	if noProject {
+		var refusal *AdoptRefusal
+		if folder, refusal = a.noProjectFolder(ctx, row.Directory); refusal != nil {
+			return nil, refusal
+		}
+	} else {
+		if row.ProjectID != nil {
+			proj, _ = config.FindProjectByID(config.FreshSettings(d.store), *row.ProjectID)
+		}
+		if proj == nil || proj.IsRemote() || proj.IsHosted() {
+			return nil, refuse(http.StatusConflict, adopt.ReasonNoProject, "the session is not in a registered local project")
+		}
+		st.projectID = proj.ID
 	}
-	if proj == nil || proj.IsRemote() || proj.IsHosted() {
-		return nil, refuse(http.StatusConflict, adopt.ReasonNoProject, "the session is not in a registered local project")
-	}
-	st.projectID = proj.ID
 
 	if agent == "pi" {
 		_, process, e := d.host().resolve()
@@ -382,11 +400,20 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		return nil, refuse(http.StatusConflict, adoptModelUnknown, "the model of the session is unknown; send model")
 	}
 
-	result, lr := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, LaunchRequest{
-		Caller: req.Caller, ProjectID: proj.ID, Kind: agent, Directory: row.Directory,
-		Name: row.Name, Model: model, offer: d.offerFor(ctx),
-		ClientSettings: json.RawMessage(`{"headless":true,"agent":true}`),
-	})
+	var result *LaunchResult
+	var lr *LaunchRefusal
+	if noProject {
+		result, lr = authorizeUnsandboxedLaunch(d.store, d.sessions, unsandboxedLaunch{
+			Caller: req.Caller, Kind: KindClaude, Directory: folder, Name: row.Name, Model: model,
+			ClientSettings: json.RawMessage(`{"headless":true,"agent":true}`),
+		})
+	} else {
+		result, lr = AuthorizeLaunch(d.store, d.modelKeys, d.sessions, LaunchRequest{
+			Caller: req.Caller, ProjectID: proj.ID, Kind: agent, Directory: row.Directory,
+			Name: row.Name, Model: model, offer: d.offerFor(ctx),
+			ClientSettings: json.RawMessage(`{"headless":true,"agent":true}`),
+		})
+	}
 	if lr != nil {
 		d.auditor.Record(lr.Audit)
 		return nil, refuse(lr.Status, lr.Code, lr.Message)
@@ -415,7 +442,12 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	}
 	actor := callerAuditActor(req.Caller)
 	base := map[string]any{
-		"outside_id": row.ID, "claude_session_id": obs.ClaudeID, "project_id": proj.ID,
+		"outside_id": row.ID, "claude_session_id": obs.ClaudeID,
+	}
+	if noProject {
+		base["no_project"], base["relay_sandbox"] = true, false
+	} else {
+		base["project_id"] = proj.ID
 	}
 	if agent == "pi" || agent == "codex" {
 		delete(base, "claude_session_id")
@@ -554,8 +586,27 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 			return ""
 		}(),
 		SessionID: result.SessionID, ClaudeSessionID: obs.ClaudeID,
-		Interrupted: st.interrupted, RecoverySent: recoverySent,
+		Interrupted: st.interrupted, RecoverySent: recoverySent, Unsandboxed: noProject,
 	}, nil
+}
+
+// noProjectFolder judges the folder of a Claude row that is in no project, at
+// adopt time and before anything is signalled: a local project that holds it
+// now answers `changed` so the person adopts again from the refreshed row,
+// sandboxed, and a folder that is not an existing directory answers
+// `directory_unusable`. Relay never picks unsandboxed over a project for them.
+// It returns the folder with its symlinks resolved.
+func (a *adoptOps) noProjectFolder(ctx context.Context, directory string) (string, *AdoptRefusal) {
+	settings := config.FreshSettings(a.deps.store)
+	resolved := resolveOutsideProjectPaths(ctx, nil, settings.Projects)
+	if matchOutsideProject(settings.Projects, resolved, nil, directory) != nil {
+		return "", &AdoptRefusal{Status: http.StatusConflict, Code: adoptChanged, Message: "a project now holds the session's folder; adopt it again"}
+	}
+	folder, ok := usableDirectory(directory)
+	if !ok {
+		return "", &AdoptRefusal{Status: http.StatusConflict, Code: adoptDirectoryGone, Message: "the session's folder is not a usable directory"}
+	}
+	return folder, nil
 }
 
 // resolveRow finds the live console row the request names. A selector that

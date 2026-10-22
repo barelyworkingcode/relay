@@ -131,8 +131,14 @@ var ErrNoBridgeSocket = errors.New("terminal: identity requires a configured bri
 // before Manager.Create would otherwise have had a chance to set
 // session.onExit/onOutput, a real data race this signature closes by
 // construction rather than by convention.
-func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode int), onIdle func(id string), onOutput func(id string, data []byte)) (*Session, error) {
-	if err := spec.validate(); err != nil {
+func startSession(spec CreateSpec, cfg Config, unsandboxed bool, onExit func(id string, exitCode int), onIdle func(id string), onOutput func(id string, data []byte)) (*Session, error) {
+	checked := spec
+	if unsandboxed && spec.Sandbox == nil && spec.Identity == nil && spec.Host == nil {
+		// Deliberate: the Claude token needs a sandbox only for a launch that is
+		// not unsandboxed, and CreateUnsandboxed's caller has marked this one.
+		checked.ClaudeToken = ""
+	}
+	if err := checked.validate(); err != nil {
 		return nil, err
 	}
 	if spec.Identity != nil && cfg.BridgeSocket == "" {

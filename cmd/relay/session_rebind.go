@@ -25,6 +25,7 @@ import (
 const (
 	rebindNotLive        = "not_live"
 	rebindProjectGone    = "project_gone"
+	rebindUnsandboxed    = "unsandboxed"
 	rebindNoRootRecord   = "no_root_record"
 	rebindRunnerMismatch = "runner_mismatch"
 	rebindRootGone       = "root_gone"
@@ -143,6 +144,11 @@ func (r *appRouter) SessionRebind(ctx context.Context, req bridge.SessionRebindR
 func (r *appRouter) rebindRoot(req bridge.SessionRebindRequest, rec ledger.Record, held bool) (*service.Launch, string) {
 	if !held || rec.State != ledger.StateLive || rec.Kind != KindClaude || rec.Detached != nil {
 		return nil, rebindNotLive
+	}
+	// An unsandboxed session has no launch identity to bind, and its record has
+	// no project to be gone: it keeps its own reason.
+	if rec.Unsandboxed {
+		return nil, rebindUnsandboxed
 	}
 	if r.store == nil || r.launches == nil {
 		return nil, rebindProjectGone
