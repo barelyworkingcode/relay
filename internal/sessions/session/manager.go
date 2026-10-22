@@ -559,7 +559,9 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 		_ = json.Unmarshal(spec.Settings, &parsed)
 	}
 	mode := parsed.PermissionMode
-	if parsed.Headless {
+	// Deliberate: an unsandboxed session has no sandbox to bound bypass, so
+	// being headless does not set it.
+	if parsed.Headless && !spec.Unsandboxed {
 		mode = "bypassPermissions"
 	}
 	if parsed.PermissionPolicy != nil && mode == "" {
