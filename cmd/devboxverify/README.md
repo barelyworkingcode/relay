@@ -1281,12 +1281,15 @@ or with no `claude_base_url`. PASS when the door answers 201 with `unsandboxed:
 true` for that conversation; the terminal's claude process is gone; `relay
 session message` gets a reply holding `verify-<nonce>-adopt-uns-2` that is in the
 same `<uuid>.jsonl`; a Chief of Staff `POST /api/chief-of-staff/messages` (a
-credential minted with `proxy` and `execute`, revoked after) answers 202; and
+`proxy` credential the journey seeds into `settings.json`, as
+`session-swap-back` does, and drops after; a stack run has no console for a
+presence-gated mint) answers 202; and
 every `relay audit --event session_adopt` row for the conversation carries
 `"no_project": true`, with the intent row and a completion with outcome `ok`.
 - Waits: as `session-adopt`. The outside reply is model output: a bounded read of
   the transcript, 120 s; the registry `idle` re-read, 60 s; the trust prompt, pane
-  capture, 30 s. The Chief of Staff send waits on its HTTP answer only.
+  capture, 30 s. The settings import has no event: the seeded credential's scoped read is retried,
+  bounded, as in `session-swap-back`. The send then waits on its HTTP answer.
 - Lives in: `cmd/relay/session_adopt.go`, `cmd/relay/session_unsandboxed.go`.
 - Reached by: `POST /api/sessions/adopt` and `POST /api/chief-of-staff/messages`
   on the frontend socket, `relay session message`, `relay audit`.

@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -271,14 +274,46 @@ func classifyAdoptUnsandboxed(r adoptRun, tag string) result {
 }
 
 // adoptCosSend sends one message to the session as the Chief of Staff, with a
-// credential minted for the call and revoked after it.
-func adoptCosSend(ctx context.Context, e env, sessionID, text string) (int, string) {
-	tok, revoke, res, ok := mintCosStartCred(ctx, e)
-	if !ok {
-		return 0, res.Detail
+// proxy credential seeded into settings.json for the call and dropped after
+// it. Deliberate: a presence-gated mint needs the console, which a stack run
+// has not; the seeded record is how session-swap-back and session-detached-host
+// get theirs. The scope needs class proxy only. The token goes into no file,
+// log or detail beyond the hash settings.json keeps.
+func adoptCosSend(ctx context.Context, e env, sessionID, text string) (status int, detail string) {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return 0, "credential: " + err.Error()
 	}
-	defer revoke()
-	resp := cosRequest(ctx, e, tok, true, http.MethodPost, "/api/chief-of-staff/messages",
+	token := hex.EncodeToString(secret)
+	hash := sha256.Sum256([]byte(token))
+	credID := uuid.NewString()
+	cred := map[string]any{
+		"id": credID, "name": "verify-" + e.Nonce + "-adopt-cos", "hash": hex.EncodeToString(hash[:]),
+		"classes": []string{"proxy"}, "created": time.Now().UTC().Format(time.RFC3339),
+		"expires": time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}
+	if err := editSettings(e.ConfigDir, func(top map[string]json.RawMessage) error {
+		return appendRecords(top, map[string]any{"api_credentials": cred})
+	}); err != nil {
+		return 0, "seeding the credential: " + err.Error()
+	}
+	defer func() {
+		if err := editSettings(e.ConfigDir, func(top map[string]json.RawMessage) error {
+			dropRecords(top, "api_credentials", credID)
+			return nil
+		}); err != nil {
+			detail += "; teardown: " + err.Error()
+		}
+	}()
+	// Waits: none possible for the settings import; relay's file watch emits
+	// no event. The seeded credential answers 200 once the import has run, so
+	// the scoped read is retried, bounded.
+	if !pollUntil(ctx, detachedStartTries, func() bool {
+		return cosRequest(ctx, e, token, true, http.MethodGet, "/api/sessions", nil, frontendRequestTimeout).Status == http.StatusOK
+	}) {
+		return 0, "the seeded credential was not imported within " + detachedStartTries.String()
+	}
+	resp := cosRequest(ctx, e, token, true, http.MethodPost, "/api/chief-of-staff/messages",
 		jsonBody(map[string]string{"sessionId": sessionID, "text": text}), frontendRequestTimeout)
 	return resp.Status, firstLine(resp.Error)
 }
