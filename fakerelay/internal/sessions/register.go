@@ -120,6 +120,9 @@ type launchTarget struct {
 	project world.Project
 	dir     string
 	host    map[string]any
+	// unsandboxed marks a launch in no project: adopt builds it, and the
+	// drop-in of such a session inherits it.
+	unsandboxed bool
 }
 
 // authorize resolves a launch. model is checked only when it is not empty.

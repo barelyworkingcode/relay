@@ -644,14 +644,24 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 		return resumeError(http.StatusInternalServerError, "corrupt session record", "corrupt_record")
 	}
 
-	req := LaunchRequest{
-		Caller: caller, SessionID: id, Resume: true,
-		ProjectID: rec.ProjectID, Kind: rec.Kind, Directory: rec.Directory,
-		Name: sessionReq.Name, Model: sessionReq.Model, ClientSettings: sessionReq.Settings,
-		SystemPrompt: sessionReq.SystemPrompt, AppendClaudeMd: sessionReq.AppendClaudeMd,
-		Entry: rec.Entry, offer: d.offerFor(ctx),
+	var result *LaunchResult
+	var refusal *LaunchRefusal
+	if rec.Unsandboxed {
+		// A record the adopt marked runs in its own folder with no project. The
+		// mark comes from the ledger, never from a caller.
+		result, refusal = authorizeUnsandboxedLaunch(d.store, d.sessions, unsandboxedLaunch{
+			Caller: caller, SessionID: id, Resume: true, Kind: rec.Kind, Directory: rec.Directory,
+			Name: sessionReq.Name, Model: sessionReq.Model, ClientSettings: sessionReq.Settings,
+		})
+	} else {
+		result, refusal = AuthorizeLaunch(d.store, d.modelKeys, d.sessions, LaunchRequest{
+			Caller: caller, SessionID: id, Resume: true,
+			ProjectID: rec.ProjectID, Kind: rec.Kind, Directory: rec.Directory,
+			Name: sessionReq.Name, Model: sessionReq.Model, ClientSettings: sessionReq.Settings,
+			SystemPrompt: sessionReq.SystemPrompt, AppendClaudeMd: sessionReq.AppendClaudeMd,
+			Entry: rec.Entry, offer: d.offerFor(ctx),
+		})
 	}
-	result, refusal := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, req)
 	if refusal != nil {
 		d.auditor.Record(resumeAuditEvent(refusal.Audit))
 		endEvent(ev, refusal)
@@ -711,6 +721,9 @@ func resumeAuditEvent(ev audit.AuditEvent) audit.AuditEvent {
 // not -- is identical.
 func (d sessionRouteDeps) auditResume(actor audit.AuditActor, sessionID, projectID, kind, outcome, errMsg string) {
 	fields := sessionLaunchAuditFields{Actor: actor, ProjectID: projectID, SessionID: sessionID, Kind: kind}
+	if rec, ok := d.sessions.Get(sessionID); ok && rec.Unsandboxed {
+		fields.NoProject = true
+	}
 	d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(fields, outcome, errMsg)))
 }
 

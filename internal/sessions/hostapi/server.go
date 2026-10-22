@@ -713,7 +713,7 @@ func (s *Server) launchTerminal(w http.ResponseWriter, req LaunchRequest) {
 			return
 		}
 	}
-	sess, err := s.terminals.Create(spec)
+	sess, err := createTerminal(s.terminals, req, spec)
 	if err != nil {
 		if req.DropInFor != "" {
 			s.takeDropIn(req.SessionID)
@@ -999,7 +999,9 @@ func (s *Server) decidePermission(ctx context.Context, body permissionRequestBod
 		Directory: sess.Directory,
 		Policy:    sess.Policy,
 	}
-	if sess.Headless {
+	// Deliberate: an unsandboxed session has no sandbox to bound bypass, so
+	// being headless does not set it.
+	if sess.Headless && !sess.Unsandboxed {
 		in.Mode = "bypassPermissions"
 	}
 	sess.Unlock()

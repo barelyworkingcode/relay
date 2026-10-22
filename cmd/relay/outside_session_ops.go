@@ -234,7 +234,7 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 				id := project.ID
 				o.Session.ProjectID = &id
 			}
-			outsidesessions.GateAdoption(&o.Session, h != nil, project != nil)
+			outsidesessions.GateAdoption(&o.Session, h != nil, project != nil, o.Agent)
 			if o.Session.TmuxSession != nil {
 				if h == nil || h.ShowAllTmuxSessions {
 					o.Session.Viewable = true

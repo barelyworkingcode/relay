@@ -23,7 +23,8 @@ outside it is not a relay bug, however real.
    loopback in place of a credential, obtain or keep a credential it wasn't
    issued, or act without the audit trail recording it. When
    `claude_token_file` is set, a sandboxed Claude launch is issued the Claude
-   token on a descriptor, no other launch is, and no sandboxed process can open
+   token on a descriptor, and so is a Claude session adopted in no project (3f),
+   which is not sandboxed; no other launch is, and no sandboxed process can open
    the file by path. An attached codex thread (3f) is not a sandboxed session: relay did not start it and confines nothing in it.
    Examples: #53 (a planted symlink widens a later session's read grants),
    #104 (renaming a socket-deny directory to connect).
@@ -147,14 +148,21 @@ outside it is not a relay bug, however real.
    `POST /api/sessions/adopt`. Only an eligible entry is adopted: an
    interactive, command-line Claude with a UUID `sessionId` whose registry
    `procStart` equals the process's kernel start time, in a registered local
-   project. An ambiguous match (two live entries, one `sessionId`), a session
+   project or in none. An ambiguous match (two live entries, one `sessionId`), a session
    relay already manages and a session on an SSH host are never adopted. Relay
    writes a durable intent row before any signal and signals nothing with
    auditing off; before each signal it re-reads the pid's start time and
    sends nothing on a mismatch. The registry and the transcript choose no
    path and grant nothing: the transcript path is derived and symlinks are
    refused. The resumed session gets the project's sandbox, allowed models and
-   permission policy and the ordinary launch identity and token path. The
+   permission policy and the ordinary launch identity and token path. A Claude
+   in no project resumes in its own folder with no sandbox, no policy and no
+   launch identity: the owner chose that, and it runs with the account's full
+   reach. A project that holds the folder at adopt time refuses the adopt, so
+   relay never picks unsandboxed over a project, and Pi and Codex in no project
+   are not adopted. Being headless sets no `bypassPermissions` on an unsandboxed
+   session; it runs the mode its settings name (`default` after an adopt), and
+   only the owner's `relay session mode` sets bypass. The
    recovery message after an interrupt quotes at most 300 characters of the
    session's own last prompt and 500 of the open tool call's input, under the
    `relay-recovery` origin. The chief-of-staff scope cannot reach the door.

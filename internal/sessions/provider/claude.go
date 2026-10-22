@@ -81,7 +81,7 @@ type ClaudeConfig struct {
 	Identity *sessionsmcp.IdentitySpec
 
 	// ClaudeToken is this launch's Claude long-term OAuth token, handed to the
-	// child on shim.TokenFD. Sandboxed local launches only; never cached across
+	// child on shim.TokenFD. Local launches only, sandboxed or unsandboxed; never cached across
 	// calls, same rule as Identity, and never logged.
 	ClaudeToken string
 
@@ -347,9 +347,11 @@ func (p *ClaudeProvider) idleWatcher(stopIdle <-chan struct{}) {
 }
 
 // effectivePermissionMode resolves the Claude CLI --permission-mode for this
-// session. A headless session forces "bypassPermissions".
+// session. A headless session forces "bypassPermissions" unless it is
+// unsandboxed: that is deliberate, because an unsandboxed session has no
+// sandbox to bound bypass.
 func (p *ClaudeProvider) effectivePermissionMode() string {
-	if p.session.Headless {
+	if p.session.Headless && !p.session.Unsandboxed {
 		return "bypassPermissions"
 	}
 	return p.session.PermissionMode
@@ -1382,12 +1384,13 @@ func (p *ClaudeProvider) Alive() bool {
 }
 
 func (p *ClaudeProvider) SetPermissionMode(mode string) error {
-	if p.cfg.Identity != nil || p.cfg.SandboxProfile != "" {
+	if p.cfg.Identity != nil || p.cfg.SandboxProfile != "" || p.cfg.ClaudeToken != "" {
 		// This launch's identity is single-use (a second Hello is refused),
 		// and relay mints the identity and sandbox profile per launch, not
 		// per spawn, so the Kill-then-Start restart below cannot reuse
-		// them. The caller must drive a real resume instead, which mints
-		// both fresh.
+		// them. The token is read from claude_token_file per launch and its
+		// pipe is spent after one spawn, so it cannot be reused either. The
+		// caller must drive a real resume instead, which mints all of them fresh.
 		return ErrRestartNeedsResume
 	}
 	switch mode {

@@ -299,6 +299,10 @@ type CreateSpec struct {
 	Model     string
 	// Origin is who asked for the session, empty for the person.
 	Origin string
+	// Unsandboxed marks a claude session with no project and no sandbox. The
+	// host saves it with the session and lists it; hostapi has already checked
+	// it fits no other shape.
+	Unsandboxed bool
 
 	Settings       json.RawMessage
 	SystemPrompt   string
@@ -516,6 +520,9 @@ func (m *Manager) resolveSessionForCreate(spec CreateSpec, reused *sessionstypes
 		if err != nil {
 			return nil, fmt.Errorf("session: resume %s: not found on disk: %w", spec.SessionID, err)
 		}
+		// Deliberate: the launch decides the mark, so a session never keeps
+		// "unsandboxed" from a saved file when relay resumes it in a project.
+		sess.Unsandboxed = spec.Unsandboxed
 		return sess, nil
 	}
 	return buildNewSession(spec, m.cfg.clockOrDefault().Now()), nil
@@ -552,7 +559,9 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 		_ = json.Unmarshal(spec.Settings, &parsed)
 	}
 	mode := parsed.PermissionMode
-	if parsed.Headless {
+	// Deliberate: an unsandboxed session has no sandbox to bound bypass, so
+	// being headless does not set it.
+	if parsed.Headless && !spec.Unsandboxed {
 		mode = "bypassPermissions"
 	}
 	if parsed.PermissionPolicy != nil && mode == "" {
@@ -587,6 +596,7 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 		Headless:       parsed.Headless,
 		Agent:          parsed.Agent,
 		Origin:         spec.Origin,
+		Unsandboxed:    spec.Unsandboxed,
 		PermissionMode: mode,
 		Policy:         parsed.PermissionPolicy,
 		Host:           spec.Host,
@@ -1841,6 +1851,8 @@ type Summary struct {
 	Headless bool `json:"headless,omitempty"`
 	// Origin is set when someone other than the person started the session.
 	Origin string `json:"origin,omitempty"`
+	// Unsandboxed is set only on a session relay runs with no project and no sandbox.
+	Unsandboxed bool `json:"unsandboxed,omitempty"`
 
 	Attention *attention.Attention `json:"attention,omitempty"`
 }
@@ -1863,6 +1875,7 @@ func summarize(sess *sessionstypes.Session) Summary {
 		Host:          sess.Host.Chip(),
 		Headless:      sess.Headless,
 		Origin:        sess.Origin,
+		Unsandboxed:   sess.Unsandboxed,
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/barelyworkingcode/relay/fakerelay/internal/server"
+	"github.com/barelyworkingcode/relay/fakerelay/internal/world"
 )
 
 // dropInTemplates is the terminal template a drop-in launches for each kind,
@@ -37,8 +38,10 @@ func (s *svc) dropIn(w http.ResponseWriter, r *http.Request) {
 	x := s.sessions[id]
 	var kind, projectID, dir, name string
 	var host map[string]any
+	unsandboxed := false
 	if x != nil {
 		kind, projectID, dir, host, name = x.kind, x.projectID, x.directory, x.host, x.askedName
+		unsandboxed = x.unsandboxed
 	}
 	s.mu.Unlock()
 	hostName := "console"
@@ -58,8 +61,16 @@ func (s *svc) dropIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	templateID := dropInTemplates[kind]
-	target, ref := s.authorize(projectID, "", "", "terminal")
-	tpl := s.findTemplate(target, templateID)
+	var target launchTarget
+	var ref *refusal
+	var tpl *world.Template
+	if unsandboxed {
+		target = launchTarget{unsandboxed: true}
+		tpl = s.consoleTemplate(templateID)
+	} else {
+		target, ref = s.authorize(projectID, "", "", "terminal")
+		tpl = s.findTemplate(target, templateID)
+	}
 	if ref == nil && tpl == nil {
 		ref = &refusal{http.StatusForbidden, "template_unavailable", templateUnavailable(templateID)}
 	}

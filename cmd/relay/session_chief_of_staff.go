@@ -181,6 +181,11 @@ func (d sessionRouteDeps) sessionMessageArgs(sessionID, body, origin string, wit
 		"origin":     origin,
 		"text_bytes": len(body),
 	}
+	if d.sessions != nil {
+		if rec, ok := d.sessions.Get(sessionID); ok && rec.Unsandboxed {
+			args["no_project"], args["relay_sandbox"] = true, false
+		}
+	}
 	if withText && d.auditor.LogArgs() {
 		text, truncated := d.auditor.CapText(body)
 		args["text"] = text

@@ -138,7 +138,17 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 
 		DropInAgent: rec.Kind,
 	}
-	result, lr := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, launchReq)
+	var result *LaunchResult
+	var lr *LaunchRefusal
+	if rec.Unsandboxed {
+		// Before the handoff: a folder that is gone refuses here, with the
+		// session still running.
+		result, lr = authorizeUnsandboxedLaunch(d.store, d.sessions, unsandboxedLaunch{
+			Caller: req.Caller, Kind: KindPTY, Directory: rec.Directory, Name: launchReq.Name, Cols: cols, Rows: rows,
+		})
+	} else {
+		result, lr = AuthorizeLaunch(d.store, d.modelKeys, d.sessions, launchReq)
+	}
 	if lr != nil {
 		d.auditor.Record(lr.Audit)
 		return nil, &DropInRefusal{Status: lr.Status, Code: lr.Code, Message: lr.Message}
@@ -148,14 +158,14 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	// The intent row is durable before anything stops; a swap relay cannot
 	// record does not start.
 	actor := callerAuditActor(req.Caller)
-	swapID, err := d.swapIntent(actor, swapToTerminal, req.SessionID, rec.ProjectID, hostID, swapAgent(rec.Kind))
+	swapID, err := d.swapIntent(actor, swapToTerminal, req.SessionID, rec.ProjectID, hostID, swapAgent(rec.Kind), rec.Unsandboxed)
 	if err != nil {
 		d.discardLaunch(result)
 		return nil, &DropInRefusal{Status: http.StatusServiceUnavailable, Code: dropInAuditOff,
 			Message: "auditing is off or cannot record; the session was not taken over"}
 	}
 	complete := func(outcome, code string) {
-		d.swapCompletion(swapID, swapToTerminal, req.SessionID, terminalID, swapAgent(rec.Kind), outcome, code)
+		d.swapCompletion(swapID, swapToTerminal, req.SessionID, terminalID, swapAgent(rec.Kind), outcome, code, rec.Unsandboxed)
 	}
 	link := swapLink{SessionID: req.SessionID, TerminalID: terminalID, Host: host, Caller: req.Caller}
 

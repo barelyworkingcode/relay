@@ -40,6 +40,9 @@ type Summary struct {
 	ExitCode   int               `json:"exitCode,omitempty"`
 	Host       map[string]string `json:"host,omitempty"`
 	Origin     string            `json:"origin,omitempty"`
+	// Unsandboxed is set only on a drop-in terminal of a session that runs with
+	// no project and no sandbox.
+	Unsandboxed bool `json:"unsandboxed,omitempty"`
 }
 
 // sessionSlot is one entry in Manager's table, including the window between
@@ -58,6 +61,9 @@ type sessionSlot struct {
 	// the table entry has been resolved.
 	done    chan struct{}
 	session *Session // nil until the launch succeeds
+	// unsandboxed marks a terminal started by CreateUnsandboxed. It lives on
+	// the slot so it leaves the table with the terminal.
+	unsandboxed bool
 }
 
 // RootPID returns s's shim pid (SH §4.2's session root), or 0 if the shim
@@ -119,12 +125,24 @@ func (m *Manager) SetOutputHandler(fn func(id string, data []byte)) {
 // under the same lock acquisition, so two concurrent Creates for the same
 // id can never both pass the check.
 func (m *Manager) Create(spec CreateSpec) (*Session, error) {
+	return m.create(spec, false)
+}
+
+// CreateUnsandboxed starts a terminal with no sandbox profile, no launch
+// identity and no host that may still carry the Claude token, and lists it as
+// unsandboxed. The caller (hostapi) has already checked the launch is a
+// drop-in terminal of an unsandboxed session.
+func (m *Manager) CreateUnsandboxed(spec CreateSpec) (*Session, error) {
+	return m.create(spec, true)
+}
+
+func (m *Manager) create(spec CreateSpec, unsandboxed bool) (*Session, error) {
 	m.mu.Lock()
 	if _, exists := m.sessions[spec.SessionID]; exists {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrSessionExists, spec.SessionID)
 	}
-	slot := &sessionSlot{launching: true, done: make(chan struct{})}
+	slot := &sessionSlot{launching: true, done: make(chan struct{}), unsandboxed: unsandboxed}
 	m.sessions[spec.SessionID] = slot
 	m.mu.Unlock()
 
@@ -144,7 +162,7 @@ func (m *Manager) Create(spec CreateSpec) (*Session, error) {
 	m.mu.Lock()
 	onOutput := m.onOutput
 	m.mu.Unlock()
-	s, err := startSession(spec, m.cfg, onExit, onIdle, onOutput)
+	s, err := startSession(spec, m.cfg, unsandboxed, onExit, onIdle, onOutput)
 
 	m.mu.Lock()
 	stopping := slot.stopping
@@ -237,6 +255,8 @@ func (m *Manager) ListSummary() []Summary {
 			ExitCode:   exitCode,
 			Host:       s.Host.Chip(),
 			Origin:     s.Origin,
+
+			Unsandboxed: slot.unsandboxed,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
