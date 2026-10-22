@@ -216,13 +216,16 @@ func markAmbiguous(obs []Observation) {
 }
 
 // GateAdoption applies the two reasons that outrank the registry's: a session
-// on an SSH host, then one outside every registered project. A row they do not
-// touch keeps the reason observe gave it.
-func GateAdoption(s *Session, onHost, inProject bool) {
+// on an SSH host, then a Pi or Codex session outside every registered project.
+// A Claude session outside every project is adoptable: relay resumes it in its
+// own folder with no sandbox. Pi needs a project for its model key and its
+// transcript grant, and a Codex attach needs one for launch authorization. A
+// row they do not touch keeps the reason observe gave it.
+func GateAdoption(s *Session, onHost, inProject bool, agent string) {
 	switch {
 	case onHost:
 		s.AdoptReason = AdoptReasonHost
-	case !inProject:
+	case !inProject && (agent == "pi" || agent == "codex"):
 		s.AdoptReason = AdoptReasonNoProject
 	default:
 		return

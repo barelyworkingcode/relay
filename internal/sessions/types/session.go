@@ -26,7 +26,11 @@ type Session struct {
 	Agent        bool   `json:"agent,omitempty"` // listed and state-tracked although headless
 	// Origin names who started the session when it was not the person at a
 	// frontend (OriginChiefOfStaff).
-	Origin        string `json:"origin,omitempty"`
+	Origin string `json:"origin,omitempty"`
+	// Unsandboxed marks a Claude session that runs with no project and no
+	// sandbox. It is saved with the session, so it survives a relay-sessions
+	// restart.
+	Unsandboxed   bool   `json:"unsandboxed,omitempty"`
 	ThinkingLevel string `json:"thinkingLevel,omitempty"` // pi-only: off/minimal/low/medium/high/xhigh
 	// Project-scoped MCP tokens are NOT stored on the session. Relay is the
 	// sole token authority: providers resolve the token just-in-time from

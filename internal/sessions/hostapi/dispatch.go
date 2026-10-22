@@ -67,6 +67,61 @@ func checkLaunchOrigin(origin string) error {
 	return nil
 }
 
+// claudeCodeTemplateID mirrors cmd/relay's kindTemplateIDs[KindClaude]: the
+// template an unsandboxed drop-in terminal runs.
+const claudeCodeTemplateID = "claude-code"
+
+// hasProject reports whether the launch names a project, in project or in the
+// session request. The literal null counts as none.
+func hasProject(req LaunchRequest, sr sessionRequestBody) bool {
+	return (len(req.Project) > 0 && string(req.Project) != "null") || sr.ProjectID != ""
+}
+
+// checkUnsandboxedTerminal allows the unsandboxed mark on a local drop-in
+// terminal of the claude-code template only, with no project, no sandbox and
+// no identity. Fail closed: any other shape that carries it is refused.
+func checkUnsandboxedTerminal(req LaunchRequest, host *sessionstypes.HostSpec) error {
+	if !req.Unsandboxed {
+		return nil
+	}
+	if req.Kind != kindPTY || req.DropInFor == "" || req.TemplateID != claudeCodeTemplateID || host != nil ||
+		req.Sandbox != nil || req.Identity != nil || hasProject(req, sessionRequestBody{}) ||
+		req.Outside || req.ReadOnly || req.ViewTarget != nil || req.ModelKey != "" {
+		return errors.New("hostapi: unsandboxed applies only to a local drop-in terminal with no project, sandbox or identity")
+	}
+	return nil
+}
+
+// checkUnsandboxedSession allows the unsandboxed mark on a local claude launch
+// only, with no project, sandbox, identity, launcher, entry or model key, and
+// refuses a local claude launch with no project and no mark. Deliberate: relay
+// authorizes every claude launch against a project, so one that arrives
+// without a project is a request relay never makes unless the mark says so.
+func checkUnsandboxedSession(req LaunchRequest, sr sessionRequestBody, host *sessionstypes.HostSpec) error {
+	noProject := !hasProject(req, sr)
+	if !req.Unsandboxed {
+		if req.Kind == session.KindClaude && host == nil && noProject {
+			return errors.New("hostapi: a local claude launch needs a project or the unsandboxed mark")
+		}
+		return nil
+	}
+	if req.Kind != session.KindClaude || host != nil || !noProject || req.Sandbox != nil || req.Identity != nil ||
+		req.Launcher != nil || sr.Entry != "" || req.ModelKey != "" || req.AttachCodexThread != "" {
+		return errors.New("hostapi: unsandboxed applies only to a local claude launch with no project, sandbox or identity")
+	}
+	return nil
+}
+
+// createTerminal starts the terminal the launch describes. The mark reaches the
+// manager here, not in the spec, so a terminal listed as unsandboxed is one
+// this function checked.
+func createTerminal(m *terminal.Manager, req LaunchRequest, spec terminal.CreateSpec) (*terminal.Session, error) {
+	if req.Unsandboxed {
+		return m.CreateUnsandboxed(spec)
+	}
+	return m.Create(spec)
+}
+
 // buildTerminalSpec translates a "pty" LaunchRequest into
 // terminal.CreateSpec, field by field: the two types were designed
 // independently (C5's wire contract vs. this package's own Go shape) and
@@ -87,6 +142,9 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 	}
 	host, err := decodeHostSpec(req.Host)
 	if err != nil {
+		return terminal.CreateSpec{}, err
+	}
+	if err := checkUnsandboxedTerminal(req, host); err != nil {
 		return terminal.CreateSpec{}, err
 	}
 	spec := terminal.CreateSpec{
@@ -170,8 +228,11 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 	if err != nil {
 		return session.CreateSpec{}, err
 	}
-	if req.ClaudeToken != "" && (req.Kind != session.KindClaude || req.Sandbox == nil || host != nil) {
-		return session.CreateSpec{}, errors.New("hostapi: claude token requires a sandboxed local claude launch")
+	if req.ClaudeToken != "" && (req.Kind != session.KindClaude || (req.Sandbox == nil && !req.Unsandboxed) || host != nil) {
+		return session.CreateSpec{}, errors.New("hostapi: claude token requires a sandboxed or unsandboxed local claude launch")
+	}
+	if err := checkUnsandboxedSession(req, sr, host); err != nil {
+		return session.CreateSpec{}, err
 	}
 	if err := checkResumeConversation(req, host); err != nil {
 		return session.CreateSpec{}, err
@@ -210,6 +271,7 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		ModelKey:       req.ModelKey,
 		Resume:         req.Resume,
 		Origin:         req.Origin,
+		Unsandboxed:    req.Unsandboxed,
 		Launcher:       req.Launcher,
 		Entry:          sr.Entry,
 		ClaudeToken:    req.ClaudeToken,
