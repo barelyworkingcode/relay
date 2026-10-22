@@ -258,7 +258,8 @@ project shows Adopt, as a terminal thread does.
 absent, null or empty, it is the top-level `cwd`. A thread with no absolute
 folder shows no row. The accepted sources are `cli` and `vscode` (the daemon
 reports `vscode` for a terminal and for the desktop app). A thread with a
-`parentThreadId` or an ephemeral thread is `not_interactive`; any other source
+`parentThreadId` is `not_interactive`; an ephemeral thread shows no row (the daemon
+refuses its turn list); any other source
 (`exec`, `mcp`, a subagent object) is `not_command_line`. The `thread/resume`
 reply is checked against the session folder by the same rule.
 
@@ -285,8 +286,8 @@ leaves the process.
 an error) and reads each thread's metadata and its newest turn. A thread with
 no turn shows no row. A row carries the folder, state (`idle` or `running`)
 and the start time, never the thread's text. A thread is not adoptable when its
-id is not a UUID (`invalid_id`), it has a parent thread or is ephemeral
-(`not_interactive`), its source is not the command line (`not_command_line`),
+id is not a UUID (`invalid_id`), it has a parent thread
+(`not_interactive`; an ephemeral thread shows no row), its source is not the command line (`not_command_line`),
 or the daemon lists its id more than once (`ambiguous`). Idle needs thread
 status `idle` and a newest turn that is not in progress; a busy thread is
 `adoptable:false` with `adoptReason:"busy"`. A daemon error, an absent daemon
