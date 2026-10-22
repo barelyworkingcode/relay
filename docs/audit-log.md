@@ -944,6 +944,18 @@ With auditing off, or when the intent row cannot be written, relay sends the
 daemon no `thread/resume`. Each audit row of an attach, the `session_launch`
 row included, records `sandbox:false`.
 
+A Claude adopted in no project (see
+[session-adoption.md](session-adoption.md#a-claude-session-in-no-project))
+writes the same rows with no `project_id` and two fields that say no project
+policy or sandbox applied: the `session_adopt` intent and completion, the
+`session_interrupt` row, the `session_swap` pairs and the `session_message`
+rows of the session carry `"no_project": true, "relay_sandbox": false`, and its
+`session_launch` and `session_resume` rows carry `"sandbox": false,
+"no_project": true` with an empty actor `project_id`. A refusal before the
+intent (`409 changed`, `409 directory_unusable`) writes no adopt row;
+`503 audit_unavailable` signals nothing. A relay restart writes the
+`session_rebind` pair with the reason `unsandboxed`.
+
 A resume of a dormant attached codex session writes the same intent and
 completion with `method:"reattach"` and `session_id` in the args, before
 `thread/resume` goes to the daemon. A refusal before the intent (`409 busy`,

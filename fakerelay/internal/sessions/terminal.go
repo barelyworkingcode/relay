@@ -59,12 +59,16 @@ type terminal struct {
 	exitCode                                int
 	readOnly, outside                       bool
 	dropIn                                  string // the session this terminal holds
+	unsandboxed                             bool   // the drop-in of a session that runs in no project
 }
 
 func (t *terminal) row() map[string]any {
 	v := map[string]any{"id": t.id, "templateId": t.templateID, "name": t.name, "directory": t.directory, "state": "running"}
 	if t.readOnly {
 		v["readOnly"], v["outside"] = true, t.outside
+	}
+	if t.unsandboxed {
+		v["unsandboxed"] = true
 	}
 	if t.stopped {
 		v["state"] = "stopped"
@@ -213,6 +217,21 @@ func templateUnavailable(id string) string {
 
 // findTemplate resolves a terminal template for a launch target: the host's
 // for a host project, else a console template the project allows.
+// consoleTemplate is a console template by id, with no project allow-list: the
+// drop-in of an unsandboxed session has no project to allow it.
+func (s *svc) consoleTemplate(id string) *world.Template {
+	var tpl *world.Template
+	s.State.Read(func(m *state.Model) {
+		for i := range m.Templates {
+			if m.Templates[i].ID == id {
+				x := m.Templates[i]
+				tpl = &x
+			}
+		}
+	})
+	return tpl
+}
+
 func (s *svc) findTemplate(t launchTarget, id string) *world.Template {
 	var tpl *world.Template
 	s.State.Read(func(m *state.Model) {
@@ -238,7 +257,7 @@ func allowedTemplate(list []string, id string) bool { return allowed(list, id) }
 
 func (s *svc) newTerminal(tpl *world.Template, b terminalBody, t launchTarget, origin string) *terminal {
 	x := &terminal{id: newUUID(), templateID: tpl.ID, name: b.Name, directory: t.dir, origin: origin, cols: b.Cols, rows: b.Rows,
-		host: t.host, viewers: map[*conn]bool{}}
+		host: t.host, viewers: map[*conn]bool{}, unsandboxed: t.unsandboxed}
 	if x.name == "" {
 		x.name = tpl.Name
 	}

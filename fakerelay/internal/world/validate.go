@@ -387,7 +387,7 @@ var (
 	adoptReasonsOther  = map[string]bool{"not_registered": true, "invalid_id": true, "start_mismatch": true, "not_interactive": true, "not_command_line": true, "ambiguous": true}
 	adoptBusyVetoes    = map[string]bool{"registry_busy": true, "status_stale": true, "open_tool_call": true, "child_process": true}
 	adoptModelFamilies = map[string]bool{"haiku": true, "sonnet": true, "opus": true}
-	adoptRefusals      = map[string]bool{"audit_unavailable": true, "unavailable": true, "adopt_in_progress": true, "changed": true, "stop_failed": true, "launch_failed": true}
+	adoptRefusals      = map[string]bool{"audit_unavailable": true, "unavailable": true, "adopt_in_progress": true, "changed": true, "stop_failed": true, "launch_failed": true, "directory_unusable": true}
 )
 
 // derivedAdoptReason is the first of relay's reasons that applies to the
@@ -398,8 +398,6 @@ func derivedAdoptReason(o OutsideFixture) string {
 		return "ended"
 	case o.HostID != nil:
 		return "host_unsupported"
-	case o.ProjectID == nil:
-		return "no_project"
 	}
 	return ""
 }
@@ -427,8 +425,6 @@ func validateOutsideAdopt(path string, o OutsideFixture) error {
 			return bad(path+".adoptable", "an ended row is not adoptable")
 		case o.HostID != nil:
 			return bad(path+".adoptable", "a host row is not adoptable")
-		case o.ProjectID == nil:
-			return bad(path+".adoptable", "requires project_id")
 		case !outsideIDShape.MatchString(o.ID):
 			return bad(path+".adoptable", "requires an id of outside: and 32 hex digits")
 		case !conversationUUID.MatchString(o.ClaudeSessionID):
@@ -447,6 +443,9 @@ func validateOutsideAdopt(path string, o OutsideFixture) error {
 			if a.Refuse != "" && !adoptRefusals[a.Refuse] {
 				return bad(path+".adopt.refuse", "invalid refusal")
 			}
+			if a.Refuse == "directory_unusable" && o.ProjectID != nil {
+				return bad(path+".adopt.refuse", "directory_unusable applies only to a row with no project_id")
+			}
 		}
 		return nil
 	}
@@ -455,6 +454,9 @@ func validateOutsideAdopt(path string, o OutsideFixture) error {
 	}
 	if o.AdoptReason == "" {
 		return nil
+	}
+	if o.AdoptReason == "no_project" {
+		return bad(path+".adopt_reason", "no_project applies to Pi and Codex rows, which a world cannot hold")
 	}
 	if d := derivedAdoptReason(o); d != "" {
 		if o.AdoptReason != d {

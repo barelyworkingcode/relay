@@ -2666,6 +2666,7 @@ when set. The text form is `started session SESSION-ID`.
 | `sessions[].folder` | string, optional | A grouping label. |
 | `sessions[].headless` | boolean, optional | `true` for a session with no terminal attached. |
 | `sessions[].origin` | string, optional | Who started it, when not a person at a screen. |
+| `sessions[].unsandboxed` | boolean, optional | `true` only for a session adopted in no project, which runs with no sandbox; its `projectId` is `""`. Absent on every other session. |
 | `sessions[].host` | object, optional | `{"id","name"}` of the SSH host of a host project. |
 | `sessions[].attention` | object, optional | Why the session needs someone. `exit` (`code`, `stderr[]`) is present on an `errored` session whose provider exited non-zero. |
 
@@ -2777,8 +2778,9 @@ session is deleted, not left dormant: it cannot be resumed.
 
 A resume applies to a dormant session. Every session is dormant after a relay
 restart, except a detached host session whose agent still runs (below); an
-unknown id exits `1` (`404`). Text form: `resumed session ID` or
-`session ID is already live`.
+unknown id exits `1` (`404`). A session adopted in no project resumes
+unsandboxed in its own folder, and exits `1` with `directory_unusable` when the
+folder is gone. Text form: `resumed session ID` or `session ID is already live`.
 
 A detached host session ([ssh-hosts.md](ssh-hosts.md)) whose agent still
 runs on the host is attached and no second agent starts. A host that cannot
@@ -2794,7 +2796,8 @@ finds the agent running and attaches it.
 permission mode through the session host. A local claude session relay
 launched answers `resume_required` for any mode, valid or not, which is exit
 `1`; the session stays live. Only a session on an SSH host changes mode in
-place, and there an unknown mode is refused. `--json` prints:
+place, and there an unknown mode is refused. An unsandboxed session (adopted in
+no project) answers `resume_required` as well. `--json` prints:
 
 | Field | JSON type | Meaning |
 |---|---|---|
@@ -3098,6 +3101,10 @@ On a host with tmux 3.0 or later, the terminal shows the session's tmux pane
 `relay-agent-<id>`: the pane swaps from the runner to Claude and back, and the
 session keeps one name. `tmux attach -t relay-agent-<id>` on the host shows the
 same pane. Closing the terminal swaps the pane back to the runner.
+
+A session adopted in no project drops in unsandboxed, in its own folder, and
+the hand back resumes it the same way; both refuse with `directory_unusable`
+when that folder is gone.
 
 No JSON form: the terminal belongs to the agent. Exit codes: the agent's own exit
 status after a hand-over; `1` for any refusal below (`error: relay drop-in needs

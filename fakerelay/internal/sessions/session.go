@@ -17,7 +17,7 @@ import (
 
 type session struct {
 	id, projectID, name, directory, folder, model, kind, origin, permMode string
-	headless, agentOn, hidden, held, dropped                              bool
+	headless, agentOn, hidden, held, dropped, unsandboxed                 bool
 	createdAt, lastMsg, since                                             time.Time
 	host                                                                  map[string]any
 	history                                                               []map[string]any
@@ -108,7 +108,7 @@ type launcher struct {
 func (s *svc) launch(t launchTarget, b launchBody, kind, origin string, headless bool) *session {
 	x := &session{id: newUUID(), projectID: t.project.ID, name: b.Name, directory: t.dir, folder: b.Folder, model: b.Model, kind: kind,
 		origin: origin, headless: headless, askedName: b.Name, createdAt: s.now(), host: t.host, live: true, state: "idle", stats: newStats(),
-		viewers: map[*conn]bool{}}
+		viewers: map[*conn]bool{}, unsandboxed: t.unsandboxed}
 	x.since = x.createdAt
 	x.agentOn, _ = b.Settings["agent"].(bool)
 	// Chief of Staff headless sessions stay listed; a client's headless launch
@@ -143,6 +143,9 @@ func (s *svc) row(x *session) map[string]any {
 	}
 	if x.origin != "" {
 		v["origin"] = x.origin
+	}
+	if x.unsandboxed {
+		v["unsandboxed"] = true
 	}
 	if (x.live || x.dropped || x.exit != nil) && x.tracked() {
 		att := map[string]any{"state": x.state, "since": stamp(x.since)}

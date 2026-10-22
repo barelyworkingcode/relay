@@ -368,6 +368,63 @@ MCP and subagent threads, ephemeral threads, and every thread source other than 
 UI opened inside a relay terminal session that joins the daemon lists like any
 daemon thread. After attach, Eve shows turns from the attach on.
 
+### A Claude session in no project
+
+A live console Claude row whose folder no registered local project holds is
+adoptable. The adopt resumes the same conversation headless in that folder, and
+the session runs **unsandboxed**. It is the owner's choice: the owner sees the
+Adopt button and takes no extra confirmation. Pi and Codex rows in no project
+stay `adoptable:false` with `adoptReason:"no_project"`: Pi needs a project for
+its model key and its transcript grant, and a Codex attach needs one for launch
+authorization on attach and reattach.
+
+What an unsandboxed session has and lacks:
+
+- No sandbox profile, no project permission policy, no allowed-models check, no
+  template allow-list, no model key and no launch identity. It runs as the
+  account that runs relay, with that account's reach.
+- A tool call that needs approval still asks the owner through relay's
+  permission hook. The hook finds the session by its runner's process tree, not
+  by a launch identity.
+- Relay tools are absent: the session has no launch identity and no
+  `useRelayTools` setting, so a relay tool call fails closed.
+- It gets the `claude_token_file` token, when set, on fd 5 through the shim
+  (the shim runs with no profile), as a sandboxed Claude does. The process
+  could read the file by path, so it gains no reach. `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=5`
+  names the descriptor; the token is never in the environment.
+- `bypassPermissions` on it lets every tool run and asks nothing. That is the
+  owner's accepted risk.
+- `relay session mode` answers `resume_required` for it, as for a sandboxed
+  session: the token is per launch and cannot be reused by a restart in place.
+
+Adopt order for such a row: audit ready (`503 audit_unavailable`), host ready,
+the row, a fresh candidate, then the folder is matched against the registered
+local projects again (a match is `409 changed`: adopt again from the refreshed
+row, sandboxed; relay never picks unsandboxed over a project), then the folder
+must be an existing directory after symlinks resolve (`409 directory_unusable`,
+no further trust rule, so the home folder or `/` is allowed), then the managed
+list, the idle check, the model, launch authorization, the durable
+`session_adopt` intent, the interrupt, the take over, the launch and the
+recovery message. Nothing is signalled before the intent is durable. The `201`
+body adds `"unsandboxed": true`.
+
+The ledger record carries `unsandboxed: true` and an empty `project_id`, and the
+session host keeps the mark on the session across a relay-sessions restart.
+`GET /api/sessions` lists the session with `unsandboxed: true` and `projectId:""`,
+and `GET /api/terminals` lists its drop-in terminal with `unsandboxed: true`; no
+other session or terminal carries the field. A resume of the dormant session, a
+drop-in and the hand-back resume run unsandboxed in the same folder, and each
+refuses with `409 directory_unusable` when the folder is gone, before anything
+stops. A project registered for the folder later does not change the record: it
+stays unsandboxed and keeps its chip; delete the session and adopt again to
+sandbox it. After a relay restart the rebind of such a session is refused with
+the reason `unsandboxed` (it has no launch identity to bind).
+
+Audit rows of the session record that no project policy or sandbox applied:
+`session_adopt`, `session_interrupt`, `session_swap` and `session_message` carry
+`no_project:true` and `relay_sandbox:false` with no `project_id`;
+`session_launch` and `session_resume` carry `sandbox:false` and `no_project:true`.
+
 ### The idle check
 
 Several signals combine. A signal can veto idle. Only the agent's own state can
@@ -414,7 +471,7 @@ with the recovery message.
 - Adopt, interrupt and swap are owner actions in this design. The Chief of
   Staff gains no new authority. Whether it may adopt on its own is an open
   question in the epic.
-- Only sessions in a registered project are adopted. A project's policy applies from the resume on to a session relay takes over, not to an attached codex thread.
+- A Claude or Pi session is adopted in a registered project, a Claude session also in no project (see [A Claude session in no project](#a-claude-session-in-no-project)). A project's policy applies from the resume on to a session relay takes over, not to an attached codex thread.
 - Every adopt, interrupt, swap and recovery message writes an audit row before
   it acts, as every other launch and send does.
 - Transcript and registry text is untrusted display data and grants no

@@ -435,6 +435,8 @@ The trailing-slash form of `POST /api/terminals`: same contract.
   `resumed` is `false` when the session was already live.
 - **Errors:** `404` unknown session; `409` a resume of the same session is in
   progress; `403` or `400` the launch is refused; `502` the session host failed.
+  A dormant session adopted in no project resumes unsandboxed in its own
+  folder and answers `409 directory_unusable` when the folder is gone.
   A dormant session attached to a codex thread resumes only by attaching again:
   the route runs the adopt checks and answers `409 busy|changed|ended|ambiguous|managed|no_project|model_unknown`,
   `502 unavailable` (before the audit intent), `502 launch_failed` (after it) or
@@ -463,7 +465,10 @@ A Pi or Codex session in an SSH host project is refused with `409 not_local`.
   `session_not_found`, `409` `not_claude`, `not_local` or a handoff conflict,
   `502` `unavailable` (for an attached Codex thread, the codex daemon is not
   reachable) or `launch_failed`, `503` `audit_unavailable` (auditing is off or cannot record;
-  nothing was stopped), or the launch refusal's own status.
+  nothing was stopped), or the launch refusal's own status. A session adopted
+  in no project drops in unsandboxed in its own folder (`claude-code`
+  template, no sandbox) and answers `409 directory_unusable` when the folder is
+  gone, before it stops.
 - **Event:** `session.drop_in`; `session.hand_back` when the terminal ends
   (background). **Audit rows:** `session_launch`, and `session_swap` (an
   intent row before the session stops, then a completion row; a second pair
@@ -483,13 +488,18 @@ daemon is attached instead: no process ends. See [Adopting a session](outside-se
   `outsideId` (`outside:<32 hex>`) and `claudeSessionId` (a UUID), plus
   optional `interrupt` (default false) and `model`.
 - **Response `201`:** `sessionId`, `claudeSessionId`, `interrupted`,
-  `recoverySent`.
+  `recoverySent`, and `unsandboxed: true` for a Claude row in no project
+  (the session runs with no sandbox; see
+  [session-adoption.md](session-adoption.md#a-claude-session-in-no-project)).
 - **Errors:** `{"error": "<code>", "message": "<text>"}`. `400` `invalid_body`;
   `413` `body_too_large`; `404` `outside_session_not_found`; `409` a reason
   code (`ended`, `host_unsupported`, `no_project`, `not_registered`,
   `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line`,
-  `ambiguous`), `managed`, `busy`, `model_unknown`, `adopt_in_progress` or
-  `changed` or `transcript_not_granted`; `403`/`400` the launch refusal's own code (nothing is signalled);
+  `ambiguous`; `no_project` is a Pi or Codex row outside every project),
+  `managed`, `busy`, `model_unknown`, `adopt_in_progress`, `changed` (also: a
+  project now holds the folder of a Claude row in no project),
+  `directory_unusable` (that folder is not an existing directory) or
+  `transcript_not_granted`; `403`/`400` the launch refusal's own code (nothing is signalled);
   `502` `unavailable` (relay-sessions is down, the registry or the idle check
   could not be read, or the process could not be signalled), `stop_failed`
   (the process outlived SIGKILL's wait) or `launch_failed`; `503`
@@ -1513,6 +1523,7 @@ Also relay's own door `GET /api/sessions` (section 2.1), which forwards here.
   | `host` | object | SSH host chip; absent for this Mac |
   | `headless` | boolean | Present for headless agents |
   | `origin` | string | Set when someone other than the person started it (`chief-of-staff`) |
+  | `unsandboxed` | boolean | `true` only on a session adopted in no project (its `projectId` is `""`); absent otherwise |
   | `attention` | object | `{"state", "since"}` (plus `"exit": {"code", "stderr"}` when a provider exit left the session `errored`) for a live tracked session; `state` is `starting`, `running`, `idle`, `asking`, `errored`, `stalled` |
 
 - **Event:** `session.list` (relay's door writes it).
@@ -1543,7 +1554,9 @@ Sends a message and waits for the whole reply.
 Also relay's own door `GET /api/terminals`.
 
 - **Response `200`:** `{"terminals": [{"id", "templateId", "name", "directory",
-  "state", "exitCode", "host", "origin"}]}`. `state` is the terminal's process state.
+  "state", "exitCode", "host", "origin", "unsandboxed"}]}`. `state` is the terminal's process state.
+  `unsandboxed` is `true` only on the drop-in terminal of a session adopted in no
+  project; absent otherwise.
 - **Event:** `terminal.list`.
 
 ### proxy:GET /api/terminals/{id}/log
