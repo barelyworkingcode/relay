@@ -1145,15 +1145,16 @@ other unclaimed path keeps the dispatch 404. relay-sessions answers 405 for a
 known path with the wrong method; fakerelay does not (D20).
 
 `POST /api/sessions/{id}/drop-in` (class `execute`, socket only) takes a
-headless Claude session over for an echo terminal. Optional body
+headless Claude, Pi or Codex session over for an echo terminal. Optional body
 `{"cols","rows"}`; 0 or less (or no body) means 120 by 40. A refusal is
 `{"error":"<code>","message":"<text>"}`. Checks run in this order:
 
 | # | Case | Status | `error` | `message` |
 |---|---|---|---|---|
 | 1 | unknown session | 404 | `session_not_found` | `no session <id>` |
-| 2 | kind is not `claude` | 409 | `not_claude` | `only Claude sessions can be taken over; this is a <kind> session` |
-| 3 | the `claude-code` terminal launch is refused (console templates, or the host's for a host project) | the launch refusal's status | the launch code, such as `template_unavailable` | the text `POST /api/terminals` gives |
+| 2 | kind is not `claude`, `pi` or `codex` | 409 | `not_claude` | `only Claude, Pi and Codex sessions can be taken over; this is a <kind> session` |
+| 2b | a `pi` or `codex` session in a host project | 409 | `not_local` | `Pi and Codex sessions drop in only on this Mac` |
+| 3 | the kind's terminal launch (`claude-code`, `pi` or `codex`) is refused (console templates, or the host's for a host project) | the launch refusal's status | the launch code, such as `template_unavailable` | the text `POST /api/terminals` gives |
 | 4 | not headless | 409 | `not_headless` | `this session is not headless; continue it in eve` |
 | 5 | already held | 409 | `dropped_in` | `a terminal already has this session; close it first` |
 | 6 | a turn waits on a permission | 409 | `tool_running` | `a tool is running (<tool>); wait for it to finish or stop the turn, then try again` |
@@ -1163,13 +1164,14 @@ headless Claude session over for an echo terminal. Optional body
 `turn_timeout` is not faked. Success is 201:
 
 ```json
-{"sessionId":"3f0c…","claudeSessionId":"9d2e…","host":"testbox",
+{"sessionId":"3f0c…","agent":"claude","conversationId":"9d2e…","claudeSessionId":"9d2e…","host":"testbox",
  "terminal":{"terminalId":"7a1b…","templateId":"claude-code",
              "name":"Fix the build (drop-in)","directory":"/home/acme/app","host":null}}
 ```
 
-- `claudeSessionId` is a lowercase UUID v4 made at the session's first turn.
-  It is not the session id.
+- `conversationId` is a lowercase UUID v4 made at the session's first turn, for
+  every kind. It is not the session id. `claudeSessionId` repeats it for a
+  Claude session and is absent for Pi and Codex.
 - `host` is the SSH host's name, omitted for a console project.
 - `terminal` is the `POST /api/terminals` 201 body. `name` is the session's
   create-request name plus ` (drop-in)`, or `session (drop-in)` without one.
@@ -2235,7 +2237,7 @@ Where fakerelay differs from relay on purpose:
 - **Echo agent and echo terminals.** An agent answers per the model's `reply`.
   Terminal input comes back as output, with `\r` becoming `\r\n`. A terminal
   ends on `\x04` at an empty line or on an `exit N` line (see Echo terminal).
-  Drop-in starts an echo terminal, not a Claude process.
+  Drop-in starts an echo terminal, not an agent process.
 - **Events come before the answer, sessions included.** For example,
   `chat.turn` is written before `message_complete`.
 - **Turn order.** For a tracked session the order is `user_message`,

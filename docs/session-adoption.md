@@ -27,8 +27,15 @@ a host, an entry is headless only) and different audit shapes. A session
 started in terminal mode cannot be messaged by the Chief of Staff, and cannot
 become headless.
 
-Drop-in moves a headless Claude session into a terminal and hands it back, but
-only for sessions relay started. A Claude, codex or pi session the owner began
+Drop-in moves a headless Claude, Pi or Codex session into a terminal and hands
+it back, but only for sessions relay started or attached. A Pi drop-in opens
+the project's `pi` template on the same session file. A Codex session relay
+started opens `codex resume` on the same thread without the shared daemon. An
+attached thread opens `codex resume` through the daemon's control socket with
+no setting override, and the daemon and its other clients keep running. The
+hand back resumes the same file or thread headless, an attached thread through
+the adopt checks and a new durable intent. Pi and Codex drop-in is for local
+projects only. A Claude, codex or pi session the owner began
 in an ordinary terminal is visible (outside sessions) and read-only.
 
 ## Principles
@@ -46,9 +53,7 @@ in an ordinary terminal is visible (outside sessions) and read-only.
    receipt.
 5. **The transcript is the source of truth for catch-up.** The live event stream
    is for latency. After a swap or a reconnect, state comes from the transcript.
-6. **Adoption applies relay's policy.** An adopted session runs under its
-   project's sandbox and permission policy. That is the purpose, not a side
-   effect.
+6. **Takeover applies relay's policy; attach does not.** A session relay takes over (Claude, pi) runs under its project's sandbox and permission policy from the resume on. An attached codex thread keeps the policy it already runs under; relay changes none of its settings and claims no sandbox over it.
 
 ## The runner and the file channel
 
@@ -174,12 +179,194 @@ happened.
 | Transcript | `~/.claude/projects/<encoded cwd>/<id>.jsonl` | `~/.codex/sessions/YYYY/MM/DD/rollout-<created>-<id>.jsonl`, created at the first turn | `<sessions dir>/<encoded cwd>/<start UTC>_<id>.jsonl`, created at the first turn |
 | Idle | registry `status` is idle and `statusUpdatedAt` is fresh; no unmatched `tool_use`; no child started in the last turn's tool window | last turn record is `task_complete` | last message is an assistant message with `stopReason: stop` |
 | Interrupt | SIGINT, then SIGTERM, then SIGKILL | `turn/interrupt` | rpc `abort`; SIGINT is undocumented (item 4) |
-| Take over | stop the process; resume under the runner with `--resume <id>` | connect to the daemon's socket and drive the thread; stop nothing (open: a second client on a thread another client has open, item 5) | stop the process; resume under the runner with `--session <id>` and `--session-dir` |
-| Not adopted | `kind` other than interactive, `entrypoint` other than the command line | a thread with a running turn and no interrupt consent | an ambiguous match |
+| Take over | stop the process; resume under the runner with `--resume <id>` | attach to the daemon's control socket and drive the thread; stop nothing, change no setting | stop an idle process; resume under the runner with `--session <exact file>` and `--session-dir <parent>` |
+| Not adopted | `kind` other than interactive, `entrypoint` other than the command line | a busy thread, a subagent or ephemeral thread, one not from the command line, a changed or ambiguous match | a busy session, ambiguous match, custom root or missing transcript grant |
 
 Observed versions: Claude Code 2.1.304, codex 0.162.1, pi 1.0.2. Pi and codex
 create their transcript at the first turn, so a session with no turn has
 nothing to adopt and nothing to lose.
+
+### Pi adoption
+
+Pi adoption is console-only and idle-only. It recognizes a kernel-reported
+executable or node script whose resolved package bin is Pi: current
+`@earendil-works/pi-coding-agent` or historical
+`@mariozechner/pi-coding-agent`. A process name or filename suffix alone is
+insufficient. The installed package metadata selects the bin, including the
+current `dist/bundle/cli.js` entry. `omp` is a separate, unsupported fork.
+Installed Pi can erase its script arguments by setting `process.title`. This
+second recognition path requires kernel argv[0] exactly `pi`, every remaining
+argument empty, and the kernel executable to be the same regular executable
+file as the privately resolved operator Node runtime. A basename or title
+alone is insufficient. Unreadable arguments and a different runtime refuse.
+The runtime pin comes from the ordinary operator-selected Pi launcher,
+including its supported Homebrew wrapper, verified package bin and Node
+shebang. An env-node shebang uses the operator PATH; an absolute shebang uses
+that exact executable even when PATH selects a different Node. Reads are
+bounded to 64 KiB and four wrapper/entry stages. Unknown or compound wrappers
+disable this recognition path; no shell text is evaluated. An empty private
+Node pin also disables title recognition.
+The same transcript, cwd, lifetime, ambiguity and managed-session checks still
+apply. These observations correlate a process; they do not attest vendor code.
+
+
+Discovery reads only `~/.pi/agent/sessions/--<encoded cwd>--/`. The header's
+UUID, cwd and timestamp must derive the exact regular filename and correlate
+with the process's kernel start (one second before through less than thirty
+seconds after). It refuses links from home through the file, duplicate
+process/file matches and custom `--session-dir` arguments. No transcript or
+first conversation message means no row. Managed UUIDs and process ancestry
+exclude Relay sessions independently; failed managed-identity reads list no
+Pi sessions. At most 512 candidate files are inspected; headers are 64 KiB,
+and streaming readiness reads bound each complete JSONL line to 8 MiB.
+
+The readiness parser follows the last persisted leaf's `id`/`parentId` chain.
+Only a last conversation message from the assistant with `stopReason: stop`,
+no unmatched tool call and no working child is idle. Malformed, incomplete or
+unreadable evidence never proves idle. Busy adoption returns `409 busy` even
+with `interrupt:true`; outside Pi's stdin belongs to the terminal, so Relay
+sends neither RPC nor SIGINT to it.
+
+Authorization and a durable `session_adopt` intent precede identity-checked
+TERM, the exit notification, and only if needed the bounded KILL escalation.
+The existing project Pi grants must allow the original transcript; a missing
+grant or explicit denial returns `409 transcript_not_granted` before stopping
+anything. No grant is added. Resume passes the exact file and its parent to
+`--session` and `--session-dir`; it does not copy, fork or truncate the file.
+The host revalidates its default-root path and header. Provider readiness
+confirms the same UUID and filename through RPC `get_state`. Adoption starts
+no turn and sends no recovery prompt. A failed launch leaves the transcript
+intact for manual resume.
+
+The private provider state retains both `piSessionId` and `piSessionFile` for
+later authorized resumes. Delete removes only that validated file. Ordinary
+Pi sessions retain their existing Relay transcript storage and state support.
+After adoption, managed interrupt uses RPC `abort`. Before delivery the
+manager asks the authenticated built-in session host's `SessionInterrupt`
+bridge door to persist an intent. An audit failure or absent handler refuses
+before any state, tool or input change; the WebSocket returns
+`{type:"error",code:"audit_unavailable",sessionId,message}`. An acknowledgement
+certifies the durable intent, not successful delivery; delivery failures use
+the provider's existing error handling. Ordinary Pi and Claude interrupts
+retain their existing behavior.
+
+### Codex attach
+
+The per-user codex app-server daemon holds the threads of the codex desktop
+app and of a terminal started with `codex --remote unix://` (0.163.0
+observed); each is one client of it. Relay attaches as one more client. It
+starts no codex, ends no process and changes no setting of the thread. A
+terminal started without `--remote` (every codex 0.162.1 terminal, and a plain
+0.163.0 one) runs an in-process server: its thread never reaches the daemon and
+shows no row. A desktop-app thread in a registered
+project shows Adopt, as a terminal thread does.
+
+**Rows.** The thread folder is `environments[0].cwd`; when `environments` is
+absent, null or empty, it is the top-level `cwd`. A thread with no absolute
+folder shows no row. The accepted sources are `cli` and `vscode` (the daemon
+reports `vscode` for a terminal and for the desktop app). A thread with a
+`parentThreadId` is `not_interactive`; an ephemeral thread shows no row (the daemon
+refuses its turn list); any other source
+(`exec`, `mcp`, a subagent object) is `not_command_line`. The `thread/resume`
+reply is checked against the session folder by the same rule.
+
+**Socket.** Relay reads only `<home>/.codex/app-server-control/app-server-control.sock`.
+No option, thread id, home or socket path reaches the door. An absent socket is
+no daemon. The link and its folder must be owned by the effective uid. The
+target must be a socket owned by the effective uid with no group or other
+permission bits, in a folder owned by that uid or root that is neither group-
+nor world-writable (unless sticky). Anything else is an unsafe socket and
+gives no codex rows. Relay dials the resolved physical path, upgrades on path
+`/` only (never `/daemon/shutdown`) and reads at most 16 MiB per message.
+The daemon's identity (physical path, device, inode, modification time) is the
+daemon's lifetime evidence: a restarted daemon is a different identity.
+
+**Handshake and allowlist.** `initialize` carries exactly
+`{"clientInfo":{"name":"relay","version":"1"}}`: no capabilities, because a
+capability can change the daemon for later connections. Relay sends only
+`initialize`, `initialized`, `thread/loaded/list`, `thread/read`,
+`thread/turns/list`, `thread/resume`, `turn/start`, `turn/interrupt` and
+`thread/unsubscribe`. Replies to the daemon's requests pass. No other method
+leaves the process.
+
+**Discovery.** One connection lists the loaded threads (at most 256; more is
+an error) and reads each thread's metadata and its newest turn. A thread with
+no turn shows no row. A row carries the folder, state (`idle` or `running`)
+and the start time, never the thread's text. A thread is not adoptable when its
+id is not a UUID (`invalid_id`), it has a parent thread
+(`not_interactive`; an ephemeral thread shows no row), its source is not the command line (`not_command_line`),
+or the daemon lists its id more than once (`ambiguous`). Idle needs thread
+status `idle` and a newest turn that is not in progress; a busy thread is
+`adoptable:false` with `adoptReason:"busy"`. A daemon error, an absent daemon
+or an unsafe socket gives no codex rows, one Warn, and leaves the Claude and Pi
+rows as they are. Managed codex thread ids are excluded; a failed read of them
+gives no codex rows. A codex row has no transcript: its latest turn and its
+transcript page are empty.
+
+**Adopt.** The row is selected by `outsideId` only; a `model` is refused
+(`400 invalid_body`) because attach sends none. In order: audit ready, host
+ready, the row, a fresh discovery with exactly one candidate of the same id,
+daemon and folder, a local registered project, the managed codex ids and a
+fresh idle check. A busy thread is `409 busy`, also with `interrupt:true`, and
+relay sends the daemon nothing that changes it. Launch authorization is the
+same decision as a codex launch in the project, with the thread's model. Then
+the durable `session_adopt` intent row (`method:"attach"`,
+`relay_sandbox:false`), a last check, the host launch and the completion row.
+The launch carries the thread id privately to the session host, which accepts
+it only for a local, headless codex launch with a UUID, fresh or the resume
+described below. Each audit row of an attach, the launch row included, says
+`sandbox:false`. An attach that
+fails after the intent answers `502 launch_failed`: "relay could not attach to
+the codex thread; nothing in codex changed".
+
+**Provider.** The session host's codex provider, seeded with the thread id and
+`daemonAttach`, never starts a program and never uses the runner, launcher,
+sandbox profile or launch identity. It dials the daemon, requires the thread in
+`thread/loaded/list`, then sends `thread/resume` with the thread id alone. The
+reply must name the thread and the session's folder. The state follows
+`thread/status/changed` for its thread (`active`, `idle`, `systemError`);
+other threads' notifications are ignored. `thread/closed` or a closed socket
+ends the provider, and the session reads dormant; there is no reconnect loop.
+Relay answers a server request only when it names the session's thread and the
+turn that relay's own `turn/start` opened, while that turn is open; a request
+that names no turn counts only while relay's turn is the open one. The answer is
+a decline and none is approved. Any other request, a terminal's turn included,
+gets no answer from relay and one Info line with its method and turn id, never
+its text, so codex's own prompt stays with the terminal user.
+
+**Interrupt, delete, resume.** Stop sends `turn/interrupt` only after the
+manager's `SessionInterrupt` gate persisted a `session_interrupt` intent row
+(`method:"turn/interrupt"`); an audit failure leaves the turn running and the
+WebSocket answers `audit_unavailable`. Kill, release and delete send a
+best-effort `thread/unsubscribe` and close the connection. They send no
+`turn/interrupt`, delete no thread, archive nothing and remove no folder.
+
+**Resume of a dormant attached session.** The ledger record keeps the thread
+(`codex_thread`). `POST /api/sessions/{id}/resume` and `relay session resume`
+run the adopt checks again, in this order: audit ready (`503 audit_unavailable`),
+host ready (`502 unavailable`), the record's project is a registered local
+project that holds its folder (`409 no_project`), a fresh discovery of exactly
+one candidate with the same thread id (none is `409 ended`, several `409
+ambiguous`) in the same folder (`409 changed`) that is adoptable, no other live
+session holding the thread (`409 managed`), an idle check on the same daemon
+(`409 busy`, or `409 changed` for another daemon or a changed thread), the
+thread's model (`409 model_unknown`) and launch authorization with `Resume:true`.
+Then the durable `session_adopt` intent (`method:"reattach"`, `session_id`,
+`relay_sandbox:false`), a last check, the host launch and the completion. A
+daemon that cannot be read before the intent is `502 unavailable` and writes no
+intent; a failure after it is `502 launch_failed`. A daemon restart does not
+block the resume: discovery and the check both see the current daemon. The
+session host refuses (`ErrAttachRequired`, `400 invalid_spec`) to resume a stored
+attached codex session unless the request carries `attach_codex_thread` for the
+same thread, so nothing resumes the thread around the intent. The row of a
+dormant session is hidden from the outside list, so the resume is the one door
+back; relay never starts its own codex for it.
+
+**Not covered.** A custom `CODEX_HOME`, a terminal UI running its own embedded
+server (every terminal started without `--remote unix://`), SSH hosts, `codex exec`,
+MCP and subagent threads, ephemeral threads, and every thread source other than `cli` and `vscode`. A codex terminal
+UI opened inside a relay terminal session that joins the daemon lists like any
+daemon thread. After attach, Eve shows turns from the attach on.
 
 ### The idle check
 
@@ -227,8 +414,7 @@ with the recovery message.
 - Adopt, interrupt and swap are owner actions in this design. The Chief of
   Staff gains no new authority. Whether it may adopt on its own is an open
   question in the epic.
-- Only sessions in a registered project are adopted, and a project's policy
-  applies from the resume on.
+- Only sessions in a registered project are adopted. A project's policy applies from the resume on to a session relay takes over, not to an attached codex thread.
 - Every adopt, interrupt, swap and recovery message writes an audit row before
   it acts, as every other launch and send does.
 - Transcript and registry text is untrusted display data and grants no
@@ -301,8 +487,10 @@ answer.
    `{"type":"abort"}` command that aborts the current operation and answers
    once the session is idle, plus `abort_retry` and `abort_bash`. Closing the
    child's stdin asks for an orderly shutdown. Pi's interrupt is therefore the
-   rpc `abort`, and a pi under the runner runs in rpc mode. Whether `--session`
-   appends to the existing file is open: `--session` opens by path, id or
+   rpc `abort`, and a pi under the runner runs in rpc mode. `--session`
+   appends to the existing file (confirmed by installed Pi 1.0.0
+   `SessionManager.open`, which sets the existing file as flushed and appends).
+   The CLI accepts a path, id or partial id: `--session` opens by path, id or
    partial id, `--session-dir` overrides storage and lookup, and only
    `--fork` is documented as making a new session. The layout is documented:
    `~/.pi/agent/sessions/--<path>--/<timestamp>_<id>.jsonl`, the path with its
@@ -328,8 +516,18 @@ answer.
    implies several clients, but a second client driving a thread another
    client has open is open. So is a shared per-user daemon: the docs name the
    default control socket and say nothing of its lifecycle, and the app-server
-   README describes the terminal UI as running the server in-process. The
-   codex adapter must not assume either until codex documents them. Sources:
+   README describes the terminal UI as running the server in-process. Codex
+   0.162.1 does run a shared per-user daemon, and the version-pinned source
+   answers the second-client question: the
+   [daemon README, lines 22-24](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server-daemon/README.md#L22-L24)
+   says shared clients use the daemon's inherited environment, with no
+   per-client isolation, and the
+   [running-thread resume path, lines 4348-4397](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/request_processors/thread_processor.rs#L4348-L4397)
+   retains a loaded thread's settings and ignores conflicting overrides while
+   another subscriber remains. A second subscriber therefore resumes a loaded
+   thread and keeps its settings (the daemon of codex 0.163.0 behaves the
+   same, read-only probe, relay#575), so relay attaches, sends no setting and
+   claims no project sandbox over the thread. Sources:
    [app-server](https://github.com/openai/codex/tree/main/codex-rs/app-server),
    [app-server docs](https://learn.chatgpt.com/docs/app-server.md).
 

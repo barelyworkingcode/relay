@@ -30,9 +30,11 @@ type Call struct {
 type AgentCall struct {
 	TS             time.Time `json:"ts"`
 	Persona, Event string
-	Argv           []string `json:"argv"`
-	Text           string   `json:"text"`
-	LineSHA256     string   `json:"line_sha256"`
+	// Pid is the fake process that wrote the line.
+	Pid        int      `json:"pid"`
+	Argv       []string `json:"argv"`
+	Text       string   `json:"text"`
+	LineSHA256 string   `json:"line_sha256"`
 	// Env is the watched environment of a start line; an unset variable has no key.
 	Env map[string]string `json:"env"`
 	// Environ is the whole environment of a start line.

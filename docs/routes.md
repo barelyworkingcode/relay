@@ -435,24 +435,34 @@ The trailing-slash form of `POST /api/terminals`: same contract.
   `resumed` is `false` when the session was already live.
 - **Errors:** `404` unknown session; `409` a resume of the same session is in
   progress; `403` or `400` the launch is refused; `502` the session host failed.
+  A dormant session attached to a codex thread resumes only by attaching again:
+  the route runs the adopt checks and answers `409 busy|changed|ended|ambiguous|managed|no_project|model_unknown`,
+  `502 unavailable` (before the audit intent), `502 launch_failed` (after it) or
+  `503 audit_unavailable`, each as `{"error":"<message>"}`. See
+  [Codex attach](session-adoption.md#codex-attach).
 - **Event:** `session.resume` (`session_id`, `project_id`).
 - **Audit row:** `session_resume`.
 - **CLI equivalent:** `relay session resume`.
 
 ### POST /api/sessions/{id}/drop-in
 
-Stops a headless Claude session and starts a terminal that resumes its
-conversation. When the terminal ends, relay resumes the session headless on
-that conversation, on the drop-in caller's behalf, with no further message.
+Stops a headless Claude, Pi or Codex session and starts a terminal that
+resumes its conversation. The terminal runs the project's template for the
+session's kind (`claude-code`, `pi` or `codex`) with the agent's own resume
+arguments appended. When the terminal ends, relay resumes the session headless
+on that conversation, on the drop-in caller's behalf, with no further message.
+A Pi or Codex session in an SSH host project is refused with `409 not_local`.
 
 - **Listeners:** socket. **Credential:** `execute`. **Gate:** none.
 - **Request:** path `id`; optional body `{"cols": <number>, "rows": <number>}`
   (defaults 120 by 40).
-- **Response `201`:** `sessionId`, `claudeSessionId`, `host` (set for an SSH
+- **Response `201`:** `sessionId`, `agent` (`claude`, `pi` or `codex`),
+  `conversationId`, `claudeSessionId` (Claude only), `host` (set for an SSH
   host), `terminal` (the terminal object of `POST /api/terminals`).
 - **Errors:** `{"error": "<code>", "message": "<text>"}` with `404`
-  `session_not_found`, `409` `not_claude` or a handoff conflict, `502`
-  `unavailable`, `503` `audit_unavailable` (auditing is off or cannot record;
+  `session_not_found`, `409` `not_claude`, `not_local` or a handoff conflict,
+  `502` `unavailable` (for an attached Codex thread, the codex daemon is not
+  reachable) or `launch_failed`, `503` `audit_unavailable` (auditing is off or cannot record;
   nothing was stopped), or the launch refusal's own status.
 - **Event:** `session.drop_in`; `session.hand_back` when the terminal ends
   (background). **Audit rows:** `session_launch`, and `session_swap` (an
@@ -464,7 +474,8 @@ that conversation, on the drop-in caller's behalf, with no further message.
 
 Ends an idle (or, with `interrupt`, a busy) Claude session the owner started
 in a terminal on this Mac, and resumes the same conversation as a headless
-relay session in the same folder. See [Adopting a session](outside-sessions.md#adopting-a-session).
+relay session in the same folder. An idle codex thread of the per-user codex
+daemon is attached instead: no process ends. See [Adopting a session](outside-sessions.md#adopting-a-session).
 
 - **Listeners:** socket. **Credential:** `execute`. **Gate:** none. Inside the
   `chief-of-staff` scope it answers `403`.
@@ -478,7 +489,7 @@ relay session in the same folder. See [Adopting a session](outside-sessions.md#a
   code (`ended`, `host_unsupported`, `no_project`, `not_registered`,
   `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line`,
   `ambiguous`), `managed`, `busy`, `model_unknown`, `adopt_in_progress` or
-  `changed`; `403`/`400` the launch refusal's own code (nothing is signalled);
+  `changed` or `transcript_not_granted`; `403`/`400` the launch refusal's own code (nothing is signalled);
   `502` `unavailable` (relay-sessions is down, the registry or the idle check
   could not be read, or the process could not be signalled), `stop_failed`
   (the process outlived SIGKILL's wait) or `launch_failed`; `503`
@@ -486,6 +497,33 @@ relay session in the same folder. See [Adopting a session](outside-sessions.md#a
 - **Event:** `session.adopt`. **Audit rows:** `session_adopt`,
   `session_interrupt`, `session_message` (origin `relay-recovery`), and the
   launch's own `session_launch`.
+
+Pi adoption uses this same door with only `outsideId` as selector. Success
+is `201 {sessionId,agent:"pi",conversationId,interrupted:false,recoverySent:false}`.
+A busy outside Pi refuses `409 busy` even with `interrupt:true`; a transcript
+outside the project's existing Pi grants refuses `409 transcript_not_granted`.
+Both refusals leave the terminal running. No public request can set the
+private `resume_conversation` or `resume_transcript` host fields.
+
+Codex attach uses this same door with only `outsideId` as selector; a
+`claudeSessionId` naming a codex thread and any `model` answer `400
+invalid_body`. Success is `201 {sessionId,agent:"codex",conversationId,
+interrupted:false,recoverySent:false}`. A busy thread refuses `409 busy` even
+with `interrupt:true`, and relay sends the daemon nothing that changes it. A
+failed attach after the intent row answers `502 launch_failed`: "relay could
+not attach to the codex thread; nothing in codex changed". `502 unavailable`
+means the daemon or the host could not be reached before the intent. No public
+request can set the private `attach_codex_thread` host field. The session host
+refuses to resume an attached codex session without it (`400 invalid_spec`). See
+[Codex attach](session-adoption.md#codex-attach).
+
+The private bridge `SessionInterrupt` request is `{session_id}`. Only the
+verified built-in session host's sessions capability reaches it. It requires
+a Pi or codex ledger record and persists a `session_interrupt` intent before returning
+OK. The response acknowledges audit persistence, not RPC delivery. Adopted
+Pi or attached codex `stop_generation` audit refusal returns
+`{type:"error",code:"audit_unavailable",sessionId,message}` with no state
+change or `abort` or `turn/interrupt` delivery. This adds no public HTTP route.
 
 ### GET /api/sessions
 

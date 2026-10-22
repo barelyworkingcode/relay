@@ -63,6 +63,14 @@ type transcriptBlock struct {
 // is above zero the first line may be the tail of an older record and is
 // dropped. A record is never split across pages.
 func ParseTranscriptPage(window []byte, start int64, limit int) TranscriptPage {
+	return parseTranscriptPage(window, start, limit, recordEntries)
+}
+
+func ParsePiTranscriptPage(window []byte, start int64, limit int) TranscriptPage {
+	return parseTranscriptPage(window, start, limit, piRecordEntries)
+}
+
+func parseTranscriptPage(window []byte, start int64, limit int, parse func(int64, []byte) []TranscriptEntry) TranscriptPage {
 	if limit < 1 {
 		limit = TranscriptPageDefault
 	}
@@ -107,7 +115,7 @@ func ParseTranscriptPage(window []byte, start int64, limit int) TranscriptPage {
 			cursor = lines[k+1].offset
 			break
 		}
-		if entries := recordEntries(lines[k].offset, lines[k].data); len(entries) > 0 {
+		if entries := parse(lines[k].offset, lines[k].data); len(entries) > 0 {
 			groups = append(groups, entries)
 		}
 	}
@@ -215,4 +223,63 @@ func capEntryText(s string) string {
 		return s
 	}
 	return string(r[:TranscriptEntryChars-1]) + "…"
+}
+
+func piRecordEntries(offset int64, raw []byte) []TranscriptEntry {
+	var rec struct {
+		Type, Timestamp string
+		Message         struct {
+			Role     string
+			Content  json.RawMessage
+			ToolName string
+			IsError  bool
+		}
+	}
+	if json.Unmarshal(raw, &rec) != nil || rec.Type != "message" {
+		return nil
+	}
+	var out []TranscriptEntry
+	add := func(index int, role, text, kind string, name *string) {
+		if strings.TrimSpace(text) != "" {
+			out = append(out, TranscriptEntry{ID: strconv.FormatInt(offset, 10) + "." + strconv.Itoa(index), Role: role, Text: capEntryText(text), At: rec.Timestamp, Kind: kind, Name: name})
+		}
+	}
+	if rec.Message.Role == "toolResult" {
+		text := toolResultText(rec.Message.Content)
+		if rec.Message.IsError {
+			text = "Error: " + text
+		}
+		add(0, "tool", text, TranscriptKindResult, nil)
+		return out
+	}
+	if rec.Message.Role != "user" && rec.Message.Role != "assistant" {
+		return nil
+	}
+	var text string
+	if json.Unmarshal(rec.Message.Content, &text) == nil {
+		add(0, rec.Message.Role, text, "", nil)
+		return out
+	}
+	var blocks []struct {
+		Type, Text, Name string
+		Arguments        json.RawMessage
+	}
+	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+		return nil
+	}
+	for i, b := range blocks {
+		if b.Type == "text" {
+			add(i, rec.Message.Role, b.Text, "", nil)
+		}
+		if b.Type == "toolCall" {
+			var compact bytes.Buffer
+			text := b.Name
+			if json.Compact(&compact, b.Arguments) == nil {
+				text += " " + compact.String()
+			}
+			name := capEntryText(b.Name)
+			add(i, "tool", text, TranscriptKindCall, &name)
+		}
+	}
+	return out
 }

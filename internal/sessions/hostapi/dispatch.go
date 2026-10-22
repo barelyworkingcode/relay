@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/sessions/adopt"
+	"os"
 	"strings"
 	"time"
 
@@ -77,8 +79,11 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 	if req.Launcher != nil {
 		return terminal.CreateSpec{}, errors.New("hostapi: a launcher applies only to a claude, codex or pi session")
 	}
-	if req.ResumeConversation != "" {
+	if req.ResumeConversation != "" || req.ResumeTranscript != "" {
 		return terminal.CreateSpec{}, errors.New("hostapi: resume_conversation applies only to a claude session")
+	}
+	if req.AttachCodexThread != "" {
+		return terminal.CreateSpec{}, errors.New("hostapi: attach_codex_thread applies only to a codex session")
 	}
 	host, err := decodeHostSpec(req.Host)
 	if err != nil {
@@ -171,6 +176,9 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 	if err := checkResumeConversation(req, host); err != nil {
 		return session.CreateSpec{}, err
 	}
+	if err := checkAttachCodexThread(req, host, sr); err != nil {
+		return session.CreateSpec{}, err
+	}
 
 	if err := checkClaudeEnv(req, host); err != nil {
 		return session.CreateSpec{}, err
@@ -208,6 +216,9 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		ClaudeEnv:      req.ClaudeEnv,
 
 		ResumeConversation: req.ResumeConversation,
+		ResumeTranscript:   req.ResumeTranscript,
+
+		AttachCodexThread: req.AttachCodexThread,
 	}
 	// session.CreateSpec has no validate() of its own to lean on the way
 	// terminal.CreateSpec does (buildTerminalSpec's own comment): an empty
@@ -256,6 +267,9 @@ func sessionLaunchStatus(err error) (int, string) {
 	if errors.Is(err, session.ErrDroppedIn) {
 		return 409, "dropped_in"
 	}
+	if errors.Is(err, session.ErrAttachRequired) {
+		return 400, ErrInvalidSpec
+	}
 	if errors.Is(err, provider.ErrIdentityRefused) {
 		return 502, ErrIdentityRefused
 	}
@@ -266,14 +280,69 @@ func sessionLaunchStatus(err error) (int, string) {
 // launch only, and only as a canonical UUID: the value becomes claude's
 // --resume argument and a transcript file name.
 func checkResumeConversation(req LaunchRequest, host *sessionstypes.HostSpec) error {
-	if req.ResumeConversation == "" {
+	if req.ResumeConversation == "" && req.ResumeTranscript == "" {
 		return nil
 	}
-	if req.Kind != session.KindClaude || req.Resume || host != nil {
-		return errors.New("hostapi: resume_conversation applies only to a fresh local claude launch")
+	if (req.Kind != session.KindClaude && req.Kind != session.KindPi) || req.Resume || host != nil {
+		return errors.New("hostapi: conversation resume requires a fresh local agent launch")
 	}
 	if _, err := uuid.Parse(req.ResumeConversation); err != nil || len(req.ResumeConversation) != 36 {
 		return errors.New("hostapi: resume_conversation is not a UUID")
+	}
+	if req.Kind == session.KindClaude {
+		if req.ResumeTranscript != "" {
+			return errors.New("hostapi: resume_transcript requires Pi")
+		}
+		return nil
+	}
+	var sr sessionRequestBody
+	if err := json.Unmarshal(req.SessionRequest, &sr); err != nil {
+		return err
+	}
+	var settings struct {
+		Headless bool `json:"headless"`
+	}
+	if json.Unmarshal(sr.Settings, &settings) != nil || !settings.Headless {
+		return errors.New("hostapi: Pi adoption requires headless")
+	}
+	cwd := sr.Directory
+	if cwd == "" {
+		cwd = req.Directory
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	return adopt.ValidatePiTranscript(home, cwd, req.ResumeConversation, req.ResumeTranscript)
+}
+
+// checkAttachCodexThread allows attach_codex_thread on a local, headless codex
+// launch only (fresh, or a resume the session manager matches to the stored
+// attach), as a canonical UUID and with no other resume field: the value becomes
+// a thread id relay sends to the codex daemon.
+func checkAttachCodexThread(req LaunchRequest, host *sessionstypes.HostSpec, sr sessionRequestBody) error {
+	if req.AttachCodexThread == "" {
+		return nil
+	}
+	if req.Kind != session.KindCodex || host != nil {
+		return errors.New("hostapi: attach_codex_thread requires a local codex launch")
+	}
+	if req.ResumeConversation != "" || req.ResumeTranscript != "" {
+		return errors.New("hostapi: attach_codex_thread excludes resume_conversation and resume_transcript")
+	}
+	if id, err := uuid.Parse(req.AttachCodexThread); err != nil || len(req.AttachCodexThread) != 36 || id.String() != req.AttachCodexThread {
+		return errors.New("hostapi: attach_codex_thread is not a UUID")
+	}
+	if req.Resume {
+		// The stored session is headless or it is not an attach: Manager.Create
+		// reads it.
+		return nil
+	}
+	var settings struct {
+		Headless bool `json:"headless"`
+	}
+	if json.Unmarshal(sr.Settings, &settings) != nil || !settings.Headless {
+		return errors.New("hostapi: a codex attach requires headless")
 	}
 	return nil
 }

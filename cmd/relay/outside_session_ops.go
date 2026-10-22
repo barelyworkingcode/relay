@@ -9,6 +9,9 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
+	"github.com/barelyworkingcode/relay/internal/sessions/adopt"
+	"github.com/barelyworkingcode/relay/internal/sessions/codexdaemon"
+	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 	"io"
 	"log/slog"
@@ -174,6 +177,51 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 			}
 		}
 		observed := native.Observations(root, managed)
+		if h == nil && deps.ready() {
+			managedPi, e := deps.host().ManagedPiIdentities(ctx)
+			if e != nil {
+				return outsidesessions.ProbeResult{}, e
+			}
+			home, e := os.UserHomeDir()
+			if e != nil {
+				return outsidesessions.ProbeResult{}, e
+			}
+			node, _ := provider.ResolvePiNodeBinary(config.LocalAgentCommandsFor(config.FreshSettings(store)).Pi)
+			adapter := adopt.NewPi(adopt.PiConfig{Home: home, NodeBinary: node})
+			// A Pi discovery failure hides only Pi rows; it must not make the
+			// whole console unreachable and age out the Claude rows.
+			candidates, e := adapter.Discover(ctx)
+			if e != nil {
+				slog.Warn("outside Pi discovery failed; Pi rows omitted", "error", e)
+				candidates = nil
+			}
+			for _, c := range candidates {
+				if managedPi[c.ConversationID] || outsideManagedAncestor(ctx, c.PID, root) {
+					continue
+				}
+				path, e := adapter.TranscriptPath(c)
+				if e != nil {
+					continue
+				}
+				ready, e := adapter.Check(ctx, c)
+				state := "running"
+				if e == nil && ready.Idle {
+					state = "idle"
+				}
+				reason := c.Reason
+				adoptable := c.Adoptable
+				if !ready.Idle && reason == "" {
+					reason = "busy"
+					adoptable = false
+				}
+				observed = append(observed, outsidesessions.Observation{Agent: "pi", ConversationID: c.ConversationID, PID: c.PID, Lifetime: outsideLifetime(c.ProcStart.Unix(), int32(c.ProcStart.Nanosecond()/1000)), Transcript: path, StatusAt: ready.Tail.LastRecord, Session: outsidesessions.Session{Agent: "pi", ConversationID: c.ConversationID, Name: "Pi — " + filepath.Base(c.Cwd), Directory: c.Cwd, State: state, Since: c.ProcStart.UTC().Format(time.RFC3339Nano), ViewReason: "not_in_tmux", Adoptable: adoptable, AdoptReason: reason}})
+			}
+		}
+
+		if h == nil && deps.ready() {
+			observed = append(observed, outsideCodexObservations(ctx, deps)...)
+		}
+
 		out := []outsidesessions.Observation{}
 		settings := config.FreshSettings(store)
 		resolved := resolveOutsideProjectPaths(ctx, h, settings.Projects)
@@ -334,6 +382,96 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 	return m
 }
 
+// codexProbeWarned holds the daemon identities whose discovery failure was
+// logged, so a daemon that stays unreachable is one Warn and not one per probe.
+// A failure before any daemon answered has no identity and shares the "" key.
+var codexProbeWarned struct {
+	sync.Mutex
+	identities map[string]bool
+}
+
+func warnCodexProbeOnce(ctx context.Context, identity string, err error) {
+	codexProbeWarned.Lock()
+	defer codexProbeWarned.Unlock()
+	if codexProbeWarned.identities[identity] {
+		return
+	}
+	if codexProbeWarned.identities == nil {
+		codexProbeWarned.identities = map[string]bool{}
+	}
+	codexProbeWarned.identities[identity] = true
+	slog.WarnContext(ctx, "outside codex discovery failed; codex rows omitted", "daemon", identity, "error", err)
+}
+
+func clearCodexProbeWarning() {
+	codexProbeWarned.Lock()
+	codexProbeWarned.identities = nil
+	codexProbeWarned.Unlock()
+}
+
+// outsideCodexObservations lists the threads the codex daemon holds. Any
+// failure (no daemon, an unsafe socket, a daemon error, an unreadable managed
+// list) gives no codex rows and leaves the Claude and Pi rows as they are.
+func outsideCodexObservations(ctx context.Context, deps sessionRouteDeps) []outsidesessions.Observation {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		warnCodexProbeOnce(ctx, "", err)
+		return nil
+	}
+	adapter := adopt.NewCodex(adopt.CodexConfig{Home: home})
+	candidates, err := adapter.Discover(ctx)
+	if errors.Is(err, codexdaemon.ErrNoDaemon) {
+		// Most machines run no daemon; that is no failure to report.
+		clearCodexProbeWarning()
+		return nil
+	}
+	if err != nil {
+		warnCodexProbeOnce(ctx, "", err)
+		return nil
+	}
+	managed, err := deps.host().ManagedCodexIdentities(ctx)
+	if err != nil {
+		// Fail closed: without the managed list a relay session could appear as
+		// an outside one.
+		warnCodexProbeOnce(ctx, candidates0(candidates), fmt.Errorf("managed codex identities: %w", err))
+		return nil
+	}
+	var rows []outsidesessions.Observation
+	for _, c := range candidates {
+		if managed[c.ConversationID] {
+			continue
+		}
+		state, reason, adoptable := "running", c.Reason, false
+		var updated time.Time
+		if c.Adoptable {
+			ready, err := adapter.Check(ctx, c)
+			if errors.Is(err, adopt.ErrChanged) {
+				continue
+			}
+			if err != nil {
+				warnCodexProbeOnce(ctx, c.Instance, err)
+				return nil
+			}
+			updated = ready.Tail.LastRecord
+			if ready.Idle {
+				state, reason, adoptable = "idle", "", true
+			} else {
+				reason = "busy"
+			}
+		}
+		rows = append(rows, outsidesessions.Observation{
+			Agent: "codex", ConversationID: c.ConversationID, Lifetime: c.Instance, StatusAt: updated,
+			Session: outsidesessions.Session{
+				Agent: "codex", ConversationID: c.ConversationID, Name: "Codex — " + filepath.Base(c.Cwd), Directory: c.Cwd,
+				State: state, Since: c.ProcStart.UTC().Format(time.RFC3339Nano), ViewReason: "not_in_tmux",
+				Adoptable: adoptable, AdoptReason: reason,
+			},
+		})
+	}
+	clearCodexProbeWarning()
+	return rows
+}
+
 // resolveOutsideProjectPaths returns each project's path resolved on the
 // machine it lives on, index-aligned with projects; "" where it cannot be
 // resolved. A host costs one extra round, not one per project.
@@ -468,4 +606,45 @@ func parseOutsideRange(out []byte, end, max int64) ([]byte, int64, error) {
 		return nil, 0, outsidesessions.ErrUnavailable
 	}
 	return body, start, nil
+}
+
+func outsideManagedAncestor(ctx context.Context, pid, root int) bool {
+	if root <= 0 {
+		return true
+	}
+	source := membership.NewSource()
+	for depth := 0; pid > 1 && depth < 64; depth++ {
+		if root > 0 && pid == root {
+			return true
+		}
+		info, ok := source.Info(pid)
+		if !ok {
+			// The kernel ancestry table includes privileged terminal ancestors that
+			// proc_pidinfo refuses to this account. Do not mistake that refusal for
+			// membership in the session host; ps still reads their parent IDs.
+			raw, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "ppid=").Output()
+			parent, e := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err != nil || e != nil || parent < 0 {
+				return true
+			}
+			info.PPID = parent
+		}
+		if info.PPID <= 1 {
+			return false
+		}
+		if info.PPID == pid {
+			return true
+		}
+		pid = info.PPID
+	}
+	return pid > 1
+}
+
+// candidates0 names the daemon the first candidate came from; every candidate
+// of one probe shares it. Empty when the daemon listed no thread.
+func candidates0(cs []adopt.Candidate) string {
+	if len(cs) == 0 {
+		return ""
+	}
+	return cs[0].Instance
 }

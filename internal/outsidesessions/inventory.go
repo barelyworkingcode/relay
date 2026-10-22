@@ -50,7 +50,15 @@ func hostIDValue(id *string) string {
 	return *id
 }
 func identity(m Machine, o Observation) string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%s", m.Key, o.ClaudeID, o.PID, o.Lifetime)))
+	key := fmt.Sprintf("%s\x00%s\x00%d\x00%s", m.Key, o.ClaudeID, o.PID, o.Lifetime)
+	if o.Agent == "pi" {
+		key = fmt.Sprintf("%s\x00pi\x00%s\x00%d\x00%s", m.Key, o.ConversationID, o.PID, o.Lifetime)
+	}
+	if o.Agent == "codex" {
+		// Lifetime is the daemon's identity: a restarted daemon is a new row.
+		key = fmt.Sprintf("%s\x00codex\x00%s\x00%s", m.Key, o.ConversationID, o.Lifetime)
+	}
+	h := sha256.Sum256([]byte(key))
 	return "outside:" + hex.EncodeToString(h[:16])
 }
 
@@ -457,11 +465,18 @@ func (i *Inventory) Detail(ctx context.Context, id string) (Detail, error) {
 		i.mu.Unlock()
 		return Detail{}, ErrNotFound
 	}
-	data, err := e.machine.Read(bounded, *live)
-	if err != nil {
-		return Detail{}, ErrUnavailable
+	var turn Turn
+	// Relay reads no codex file, so a codex row has no latest turn to show.
+	if live.Agent != "codex" {
+		data, err := e.machine.Read(bounded, *live)
+		if err != nil {
+			return Detail{}, ErrUnavailable
+		}
+		turn = LatestTurn(data)
+		if live.Agent == "pi" {
+			turn = LatestPiTurn(data)
+		}
 	}
-	turn := LatestTurn(data)
 	s := live.Session
 	s.ID = id
 	s.HostID = e.machine.HostID
@@ -505,6 +520,13 @@ func (i *Inventory) Transcript(ctx context.Context, id string, before int64, lim
 	if !ok {
 		return TranscriptPage{}, ErrNotFound
 	}
+	if e.observation.Agent == "codex" {
+		if unreachable {
+			return TranscriptPage{}, ErrUnavailable
+		}
+		// An empty page, as for a missing file: relay reads no codex transcript.
+		return ParseTranscriptPage(nil, 0, limit), nil
+	}
 	if unreachable || e.machine.ReadRange == nil || e.observation.Transcript == "" {
 		return TranscriptPage{}, ErrUnavailable
 	}
@@ -520,6 +542,9 @@ func (i *Inventory) Transcript(ctx context.Context, id string, before int64, lim
 	}
 	if err != nil || start < 0 || int64(len(window)) > TranscriptPageBytes {
 		return TranscriptPage{}, ErrUnavailable
+	}
+	if e.observation.Agent == "pi" {
+		return ParsePiTranscriptPage(window, start, limit), nil
 	}
 	return ParseTranscriptPage(window, start, limit), nil
 }

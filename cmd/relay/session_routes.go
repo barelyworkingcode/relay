@@ -633,6 +633,11 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 	}
 	defer d.resumeGuard.release(id)
 
+	// A dormant attached codex thread comes back only through the adopt checks.
+	if rec.Kind == KindCodex && rec.CodexThread != "" {
+		return d.reattachCodex(ctx, ev, caller, rec)
+	}
+
 	sessionReq, err := decodeStoredSessionRequest(rec)
 	if err != nil {
 		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeError, err.Error())

@@ -24,7 +24,7 @@ outside it is not a relay bug, however real.
    issued, or act without the audit trail recording it. When
    `claude_token_file` is set, a sandboxed Claude launch is issued the Claude
    token on a descriptor, no other launch is, and no sandboxed process can open
-   the file by path.
+   the file by path. An attached codex thread (3f) is not a sandboxed session: relay did not start it and confines nothing in it.
    Examples: #53 (a planted symlink widens a later session's read grants),
    #104 (renaming a socket-deny directory to connect).
    The file plane (`docs/project-files.md`) holds the same line for eve's
@@ -141,7 +141,7 @@ outside it is not a relay bug, however real.
    at the next restart. This gains it no reach: it can already start a session in
    any project from the operator socket. Every rebind writes a durable
    `session_rebind` pair that names the root pid.
-3f. **A caller adopting an outside Claude session.** A caller holding `execute`
+3f. **A caller adopting an outside session.** A caller holding `execute`
    on the socket can end a console Claude process a person started in a
    terminal and resume its conversation under relay, through
    `POST /api/sessions/adopt`. Only an eligible entry is adopted: an
@@ -158,6 +158,23 @@ outside it is not a relay bug, however real.
    recovery message after an interrupt quotes at most 300 characters of the
    session's own last prompt and 500 of the open tool call's input, under the
    `relay-recovery` origin. The chief-of-staff scope cannot reach the door.
+   The same door adopts an idle console Pi whose verified package bin,
+   kernel lifetime and actual cwd match one default-root transcript header.
+   After Pi erases its arguments, recognition requires the exact operator
+   Node executable file and kernel argv `pi` followed only by empty arguments.
+   Names, package metadata and transcripts are observations, not vendor-code
+   attestation. Same-account forgery remains within the documented boundary;
+   it cannot add project reach or bypass authorization, audit or containment.
+   Pi uses `agent`/`conversationId`, never a Claude-specific identity. Busy,
+   ambiguous, malformed and managed evidence refuses; no first message means
+   no row. The transcript's existing project grants must permit writing; no
+   grant is added. Durable adoption intent precedes TERM/KILL and the exact
+   file resumes under the ordinary project sandbox/model/permission policy.
+   After adoption, a durable `session_interrupt` intent precedes RPC `abort`;
+   audit rejection changes neither turn state nor input. Pi outside rows are
+   display data with the same scoped latest-turn and execute transcript reads
+   as Claude. They add no ended scan and no Chief of Staff adopt authority.
+   The same door attaches to a codex thread that the per-user codex daemon has loaded, when the thread is idle, came from a codex terminal or the codex desktop app (source `cli` or `vscode`) and works in a registered local project. Attach gets what is running: it ends no process and changes no thread setting. Relay sends the daemon no sandbox, approval, model, folder or instruction override. It never asks the daemon to stop, restart, update, delete or archive. It approves no request on the thread. It declines each approval request for a turn relay started, and answers no request for a turn it did not start. An attached thread keeps the policy it already runs under, as codex and its own configuration set it. Relay claims no project sandbox, allowed-model or permission enforcement over that thread. Relay reads only the default control socket under the home folder, and only when this user owns it and no other account can replace it. Codex rows show folder, state and times, never thread text. The daemon's answers are observations: a changed, ambiguous or already managed thread is refused. A durable `session_adopt` intent precedes the attach, and a durable `session_interrupt` intent precedes every `turn/interrupt`; with auditing off relay sends neither. A dormant attached session comes back only by attaching again: a resume runs the same checks and writes the same intent first. Relay never starts its own codex for it. A drop-in on an attached codex thread opens a codex client of the daemon in a terminal; the thread keeps the policy it already runs under, and relay passes it no setting. A drop-in on a pi session, or on a codex session relay started, runs the terminal under the project's template sandbox with the grants of that headless kind.
 4. **A peer on the network or in the browser** (a machine that can reach a
    relay listener, or a web page open on this Mac reaching relay's localhost
    ports). It gets nothing without a credential: no tool call, no config

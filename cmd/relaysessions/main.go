@@ -11,6 +11,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
@@ -132,6 +133,9 @@ func runService(args []string) int {
 	store := session.NewStore(filepath.Join(cfg.dataDir, "sessions"))
 	perms := permission.NewPermissionManager()
 	sessions := session.NewManager(sessionConfig(cfg, shimBinary), store, perms)
+	sessions.SetInterruptHandler(func(_ context.Context, id string) error {
+		return bridge.NewClientAt(bridgeSock, "").SessionInterrupt(bridge.SessionInterruptRequest{SessionID: id})
+	})
 
 	// The internal bearer must never be an argv value — any same-uid
 	// process, including a sandboxed session target, can read another

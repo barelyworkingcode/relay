@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
 
 	"github.com/google/uuid"
 
@@ -14,14 +17,13 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/logging"
+	"github.com/barelyworkingcode/relay/internal/sessions/codexdaemon"
+	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
+	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
 	"github.com/barelyworkingcode/relay/internal/sessions/sandbox"
 	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
-
-// dropInTemplateID is the terminal template a drop-in launches: the project's
-// own Claude terminal, so its sandbox, model key and host handling apply.
-const dropInTemplateID = "claude-code"
 
 const (
 	defaultDropInCols = 120
@@ -32,6 +34,7 @@ const (
 const (
 	dropInSessionNotFound = "session_not_found"
 	dropInNotClaude       = "not_claude"
+	dropInNotLocal        = "not_local"
 	dropInUnavailable     = "unavailable"
 	dropInLaunchFailed    = "launch_failed"
 	dropInAuditOff        = "audit_unavailable"
@@ -44,7 +47,12 @@ type DropInRequest struct {
 }
 
 type DropInResult struct {
-	SessionID       string
+	SessionID string
+	// Agent is the session's kind; ConversationID is its Claude session id, Pi
+	// session uuid or Codex thread uuid.
+	Agent          string
+	ConversationID string
+	// ClaudeSessionID is set for Claude only.
 	ClaudeSessionID string
 	// Host is the SSH host's name, empty for this machine.
 	Host        string
@@ -64,8 +72,8 @@ type DropInRefusal struct {
 
 func (r *DropInRefusal) Error() string { return r.Message }
 
-// dropIn stops a headless Claude session and launches a terminal that resumes
-// its conversation, for both doors. AuthorizeLaunch runs before anything is
+// dropIn stops a headless Claude, Pi or Codex session and launches a terminal
+// that resumes its conversation, for both doors. AuthorizeLaunch runs before anything is
 // stopped, so a caller that may not launch cannot disturb a session. Once the
 // host holds the session, every failure hands it back.
 func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *DropInResult, refusal *DropInRefusal) {
@@ -82,15 +90,32 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	if !ok {
 		return nil, &DropInRefusal{Status: http.StatusNotFound, Code: dropInSessionNotFound, Message: fmt.Sprintf("no session %s", req.SessionID)}
 	}
-	if rec.Kind != KindClaude {
+	if rec.Kind != KindClaude && rec.Kind != KindPi && rec.Kind != KindCodex {
 		return nil, &DropInRefusal{Status: http.StatusConflict, Code: dropInNotClaude,
-			Message: fmt.Sprintf("only Claude sessions can be taken over; this is a %s session", rec.Kind)}
+			Message: fmt.Sprintf("only Claude, Pi and Codex sessions can be taken over; this is a %s session", rec.Kind)}
 	}
+	hosted := false
 	if proj, _ := config.FindProjectByID(config.FreshSettings(d.store), rec.ProjectID); proj != nil && proj.IsHosted() {
+		hosted = true
 		if h, _ := config.FindHostByID(config.FreshSettings(d.store), proj.HostID); h != nil {
 			host = h.Name
 			hostID = h.ID
 		}
+	}
+	if hosted && rec.Kind != KindClaude {
+		return nil, &DropInRefusal{Status: http.StatusConflict, Code: dropInNotLocal, Message: "Pi and Codex sessions drop in only on this Mac"}
+	}
+	// An attached thread's terminal talks to the daemon, so the daemon must be
+	// reachable before anything stops.
+	var daemon codexdaemon.Identity
+	attached := rec.Kind == KindCodex && rec.CodexThread != ""
+	if attached {
+		id, err := resolveCodexDaemon()
+		if err != nil {
+			slog.WarnContext(ctx, "session drop-in: codex daemon not reachable", "session", req.SessionID, "error", err)
+			return nil, &DropInRefusal{Status: http.StatusBadGateway, Code: dropInUnavailable, Message: "the codex daemon is not reachable; the session was not taken over"}
+		}
+		daemon = id
 	}
 
 	cols, rows := req.Cols, req.Rows
@@ -105,11 +130,13 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 		Caller:     req.Caller,
 		ProjectID:  rec.ProjectID,
 		Kind:       KindPTY,
-		TemplateID: dropInTemplateID,
+		TemplateID: kindTemplateIDs[rec.Kind], // the project's own template for the kind: its sandbox, model key and host handling apply
 		Directory:  rec.Directory,
 		Name:       name + " (drop-in)",
 		Cols:       cols,
 		Rows:       rows,
+
+		DropInAgent: rec.Kind,
 	}
 	result, lr := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, launchReq)
 	if lr != nil {
@@ -121,14 +148,14 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	// The intent row is durable before anything stops; a swap relay cannot
 	// record does not start.
 	actor := callerAuditActor(req.Caller)
-	swapID, err := d.swapIntent(actor, swapToTerminal, req.SessionID, rec.ProjectID, hostID)
+	swapID, err := d.swapIntent(actor, swapToTerminal, req.SessionID, rec.ProjectID, hostID, swapAgent(rec.Kind))
 	if err != nil {
 		d.discardLaunch(result)
 		return nil, &DropInRefusal{Status: http.StatusServiceUnavailable, Code: dropInAuditOff,
 			Message: "auditing is off or cannot record; the session was not taken over"}
 	}
 	complete := func(outcome, code string) {
-		d.swapCompletion(swapID, swapToTerminal, req.SessionID, terminalID, outcome, code)
+		d.swapCompletion(swapID, swapToTerminal, req.SessionID, terminalID, swapAgent(rec.Kind), outcome, code)
 	}
 	link := swapLink{SessionID: req.SessionID, TerminalID: terminalID, Host: host, Caller: req.Caller}
 
@@ -136,7 +163,7 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	// happens to the request ctx, and a cancelled request must still hand the
 	// session back. Only the handoff's own wait follows ctx.
 	hold := context.WithoutCancel(ctx)
-	claudeID, hr, err := d.host().Handoff(ctx, req.SessionID)
+	target, hr, err := d.host().Handoff(ctx, req.SessionID)
 	switch {
 	case hr != nil:
 		d.discardLaunch(result)
@@ -155,20 +182,25 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 		return nil, &DropInRefusal{Status: http.StatusBadGateway, Code: dropInUnavailable, Message: "the session host is not available"}
 	}
 
-	if _, err := uuid.Parse(claudeID); err != nil {
+	extra, reason := dropInTerminalArgs(rec, target, daemon, result.Spec.Sandbox != nil)
+	if reason != "" {
 		d.discardLaunch(result)
 		d.handBack(hold, req.SessionID)
-		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "host returned a conversation id that is not a UUID"))
+		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, reason))
 		complete(audit.AuditOutcomeError, dropInLaunchFailed)
 		link.TerminalGone = true
 		d.armSwap(link)
 		return nil, &DropInRefusal{Status: http.StatusBadGateway, Code: dropInLaunchFailed, Message: "relay could not start the terminal; the session is idle again"}
 	}
-	if argv, ok := d.paneDropInArgv(req.SessionID, rec.ProjectID, result, claudeID); ok {
-		result.Spec.Argv = argv
+	pane, onPane := []string(nil), false
+	if rec.Kind == KindClaude {
+		pane, onPane = d.paneDropInArgv(req.SessionID, rec.ProjectID, result, target.ConversationID)
+	}
+	if onPane {
+		result.Spec.Argv = pane
 		result.Spec.Name = launchReq.Name
 	} else {
-		result.Spec.Argv = append(result.Spec.Argv, "--resume", claudeID)
+		result.Spec.Argv = append(result.Spec.Argv, extra...)
 	}
 	result.Spec.DropInFor = req.SessionID
 
@@ -189,10 +221,67 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 	d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, ""))
 	complete(audit.AuditOutcomeOK, "")
 	d.armSwap(link)
+	claudeID := ""
+	if rec.Kind == KindClaude {
+		claudeID = target.ConversationID
+	}
 	return &DropInResult{
-		SessionID: req.SessionID, ClaudeSessionID: claudeID, Host: host,
+		SessionID: req.SessionID, Agent: rec.Kind, ConversationID: target.ConversationID, ClaudeSessionID: claudeID, Host: host,
 		ProjectName: result.AuditFields.ProjectName, Launch: result, TerminalBody: resp.Body,
 	}, nil
+}
+
+// resolveCodexDaemon finds the codex daemon's control socket by the same safety
+// rules the attach uses.
+func resolveCodexDaemon() (codexdaemon.Identity, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return codexdaemon.Identity{}, err
+	}
+	return codexdaemon.Resolve(home)
+}
+
+// dropInTerminalArgs is the argv a drop-in appends to the template's own. A
+// non-empty reason means the host's answer does not match the session, and the
+// terminal must not start. Deliberate: a Relay-started Codex terminal runs
+// without Codex's own sandbox when relay's profile confines it, because Codex
+// cannot apply its seatbelt inside another; the headless runner does the same.
+// An attached thread's terminal gets no setting at all: it keeps the policy
+// the thread already runs under.
+func dropInTerminalArgs(rec ledger.Record, t hostapi.HandoffResponse, daemon codexdaemon.Identity, sandboxed bool) (argv []string, reason string) {
+	if t.Agent != rec.Kind {
+		return nil, "host returned a different agent than the session's"
+	}
+	if _, err := uuid.Parse(t.ConversationID); err != nil {
+		return nil, "host returned a conversation id that is not a UUID"
+	}
+	switch rec.Kind {
+	case KindClaude:
+		return []string{"--resume", t.ConversationID}, ""
+	case KindPi:
+		a := t.PiSessionArgs
+		if len(a) != 4 || a[0] != "--session" || a[2] != "--session-dir" || !filepath.IsAbs(a[3]) ||
+			(a[1] != t.ConversationID && !filepath.IsAbs(a[1])) {
+			return nil, "host returned unexpected Pi session arguments"
+		}
+		return slices.Clone(a), ""
+	case KindCodex:
+		if t.CodexAttach != (rec.CodexThread != "") {
+			return nil, "host and ledger disagree on whether the Codex thread is attached"
+		}
+		if t.CodexAttach {
+			if t.ConversationID != rec.CodexThread {
+				return nil, "host returned a different Codex thread than the session's"
+			}
+			return []string{"resume", "--remote", "unix://" + daemon.Physical, t.ConversationID}, ""
+		}
+		argv = []string{"resume", "--no-daemon"}
+		if sandboxed {
+			argv = append(argv, "--sandbox", "danger-full-access")
+		}
+		return append(argv, t.ConversationID), ""
+	}
+	return nil, "unsupported session kind"
 }
 
 // paneDropInArgv is the terminal's argv on a host whose detached agent runs as
@@ -211,7 +300,7 @@ func (d sessionRouteDeps) paneDropInArgv(sessionID, projectID string, result *La
 	if proj == nil || !proj.IsHosted() {
 		return nil, false
 	}
-	tmpl, ok := findTemplate(settings, proj, dropInTemplateID)
+	tmpl, ok := findTemplate(settings, proj, kindTemplateIDs[KindClaude])
 	if !ok {
 		return nil, false
 	}
@@ -269,7 +358,9 @@ type dropInWireBody struct {
 
 type dropInResponseBody struct {
 	SessionID       string          `json:"sessionId"`
-	ClaudeSessionID string          `json:"claudeSessionId"`
+	Agent           string          `json:"agent"`
+	ConversationID  string          `json:"conversationId"`
+	ClaudeSessionID string          `json:"claudeSessionId,omitempty"`
 	Host            string          `json:"host,omitempty"`
 	Terminal        json.RawMessage `json:"terminal"`
 }
@@ -296,7 +387,8 @@ func (d sessionRouteDeps) handleDropIn(w http.ResponseWriter, r *http.Request) {
 		terminal = json.RawMessage("{}")
 	}
 	writeJSON(w, http.StatusCreated, dropInResponseBody{
-		SessionID: res.SessionID, ClaudeSessionID: res.ClaudeSessionID, Host: res.Host, Terminal: terminal,
+		SessionID: res.SessionID, Agent: res.Agent, ConversationID: res.ConversationID,
+		ClaudeSessionID: res.ClaudeSessionID, Host: res.Host, Terminal: terminal,
 	})
 }
 

@@ -457,3 +457,28 @@ func darwinUserTempDir() string {
 func modelEndpointLoopbackPort() (int, bool) {
 	return listenPort(currentListenAddrs().Model)
 }
+
+// Adoption reuses the ordinary Pi grants. A transcript is never a reason to
+// add a grant, and an explicit denial always wins over an enclosing grant.
+func piTranscriptGranted(settings *config.Settings, proj *config.Project, directory, path string) bool {
+	spec, err := sandboxSpecForLaunch(settings, proj, directory, KindPi, templateForKind(settings, proj, KindPi), nil)
+	if err != nil {
+		return false
+	}
+	for _, deny := range spec.Deny {
+		if path == deny || strings.HasPrefix(path, strings.TrimSuffix(deny, "/")+"/") {
+			return false
+		}
+	}
+	for _, file := range spec.ReadWriteFiles {
+		if file == path {
+			return true
+		}
+	}
+	for _, dir := range spec.ReadWrite {
+		if path == dir || strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}

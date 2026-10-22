@@ -856,8 +856,8 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleHandoff implements POST /handoff: stop id's headless Claude process
-// and hold the session for a terminal. It can stay open up to HandoffWait.
+// handleHandoff implements POST /handoff: stop id's headless Claude, Pi or
+// Codex process and hold the session for a terminal. It can stay open up to HandoffWait.
 func (s *Server) handleHandoff(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -872,12 +872,19 @@ func (s *Server) handleHandoff(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "session_id is required")
 		return
 	}
-	claudeID, err := s.sessions.Handoff(r.Context(), req.SessionID, HandoffWait, func() { s.markTerminating(req.SessionID) })
+	target, err := s.sessions.Handoff(r.Context(), req.SessionID, HandoffWait, func() { s.markTerminating(req.SessionID) })
 	var herr *session.HandoffError
 	switch {
 	case err == nil:
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(HandoffResponse{SessionID: req.SessionID, ClaudeSessionID: claudeID})
+		resp := HandoffResponse{
+			SessionID: req.SessionID, Agent: target.Agent, ConversationID: target.ConversationID,
+			CodexAttach: target.CodexAttach, PiSessionArgs: target.PiSessionArgs,
+		}
+		if target.Agent == session.KindClaude {
+			resp.ClaudeSessionID = target.ConversationID
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	case errors.As(err, &herr):
 		writeErr(w, http.StatusConflict, herr.Code, herr.Message)
 	case errors.Is(err, session.ErrSessionNotFound):
@@ -904,7 +911,7 @@ func (s *Server) handleHandback(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleManagedIdentities answers the Claude conversation ids this host owns.
+// handleManagedIdentities answers the Claude, Pi and codex ids this host owns.
 // It sits beside /launch, off the manifest, so only relay reads it.
 func (s *Server) handleManagedIdentities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -916,7 +923,7 @@ func (s *Server) handleManagedIdentities(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(ManagedIdentitiesResponse{ClaudeSessionIDs: s.sessions.ClaudeSessionIDs()})
+	_ = json.NewEncoder(w).Encode(ManagedIdentitiesResponse{ClaudeSessionIDs: s.sessions.ClaudeSessionIDs(), PiSessionIDs: s.sessions.PiSessionIDs(), CodexThreadIDs: s.sessions.CodexThreadIDs()})
 }
 
 // maxPermissionBodyBytes bounds a /permission body. A real tool_input is

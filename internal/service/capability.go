@@ -31,7 +31,8 @@ const (
 	// R-S1's job: nothing in this repo yet sends or dispatches the request
 	// itself — R-S4b adds the bridge request type, the handler, and the
 	// ledger/model-key/identity cleanup it drives.
-	OpSessionExited Operation = "SessionExited"
+	OpSessionExited    Operation = "SessionExited"
+	OpSessionInterrupt Operation = "SessionInterrupt"
 	// OpSessionRebind is relay-sessions' claim that a local session's root
 	// outlived a relay restart. Relay's own gate decides the claim; this
 	// only admits the caller.
@@ -54,7 +55,7 @@ const (
 // Operations is every Operation Allowed decides.
 var Operations = []Operation{
 	OpHello, OpFrontendSocket, OpRegisterManifest,
-	OpRegisterModelHost, OpModelCall, OpModelList, OpSessionExited, OpSessionRebind,
+	OpRegisterModelHost, OpModelCall, OpModelList, OpSessionExited, OpSessionRebind, OpSessionInterrupt,
 	OpProjectTools, OpProjectDescribe, OpProjectListSkills,
 }
 
@@ -69,6 +70,7 @@ var serviceOperationCapability = map[Operation]config.ServiceCapability{
 	OpRegisterModelHost: config.ServiceCapabilityModelHost,
 	OpModelCall:         config.ServiceCapabilityModels,
 	OpSessionExited:     config.ServiceCapabilitySessions,
+	OpSessionInterrupt:  config.ServiceCapabilitySessions,
 	OpSessionRebind:     config.ServiceCapabilitySessions,
 }
 

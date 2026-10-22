@@ -8,9 +8,11 @@ import (
 	"github.com/barelyworkingcode/relay/fakerelay/internal/server"
 )
 
-const dropInTemplate = "claude-code"
+// dropInTemplates is the terminal template a drop-in launches for each kind,
+// as relay's kindTemplateIDs names them.
+var dropInTemplates = map[string]string{"claude": "claude-code", "pi": "pi", "codex": "codex"}
 
-// dropIn takes a headless Claude session over for an echo terminal. The hold
+// dropIn takes a headless Claude, Pi or Codex session over for an echo terminal. The hold
 // is set under the same lock as the checks, so two callers cannot both win.
 func (s *svc) dropIn(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -48,14 +50,18 @@ func (s *svc) dropIn(w http.ResponseWriter, r *http.Request) {
 	case x == nil:
 		refuse(http.StatusNotFound, "session_not_found", "no session "+id)
 		return
-	case kind != "claude":
-		refuse(http.StatusConflict, "not_claude", "only Claude sessions can be taken over; this is a "+kind+" session")
+	case dropInTemplates[kind] == "":
+		refuse(http.StatusConflict, "not_claude", "only Claude, Pi and Codex sessions can be taken over; this is a "+kind+" session")
+		return
+	case kind != "claude" && host != nil:
+		refuse(http.StatusConflict, "not_local", "Pi and Codex sessions drop in only on this Mac")
 		return
 	}
+	templateID := dropInTemplates[kind]
 	target, ref := s.authorize(projectID, "", "", "terminal")
-	tpl := s.findTemplate(target, dropInTemplate)
+	tpl := s.findTemplate(target, templateID)
 	if ref == nil && tpl == nil {
-		ref = &refusal{http.StatusForbidden, "template_unavailable", templateUnavailable(dropInTemplate)}
+		ref = &refusal{http.StatusForbidden, "template_unavailable", templateUnavailable(templateID)}
 	}
 	if ref != nil {
 		refuse(ref.status, ref.code, ref.msg)
@@ -63,7 +69,7 @@ func (s *svc) dropIn(w http.ResponseWriter, r *http.Request) {
 	}
 	target.dir = dir
 
-	claudeID, ref := s.holdSession(r, id)
+	conversationID, ref := s.holdSession(r, id)
 	if ref != nil {
 		if ref.status == 0 {
 			ev.End("error", "cancelled", r.Context().Err())
@@ -88,7 +94,10 @@ func (s *svc) dropIn(w http.ResponseWriter, r *http.Request) {
 	if target.host != nil {
 		tv["host"] = map[string]any{"id": target.host["id"], "name": target.host["name"]}
 	}
-	resp := map[string]any{"sessionId": id, "claudeSessionId": claudeID, "terminal": tv}
+	resp := map[string]any{"sessionId": id, "agent": kind, "conversationId": conversationID, "terminal": tv}
+	if kind == "claude" {
+		resp["claudeSessionId"] = conversationID
+	}
 	if host != nil {
 		resp["host"] = hostName
 	}
@@ -112,7 +121,7 @@ func (s *svc) holdSession(r *http.Request, id string) (string, *refusal) {
 			ref = &refusal{http.StatusConflict, "not_headless", "this session is not headless; continue it in eve"}
 		case x.held:
 			ref = &refusal{http.StatusConflict, "dropped_in", "a terminal already has this session; close it first"}
-		case x.processing && x.tool != "":
+		case x.processing && x.tool != "" && x.kind == "claude":
 			ref = &refusal{http.StatusConflict, "tool_running", "a tool is running (" + x.tool + "); wait for it to finish or stop the turn, then try again"}
 		case x.processing:
 			if x.changed == nil {

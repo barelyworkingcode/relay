@@ -133,7 +133,8 @@ type Manager struct {
 	// same name and purpose: a later unit's SessionExited bridge hook, fired
 	// from handleProviderEvent's "process_exited" case, usually on the
 	// provider's own waitForExit goroutine (see SetExitHandler).
-	onExit func(id string, exitCode int)
+	onInterrupt func(context.Context, string) error
+	onExit      func(id string, exitCode int)
 
 	tools toolBoard
 
@@ -225,6 +226,16 @@ func (m *Manager) eventSink() sessionstypes.EventSink {
 func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 	m.mu.Lock()
 	m.onExit = fn
+	m.mu.Unlock()
+}
+
+var ErrInterruptAuditUnavailable = errors.New("interrupt audit unavailable")
+
+// SetInterruptHandler records permission to deliver an adopted Pi or attached
+// codex interrupt.
+func (m *Manager) SetInterruptHandler(fn func(context.Context, string) error) {
+	m.mu.Lock()
+	m.onInterrupt = fn
 	m.mu.Unlock()
 }
 
@@ -340,6 +351,11 @@ type CreateSpec struct {
 	// ResumeConversation seeds a new claude session's provider state with an
 	// existing Claude conversation id, so the first start resumes it.
 	ResumeConversation string
+	ResumeTranscript   string
+	// AttachCodexThread seeds a new codex session's provider state with a thread
+	// the codex daemon holds, so the first start attaches to it instead of
+	// running a codex of its own.
+	AttachCodexThread string
 }
 
 func (m *Manager) providerKindSupported(kind string) bool {
@@ -362,6 +378,9 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 	}
 	if m.getProviderFactory() == nil && !m.providerKindSupported(spec.Kind) {
 		return nil, fmt.Errorf("session: kind %q has no provider wired (claude/pi/codex/chat only)", spec.Kind)
+	}
+	if err := m.checkAttachResume(spec); err != nil {
+		return nil, err
 	}
 
 	m.mu.Lock()
@@ -541,8 +560,14 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 	}
 
 	var providerState json.RawMessage
-	if spec.ResumeConversation != "" {
-		providerState, _ = json.Marshal(map[string]string{"claudeSessionId": spec.ResumeConversation})
+	if spec.AttachCodexThread != "" {
+		providerState, _ = json.Marshal(map[string]any{"threadId": spec.AttachCodexThread, "daemonAttach": true})
+	} else if spec.ResumeConversation != "" {
+		if spec.Kind == KindPi {
+			providerState, _ = json.Marshal(map[string]string{"piSessionId": spec.ResumeConversation, "piSessionFile": spec.ResumeTranscript})
+		} else {
+			providerState, _ = json.Marshal(map[string]string{"claudeSessionId": spec.ResumeConversation})
+		}
 	}
 
 	return &sessionstypes.Session{
@@ -593,9 +618,11 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) (s
 	if err := p.Start(); err != nil {
 		return p, err
 	}
-	if m.attachable(sess) {
+	if m.runnerSession(sess) {
 		// The saved state names the run, its cursor and its root; a restart before
-		// the first result would otherwise find none of them.
+		// the first result would otherwise find none of them. A pi session, which
+		// ends with relay-sessions, needs it too: its adopted transcript is the
+		// only way back to the conversation when the restart comes mid-turn.
 		m.persist(sess)
 	}
 	return p, nil
@@ -1464,6 +1491,36 @@ func (m *Manager) StopGeneration(id string) error {
 	if !ok {
 		return ErrSessionNotFound
 	}
+	sess.Lock()
+	kind := sess.ProviderType
+	raw := append(json.RawMessage(nil), sess.ProviderState...)
+	sess.Unlock()
+	if kind == KindPi || kind == KindCodex {
+		if p := sess.Provider(); p != nil {
+			raw = p.GetState()
+		}
+		var state struct {
+			File         string `json:"piSessionFile"`
+			DaemonAttach bool   `json:"daemonAttach"`
+		}
+		// An ordinary Pi or codex session has no adopted state and may carry none
+		// at all; only non-empty, unreadable state is an error.
+		if len(raw) > 0 && json.Unmarshal(raw, &state) != nil {
+			return errors.New("interrupt: invalid session state")
+		}
+		if (kind == KindPi && state.File != "") || (kind == KindCodex && state.DaemonAttach) {
+			m.mu.Lock()
+			fn := m.onInterrupt
+			m.mu.Unlock()
+			if fn == nil {
+				return ErrInterruptAuditUnavailable
+			}
+			if err := fn(context.Background(), id); err != nil {
+				slog.Warn("session interrupt: audit refused", "session", id, "error", err)
+				return ErrInterruptAuditUnavailable
+			}
+		}
+	}
 	m.signal(sess, attention.TurnStopped)
 	m.tools.clear(id)
 	if p := sess.Provider(); p != nil {
@@ -1476,6 +1533,70 @@ func (m *Manager) StopGeneration(id string) error {
 	// case this manufactures is never "process_exited", the only case that
 	// check applies to.
 	m.handleProviderEvent(sess, nil, events.HandlerMessageComplete, nil)
+	return nil
+}
+
+// ErrClearAttached refuses clear_session on a codex thread relay attached to:
+// the thread belongs to the codex daemon, and relay never starts its own codex
+// for it.
+var ErrClearAttached = errors.New("this session is attached to a codex thread and its history cannot be cleared from relay")
+
+// attachedCodexThread returns the daemon thread sess is attached to. State that
+// cannot be read counts as not attached only when empty.
+func (m *Manager) attachedCodexThread(sess *sessionstypes.Session) (string, bool) {
+	sess.Lock()
+	kind := sess.ProviderType
+	raw := append(json.RawMessage(nil), sess.ProviderState...)
+	sess.Unlock()
+	if kind != KindCodex {
+		return "", false
+	}
+	if p := sess.Provider(); p != nil {
+		raw = p.GetState()
+	}
+	var state struct {
+		ThreadID     string `json:"threadId"`
+		DaemonAttach bool   `json:"daemonAttach"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &state) != nil || !state.DaemonAttach {
+		return "", false
+	}
+	return state.ThreadID, true
+}
+
+// attachedCodex reports whether sess is an attach to a daemon-held codex
+// thread.
+func (m *Manager) attachedCodex(sess *sessionstypes.Session) bool {
+	_, attached := m.attachedCodexThread(sess)
+	return attached
+}
+
+// ErrAttachRequired refuses a resume that would start a provider for an
+// attached codex thread outside relay's attach checks.
+var ErrAttachRequired = errors.New("session: an attached codex session resumes only through relay's attach checks")
+
+// checkAttachResume holds the attach checks' door shut: a stored attach resumes
+// only for a request that names its own thread, and only a stored attach of that
+// thread takes such a request.
+func (m *Manager) checkAttachResume(spec CreateSpec) error {
+	if !spec.Resume {
+		return nil
+	}
+	var thread string
+	var attached bool
+	if sess, ok := m.Get(spec.SessionID); ok {
+		thread, attached = m.attachedCodexThread(sess)
+		sess.Lock()
+		headless := sess.Headless
+		sess.Unlock()
+		attached = attached && (headless || spec.AttachCodexThread == "")
+	}
+	if attached && spec.AttachCodexThread != thread {
+		return ErrAttachRequired
+	}
+	if spec.AttachCodexThread != "" && !attached {
+		return ErrAttachRequired
+	}
 	return nil
 }
 
@@ -1493,6 +1614,13 @@ func (m *Manager) ClearSession(id string) error {
 	sess, ok := m.Get(id)
 	if !ok {
 		return ErrSessionNotFound
+	}
+	// Clearing drops ProviderState, which holds the thread id and the
+	// daemonAttach mark. Without them a later resume would start relay's own
+	// codex for an attached thread, so the clear is refused before it changes
+	// anything.
+	if m.attachedCodex(sess) {
+		return ErrClearAttached
 	}
 
 	m.signal(sess, attention.TurnStopped)
@@ -1659,6 +1787,16 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessio
 			fn(sess.ID, payload.ExitCode)
 		}
 
+	case "turn_started":
+		// A turn that no send of this manager started: a daemon-attached codex
+		// thread's terminal began it. A turn this manager's own send began has
+		// the session running already.
+		sess.SetProcessing(true)
+		if cur, ok := m.attn.Get(sess.ID); !ok || cur.State != attention.Running {
+			m.signal(sess, attention.TurnStarted)
+		}
+		return
+
 	case "raw_output":
 		m.signal(sess, attention.Activity)
 		msg = map[string]any{"type": events.WSMsgRawOutput, "sessionId": sess.ID, "text": string(data)}
@@ -1797,6 +1935,75 @@ func (m *Manager) ClaudeSessionIDs() []string {
 		if id := claudeConversationID(sess); id != "" && !seen[id] {
 			seen[id] = true
 			ids = append(ids, id)
+		}
+	}
+	for _, sess := range m.liveSessions() {
+		add(sess)
+	}
+	if persisted, err := m.store.LoadAll(); err == nil {
+		for _, sess := range persisted {
+			add(sess)
+		}
+	}
+	return ids
+}
+
+func (m *Manager) PiSessionIDs() []string {
+	seen := map[string]bool{}
+	ids := []string{}
+	add := func(sess *sessionstypes.Session) {
+		sess.Lock()
+		kind := sess.ProviderType
+		raw := append(json.RawMessage(nil), sess.ProviderState...)
+		sess.Unlock()
+		if kind != KindPi {
+			return
+		}
+		if p := sess.Provider(); p != nil {
+			raw = p.GetState()
+		}
+		var state struct {
+			ID string `json:"piSessionId"`
+		}
+		if json.Unmarshal(raw, &state) == nil && state.ID != "" && !seen[state.ID] {
+			seen[state.ID] = true
+			ids = append(ids, state.ID)
+		}
+	}
+	for _, sess := range m.liveSessions() {
+		add(sess)
+	}
+	if persisted, err := m.store.LoadAll(); err == nil {
+		for _, sess := range persisted {
+			add(sess)
+		}
+	}
+	return ids
+}
+
+// CodexThreadIDs returns the thread id of every codex session this host owns,
+// live or persisted. Relay uses it to keep managed threads out of the
+// outside-session list.
+func (m *Manager) CodexThreadIDs() []string {
+	seen := map[string]bool{}
+	ids := []string{}
+	add := func(sess *sessionstypes.Session) {
+		sess.Lock()
+		kind := sess.ProviderType
+		raw := append(json.RawMessage(nil), sess.ProviderState...)
+		sess.Unlock()
+		if kind != KindCodex {
+			return
+		}
+		if p := sess.Provider(); p != nil {
+			raw = p.GetState()
+		}
+		var state struct {
+			ThreadID string `json:"threadId"`
+		}
+		if json.Unmarshal(raw, &state) == nil && state.ThreadID != "" && !seen[state.ThreadID] {
+			seen[state.ThreadID] = true
+			ids = append(ids, state.ThreadID)
 		}
 	}
 	for _, sess := range m.liveSessions() {

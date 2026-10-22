@@ -200,32 +200,32 @@ func (c *sessionHostClient) Terminate(ctx context.Context, sessionID, reason str
 // process and holds the session. A 404 or 409 answer comes back as refusal
 // (nothing is held); every other failure is err, and the caller cannot tell
 // whether the host held the session before the failure.
-func (c *sessionHostClient) Handoff(ctx context.Context, sessionID string) (claudeSessionID string, refusal *hostapi.ErrorResponse, err error) {
+func (c *sessionHostClient) Handoff(ctx context.Context, sessionID string) (hostapi.HandoffResponse, *hostapi.ErrorResponse, error) {
 	httpResp, err := c.doWithin(ctx, hostapi.HandoffWait+sessionHostRequestTimeout, http.MethodPost, "/handoff", hostapi.HandoffRequest{SessionID: sessionID})
 	if err != nil {
-		return "", nil, err
+		return hostapi.HandoffResponse{}, nil, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes))
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: read /handoff response: %v", errSessionHostUnavailable, err)
+		return hostapi.HandoffResponse{}, nil, fmt.Errorf("%w: read /handoff response: %v", errSessionHostUnavailable, err)
 	}
 	switch httpResp.StatusCode {
 	case http.StatusOK:
 		var out hostapi.HandoffResponse
 		if err := json.Unmarshal(data, &out); err != nil {
-			return "", nil, fmt.Errorf("%w: parse /handoff response: %v", errSessionHostUnavailable, err)
+			return hostapi.HandoffResponse{}, nil, fmt.Errorf("%w: parse /handoff response: %v", errSessionHostUnavailable, err)
 		}
-		return out.ClaudeSessionID, nil, nil
+		return out, nil, nil
 	case http.StatusNotFound, http.StatusConflict:
 		var eb hostapi.ErrorResponse
 		_ = json.Unmarshal(data, &eb)
 		if eb.Error == "" {
 			eb.Error = fmt.Sprintf("http_%d", httpResp.StatusCode)
 		}
-		return "", &eb, nil
+		return hostapi.HandoffResponse{}, &eb, nil
 	default:
-		return "", nil, fmt.Errorf("%w: /handoff returned %d", errSessionHostUnavailable, httpResp.StatusCode)
+		return hostapi.HandoffResponse{}, nil, fmt.Errorf("%w: /handoff returned %d", errSessionHostUnavailable, httpResp.StatusCode)
 	}
 }
 
@@ -324,24 +324,48 @@ func (c *sessionHostClient) DialWS(ctx context.Context) (*websocket.Conn, error)
 	return conn, nil
 }
 
-// ManagedClaudeIdentities asks the host for the Claude conversation ids it
-// owns; the public session summary deliberately omits them.
-func (c *sessionHostClient) ManagedClaudeIdentities(ctx context.Context) (map[string]bool, error) {
+// managedIdentities asks the host for every id it owns, by agent.
+func (c *sessionHostClient) managedIdentities(ctx context.Context) (hostapi.ManagedIdentitiesResponse, error) {
+	var body hostapi.ManagedIdentitiesResponse
 	httpResp, err := c.do(ctx, http.MethodGet, "/managed-identities", nil)
 	if err != nil {
-		return nil, err
+		return body, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: /managed-identities returned %d", errSessionHostUnavailable, httpResp.StatusCode)
+		return body, fmt.Errorf("%w: /managed-identities returned %d", errSessionHostUnavailable, httpResp.StatusCode)
 	}
-	var body hostapi.ManagedIdentitiesResponse
 	if err := json.NewDecoder(io.LimitReader(httpResp.Body, maxSessionHostResponseBytes)).Decode(&body); err != nil {
-		return nil, fmt.Errorf("session host: decode /managed-identities: %w", err)
+		return body, fmt.Errorf("session host: decode /managed-identities: %w", err)
 	}
-	ids := make(map[string]bool, len(body.ClaudeSessionIDs))
-	for _, id := range body.ClaudeSessionIDs {
+	return body, nil
+}
+
+func idSet(list []string) map[string]bool {
+	ids := make(map[string]bool, len(list))
+	for _, id := range list {
 		ids[id] = true
 	}
-	return ids, nil
+	return ids
+}
+
+// ManagedClaudeIdentities asks the host for the Claude conversation ids it
+// owns; the public session summary deliberately omits them.
+func (c *sessionHostClient) ManagedClaudeIdentities(ctx context.Context) (map[string]bool, error) {
+	body, err := c.managedIdentities(ctx)
+	return idSet(body.ClaudeSessionIDs), err
+}
+
+// ManagedPiIdentities asks the host for the Pi conversation ids it owns; the
+// public session summary deliberately omits them.
+func (c *sessionHostClient) ManagedPiIdentities(ctx context.Context) (map[string]bool, error) {
+	body, err := c.managedIdentities(ctx)
+	return idSet(body.PiSessionIDs), err
+}
+
+// ManagedCodexIdentities asks the host for the codex thread ids it owns; the
+// public session summary deliberately omits them.
+func (c *sessionHostClient) ManagedCodexIdentities(ctx context.Context) (map[string]bool, error) {
+	body, err := c.managedIdentities(ctx)
+	return idSet(body.CodexThreadIDs), err
 }

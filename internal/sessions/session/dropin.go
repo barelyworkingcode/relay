@@ -10,6 +10,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/sessions/attention"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
+	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
@@ -21,6 +22,22 @@ var ErrDroppedIn = errors.New("session: a terminal holds this session")
 type HandoffError struct{ Code, Message string }
 
 func (e *HandoffError) Error() string { return e.Message }
+
+// HandoffTarget is what a terminal needs to open the conversation a stopped
+// headless session held.
+type HandoffTarget struct {
+	// Agent is "claude", "pi" or "codex".
+	Agent string
+	// ConversationID is the Claude session id, the Pi session uuid or the
+	// Codex thread uuid.
+	ConversationID string
+	// CodexAttach is true when the codex thread is held through the shared
+	// daemon.
+	CodexAttach bool
+	// PiSessionArgs is exactly ["--session", <file or uuid>, "--session-dir",
+	// <absolute dir>]; Pi only.
+	PiSessionArgs []string
+}
 
 type openTool struct{ id, name string }
 
@@ -126,41 +143,49 @@ func (m *Manager) Held(id string) bool {
 	return slot != nil && slot.held
 }
 
-// Handoff stops id's headless Claude process so a terminal can resume its
-// conversation, and holds the session until HandBack. It refuses at once when
-// a tool call is open, and otherwise waits up to wait for the current turn to
-// end. beforeStop runs just before the process is killed. The provider and
-// slot stay installed, so the process's exit still reaches the exit handler.
-func (m *Manager) Handoff(ctx context.Context, id string, wait time.Duration, beforeStop func()) (string, error) {
+// Handoff stops id's headless Claude, Pi or Codex process so a terminal can
+// resume its conversation, and holds the session until HandBack. A Claude
+// session refuses at once when a tool call is open; every kind otherwise waits
+// up to wait for the current turn to end. beforeStop runs just before the
+// process is killed. The provider and slot stay installed, so the process's
+// exit still reaches the exit handler. For an attached Codex thread the stop
+// only ends relay's own daemon connection.
+func (m *Manager) Handoff(ctx context.Context, id string, wait time.Duration, beforeStop func()) (HandoffTarget, error) {
 	// A detached agent that relay or this host left running is attached first,
 	// so the stop below ends it: a terminal and a second agent must not share
 	// the conversation.
 	if err := m.reattachIfDetached(id); err != nil {
 		if errors.Is(err, ErrAttachFailed) {
-			return "", &HandoffError{"attach_failed", "the host answered and the session's agent is running, but relay could not attach to it, so it cannot be stopped for the terminal; try again"}
+			return HandoffTarget{}, &HandoffError{"attach_failed", "the host answered and the session's agent is running, but relay could not attach to it, so it cannot be stopped for the terminal; try again"}
 		}
-		return "", &HandoffError{"host_unavailable", "the host of this session did not answer, so its agent cannot be stopped for the terminal; try again when the host is reachable"}
+		return HandoffTarget{}, &HandoffError{"host_unavailable", "the host of this session did not answer, so its agent cannot be stopped for the terminal; try again when the host is reachable"}
 	}
 	sess, ok := m.Get(id)
 	if !ok {
-		return "", ErrSessionNotFound
+		return HandoffTarget{}, ErrSessionNotFound
 	}
-	if sess.ProviderType != KindClaude {
-		return "", &HandoffError{"not_claude", fmt.Sprintf("only Claude sessions can be taken over; this is a %s session", sess.ProviderType)}
+	switch sess.ProviderType {
+	case KindClaude:
+	case KindPi, KindCodex:
+		if sess.GetHost() != nil {
+			return HandoffTarget{}, &HandoffError{"not_local", "Pi and Codex sessions drop in only on this Mac"}
+		}
+	default:
+		return HandoffTarget{}, &HandoffError{"not_claude", fmt.Sprintf("only Claude, Pi and Codex sessions can be taken over; this is a %s session", sess.ProviderType)}
 	}
 	if !sess.Headless {
-		return "", &HandoffError{"not_headless", "this session is not headless; continue it in eve"}
+		return HandoffTarget{}, &HandoffError{"not_headless", "this session is not headless; continue it in eve"}
 	}
 	deadline := m.cfg.clockOrDefault().After(wait)
 	for {
 		if m.Held(id) {
-			return "", errDroppedIn()
+			return HandoffTarget{}, errDroppedIn()
 		}
 		// The wake channel is taken before the claim attempt so a turn that
 		// ends in between is not missed.
 		tool, wake := m.tools.snapshot(id)
-		if tool != "" {
-			return "", &HandoffError{"tool_running", fmt.Sprintf("a tool is running (%s); wait for it to finish or stop the turn, then try again", tool)}
+		if tool != "" && sess.ProviderType == KindClaude {
+			return HandoffTarget{}, &HandoffError{"tool_running", fmt.Sprintf("a tool is running (%s); wait for it to finish or stop the turn, then try again", tool)}
 		}
 		if sess.TryStartProcessing() {
 			break
@@ -168,18 +193,22 @@ func (m *Manager) Handoff(ctx context.Context, id string, wait time.Duration, be
 		select {
 		case <-wake:
 		case <-deadline:
-			return "", &HandoffError{"turn_timeout", fmt.Sprintf("the current turn did not end within %d s; stop it or try again", int(wait/time.Second))}
+			return HandoffTarget{}, &HandoffError{"turn_timeout", fmt.Sprintf("the current turn did not end within %d s; stop it or try again", int(wait/time.Second))}
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return HandoffTarget{}, ctx.Err()
 		}
 	}
 
 	// Read before m.mu: a provider's state lock can be held across a blocking
 	// stdin write.
-	claudeID := claudeConversationID(sess)
-	if claudeID == "" {
+	target, err := m.handoffTarget(sess)
+	if err != nil {
 		sess.SetProcessing(false)
-		return "", &HandoffError{"no_conversation", "the session has not run a turn yet; there is nothing to take over"}
+		return HandoffTarget{}, &HandoffError{"no_conversation", fmt.Sprintf("the session's conversation cannot be opened in a terminal: %v", err)}
+	}
+	if target.ConversationID == "" {
+		sess.SetProcessing(false)
+		return HandoffTarget{}, &HandoffError{"no_conversation", "the session has not run a turn yet; there is nothing to take over"}
 	}
 
 	m.mu.Lock()
@@ -188,10 +217,10 @@ func (m *Manager) Handoff(ctx context.Context, id string, wait time.Duration, be
 		held := slot != nil && slot.held
 		m.mu.Unlock()
 		if held {
-			return "", errDroppedIn()
+			return HandoffTarget{}, errDroppedIn()
 		}
 		sess.SetProcessing(false)
-		return "", ErrSessionNotFound
+		return HandoffTarget{}, ErrSessionNotFound
 	}
 	slot.held = true
 	m.mu.Unlock()
@@ -203,7 +232,7 @@ func (m *Manager) Handoff(ctx context.Context, id string, wait time.Duration, be
 	if p := sess.Provider(); p != nil && p.Alive() {
 		p.Kill()
 	}
-	return claudeID, nil
+	return target, nil
 }
 
 func errDroppedIn() error {
@@ -230,6 +259,53 @@ func claudeConversationID(sess *sessionstypes.Session) string {
 	sess.Unlock()
 	read(state)
 	return id
+}
+
+// handoffTarget reads the conversation from the live provider, else from the
+// persisted provider state. An empty ConversationID means the session has not
+// run a turn yet; an error means the state names a conversation no terminal
+// can safely open.
+func (m *Manager) handoffTarget(sess *sessionstypes.Session) (HandoffTarget, error) {
+	var states []json.RawMessage
+	if p := sess.Provider(); p != nil {
+		states = append(states, p.GetState())
+	}
+	sess.Lock()
+	states = append(states, sess.ProviderState)
+	sess.Unlock()
+
+	t := HandoffTarget{Agent: sess.ProviderType}
+	for _, state := range states {
+		var s struct {
+			ClaudeSessionID string `json:"claudeSessionId"`
+			PiSessionID     string `json:"piSessionId"`
+			ThreadID        string `json:"threadId"`
+			DaemonAttach    bool   `json:"daemonAttach"`
+		}
+		if len(state) == 0 || json.Unmarshal(state, &s) != nil {
+			continue
+		}
+		switch sess.ProviderType {
+		case KindClaude:
+			t.ConversationID = s.ClaudeSessionID
+		case KindPi:
+			t.ConversationID = s.PiSessionID
+			if t.ConversationID != "" {
+				args, err := provider.PiTerminalSessionArgs(state, m.cfg.Pi.DataDir)
+				if err != nil {
+					return HandoffTarget{}, err
+				}
+				t.PiSessionArgs = args
+			}
+		case KindCodex:
+			t.ConversationID = s.ThreadID
+			t.CodexAttach = s.DaemonAttach
+		}
+		if t.ConversationID != "" {
+			return t, nil
+		}
+	}
+	return t, nil
 }
 
 // HandBack releases the hold on id and reports it idle. Idempotent; an unknown

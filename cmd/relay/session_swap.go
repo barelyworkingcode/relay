@@ -120,15 +120,25 @@ type swapArgs struct {
 	ProjectID  string `json:"project_id,omitempty"`
 	HostID     string `json:"host_id,omitempty"`
 	TerminalID string `json:"terminal_id,omitempty"`
+	// Agent is set for Pi and Codex swaps; a Claude swap's rows carry none.
+	Agent string `json:"agent,omitempty"`
+}
+
+// swapAgent is the agent a swap row names: empty for Claude.
+func swapAgent(kind string) string {
+	if kind == KindClaude {
+		return ""
+	}
+	return kind
 }
 
 // swapIntent writes the swap's intent row and answers only once it is
 // durable. A swap that cannot be recorded does not start.
-func (d sessionRouteDeps) swapIntent(actor audit.AuditActor, dir swapDirection, sessionID, projectID, hostID string) (string, error) {
+func (d sessionRouteDeps) swapIntent(actor audit.AuditActor, dir swapDirection, sessionID, projectID, hostID, agent string) (string, error) {
 	if !d.auditor.Ready() {
 		return "", errors.New(swapAuditUnavailable)
 	}
-	args, _ := json.Marshal(swapArgs{SessionID: sessionID, Direction: string(dir), ProjectID: projectID, HostID: hostID})
+	args, _ := json.Marshal(swapArgs{SessionID: sessionID, Direction: string(dir), ProjectID: projectID, HostID: hostID, Agent: agent})
 	id := audit.NewAuditID()
 	if err := d.auditor.RecordDurable(audit.AuditEvent{
 		ID: id, TS: d.swaps.clock(), Event: audit.AuditEventSessionSwap, Phase: audit.AuditPhaseIntent,
@@ -142,8 +152,8 @@ func (d sessionRouteDeps) swapIntent(actor audit.AuditActor, dir swapDirection, 
 
 // swapCompletion writes the completion row that pairs with swapIntent's id. It
 // is durable before the caller's event ends, so a reader of the event finds it.
-func (d sessionRouteDeps) swapCompletion(auditID string, dir swapDirection, sessionID, terminalID, outcome, code string) {
-	args, _ := json.Marshal(swapArgs{SessionID: sessionID, Direction: string(dir), TerminalID: terminalID})
+func (d sessionRouteDeps) swapCompletion(auditID string, dir swapDirection, sessionID, terminalID, agent, outcome, code string) {
+	args, _ := json.Marshal(swapArgs{SessionID: sessionID, Direction: string(dir), TerminalID: terminalID, Agent: agent})
 	now := d.swaps.clock()
 	ev := audit.AuditEvent{
 		ID: auditID, TS: now, Event: audit.AuditEventSessionSwap, Phase: audit.AuditPhaseCompletion,
@@ -208,14 +218,14 @@ func (d sessionRouteDeps) handBackResume(ctx context.Context, l swapLink) {
 		ev.End(logging.OutcomeDenied, "session_not_found", errors.New("session_not_found"))
 		return
 	}
-	auditID, err := d.swapIntent(callerAuditActor(l.Caller), swapToHeadless, l.SessionID, rec.ProjectID, d.swapHostID(rec.ProjectID))
+	auditID, err := d.swapIntent(callerAuditActor(l.Caller), swapToHeadless, l.SessionID, rec.ProjectID, d.swapHostID(rec.ProjectID), swapAgent(rec.Kind))
 	if err != nil {
 		ev.End(logging.OutcomeDenied, swapAuditUnavailable, err)
 		return
 	}
 	out := d.resumeSession(ctx, l.Caller, l.SessionID)
 	if out.Status == http.StatusOK {
-		d.swapCompletion(auditID, swapToHeadless, l.SessionID, l.TerminalID, audit.AuditOutcomeOK, "")
+		d.swapCompletion(auditID, swapToHeadless, l.SessionID, l.TerminalID, swapAgent(rec.Kind), audit.AuditOutcomeOK, "")
 		ev.End(logging.OutcomeOK, "", nil)
 		return
 	}
@@ -225,6 +235,6 @@ func (d sessionRouteDeps) handBackResume(ctx context.Context, l swapLink) {
 	if out.Status >= http.StatusInternalServerError {
 		auditOutcome = audit.AuditOutcomeError
 	}
-	d.swapCompletion(auditID, swapToHeadless, l.SessionID, l.TerminalID, auditOutcome, code)
+	d.swapCompletion(auditID, swapToHeadless, l.SessionID, l.TerminalID, swapAgent(rec.Kind), auditOutcome, code)
 	ev.End(outcome, reason, errors.New(code))
 }

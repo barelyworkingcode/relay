@@ -1,6 +1,6 @@
-# Outside Claude sessions
+# Outside sessions
 
-Relay observes Claude sessions started outside Relay on the console and in
+Relay observes Claude, console Pi and codex daemon sessions started outside Relay on the console and in
 registered SSH host project folders. These are display data, separate from
 managed sessions. An `outside:` identity never grants input, resize, kill,
 start, permission-answer or configuration authority.
@@ -121,6 +121,57 @@ A paused tool request estimates asking; hooks identify permission prompts exactl
 Transcript and report text is untrusted display data and cannot confer action
 or read authority. Transcript paths are derived from home/cwd/session identity;
 a reported `transcript_path` never chooses a file to read.
+
+## Console Pi rows
+
+Pi rows add `agent:"pi"` and `conversationId` (the header UUID); they omit
+`claudeSessionId`. Their private identity hashes machine, `pi`, conversation
+UUID, PID and process lifetime. Claude identities remain unchanged. They use
+the same list, detail and normalized transcript-page shapes. Pi `message`
+records map user and assistant text, `toolCall` arguments and `toolResult`
+content to the existing entries. Latest-turn reads reset at user messages.
+No ended Pi scan is performed.
+
+Discovery correlates the default Pi transcript's encoded cwd and timestamp
+with a verified Pi package bin, actual process cwd and kernel start. A session
+without its first message is absent. Managed Pi UUIDs come from the private
+`GET /managed-identities` `pi_session_ids`, beside `claude_session_ids`;
+ancestry independently excludes the session host's children. No raw process
+arguments or paths supplied by a caller choose a transcript. See
+[Pi adoption](session-adoption.md#pi-adoption) for validation and read bounds.
+
+Only an idle Pi row offers Adopt. Busy rows have `adoptReason:"busy"` and
+cannot be adopted even with `interrupt:true`. An idle adoption uses only
+`outsideId`; it retains the exact transcript under the existing project Pi
+grants. Missing grants answer `409 transcript_not_granted`. Success returns
+`{sessionId,agent:"pi",conversationId,interrupted:false,recoverySent:false}`.
+The same conversation continues headless, with no automatic model turn.
+
+## Codex daemon rows
+
+A codex thread that the per-user codex daemon has loaded is a console row with
+`agent:"codex"` and `conversationId` (the thread UUID); it omits
+`claudeSessionId`. The name is "Codex — <folder>", `since` is the thread's
+creation time and `state` is `idle` or `running`. Its private identity hashes
+machine, `codex`, the thread id and the daemon's lifetime (the control socket's
+physical path, device, inode and modification time), so a restarted daemon
+makes new ids. The daemon holds the threads of the codex desktop app and of a terminal started
+with `codex --remote unix://`; a terminal started without `--remote` runs
+an in-process server and shows no row. The folder is `environments[0].cwd`,
+else `cwd`, and the accepted sources are `cli` and `vscode`; a desktop-app
+thread in a registered project shows Adopt, as a terminal thread does. A thread
+with no turn is absent. Relay reads no codex file: the
+detail's `lastTurn` is empty and the transcript page is empty, as for a missing
+file. Row text never carries thread text, only folder, state and times.
+
+One connection per probe lists the threads. Only the default control socket
+under the home folder is read, and only when this user alone owns it and no
+other account can replace it. An absent daemon, an unsafe socket or any daemon
+error gives no codex rows, one Warn, and leaves the Claude and Pi rows intact.
+Managed codex thread ids come from the private `GET /managed-identities`
+`codex_thread_ids`; when they cannot be read, no codex rows show. Only an idle
+row offers Adopt: a busy thread is `adoptable:false` with `adoptReason:"busy"`.
+See [Codex attach](session-adoption.md#codex-attach).
 
 ## Ended sessions
 
@@ -248,6 +299,10 @@ Sessions on SSH hosts are not adopted.
   check whether the call took effect.
 - **Selectors.** `outsideId` is the row's id. `claudeSessionId` is the power
   path; with no live console row for it relay runs one console probe first.
+  A codex thread is selected by `outsideId` only: `claudeSessionId` naming a
+  codex thread and any `model` for a codex row answer `400 invalid_body`. A
+  codex adopt attaches to the daemon, ends no process and answers
+  `{sessionId,agent:"codex",conversationId,interrupted:false,recoverySent:false}`.
 
 ## Optional hooks
 

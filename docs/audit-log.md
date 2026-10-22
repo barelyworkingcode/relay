@@ -919,6 +919,46 @@ The resumed launch writes its ordinary `session_launch` row. With auditing off,
 or when an intent row cannot be written, the door answers 503
 `audit_unavailable` and signals nothing.
 
+Pi adoption replaces Claude-specific args with `agent:"pi"` and
+`conversation_id`; it retains the same `session_adopt` intent/completion and
+actual TERM/KILL signal records. Idle adoption has `interrupted:false` and
+`recovery_sent:false`, with no recovery message. The ordinary project launch
+audit remains in force.
+
+After adoption, each managed Pi interrupt first writes a durable
+`session_interrupt` intent through the built-in host's authenticated bridge
+request. Its service actor names the session host and session; args contain
+`session_id`, `project_id`, `agent:"pi"`, `method:"abort"`; outcome is `pending`.
+An audit write failure prevents the RPC input and leaves the turn running.
+The intent acknowledges persistence only; provider delivery errors are logged
+by the existing abort path. This boundary applies to adopted Pi state with
+`piSessionFile`; it does not change ordinary Pi or Claude interrupt behavior.
+
+A codex attach writes the same `session_adopt` intent and completion with
+`agent:"codex"`, `conversation_id`, `project_id`, `directory`, `interrupt:false`,
+`model` (`codex/<thread model>`), `method:"attach"` and `relay_sandbox:false`;
+it has no `claude_session_id`. The completion adds `session_id`, or the refusal
+code in `error`. No signal is sent and no `session_interrupt` or recovery row
+belongs to an attach: a busy thread is refused with no row past the refusal.
+With auditing off, or when the intent row cannot be written, relay sends the
+daemon no `thread/resume`. Each audit row of an attach, the `session_launch`
+row included, records `sandbox:false`.
+
+A resume of a dormant attached codex session writes the same intent and
+completion with `method:"reattach"` and `session_id` in the args, before
+`thread/resume` goes to the daemon. A refusal before the intent (`409 busy`,
+`changed`, `ended`, `ambiguous`, `managed`, `no_project`, `model_unknown`,
+`502 unavailable`) writes a `session_resume` row with the code in `error` and no
+intent; `503 audit_unavailable` writes nothing. The `session_resume` row of the
+re-attach records `sandbox:false`.
+
+After the attach, each managed `turn/interrupt` first writes a durable
+`session_interrupt` intent through the same bridge request, with `session_id`,
+`project_id`, `agent:"codex"` and `method:"turn/interrupt"`; outcome is
+`pending`. An audit write failure sends no `turn/interrupt` and leaves the turn
+running. This boundary applies to a codex session whose state holds
+`daemonAttach:true`; it does not change ordinary codex interrupts.
+
 ### Session rebind
 
 A surviving local session's relay tools are bound again after a relay restart
@@ -976,7 +1016,7 @@ was started with.
 ### Session swaps
 
 `session_swap` records a change of driver. A drop-in (`to_terminal`) stops the
-headless agent for a terminal; closing the terminal (`to_headless`) resumes
+headless Claude, Pi or Codex agent for a terminal; closing the terminal (`to_headless`) resumes
 the session headless. Each swap writes two rows with the same `id`: an
 `intent` row (`outcome: pending`, durable before the act) and a `completion`
 row.
@@ -986,6 +1026,10 @@ row.
 {"id":"5c0d…","ts":"2026-10-20T09:12:01.012Z","dur_ms":12,"event":"session_swap","phase":"completion","args":{"session_id":"3af1…","direction":"to_terminal","terminal_id":"…"},"outcome":"ok"}
 ```
 
+- **Agent.** A Pi or Codex swap carries `args.agent` (`pi` or `codex`) on every
+  row; a Claude swap carries none. An attached Codex thread's hand back also
+  writes its own `session_adopt` intent (`method: reattach`) before it
+  attaches.
 - **When the intent is written.** `to_terminal`: after `AuthorizeLaunch`
   passes, before the handoff. `to_headless`: before the resume. A refusal
   before the intent (`session_not_found`, `not_claude`, a launch refusal)
