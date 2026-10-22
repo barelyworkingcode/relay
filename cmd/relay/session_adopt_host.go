@@ -274,6 +274,12 @@ func (a *adoptOps) hostLaunchFailed(ctx context.Context, d sessionRouteDeps, res
 		_ = d.sessions.Remove(result.SessionID)
 		return fail(http.StatusBadGateway, adoptStopFailed, "the process did not exit after SIGKILL; nothing was launched")
 	}
+	if code != "" && !strings.HasPrefix(code, "adopt_") {
+		// Relay-sessions refused before any script ran: nothing was touched.
+		_ = d.sessions.Remove(result.SessionID)
+		slog.WarnContext(ctx, "session adopt: host launch refused", "session", result.SessionID, "code", code, "error", err)
+		return fail(http.StatusBadGateway, adoptUnavailable, "the session host is not available")
+	}
 	slog.WarnContext(ctx, "session adopt: host launch did not complete", "session", result.SessionID, "code", code, "error", err)
 	d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error()))
 	if code == "" || code == hostapi.ErrAdoptLinkLost {

@@ -240,8 +240,8 @@ Claude in no registered project is adopted too, unsandboxed
 ([A Claude session in no project](session-adoption.md#a-claude-session-in-no-project)).
 A Claude row on a Unix SSH host is adopted too, in its host project, and keeps
 running on that host ([Sessions on SSH hosts](session-adoption.md#sessions-on-ssh-hosts)).
-Such a row is `adoptable` when the host's `detach_sessions` is absent or `true`
-and the host project allows the `claude-code` template; otherwise it reads
+Such a row is `adoptable` when the host probe found `claude`, the host's
+`detach_sessions` is absent or `true`, and the host project allows the `claude-code` template; otherwise it reads
 `host_unsupported`, as does every row of a Windows host. An adopt of a host row
 selects it by `outsideId` only, and the idle check, the ladder and the start run
 in one detached script on the host, not in relay. A host adopt never answers

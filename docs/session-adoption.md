@@ -438,7 +438,8 @@ runs in the tmux session `relay-agent-<session id>`; without it, under the
 plain runner. A terminal Claude that ran in a tmux pane ends, and the adopt
 starts a fresh `relay-agent` session: it does not reuse the pane.
 
-**Eligibility** is the probe's: the registry tests of any row, a host with
+**Eligibility** is the probe's: the registry tests of any row, a host whose
+probe found `claude`, a host with
 `detach_sessions` absent or `true` (a host that ends its agent with the link
 cannot hold a detached script), and a host project that allows `claude-code`.
 The door tests it again, fresh, at request time.
