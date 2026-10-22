@@ -575,6 +575,8 @@ func TestAdoptReasonsOnRows(t *testing.T) {
 	h.transcript(t, osPrompt("acme hello"), osAnswer("acme hi"))
 
 	s, frame := a.probeFrame()
+	// A Claude row in no project is adoptable (an empty reason); the others
+	// carry their reason.
 	cases := []struct {
 		name, reason string
 		row          *osRow
@@ -582,7 +584,7 @@ func TestAdoptReasonsOnRows(t *testing.T) {
 	}{
 		{"kind bg", "not_interactive", s.liveAt(bg.dir), ""},
 		{"entrypoint sdk-cli", "not_command_line", s.liveAt(sdk.dir), ""},
-		{"no project", "no_project", s.liveAt(loose.dir), ""},
+		{"no project", "", s.liveAt(loose.dir), ""},
 		{"ended", "ended", s.endedAt(edir), ""},
 		{"host", "host_unsupported", s.liveAt(h.dir), ""},
 	}
@@ -591,6 +593,18 @@ func TestAdoptReasonsOnRows(t *testing.T) {
 			t.Fatalf("%s: no row in %+v", c.name, s)
 		}
 		wire := osRowByID(frame, c.row.ID)
+		if c.reason == "" {
+			if wire["adoptable"] != true {
+				t.Fatalf("%s: row = %v, want adoptable true", c.name, wire)
+			}
+			if _, has := wire["adoptReason"]; has {
+				t.Fatalf("%s: an adoptable row carries adoptReason: %v", c.name, wire)
+			}
+			if got := a.detailSession(c.row.ID); got["adoptable"] != true {
+				t.Fatalf("%s: detail = %v, want adoptable true", c.name, got)
+			}
+			continue
+		}
 		if wire["adoptable"] != false || wire["adoptReason"] != c.reason {
 			t.Fatalf("%s: row = %v, want adoptable false and adoptReason %s", c.name, wire, c.reason)
 		}

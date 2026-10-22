@@ -1270,6 +1270,30 @@ holds the intent row and a completion with outcome `ok`.
   kills the tmux session, removes the transcript (only a file named for the
   conversation id that holds the run's tag) and the folder.
 
+**session-adopt-unsandboxed** (api, so a `--stack` run drives it). The same
+adopt for an interactive Claude that is in no project: the terminal's folder is a
+scratch folder `verify-<nonce>-adopt-uns-*` under the OS temp directory, which no
+registered project holds. Relay adopts it with no project, no sandbox and no
+permission policy. The setup is `session-adopt`'s: a detached tmux session on a
+socket of its own, `claude --model haiku --session-id <uuid>`, the stack's local
+model endpoint from `stack.json`, the trust prompt answered. NOTRUN off a stack
+or with no `claude_base_url`. PASS when the door answers 201 with `unsandboxed:
+true` for that conversation; the terminal's claude process is gone; `relay
+session message` gets a reply holding `verify-<nonce>-adopt-uns-2` that is in the
+same `<uuid>.jsonl`; a Chief of Staff `POST /api/chief-of-staff/messages` (a
+credential minted with `proxy` and `execute`, revoked after) answers 202; and
+every `relay audit --event session_adopt` row for the conversation carries
+`"no_project": true`, with the intent row and a completion with outcome `ok`.
+- Waits: as `session-adopt`. The outside reply is model output: a bounded read of
+  the transcript, 120 s; the registry `idle` re-read, 60 s; the trust prompt, pane
+  capture, 30 s. The Chief of Staff send waits on its HTTP answer only.
+- Lives in: `cmd/relay/session_adopt.go`, `cmd/relay/session_unsandboxed.go`.
+- Reached by: `POST /api/sessions/adopt` and `POST /api/chief-of-staff/messages`
+  on the frontend socket, `relay session message`, `relay audit`.
+- Traps: as `session-adopt`, plus a temp directory that lies inside a registered
+  project, which the door refuses as `changed`. Cleanup also removes the scratch
+  folder (only a folder whose name starts with `verify-`).
+
 **session-host-restart** (screen). The admin op `service.restart
 {"id":"relaysessions"}` answers without error, and within 15 s
 `relaysessions` is STATE `running` with a `relay-sessions` pid it did not

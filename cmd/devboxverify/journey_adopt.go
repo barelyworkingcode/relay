@@ -27,6 +27,7 @@ import (
 
 const (
 	adoptID         = "session-adopt"
+	adoptUnsID      = "session-adopt-unsandboxed"
 	adoptTrustWait  = 30 * time.Second
 	adoptMarkerWait = 120 * time.Second
 	adoptIdleWait   = 60 * time.Second
@@ -37,6 +38,7 @@ const (
 
 var adoptJourneys = []journey{
 	{adoptID, []string{"sessions", "audit"}, []string{"project:acme"}, phaseAPI, 240 * time.Second, runAdopt},
+	{adoptUnsID, []string{"sessions", "audit"}, nil, phaseAPI, 300 * time.Second, runAdoptUnsandboxed},
 }
 
 var adoptTrustPrompt = regexp.MustCompile(`(?i)trust (this|the files in this) folder|Do you trust|Yes, I trust`)
@@ -50,6 +52,11 @@ type adoptRun struct {
 	Reply       string
 	ReplyInFile bool
 	Audit       []audit.AuditEvent
+
+	// Unsandboxed journey only.
+	Unsandboxed bool
+	SendStatus  int
+	SendDetail  string
 }
 
 // runAdopt drives the simple path of the adopt door: an interactive Claude
@@ -62,43 +69,67 @@ type adoptRun struct {
 // journey is NOTRUN, so it never runs claude against a hosted model. The
 // token is read by the shell at exec from its file; it is in no argv, file
 // or detail.
-func runAdopt(ctx context.Context, e env) result {
+func runAdopt(ctx context.Context, e env) result { return adoptFlow(ctx, e, false) }
+
+// runAdoptUnsandboxed is runAdopt for a terminal Claude in a scratch folder
+// outside every project: relay adopts it with no project, no sandbox and no
+// permission policy, and the Chief of Staff can still send to it.
+func runAdoptUnsandboxed(ctx context.Context, e env) result { return adoptFlow(ctx, e, true) }
+
+func adoptFlow(ctx context.Context, e env, unsandboxed bool) result {
+	id, suffix := adoptID, "adopt"
+	if unsandboxed {
+		id, suffix = adoptUnsID, "adopt-uns"
+	}
 	baseURL, model, tokenFile, err := stackClaude(e)
 	if err != nil {
-		return blocked(adoptID, err.Error())
+		return blocked(id, err.Error())
 	}
 	if baseURL == "" {
-		return result{adoptID, stateNotRun, "needs a stack's local model endpoint (claude_base_url in stack.json)"}
+		return result{id, stateNotRun, "needs a stack's local model endpoint (claude_base_url in stack.json)"}
 	}
-	acme, err := e.World.project("acme")
-	if err != nil {
-		return blocked(adoptID, err.Error())
-	}
-	folder, err := filepath.EvalSymlinks(acme.Folder)
-	if err != nil {
-		return blocked(adoptID, acme.Name+" folder missing")
+	tag := "verify-" + e.Nonce + "-" + suffix
+	var dir string
+	if unsandboxed {
+		// Deliberate: the folder is under the OS temp directory, which no
+		// registered project holds, so relay finds the row in no project.
+		tmp, err := os.MkdirTemp("", tag+"-")
+		if err != nil {
+			return blocked(id, "scratch folder: "+err.Error())
+		}
+		if dir, err = filepath.EvalSymlinks(tmp); err != nil {
+			return blocked(id, "scratch folder: "+err.Error())
+		}
+	} else {
+		acme, err := e.World.project("acme")
+		if err != nil {
+			return blocked(id, err.Error())
+		}
+		folder, err := filepath.EvalSymlinks(acme.Folder)
+		if err != nil {
+			return blocked(id, acme.Name+" folder missing")
+		}
+		dir = filepath.Join(folder, tag)
 	}
 	token, err := adoptCredential(e.CredentialFile)
 	if err != nil {
-		return blocked(adoptID, err.Error())
+		return blocked(id, err.Error())
 	}
 	tmux := adoptTmux()
 	claude, cerr := cmdlookup.Local(ctx, "claude")
 	switch {
 	case tmux == "":
-		return blocked(adoptID, "tmux is not installed")
+		return blocked(id, "tmux is not installed")
 	case cerr != nil:
-		return blocked(adoptID, "no claude on this machine's login-shell PATH")
+		return blocked(id, "no claude on this machine's login-shell PATH")
 	}
 
-	tag := "verify-" + e.Nonce + "-adopt"
-	dir := filepath.Join(folder, tag)
 	convID := uuid.NewString()
-	sess := &adoptCleanup{tmux: tmux, name: tag, dir: dir, convID: convID, tag: tag, e: e}
+	sess := &adoptCleanup{tmux: tmux, name: tag, dir: dir, convID: convID, tag: tag, e: e, id: id}
 	defer sess.run(context.WithoutCancel(ctx))
 
 	if err := writeAdoptSettings(dir); err != nil {
-		return blocked(adoptID, "scratch folder: "+err.Error())
+		return blocked(id, "scratch folder: "+err.Error())
 	}
 	line := adoptShellPrefix(baseURL, model, tokenFile) + "exec env -u CLAUDE_CODE_ENTRYPOINT -u CLAUDECODE " + shellQuote(claude) +
 		" --model haiku --session-id " + convID + " --permission-mode default " + shellQuote("Reply with exactly: "+tag+"-1")
@@ -108,7 +139,7 @@ func runAdopt(ctx context.Context, e env) result {
 	// entrypoint "sdk-cli", which the door refuses as not_command_line.
 	create.Env = adoptCleanEnv(os.Environ())
 	if out, err := create.CombinedOutput(); err != nil {
-		return blocked(adoptID, "tmux new-session: "+firstLine(string(out)))
+		return blocked(id, "tmux new-session: "+firstLine(string(out)))
 	}
 	sess.started = true
 
@@ -118,7 +149,7 @@ func runAdopt(ctx context.Context, e env) result {
 	// Waits: none possible for the outside reply: model output; a bounded read
 	// of the transcript for the marker record, 120 s.
 	if !pollUntil(ctx, adoptMarkerWait, func() bool { return adoptAssistantHas(convID, tag+"-1") }) {
-		return blocked(adoptID, "the outside claude did not reply "+tag+"-1 within 120s (model output)")
+		return blocked(id, "the outside claude did not reply "+tag+"-1 within 120s (model output)")
 	}
 	// Waits: the registry status change to idle, re-read, 60 s.
 	var pid int
@@ -126,17 +157,17 @@ func runAdopt(ctx context.Context, e env) result {
 		pid = adoptPID(ctx, convID)
 		return pid > 0 && adoptRegistryStatus(pid) == "idle"
 	}) {
-		return blocked(adoptID, "the outside claude's registry entry did not read idle within 60s")
+		return blocked(id, "the outside claude's registry entry did not read idle within 60s")
 	}
 	if id, err := claudeSessionForPID(pid); err != nil || id != convID {
-		return blocked(adoptID, "the registry entry does not carry the conversation id the journey set")
+		return blocked(id, "the registry entry does not carry the conversation id the journey set")
 	}
 
 	r := adoptRun{ClaudeID: convID}
 	body, _ := json.Marshal(map[string]any{"claudeSessionId": convID, "interrupt": false, "model": "haiku"})
 	r.Status, r.Body, err = adoptPost(ctx, e.FrontendSocket, token, body)
 	if err != nil {
-		return blocked(adoptID, "frontend socket unreachable")
+		return blocked(id, "frontend socket unreachable")
 	}
 	var ok struct {
 		SessionID string `json:"sessionId"`
@@ -155,7 +186,14 @@ func runAdopt(ctx context.Context, e env) result {
 		}
 		r.ReplyInFile = adoptAssistantHas(convID, tag+"-2")
 	}
+	if unsandboxed && r.Status == http.StatusCreated && ok.SessionID != "" {
+		r.Unsandboxed = true
+		r.SendStatus, r.SendDetail = adoptCosSend(ctx, e, ok.SessionID, "Reply with exactly: "+tag+"-3")
+	}
 	r.Audit = adoptAuditRows(ctx, e, convID)
+	if unsandboxed {
+		return classifyAdoptUnsandboxed(r, tag)
+	}
 	return classifyAdopt(r, tag)
 }
 
@@ -197,6 +235,52 @@ func classifyAdopt(r adoptRun, tag string) result {
 		return fail("no session_adopt completion row with outcome ok")
 	}
 	return result{adoptID, statePass, "idle terminal Claude adopted by conversation id: 201, terminal process gone, the resumed headless session replied in the same transcript, session_adopt intent and ok completion audited"}
+}
+
+func classifyAdoptUnsandboxed(r adoptRun, tag string) result {
+	fail := func(d string) result { return result{adoptUnsID, stateFail, d} }
+	base := classifyAdopt(r, tag)
+	if base.State != statePass {
+		base.ID = adoptUnsID
+		return base
+	}
+	var got struct {
+		Unsandboxed bool `json:"unsandboxed"`
+	}
+	_ = json.Unmarshal(r.Body, &got)
+	var intent, done bool
+	for _, row := range r.Audit {
+		var args struct {
+			NoProject bool `json:"no_project"`
+		}
+		if json.Unmarshal(row.Args, &args) != nil || !args.NoProject {
+			return fail("a session_adopt row lacks no_project: true (" + row.Phase + ")")
+		}
+		intent = intent || row.Phase == "intent"
+		done = done || row.Phase == "completion" && row.Outcome == "ok"
+	}
+	switch {
+	case !got.Unsandboxed:
+		return fail("201 body lacks unsandboxed: true")
+	case r.SendStatus != http.StatusAccepted:
+		return fail(fmt.Sprintf("Chief of Staff send answered %d, want 202: %s", r.SendStatus, r.SendDetail))
+	case !intent || !done:
+		return fail("session_adopt rows with no_project: true lack the intent or the ok completion")
+	}
+	return result{adoptUnsID, statePass, "terminal Claude in a folder outside every project adopted unsandboxed: 201 with unsandboxed true, terminal process gone, the headless session replied in the same transcript, a Chief of Staff send answered 202, session_adopt rows audited with no_project true"}
+}
+
+// adoptCosSend sends one message to the session as the Chief of Staff, with a
+// credential minted for the call and revoked after it.
+func adoptCosSend(ctx context.Context, e env, sessionID, text string) (int, string) {
+	tok, revoke, res, ok := mintCosStartCred(ctx, e)
+	if !ok {
+		return 0, res.Detail
+	}
+	defer revoke()
+	resp := cosRequest(ctx, e, tok, true, http.MethodPost, "/api/chief-of-staff/messages",
+		jsonBody(map[string]string{"sessionId": sessionID, "text": text}), frontendRequestTimeout)
+	return resp.Status, firstLine(resp.Error)
 }
 
 // adoptCredential reads the execute credential the way the other journeys do.
@@ -406,6 +490,7 @@ type adoptCleanup struct {
 	tmux, name, dir, convID, tag, sessionID string
 	started                                 bool
 	e                                       env
+	id                                      string
 }
 
 func (c *adoptCleanup) run(ctx context.Context) {
@@ -418,7 +503,7 @@ func (c *adoptCleanup) run(ctx context.Context) {
 	if pid := adoptPID(ctx, c.convID); pid > 0 {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
 	}
-	removeTranscript(adoptID, c.convID, c.tag, false, func(ctx context.Context) string {
+	removeTranscript(c.id, c.convID, c.tag, false, func(ctx context.Context) string {
 		if adoptPID(ctx, c.convID) > 0 {
 			return "process still running"
 		}
