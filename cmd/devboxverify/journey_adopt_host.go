@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -96,6 +97,10 @@ func adoptHostFlow(ctx context.Context, e env, id string) result {
 	token, credID, err := seedSwapCredential(e, fx, hostTmux)
 	if err != nil {
 		return blocked(id, "fixture credential: "+err.Error()+fx.tearDown())
+	}
+
+	if err := seedHostProbe(e, fx, hostTmux); err != nil {
+		return blocked(id, "fixture host probe: "+err.Error()+dropSwapCredential(fx, credID)+fx.tearDown())
 	}
 
 	suffix := "ahost"
@@ -528,5 +533,43 @@ func adoptHostTrust(ctx context.Context, tmux, name, convID string) {
 			}
 		}
 		return false
+	})
+}
+
+// seedHostProbe gives the fixture host a successful probe record. Deliberate:
+// a plain host Claude launch, which is what an adopt starts, runs the host's
+// probed claude_path, and setUpDetachedFixture writes a host with no probe.
+// The path is the fixture's launcher, which sets the stack's model endpoint
+// and execs claude. The host is this machine, so its os and home are this
+// machine's. The record goes in before the outside row wait.
+func seedHostProbe(e env, fx *detachedFixture, tmuxPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	hostOS := "Linux"
+	if runtime.GOOS == "darwin" {
+		hostOS = "Darwin"
+	}
+	probe := map[string]any{
+		"at": time.Now().UTC().Format(time.RFC3339), "ok": true, "os": hostOS, "arch": runtime.GOARCH,
+		"home": home, "claude_path": fx.launcher, "tmux_path": tmuxPath,
+	}
+	return editSettings(fx.configDir, func(top map[string]json.RawMessage) error {
+		var hosts []map[string]any
+		if err := json.Unmarshal(top["hosts"], &hosts); err != nil {
+			return fmt.Errorf("settings.json hosts: %w", err)
+		}
+		for _, h := range hosts {
+			if h["id"] == fx.hostID {
+				h["probe"] = probe
+			}
+		}
+		b, err := json.Marshal(hosts)
+		if err != nil {
+			return err
+		}
+		top["hosts"] = b
+		return nil
 	})
 }

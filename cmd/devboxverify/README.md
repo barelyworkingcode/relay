@@ -1324,6 +1324,10 @@ with no `claude_base_url`.
 - Reached by: `POST /api/sessions/adopt`, `POST /api/sessions/{id}/drop-in` and
   `DELETE /api/terminals/{id}` (the drop-in `relay drop-in` calls),
   `POST /api/chief-of-staff/messages`, `relay session list`, `relay audit`.
+- Setup: the fixture host gets a seeded successful `probe` record (`claude_path` = the
+  fixture's launcher, which sets the stack's model env; `tmux_path`; this machine's
+  `os` and `home`), written before the outside row wait: a plain host Claude launch
+  needs a probed `claude_path`.
 - Traps: the adopt sends `haiku`, as `session-adopt` does: on a stack the
   transcript names the stack's model id, not a Claude family, and the stack maps
   only the haiku alias. An e2e test covers the no-model rule. Cleanup ends only its own tmux session
