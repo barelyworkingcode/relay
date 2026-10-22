@@ -182,7 +182,7 @@ func (a *adoptOps) adoptHost(ctx context.Context, req AdoptRequest, obs outsides
 		completion.Outcome, completion.Error = outcome, errCode
 		var args map[string]any
 		_ = json.Unmarshal(adoptIntent.Args, &args)
-		completion.Args = mustJSON(withKeys(args, withKeys(map[string]any{"interrupted": st.interrupted}, extra)))
+		completion.Args = mustJSON(withKeys(args, withKeys(map[string]any{"interrupted": interrupt}, extra)))
 		d.auditor.Record(completion)
 	}
 	var interruptIntent *audit.AuditEvent
@@ -192,7 +192,7 @@ func (a *adoptOps) adoptHost(ctx context.Context, req AdoptRequest, obs outsides
 			completion.Phase = audit.AuditPhaseCompletion
 			completion.DurMs = time.Since(start).Milliseconds()
 			completion.Outcome, completion.Error = outcome, errCode
-			completion.Args = mustJSON(withKeys(base, map[string]any{"interrupted": st.interrupted}))
+			completion.Args = mustJSON(withKeys(base, map[string]any{"interrupted": interrupt}))
 			d.auditor.Record(completion)
 		}
 		completeAdopt(outcome, errCode, extra)
@@ -267,6 +267,9 @@ func (a *adoptOps) hostLaunchFailed(ctx context.Context, d sessionRouteDeps, res
 	case hostapi.ErrAdoptChanged:
 		_ = d.sessions.Remove(result.SessionID)
 		return fail(http.StatusConflict, adoptChanged, "the process or its registry entry changed")
+	case hostapi.ErrAdoptSetupFailed:
+		_ = d.sessions.Remove(result.SessionID)
+		return fail(http.StatusBadGateway, adoptUnavailable, "the host could not start the adopt; nothing was changed")
 	case hostapi.ErrAdoptStopFailed:
 		_ = d.sessions.Remove(result.SessionID)
 		return fail(http.StatusBadGateway, adoptStopFailed, "the process did not exit after SIGKILL; nothing was launched")
@@ -340,6 +343,7 @@ func (d sessionRouteDeps) resumeAdoptPending(ctx context.Context, ev *logging.Ev
 		d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error())))
 		if code == hostapi.ErrAdoptChanged {
 			_ = d.sessions.Remove(rec.SessionID)
+			d.deleteHostSession(hold, rec.SessionID)
 			ev.End(logging.OutcomeDenied, adoptChanged, errors.New(adoptChanged))
 			return resumeError(http.StatusConflict, "the terminal session still runs; adopt it again", adoptChanged)
 		}
@@ -376,4 +380,15 @@ func (d sessionRouteDeps) hostKnowsSession(ctx context.Context, id string) bool 
 		}
 	}
 	return false
+}
+
+// deleteHostSession removes relay-sessions' saved copy of a session whose
+// record relay dropped, so the outside row is adoptable again.
+func (d sessionRouteDeps) deleteHostSession(ctx context.Context, id string) {
+	resp, err := d.host().do(ctx, http.MethodDelete, "/api/sessions/"+id, nil)
+	if err != nil {
+		slog.Warn("session resume: saved session not deleted", "session", id, "error", err)
+		return
+	}
+	_ = resp.Body.Close()
 }

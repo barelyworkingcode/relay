@@ -44,9 +44,10 @@ const adoptSentinel = "@@RELAY_ADOPT@@"
 const adoptSteps = `
 trap '' HUP
 done_line=
+printf '%s %s\n' "$$" "$(lstart "$$")" > "$base/adopt.lock/owner"
 state() { printf '%s\n' "$1" >> "$base/adopt.state"; }
-terminal() { [ -z "$done_line" ] || return 0; done_line=1; state "$1"; }
-trap '[ -n "$done_line" ] || terminal "failed launch_failed"' EXIT
+terminal() { [ -z "$done_line" ] || return 0; done_line=1; state "$1"; rm -rf "$base/adopt.lock"; }
+trap '[ -n "$done_line" ] || terminal "failed launch_failed"; rm -rf "$base/adopt.lock"' EXIT
 refuse() { terminal "refused $1"; exit 0; }
 now_ms() {
   ms=$(date +%s%3N 2>/dev/null)
@@ -154,7 +155,7 @@ case "$a_pid" in ''|*[!0-9]*|0) refuse changed;; esac
 cur=$(adopt_lifetime "$a_pid")
 if [ -n "$cur" ]; then
   if [ "$a_nosig" = 1 ]; then
-    [ "$cur" != "$a_life" ] || refuse changed
+    if [ "$cur" = "$a_life" ] && alive; then refuse changed; fi
   else
     [ "$cur" = "$a_life" ] || refuse changed
     registry_check
@@ -167,12 +168,31 @@ fi
 // adoptOuter is the SSH command's script: $1 to $7 are the start's arguments.
 // It writes adopt.sh from its heredoc, starts it detached, and prints each new
 // adopt.state line behind the sentinel until the terminal one. Exit 6 is a
-// result that did not come in time. Deliberate: HUP is ignored so a dropped
+// result that did not come in time. Deliberate: adopt.lock (a directory holding
+// the owner's pid and start time) is taken before adopt.state is touched and
+// kept by adopt.sh until it ends, so two scripts never run for one session; a
+// lock whose owner is gone or has another start time is taken over. A setup
+// failure prints "failed setup" and a held lock "failed in_progress", on stdout
+// only: nothing was touched. HUP is ignored so a dropped
 // link leaves the detached script running; the dots on stderr end this reader
 // when the link is gone.
 const adoptOuter = agentPrelude + `
-fail() { echo "` + adoptSentinel + ` failed launch_failed"; exit 3; }
-mkdir -p "$base" 2>/dev/null || fail
+lock="$base/adopt.lock"
+fail() { rm -rf "$lock" 2>/dev/null; echo "` + adoptSentinel + ` failed setup"; exit 3; }
+mkdir -p "$base" 2>/dev/null || { echo "` + adoptSentinel + ` failed setup"; exit 3; }
+lock_held() {
+  o=$(cat "$lock/owner" 2>/dev/null)
+  opid=${o%% *}; olife=${o#* }
+  case "$opid" in ''|*[!0-9]*) return 1;; esac
+  [ -n "$olife" ] && [ "$(lstart "$opid")" = "$olife" ]
+}
+if ! mkdir "$lock" 2>/dev/null; then
+  [ -f "$lock/owner" ] || sleep 1
+  if lock_held; then echo "` + adoptSentinel + ` failed in_progress"; exit 0; fi
+  mv "$lock" "$lock.old.$$" 2>/dev/null; rm -rf "$lock.old.$$"
+  mkdir "$lock" 2>/dev/null || { echo "` + adoptSentinel + ` failed in_progress"; exit 0; }
+fi
+printf '%s %s\n' "$$" "$(lstart "$$")" > "$lock/owner" || fail
 st="$base/adopt.state"
 : > "$st" || fail
 : > "$base/adopt.log" || fail
@@ -281,7 +301,7 @@ func ParseAdoptResult(out string) (AdoptOutcome, error) {
 			return AdoptOutcome{Result: "ok", Generation: f[2]}, nil
 		case f[1] == "refused" && len(f) == 3 && (f[2] == "busy" || f[2] == "changed"):
 			return AdoptOutcome{Result: "refused", Code: f[2]}, nil
-		case f[1] == "failed" && len(f) == 3 && (f[2] == "stop_failed" || f[2] == "launch_failed"):
+		case f[1] == "failed" && len(f) == 3 && (f[2] == "stop_failed" || f[2] == "launch_failed" || f[2] == "setup" || f[2] == "in_progress"):
 			return AdoptOutcome{Result: "failed", Code: f[2]}, nil
 		}
 		return AdoptOutcome{}, fmt.Errorf("%w: unexpected line %q", ErrAdoptLinkLost, l)

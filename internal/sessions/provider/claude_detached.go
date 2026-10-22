@@ -45,6 +45,9 @@ var (
 	ErrAdoptStopFailed   = errors.New("adopt: the outside process did not exit after SIGKILL")
 	ErrAdoptLaunchFailed = errors.New("adopt: the outside process ended but the agent did not start")
 	ErrAdoptLinkLost     = errors.New("adopt: the connection to the host dropped before the result")
+	// ErrAdoptSetupFailed: the SSH command could not set the script up, so
+	// nothing on the host was touched.
+	ErrAdoptSetupFailed = errors.New("adopt: the host could not set the adopt script up")
 )
 
 func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []string) error {
@@ -129,6 +132,10 @@ func (p *ClaudeProvider) adoptOutcome(host *sessionstypes.HostSpec, stdout strin
 		return "", fmt.Errorf("%w: host %q", ErrAdoptBusy, host.Name)
 	case out.Result == "refused":
 		return "", fmt.Errorf("%w: host %q", ErrAdoptChanged, host.Name)
+	case out.Code == "setup":
+		return "", fmt.Errorf("%w: host %q", ErrAdoptSetupFailed, host.Name)
+	case out.Code == "in_progress":
+		return "", fmt.Errorf("%w: host %q: another adopt script is running for this session", ErrAdoptLinkLost, host.Name)
 	case out.Code == "stop_failed":
 		return "", fmt.Errorf("%w: host %q", ErrAdoptStopFailed, host.Name)
 	}

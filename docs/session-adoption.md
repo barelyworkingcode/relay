@@ -480,6 +480,16 @@ one. Relay sends no signal over SSH itself. The script:
 5. runs the same start as a detached session (`failed launch_failed` when it
    fails) and writes `ok <generation>`.
 
+**One script at a time.** Before it touches `adopt.state`, the SSH command takes
+the per-session lock `adopt.lock` (a directory holding the owner's pid and
+start time). `adopt.sh` keeps it until it ends, and a lock whose owner is gone
+or has another start time is taken over. While the owner lives, a second
+command changes nothing and answers `adopt_link_lost`: relay answers `502
+host_link_lost` (an adopt) or `502 launch_failed` (a resume), and the record
+stays. A command that cannot set the script up (an unwritable
+`~/.relay/agents`, say) has touched nothing: relay answers `502 unavailable`,
+removes the record, and relay-sessions saves nothing.
+
 `adopt.state` holds each `signal INT|TERM|KILL <unix ms>` line and exactly one
 terminal line: `ok <generation>`, `refused busy`, `refused changed`,
 `failed stop_failed` or `failed launch_failed`.
@@ -499,8 +509,11 @@ asks relay-sessions to attach a live `relay-agent-<id>` run first, as for any
 detached session. With none it runs the script again with `no_signal`: a pid
 alive with the pinned lifetime answers `409 changed`, starts nothing and removes
 the record ("the terminal session still runs; adopt it again"), and anything
-else starts `claude --resume` on the host. A resume never starts a Claude beside
-the outside process. If the link returned and the script had already finished,
+else starts `claude --resume` on the host. A resume answered `changed` also
+deletes relay-sessions' saved copy of the session, so the outside row is
+adoptable again. A resume never starts a Claude beside the outside process, and
+never while the first script still runs (the lock above); once that script has
+finished, the resume attaches the agent it started. If the link returned and the script had already finished,
 its agent is the run that Resume attaches. A relay-sessions restart does not
 reattach an agent that was never saved, so Resume does it.
 

@@ -360,6 +360,8 @@ func sessionLaunchStatus(err error) (int, string) {
 		return 502, ErrAdoptStopFailed
 	case errors.Is(err, provider.ErrAdoptLaunchFailed):
 		return 502, ErrAdoptLaunchFailed
+	case errors.Is(err, provider.ErrAdoptSetupFailed):
+		return 502, ErrAdoptSetupFailed
 	case errors.Is(err, provider.ErrAdoptLinkLost):
 		return 502, ErrAdoptLinkLost
 	}

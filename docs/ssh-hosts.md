@@ -918,7 +918,7 @@ answers but whose running agent cannot be attached is refused with
 
 **Adopt.** A terminal Claude on the host is adopted into a detached session
 by one more script, `~/.relay/agents/<session id>/adopt.sh`, with `adopt.state`
-(its `signal` lines and one terminal line) and `adopt.log` beside the run
+(its `signal` lines and one terminal line), `adopt.lock` and `adopt.log` beside the run
 folders; none of them is a generation, and removing the session removes them.
 Relay-sessions runs it when a host `claude` launch carries `adopt_host` (the
 pinned pid and lifetime, the transcript size, the child test and the

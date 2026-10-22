@@ -188,6 +188,7 @@ const (
 	ErrAdoptStopFailed   = "adopt_stop_failed"   // 502
 	ErrAdoptLaunchFailed = "adopt_launch_failed" // 502
 	ErrAdoptLinkLost     = "adopt_link_lost"     // 502
+	ErrAdoptSetupFailed  = "adopt_setup_failed"  // 502
 )
 
 // Error codes POST /send names.
