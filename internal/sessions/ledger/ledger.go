@@ -63,6 +63,9 @@ type Record struct {
 	// binds again after a restart. Nil for a record written before relay kept
 	// it, and for a session with no shim.
 	Root *RootRef `json:"root,omitempty"`
+	// CodexThread is the codex daemon thread an attached session drives; a
+	// dormant session keeps it to attach again.
+	CodexThread string `json:"codex_thread,omitempty"`
 }
 
 // RootRef names a process by its kernel identity. It is not a credential:

@@ -98,6 +98,11 @@ type LaunchRequest struct {
 	// claude starts with --resume.
 	ResumeConversation string `json:"resume_conversation,omitempty"`
 	ResumeTranscript   string `json:"resume_transcript,omitempty"`
+	// AttachCodexThread names a thread the codex daemon holds. The host seeds a
+	// fresh local codex session's provider state with it, and the session attaches
+	// to the daemon instead of running a codex of its own. Relay's adopt door is
+	// the only sender; the public adopt body never carries it.
+	AttachCodexThread string `json:"attach_codex_thread,omitempty"`
 	// Launcher replaces the program a claude, codex or pi session runs. It is
 	// omitted when the agent entry names no command; the host refuses one on a
 	// pty or chat launch.
@@ -203,6 +208,7 @@ type HandbackRequest struct {
 type ManagedIdentitiesResponse struct {
 	ClaudeSessionIDs []string `json:"claude_session_ids"`
 	PiSessionIDs     []string `json:"pi_session_ids"`
+	CodexThreadIDs   []string `json:"codex_thread_ids"`
 }
 
 // TerminateRequest is C5's POST /terminate body.

@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/barelyworkingcode/relay/internal/sessions/codexdaemon"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
 	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/runner"
@@ -77,6 +78,7 @@ var codexNotifications = setOf(
 	"thread/attachment/updated", "thread/goal/updated", "thread/goal/cleared", "thread/queue/changed",
 	"project/changed", "thread/project/updated", "thread/environment/connected",
 	"thread/environment/disconnected", "thread/settings/updated", "thread/tokenUsage/updated",
+	"thread/readState/changed", "thread/prediction/updated",
 	"turn/started", "hook/started", "turn/completed", "hook/completed", "turn/diff/updated",
 	"turn/plan/updated", "item/started", "item/autoApprovalReview/started",
 	"item/autoApprovalReview/completed", "autoApprovalReview/strictReviewRequired", "item/completed",
@@ -156,6 +158,13 @@ type CodexProvider struct {
 	// released is set by Release, which leaves the agent running.
 	released atomic.Bool
 
+	// daemonAttach is set by RestoreState: the thread is held by the codex
+	// daemon, and this provider is one more client of it. daemon is that
+	// connection while it lives. A daemon-attached provider never starts a codex
+	// of its own.
+	daemonAttach atomic.Bool
+	daemon       atomic.Pointer[codexdaemon.Conn]
+
 	directory string
 	slug      string
 
@@ -164,8 +173,12 @@ type CodexProvider struct {
 	stateMu  sync.Mutex
 	threadID string
 	turnID   string
-	pending  map[string]func(codexReply)
-	nextID   atomic.Int64
+	// relayTurn is the turn this provider's own turn/start opened on a
+	// daemon-attached thread, until that turn ends. Only a request for this
+	// turn is answered.
+	relayTurn string
+	pending   map[string]func(codexReply)
+	nextID    atomic.Int64
 	// reqPrefix starts every client request id of one spawn. Deliberate: a reply
 	// that a run directory still holds from before an attach never matches a
 	// request made after it.
@@ -254,13 +267,14 @@ func buildCodexHostExec(spec *sessionstypes.HostSpec, program []string, dir, ses
 
 func (p *CodexProvider) Start() (err error) {
 	// An attach starts no thread, so it needs no model.
-	if p.slug == "" && !p.cfg.DefaultModel && !p.cfg.AttachOnly {
+	if p.slug == "" && !p.cfg.DefaultModel && !p.cfg.AttachOnly && !p.daemonAttach.Load() {
 		return errors.New("codex session has no model")
 	}
 
 	p.stateMu.Lock()
 	p.pending = make(map[string]func(codexReply))
 	p.turnID = ""
+	p.relayTurn = ""
 	p.reqPrefix = "relay-" + uuid.NewString()[:8] + "-"
 	p.stateMu.Unlock()
 	p.nextID.Store(0)
@@ -269,6 +283,10 @@ func (p *CodexProvider) Start() (err error) {
 	p.warnedMu.Unlock()
 	p.resetTurnState()
 	p.det.Store(nil)
+
+	if p.daemonAttach.Load() {
+		return p.startDaemon()
+	}
 
 	host := p.session.GetHost()
 	if host == nil {
@@ -790,6 +808,12 @@ func (p *CodexProvider) writeLine(ctx context.Context, v any, kind runner.Messag
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
+	if conn := p.daemon.Load(); conn != nil {
+		if !p.alive.Load() {
+			return errors.New("codex process not running")
+		}
+		return conn.Send(ctx, data)
+	}
 	if det := p.det.Load(); det != nil {
 		if !p.alive.Load() {
 			return errors.New("codex process not running")
@@ -883,6 +907,9 @@ func (p *CodexProvider) processLine(raw json.RawMessage) {
 	case hasID:
 		p.deliverReply(env)
 	case env.Method != "":
+		if p.daemonAttach.Load() && !p.forOwnThread(env.Params) {
+			return
+		}
 		p.translate(env.Method, env.Params, raw)
 	default:
 		p.warnUnrecognisedOnce("(no method)", "")
@@ -912,10 +939,15 @@ func (p *CodexProvider) deliverReply(env codexEnvelope) {
 	cb(reply)
 }
 
-// answerServerRequest always replies: a request left waiting would hang the
-// turn. Approvals are declined because approvalPolicy "never" means one only
-// arrives when something outside relay forced it.
+// answerServerRequest replies to every request of a turn relay runs: a request
+// left waiting would hang the turn. Approvals are declined because
+// approvalPolicy "never" means one only arrives when something outside relay
+// forced it. On an attached thread it answers only for the turn relay started;
+// a request on a terminal's turn is left for the terminal user.
 func (p *CodexProvider) answerServerRequest(env codexEnvelope) {
+	if p.daemonAttach.Load() && !p.ownTurnRequest(env) {
+		return
+	}
 	// A request the run directory already shows an answer for, or one this
 	// provider answered already, is not answered twice.
 	if det := p.det.Load(); det != nil && !det.Claim(codexIDKey(env.ID)) {
@@ -984,8 +1016,12 @@ type codexThreadItem struct {
 func (p *CodexProvider) translate(method string, params, raw json.RawMessage) {
 	switch method {
 	case "turn/started":
-		p.resetTurnState()
-		p.turnActive = true
+		// A daemon-attached thread may be shown as working by its status first.
+		alreadyOpen := p.daemonAttach.Load() && p.turnActive
+		if !alreadyOpen {
+			p.resetTurnState()
+			p.turnActive = true
+		}
 		var ev struct {
 			ThreadID string `json:"threadId"`
 			Turn     struct {
@@ -1004,8 +1040,14 @@ func (p *CodexProvider) translate(method string, params, raw json.RawMessage) {
 			}
 			p.stateMu.Unlock()
 		}
+		if alreadyOpen {
+			return
+		}
 		p.emitter.SystemInit(p.slug, p.directory, nil, nil)
 		p.emitter.MessageStart("")
+		if p.daemonAttach.Load() {
+			p.handler(handlerTurnStarted, nil)
+		}
 
 	case "item/agentMessage/delta":
 		var ev struct {
@@ -1047,7 +1089,16 @@ func (p *CodexProvider) translate(method string, params, raw json.RawMessage) {
 		p.emitter.SystemAPIError(nestedCodexError(ev.Error.Message), ev.WillRetry)
 
 	case "turn/completed":
+		if p.daemonAttach.Load() && !p.turnActive {
+			// The thread's status already ended the turn.
+			return
+		}
 		p.translateTurnCompleted(params)
+
+	case "thread/status/changed", "thread/closed":
+		if p.daemonAttach.Load() {
+			p.translateDaemonThread(method, params)
+		}
 
 	default:
 		if _, known := codexNotifications[method]; known {
@@ -1147,6 +1198,7 @@ func (p *CodexProvider) translateTurnCompleted(params json.RawMessage) {
 	p.turnActive = false
 	p.stateMu.Lock()
 	p.turnID = ""
+	p.relayTurn = ""
 	p.stateMu.Unlock()
 
 	if len(blocks) > 0 {
@@ -1195,7 +1247,7 @@ func (p *CodexProvider) SendMessage(text string, files []sessionstypes.FileAttac
 // waits for a lost link to return, ended early when ctx ends. A runner session
 // returns once the runner has written the message to the agent.
 func (p *CodexProvider) SendMessageWithin(ctx context.Context, text string, files []sessionstypes.FileAttachment, wait time.Duration) error {
-	if !p.alive.Load() || (p.stdin == nil && p.det.Load() == nil) {
+	if !p.alive.Load() || (p.stdin == nil && p.det.Load() == nil && p.daemon.Load() == nil) {
 		return errors.New("codex process not running")
 	}
 	p.stateMu.Lock()
@@ -1230,13 +1282,17 @@ func (p *CodexProvider) onTurnStartReply(r codexReply) {
 	if json.Unmarshal(r.result, &res) == nil && res.Turn.ID != "" {
 		p.stateMu.Lock()
 		p.turnID = res.Turn.ID
+		if p.daemonAttach.Load() {
+			p.relayTurn = res.Turn.ID
+		}
 		p.stateMu.Unlock()
 	}
 }
 
 func (p *CodexProvider) StopGeneration() {
 	det := p.det.Load()
-	if !p.alive.Load() || (p.stdin == nil && det == nil) {
+	daemon := p.daemon.Load()
+	if !p.alive.Load() || (p.stdin == nil && det == nil && daemon == nil) {
 		return
 	}
 	p.stateMu.Lock()
@@ -1253,7 +1309,7 @@ func (p *CodexProvider) StopGeneration() {
 	if err == nil {
 		return
 	}
-	if det != nil {
+	if det != nil || daemon != nil {
 		// Deliberate: an interrupt that did not go does not end the agent. The
 		// run keeps its conversation, and the person can stop again.
 		slog.Warn("codex interrupt not sent", "session", p.session.ID, "error", err)
@@ -1264,6 +1320,10 @@ func (p *CodexProvider) StopGeneration() {
 }
 
 func (p *CodexProvider) Kill() {
+	if conn := p.daemon.Load(); conn != nil {
+		p.detachDaemon(conn, false)
+		return
+	}
 	if det := p.det.Load(); det != nil {
 		p.killDetached(det, true)
 		return
@@ -1314,6 +1374,10 @@ func (p *CodexProvider) killDetached(det *runFollower, stopAgent bool) {
 // A relay-sessions shutdown uses it, because a codex agent holds no relay
 // credential and outlives relay. Kill, by contrast, ends the agent.
 func (p *CodexProvider) Release() {
+	if conn := p.daemon.Load(); conn != nil {
+		p.detachDaemon(conn, true)
+		return
+	}
 	if det := p.det.Load(); det != nil {
 		p.released.Store(true)
 		p.killDetached(det, false)
@@ -1353,6 +1417,12 @@ func (p *CodexProvider) TakeAttach() (turnOpen bool, raise func()) {
 // DeleteSession ends the agent and deletes its run directories, which hold the
 // agent's output. Codex's own transcripts stay where Codex keeps them.
 func (p *CodexProvider) DeleteSession() error {
+	if p.daemonAttach.Load() {
+		// The thread and its terminal belong to codex: only this connection ends,
+		// and relay holds no run folder for it.
+		p.Kill()
+		return nil
+	}
 	if host := p.session.GetHost(); host != nil {
 		p.Kill()
 		DeleteDetachedAgent("codex", p.session.ID, host)
@@ -1368,6 +1438,9 @@ func (p *CodexProvider) GetState() json.RawMessage {
 	tid := p.threadID
 	p.stateMu.Unlock()
 	state := map[string]any{"threadId": tid}
+	if p.daemonAttach.Load() {
+		state["daemonAttach"] = true
+	}
 	if det := p.det.Load(); det != nil {
 		state["detached"] = det.Cursor()
 	}
@@ -1380,10 +1453,12 @@ func (p *CodexProvider) RestoreState(state json.RawMessage) {
 		return
 	}
 	var s struct {
-		ThreadID string          `json:"threadId"`
-		Detached *detachedCursor `json:"detached"`
+		ThreadID     string          `json:"threadId"`
+		Detached     *detachedCursor `json:"detached"`
+		DaemonAttach bool            `json:"daemonAttach"`
 	}
 	if err := json.Unmarshal(state, &s); err == nil {
+		p.daemonAttach.Store(s.DaemonAttach)
 		p.stateMu.Lock()
 		p.threadID = s.ThreadID
 		p.restoredRun = s.Detached

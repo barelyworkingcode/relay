@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -20,7 +21,9 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
+	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/sessions/adopt"
+	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	sessiontypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
@@ -99,7 +102,9 @@ func (r *AdoptRefusal) Error() string { return r.Message }
 
 // adoptOps is the one core behind the adopt door: it ends an outside Claude
 // process a person started in a terminal and resumes its conversation as a
-// headless relay session, under the project's sandbox and policy.
+// headless relay session, under the project's sandbox and policy. An outside
+// codex thread is not ended: relay attaches to it through the codex daemon and
+// changes none of its settings.
 type adoptOps struct {
 	deps    sessionRouteDeps
 	outside *outsidesessions.Inventory
@@ -241,8 +246,8 @@ type adoptState struct {
 }
 
 func (s *adoptState) endEvent(ev *logging.Event, refusal *AdoptRefusal) {
-	if s.agent == "pi" {
-		ev.Set("agent", "pi").Set("conversation_id", s.conversationID)
+	if s.agent == "pi" || s.agent == "codex" {
+		ev.Set("agent", s.agent).Set("conversation_id", s.conversationID)
 	} else {
 		ev.Set("claude_session_id", s.claudeID)
 	}
@@ -287,6 +292,9 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	st.outsideID, st.claudeID = row.ID, obs.ClaudeID
 	agent, conversationID := observationAgent(obs), observationConversation(obs)
 	st.agent, st.conversationID = agent, conversationID
+	if agent == "codex" && req.Model != "" {
+		return nil, refuse(http.StatusBadRequest, adoptInvalidBody, "model is not accepted for a codex thread: attaching changes no setting")
+	}
 	adapter := a.adapter(agent)
 	lockKey := agent + ":" + conversationID
 	if _, taken := a.inflight.LoadOrStore(lockKey, struct{}{}); taken {
@@ -298,6 +306,7 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	if refusal != nil {
 		return nil, refusal
 	}
+	var err error
 
 	var proj *config.Project
 	if row.ProjectID != nil {
@@ -317,9 +326,14 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 			return nil, refuse(http.StatusConflict, adoptManaged, "relay already holds this process")
 		}
 	}
-	managed, err := d.host().ManagedClaudeIdentities(ctx)
-	if agent == "pi" {
+	var managed map[string]bool
+	switch agent {
+	case "pi":
 		managed, err = d.host().ManagedPiIdentities(ctx)
+	case "codex":
+		managed, err = d.host().ManagedCodexIdentities(ctx)
+	default:
+		managed, err = d.host().ManagedClaudeIdentities(ctx)
 	}
 	if err != nil {
 		return nil, refuse(http.StatusBadGateway, adoptUnavailable, "the session host is not available")
@@ -337,22 +351,32 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		return nil, refuse(http.StatusBadGateway, adoptUnavailable, "the session could not be inspected")
 	}
 	busy := !ready.Idle
-	if busy && (!req.Interrupt || agent == "pi") {
+	if busy && (!req.Interrupt || agent != "claude") {
 		return nil, refuse(http.StatusConflict, adoptBusy,
 			func() string {
-				if agent == "pi" {
+				switch agent {
+				case "pi":
 					return "the Pi session must finish its turn before adoption"
+				case "codex":
+					return "the codex thread must finish its turn before it is attached"
 				}
 				return fmt.Sprintf("the session is not idle (%s); ask to interrupt to take it over anyway", ready.Veto)
 			}())
 	}
 
 	model := req.Model
-	if model == "" {
-		model = ready.Tail.ModelFamily
-	}
-	if model == "" {
-		model = a.brokerAlias(ctx, row.ID, ready.Tail.Model)
+	if agent == "codex" {
+		// Attach sends no model: the name is only what launch authorization judges.
+		if ready.Tail.Model != "" {
+			model = "codex/" + ready.Tail.Model
+		}
+	} else {
+		if model == "" {
+			model = ready.Tail.ModelFamily
+		}
+		if model == "" {
+			model = a.brokerAlias(ctx, row.ID, ready.Tail.Model)
+		}
 	}
 	if model == "" {
 		return nil, refuse(http.StatusConflict, adoptModelUnknown, "the model of the session is unknown; send model")
@@ -367,7 +391,11 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		d.auditor.Record(lr.Audit)
 		return nil, refuse(lr.Status, lr.Code, lr.Message)
 	}
-	result.Spec.ResumeConversation = conversationID
+	if agent == "codex" {
+		attachCodexResult(result, conversationID)
+	} else {
+		result.Spec.ResumeConversation = conversationID
+	}
 	launched := false
 	defer func() {
 		if !launched {
@@ -389,10 +417,14 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	base := map[string]any{
 		"outside_id": row.ID, "claude_session_id": obs.ClaudeID, "project_id": proj.ID,
 	}
-	if agent == "pi" {
+	if agent == "pi" || agent == "codex" {
 		delete(base, "claude_session_id")
-		base["agent"] = "pi"
+		base["agent"] = agent
 		base["conversation_id"] = conversationID
+	}
+	if agent == "codex" {
+		base["method"] = "attach"
+		base["relay_sandbox"] = false
 	}
 	adoptArgs := func(extra map[string]any) json.RawMessage {
 		args := map[string]any{}
@@ -400,7 +432,7 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 			args[k] = v
 		}
 		args["directory"] = capAuditText(row.Directory, maxAuditDirectoryRunes)
-		args["interrupt"] = req.Interrupt
+		args["interrupt"] = req.Interrupt && agent != "codex"
 		args["model"] = model
 		for k, v := range extra {
 			args[k] = v
@@ -424,7 +456,10 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		completion.Phase = audit.AuditPhaseCompletion
 		completion.DurMs = time.Since(start).Milliseconds()
 		completion.Outcome, completion.Error = outcome, errCode
-		args := map[string]any{"interrupted": st.interrupted, "signals": signalRows(takeSignals)}
+		args := map[string]any{}
+		if agent != "codex" {
+			args["interrupted"], args["signals"] = st.interrupted, signalRows(takeSignals)
+		}
 		for k, v := range extra {
 			args[k] = v
 		}
@@ -471,6 +506,9 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	takeSignals = spec.Signals
 	if err != nil {
 		status, code, message := adoptStopRefusal(err)
+		if agent == "codex" {
+			status, code, message = codexTakeOverRefusal(err)
+		}
 		return fail(status, code, message, nil)
 	}
 
@@ -478,11 +516,17 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		slog.WarnContext(ctx, "session adopt: launch failed after the process ended", "outside_id", row.ID, "error", err)
 		launched = true // launchOnHost undid what it minted
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error()))
+		if agent == "codex" {
+			return fail(http.StatusBadGateway, adoptLaunchFailed, codexAttachFailed, nil)
+		}
 		return fail(http.StatusBadGateway, adoptLaunchFailed, "the process ended but relay could not start the session; the conversation is intact and can be resumed", nil)
 	}
 	launched = true
 	if !d.commitLaunch(hold, result) {
 		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "project no longer exists"))
+		if agent == "codex" {
+			return fail(http.StatusBadGateway, adoptLaunchFailed, codexAttachFailed, nil)
+		}
 		return fail(http.StatusBadGateway, adoptLaunchFailed, "the process ended but the project is gone; the conversation is intact", nil)
 	}
 	d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, ""))
@@ -499,12 +543,12 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 	complete(audit.AuditOutcomeOK, "", map[string]any{"session_id": result.SessionID, "recovery_sent": recoverySent})
 	return &AdoptResult{
 		Agent: func() string {
-			if agent == "pi" {
+			if agent != "claude" {
 				return agent
 			}
 			return ""
 		}(), ConversationID: func() string {
-			if agent == "pi" {
+			if agent != "claude" {
 				return conversationID
 			}
 			return ""
@@ -538,6 +582,11 @@ func (a *adoptOps) resolveRow(ctx context.Context, req AdoptRequest) (outsideses
 	}
 	switch len(rows) {
 	case 0:
+		if a.snapshotHas(func(s outsidesessions.Session) bool {
+			return s.Agent == "codex" && s.ConversationID == req.ClaudeSessionID
+		}) {
+			return outsidesessions.Observation{}, &AdoptRefusal{Status: http.StatusBadRequest, Code: adoptInvalidBody, Message: "a codex thread is selected by outsideId"}
+		}
 		if a.snapshotHas(func(s outsidesessions.Session) bool {
 			return s.ClaudeSessionID == req.ClaudeSessionID && s.State == "ended"
 		}) {
@@ -580,6 +629,9 @@ func (a *adoptOps) freshCandidate(ctx context.Context, obs outsidesessions.Obser
 		slog.WarnContext(ctx, "session adopt: registry read failed", "outside_id", obs.Session.ID, "error", err)
 		return adopt.Candidate{}, &AdoptRefusal{Status: http.StatusBadGateway, Code: adoptUnavailable, Message: "the agent registry could not be read"}
 	}
+	if observationAgent(obs) == "codex" {
+		return freshCodexCandidate(cands, obs)
+	}
 	for _, c := range cands {
 		if c.PID != obs.PID || c.ConversationID != observationConversation(obs) {
 			continue
@@ -593,6 +645,59 @@ func (a *adoptOps) freshCandidate(ctx context.Context, obs outsidesessions.Obser
 		return c, nil
 	}
 	return adopt.Candidate{}, &AdoptRefusal{Status: http.StatusConflict, Code: adoptChanged, Message: "the process or its registry entry changed"}
+}
+
+// attachCodexResult marks a launch as an attach to a daemon thread. Relay claims
+// no sandbox over an attached thread: the codex daemon runs it, so no audit row
+// of the attach implies confinement. The ledger record remembers the thread, so
+// a dormant session can attach again.
+func attachCodexResult(result *LaunchResult, thread string) {
+	result.AuditFields.Sandbox = false
+	result.AuditFields.ReadOnlyProjects = false
+	result.AuditFields.ReadRoots = 0
+	result.AuditFields.GrantWarnings = nil
+	result.Spec.AttachCodexThread = thread
+	if result.Ledger != nil {
+		result.Ledger.CodexThread = thread
+	}
+}
+
+// codexAttachFailed is the refusal text of an attach that failed after its
+// intent row.
+const codexAttachFailed = "relay could not attach to the codex thread; nothing in codex changed"
+
+// freshCodexCandidate wants exactly one candidate with the row's thread id, on
+// the daemon and in the folder the row names. A thread the daemon no longer
+// lists has ended.
+func freshCodexCandidate(cands []adopt.Candidate, obs outsidesessions.Observation) (adopt.Candidate, *AdoptRefusal) {
+	var same []adopt.Candidate
+	for _, c := range cands {
+		if c.ConversationID == obs.ConversationID {
+			same = append(same, c)
+		}
+	}
+	switch {
+	case len(same) > 1:
+		return adopt.Candidate{}, &AdoptRefusal{Status: http.StatusConflict, Code: adopt.ReasonAmbiguous, Message: "the daemon lists this codex thread more than once"}
+	case len(same) == 0:
+		return adopt.Candidate{}, &AdoptRefusal{Status: http.StatusConflict, Code: adopt.ReasonEnded, Message: "the codex thread is no longer loaded in codex"}
+	case same[0].Instance != obs.Lifetime || same[0].Cwd != obs.Session.Directory:
+		return adopt.Candidate{}, &AdoptRefusal{Status: http.StatusConflict, Code: adoptChanged, Message: "the codex thread or its daemon changed"}
+	case !same[0].Adoptable:
+		return same[0], &AdoptRefusal{Status: http.StatusConflict, Code: same[0].Reason, Message: "the session cannot be adopted: " + same[0].Reason}
+	}
+	return same[0], nil
+}
+
+// codexTakeOverRefusal maps a failed attach check after the intent row.
+func codexTakeOverRefusal(err error) (int, string, string) {
+	switch {
+	case errors.Is(err, adopt.ErrChanged):
+		return http.StatusConflict, adoptChanged, "the codex thread or its daemon changed"
+	case errors.Is(err, adopt.ErrNotIdle):
+		return http.StatusConflict, adoptBusy, "the codex thread must finish its turn before it is attached"
+	}
+	return http.StatusBadGateway, adoptLaunchFailed, codexAttachFailed
 }
 
 // adoptStopRefusal maps a ladder error to the door's refusal.
@@ -645,18 +750,26 @@ func mustJSON(v any) json.RawMessage {
 }
 
 func observationAgent(o outsidesessions.Observation) string {
-	if o.Agent == "pi" {
-		return "pi"
+	switch o.Agent {
+	case "pi", "codex":
+		return o.Agent
 	}
 	return "claude"
 }
 func observationConversation(o outsidesessions.Observation) string {
-	if o.Agent == "pi" {
+	if o.Agent == "pi" || o.Agent == "codex" {
 		return o.ConversationID
 	}
 	return o.ClaudeID
 }
 func (a *adoptOps) adapter(agent string) adopt.Adopter {
+	if agent == "codex" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = ""
+		}
+		return adopt.NewCodex(adopt.CodexConfig{Home: home, Clock: a.clock})
+	}
 	if agent == "pi" {
 		// Built per request: the configured Pi command can change while relay runs.
 		home, err := os.UserHomeDir()
@@ -667,4 +780,166 @@ func (a *adoptOps) adapter(agent string) adopt.Adopter {
 		return adopt.NewPi(adopt.PiConfig{Home: home, Clock: a.clock, NodeBinary: node})
 	}
 	return a.claude
+}
+
+// resolvedFolder cleans a folder and resolves its symlinks where it can.
+func resolvedFolder(dir string) string {
+	dir = filepath.Clean(dir)
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		return r
+	}
+	return dir
+}
+
+// reattachCodex brings a dormant attached codex session back by attaching again,
+// through the checks of a first attach in the same order: audit ready, host
+// ready, project, a fresh discovery of the same thread and folder, no other
+// session holding it, an idle check on the same daemon, launch authorization and
+// the durable session_adopt intent, all before anything goes to the daemon.
+// Relay never starts a codex of its own for the session.
+func (d sessionRouteDeps) reattachCodex(ctx context.Context, ev *logging.Event, caller LaunchCaller, rec ledger.Record) resumeOutcome {
+	actor := callerAuditActor(caller)
+	thread := rec.CodexThread
+	refuse := func(status int, code, message string) resumeOutcome {
+		outcome, reason := refusalOutcome(status, code)
+		ev.End(outcome, reason, errors.New(code))
+		if code != adoptAuditOff {
+			d.auditResume(actor, rec.SessionID, rec.ProjectID, rec.Kind, audit.AuditOutcomeDenied, code)
+		}
+		return resumeError(status, message, code)
+	}
+	if !d.auditor.Ready() {
+		return refuse(http.StatusServiceUnavailable, adoptAuditOff, "auditing is off; no session can be resumed")
+	}
+	if !d.ready() || d.sessions == nil {
+		return refuse(http.StatusBadGateway, adoptUnavailable, "the session host is not available")
+	}
+
+	proj, _ := config.FindProjectByID(config.FreshSettings(d.store), rec.ProjectID)
+	if proj == nil || proj.IsRemote() || proj.IsHosted() || rec.Directory == "" || !project.DirWithin(resolvedFolder(rec.Directory), proj.Path) {
+		return refuse(http.StatusConflict, adopt.ReasonNoProject, "the session is not in a registered local project")
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	adapter := adopt.NewCodex(adopt.CodexConfig{Home: home})
+	cands, err := adapter.Discover(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "session resume: codex daemon not readable", "session", rec.SessionID, "error", err)
+		return refuse(http.StatusBadGateway, adoptUnavailable, "the codex daemon is not reachable")
+	}
+	var same []adopt.Candidate
+	for _, c := range cands {
+		if c.ConversationID == thread {
+			same = append(same, c)
+		}
+	}
+	switch {
+	case len(same) == 0:
+		return refuse(http.StatusConflict, adopt.ReasonEnded, "the codex thread is not running in codex; open it in a codex terminal, then resume")
+	case len(same) > 1:
+		return refuse(http.StatusConflict, adopt.ReasonAmbiguous, "the daemon lists this codex thread more than once")
+	case resolvedFolder(same[0].Cwd) != resolvedFolder(rec.Directory):
+		return refuse(http.StatusConflict, adoptChanged, "the codex thread changed; delete this session and adopt the thread again")
+	case !same[0].Adoptable:
+		return refuse(http.StatusConflict, same[0].Reason, "the codex thread cannot be attached: "+same[0].Reason)
+	}
+	cand := same[0]
+
+	for _, other := range d.sessions.All() {
+		if other.SessionID != rec.SessionID && other.State == ledger.StateLive && other.CodexThread == thread {
+			return refuse(http.StatusConflict, adoptManaged, "relay already holds this codex thread")
+		}
+	}
+
+	ready, err := adapter.Check(ctx, cand)
+	switch {
+	case errors.Is(err, adopt.ErrChanged):
+		return refuse(http.StatusConflict, adoptChanged, "the codex thread changed; delete this session and adopt the thread again")
+	case err != nil:
+		slog.WarnContext(ctx, "session resume: codex idle check failed", "session", rec.SessionID, "error", err)
+		return refuse(http.StatusBadGateway, adoptUnavailable, "the codex daemon is not reachable")
+	case !ready.Idle:
+		return refuse(http.StatusConflict, adoptBusy, "the codex thread must finish its turn before relay attaches again")
+	case ready.Tail.Model == "":
+		return refuse(http.StatusConflict, adoptModelUnknown, "the model of the codex thread is unknown")
+	}
+	model := "codex/" + ready.Tail.Model
+
+	sessionReq, err := decodeStoredSessionRequest(rec)
+	if err != nil {
+		return refuse(http.StatusInternalServerError, "corrupt_record", "corrupt session record")
+	}
+	result, lr := AuthorizeLaunch(d.store, d.modelKeys, d.sessions, LaunchRequest{
+		Caller: caller, SessionID: rec.SessionID, Resume: true,
+		ProjectID: rec.ProjectID, Kind: rec.Kind, Directory: rec.Directory,
+		Name: sessionReq.Name, Model: model, offer: d.offerFor(ctx),
+		ClientSettings: json.RawMessage(`{"headless":true,"agent":true}`),
+	})
+	if lr != nil {
+		d.auditor.Record(resumeAuditEvent(lr.Audit))
+		endEvent(ev, lr)
+		return resumeError(lr.Status, lr.Message, lr.Code)
+	}
+	attachCodexResult(result, thread)
+	launched := false
+	defer func() {
+		if !launched {
+			d.discardLaunch(result)
+		}
+	}()
+
+	args := func(extra map[string]any) json.RawMessage {
+		return mustJSON(withKeys(map[string]any{
+			"session_id": rec.SessionID, "agent": "codex", "conversation_id": thread, "project_id": rec.ProjectID,
+			"directory": capAuditText(rec.Directory, maxAuditDirectoryRunes), "interrupt": false, "model": model,
+			"method": "reattach", "relay_sandbox": false,
+		}, extra))
+	}
+	intent := audit.AuditEvent{
+		ID: audit.NewAuditID(), TS: time.Now(), Event: audit.AuditEventSessionAdopt, Phase: audit.AuditPhaseIntent,
+		Actor: actor, Args: args(nil), Outcome: audit.AuditOutcomePending,
+	}
+	if err := d.auditor.RecordDurable(intent); err != nil {
+		return refuse(http.StatusServiceUnavailable, adoptAuditOff, "the audit log could not record the attach")
+	}
+	start := time.Now()
+	complete := func(outcome, errCode string, extra map[string]any) {
+		completion := intent
+		completion.Phase = audit.AuditPhaseCompletion
+		completion.DurMs = time.Since(start).Milliseconds()
+		completion.Outcome, completion.Error = outcome, errCode
+		completion.Args = args(extra)
+		d.auditor.Record(completion)
+	}
+	fail := func(status int, code, message string) resumeOutcome {
+		complete(audit.AuditOutcomeError, code, nil)
+		outcome, reason := refusalOutcome(status, code)
+		ev.End(outcome, reason, errors.New(code))
+		return resumeError(status, message, code)
+	}
+
+	// Deliberate: past the intent the work finishes whatever happens to the
+	// request ctx, as an adopt does.
+	hold := context.WithoutCancel(ctx)
+	if _, err := adapter.TakeOver(hold, cand); err != nil {
+		status, code, message := codexTakeOverRefusal(err)
+		return fail(status, code, message)
+	}
+	if _, err := d.launchOnHost(hold, result); err != nil {
+		slog.WarnContext(ctx, "session resume: codex attach failed", "session", rec.SessionID, "error", err)
+		launched = true // launchOnHost undid what it minted
+		d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, err.Error())))
+		return fail(http.StatusBadGateway, adoptLaunchFailed, codexAttachFailed)
+	}
+	launched = true
+	if !d.commitLaunch(hold, result) {
+		d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "project no longer exists")))
+		return fail(http.StatusBadGateway, adoptLaunchFailed, codexAttachFailed)
+	}
+	d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, "")))
+	complete(audit.AuditOutcomeOK, "", map[string]any{"session_id": result.SessionID})
+	return resumeOutcome{Status: http.StatusOK, Body: resumeResponseBody{SessionID: result.SessionID, Resumed: true}}
 }

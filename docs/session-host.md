@@ -29,8 +29,9 @@ well-known lookup). A verified package bin can name absolute Node or env-node;
 only the observed constant Homebrew exec wrapper is followed. Unknown launch
 chains disable title-erased recognition without granting by process name.
 
-The internal `GET /managed-identities` responds with both
-`claude_session_ids` and `pi_session_ids`, including persisted identities.
+The internal `GET /managed-identities` responds with
+`claude_session_ids`, `pi_session_ids` and `codex_thread_ids`, including
+persisted identities.
 This route is private and absent from the service manifest.
 
 For a Pi with `piSessionFile`, `Manager.StopGeneration` requires its interrupt
@@ -41,6 +42,13 @@ built-in host calls authenticated bridge `SessionInterrupt` with
 WebSocket shape `{type:"error",code:"audit_unavailable",sessionId,message}`;
 the turn continues and no abort is delivered. Ordinary Pi and Claude retain
 their interrupt behavior. See [Pi adoption](session-adoption.md#pi-adoption).
+
+A codex session whose provider state holds `daemonAttach:true` passes the same
+gate: a nil handler or an error returns `ErrInterruptAuditUnavailable` before
+any state change, tool clearing or write, and `turn/interrupt` is sent only
+after it. The bridge request checks a `pi` or `codex` ledger record; a codex
+intent's args are `session_id`, `project_id`, `agent:"codex"` and
+`method:"turn/interrupt"`.
 
 ## The binary and its three modes
 
@@ -1039,6 +1047,12 @@ An attach (`CodexConfig.Resume` or `AttachOnly` found the runner alive) sends no
 
 A piped session (host with `detach_sessions: false`, a Windows host) keeps the pipes and the handshake as before.
 
+#### Codex attached to the daemon
+
+`LaunchRequest.attach_codex_thread` (a local, headless `codex` launch only, fresh or a resume of the stored attach of that same thread, a canonical UUID, with no `resume_conversation` or `resume_transcript`; `400 invalid_spec` otherwise). A resume of a stored attached codex session without it, or with another thread, is refused `ErrAttachRequired` (`400 invalid_spec`), so only relay's attach checks can start it again seeds the session's provider state with `{"threadId":"<id>","daemonAttach":true}`. Relay's adopt door sets it; the public adopt body never carries it. With `daemonAttach` the provider never execs a program and never uses the runner, `Launcher`, `SandboxProfile` or `Identity`; a resume's sandbox profile, launcher and launch identity go unused, and there is no fallback to runner mode. `Start` dials the daemon's default control socket under this host's home (`internal/sessions/codexdaemon`), requires the thread in `thread/loaded/list`, then sends `thread/resume` with params exactly `{"threadId":"<id>"}`. The reply's `thread.id` must equal the id, and the reply folder must equal the session folder (cleaned, symlinks resolved). The reply folder is `thread.environments[0].cwd`, else `thread.cwd`, and the reply's top-level `cwd` must match too when present. A reply that fails any of this, or names no folder, closes the connection and fails the start. The model and an open turn are taken from the reply. `turn/start` params stay `{"threadId","input"}`.
+
+`thread/status/changed` for the thread drives state (`active` is a turn open, `idle` is idle, `systemError` is errored); other threads' notifications are ignored. `thread/closed` or a closed socket is a provider exit and the session reads dormant; there is no reconnect loop. A server request is answered (declined, as above) only when it names the session's thread and the turn relay's own `turn/start` opened, while that turn is open; a request for a turn the terminal started gets no answer and one Info line with its method and turn id. `Kill`, `Release` and `DeleteSession` send `thread/unsubscribe` (best effort) and close: no `turn/interrupt`, no thread deleted or archived, no run folder removed. A resume of a dormant attached session attaches again, through relay's adopt checks, and fails while the daemon is down. See [Codex attach](session-adoption.md#codex-attach).
+
 ### Model catalog
 
 `GET /api/models` gains a "Codex" group from `FetchCodexModels`, which runs `<codex> debug models` (8 s timeout, 5 minute cache) and parses stdout only, so stderr noise cannot break the parse. It lists the rows whose `visibility` is `list`, as `{"label": <display_name>, "value": "codex/<slug>", "group": "Codex", "provider": "codex"}`. Both capabilities are false. With Codex absent or the call failing the group is dropped silently.
@@ -1296,7 +1310,7 @@ Body `{session_id}`. Always `204`; an unknown or unheld id is a no-op. It clears
 
 ### `GET /managed-identities`
 
-Answers `200 {"claude_session_ids":[string]}`: the Claude conversation id of every session this host owns, live or persisted. Relay reads it to keep managed sessions out of the outside-session list. It is internal-socket only, behind the same peer check as `/handback`.
+Answers `200 {"claude_session_ids":[string],"pi_session_ids":[string],"codex_thread_ids":[string]}`: the Claude conversation id, the Pi session id and the codex `threadId` of every session this host owns, live or persisted. Relay reads it to keep managed sessions out of the outside-session list. It is internal-socket only, behind the same peer check as `/handback`.
 
 ### The terminal
 

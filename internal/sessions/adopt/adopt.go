@@ -59,9 +59,11 @@ var (
 
 // Candidate is one live process the agent's registry names.
 type Candidate struct {
-	Agent          string // "claude" or "pi"
-	ConversationID string // the registry sessionId
-	PID            int    // process evidence; never on the wire
+	Agent          string // "claude", "pi" or "codex"
+	ConversationID string // the registry sessionId; the thread id for codex
+	PID            int    // process evidence; never on the wire; 0 for codex
+	// Instance is the codex daemon's identity; empty for a process agent.
+	Instance string
 	// ProcStart is the kernel's start time of PID. Its second equals the
 	// registry's procStart for an adoptable candidate.
 	ProcStart time.Time
@@ -102,7 +104,7 @@ type Signal struct {
 
 // SessionSpec is what a caller needs to resume the conversation under relay.
 type SessionSpec struct {
-	Kind           string // "claude" or "pi"
+	Kind           string // "claude", "pi" or "codex"
 	ConversationID string
 	Transcript     string
 	Directory      string
