@@ -39,9 +39,9 @@ type adoptAnswer struct {
 // the owner do: a send, a drop in, a send refused while dropped in, the hand
 // back and a second send.
 //
-// Deliberate: the adopt carries no model, so the host adopt takes it from the
-// transcript. The other adopt journeys send model "haiku" because a local
-// adopt needs a model the broker knows.
+// Deliberate: the adopt sends model "haiku". On a stack the transcript records
+// the stack's model id, which names no Claude family, and the stack maps only
+// the haiku alias to its endpoint. The no-model rule is an e2e test.
 func runAdoptHost(ctx context.Context, e env) result { return adoptHostFlow(ctx, e, adoptHostID) }
 
 // runAdoptHostDrop stops the outside Claude with SIGSTOP, so the script's
@@ -205,7 +205,7 @@ func adoptHostFlow(ctx context.Context, e env, id string) result {
 	}
 	answered := make(chan adoptAnswer, 1)
 	go func() {
-		r := frontendDoTimeout(ctx, e, token, http.MethodPost, "/api/sessions/adopt", jsonBody(map[string]any{"outsideId": row.ID}), adoptHostWait)
+		r := frontendDoTimeout(ctx, e, token, http.MethodPost, "/api/sessions/adopt", jsonBody(map[string]any{"outsideId": row.ID, "model": "haiku"}), adoptHostWait)
 		answered <- adoptAnswer{r.Status, r.Body}
 	}()
 
@@ -293,7 +293,7 @@ func adoptHostFlow(ctx context.Context, e env, id string) result {
 	if !intent || !done {
 		return fail("session_adopt rows lack the intent or the ok completion")
 	}
-	return result{id, statePass, "terminal Claude on the loopback host adopted by outsideId with no model: 201, relay-agent-<id> in the host's tmux, listed with its host and headless, a Chief of Staff send answered 202 and replied in the same transcript, drop-in opened Claude and a send answered dropped_in, the hand back made it headless again, a second send answered 202 and replied, session_adopt rows carry host_id"}
+	return result{id, statePass, "terminal Claude on the loopback host adopted by outsideId: 201, relay-agent-<id> in the host's tmux, listed with its host and headless, a Chief of Staff send answered 202 and replied in the same transcript, drop-in opened Claude and a send answered dropped_in, the hand back made it headless again, a second send answered 202 and replied, session_adopt rows carry host_id"}
 }
 
 var adoptHostTerminal = regexp.MustCompile(`^(ok|refused|failed)\b`)

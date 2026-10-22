@@ -1306,7 +1306,7 @@ session. The fixture is `session-swap-back`'s: a loopback host with no
 `verify-<nonce>-ahost` on the default tmux server, in the host project's folder,
 with the stack's local model endpoint (as `session-adopt`), and answers the
 trust prompt. It reads the Chief of Staff outside list for the row with the
-host's `hostId` (never its console twin) and posts `{outsideId}` with no `model`.
+host's `hostId` (never its console twin) and posts `{outsideId, model: "haiku"}`.
 PASS when the door answers 201; `relay session list` shows the session with the
 host, `headless: true` and no `unsandboxed`; the host's tmux holds
 `relay-agent-<id>`; a Chief of Staff send answers 202 and the reply is in the
@@ -1324,8 +1324,9 @@ with no `claude_base_url`.
 - Reached by: `POST /api/sessions/adopt`, `POST /api/sessions/{id}/drop-in` and
   `DELETE /api/terminals/{id}` (the drop-in `relay drop-in` calls),
   `POST /api/chief-of-staff/messages`, `relay session list`, `relay audit`.
-- Traps: the adopt sends no `model` (the host adopt reads it from the transcript),
-  where `session-adopt` sends `haiku`. Cleanup ends only its own tmux session
+- Traps: the adopt sends `haiku`, as `session-adopt` does: on a stack the
+  transcript names the stack's model id, not a Claude family, and the stack maps
+  only the haiku alias. An e2e test covers the no-model rule. Cleanup ends only its own tmux session
   (`tmux kill-session`), never the server, which also holds the host's
   `relay-agent-*` sessions.
 
