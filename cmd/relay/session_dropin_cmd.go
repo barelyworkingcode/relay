@@ -12,10 +12,10 @@ import (
 
 const dropInUsage = "usage: relay drop-in <session-id>"
 
-// runDropInCommand takes a headless Claude session over in this terminal.
+// runDropInCommand takes a headless Claude, Pi or Codex session over in this terminal.
 // Relay hosts the terminal and this process only shows it, so closing the
 // window ends the terminal, which hands the session back. The exit status is
-// Claude's.
+// the agent's.
 func runDropInCommand(args []string) {
 	os.Exit(dropInMain(args))
 }
@@ -73,6 +73,6 @@ func dropInMain(args []string) int {
 	}
 
 	status := attachTerminal(conn, in)
-	fmt.Fprintf(os.Stderr, "relay: handed back %s\n", id)
+	fmt.Fprintf(os.Stderr, "relay: the terminal closed; relay resumes %[1]s headless. If it stays dormant, run: relay session resume --id %[1]s\n", id)
 	return status
 }

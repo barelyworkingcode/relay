@@ -28,8 +28,10 @@ import (
 
 // agentLine is one call-log line.
 type agentLine struct {
-	TS         string   `json:"ts"`
-	Persona    string   `json:"persona"`
+	TS      string `json:"ts"`
+	Persona string `json:"persona"`
+	// Pid names the process, so a test can tell two runners of one persona apart.
+	Pid        int      `json:"pid,omitempty"`
 	Event      string   `json:"event"`
 	Argv       []string `json:"argv,omitempty"`
 	Cwd        string   `json:"cwd,omitempty"`
@@ -174,6 +176,7 @@ func (a *agent) dispatch() int {
 func (a *agent) record(l agentLine) {
 	l.TS = time.Now().UTC().Format(time.RFC3339Nano)
 	l.Persona = a.persona
+	l.Pid = os.Getpid()
 	_ = a.log.Append(l)
 }
 

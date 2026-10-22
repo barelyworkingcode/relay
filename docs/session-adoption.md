@@ -27,8 +27,15 @@ a host, an entry is headless only) and different audit shapes. A session
 started in terminal mode cannot be messaged by the Chief of Staff, and cannot
 become headless.
 
-Drop-in moves a headless Claude session into a terminal and hands it back, but
-only for sessions relay started. A Claude, codex or pi session the owner began
+Drop-in moves a headless Claude, Pi or Codex session into a terminal and hands
+it back, but only for sessions relay started or attached. A Pi drop-in opens
+the project's `pi` template on the same session file. A Codex session relay
+started opens `codex resume` on the same thread without the shared daemon. An
+attached thread opens `codex resume` through the daemon's control socket with
+no setting override, and the daemon and its other clients keep running. The
+hand back resumes the same file or thread headless, an attached thread through
+the adopt checks and a new durable intent. Pi and Codex drop-in is for local
+projects only. A Claude, codex or pi session the owner began
 in an ordinary terminal is visible (outside sessions) and read-only.
 
 ## Principles

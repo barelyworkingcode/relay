@@ -1282,25 +1282,28 @@ fake       fake-echo   128K
 
 ## Drop-in
 
-A terminal can take over a headless Claude session. relay hosts the terminal; this host stops the headless process, holds the session and hands it back when the terminal exits. relay's side (the HTTP route, the bridge door and `relay drop-in`) is in [`docs/cli.md`](cli.md).
+A terminal can take over a headless Claude, Pi or Codex session. relay hosts the terminal; this host stops the headless process, holds the session and hands it back when the terminal exits. relay's side (the HTTP route, the bridge door and `relay drop-in`) is in [`docs/cli.md`](cli.md).
 
 ### `POST /handoff`
 
-Body `{session_id}`. Internal peer only, like `/launch`. Answers `200 {session_id, claude_session_id}` or an error `{error, message}`; the request can stay open up to `hostapi.HandoffWait` (60 s). `session.Manager.Handoff` decides:
+Body `{session_id}`. Internal peer only, like `/launch`. Answers `200 {session_id, claude_session_id, agent, conversation_id, codex_attach, pi_session_args}` or an error `{error, message}`; the request can stay open up to `hostapi.HandoffWait` (60 s). `session.Manager.Handoff` decides:
 
 | Status | `error` | When |
 |---|---|---|
 | 404 | `session_not_found` | no such session |
-| 409 | `not_claude` | the provider is not `claude` |
+| 409 | `not_claude` | the provider is not `claude`, `pi` or `codex` |
+| 409 | `not_local` | a Pi or Codex session of an SSH host project |
 | 409 | `not_headless` | the session is not headless |
 | 409 | `dropped_in` | a terminal already holds it |
-| 409 | `tool_running` | a tool call is open; the message names the earliest |
+| 409 | `tool_running` | a Claude tool call is open; the message names the earliest |
 | 409 | `turn_timeout` | the turn did not end within the wait |
-| 409 | `no_conversation` | no Claude conversation id yet |
+| 409 | `no_conversation` | no conversation id yet (Claude session id, Pi session uuid or Codex thread uuid), or a Pi state no terminal can open |
 | 409 | `host_unavailable` | a detached session's host did not say whether its agent runs; nothing is stopped |
 | 409 | `attach_failed` | the host answered and the agent runs, but relay-sessions could not attach it; nothing is stopped |
 
-A session with no live process can be taken over; it loads from disk first. If a turn is in flight and no tool is open, the request waits for the turn to end, a tool to open, the timeout or the caller to go away. It does not poll. A tool call opens on an assistant `content_block_stop` of a `tool_use` block and closes on its `tool_result`; `message_complete`, `error`, `process_exited`, `StopGeneration` and `ClearSession` clear them all. Waiting through a tool could last without bound, and stopping mid-tool leaves a half-finished call, so a running tool refuses at once.
+The answer names the agent's resume target: `agent`, `conversation_id` (`claude_session_id` repeats it for Claude only), `codex_attach` (the Codex thread is held through the daemon) and, for Pi, `pi_session_args`, exactly `--session <file or uuid> --session-dir <absolute dir>` by the rule the headless Pi uses (`provider.PiTerminalSessionArgs`). Relay appends the agent's own resume arguments to the project's template. The stop ends only that session's own runner; for an attached Codex thread it sends `thread/unsubscribe` and closes relay's own daemon connection, and never touches the daemon's lifecycle or its other clients.
+
+A session with no live process can be taken over; it loads from disk first. If a turn is in flight and no tool is open, the request waits for the turn to end, a tool to open, the timeout or the caller to go away. It does not poll. A tool call opens on an assistant `content_block_stop` of a `tool_use` block and closes on its `tool_result`; `message_complete`, `error`, `process_exited`, `StopGeneration` and `ClearSession` clear them all. Waiting through a tool could last without bound, and stopping mid-tool leaves a half-finished call, so a running Claude tool refuses at once. A Pi or Codex turn is waited out only; an attached thread's turn from any client counts as open while the thread reports `active`.
 
 On success the manager sets the hold under its lock, marks the id terminating (relay's `session_end` reads `closed`), signals `DroppedIn` and kills the process. A session under the runner has its runner stopped too, and the stop waits until the runner and its agent are gone. The provider and slot stay in place, so `process_exited` still reaches relay, which ends the identity and profile and marks the ledger `dormant`.
 
@@ -1320,7 +1323,7 @@ Answers `200 {"claude_session_ids":[string],"pi_session_ids":[string],"codex_thr
 
 #### The hand-back resume
 
-Relay keeps an in-memory swap table keyed by terminal id (`cmd/relay/session_swap.go`). `dropIn` adds a link after the terminal launch commits, and in each failure path after the handoff succeeded. `appRouter.SessionExited` reports each exit to the table. The resume starts once the terminal's report has arrived **and** the held session's ledger record reads dormant, in either order, in its own goroutine. It is `resumeSession` with the drop-in's caller: `AuthorizeLaunch` with `Resume`, the current project policy, a fresh launch identity and model key, and `--resume <conversation id>`. A detached host session starts a new generation, and so does a local session, whose runner the handoff stopped; the hand back always starts and never attaches. Each hand back writes a `session_swap` pair (`to_headless`) and one `session.hand_back` event. With auditing off, nothing is resumed and the session stays dormant. A relay restart drops the table: the session then reads dormant and needs a Resume, as before.
+Relay keeps an in-memory swap table keyed by terminal id (`cmd/relay/session_swap.go`). `dropIn` adds a link after the terminal launch commits, and in each failure path after the handoff succeeded. `appRouter.SessionExited` reports each exit to the table. The resume starts once the terminal's report has arrived **and** the held session's ledger record reads dormant, in either order, in its own goroutine. It is `resumeSession` with the drop-in's caller: `AuthorizeLaunch` with `Resume`, the current project policy, a fresh launch identity and model key, and `--resume <conversation id>`. A detached host session starts a new generation, and so does a local session, whose runner the handoff stopped; for Claude, Pi and a Relay-started Codex session the hand back always starts and never attaches. A Pi session resumes the same session file. A Relay-started Codex session resumes its thread. An attached Codex thread attaches again through the adopt checks, with its own durable `session_adopt` intent first; if the daemon has unloaded the thread, the resume refuses and the session stays dormant. Each hand back writes a `session_swap` pair (`to_headless`) and one `session.hand_back` event. With auditing off, nothing is resumed and the session stays dormant. A relay restart drops the table: the session then reads dormant and needs a Resume, as before.
 
 On a detached host session whose host has tmux 3.0 or later, the terminal is the same tmux pane: its remote command respawns the dead pane with Claude's UI and attaches (`sshhost.PaneDropInArgv`), and the pane command detaches every client when the UI exits. A local session, and a host without tmux 3.0, keep this terminal as a pty; there is no refusal.
 
