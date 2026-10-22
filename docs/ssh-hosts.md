@@ -916,6 +916,19 @@ history. A session whose host does not answer is refused (`host_unavailable`,
 answers but whose running agent cannot be attached is refused with
 `attach_failed`, and nothing is stopped either. The agent and the terminal never run on the conversation together.
 
+**Adopt.** A terminal Claude on the host is adopted into a detached session
+by one more script, `~/.relay/agents/<session id>/adopt.sh`, with `adopt.state`
+(its `signal` lines and one terminal line) and `adopt.log` beside the run
+folders; none of them is a generation, and removing the session removes them.
+Relay-sessions runs it when a host `claude` launch carries `adopt_host` (the
+pinned pid and lifetime, the transcript size, the child test and the
+`interrupt` and `no_signal` flags) with `resume_conversation`: the script
+checks and stops the outside process, then starts the agent exactly as above.
+`adopt_host` on any other launch is `400 invalid_spec`. Its refusals reach relay
+as `409 adopt_busy`, `409 adopt_changed`, `502 adopt_stop_failed`,
+`502 adopt_launch_failed` and `502 adopt_link_lost`. See
+[Sessions on SSH hosts](session-adoption.md#sessions-on-ssh-hosts).
+
 **Not covered.** Windows hosts: they use `ssh -T`; a detached start there is
 refused with an error that names the host. A host whose login manager kills a user's processes when
 the last session ends (`KillUserProcesses=yes`) takes the agent with it. A

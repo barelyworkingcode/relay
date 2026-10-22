@@ -37,6 +37,16 @@ var claudeRunnerPatterns = runner.Patterns{
 	Asking:    `"subtype":"can_use_tool"`,
 }
 
+// The refusals of a host adopt's start, each the script's own answer. The
+// hostapi dispatcher maps them to adopt_* codes.
+var (
+	ErrAdoptBusy         = errors.New("adopt: the outside session is not idle")
+	ErrAdoptChanged      = errors.New("adopt: the outside process or its registry entry changed")
+	ErrAdoptStopFailed   = errors.New("adopt: the outside process did not exit after SIGKILL")
+	ErrAdoptLaunchFailed = errors.New("adopt: the outside process ended but the agent did not start")
+	ErrAdoptLinkLost     = errors.New("adopt: the connection to the host dropped before the result")
+)
+
 func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []string) error {
 	if sshhost.IsWindowsOS(host.OS) {
 		return fmt.Errorf("host %q is a Windows host: detach_sessions is not available there", host.Name)
@@ -71,16 +81,28 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 	if host.TmuxPath != "" {
 		remote = sshhost.RunnerStartInPane(host.OS, p.directory, run, argv, env, claudeRunnerPatterns, host.TmuxPath, sshhost.AgentPaneName(p.session.ID))
 	}
+	if pins := p.cfg.AdoptHost; pins != nil {
+		remote = sshhost.AdoptStartIn(host.OS, p.directory, run, argv, env, claudeRunnerPatterns, *pins)
+		if host.TmuxPath != "" {
+			remote = sshhost.AdoptStartInPane(host.OS, p.directory, run, argv, env, claudeRunnerPatterns, host.TmuxPath, sshhost.AgentPaneName(p.session.ID), *pins)
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), detachedStartTimeout)
 	defer cancel()
 	stdout, msg, err := runHost(ctx, host, remote, nil)
-	if err != nil {
-		return fmt.Errorf("start detached claude on host %q: %s (hosts[].detach_sessions: false runs this host's sessions under ssh -T)", host.Name, msg)
-	}
-	gen, err := sshhost.ParseRunStart(stdout)
-	if err != nil {
-		return fmt.Errorf("start detached claude on host %q: %w (hosts[].detach_sessions: false runs this host's sessions under ssh -T)", host.Name, err)
+	var gen string
+	if p.cfg.AdoptHost != nil {
+		if gen, err = p.adoptOutcome(host, stdout); err != nil {
+			return err
+		}
+	} else {
+		if err != nil {
+			return fmt.Errorf("start detached claude on host %q: %s (hosts[].detach_sessions: false runs this host's sessions under ssh -T)", host.Name, msg)
+		}
+		if gen, err = sshhost.ParseRunStart(stdout); err != nil {
+			return fmt.Errorf("start detached claude on host %q: %w (hosts[].detach_sessions: false runs this host's sessions under ssh -T)", host.Name, err)
+		}
 	}
 
 	p.mu.Lock()
@@ -90,6 +112,27 @@ func (p *ClaudeProvider) startDetached(host *sessionstypes.HostSpec, args []stri
 	p.runDetached(det)
 	slog.Info("claude detached agent started", "session", p.session.ID, "host", host.ID, "generation", gen)
 	return nil
+}
+
+// adoptOutcome reads the adopt script's answer. The stream decides, not the
+// ssh exit status: a link that dropped after the terminal line still carries
+// the answer, and one that dropped before it carries none.
+func (p *ClaudeProvider) adoptOutcome(host *sessionstypes.HostSpec, stdout string) (string, error) {
+	out, err := sshhost.ParseAdoptResult(stdout)
+	if err != nil {
+		return "", fmt.Errorf("%w: host %q", ErrAdoptLinkLost, host.Name)
+	}
+	switch {
+	case out.Result == "ok":
+		return out.Generation, nil
+	case out.Result == "refused" && out.Code == "busy":
+		return "", fmt.Errorf("%w: host %q", ErrAdoptBusy, host.Name)
+	case out.Result == "refused":
+		return "", fmt.Errorf("%w: host %q", ErrAdoptChanged, host.Name)
+	case out.Code == "stop_failed":
+		return "", fmt.Errorf("%w: host %q", ErrAdoptStopFailed, host.Name)
+	}
+	return "", fmt.Errorf("%w: host %q", ErrAdoptLaunchFailed, host.Name)
 }
 
 // beginDetached installs the state of a spawn that follows a run from offset and

@@ -103,6 +103,9 @@ type ClaudeConfig struct {
 	// AttachOnly makes Start of a detached host session attach to a running
 	// agent and fail with ErrNoDetachedRun rather than start one.
 	AttachOnly bool
+	// AdoptHost makes the start of a detached host session run the adopt
+	// script in place of the plain start; nil starts as any session does.
+	AdoptHost *sshhost.AdoptPins
 
 	// RunnerBase is the directory local sessions' run directories live under
 	// (<config dir>/sessions/runners). Every local Claude session runs under

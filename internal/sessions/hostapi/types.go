@@ -115,6 +115,22 @@ type LaunchRequest struct {
 	// ViewTarget names the tmux session an outside viewer attaches to. The
 	// host builds the attach argv from it; an outside launch carries no argv.
 	ViewTarget *ViewTarget `json:"view_target,omitempty"`
+	// AdoptHost makes a host claude launch the end of an adopt: the host
+	// script checks and stops the outside process named here, then starts the
+	// agent. Relay's adopt and resume doors are the only senders.
+	AdoptHost *AdoptHostSpec `json:"adopt_host,omitempty"`
+}
+
+// AdoptHostSpec pins the outside process a host adopt takes over.
+type AdoptHostSpec struct {
+	PID            int    `json:"pid"`
+	Lifetime       string `json:"lifetime"`
+	Interrupt      bool   `json:"interrupt,omitempty"`      // send SIGINT first
+	TranscriptSize int64  `json:"transcript_size"`          // bytes the tail read saw
+	ChildTest      string `json:"child_test"`               // "none", "window" or "all"
+	WindowFromMs   int64  `json:"window_from_ms,omitempty"` // "window": the last turn's first assistant record
+	WindowToMs     int64  `json:"window_to_ms,omitempty"`   // "window": the newest transcript record
+	NoSignal       bool   `json:"no_signal,omitempty"`      // a resume: a live pinned pid answers changed
 }
 
 // ViewTarget is an outside viewer's tmux binary and exact session ID ($N).
@@ -163,6 +179,15 @@ const (
 	ErrIdentityRefused = "identity_refused" // 502
 	ErrSpawnFailed     = "spawn_failed"     // 500
 	ErrNotHeld         = "not_held"         // 409
+)
+
+// Error codes a host adopt launch names.
+const (
+	ErrAdoptBusy         = "adopt_busy"          // 409
+	ErrAdoptChanged      = "adopt_changed"       // 409
+	ErrAdoptStopFailed   = "adopt_stop_failed"   // 502
+	ErrAdoptLaunchFailed = "adopt_launch_failed" // 502
+	ErrAdoptLinkLost     = "adopt_link_lost"     // 502
 )
 
 // Error codes POST /send names.

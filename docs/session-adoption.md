@@ -427,6 +427,87 @@ Audit rows of the session record that no project policy or sandbox applied:
 `no_project:true` and `relay_sandbox:false` with no `project_id`;
 `session_launch` and `session_resume` carry `sandbox:false` and `no_project:true`.
 
+### Sessions on SSH hosts
+
+A live Claude row of a Unix SSH host is adoptable, in its host project. The
+adopt ends the terminal Claude on the host and resumes the same conversation
+headless there, in the row's folder, as `claude --resume <conversation id>`
+under the host project's policy. A host session has no sandbox, no launch
+identity and no `unsandboxed` field. On a host with tmux 3.0 or later the agent
+runs in the tmux session `relay-agent-<session id>`; without it, under the
+plain runner. A terminal Claude that ran in a tmux pane ends, and the adopt
+starts a fresh `relay-agent` session: it does not reuse the pane.
+
+**Eligibility** is the probe's: the registry tests of any row, a host with
+`detach_sessions` absent or `true` (a host that ends its agent with the link
+cannot hold a detached script), and a host project that allows `claude-code`.
+The door tests it again, fresh, at request time.
+
+**Order.** Audit ready, host ready, the in-flight lock, a fresh eligibility
+test, the managed list, a read of the transcript tail over SSH (the same
+256 KiB window a local adopt reads), the verdict, the model, launch
+authorization, the `session_adopt` intent, the `session_interrupt` intent when
+the adopt interrupts, the dormant ledger record, then one SSH command. Nothing
+reaches the host before the intents and the record are durable. The verdict is
+busy when the row's state is not `idle` or the tail holds an open tool call; a
+busy session without `interrupt` answers `409 busy` and nothing is sent. The
+model is the body's `model`, else the family alias of the newest assistant
+record, else none: a host adopt never answers `model_unknown`.
+
+**The script.** One SSH command writes `adopt.sh` beside the session's run
+folders on the host (`~/.relay/agents/<session id>/adopt.sh`, with `adopt.state`
+and `adopt.log`), starts it detached (`setsid`, else `set -m`, HUP ignored) and
+prints each new `adopt.state` line behind `@@RELAY_ADOPT@@` until the terminal
+one. Relay sends no signal over SSH itself. The script:
+
+1. computes the pid's lifetime exactly as the outside probe does and compares
+   it with the row's, byte for byte. A gone pid goes to the start. A different
+   lifetime before the first signal answers `refused changed` and sends
+   nothing;
+2. reads `~/.claude/sessions/<pid>.json` (no symlink, at most 64 KiB) and
+   requires its `sessionId` to be the conversation, else `refused changed`;
+3. tests idleness unless the adopt interrupts: the registry status is not one
+   the probe reads as running or asking, the transcript is the size the tail
+   read saw, and the process has no child but the turn helper
+   (`/usr/bin/caffeinate`) that started in the last turn's window. The door
+   sends the window, or tests every child when the tail cannot give a turn
+   boundary. Not idle answers `refused busy`;
+4. sends SIGINT when the adopt interrupts, then SIGTERM and SIGKILL as needed,
+   with the local ladder's 5 s waits, re-reading the lifetime before each
+   signal. A mismatch or a gone pid after a signal ends the ladder and goes to
+   the start. A process alive after the SIGKILL wait answers
+   `failed stop_failed`;
+5. runs the same start as a detached session (`failed launch_failed` when it
+   fails) and writes `ok <generation>`.
+
+`adopt.state` holds each `signal INT|TERM|KILL <unix ms>` line and exactly one
+terminal line: `ok <generation>`, `refused busy`, `refused changed`,
+`failed stop_failed` or `failed launch_failed`.
+
+**Answers.** `ok` is `201`; the live record replaces the dormant one, and an
+adopt that interrupted sends the recovery message. `refused busy|changed` and
+`failed stop_failed` answer `409 busy`, `409 changed` and `502 stop_failed` and
+remove the dormant record. `failed launch_failed` answers `502 launch_failed`
+and keeps the record. When the SSH command ends with no terminal line, relay
+answers `502 host_link_lost` and keeps the dormant record: the script may still
+run, and it ends the outside process and starts the agent, or refuses, on its
+own. The audit completion of a host adopt carries `interrupted` and no
+`signals`; its rows carry `host_id`.
+
+**The dropped link.** The record lists as dormant, with Resume. A resume of it
+asks relay-sessions to attach a live `relay-agent-<id>` run first, as for any
+detached session. With none it runs the script again with `no_signal`: a pid
+alive with the pinned lifetime answers `409 changed`, starts nothing and removes
+the record ("the terminal session still runs; adopt it again"), and anything
+else starts `claude --resume` on the host. A resume never starts a Claude beside
+the outside process. If the link returned and the script had already finished,
+its agent is the run that Resume attaches. A relay-sessions restart does not
+reattach an agent that was never saved, so Resume does it.
+
+An adopt that takes longer than relay's 15 s wait for relay-sessions ends the
+same way: `host_link_lost`, a dormant record, and Resume attaches what the
+script started.
+
 ### The idle check
 
 Several signals combine. A signal can veto idle. Only the agent's own state can

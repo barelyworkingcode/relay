@@ -1319,7 +1319,7 @@ Answers `200 {"claude_session_ids":[string],"pi_session_ids":[string],"codex_thr
 
 ### The terminal
 
-`LaunchRequest.resume_conversation` (a fresh local `claude` launch only) names the Claude conversation to resume: a canonical UUID, refused with `invalid_spec` on a pty, a resume, a host launch or any other value. The host seeds the new session's provider state with it, so claude starts with `--resume <id>`. Relay's adopt door sets it; see [Outside sessions](outside-sessions.md#adopting-a-session).
+`LaunchRequest.resume_conversation` (a fresh local `claude` launch, or a host `claude` launch that carries `adopt_host`, fresh or a resume) names the Claude conversation to resume: a canonical UUID, refused with `invalid_spec` on a pty, a local resume, any other host launch or any other value. The host seeds the new session's provider state with it, so claude starts with `--resume <id>`. Relay's adopt door sets it; see [Outside sessions](outside-sessions.md#adopting-a-session).
 
 `LaunchRequest.drop_in_for` (pty only) names the held session the terminal takes over. `/launch` answers `409 not_held` unless that session is held and no other terminal already has it. The link from terminal id to session id is recorded before the terminal starts, and removed if the start fails. When the terminal exits, `onTerminalExit` calls `HandBack` first and `reportExit` second, so the hold is clear when relay's resume reaches `/launch`. Closing the window or a killed client never leaves a session held. The hold is in memory: a relay-sessions restart drops it.
 
