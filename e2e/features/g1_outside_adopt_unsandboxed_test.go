@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 
 	"relaye2e/harness"
@@ -494,10 +495,12 @@ func TestAdoptNoProjectAuditRows(t *testing.T) {
 	msgs := g4Wait(t, a.i, g4Has(func(r g4Row) bool {
 		return r.obj("args").str("origin") == "relay-recovery" && r.str("phase") == "completion"
 	}), "--event", "session_message")
-	for _, r := range msgs {
-		if r.obj("args").str("session_id") == ad.sid {
-			nsNoProjectArgs(t, r, "session_message "+r.str("phase"))
-		}
+	named := g4Where(msgs, func(r g4Row) bool { return r.obj("args").str("session_id") == ad.sid })
+	if len(named) == 0 {
+		t.Fatalf("no session_message row names %s", ad.sid)
+	}
+	for _, r := range named {
+		nsNoProjectArgs(t, r, "session_message "+r.str("phase"))
 	}
 	launches := g4Wait(t, a.i, func(rows []g4Row) bool {
 		kinds := map[string]bool{}
@@ -682,5 +685,46 @@ func TestAdoptNoProjectScopeRefused(t *testing.T) {
 	adNoSignals(t, f)
 	if n := len(adSessions(t, a.i)); n != 0 {
 		t.Fatalf("refused adopts left %d sessions", n)
+	}
+}
+
+// With claude_token_file set the unsandboxed session gets the token on fd 5 and
+// never in its environment or argv; relay session mode then refuses, because a
+// restart in place cannot reuse the per-launch token.
+func TestAdoptNoProjectTokenDescriptor(t *testing.T) {
+	t.Parallel()
+	r := osStart(t, false, func(o *harness.Options) {
+		if o.Settings == nil {
+			o.Settings = map[string]json.RawMessage{}
+		}
+		o.Settings["claude_token_file"] = ctJSON(t, ctSetting)
+	})
+	a := &adRig{osRig: r}
+	token := ctNewToken(t)
+	ctWriteToken(t, r.i, token, 0o600)
+	ad := nsAdoptIdle(t, a)
+	adStartLine(t, r.i, ad.sid, "acme next")
+
+	var start *harness.AgentCall
+	for _, c := range nsStarts(r.i) {
+		if c.Env["RELAY_SESSION_ID"] == ad.sid {
+			c := c
+			start = &c
+		}
+	}
+	if start == nil {
+		t.Fatalf("no claude start line carries RELAY_SESSION_ID %s", ad.sid)
+	}
+	ctWantToken(t, "unsandboxed adopted session", *start, token)
+	ctScan(t, "the start line's environment", strings.Join(start.Environ, "\n"), token)
+	ctScan(t, "the start line's argv", strings.Join(start.Argv, "\n"), token)
+	nsNoSandbox(t, r.i)
+
+	res := r.i.CLI("session", "mode", "--id", ad.sid, "--mode", "plan", "--json")
+	if res.Code != 1 {
+		t.Fatalf("session mode on the unsandboxed session exited %d, want 1 (resume_required)\nstdout: %s\nstderr: %s", res.Code, res.Stdout, res.Stderr)
+	}
+	if row := nsSessionRow(t, r.i, ad.sid); row["live"] != true {
+		t.Fatalf("the session is not live after the refused mode change: %v", row)
 	}
 }

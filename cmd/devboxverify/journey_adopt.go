@@ -93,17 +93,7 @@ func adoptFlow(ctx context.Context, e env, unsandboxed bool) result {
 	}
 	tag := "verify-" + e.Nonce + "-" + suffix
 	var dir string
-	if unsandboxed {
-		// Deliberate: the folder is under the OS temp directory, which no
-		// registered project holds, so relay finds the row in no project.
-		tmp, err := os.MkdirTemp("", tag+"-")
-		if err != nil {
-			return blocked(id, "scratch folder: "+err.Error())
-		}
-		if dir, err = filepath.EvalSymlinks(tmp); err != nil {
-			return blocked(id, "scratch folder: "+err.Error())
-		}
-	} else {
+	if !unsandboxed {
 		acme, err := e.World.project("acme")
 		if err != nil {
 			return blocked(id, err.Error())
@@ -127,6 +117,19 @@ func adoptFlow(ctx context.Context, e env, unsandboxed bool) result {
 		return blocked(id, "no claude on this machine's login-shell PATH")
 	}
 
+	if unsandboxed {
+		// Deliberate: the folder is under the OS temp directory, which no
+		// registered project holds, so relay finds the row in no project. It is
+		// made after every BLOCKED check above, so none leaves it behind.
+		tmp, err := os.MkdirTemp("", tag+"-")
+		if err != nil {
+			return blocked(id, "scratch folder: "+err.Error())
+		}
+		if dir, err = filepath.EvalSymlinks(tmp); err != nil {
+			_ = os.RemoveAll(tmp)
+			return blocked(id, "scratch folder: "+err.Error())
+		}
+	}
 	convID := uuid.NewString()
 	sess := &adoptCleanup{tmux: tmux, name: tag, dir: dir, convID: convID, tag: tag, e: e, id: id}
 	defer sess.run(context.WithoutCancel(ctx))
@@ -162,7 +165,7 @@ func adoptFlow(ctx context.Context, e env, unsandboxed bool) result {
 	}) {
 		return blocked(id, "the outside claude's registry entry did not read idle within 60s")
 	}
-	if id, err := claudeSessionForPID(pid); err != nil || id != convID {
+	if got, err := claudeSessionForPID(pid); err != nil || got != convID {
 		return blocked(id, "the registry entry does not carry the conversation id the journey set")
 	}
 

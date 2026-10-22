@@ -491,7 +491,7 @@ func TestAdoptRefusals(t *testing.T) {
 			return []J{adoptRow(1, e.dir), adoptRow(2, e.dir, "claude_session_id", adoptUUID(1))}
 		}, body: func(adoptEnv) any { return J{"claudeSessionId": adoptUUID(1)} }, status: 409, code: "ambiguous", msg: "more than one live process holds this conversation"},
 		{name: "host", rows: oneRow("adoptable", false, "host_id", "h_box", "machine", "testbox"), body: idBody(nil), status: 409, code: "host_unsupported", msg: "sessions on an SSH host cannot be adopted"},
-		{name: "no project row not adoptable", rows: oneRow("adoptable", false, "project_id", nil), body: idBody(nil), status: 409, code: "not_registered", msg: "the session cannot be adopted: not_registered"},
+		{name: "no project row keeps its reason", rows: oneRow("adoptable", false, "project_id", nil, "adopt_reason", "not_interactive"), body: idBody(nil), status: 409, code: "not_interactive", msg: "the session cannot be adopted: not_interactive"},
 		{name: "not registered", rows: oneRow("adoptable", false), body: idBody(nil), status: 409, code: "not_registered", msg: "the session cannot be adopted: not_registered"},
 		{name: "audit off", rows: oneRow("adopt", J{"refuse": "audit_unavailable"}), body: idBody(nil), status: 503, code: "audit_unavailable", msg: "auditing is off; no session can be adopted"},
 		{name: "host down", rows: oneRow("adopt", J{"refuse": "unavailable"}), body: idBody(nil), status: 502, code: "unavailable", msg: "the session host is not available"},
