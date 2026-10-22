@@ -121,7 +121,7 @@ func (s *svc) holdSession(r *http.Request, id string) (string, *refusal) {
 			ref = &refusal{http.StatusConflict, "not_headless", "this session is not headless; continue it in eve"}
 		case x.held:
 			ref = &refusal{http.StatusConflict, "dropped_in", "a terminal already has this session; close it first"}
-		case x.processing && x.tool != "":
+		case x.processing && x.tool != "" && x.kind == "claude":
 			ref = &refusal{http.StatusConflict, "tool_running", "a tool is running (" + x.tool + "); wait for it to finish or stop the turn, then try again"}
 		case x.processing:
 			if x.changed == nil {

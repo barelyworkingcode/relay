@@ -25,9 +25,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
-// A drop-in launches the project's own terminal template for the session's
-// kind (kindTemplateIDs), so its sandbox, model key and host handling apply.
-
 const (
 	defaultDropInCols = 120
 	defaultDropInRows = 40
@@ -133,7 +130,7 @@ func (d sessionRouteDeps) dropIn(ctx context.Context, req DropInRequest) (res *D
 		Caller:     req.Caller,
 		ProjectID:  rec.ProjectID,
 		Kind:       KindPTY,
-		TemplateID: kindTemplateIDs[rec.Kind],
+		TemplateID: kindTemplateIDs[rec.Kind], // the project's own template for the kind: its sandbox, model key and host handling apply
 		Directory:  rec.Directory,
 		Name:       name + " (drop-in)",
 		Cols:       cols,

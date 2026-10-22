@@ -76,16 +76,7 @@ func g1xStart(t *testing.T, kind string, o g1xOpts) *g1xRig {
 	}
 	model := "codex/fake-echo"
 	if kind == "pi" {
-		model = ""
-		_, ids := modelIDs(t, i)
-		for _, id := range ids {
-			if strings.HasPrefix(id, "pi/") && strings.HasSuffix(id, "/fake-echo") {
-				model = id
-			}
-		}
-		if model == "" {
-			t.Fatalf("model list %v holds no pi/<provider>/fake-echo", ids)
-		}
+		model = g1xPiModel(t, i)
 	}
 	r := &g1xRig{t: t, i: i, kind: kind, dir: g1tDir(i, "acme-swap-"+kind), project: p.ID}
 	r.sid = g1tStartSession(t, i, p.ID, model, g1xHeadless)
@@ -292,6 +283,31 @@ func g1xPiEntries(t *testing.T, file string) []g1xPiEntry {
 	return out
 }
 
+// g1xPiModel is the Pi fake echo model's id.
+func g1xPiModel(t *testing.T, i *harness.Instance) string {
+	t.Helper()
+	_, ids := modelIDs(t, i)
+	for _, id := range ids {
+		if strings.HasPrefix(id, "pi/") && strings.HasSuffix(id, "/fake-echo") {
+			return id
+		}
+	}
+	t.Fatalf("model list %v holds no pi/<provider>/fake-echo", ids)
+	return ""
+}
+
+// g1xCallsByTime are the persona's call-log lines that match, oldest first.
+func g1xCallsByTime(i *harness.Instance, persona string, match func(harness.AgentCall) bool) []harness.AgentCall {
+	var out []harness.AgentCall
+	for _, c := range i.FakeAgentCalls(persona) {
+		if match(c) {
+			out = append(out, c)
+		}
+	}
+	slices.SortStableFunc(out, func(a, b harness.AgentCall) int { return a.TS.Compare(b.TS) })
+	return out
+}
+
 // g1xPiTerminalArgs checks the terminal's pi argv and returns the session
 // directory it names.
 func g1xPiTerminalArgs(t *testing.T, argv []string, conv string) string {
@@ -319,6 +335,17 @@ func TestSwapPiSameFile(t *testing.T) {
 	r := g1xStart(t, "pi", g1xOpts{})
 	i := r.i
 
+	// A second headless session in the same instance must not feel the swap.
+	other := g1tStartSession(t, i, r.project, g1xPiModel(t, i), g1xHeadless)
+	g1sSendText(t, i, other, "acme other", "echo: acme other")
+	headless := g1xCallsByTime(i, "pi", func(c harness.AgentCall) bool {
+		return c.Event == "start" && slices.Contains(c.Argv, "--mode")
+	})
+	if len(headless) != 2 {
+		t.Fatalf("pi headless starts are %d before the drop-in, want 2: %v", len(headless), headless)
+	}
+	otherPid := headless[1].Pid
+
 	tty := r.dropIn(1)
 	starts := g1xTerminalStarts(i, "pi")
 	if len(starts) != 1 {
@@ -330,12 +357,17 @@ func TestSwapPiSameFile(t *testing.T) {
 	r.quit(tty)
 
 	g1sSendText(t, i, r.sid, "acme two", "echo: acme two")
-	if got := len(g1xHeadlessStarts(i, "pi")); got != 2 {
-		t.Fatalf("pi headless starts are %d, want the first and the one after the hand back", got)
+	if got := len(g1xHeadlessStarts(i, "pi")); got != 3 {
+		t.Fatalf("pi headless starts are %d, want the two sessions' and the one after the hand back", got)
 	}
-	if argv := g1xHeadlessStarts(i, "pi")[1]; g1xUUIDIn.FindString(g1xArgv(argv, "--session")) != r.conv {
+	if argv := g1xHeadlessStarts(i, "pi")[2]; g1xUUIDIn.FindString(g1xArgv(argv, "--session")) != r.conv {
 		t.Fatalf("the headless pi start after the hand back is %v, want it on session %s", argv, r.conv)
 	}
+
+	for _, c := range g1xCallsByTime(i, "pi", func(c harness.AgentCall) bool { return c.Pid == otherPid && c.Event == "exit" }) {
+		t.Fatalf("the other session's pi runner %d exited at %v across the drop-in and hand back", otherPid, c.TS)
+	}
+	g1sSendText(t, i, other, "acme other two", "echo: acme other two")
 
 	files := g1xPiFiles(t, dir, r.conv)
 	if len(files) != 1 {
@@ -575,20 +607,20 @@ func TestSwapAgentsStopBeforeStart(t *testing.T) {
 		t.Parallel()
 		r := g1xStart(t, "pi", g1xOpts{})
 		tty := r.dropIn(1)
-		var exit, start *harness.AgentCall
-		calls := r.i.FakeAgentCalls("pi")
-		slices.SortStableFunc(calls, func(a, b harness.AgentCall) int { return a.TS.Compare(b.TS) })
-		for k := range calls {
-			c := &calls[k]
-			if c.Event == "exit" && exit == nil {
-				exit = c
-			}
-			if c.Event == "start" && start == nil && !slices.Contains(c.Argv, "--mode") && !slices.Contains(c.Argv, "--list-models") {
-				start = c
-			}
+		// The model-list probe also logs an exit, before any session runs, so the
+		// runner's exit is the first one after the headless start.
+		headless := g1xCallsByTime(r.i, "pi", func(c harness.AgentCall) bool {
+			return c.Event == "start" && slices.Contains(c.Argv, "--mode")
+		})
+		terminal := g1xCallsByTime(r.i, "pi", func(c harness.AgentCall) bool {
+			return c.Event == "start" && !slices.Contains(c.Argv, "--mode") && !slices.Contains(c.Argv, "--list-models")
+		})
+		if len(headless) == 0 || len(terminal) == 0 {
+			t.Fatalf("the pi call log holds headless starts %v and terminal starts %v, want both", headless, terminal)
 		}
-		if exit == nil || start == nil || start.TS.Before(exit.TS) {
-			t.Fatalf("the pi runner exit is %+v and the terminal start %+v, want the exit first", exit, start)
+		exits := g1xCallsByTime(r.i, "pi", func(c harness.AgentCall) bool { return c.Event == "exit" && c.TS.After(headless[0].TS) })
+		if len(exits) == 0 || exits[0].TS.After(terminal[0].TS) {
+			t.Fatalf("the first pi exit after the runner start is %+v and the terminal start %+v, want the exit first", exits, terminal[0])
 		}
 		r.quit(tty)
 	})

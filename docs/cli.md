@@ -3076,7 +3076,7 @@ There are no flags. Before relay answers, it prints
 `relay: handing over <id>; waiting up to 60 s for the current turn to end` on
 stderr; on exit it prints `relay: the terminal closed; relay resumes <id> headless. If
 it stays dormant, run: relay session resume --id <id>`. The exit status is
-the agent's. Ending the terminal, by quitting Claude, closing the window or
+the agent's. Ending the terminal, by quitting the agent (Claude, Pi or Codex), closing the window or
 SIGHUP, hands the session back and relay resumes it headless on the same
 conversation, with no further message and no `relay session resume`. The
 resume finishes after the CLI exits, when relay sees the terminal end: wait
