@@ -85,6 +85,16 @@ func adHasArg(argv []string, name string) bool {
 	return false
 }
 
+// npStart boots the adopt rig with the "mounter" credential g1aReplay joins
+// with.
+func npStart(t *testing.T) *adRig {
+	t.Helper()
+	return adStart(t, func(o *harness.Options) {
+		o.Credentials = append(append([]harness.CredentialSpec{}, o.Credentials...),
+			harness.CredentialSpec{Name: "mounter", Classes: []string{"proxy"}})
+	})
+}
+
 // npAskAndDeny sends "!tool Bash" and checks the call waits for the owner: an
 // unjoined /ws sees asking, a joining one gets the replayed request, and the
 // owner's denial and reason reach the agent.
@@ -130,7 +140,7 @@ func npAskAndDeny(t *testing.T, ad *nsAdopted) {
 // its tool call waits for the owner, who can deny it with a reason.
 func TestAdoptNoProjectAsksForApproval(t *testing.T) {
 	t.Parallel()
-	a := adStart(t)
+	a := npStart(t)
 	ad := npAdoptIdle(t, a, true)
 	npAskAndDeny(t, ad)
 	npNoBypass(t, a.i)
@@ -139,7 +149,7 @@ func TestAdoptNoProjectAsksForApproval(t *testing.T) {
 // AC4: after drop in and hand back the resumed session still asks.
 func TestAdoptNoProjectAsksAfterHandBack(t *testing.T) {
 	t.Parallel()
-	a := adStart(t)
+	a := npStart(t)
 	ad := npAdoptIdle(t, a, true)
 	nsSend(t, ad, "acme hello")
 	tid := nsDropIn(t, a, ad.sid, ad.f.sid, 2)
@@ -156,7 +166,7 @@ func TestAdoptNoProjectAsksAfterHandBack(t *testing.T) {
 // AC5: an adopted session in a project still runs headless with bypass.
 func TestAdoptInProjectStaysBypass(t *testing.T) {
 	t.Parallel()
-	a := adStart(t)
+	a := npStart(t)
 	ad := npAdoptIdle(t, a, false)
 
 	res := g1aSendHeadless(a.i, ad.sid)

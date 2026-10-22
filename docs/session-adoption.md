@@ -392,8 +392,9 @@ What an unsandboxed session has and lacks:
   (the shim runs with no profile), as a sandboxed Claude does. The process
   could read the file by path, so it gains no reach. `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=5`
   names the descriptor; the token is never in the environment.
-- `bypassPermissions` on it lets every tool run and asks nothing. That is the
-  owner's accepted risk.
+- Being headless sets no `bypassPermissions` on it. It runs the mode its
+  settings name (`default` after an adopt), so a tool call that needs approval
+  asks the owner. Only the owner's `relay session mode` sets bypass.
 - `relay session mode` answers `resume_required` for it when `claude_token_file`
   is set, as for a sandboxed session: the token is per launch and cannot be
   reused by a restart in place. With no token set it restarts in place.

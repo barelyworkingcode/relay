@@ -999,7 +999,9 @@ func (s *Server) decidePermission(ctx context.Context, body permissionRequestBod
 		Directory: sess.Directory,
 		Policy:    sess.Policy,
 	}
-	if sess.Headless {
+	// Deliberate: an unsandboxed session has no sandbox to bound bypass, so
+	// being headless does not set it.
+	if sess.Headless && !sess.Unsandboxed {
 		in.Mode = "bypassPermissions"
 	}
 	sess.Unlock()

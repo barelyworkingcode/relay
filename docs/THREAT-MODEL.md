@@ -160,8 +160,9 @@ outside it is not a relay bug, however real.
    launch identity: the owner chose that, and it runs with the account's full
    reach. A project that holds the folder at adopt time refuses the adopt, so
    relay never picks unsandboxed over a project, and Pi and Codex in no project
-   are not adopted. `bypassPermissions` on an unsandboxed session lets every tool
-   run and asks nothing, which is the owner's accepted risk. The
+   are not adopted. Being headless sets no `bypassPermissions` on an unsandboxed
+   session; it runs the mode its settings name (`default` after an adopt), and
+   only the owner's `relay session mode` sets bypass. The
    recovery message after an interrupt quotes at most 300 characters of the
    session's own last prompt and 500 of the open tool call's input, under the
    `relay-recovery` origin. The chief-of-staff scope cannot reach the door.

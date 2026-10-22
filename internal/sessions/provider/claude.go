@@ -347,9 +347,11 @@ func (p *ClaudeProvider) idleWatcher(stopIdle <-chan struct{}) {
 }
 
 // effectivePermissionMode resolves the Claude CLI --permission-mode for this
-// session. A headless session forces "bypassPermissions".
+// session. A headless session forces "bypassPermissions" unless it is
+// unsandboxed: that is deliberate, because an unsandboxed session has no
+// sandbox to bound bypass.
 func (p *ClaudeProvider) effectivePermissionMode() string {
-	if p.session.Headless {
+	if p.session.Headless && !p.session.Unsandboxed {
 		return "bypassPermissions"
 	}
 	return p.session.PermissionMode
