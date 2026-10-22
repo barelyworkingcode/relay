@@ -474,6 +474,12 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 		if sess != nil && !spec.AttachOnly {
 			m.signal(sess, attention.LaunchFailed)
 		}
+		// Deliberate: a host adopt whose result never arrived, or whose start
+		// failed after the outside process ended, keeps its session saved so it
+		// lists as dormant and a resume finds it. A refusal leaves nothing.
+		if sess != nil && spec.AdoptHost != nil && (errors.Is(err, provider.ErrAdoptLinkLost) || errors.Is(err, provider.ErrAdoptLaunchFailed)) {
+			m.persist(sess)
+		}
 		close(slot.done)
 		return nil, err
 	}

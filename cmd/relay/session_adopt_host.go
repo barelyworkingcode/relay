@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -306,7 +307,10 @@ func (d sessionRouteDeps) resumeAdoptPending(ctx context.Context, ev *logging.Ev
 	if err != nil {
 		return refuse(http.StatusBadGateway, adoptUnavailable, "the session host is not available")
 	}
-	if managed[pin.ConversationID] {
+	// Deliberate: relay-sessions keeps a dormant host adopt's session saved, and
+	// that session holds the conversation itself; only another session's hold
+	// refuses.
+	if managed[pin.ConversationID] && !d.hostKnowsSession(ctx, rec.SessionID) {
 		return refuse(http.StatusConflict, adoptManaged, "relay already holds this conversation")
 	}
 
@@ -348,4 +352,28 @@ func (d sessionRouteDeps) resumeAdoptPending(ctx context.Context, ev *logging.Ev
 	}
 	d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, "")))
 	return resumeOutcome{Status: http.StatusOK, Body: resumeResponseBody{SessionID: result.SessionID, Resumed: true}}
+}
+
+// hostKnowsSession reports whether relay-sessions lists the session. An answer
+// it cannot read is "no": the managed check then applies.
+func (d sessionRouteDeps) hostKnowsSession(ctx context.Context, id string) bool {
+	resp, err := d.host().do(ctx, http.MethodGet, "/api/sessions", nil)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, maxSessionHostResponseBytes)).Decode(&body) != nil {
+		return false
+	}
+	for _, s := range body.Sessions {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
 }
