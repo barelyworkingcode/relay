@@ -983,7 +983,8 @@ Relay writes a durable `intent` row before it checks the claim and a durable
   `root_pid` (from the ledger); `outcome: pending`.
 - `session_rebind` completion: the same args. `outcome` is `ok`; `denied` with
   `error` one of `not_live`, `project_gone`, `no_root_record`, `runner_mismatch`,
-  `root_gone`, `root_not_in_tree`, `already_bound`; or `error` with `error`
+  `root_gone`, `root_not_in_tree`, `already_bound`, `unsandboxed` (the session
+  has no launch identity to bind); or `error` with `error`
   `bind_failed`.
 - A caller that is not the bound relay-sessions identity writes one row with no
   phase: actor `unknown`, `auth: none`, args `session_id`, `outcome:

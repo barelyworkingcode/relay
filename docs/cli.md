@@ -2779,8 +2779,9 @@ session is deleted, not left dormant: it cannot be resumed.
 A resume applies to a dormant session. Every session is dormant after a relay
 restart, except a detached host session whose agent still runs (below); an
 unknown id exits `1` (`404`). A session adopted in no project resumes
-unsandboxed in its own folder, and exits `1` with `directory_unusable` when the
-folder is gone. Text form: `resumed session ID` or `session ID is already live`.
+unsandboxed in its own folder. When the folder is gone it exits `1` and prints
+the refusal message ("the session's folder is not a usable directory"); the code
+`directory_unusable` is the `reason` of the `session.resume` event. Text form: `resumed session ID` or `session ID is already live`.
 
 A detached host session ([ssh-hosts.md](ssh-hosts.md)) whose agent still
 runs on the host is attached and no second agent starts. A host that cannot
@@ -2870,6 +2871,7 @@ The text form is `started terminal TERMINAL-ID`.
 | `terminals[].exitCode` | number, optional | The exit code of an ended terminal, when it is not 0. Absent while the terminal runs and absent after it exits 0, so a `state` of `stopped` with no `exitCode` means exit 0. A signalled exit is 128 plus the signal. |
 | `terminals[].host` | object, optional | `{"id","name"}` of the SSH host. |
 | `terminals[].origin` | string, optional | Who started it, when not a person at a screen. |
+| `terminals[].unsandboxed` | boolean, optional | `true` only on the drop-in terminal of a session adopted in no project. Absent otherwise. |
 
 Text form: the line `N terminals`, then one `ID<TAB>NAME` line per terminal.
 
@@ -3103,8 +3105,9 @@ session keeps one name. `tmux attach -t relay-agent-<id>` on the host shows the
 same pane. Closing the terminal swaps the pane back to the runner.
 
 A session adopted in no project drops in unsandboxed, in its own folder, and
-the hand back resumes it the same way; both refuse with `directory_unusable`
-when that folder is gone.
+the hand back resumes it the same way; both refuse when that folder is gone
+(`directory_unusable`; the CLI prints the message, and the code is the `reason`
+of the `session.resume` or `session.drop_in` event).
 
 No JSON form: the terminal belongs to the agent. Exit codes: the agent's own exit
 status after a hand-over; `1` for any refusal below (`error: relay drop-in needs
