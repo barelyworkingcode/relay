@@ -1318,7 +1318,7 @@ the host's `host_id`, with the intent and an ok completion. NOTRUN off a stack o
 with no `claude_base_url`.
 - Waits: the outside reply is model output: a bounded read of the transcript, 120
   s; the registry `idle` re-read, 60 s; the trust prompt, pane capture, 30 s; the
-  outside row, the probe interval, polled 90 s. Everything else waits on HTTP
+  outside row, the probe interval, polled 90 s until the host row reads `idle` (the door judges busy from that snapshot state). Everything else waits on HTTP
   answers, CLI exits and the `session.hand_back` event.
 - Lives in: `cmd/relay/session_adopt_host.go`, `internal/sshhost/adopt.go`.
 - Reached by: `POST /api/sessions/adopt`, `POST /api/sessions/{id}/drop-in` and

@@ -60,6 +60,7 @@ type adoptHostRow struct {
 	ClaudeSessionID string  `json:"claudeSessionId"`
 	Adoptable       bool    `json:"adoptable"`
 	AdoptReason     string  `json:"adoptReason"`
+	State           string  `json:"state"`
 }
 
 func adoptHostFlow(ctx context.Context, e env, id string) result {
@@ -169,8 +170,11 @@ func adoptHostFlow(ctx context.Context, e env, id string) result {
 		return blocked(id, "the seeded credential was not imported within "+detachedStartTries.String())
 	}
 	// Waits: the probe interval; the outside list is polled, bounded. The row
-	// is the one with the host's hostId, never its console twin.
+	// is the one with the host's hostId, never its console twin. Deliberate:
+	// the door judges busy from the row's snapshot state, which can read
+	// running after the registry file turned idle, so the row must read idle.
 	var row adoptHostRow
+	lastState := "no host row"
 	if !pollUntil(ctx, adoptHostRowWait, func() bool {
 		resp := cosRequest(ctx, e, token, true, http.MethodGet, "/api/chief-of-staff/outside-sessions", nil, frontendRequestTimeout)
 		var snap struct {
@@ -181,13 +185,16 @@ func adoptHostFlow(ctx context.Context, e env, id string) result {
 		}
 		for _, r := range snap.Sessions {
 			if r.ClaudeSessionID == convID && r.HostID != nil && *r.HostID == fx.hostID {
-				row = r
-				return true
+				lastState = r.State
+				if r.State == "idle" {
+					row = r
+					return true
+				}
 			}
 		}
 		return false
 	}) {
-		return fail("no outside row with the host's hostId for the conversation within %s", adoptHostRowWait)
+		return fail("no outside row with the host's hostId reading idle within %s; last state: %s", adoptHostRowWait, lastState)
 	}
 	if !row.Adoptable {
 		return fail("the host row is not adoptable: %q", row.AdoptReason)
