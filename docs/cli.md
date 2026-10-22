@@ -3058,10 +3058,14 @@ project's allowed templates.
 
 ## `relay drop-in`
 
-Takes a headless Claude session over in your own terminal. Relay waits for the
-session's current turn to end, stops its headless process, and starts an
-ordinary terminal from the project's `claude-code` template that resumes the
-same conversation (`claude --resume`). This terminal shows that one. Design:
+Takes a headless Claude, Pi or Codex session over in your own terminal. Relay
+waits for the session's current turn to end, stops its headless process, and
+starts an ordinary terminal from the project's `claude-code`, `pi` or `codex`
+template that resumes the same conversation (`claude --resume`, the Pi
+session file, `codex resume`). A Relay-started Codex session resumes without
+the shared codex daemon; an attached Codex thread resumes through the daemon's
+control socket, with no setting override, and the daemon and its other clients
+keep running. This terminal shows that one. Design:
 [`docs/session-host.md`](session-host.md).
 
 ```
@@ -3070,8 +3074,9 @@ relay drop-in <session-id>
 
 There are no flags. Before relay answers, it prints
 `relay: handing over <id>; waiting up to 60 s for the current turn to end` on
-stderr; on exit it prints `relay: handed back <id>`. The exit status is
-Claude's. Ending the terminal, by quitting Claude, closing the window or
+stderr; on exit it prints `relay: the terminal closed; relay resumes <id> headless. If
+it stays dormant, run: relay session resume --id <id>`. The exit status is
+the agent's. Ending the terminal, by quitting Claude, closing the window or
 SIGHUP, hands the session back and relay resumes it headless on the same
 conversation, with no further message and no `relay session resume`. The
 resume finishes after the CLI exits, when relay sees the terminal end: wait
@@ -3094,17 +3099,19 @@ On a host with tmux 3.0 or later, the terminal shows the session's tmux pane
 session keeps one name. `tmux attach -t relay-agent-<id>` on the host shows the
 same pane. Closing the terminal swaps the pane back to the runner.
 
-No JSON form: the terminal belongs to Claude. Exit codes: Claude's own exit
+No JSON form: the terminal belongs to the agent. Exit codes: the agent's own exit
 status after a hand-over; `1` for any refusal below (`error: relay drop-in needs
 an interactive terminal on stdin and stdout` when stdin or stdout is not a
 terminal).
 
 It refuses, with a message and a non-zero exit, when: it is run inside a relay
 session; stdin or stdout is not a terminal; relay is not running; no id is
-given; the session does not exist, is not a Claude session, is not headless or
-has not run a turn yet; a tool is running (the message names it) or the turn
+given; the session does not exist, is not a Claude, Pi or Codex session, is a Pi or
+Codex session in an SSH host project (`not_local`), is not headless or
+has not run a turn yet; a Claude tool is running (the message names it) or the turn
 does not end within 60 s; a terminal already has the session; or the
-project's authorization refuses a `claude-code` terminal, or auditing cannot
+project's authorization refuses the kind's terminal template, the codex
+daemon is not reachable for an attached Codex thread, or auditing cannot
 record the swap. A refusal stops
 nothing: the session keeps running.
 

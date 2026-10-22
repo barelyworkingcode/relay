@@ -191,10 +191,49 @@ func (p *PiProvider) idleWatcher(stopIdle <-chan struct{}) {
 }
 
 func (p *PiProvider) sessionDir() string {
-	if p.piSessionFile != "" {
-		return filepath.Dir(p.piSessionFile)
+	return piSessionDirFor(p.piSessionFile, p.cfg.DataDir)
+}
+
+// piSessionDirFor is the one rule for Pi's --session-dir: the folder of the
+// session file when there is one, else relay's own pi-sessions folder.
+func piSessionDirFor(file, dataDir string) string {
+	if file != "" {
+		return filepath.Dir(file)
 	}
-	return filepath.Join(p.cfg.DataDir, "pi-sessions")
+	return filepath.Join(dataDir, "pi-sessions")
+}
+
+// piSessionTarget is what --session names: the file when known, else the id.
+func piSessionTarget(id, file string) string {
+	if file != "" {
+		return file
+	}
+	return id
+}
+
+// PiTerminalSessionArgs is the session flags a Pi terminal takes to open the
+// conversation a headless runner holds: exactly --session and --session-dir,
+// by the same rule buildPiArgs uses. state is the provider state. An id that
+// is not a UUID or a path that is not absolute is an error: the argv is the
+// terminal's only pointer at the conversation.
+func PiTerminalSessionArgs(state json.RawMessage, dataDir string) ([]string, error) {
+	var s struct {
+		PiSessionID   string `json:"piSessionId"`
+		PiSessionFile string `json:"piSessionFile"`
+	}
+	if len(state) == 0 || json.Unmarshal(state, &s) != nil {
+		return nil, errors.New("pi session state is unreadable")
+	}
+	if _, err := uuid.Parse(s.PiSessionID); err != nil {
+		return nil, errors.New("pi session id is not a UUID")
+	}
+	if s.PiSessionFile != "" && !filepath.IsAbs(s.PiSessionFile) {
+		return nil, errors.New("pi session file is not an absolute path")
+	}
+	if s.PiSessionFile == "" && !filepath.IsAbs(dataDir) {
+		return nil, errors.New("pi data folder is not an absolute path")
+	}
+	return []string{"--session", piSessionTarget(s.PiSessionID, s.PiSessionFile), "--session-dir", piSessionDirFor(s.PiSessionFile, dataDir)}, nil
 }
 
 // resolveSkillDir returns the project skills directory to auto-mount via
@@ -232,11 +271,7 @@ func (p *PiProvider) buildPiArgs(sessionDir, skillDir, sysPromptPath string) []s
 		args = append(args, "--thinking", p.thinkingLevel)
 	}
 	if p.piSessionID != "" {
-		file := p.piSessionID
-		if p.piSessionFile != "" {
-			file = p.piSessionFile
-		}
-		args = append(args, "--session", file)
+		args = append(args, "--session", piSessionTarget(p.piSessionID, p.piSessionFile))
 	}
 
 	args = append(args, "--session-dir", sessionDir)

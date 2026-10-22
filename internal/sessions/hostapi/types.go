@@ -195,8 +195,15 @@ type HandoffRequest struct {
 
 // HandoffResponse is POST /handoff's 200 body.
 type HandoffResponse struct {
-	SessionID       string `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// ClaudeSessionID is set for Claude only.
 	ClaudeSessionID string `json:"claude_session_id"`
+	Agent           string `json:"agent"`
+	ConversationID  string `json:"conversation_id"`
+	// CodexAttach is true when the Codex thread is held through the daemon.
+	CodexAttach bool `json:"codex_attach,omitempty"`
+	// PiSessionArgs is exactly --session <file or uuid> --session-dir <dir>.
+	PiSessionArgs []string `json:"pi_session_args,omitempty"`
 }
 
 // HandbackRequest is POST /handback's body.

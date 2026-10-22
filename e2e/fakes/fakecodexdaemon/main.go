@@ -26,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"relaye2e/fakes/calllog"
 )
 
 const (
@@ -41,6 +43,8 @@ const (
 var out struct {
 	sync.Mutex
 	enc *json.Encoder
+	// tee, when set, also receives every line: the terminal persona's call log.
+	tee *calllog.Writer
 }
 
 // emit writes one stdout line. A single Encode is one write, so lines from
@@ -50,6 +54,9 @@ func emit(m map[string]any) {
 	out.Lock()
 	defer out.Unlock()
 	_ = out.enc.Encode(m)
+	if out.tee != nil {
+		_ = out.tee.Append(m)
+	}
 }
 
 func readFrame(br *bufio.Reader) (op byte, fin bool, payload []byte, err error) {
@@ -662,7 +669,15 @@ func serve(home string, unsafe bool) {
 // runClient is the terminal UI: it subscribes to one thread and prints every
 // notification and server request it receives, then "closed" at the end.
 func runClient(home, threadID string) {
-	nc, err := net.Dial("unix", filepath.Join(home, ".codex", "app-server-control", sockName))
+	runClientAt(filepath.Join(home, ".codex", "app-server-control", sockName), threadID, false)
+}
+
+// runClientAt is runClient on a named socket. With tui set it is the terminal
+// UI of `codex resume --remote`: the client is named codex-tui, stdin lines
+// are the user's keystrokes (each logged as an input line), and /quit sends
+// thread/unsubscribe and ends the process.
+func runClientAt(sock, threadID string, tui bool) {
+	nc, err := net.Dial("unix", sock)
 	must(err)
 	defer nc.Close()
 	key := make([]byte, 16)
@@ -695,33 +710,39 @@ func runClient(home, threadID string) {
 			}
 		}
 	}
-	send(map[string]any{"id": 1, "method": "initialize", "params": map[string]any{"clientInfo": map[string]any{"name": "terminal-ui", "version": "1"}}})
+	name := "terminal-ui"
+	if tui {
+		name = "codex-tui"
+	}
+	send(map[string]any{"id": 1, "method": "initialize", "params": map[string]any{"clientInfo": map[string]any{"name": name, "version": "1"}}})
 	awaitReply(1)
 	send(map[string]any{"method": "initialized"})
 	send(map[string]any{"id": 2, "method": "thread/resume", "params": map[string]any{"threadId": threadID}})
 	awaitReply(2)
 	emit(map[string]any{"event": "ready", "thread": threadID})
+	if tui {
+		fmt.Fprintln(os.Stderr, "fakecodexdaemon: terminal ready")
+		go func() {
+			sc := bufio.NewScanner(os.Stdin)
+			for sc.Scan() {
+				text := strings.TrimSpace(sc.Text())
+				if text == "" {
+					continue
+				}
+				if text == "/quit" {
+					send(map[string]any{"id": 3, "method": "thread/unsubscribe", "params": map[string]any{"threadId": threadID}})
+					emit(map[string]any{"event": "quit"})
+					os.Exit(0)
+				}
+				emit(map[string]any{"event": "input", "text": text})
+			}
+		}()
+	}
 	// The terminal answers a server request on a stdin command: {"cmd":"answer",
 	// "id":"<request id>","result":{...}}. Its ack carries the command's tag.
-	go func() {
-		sc := bufio.NewScanner(os.Stdin)
-		for sc.Scan() {
-			var c struct {
-				Cmd    string          `json:"cmd"`
-				Tag    any             `json:"tag"`
-				ID     string          `json:"id"`
-				Result json.RawMessage `json:"result"`
-			}
-			ack := map[string]any{"event": "ack", "cmd": "", "ok": true}
-			if json.Unmarshal(sc.Bytes(), &c) != nil || c.Cmd != "answer" {
-				ack["ok"], ack["error"] = false, "unknown command"
-			} else {
-				send(map[string]any{"id": c.ID, "result": c.Result})
-			}
-			ack["cmd"], ack["tag"] = c.Cmd, c.Tag
-			emit(ack)
-		}
-	}()
+	if !tui {
+		go answerCommands(send)
+	}
 	for {
 		op, payload, err := readMessage(br)
 		if err != nil || op == opClose {
@@ -746,6 +767,52 @@ func runClient(home, threadID string) {
 	}
 }
 
+// answerCommands reads the stand-in terminal's stdin commands.
+func answerCommands(send func(any)) {
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		var c struct {
+			Cmd    string          `json:"cmd"`
+			Tag    any             `json:"tag"`
+			ID     string          `json:"id"`
+			Result json.RawMessage `json:"result"`
+		}
+		ack := map[string]any{"event": "ack", "cmd": "", "ok": true}
+		if json.Unmarshal(sc.Bytes(), &c) != nil || c.Cmd != "answer" {
+			ack["ok"], ack["error"] = false, "unknown command"
+		} else {
+			send(map[string]any{"id": c.ID, "result": c.Result})
+		}
+		ack["cmd"], ack["tag"] = c.Cmd, c.Tag
+		emit(ack)
+	}
+}
+
+// runResume is `codex resume --remote unix://<socket> <thread>`: the terminal
+// UI a drop-in opens on an attached thread. It writes every line it emits to
+// $TMPDIR/fakecodexdaemon-resume.jsonl too, beginning with a start line that
+// holds its whole argv.
+func runResume(args []string) {
+	out.enc = json.NewEncoder(os.Stdout)
+	log, err := calllog.Open(filepath.Join(os.TempDir(), "fakecodexdaemon-resume.jsonl"))
+	must(err)
+	out.tee = log
+	emit(map[string]any{"event": "start", "argv": args})
+	sock, thread := "", ""
+	for i, a := range args {
+		if a == "--remote" && i+1 < len(args) {
+			sock = strings.TrimPrefix(args[i+1], "unix://")
+		}
+	}
+	if len(args) > 0 {
+		thread = args[len(args)-1]
+	}
+	if sock == "" || thread == "" || args[0] != "resume" {
+		must(errors.New("resume needs --remote unix://<socket> and a thread"))
+	}
+	runClientAt(sock, thread, true)
+}
+
 func must(err error) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fakecodexdaemon:", err)
@@ -754,6 +821,16 @@ func must(err error) {
 }
 
 func main() {
+	// A template whose command is this binary still answers the model listing
+	// relay asks the codex CLI for.
+	if len(os.Args) > 2 && os.Args[1] == "debug" && os.Args[2] == "models" {
+		fmt.Print(`{"models":[{"slug":"fake-echo","display_name":"Fake Echo","visibility":"list"}]}` + "\n")
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "resume" {
+		runResume(os.Args[1:])
+		return
+	}
 	home := flag.String("home", "", "the home folder that holds .codex")
 	unsafe := flag.Bool("unsafe", false, "make the socket's folder world-writable")
 	client := flag.Bool("client", false, "run as the terminal UI")

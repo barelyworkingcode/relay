@@ -154,6 +154,10 @@ type LaunchRequest struct {
 	// pty only.
 	TemplateID string
 	Cols, Rows int
+	// DropInAgent names the kind a drop-in terminal resumes. Only the drop-in
+	// core sets it, never a request decoder: it picks the headless kind's
+	// sandbox grants for the terminal, and no caller may ask for them.
+	DropInAgent string
 	// PersistSession names an existing tmux session of a hosted project's
 	// persist template to reattach to; empty mints the next name.
 	PersistSession string
@@ -735,7 +739,13 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 				baseFields.GrantWarnings = project.TemplateFolderWarnings(*grants, projectPath, home)
 			}
 		}
-		profilePath, err := writeSessionSandboxProfile(settings, proj, directory, sessionID, req.Kind, grants, readOnlyRoots)
+		sandboxKind := req.Kind
+		if req.DropInAgent == KindPi {
+			// A Pi terminal gets the headless Pi grants: the pi template's folders
+			// plus the one leaf Pi writes its transcript into.
+			sandboxKind = KindPi
+		}
+		profilePath, err := writeSessionSandboxProfile(settings, proj, directory, sessionID, sandboxKind, grants, readOnlyRoots)
 		if err != nil {
 			return nil, invalidRequest("sandbox_unavailable", err.Error(), baseFields)
 		}

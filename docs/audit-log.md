@@ -1016,7 +1016,7 @@ was started with.
 ### Session swaps
 
 `session_swap` records a change of driver. A drop-in (`to_terminal`) stops the
-headless agent for a terminal; closing the terminal (`to_headless`) resumes
+headless Claude, Pi or Codex agent for a terminal; closing the terminal (`to_headless`) resumes
 the session headless. Each swap writes two rows with the same `id`: an
 `intent` row (`outcome: pending`, durable before the act) and a `completion`
 row.
@@ -1026,6 +1026,10 @@ row.
 {"id":"5c0d…","ts":"2026-10-20T09:12:01.012Z","dur_ms":12,"event":"session_swap","phase":"completion","args":{"session_id":"3af1…","direction":"to_terminal","terminal_id":"…"},"outcome":"ok"}
 ```
 
+- **Agent.** A Pi or Codex swap carries `args.agent` (`pi` or `codex`) on every
+  row; a Claude swap carries none. An attached Codex thread's hand back also
+  writes its own `session_adopt` intent (`method: reattach`) before it
+  attaches.
 - **When the intent is written.** `to_terminal`: after `AuthorizeLaunch`
   passes, before the handoff. `to_headless`: before the resume. A refusal
   before the intent (`session_not_found`, `not_claude`, a launch refusal)

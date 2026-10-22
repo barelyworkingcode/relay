@@ -446,18 +446,23 @@ The trailing-slash form of `POST /api/terminals`: same contract.
 
 ### POST /api/sessions/{id}/drop-in
 
-Stops a headless Claude session and starts a terminal that resumes its
-conversation. When the terminal ends, relay resumes the session headless on
-that conversation, on the drop-in caller's behalf, with no further message.
+Stops a headless Claude, Pi or Codex session and starts a terminal that
+resumes its conversation. The terminal runs the project's template for the
+session's kind (`claude-code`, `pi` or `codex`) with the agent's own resume
+arguments appended. When the terminal ends, relay resumes the session headless
+on that conversation, on the drop-in caller's behalf, with no further message.
+A Pi or Codex session in an SSH host project is refused with `409 not_local`.
 
 - **Listeners:** socket. **Credential:** `execute`. **Gate:** none.
 - **Request:** path `id`; optional body `{"cols": <number>, "rows": <number>}`
   (defaults 120 by 40).
-- **Response `201`:** `sessionId`, `claudeSessionId`, `host` (set for an SSH
+- **Response `201`:** `sessionId`, `agent` (`claude`, `pi` or `codex`),
+  `conversationId`, `claudeSessionId` (Claude only), `host` (set for an SSH
   host), `terminal` (the terminal object of `POST /api/terminals`).
 - **Errors:** `{"error": "<code>", "message": "<text>"}` with `404`
-  `session_not_found`, `409` `not_claude` or a handoff conflict, `502`
-  `unavailable`, `503` `audit_unavailable` (auditing is off or cannot record;
+  `session_not_found`, `409` `not_claude`, `not_local` or a handoff conflict,
+  `502` `unavailable` (for an attached Codex thread, the codex daemon is not
+  reachable) or `launch_failed`, `503` `audit_unavailable` (auditing is off or cannot record;
   nothing was stopped), or the launch refusal's own status.
 - **Event:** `session.drop_in`; `session.hand_back` when the terminal ends
   (background). **Audit rows:** `session_launch`, and `session_swap` (an

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -17,8 +18,11 @@ func (a *agent) runCodex() int {
 		fmt.Fprint(os.Stdout, codexModels)
 		return 0
 	}
+	if len(a.args) > 0 && a.args[0] == "resume" {
+		return a.runCodexResume()
+	}
 	if len(a.args) == 0 || a.args[0] != "app-server" {
-		fmt.Fprintln(os.Stderr, "fakeagent codex: only app-server and debug models are supported")
+		fmt.Fprintln(os.Stderr, "fakeagent codex: only app-server, resume and debug models are supported")
 		return 2
 	}
 
@@ -53,8 +57,9 @@ func (a *agent) runCodex() int {
 			_ = json.Unmarshal(req.Params, &p)
 			threadID = p.ThreadID
 			if threadID == "" {
-				threadID = randomID("thr_")
+				threadID = randomUUID()
 			}
+			a.record(agentLine{Event: "thread", Text: threadID})
 			reply(map[string]any{"thread": map[string]any{"id": threadID}})
 		case "turn/start":
 			var p struct {
@@ -108,4 +113,32 @@ func (a *agent) notify(method string, params any) {
 		return
 	}
 	a.emit(b)
+}
+
+// runCodexResume is `codex resume --no-daemon <thread>`: the terminal UI a
+// drop-in opens on a session relay started. It owns the thread in-process, so
+// it never speaks to a daemon. It logs tui_ready and writes one ready line to
+// the terminal; each input line is logged; /quit or a closed terminal ends it.
+func (a *agent) runCodexResume() int {
+	a.record(agentLine{Event: "tui_ready", Text: a.args[len(a.args)-1]})
+	fmt.Fprintln(os.Stdout, "fakecodex: ready")
+	a.stdinLines(func(line []byte) {
+		if string(line) == "/quit" {
+			code := 0
+			a.record(agentLine{Event: "exit", ExitCode: &code})
+			os.Exit(0)
+		}
+		text := string(line)
+		a.logInput(line, &text)
+	})
+	return 0
+}
+
+// randomUUID is a canonical version 4 UUID, the form codex thread ids take.
+func randomUUID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
