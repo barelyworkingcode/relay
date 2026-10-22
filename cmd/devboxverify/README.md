@@ -1334,7 +1334,7 @@ with no `claude_base_url`.
 Claude with SIGSTOP so the script's SIGTERM wait runs its full bound. On the
 `signal TERM` line of the host's `~/.relay/agents/<id>/adopt.state` it kills the
 adopt's `ssh` client (a process named `ssh`, child of relay-sessions, whose
-arguments hold `relay-adopt`, never the `relay-adopt-run` script). PASS when the
+launcher script, base64-decoded from its arguments, holds `relay-adopt` and the session id; never the `relay-adopt-run` shell). PASS when the
 adopt answers 502 `host_link_lost`; the `adopt.state` terminal line reads `ok
 <generation>`; `relay session resume` exits 0; and a `relay session message`
 reply is in the same transcript. FAIL when the outside process is gone and the

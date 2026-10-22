@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -323,9 +324,9 @@ func adoptHostDropDrive(ctx context.Context, e env, id, agentsRoot string, befor
 		return fail("no adopt.state line \"signal TERM\" within %s", adoptHostStep)
 	}
 	*sids = append(*sids, sid)
-	client := adoptSSHClientPID(ctx)
+	client := adoptSSHClientPID(ctx, sid)
 	if client == 0 {
-		return fail("no ssh client of relay-sessions whose arguments hold relay-adopt")
+		return fail("no ssh client of relay-sessions whose launcher script holds relay-adopt and the session id")
 	}
 	if err := syscall.Kill(client, syscall.SIGKILL); err != nil {
 		return fail("killing the adopt's ssh client %d: %v", client, err)
@@ -381,9 +382,12 @@ func adoptStateLines(root, sid string) []string {
 }
 
 // adoptSSHClientPID is the adopt's ssh client: a process named ssh, a child
-// of relay-sessions, whose arguments hold relay-adopt. The script itself runs
-// as relay-adopt-run and is never matched.
-func adoptSSHClientPID(ctx context.Context) int {
+// of relay-sessions, whose remote command is the adopt's. Deliberate: relay
+// wraps the whole remote script as base64 inside an sh -c launcher, so the
+// words relay-adopt and the session id appear only in the decoded payload,
+// which is matched. The detached script (relay-adopt-run) is a shell, never a
+// process named ssh, so the name test keeps it out.
+func adoptSSHClientPID(ctx context.Context, sid string) int {
 	out, err := exec.CommandContext(ctx, "ps", "-axwwo", "pid=,ppid=,comm=,command=").Output()
 	if err != nil {
 		return 0
@@ -406,12 +410,30 @@ func adoptSSHClientPID(ctx context.Context) int {
 	}
 	for pid, p := range procs {
 		parent := procs[p.ppid].cmdline
-		if p.comm == "ssh" && strings.Contains(p.cmdline, "relay-adopt") && !strings.Contains(p.cmdline, "relay-adopt-run") &&
-			(strings.Contains(parent, "relaysessions") || strings.Contains(parent, "relay-sessions")) {
+		if p.comm != "ssh" || !strings.Contains(parent, "relaysessions") && !strings.Contains(parent, "relay-sessions") {
+			continue
+		}
+		if script := adoptLauncherScript(p.cmdline); strings.Contains(script, "relay-adopt") && strings.Contains(script, sid) {
 			return pid
 		}
 	}
 	return 0
+}
+
+var adoptLauncherPayload = regexp.MustCompile(`printf %s ([A-Za-z0-9+/=]+) \| base64 -d`)
+
+// adoptLauncherScript is the script inside the base64 launcher of an ssh
+// command line, or the line itself when it holds no launcher.
+func adoptLauncherScript(cmdline string) string {
+	m := adoptLauncherPayload.FindStringSubmatch(cmdline)
+	if m == nil {
+		return cmdline
+	}
+	b, err := base64.StdEncoding.DecodeString(m[1])
+	if err != nil {
+		return cmdline
+	}
+	return string(b)
 }
 
 // adoptHostSend is one Chief of Staff send.
