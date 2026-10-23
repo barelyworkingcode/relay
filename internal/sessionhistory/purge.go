@@ -14,9 +14,13 @@ import (
 type PurgeDeps struct {
 	// Grace is how long a record stays after its transcript goes missing; 0 is off.
 	Grace func() time.Duration
-	// Audit writes the session_purge row durably. An error purges nothing.
-	Audit func(r ledger.Record) error
-	// Auditing reports whether the audit log is on.
+	// AuditIntent writes the pending session_purge row durably and returns its
+	// id; grace is the period the pass decided with. An error purges nothing.
+	AuditIntent func(r ledger.Record, grace time.Duration) (id string, err error)
+	// AuditCompletion writes the row that closes an intent: outcome ok, error
+	// or denied, with a code for the last two.
+	AuditCompletion func(id, outcome, code string)
+	// Auditing reports whether the audit log can take a durable write.
 	Auditing func() bool
 }
 
@@ -28,7 +32,7 @@ type PurgeDeps struct {
 // process still holds.
 func (x *Index) purge(ctx context.Context, m Machine, listing Listing) {
 	p := x.o.Purge
-	if p.Grace == nil || p.Audit == nil || p.Auditing == nil || x.o.Ledger == nil || x.o.Managed == nil {
+	if p.Grace == nil || p.AuditIntent == nil || p.AuditCompletion == nil || p.Auditing == nil || x.o.Ledger == nil || x.o.Managed == nil {
 		return
 	}
 	grace := p.Grace()
@@ -65,9 +69,21 @@ func (x *Index) purge(ctx context.Context, m Machine, listing Listing) {
 	guard := func(r ledger.Record) bool { return purgeCandidate(r) && !keeps(r) && r.MissingSince != nil }
 
 	now := x.o.Clock.Now()
+	x.purgeMu.Lock()
+	retry := make(map[string]time.Time, len(x.purgeRetry))
+	for id, until := range x.purgeRetry {
+		if now.Before(until) {
+			retry[id] = until
+		}
+	}
+	x.purgeRetry = retry
+	x.purgeMu.Unlock()
 	var back, gone []string
 	var due []ledger.Record
 	for _, r := range candidates {
+		if _, wait := retry[r.SessionID]; wait {
+			continue
+		}
 		switch {
 		case keeps(r):
 		case r.ConversationID != "" && listing.Has("claude", r.ConversationID):
@@ -98,18 +114,27 @@ func (x *Index) purge(ctx context.Context, m Machine, listing Listing) {
 	}
 	for _, r := range due {
 		ev := logging.BeginEvent(ctx, "session.history.purge").Set("session_id", r.SessionID)
-		if err := p.Audit(r); err != nil {
-			slog.Warn("session history: purge audit failed, record kept", "session", r.SessionID, "error", err)
+		id, err := p.AuditIntent(r, grace)
+		if err != nil {
+			slog.Warn("session history: purge intent not written, record kept", "session", r.SessionID, "error", err)
 			ev.End(logging.OutcomeError, "audit_failed", err)
 			continue
 		}
 		removed, err := x.o.Ledger.RemoveIfPurgeable(r.SessionID, guard)
 		switch {
 		case err != nil:
-			ev.End(logging.OutcomeError, "ledger_write_failed", err)
+			p.AuditCompletion(id, "error", "ledger_save_failed")
+			// Deliberate: a save that failed once is not retried every scan; the
+			// record waits one more grace period on the injected clock.
+			x.purgeMu.Lock()
+			x.purgeRetry[r.SessionID] = now.Add(grace)
+			x.purgeMu.Unlock()
+			ev.End(logging.OutcomeError, "ledger_save_failed", err)
 		case !removed:
-			ev.End(logging.OutcomeDenied, "not_purgeable", nil)
+			p.AuditCompletion(id, "denied", "guard_refused")
+			ev.End(logging.OutcomeDenied, "guard_refused", nil)
 		default:
+			p.AuditCompletion(id, "ok", "")
 			ev.End(logging.OutcomeOK, "", nil)
 		}
 	}

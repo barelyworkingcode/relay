@@ -31,6 +31,8 @@ type historyOps struct {
 	// hostRoots holds each host project's resolved folder from the last scan, so
 	// a row's project match costs no round trip to the host.
 	hostRoots map[string]string
+	// purgeIntents holds each session_purge intent row until its completion.
+	purgeIntents map[string]audit.AuditEvent
 }
 
 func (o *historyOps) List(projectID string) sessionhistory.Response {
@@ -38,7 +40,7 @@ func (o *historyOps) List(projectID string) sessionhistory.Response {
 }
 
 func newHistoryOps(store config.SettingsStore, clock serverClock, deps sessionRouteDeps, inv *outsidesessions.Inventory) *historyOps {
-	o := &historyOps{store: store, deps: deps, inv: inv, hostRoots: map[string]string{}}
+	o := &historyOps{store: store, deps: deps, inv: inv, hostRoots: map[string]string{}, purgeIntents: map[string]audit.AuditEvent{}}
 	opts := sessionhistory.Options{
 		Purge:   o.purgeDeps(),
 		Clock:   clock,
@@ -97,9 +99,8 @@ func (o *historyOps) purgeDeps() sessionhistory.PurgeDeps {
 			}
 			return grace
 		},
-		Auditing: rec.Enabled,
-		Audit: func(r ledger.Record) error {
-			grace := config.FreshSettings(o.store).PurgeGrace()
+		Auditing: rec.Ready,
+		AuditIntent: func(r ledger.Record, grace time.Duration) (string, error) {
 			args := map[string]any{
 				"session_id": r.SessionID, "record": "launched", "kind": r.Kind, "agent": r.Agent,
 				"conversation_id": r.ConversationID, "grace_days": int(grace / (24 * time.Hour)),
@@ -115,13 +116,34 @@ func (o *historyOps) purgeDeps() sessionhistory.PurgeDeps {
 			}
 			raw, err := json.Marshal(args)
 			if err != nil {
-				return err
+				return "", err
 			}
-			return rec.RecordDurable(audit.AuditEvent{
+			ev := audit.AuditEvent{
 				ID: audit.NewAuditID(), TS: time.Now(), Event: audit.AuditEventSessionPurge,
-				Actor:   audit.AuditActor{Kind: audit.AuditActorService, Auth: audit.AuditAuthNone, ServiceID: config.RelaySessionsServiceID},
-				Outcome: audit.AuditOutcomeOK, Args: raw, ArgsBytes: len(raw),
-			})
+				Phase: audit.AuditPhaseIntent, Outcome: audit.AuditOutcomePending,
+				Actor: audit.AuditActor{Kind: audit.AuditActorService, Auth: audit.AuditAuthNone, ServiceID: config.RelaySessionsServiceID},
+				Args:  raw, ArgsBytes: len(raw),
+			}
+			if err := rec.RecordDurable(ev); err != nil {
+				return "", err
+			}
+			o.mu.Lock()
+			o.purgeIntents[ev.ID] = ev
+			o.mu.Unlock()
+			return ev.ID, nil
+		},
+		AuditCompletion: func(id, outcome, code string) {
+			o.mu.Lock()
+			ev, ok := o.purgeIntents[id]
+			delete(o.purgeIntents, id)
+			o.mu.Unlock()
+			if !ok {
+				return
+			}
+			ev.Phase, ev.TS, ev.Outcome, ev.Error = audit.AuditPhaseCompletion, time.Now(), outcome, code
+			if err := rec.RecordDurable(ev); err != nil {
+				slog.Warn("session history: purge completion not written", "id", id, "error", err)
+			}
 		},
 	}
 }

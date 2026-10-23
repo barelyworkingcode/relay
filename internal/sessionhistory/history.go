@@ -225,6 +225,10 @@ type Index struct {
 	mu       sync.Mutex
 	revision uint64
 	states   map[string]*machineState
+	// purgeRetry holds, in memory only, the time before which a record whose
+	// purge failed to save is not tried again.
+	purgeMu    sync.Mutex
+	purgeRetry map[string]time.Time
 }
 
 // New returns an Index. Run starts its scans.

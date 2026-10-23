@@ -835,17 +835,30 @@ carries the offered value (capped) as `session_kind`.
 
 ### session_purge
 
-`cmd/relay/session_history_ops.go` writes one `session_purge` row, durably,
-before the session history removes a record whose transcript is gone (see
-[session history](session-history.md#purge)). The actor is the `service` actor
-`session_end` uses. With auditing off, or when the write fails, the record is
-kept and nothing is purged. `args` holds `session_id`, `record` (`launched` or
-`discovered`), `kind`, `agent`, `conversation_id`, `host_id` (absent on the
-console), `missing_since` and `grace_days`. Read the rows with
-`relay audit --event session_purge`.
+`cmd/relay/session_history_ops.go` writes two `session_purge` rows around the
+removal of a history record whose transcript is gone (see
+[session history](session-history.md#purge)): an intent row, durably, before
+the record is removed, and a completion row after, sharing the intent's `id`.
+The actor is the `service` actor `session_end` uses. With auditing not ready,
+or when the intent write fails, the record is kept and nothing is purged. A
+failed completion write logs at Warn. `args` holds `session_id`, `record`
+(`launched` or `discovered`), `kind`, `agent`, `conversation_id`, `host_id`
+(absent on the console), `missing_since` and `grace_days`, the grace the pass
+decided with.
+
+| Row | `phase` | `outcome` | `error` |
+|---|---|---|---|
+| intent | `intent` | `pending` | none |
+| completion, removed | `completion` | `ok` | none |
+| completion, the ledger save failed | `completion` | `error` | `ledger_save_failed` |
+| completion, a guard no longer held | `completion` | `denied` | `guard_refused` |
+
+After an `error` completion the pass skips that record for one more grace
+period, held in memory only. A `denied` record is judged again at the next
+scan. Read the rows with `relay audit --event session_purge`.
 
 ```json
-{"id":"…","ts":"…","event":"session_purge",
+{"id":"…","ts":"…","event":"session_purge","phase":"completion",
  "actor":{"kind":"service","auth":"none","service_id":"relaysessions"},
  "args":{"session_id":"3af1…","record":"launched","kind":"pty","agent":"claude",
          "conversation_id":"9b1c…","missing_since":"2026-10-01T09:30:00Z","grace_days":7},

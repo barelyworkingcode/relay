@@ -268,9 +268,10 @@ while candidates exist: that reads as a store that went away.
    unknown stretch breaks "stayed absent", so the grace period starts again.
 2. A candidate that is absent and has no `missing_since` gets the scan's time.
    A record with no `conversation_id` counts as absent, under the same rule.
-3. A candidate absent for the grace period gets a `session_purge` audit row,
-   then is removed, only if the guards above still hold under the ledger's lock.
-   A failed audit write keeps the record. With auditing off nothing is marked
+3. A candidate absent for the grace period gets a `session_purge` intent row,
+   then is removed, only if the guards above still hold under the ledger's lock,
+   then gets a completion row. A failed intent write keeps the record. A failed
+   ledger save is skipped for one more grace period. With auditing off nothing is marked
    or purged.
 
 Each purge writes one `session.history.purge` event ([events](events.md)). The
