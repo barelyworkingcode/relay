@@ -646,6 +646,9 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 	if rec.Kind == KindCodex && rec.CodexThread != "" {
 		return d.reattachCodex(ctx, ev, caller, rec)
 	}
+	if rec.AdoptPending != nil {
+		return d.resumeAdoptPending(ctx, ev, caller, rec)
+	}
 
 	sessionReq, err := decodeStoredSessionRequest(rec)
 	if err != nil {

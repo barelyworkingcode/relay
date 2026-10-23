@@ -82,6 +82,17 @@ type Record struct {
 	Agent string `json:"agent,omitempty"`
 	// HostID is a discovered record's SSH host; empty on the console.
 	HostID string `json:"host_id,omitempty"`
+	// AdoptPending marks a dormant record whose host adopt has not settled:
+	// the outside process it names may still run. A resume checks it first.
+	AdoptPending *AdoptPending `json:"adopt_pending,omitempty"`
+}
+
+// AdoptPending pins the outside process a host adopt was taking over.
+type AdoptPending struct {
+	ConversationID string `json:"conversation_id"`
+	PID            int    `json:"pid"`
+	// Lifetime is the row's lifetime string, compared byte for byte.
+	Lifetime string `json:"lifetime"`
 }
 
 // RootRef names a process by its kernel identity. It is not a credential:
@@ -275,7 +286,8 @@ func (l *Ledger) RemoveDiscovered(ids []string) (int, error) {
 // of the same machine, agent and conversation: they are the same conversation
 // under a name that no longer adds anything. recordMachine names a launched
 // record's machine; a discovered record's is its host id, else "console". It
-// never removes a live record or an agent record. It reports whether anything
+// never removes a live record, an agent record or a record with AdoptPending
+// set. It reports whether anything
 // changed. A record is removed only when its Directory equals cwd, the link's
 // working folder, or holds it.
 func (l *Ledger) LinkConversation(sessionID, machineKey, conversationID, cwd string, recordMachine func(Record) string) (bool, error) {
@@ -294,7 +306,7 @@ func (l *Ledger) LinkConversation(sessionID, machineKey, conversationID, cwd str
 	rec.ConversationID = conversationID
 	l.records[sessionID] = rec
 	for id, r := range l.records {
-		if id == sessionID || r.ConversationID != conversationID || r.Agent != agent || !dirContains(r.Directory, cwd) {
+		if id == sessionID || r.ConversationID != conversationID || r.Agent != agent || !dirContains(r.Directory, cwd) || r.AdoptPending != nil {
 			continue
 		}
 		machine := ""

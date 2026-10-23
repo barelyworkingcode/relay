@@ -51,8 +51,15 @@ func (i *Instance) installSSHStub() {
 			t.Fatalf("copying the ssh stub: %v", werr)
 		}
 	}
+	psDir := filepath.Join(i.fakeSSHState(), "bin")
+	if err := os.MkdirAll(psDir, 0o700); err != nil {
+		t.Fatalf("creating %s: %v", psDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(psDir, "ps"), []byte(psWrapper), 0o700); err != nil {
+		t.Fatalf("writing the ps wrapper: %v", err)
+	}
 	cfg, _ := json.Marshal(map[string]string{
-		"root": root, "path": os.Getenv("PATH"), "call_log": i.fakePath("fakessh.jsonl"),
+		"root": root, "path": psDir + string(os.PathListSeparator) + os.Getenv("PATH"), "call_log": i.fakePath("fakessh.jsonl"),
 	})
 	writeFileAtomic(t, filepath.Join(i.Dir, "sshstub", "fakessh.json"), cfg)
 	seam, _ := json.Marshal(map[string]string{"command": stub})
@@ -142,4 +149,73 @@ func (i *Instance) SSHCommandLineCap(target string, max int) {
 	if err := os.WriteFile(path, []byte(strconv.Itoa(max)), 0o600); err != nil {
 		t.Fatalf("writing %s: %v", path, err)
 	}
+}
+
+// psWrapper stands first on the stub host's PATH. It runs the machine's ps and,
+// for `ps -o lstart= -p <pid>` on a pid named in <root>/.fakessh/lie/, shifts
+// the year of the answer, as a host would report if the pid had been reused by
+// a process that started at another time. Every other call passes through.
+const psWrapper = `#!/bin/sh
+d=$(cd "$(dirname "$0")" && pwd)
+pid=
+ls=
+prev=
+for a in "$@"; do
+  case "$prev" in
+    -p) pid=$a ;;
+    -o) case "$a" in lstart=) ls=1 ;; esac ;;
+  esac
+  prev=$a
+done
+if [ -n "$ls" ] && [ -n "$pid" ] && [ -e "$d/../lie/$pid" ]; then
+  /bin/ps "$@" | sed -e 's/[0-9][0-9][0-9][0-9][[:space:]]*$/1999/'
+  exit 0
+fi
+exec /bin/ps "$@"
+`
+
+// SSHLieStart makes the stub host report a different start time for pid from
+// now on: the host's ps answers `lstart` with a shifted year. Needs
+// Options.SSHStub. The pid's real start time and the registry are untouched, so
+// the process reads as one that was replaced after relay listed it.
+func (i *Instance) SSHLieStart(pid int) {
+	t := i.t
+	t.Helper()
+	i.requireSSHStub()
+	path := filepath.Join(i.fakeSSHState(), "lie", strconv.Itoa(pid))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("creating %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+}
+
+// SSHNoClaude removes from the stub host's PATH every directory that holds an
+// executable named claude, so a probe of the host finds none. The stub reads
+// its config on every call, so the change applies to the next ssh call. Needs
+// Options.SSHStub.
+func (i *Instance) SSHNoClaude() {
+	t := i.t
+	t.Helper()
+	i.requireSSHStub()
+	path := filepath.Join(i.Dir, "sshstub", "fakessh.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	var cfg map[string]string
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("decoding %s: %v", path, err)
+	}
+	var keep []string
+	for _, d := range strings.Split(cfg["path"], string(os.PathListSeparator)) {
+		if fi, err := os.Stat(filepath.Join(d, "claude")); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			continue
+		}
+		keep = append(keep, d)
+	}
+	cfg["path"] = strings.Join(keep, string(os.PathListSeparator))
+	out, _ := json.Marshal(cfg)
+	writeFileAtomic(t, path, out)
 }

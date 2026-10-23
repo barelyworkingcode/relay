@@ -502,7 +502,10 @@ daemon is attached instead: no process ends. See [Adopting a session](outside-se
   `transcript_not_granted`; `403`/`400` the launch refusal's own code (nothing is signalled);
   `502` `unavailable` (relay-sessions is down, the registry or the idle check
   could not be read, or the process could not be signalled), `stop_failed`
-  (the process outlived SIGKILL's wait) or `launch_failed`; `503`
+  (the process outlived SIGKILL's wait), `launch_failed` or `host_link_lost` (a
+  host adopt whose SSH connection dropped before the result; the session lists
+  as dormant and Resume continues it, see
+  [session-adoption.md](session-adoption.md#sessions-on-ssh-hosts)); `503`
   `audit_unavailable` (nothing is signalled).
 - **Event:** `session.adopt`. **Audit rows:** `session_adopt`,
   `session_interrupt`, `session_message` (origin `relay-recovery`), and the

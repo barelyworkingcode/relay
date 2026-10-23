@@ -290,7 +290,7 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		return nil, refuse(http.StatusBadGateway, adoptUnavailable, "the session host is not available")
 	}
 
-	obs, refusal := a.resolveRow(ctx, req)
+	obs, machineKey, refusal := a.resolveRow(ctx, req)
 	if refusal != nil {
 		return nil, refusal
 	}
@@ -307,6 +307,10 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 		return nil, refuse(http.StatusConflict, adoptInProgress, "an adopt of this conversation is already running")
 	}
 	defer a.inflight.Delete(lockKey)
+
+	if machineKey != consoleMachineKey {
+		return a.adoptHost(ctx, req, obs, machineKey, st)
+	}
 
 	cand, refusal := a.freshCandidate(ctx, obs)
 	if refusal != nil {
@@ -609,9 +613,10 @@ func (a *adoptOps) noProjectFolder(ctx context.Context, directory string) (strin
 	return folder, nil
 }
 
-// resolveRow finds the live console row the request names. A selector that
-// matches an ended row answers `ended`; one that matches nothing answers 404.
-func (a *adoptOps) resolveRow(ctx context.Context, req AdoptRequest) (outsidesessions.Observation, *AdoptRefusal) {
+// resolveRow finds the live row the request names and the key of the machine
+// that holds it. A selector that matches an ended row answers `ended`; one that
+// matches nothing answers 404. Only outsideId selects a row of an SSH host.
+func (a *adoptOps) resolveRow(ctx context.Context, req AdoptRequest) (outsidesessions.Observation, string, *AdoptRefusal) {
 	notFound := &AdoptRefusal{Status: http.StatusNotFound, Code: adoptOutsideNotFound, Message: "no live outside session matches"}
 	ended := &AdoptRefusal{Status: http.StatusConflict, Code: adopt.ReasonEnded, Message: "the session has ended; there is no process to adopt"}
 
@@ -619,11 +624,11 @@ func (a *adoptOps) resolveRow(ctx context.Context, req AdoptRequest) (outsideses
 		obs, key, ok := a.outside.Live(req.OutsideID)
 		if !ok {
 			if a.snapshotHas(func(s outsidesessions.Session) bool { return s.ID == req.OutsideID && s.State == "ended" }) {
-				return obs, ended
+				return obs, key, ended
 			}
-			return obs, notFound
+			return obs, key, notFound
 		}
-		return obs, adoptableRow(obs, key)
+		return obs, key, adoptableRow(obs)
 	}
 
 	rows := a.outside.LiveByClaudeID(consoleMachineKey, req.ClaudeSessionID)
@@ -636,18 +641,18 @@ func (a *adoptOps) resolveRow(ctx context.Context, req AdoptRequest) (outsideses
 		if a.snapshotHas(func(s outsidesessions.Session) bool {
 			return s.Agent == "codex" && s.ConversationID == req.ClaudeSessionID
 		}) {
-			return outsidesessions.Observation{}, &AdoptRefusal{Status: http.StatusBadRequest, Code: adoptInvalidBody, Message: "a codex thread is selected by outsideId"}
+			return outsidesessions.Observation{}, consoleMachineKey, &AdoptRefusal{Status: http.StatusBadRequest, Code: adoptInvalidBody, Message: "a codex thread is selected by outsideId"}
 		}
 		if a.snapshotHas(func(s outsidesessions.Session) bool {
 			return s.ClaudeSessionID == req.ClaudeSessionID && s.State == "ended"
 		}) {
-			return outsidesessions.Observation{}, ended
+			return outsidesessions.Observation{}, consoleMachineKey, ended
 		}
-		return outsidesessions.Observation{}, notFound
+		return outsidesessions.Observation{}, consoleMachineKey, notFound
 	case 1:
-		return rows[0], adoptableRow(rows[0], consoleMachineKey)
+		return rows[0], consoleMachineKey, adoptableRow(rows[0])
 	}
-	return rows[0], &AdoptRefusal{Status: http.StatusConflict, Code: adopt.ReasonAmbiguous, Message: "more than one live process holds this conversation"}
+	return rows[0], consoleMachineKey, &AdoptRefusal{Status: http.StatusConflict, Code: adopt.ReasonAmbiguous, Message: "more than one live process holds this conversation"}
 }
 
 func (a *adoptOps) snapshotHas(match func(outsidesessions.Session) bool) bool {
@@ -660,12 +665,10 @@ func (a *adoptOps) snapshotHas(match func(outsidesessions.Session) bool) bool {
 }
 
 // adoptableRow refuses a row the inventory marks not adoptable, with the
-// reason the row carries, and a row of any machine but the console.
-func adoptableRow(obs outsidesessions.Observation, machineKey string) *AdoptRefusal {
-	switch {
-	case machineKey != consoleMachineKey:
-		return &AdoptRefusal{Status: http.StatusConflict, Code: adopt.ReasonHost, Message: "sessions on an SSH host cannot be adopted"}
-	case !obs.Session.Adoptable:
+// reason the row carries. A host row the probe judged adoptable passes: the host
+// door re-judges it.
+func adoptableRow(obs outsidesessions.Observation) *AdoptRefusal {
+	if !obs.Session.Adoptable {
 		return &AdoptRefusal{Status: http.StatusConflict, Code: obs.Session.AdoptReason, Message: "the session cannot be adopted: " + obs.Session.AdoptReason}
 	}
 	return nil

@@ -237,7 +237,7 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 				id := project.ID
 				o.Session.ProjectID = &id
 			}
-			outsidesessions.GateAdoption(&o.Session, h != nil, project != nil, o.Agent)
+			outsidesessions.GateAdoption(&o.Session, h != nil && !hostAdopts(settings, h, project), project != nil, o.Agent)
 			if o.Session.TmuxSession != nil {
 				if h == nil || h.ShowAllTmuxSessions {
 					o.Session.Viewable = true
@@ -532,6 +532,23 @@ func matchOutsideProject(projects []config.Project, resolved []string, h *config
 		}
 	}
 	return project
+}
+
+// hostAdopts: not Windows, the host probe found claude, detach_sessions nil or
+// true, and the project allows the claude-code template. Deliberate: the same
+// tests the launch applies to a host project's Claude session, so a row is
+// adoptable only where the session it becomes can start.
+func hostAdopts(settings *config.Settings, h *config.Host, p *config.Project) bool {
+	if h == nil || p == nil || !p.IsHosted() || p.HostID != h.ID {
+		return false
+	}
+	if h.Probe != nil && (sshhost.IsWindowsOS(h.Probe.OS) || h.Probe.OS == "Windows") {
+		return false
+	}
+	if h.Probe == nil || !h.Probe.OK || h.Probe.ClaudePath == "" {
+		return false
+	}
+	return (h.DetachSessions == nil || *h.DetachSessions) && kindAllowed(settings, p, KindClaude)
 }
 
 func hostKey(h *config.Host) string {

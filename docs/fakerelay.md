@@ -1218,8 +1218,7 @@ match answers, and nothing changes before step 11:
 | 2 | the selector names an ended row (a `claudeSessionId` only when no live console row holds it) | 409 | `ended` | `the session has ended; there is no process to adopt` |
 | 2 | `claudeSessionId` matches no row | 404 | `outside_session_not_found` | `no live outside session matches` |
 | 2 | two or more live console rows hold the `claudeSessionId` | 409 | `ambiguous` | `more than one live process holds this conversation` |
-| 3 | the row has a `host_id` | 409 | `host_unsupported` | `sessions on an SSH host cannot be adopted` |
-| 3 | the row is not adoptable | 409 | the row's `adoptReason` | `the session cannot be adopted: <adoptReason>` |
+| 3 | the row is not adoptable (a row with a `host_id` that is not adoptable reads `host_unsupported`) | 409 | the row's `adoptReason` | `the session cannot be adopted: <adoptReason>` |
 | 4 | `adopt.refuse` `audit_unavailable` | 503 | `audit_unavailable` | `auditing is off; no session can be adopted` |
 | 4 | `adopt.refuse` `unavailable` | 502 | `unavailable` | `the session host is not available` |
 | 4 | `adopt.refuse` `adopt_in_progress` | 409 | `adopt_in_progress` | `an adopt of this conversation is already running` |
@@ -2402,12 +2401,12 @@ refused as an invalid outside fixture (`PUT` 400; a world file fails the load at
 
 | Key | Shape | Rule |
 |---|---|---|
-| `adoptable` | bool, default `false` | `true` needs: `state` not `ended`; `host_id` null; `id` matching `^outside:[0-9a-f]{32}$`; `claude_session_id` a UUID; no `adopt_reason` |
+| `adoptable` | bool, default `false` | `true` needs: `state` not `ended`; `id` matching `^outside:[0-9a-f]{32}$`; `claude_session_id` a UUID; no `adopt_reason` |
 | `adopt_reason` | `ended`, `host_unsupported`, `not_registered`, `invalid_id`, `start_mismatch`, `not_interactive`, `not_command_line` or `ambiguous` | only when `adoptable` is false. Where the row is ended or has a `host_id` (in that order) it must equal that code; otherwise one of the last five. `no_project` is refused: it is the reason of a Pi or Codex row in no project, and a world holds only Claude rows, which are adoptable in no project. Absent: that first rule, else `not_registered` |
 | `adopt` | `{busy?, model_family?, refuse?}`, unknown keys refused | only with `adoptable: true` |
 | `adopt.busy` | `registry_busy`, `status_stale`, `open_tool_call` or `child_process` | the idle check's veto. Absent: idle |
 | `adopt.model_family` | `haiku`, `sonnet` or `opus` | the family relay derives from the transcript. Absent: none derivable |
-| `adopt.refuse` | `audit_unavailable`, `unavailable`, `adopt_in_progress`, `changed`, `stop_failed`, `launch_failed` or `directory_unusable` (only on a row with no `project_id`) | the refusal relay would reach from process or host state. Absent: the adopt succeeds |
+| `adopt.refuse` | `audit_unavailable`, `unavailable`, `adopt_in_progress`, `changed`, `stop_failed`, `launch_failed`, `directory_unusable` (only on a row with no `project_id`) or `host_link_lost` (only on a row with a `host_id`; 502, the row stays) | the refusal relay would reach from process or host state. Absent: the adopt succeeds. An adoptable host row is adopted into its host project with the host on the session and no `unsandboxed`; its model is the body's, else `adopt.model_family`, else empty, and it never answers `model_unknown` |
 
 A fixture row with none of these keys reads `adoptable:false` with the first
 rule that applies as its reason, so existing fixtures stay valid. A test
