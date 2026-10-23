@@ -59,6 +59,9 @@ type FrontendServer struct {
 	auditor   control.ControlAuditor
 	// recordRoute tells the doors catalogue every route either mux registers.
 	recordRoute func(control.RouteInfo)
+	// historyCtx bounds the history scan loop Serve starts; Shutdown ends it.
+	historyCtx    context.Context
+	historyCancel context.CancelFunc
 }
 
 // EnvAPIListen opts the API into a loopback TCP listener beside the 0600 Unix
@@ -231,6 +234,8 @@ func (s *FrontendServer) ServeLoopback() error {
 // copy of NewFrontendServer's parameter list.
 type frontendRouteDeps struct {
 	outside *outsidesessions.Inventory
+	// history backs GET /api/session-history; nil answers 503.
+	history *historyOps
 	// adopt backs POST /api/sessions/adopt; nil registers no route.
 	adopt             *adoptOps
 	store             config.SettingsStore
@@ -304,6 +309,7 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 	if deps.outside != nil {
 		RegisterOutsideSessionRoutes(rr, deps.outside)
 	}
+	RegisterSessionHistoryRoutes(rr, deps.history)
 	RegisterProjectRoutes(rr, deps.store, deps.projectOps, deps.mcps, deps.tools, deps.enum, deps.skillLister, deps.onProjectsChanged)
 	RegisterTemplateRoutes(rr, deps.store, deps.templateOps)
 	if deps.auditOps != nil {
@@ -499,6 +505,8 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		outside:         newOutsideInventory(store, clock, sessionHost),
 	}
 	deps.adopt = newAdoptOps(sessionHost, deps.outside, clock)
+	deps.history = newHistoryOps(store, clock, sessionHost, deps.outside)
+	activeHistoryOps.Store(deps.history)
 
 	socketMux := http.NewServeMux()
 	registerFrontendRoutes(&control.RouteRegistrar{Mux: socketMux, Transport: control.TransportSocket, Authz: authz, Auditor: auditor, Reserve: deps.enhanced, CredentialID: APICredentialIDFromContext, Record: recordRoute}, deps)
@@ -533,13 +541,15 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 	}
 
 	slog.Info("frontend server bound", "socket", frontend.Socket)
+	historyCtx, historyCancel := context.WithCancel(context.Background())
 	return &FrontendServer{
 		socketPath: frontend.Socket,
 		server:     srv,
 		listener:   ln,
 		routeDeps:  deps,
-		authz:      authz,
-		auditor:    auditor,
+		historyCtx: historyCtx, historyCancel: historyCancel,
+		authz:   authz,
+		auditor: auditor,
 
 		recordRoute: recordRoute,
 	}, nil
@@ -556,6 +566,9 @@ func (s *FrontendServer) FileOps() *FileOps {
 
 // Serve blocks accepting connections until Shutdown is called.
 func (s *FrontendServer) Serve() error {
+	if s.routeDeps.history != nil {
+		go s.routeDeps.history.index.Run(s.historyCtx)
+	}
 	if err := s.server.Serve(s.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -566,6 +579,9 @@ func (s *FrontendServer) Serve() error {
 func (s *FrontendServer) Shutdown(ctx context.Context) {
 	if s == nil || s.server == nil {
 		return
+	}
+	if s.historyCancel != nil {
+		s.historyCancel()
 	}
 	if err := s.server.Shutdown(ctx); err != nil {
 		slog.Warn("frontend server did not drain cleanly", "error", err)

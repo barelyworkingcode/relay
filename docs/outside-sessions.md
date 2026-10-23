@@ -229,6 +229,11 @@ start and no resume.
 Transcript text stays untrusted display data. The transcript page route does not
 serve ended ids.
 
+Ended rows are unchanged by session history. The same transcripts also feed
+the session history, which lists them with titles and last-activity times and
+writes a discovered record for each one relay does not manage; see
+[session history](session-history.md).
+
 ## Adopting a session
 
 `POST /api/sessions/adopt` (class `execute`, socket only, absent from the

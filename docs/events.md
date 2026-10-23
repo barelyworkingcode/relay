@@ -409,6 +409,7 @@ prompt and an unavailable audit log use the shared `presence_*` and
 | Event | When written | Doors | Fields |
 |---|---|---|---|
 | `session.list` | In `handleProxyList`, `listViaHost` | `GET /api/sessions`, `relay session list` | `count` |
+| `session.history.scan` | After each machine scan, once the rows reflect it (background, relay) | none (background); the list is `GET /api/session-history`, `relay session history` | `machine` (`console` or the host id), `answered` (the listing was complete), `count` (interactive transcripts), `revision` (the history's revision after the scan). `error` with reason `scan_failed` when the machine could not be read |
 | `terminal.list` | In `handleProxyList`, `listViaHost` | `GET /api/terminals`, `relay terminal list` | `count` |
 | `session.launch` | In `launchWithEvent` | `POST /api/sessions`, `POST /api/terminals`, `relay session start`, `relay terminal start` | `session_id`, `project_id`, `kind`, and when the start named an agent `entry` and `command` (the stored absolute path; absent when the entry has none). On a refusal `reason` is the launch refusal code, and `model` (the requested model, capped) is set for `model_not_offered` and `models_unavailable`, only on a start with no entry |
 | `session.resume` | In `resumeSession` | `POST /api/sessions/{id}/resume`, `relay session resume` | `session_id`, `project_id`. A refusal is `denied` or `error` with `reason` the refusal code; `directory_unusable` is the reason when a session adopted in no project has lost its folder |
