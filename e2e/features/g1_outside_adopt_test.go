@@ -554,7 +554,8 @@ func TestAdoptRowListsConversationAndState(t *testing.T) {
 // and at the door.
 func TestAdoptReasonsOnRows(t *testing.T) {
 	t.Parallel()
-	r := adStartHost(t, true)
+	// The host row's host has detach_sessions false, which makes its rows host_unsupported.
+	r := haStart(t, haDetachOff).adRig
 	a := r.osRig
 
 	bg := r.fake("bg", "INT", "TERM")

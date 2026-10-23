@@ -944,6 +944,15 @@ With auditing off, or when the intent row cannot be written, relay sends the
 daemon no `thread/resume`. Each audit row of an attach, the `session_launch`
 row included, records `sandbox:false`.
 
+A Claude adopted on an SSH host (see
+[session-adoption.md](session-adoption.md#sessions-on-ssh-hosts)) writes the
+same rows with `host_id` in the args of the `session_adopt` intent and
+completion and of the `session_interrupt` intent and completion. The host
+script signals, not relay, so the completions carry `interrupted` and no
+`signals`; each intent gets exactly one completion, whatever the outcome
+(`host_link_lost` among the codes in `error`). The `session_interrupt`
+completion repeats the outcome of the adopt.
+
 A Claude adopted in no project (see
 [session-adoption.md](session-adoption.md#a-claude-session-in-no-project))
 writes the same rows with no `project_id` and two fields that say no project

@@ -17,6 +17,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	"github.com/barelyworkingcode/relay/internal/sessions/terminal"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
+	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
 // kindPTY mirrors cmd/relay/session_launch.go's KindPTY: C5's own wire
@@ -140,6 +141,9 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 	if req.AttachCodexThread != "" {
 		return terminal.CreateSpec{}, errors.New("hostapi: attach_codex_thread applies only to a codex session")
 	}
+	if req.AdoptHost != nil {
+		return terminal.CreateSpec{}, errors.New("hostapi: adopt_host applies only to a host claude session")
+	}
 	host, err := decodeHostSpec(req.Host)
 	if err != nil {
 		return terminal.CreateSpec{}, err
@@ -203,7 +207,9 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 	}
 	// Deliberate: an entry start of claude or codex may carry no model, which
 	// runs the binary's own default. A raw start still needs one.
-	noModelOK := sr.Entry != "" && (req.Kind == session.KindClaude || req.Kind == session.KindCodex)
+	// A host adopt may carry none: the outside session's model family is unknown
+	// and the binary then runs its own default.
+	noModelOK := (sr.Entry != "" && (req.Kind == session.KindClaude || req.Kind == session.KindCodex)) || req.AdoptHost != nil
 	if !req.Resume && strings.TrimSpace(sr.Model) == "" && !noModelOK {
 		return session.CreateSpec{}, fmt.Errorf("hostapi: %s session %s has no model", req.Kind, req.SessionID)
 	}
@@ -235,6 +241,9 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		return session.CreateSpec{}, err
 	}
 	if err := checkResumeConversation(req, host); err != nil {
+		return session.CreateSpec{}, err
+	}
+	if err := checkAdoptHost(req, host); err != nil {
 		return session.CreateSpec{}, err
 	}
 	if err := checkAttachCodexThread(req, host, sr); err != nil {
@@ -281,6 +290,13 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		ResumeTranscript:   req.ResumeTranscript,
 
 		AttachCodexThread: req.AttachCodexThread,
+	}
+	if a := req.AdoptHost; a != nil {
+		spec.AdoptHost = &sshhost.AdoptPins{
+			PID: a.PID, Lifetime: a.Lifetime, ConversationID: req.ResumeConversation, ChildTest: a.ChildTest,
+			Interrupt: a.Interrupt, NoSignal: a.NoSignal,
+			TranscriptSize: a.TranscriptSize, WindowFromMs: a.WindowFromMs, WindowToMs: a.WindowToMs,
+		}
 	}
 	// session.CreateSpec has no validate() of its own to lean on the way
 	// terminal.CreateSpec does (buildTerminalSpec's own comment): an empty
@@ -335,17 +351,35 @@ func sessionLaunchStatus(err error) (int, string) {
 	if errors.Is(err, provider.ErrIdentityRefused) {
 		return 502, ErrIdentityRefused
 	}
+	switch {
+	case errors.Is(err, provider.ErrAdoptBusy):
+		return 409, ErrAdoptBusy
+	case errors.Is(err, provider.ErrAdoptChanged):
+		return 409, ErrAdoptChanged
+	case errors.Is(err, provider.ErrAdoptStopFailed):
+		return 502, ErrAdoptStopFailed
+	case errors.Is(err, provider.ErrAdoptLaunchFailed):
+		return 502, ErrAdoptLaunchFailed
+	case errors.Is(err, provider.ErrAdoptSetupFailed):
+		return 502, ErrAdoptSetupFailed
+	case errors.Is(err, provider.ErrAdoptLinkLost):
+		return 502, ErrAdoptLinkLost
+	}
 	return 500, ErrSpawnFailed
 }
 
 // checkResumeConversation allows resume_conversation on a fresh, local claude
-// launch only, and only as a canonical UUID: the value becomes claude's
-// --resume argument and a transcript file name.
+// launch, and on a host claude launch that carries adopt_host, as a canonical
+// UUID: the value becomes claude's --resume argument and a transcript file name.
 func checkResumeConversation(req LaunchRequest, host *sessionstypes.HostSpec) error {
 	if req.ResumeConversation == "" && req.ResumeTranscript == "" {
 		return nil
 	}
-	if (req.Kind != session.KindClaude && req.Kind != session.KindPi) || req.Resume || host != nil {
+	if host != nil {
+		if req.AdoptHost == nil || req.Kind != session.KindClaude || req.ResumeTranscript != "" {
+			return errors.New("hostapi: conversation resume on a host requires adopt_host on a claude launch")
+		}
+	} else if (req.Kind != session.KindClaude && req.Kind != session.KindPi) || req.Resume {
 		return errors.New("hostapi: conversation resume requires a fresh local agent launch")
 	}
 	if _, err := uuid.Parse(req.ResumeConversation); err != nil || len(req.ResumeConversation) != 36 {
@@ -376,6 +410,35 @@ func checkResumeConversation(req LaunchRequest, host *sessionstypes.HostSpec) er
 		return err
 	}
 	return adopt.ValidatePiTranscript(home, cwd, req.ResumeConversation, req.ResumeTranscript)
+}
+
+// checkAdoptHost allows adopt_host on a claude launch to a Unix host with
+// detach on, with the conversation to resume, and nothing else. Every field the
+// script puts in a comparison or a count is shaped here as well.
+func checkAdoptHost(req LaunchRequest, host *sessionstypes.HostSpec) error {
+	a := req.AdoptHost
+	if a == nil {
+		return nil
+	}
+	if req.Kind != session.KindClaude || host == nil || !host.Detach || sshhost.IsWindowsOS(host.OS) {
+		return errors.New("hostapi: adopt_host requires a claude launch to a Unix host with detached sessions")
+	}
+	if req.ResumeConversation == "" {
+		return errors.New("hostapi: adopt_host requires resume_conversation")
+	}
+	switch a.ChildTest {
+	case "none", "all":
+	case "window":
+		if a.WindowFromMs <= 0 || a.WindowToMs < a.WindowFromMs {
+			return errors.New("hostapi: adopt_host child_test window is not a window")
+		}
+	default:
+		return errors.New("hostapi: adopt_host child_test is not none, window or all")
+	}
+	if a.PID <= 0 || a.Lifetime == "" || len(a.Lifetime) > 64 || a.TranscriptSize < 0 {
+		return errors.New("hostapi: adopt_host names no process")
+	}
+	return nil
 }
 
 // checkAttachCodexThread allows attach_codex_thread on a local, headless codex

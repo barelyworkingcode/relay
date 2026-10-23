@@ -148,8 +148,8 @@ outside it is not a relay bug, however real.
    `POST /api/sessions/adopt`. Only an eligible entry is adopted: an
    interactive, command-line Claude with a UUID `sessionId` whose registry
    `procStart` equals the process's kernel start time, in a registered local
-   project or in none. An ambiguous match (two live entries, one `sessionId`), a session
-   relay already manages and a session on an SSH host are never adopted. Relay
+   project or in none, or a Claude session on a Unix SSH host in its host project. An ambiguous match (two live entries, one `sessionId`), a session
+   relay already manages and a session on a Windows host, on a host with `detach_sessions: false` or in a host project with no `claude-code` template are never adopted. On a host the check, the signals and the start run as one detached script on the host, which compares the pid's start time before each signal; relay sends no signal over SSH itself. Relay
    writes a durable intent row before any signal and signals nothing with
    auditing off; before each signal it re-reads the pid's start time and
    sends nothing on a mismatch. The registry and the transcript choose no

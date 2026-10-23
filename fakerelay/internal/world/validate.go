@@ -387,7 +387,7 @@ var (
 	adoptReasonsOther  = map[string]bool{"not_registered": true, "invalid_id": true, "start_mismatch": true, "not_interactive": true, "not_command_line": true, "ambiguous": true}
 	adoptBusyVetoes    = map[string]bool{"registry_busy": true, "status_stale": true, "open_tool_call": true, "child_process": true}
 	adoptModelFamilies = map[string]bool{"haiku": true, "sonnet": true, "opus": true}
-	adoptRefusals      = map[string]bool{"audit_unavailable": true, "unavailable": true, "adopt_in_progress": true, "changed": true, "stop_failed": true, "launch_failed": true, "directory_unusable": true}
+	adoptRefusals      = map[string]bool{"audit_unavailable": true, "unavailable": true, "adopt_in_progress": true, "changed": true, "stop_failed": true, "launch_failed": true, "directory_unusable": true, "host_link_lost": true}
 )
 
 // derivedAdoptReason is the first of relay's reasons that applies to the
@@ -423,8 +423,6 @@ func validateOutsideAdopt(path string, o OutsideFixture) error {
 		switch {
 		case o.State == "ended":
 			return bad(path+".adoptable", "an ended row is not adoptable")
-		case o.HostID != nil:
-			return bad(path+".adoptable", "a host row is not adoptable")
 		case !outsideIDShape.MatchString(o.ID):
 			return bad(path+".adoptable", "requires an id of outside: and 32 hex digits")
 		case !conversationUUID.MatchString(o.ClaudeSessionID):
@@ -445,6 +443,9 @@ func validateOutsideAdopt(path string, o OutsideFixture) error {
 			}
 			if a.Refuse == "directory_unusable" && o.ProjectID != nil {
 				return bad(path+".adopt.refuse", "directory_unusable applies only to a row with no project_id")
+			}
+			if a.Refuse == "host_link_lost" && o.HostID == nil {
+				return bad(path+".adopt.refuse", "host_link_lost applies only to a host row")
 			}
 		}
 		return nil
