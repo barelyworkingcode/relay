@@ -8,7 +8,8 @@ import (
 	"errors"
 )
 
-// World is the whole spec. It is read once at serve and never mutated.
+// World is the whole spec. It is read once at serve and never mutated, except
+// the session-history row store History() keeps beside it.
 type World struct {
 	history         *HistoryStore     // built by History; never in the spec
 	Schema          int               `json:"schema"`

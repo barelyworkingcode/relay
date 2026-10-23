@@ -183,7 +183,7 @@ func runSessionHistoryTerminal(ctx context.Context, e env) (res result) {
 		return fail("no live terminal row in the history within %s of the launch", histTermRowWait)
 	}
 	if _, err := waitEvent(ctx, h.e, dir, "session.history.link", launchedAt, histTermLinkWait, func(m map[string]any) bool {
-		return m["session_id"] == live.ID && m["outcome"] == "ok"
+		return m["session_id"] == live.ID && m["status"] == "ok"
 	}); err != nil {
 		return fail("the terminal's record was never linked: %s", err)
 	}
