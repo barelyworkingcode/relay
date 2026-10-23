@@ -532,9 +532,9 @@ func matchOutsideProject(projects []config.Project, resolved []string, h *config
 }
 
 // hostAdopts: not Windows, the host probe found claude, detach_sessions nil or
-// true, and the project allows the claude-code template. Deliberate: the same three tests the launch applies
-// to a host project's Claude session, so a row is adoptable only where the
-// session it becomes can start.
+// true, and the project allows the claude-code template. Deliberate: the same
+// tests the launch applies to a host project's Claude session, so a row is
+// adoptable only where the session it becomes can start.
 func hostAdopts(settings *config.Settings, h *config.Host, p *config.Project) bool {
 	if h == nil || p == nil || !p.IsHosted() || p.HostID != h.ID {
 		return false
