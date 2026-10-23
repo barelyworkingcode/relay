@@ -519,6 +519,26 @@ func TestHistoryScanScope(t *testing.T) {
 	if after := snapshot(); after != before {
 		t.Fatalf("the scan changed the transcript folders:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
+
+	// A folder that turns into a link is refused, so its record is unknown, not absent.
+	gone := osDir(t, proj, "gone")
+	hxSimple(t, h.remote, gone, hxConv(6), end, "acme soon linked")
+	h.scan(nil)
+	if r := h.rows().byConv(hxConv(6)); r == nil || r.Transcript != "present" {
+		t.Fatalf("row before its folder became a link = %+v, want transcript present", r)
+	}
+	goneFolder := filepath.Dir(osTranscriptPath(h.remote, gone, hxConv(6)))
+	moved := filepath.Join(stash, "moved")
+	if err := os.Rename(goneFolder, moved); err != nil {
+		t.Fatalf("moving the folder: %v", err)
+	}
+	if err := os.Symlink(moved, goneFolder); err != nil {
+		t.Fatalf("linking the folder: %v", err)
+	}
+	h.scan(nil)
+	if r := h.rows().byConv(hxConv(6)); r == nil || r.Transcript != "unknown" {
+		t.Fatalf("row behind a linked folder = %+v, want transcript unknown", r)
+	}
 }
 
 // A missing store root, or a link on it, is a scan that did not answer.
@@ -712,5 +732,51 @@ func TestHistoryHostScopeUnknown(t *testing.T) {
 	h.scan(nil)
 	if r := h.rows().byConv(hxConv(1)); r == nil || r.Transcript != "unknown" {
 		t.Fatalf("host row after the removal = %+v, want transcript unknown", r)
+	}
+}
+
+// Past 2000 discovered records a machine keeps the newest 2000; the eviction
+// writes no audit row.
+func TestHistoryDiscoveredCap(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "seeded")
+	var seed []map[string]any
+	for n := 0; n < 2000; n++ {
+		c := hxConv(1000 + n)
+		seed = append(seed, map[string]any{"session_id": hxDiscoveredID(c), "kind": "claude", "agent": "claude", "state": "discovered",
+			"directory": dir, "conversation_id": c, "created": hxBase.Add(time.Duration(n) * time.Minute).Format(time.RFC3339)})
+	}
+	r := osStart(t, false, func(o *harness.Options) {
+		o.PrepareConfigDir = func(configDir string) {
+			raw, _ := json.Marshal(seed)
+			if err := os.WriteFile(filepath.Join(configDir, g1rLedger), raw, 0o600); err != nil {
+				t.Errorf("seeding the ledger: %v", err)
+			}
+		}
+	})
+	h := hxReady(t, r, false)
+	fresh := hxConv(1)
+	hxSimple(t, h.i.Home, osDir(t, t.TempDir(), "new"), fresh, hxBase.Add(100*time.Hour), "acme newest")
+	h.scan(map[string]any{"evicted": 1})
+
+	raw, err := os.ReadFile(filepath.Join(h.i.ConfigDir, g1rLedger))
+	if err != nil {
+		t.Fatalf("reading the ledger: %v", err)
+	}
+	var recs []map[string]any
+	if err := json.Unmarshal(raw, &recs); err != nil {
+		t.Fatalf("ledger does not decode: %v", err)
+	}
+	have := map[any]bool{}
+	for _, rec := range recs {
+		have[rec["session_id"]] = true
+	}
+	oldest := hxDiscoveredID(hxConv(1000))
+	if len(recs) != 2000 || !have[hxDiscoveredID(fresh)] || have[oldest] {
+		t.Fatalf("ledger holds %d records, newest present %v, oldest present %v, want 2000, true, false", len(recs), have[hxDiscoveredID(fresh)], have[oldest])
+	}
+	rows, _ := json.Marshal(h.i.Audit(harness.AuditQuery{Tail: 100000}))
+	if strings.Contains(string(rows), oldest) || strings.Contains(string(rows), hxConv(1000)) {
+		t.Fatalf("the audit log names the evicted record")
 	}
 }
