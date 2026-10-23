@@ -1990,8 +1990,8 @@ rows. `POST /api/session-history/{id}/resume` (body `{cols,rows}`, 1 to 1000)
 answers, as relay does, `400 invalid_body`, `404 history_not_found`, then the
 row's `refuse`, else `409 use_session_resume` for a `session` row or the row's
 `resumeReason`. A `history` row answers 201 with a terminal body plus
-`supersedes` and is removed. It opens no terminal. `DELETE /api/sessions/{id}` removes that
-session's row from the list, as relay does.
+`supersedes` and is removed. It opens no terminal. Deleting a session, by `DELETE /api/sessions/{id}` or the `delete_session`
+frame, removes its row from the list, as relay does.
 
 ## Instance and ready file
 
