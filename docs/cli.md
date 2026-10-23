@@ -2588,6 +2588,7 @@ relay session start --project ID (--model M | --entry N) [--name N] [--directory
                     [--settings JSON] [--system-prompt S] [--append-claude-md]
 relay session start --file F            # POST /api/sessions body
 relay session list
+relay session history [--project ID]
 relay session message --id ID (--text T | --file F) [--timeout D]
 relay session send --id ID (--text T | --file F) [--timeout D]
 relay session wait --id ID [--timeout D]
@@ -2597,7 +2598,7 @@ relay session resume --id ID
 relay session mode --id ID --mode M
 ```
 
-Every verb takes `--json`. Exit codes for all nine: `0` done; `1` for a missing
+Every verb takes `--json`. Exit codes for all ten: `0` done; `1` for a missing
 or conflicting flag (each is named in its section), a refusal from the session
 host (`error: session host: CODE: MESSAGE`) or the project's authorization, or a
 host that is down; `2` for an unknown flag.
@@ -2671,6 +2672,20 @@ when set. The text form is `started session SESSION-ID`.
 | `sessions[].attention` | object, optional | Why the session needs someone. `exit` (`code`, `stderr[]`) is present on an `errored` session whose provider exited non-zero. |
 
 Text form: the line `N sessions`, then one `ID<TAB>NAME` line per session.
+
+### `session history`
+
+Lists every Claude session relay knows of: launched records and discovered ones
+(transcripts relay did not launch). `--project ID` keeps one project's rows.
+`--json` prints the `GET /api/session-history` body, documented in
+[session history](session-history.md). It does not need the session host.
+
+Text form: a table with the columns TITLE (the client's title, else
+`Claude — <folder>`), LAST ACTIVE (local time, `-` when unknown), KIND, STATE,
+RESUME (the door and, when none, the reason) and ID. Row text comes from
+transcripts, so control characters are shown escaped. While a first scan runs
+the line `still scanning; titles may be missing` comes first. An empty history
+prints the header alone.
 
 ### `session message`
 

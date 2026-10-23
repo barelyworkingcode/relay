@@ -11,12 +11,15 @@
 package ledger
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +35,10 @@ type State string
 const (
 	StateLive    State = "live"
 	StateDormant State = "dormant"
+	// StateDiscovered marks a record read from a transcript relay did not
+	// launch: display-only, no project, never resumable through the session
+	// resume door.
+	StateDiscovered State = "discovered"
 )
 
 // Record is one session the ledger knows about. Field names match C5's
@@ -69,9 +76,18 @@ type Record struct {
 	// Unsandboxed marks a Claude session relay runs with no project and no
 	// sandbox; its ProjectID is empty. A resume carries the mark back to the host.
 	Unsandboxed bool `json:"unsandboxed,omitempty"`
+	// ConversationID is the client's own conversation id.
+	ConversationID string `json:"conversation_id,omitempty"`
+	// Agent is "claude" on a terminal or discovered record.
+	Agent string `json:"agent,omitempty"`
+	// HostID is a discovered record's SSH host; empty on the console.
+	HostID string `json:"host_id,omitempty"`
 	// AdoptPending marks a dormant record whose host adopt has not settled:
 	// the outside process it names may still run. A resume checks it first.
 	AdoptPending *AdoptPending `json:"adopt_pending,omitempty"`
+	// MissingSince is the first answered scan that found no transcript for the
+	// record's conversation; nil while the transcript is present.
+	MissingSince *time.Time `json:"missing_since,omitempty"`
 }
 
 // AdoptPending pins the outside process a host adopt was taking over.
@@ -190,6 +206,205 @@ func (l *Ledger) MarkLiveDormant(keep func(Record) bool) (int, error) {
 		return 0, nil
 	}
 	return changed, l.saveLocked()
+}
+
+// DiscoveredID is "d-" plus the first 16 bytes, hex, of
+// sha256(machineKey, NUL, agent, NUL, conversationID): one machine's
+// conversation always maps to one record.
+func DiscoveredID(machineKey, agent, conversationID string) string {
+	h := sha256.Sum256([]byte(machineKey + "\x00" + agent + "\x00" + conversationID))
+	return "d-" + hex.EncodeToString(h[:16])
+}
+
+// PutDiscovered adds the records in one save. It skips an id the ledger already
+// holds, so it never replaces a record, discovered or not, and returns how many
+// it added. It does not save when it added none.
+func (l *Ledger) PutDiscovered(recs []Record) (int, error) {
+	added, _, err := l.ReplaceDiscovered(recs, nil)
+	return added, err
+}
+
+// ReplaceDiscovered adds the records PutDiscovered would and removes the named
+// records that are still discovered, all in one save. It returns both counts.
+func (l *Ledger) ReplaceDiscovered(recs []Record, evict []string) (added, evicted int, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	removed := map[string]Record{}
+	for _, id := range evict {
+		if r, ok := l.records[id]; ok && r.State == StateDiscovered {
+			removed[id] = r
+			delete(l.records, id)
+		}
+	}
+	var addedIDs []string
+	for _, r := range recs {
+		if _, held := l.records[r.SessionID]; held {
+			continue
+		}
+		l.records[r.SessionID] = r
+		addedIDs = append(addedIDs, r.SessionID)
+	}
+	if len(addedIDs) == 0 && len(removed) == 0 {
+		return 0, 0, nil
+	}
+	if err := l.saveLocked(); err != nil {
+		for _, id := range addedIDs {
+			delete(l.records, id)
+		}
+		for id, r := range removed {
+			l.records[id] = r
+		}
+		return 0, 0, err
+	}
+	return len(addedIDs), len(removed), nil
+}
+
+// RemoveDiscovered removes, in one save, only the named records that are still
+// discovered, and returns how many it removed. A record that has since become
+// something else stays.
+func (l *Ledger) RemoveDiscovered(ids []string) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	removed := map[string]Record{}
+	for _, id := range ids {
+		if r, ok := l.records[id]; ok && r.State == StateDiscovered {
+			removed[id] = r
+			delete(l.records, id)
+		}
+	}
+	if len(removed) == 0 {
+		return 0, nil
+	}
+	if err := l.saveLocked(); err != nil {
+		for id, r := range removed {
+			l.records[id] = r
+		}
+		return 0, err
+	}
+	return len(removed), nil
+}
+
+// SetMissing marks the records named by ids as missing since the given time, or
+// clears the mark when since is nil, in one save, and returns how many changed.
+// A record already marked keeps its first time.
+func (l *Ledger) SetMissing(ids []string, since *time.Time) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	prev := map[string]Record{}
+	for _, id := range ids {
+		r, ok := l.records[id]
+		if !ok || (since == nil && r.MissingSince == nil) || (since != nil && r.MissingSince != nil) {
+			continue
+		}
+		prev[id] = r
+		if since != nil {
+			t := *since
+			r.MissingSince = &t
+		} else {
+			r.MissingSince = nil
+		}
+		l.records[id] = r
+	}
+	if len(prev) == 0 {
+		return 0, nil
+	}
+	if err := l.saveLocked(); err != nil {
+		for id, r := range prev {
+			l.records[id] = r
+		}
+		return 0, err
+	}
+	return len(prev), nil
+}
+
+// RemoveIfPurgeable removes the record only when guard still holds for it under
+// the ledger's lock, so a record that went live or was claimed since the caller
+// looked stays.
+func (l *Ledger) RemoveIfPurgeable(id string, guard func(Record) bool) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.records[id]
+	if !ok || guard == nil || !guard(r) {
+		return false, nil
+	}
+	delete(l.records, id)
+	if err := l.saveLocked(); err != nil {
+		l.records[id] = r
+		return false, err
+	}
+	return true, nil
+}
+
+// LinkConversation sets ConversationID on the live record sessionID and, in the
+// same save, removes every discovered record and every dormant terminal record
+// of the same machine, agent and conversation: they are the same conversation
+// under a name that no longer adds anything. recordMachine names a launched
+// record's machine; a discovered record's is its host id, else "console". It
+// never removes a live record, an agent record or a record with AdoptPending
+// set. It reports whether anything
+// changed. A record is removed only when its Directory equals cwd, the link's
+// working folder, or holds it.
+func (l *Ledger) LinkConversation(sessionID, machineKey, conversationID, cwd string, recordMachine func(Record) string) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	rec, ok := l.records[sessionID]
+	if !ok || rec.State != StateLive || conversationID == "" {
+		return false, nil
+	}
+	agent := rec.Agent
+	if agent == "" {
+		agent = rec.Kind
+	}
+	prev := map[string]Record{sessionID: rec}
+	changed := rec.ConversationID != conversationID
+	rec.ConversationID = conversationID
+	l.records[sessionID] = rec
+	for id, r := range l.records {
+		if id == sessionID || r.ConversationID != conversationID || r.Agent != agent || !dirContains(r.Directory, cwd) || r.AdoptPending != nil {
+			continue
+		}
+		machine := ""
+		switch {
+		case r.State == StateDiscovered:
+			machine = r.HostID
+			if machine == "" {
+				machine = "console"
+			}
+		case r.State == StateDormant && r.Kind == "pty":
+			machine = "console"
+			if recordMachine != nil {
+				machine = recordMachine(r)
+			}
+		default:
+			continue
+		}
+		if machine == machineKey {
+			prev[id] = r
+			delete(l.records, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := l.saveLocked(); err != nil {
+		for id, r := range prev {
+			l.records[id] = r
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// dirContains reports whether dir equals cwd or is a parent of it, by path
+// segments. An empty dir or cwd contains nothing: a record with no folder is
+// never removed on a link's word.
+func dirContains(dir, cwd string) bool {
+	if dir == "" || cwd == "" {
+		return false
+	}
+	dir, cwd = filepath.Clean(dir), filepath.Clean(cwd)
+	return cwd == dir || strings.HasPrefix(cwd, strings.TrimSuffix(dir, string(filepath.Separator))+string(filepath.Separator))
 }
 
 // Remove deletes the record named id and saves. A no-op for an id the

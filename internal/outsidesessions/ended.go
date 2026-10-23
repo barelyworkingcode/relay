@@ -172,6 +172,12 @@ func endedObservation(path, stem string, at time.Time, tail []byte, home string)
 	return Observation{Session: s, ClaudeID: stem, Transcript: path, StatusAt: at}, true
 }
 
+// LaunchFolder is launchFolder for a reader outside this package: the folder a
+// transcript at path belongs to, or false when cwd does not map back to it.
+func LaunchFolder(home, cwd, stem, path string) (string, bool) {
+	return launchFolder(home, cwd, stem, path)
+}
+
 // launchFolder returns the nearest folder, cwd or a parent of it, whose project
 // folder name is the transcript's own. A session that changed into a subfolder
 // keeps its transcript under the launch folder's name.

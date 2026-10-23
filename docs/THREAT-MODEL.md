@@ -126,6 +126,7 @@ outside it is not a relay bug, however real.
    reads the window size to follow it and sets nothing on the owner's
    session. Being listed by tmux confers no managed-session authority.
 3d. **A caller reading an outside transcript.** A frontend holding `execute` on the socket reads one page of an outside session's transcript through `GET /api/outside-sessions/{id}/transcript`. The id resolves only to a live inventory entry. The file is the one the probe derived from the machine's home, the process's working folder and a validated session id; no request field names a path. The read refuses a symbolic link on the file or its three parent folders, reads at most 256 KiB per request and writes nothing. On an SSH host it runs over the host's ssh as the host account, as the probe does. No `read` credential and no TCP caller reaches the route, and neither does the Chief of Staff scope, which still reads only the latest turn. Transcript text is untrusted display data and grants no action authority.
+3d, history. A frontend holding `execute` on the socket also reads the title and last-activity time of every console transcript, and of the transcripts in the folders of a host's projects, through `GET /api/session-history`. No request field names a path. The scans refuse a symbolic link on a transcript, its folder, `~/.claude/projects` and `~/.claude`, and write nothing on the machine. Title text is untrusted display data and grants nothing; a discovered record has no project and never resumes through the session resume door ([session history](session-history.md)).
 3e. **Other code running as the host account on a detached session's host, or as the user on this Mac.**
    A detached session's agent reads `~/.relay/agents/<session id>/<generation>/inbox/`
    on the host; a local Claude session's runner reads the same layout under
@@ -166,7 +167,14 @@ outside it is not a relay bug, however real.
    recovery message after an interrupt quotes at most 300 characters of the
    session's own last prompt and 500 of the open tool call's input, under the
    `relay-recovery` origin. The chief-of-staff scope cannot reach the door.
-   The same door adopts an idle console Pi whose verified package bin,
+   A discovered record resumes only through the history door
+   (`POST /api/session-history/{id}/resume`), after relay re-reads the
+   transcript now, derives its folder by the ended-row rule, finds that folder in
+   a registered local project and finds no live process or relay-sessions
+   holding the conversation. A conversation link needs the process's
+   `RELAY_SESSION_ID` marker, its own registry entry, a folder inside the
+   record's and, on the console, descent from the record's bound root.
+   The adopt door also adopts an idle console Pi whose verified package bin,
    kernel lifetime and actual cwd match one default-root transcript header.
    After Pi erases its arguments, recognition requires the exact operator
    Node executable file and kernel argv `pi` followed only by empty arguments.
@@ -204,7 +212,9 @@ outside it is not a relay bug, however real.
 
 The audit trail (asset C) is part of every promise above. Examples: #147 (a
 cancelled presence prompt left no audit row), #150 (caller-controlled
-terminal escapes in `relay audit`'s table).
+terminal escapes in `relay audit`'s table). Each history purge is recorded as a
+`session_purge` row before the record goes, and nothing is purged with auditing
+off.
 
 ## The test build
 

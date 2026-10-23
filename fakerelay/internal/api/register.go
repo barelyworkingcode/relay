@@ -46,6 +46,9 @@ func Register(r server.Registrar, d server.Deps) (server.OutsideRows, error) {
 	a.cosConfigRoutes(r)
 	a.cosAgentRoutes(r)
 	a.outsideRoutes(r)
+	if err := a.historyRoutes(r); err != nil {
+		return nil, err
+	}
 	a.hostRoutes(r)
 	a.templateRoutes(r)
 	a.mcpRoutes(r)

@@ -231,6 +231,8 @@ func (s *FrontendServer) ServeLoopback() error {
 // copy of NewFrontendServer's parameter list.
 type frontendRouteDeps struct {
 	outside *outsidesessions.Inventory
+	// history backs GET /api/session-history; nil answers 503.
+	history *historyOps
 	// adopt backs POST /api/sessions/adopt; nil registers no route.
 	adopt             *adoptOps
 	store             config.SettingsStore
@@ -304,6 +306,7 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 	if deps.outside != nil {
 		RegisterOutsideSessionRoutes(rr, deps.outside)
 	}
+	RegisterSessionHistoryRoutes(rr, deps.history)
 	RegisterProjectRoutes(rr, deps.store, deps.projectOps, deps.mcps, deps.tools, deps.enum, deps.skillLister, deps.onProjectsChanged)
 	RegisterTemplateRoutes(rr, deps.store, deps.templateOps)
 	if deps.auditOps != nil {
@@ -499,6 +502,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		outside:         newOutsideInventory(store, clock, sessionHost),
 	}
 	deps.adopt = newAdoptOps(sessionHost, deps.outside, clock)
+	deps.history = newHistoryOps(store, clock, sessionHost, deps.outside)
 
 	socketMux := http.NewServeMux()
 	registerFrontendRoutes(&control.RouteRegistrar{Mux: socketMux, Transport: control.TransportSocket, Authz: authz, Auditor: auditor, Reserve: deps.enhanced, CredentialID: APICredentialIDFromContext, Record: recordRoute}, deps)
