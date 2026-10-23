@@ -42,13 +42,6 @@ type haRig struct {
 // returns once every machine has completed a probe.
 func haStart(t *testing.T, detach string) *haRig {
 	t.Helper()
-	return haStartWith(t, detach, true)
-}
-
-// haStartWith is haStart; with hostClaude false the host has no claude on its
-// PATH, so its probe finds none.
-func haStartWith(t *testing.T, detach string, hostClaude bool) *haRig {
-	t.Helper()
 	seed := `[{"id":"` + haHostID + `","name":"testbox","target":"` + haTarget + `",` + detach + `"created_at":"2026-01-01T00:00:00Z"}]`
 	i := cosStart(t, func(o *harness.Options) {
 		o.SSHStub = true
@@ -58,25 +51,11 @@ func haStartWith(t *testing.T, detach string, hostClaude bool) *haRig {
 
 	// The host's claude-code template exists only when a probe finds claude on
 	// the host, so the host gets the fake as its claude first.
-	if hostClaude {
-		claudeDir := filepath.Join(g.remote, "hostclaude")
-		g.mkdir(t, claudeDir)
-		g.write(t, filepath.Join(claudeDir, "claude"), "#!/bin/sh\nexec "+agShQuote(filepath.Join(i.Home, ".local", "bin", "claude"))+" \"$@\"\n", 0o755)
-		g.write(t, filepath.Join(g.remote, ".profile"), "export PATH="+agShQuote(claudeDir)+":\"$PATH\"\n", 0o600)
-	} else {
-		// This machine's own claude is on the stub's PATH.
-		i.SSHNoClaude()
-	}
-	var probed struct {
-		Probe struct {
-			OK         bool   `json:"ok"`
-			ClaudePath string `json:"claude_path"`
-		} `json:"probe"`
-	}
-	i.MustCLI("host", "probe", "--id", haHostID, "--json").JSON(t, &probed)
-	if probed.Probe.OK && (probed.Probe.ClaudePath != "") != hostClaude {
-		t.Fatalf("the host probe found claude_path %q, want one only when the rig gives the host a claude", probed.Probe.ClaudePath)
-	}
+	claudeDir := filepath.Join(g.remote, "hostclaude")
+	g.mkdir(t, claudeDir)
+	g.write(t, filepath.Join(claudeDir, "claude"), "#!/bin/sh\nexec "+agShQuote(filepath.Join(i.Home, ".local", "bin", "claude"))+" \"$@\"\n", 0o755)
+	g.write(t, filepath.Join(g.remote, ".profile"), "export PATH="+agShQuote(claudeDir)+":\"$PATH\"\n", 0o600)
+	i.MustCLI("host", "probe", "--id", haHostID, "--json")
 
 	// The project's path is the resolved one: the probe reports a process's
 	// resolved folder, and the launch refuses a folder outside the project.
@@ -429,11 +408,41 @@ func TestAdoptHostLinkDrop(t *testing.T) {
 	}
 }
 
-// AC (amendment): a Claude row on a host whose probe found no claude reads
-// host_unsupported, and the adopt door refuses it as any non-adoptable row.
+// AC (amendment): a Claude row on a host whose latest probe found no claude
+// reads host_unsupported and the adopt door refuses it as any non-adoptable
+// row, though the claude-code template the first probe seeded is still there.
 func TestAdoptHostNoClaude(t *testing.T) {
 	t.Parallel()
-	h := haStartWith(t, haDetachOn, false)
+	h := haStart(t, haDetachOn)
+	// Claude is uninstalled: the host's profile no longer adds it, this
+	// machine's own claude leaves the stub's PATH, and the host is probed again.
+	if err := os.Remove(filepath.Join(h.g.remote, ".profile")); err != nil {
+		t.Fatalf("removing the host profile: %v", err)
+	}
+	h.i.SSHNoClaude()
+	var probed struct {
+		Probe struct {
+			OK         bool   `json:"ok"`
+			ClaudePath string `json:"claude_path"`
+		} `json:"probe"`
+	}
+	h.i.MustCLI("host", "probe", "--id", haHostID, "--json").JSON(t, &probed)
+	if !probed.Probe.OK || probed.Probe.ClaudePath != "" {
+		t.Fatalf("the second probe is %+v, want ok with no claude_path", probed.Probe)
+	}
+	tr := h.i.HTTP(h.i.Credential("cos")).Do("GET", "/api/hosts/"+haHostID+"/templates", nil)
+	var templates []struct {
+		ID string `json:"id"`
+	}
+	tr.JSON(t, &templates)
+	seeded := false
+	for _, tpl := range templates {
+		seeded = seeded || tpl.ID == "claude-code"
+	}
+	if tr.Status != http.StatusOK || !seeded {
+		t.Fatalf("host templates answered %d %s, want the seeded claude-code template to remain", tr.Status, tr.Body)
+	}
+
 	f := h.hostFake("app", "INT", "TERM")
 	f.idle(h.remote, adModelSn)
 	id, row := h.hostRow(f)
