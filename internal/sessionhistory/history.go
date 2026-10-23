@@ -725,6 +725,9 @@ func (x *Index) resume(v View, r ledger.Record, row Row, machineKey string) (str
 	case r.State == ledger.StateLive:
 		return "none", "live"
 	case row.Record == "launched" && r.State == ledger.StateDormant && (r.Kind == "claude" || r.Kind == "pi" || r.Kind == "codex" || r.Kind == "chat"):
+		if row.Transcript == "absent" {
+			return "none", "transcript_absent"
+		}
 		return "session", ""
 	case row.Kind != "terminal":
 		return "none", "kind"

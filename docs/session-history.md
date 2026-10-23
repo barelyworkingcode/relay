@@ -168,6 +168,7 @@ history door, `POST /api/session-history/{id}/resume`.
 | Row | `resume` | `resumeReason` |
 |---|---|---|
 | `state: "live"` | `none` | `live` |
+| launched, kind `claude`, `pi`, `codex` or `chat`, dormant, `transcript: "absent"` | `none` | `transcript_absent` |
 | launched, kind `claude`, `pi`, `codex` or `chat`, dormant | `session` | none |
 | any other kind that is not a terminal | `none` | `kind` |
 | launched terminal or discovered, on a host | `none` | `host_unsupported` |
