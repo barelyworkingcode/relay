@@ -1,6 +1,9 @@
 package world
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // HistoryRow is one row of relay's GET /api/session-history, as the world
 // spells it. Refuse, when set, makes the resume door answer that code.
@@ -59,10 +62,72 @@ func ValidateHistory(rows []HistoryRow) error {
 			return bad(path+".resume", "must be session, history or none")
 		case r.TitleSource != nil && !historyTitleSrc[*r.TitleSource]:
 			return bad(path+".titleSource", "must be client or prompt")
+		case r.ResumeReason != "" && HistoryReasons[r.ResumeReason] == 0 && r.ResumeReason != "kind":
+			return bad(path+".resumeReason", "is not a reason the wire carries")
 		case r.Refuse != "" && HistoryReasons[r.Refuse] == 0:
 			return bad(path+".refuse", "is not a code the resume door answers")
 		}
 		seen[r.ID] = true
 	}
 	return nil
+}
+
+// HistoryStore is the rows the list door and the resume door share. A resume
+// removes its row.
+type HistoryStore struct {
+	mu       sync.Mutex
+	rows     []HistoryRow
+	revision uint64
+	Down     bool
+}
+
+var historyMu sync.Mutex
+
+// History returns the world's shared history store, built on first use.
+func (w *World) History() *HistoryStore {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	if w.history == nil {
+		w.history = &HistoryStore{rows: append([]HistoryRow{}, w.SessionHistory...), revision: 1, Down: w.SessionHistoryUnavailable}
+	}
+	return w.history
+}
+
+// Rows returns a copy of the rows (those of one project when projectID is set)
+// and the revision.
+func (h *HistoryStore) Rows(projectID string) ([]HistoryRow, uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := []HistoryRow{}
+	for _, r := range h.rows {
+		if projectID == "" || (r.ProjectID != nil && *r.ProjectID == projectID) {
+			out = append(out, r)
+		}
+	}
+	return out, h.revision
+}
+
+// Find returns the row named id.
+func (h *HistoryStore) Find(id string) (HistoryRow, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.rows {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return HistoryRow{}, false
+}
+
+// Remove drops the row named id and bumps the revision.
+func (h *HistoryStore) Remove(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, r := range h.rows {
+		if r.ID == id {
+			h.rows = append(h.rows[:i:i], h.rows[i+1:]...)
+			h.revision++
+			return
+		}
+	}
 }

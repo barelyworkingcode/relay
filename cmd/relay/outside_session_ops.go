@@ -677,12 +677,25 @@ func (d sessionRouteDeps) linkConversations(ctx context.Context, machineKey stri
 			continue
 		}
 		ev := logging.BeginEvent(ctx, "session.history.link").Set("session_id", marker)
-		if _, err := d.sessions.LinkConversation(marker, machineKey, link.ConversationID, recordMachine); err != nil {
+		changed, err := d.sessions.LinkConversation(marker, machineKey, link.ConversationID, link.Cwd, recordMachine)
+		switch {
+		case err != nil:
 			ev.End(logging.OutcomeError, "ledger_write_failed", err)
-			continue
+		case changed:
+			ev.End(logging.OutcomeOK, "", nil)
+		case !stillLive(d.sessions, marker):
+			ev.End(logging.OutcomeDenied, "not_live", nil)
+		default:
+			// Deliberate: an already-linked record is the steady state of every
+			// probe, so it writes no line.
+			ev.Quiet().End(logging.OutcomeOK, "", nil)
 		}
-		ev.End(logging.OutcomeOK, "", nil)
 	}
+}
+
+func stillLive(store *ledger.Ledger, id string) bool {
+	rec, ok := store.Get(id)
+	return ok && rec.State == ledger.StateLive
 }
 
 // descendsFromBoundRoot reports whether pid is root's process or one of its

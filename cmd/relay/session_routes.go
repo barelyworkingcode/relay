@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -618,6 +619,14 @@ func (d sessionRouteDeps) resumeSessionInner(ctx context.Context, ev *logging.Ev
 		return resumeError(http.StatusNotFound, "session not found", "session_not_found")
 	}
 	ev.Set("project_id", rec.ProjectID)
+	// Deliberate: a terminal or discovered record comes back only through the
+	// session history, live or dormant alike, so the live no-op never answers ok.
+	if rec.Kind == KindPTY || rec.State == ledger.StateDiscovered {
+		const msg = "resume this terminal session from the session history"
+		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeDenied, msg)
+		ev.End(logging.OutcomeDenied, "session_not_resumable", errors.New(msg))
+		return resumeError(http.StatusForbidden, msg, "session_not_resumable")
+	}
 	if rec.State == ledger.StateLive {
 		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeOK, "")
 		return resumeOutcome{Status: http.StatusOK, Body: resumeResponseBody{SessionID: id, Resumed: false}}

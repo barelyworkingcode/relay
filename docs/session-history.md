@@ -155,14 +155,15 @@ absent from the TCP mux and from the Chief of Staff scope. An unknown
   cap, a host project removed from the scope, a missing `conversationId` or a
   client no reader covers all give `unknown`. A
   `present` row whose file no scan has read yet shows `title` and `lastActiveAt`
-  `null`. A launched agent record has no `conversationId`, so its row is `unknown`.
+  `null`. A launched agent record has a `conversationId` only once a probe has linked it
+  (see below); until then its row is `unknown`.
 - Rows run newest first by `lastActiveAt`, else by `createdAt` (the wire value
   stays `null`), then by `id`; at most 500.
 
 ### Resume
 
-The first row of this table that applies decides `resume`. `history` names a
-door that a later release adds; until then it answers `404`.
+The first row of this table that applies decides `resume`. `history` names the
+history door, `POST /api/session-history/{id}/resume`.
 
 | Row | `resume` | `resumeReason` |
 |---|---|---|
@@ -207,7 +208,8 @@ whose start time still equals the one the kernel attested at launch. A failed
 check links nothing and logs at Debug. Each change writes one
 `session.history.link` event. `LinkConversation` sets the conversation and, in
 the same save, removes every discovered record and every dormant terminal record
-of the same machine, agent and conversation; it never removes a live record or
+of the same machine, agent and conversation whose `directory` equals the link's
+folder or holds it by path segments; it never removes a live record or
 an agent record. A terminal that ends before any probe sees it keeps a record
 with no conversation (`no_conversation`); its transcript lists as a discovered
 row.
@@ -228,7 +230,11 @@ discovered record's is the registered local project holding the verified folder,
 a terminal record keeps its own project and folder and the verified folder must
 equal it; 11. `AuthorizeLaunch` with the `claude-code` template and
 `--resume <conversation id>`; 12. the host launch and the ledger commit; 13.
-`LinkConversation`, which removes the old record.
+`LinkConversation` with the verified folder, which removes the old record.
+`POST /api/sessions/{id}/resume` refuses a terminal or discovered record, live
+or dormant, with `403 session_not_resumable` and a `denied` `session_resume`
+audit row. `Inventory.Held` answers "no fresh probe" once the machine's last
+probe is older than two probe intervals, so step 8 refuses with `unavailable`.
 
 The 201 body is the terminal body plus `supersedes`. The launch writes its
 ordinary `session_launch` row and no other audit row is added; the

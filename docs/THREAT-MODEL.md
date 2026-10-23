@@ -174,7 +174,7 @@ outside it is not a relay bug, however real.
    holding the conversation. A conversation link needs the process's
    `RELAY_SESSION_ID` marker, its own registry entry, a folder inside the
    record's and, on the console, descent from the record's bound root.
-   The same door adopts an idle console Pi whose verified package bin,
+   The adopt door also adopts an idle console Pi whose verified package bin,
    kernel lifetime and actual cwd match one default-root transcript header.
    After Pi erases its arguments, recognition requires the exact operator
    Node executable file and kernel argv `pi` followed only by empty arguments.

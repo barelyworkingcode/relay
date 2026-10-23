@@ -20,14 +20,16 @@ func RegisterSessionHistoryRoutes(rr *control.RouteRegistrar, ops *historyOps) {
 		writeJSON(w, http.StatusOK, ops.List(r.URL.Query().Get("projectId")))
 	})
 	rr.Handle(control.ClassExecute, "POST /api/session-history/{id}/resume", func(w http.ResponseWriter, r *http.Request) {
-		if ops == nil || ops.index == nil {
-			writeChiefOfStaffError(w, http.StatusServiceUnavailable, "history_unavailable", "session history is not available")
-			return
-		}
 		var body historyResumeBody
 		data, err := io.ReadAll(io.LimitReader(r.Body, 4097))
-		if err != nil || len(data) > 4096 || json.Unmarshal(data, &body) != nil {
+		if err != nil || len(data) > 4096 || json.Unmarshal(data, &body) != nil ||
+			body.Cols < 1 || body.Cols > 1000 || body.Rows < 1 || body.Rows > 1000 {
 			out := historyRefusal(http.StatusBadRequest, "invalid_body", "the body must be {\"cols\":1-1000,\"rows\":1-1000}")
+			writeJSON(w, out.Status, out.Body)
+			return
+		}
+		if ops == nil || ops.index == nil {
+			out := historyRefusal(http.StatusServiceUnavailable, "history_unavailable", "session history is not available")
 			writeJSON(w, out.Status, out.Body)
 			return
 		}

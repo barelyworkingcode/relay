@@ -59,8 +59,9 @@ func (r *appRouter) SessionExited(ctx context.Context, req bridge.SessionExitedR
 				slog.Warn("session exited: ledger remove failed", "session", req.SessionID, "error", err)
 			}
 		default:
-			// A terminal is never in the ledger (C5), so "no such record" here
-			// is the ordinary pty case, not a failure worth logging.
+			// Only a claude-code terminal has a ledger record; every other
+			// terminal has none, so "no such record" here is the ordinary pty
+			// case, not a failure worth logging.
 			if rec, ok := r.sessions.Get(req.SessionID); ok && !r.detachedAgentStillRuns(rec) {
 				if _, err := r.sessions.SetState(req.SessionID, ledger.StateDormant); err != nil {
 					slog.Warn("session exited: ledger update failed", "session", req.SessionID, "error", err)

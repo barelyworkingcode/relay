@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -275,8 +276,9 @@ func (l *Ledger) RemoveDiscovered(ids []string) (int, error) {
 // under a name that no longer adds anything. recordMachine names a launched
 // record's machine; a discovered record's is its host id, else "console". It
 // never removes a live record or an agent record. It reports whether anything
-// changed.
-func (l *Ledger) LinkConversation(sessionID, machineKey, conversationID string, recordMachine func(Record) string) (bool, error) {
+// changed. A record is removed only when its Directory equals cwd, the link's
+// working folder, or holds it.
+func (l *Ledger) LinkConversation(sessionID, machineKey, conversationID, cwd string, recordMachine func(Record) string) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	rec, ok := l.records[sessionID]
@@ -292,7 +294,7 @@ func (l *Ledger) LinkConversation(sessionID, machineKey, conversationID string, 
 	rec.ConversationID = conversationID
 	l.records[sessionID] = rec
 	for id, r := range l.records {
-		if id == sessionID || r.ConversationID != conversationID || r.Agent != agent {
+		if id == sessionID || r.ConversationID != conversationID || r.Agent != agent || !dirContains(r.Directory, cwd) {
 			continue
 		}
 		machine := ""
@@ -326,6 +328,17 @@ func (l *Ledger) LinkConversation(sessionID, machineKey, conversationID string, 
 		return false, err
 	}
 	return true, nil
+}
+
+// dirContains reports whether dir equals cwd or is a parent of it, by path
+// segments. An empty dir or cwd contains nothing: a record with no folder is
+// never removed on a link's word.
+func dirContains(dir, cwd string) bool {
+	if dir == "" || cwd == "" {
+		return false
+	}
+	dir, cwd = filepath.Clean(dir), filepath.Clean(cwd)
+	return cwd == dir || strings.HasPrefix(cwd, strings.TrimSuffix(dir, string(filepath.Separator))+string(filepath.Separator))
 }
 
 // Remove deletes the record named id and saves. A no-op for an id the

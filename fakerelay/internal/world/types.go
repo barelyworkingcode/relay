@@ -10,6 +10,7 @@ import (
 
 // World is the whole spec. It is read once at serve and never mutated.
 type World struct {
+	history         *HistoryStore     // built by History; never in the spec
 	Schema          int               `json:"schema"`
 	Listeners       Listeners         `json:"listeners"`
 	Credentials     []Credential      `json:"credentials"`

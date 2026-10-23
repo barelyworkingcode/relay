@@ -234,9 +234,6 @@ func (o *historyOps) resume(ctx context.Context, ev *logging.Event, caller Launc
 	if o.index == nil || !d.ready() || d.sessions == nil || o.inv == nil {
 		return historyRefusal(http.StatusServiceUnavailable, "history_unavailable", "session history is not available")
 	}
-	if body.Cols < 1 || body.Cols > 1000 || body.Rows < 1 || body.Rows > 1000 {
-		return historyRefusal(http.StatusBadRequest, "invalid_body", "cols and rows must be 1 to 1000")
-	}
 	rec, ok := d.sessions.Get(id)
 	if !ok {
 		return historyRefusal(http.StatusNotFound, "history_not_found", "history entry not found")
@@ -298,7 +295,7 @@ func (o *historyOps) resume(ctx context.Context, ev *logging.Event, caller Launc
 	}
 	// The new record already carries the conversation, so linking removes the old
 	// one in the same save.
-	if _, err := d.sessions.LinkConversation(result.SessionID, "console", rec.ConversationID, func(r ledger.Record) string { return recordMachineKey(o.store, r) }); err != nil {
+	if _, err := d.sessions.LinkConversation(result.SessionID, "console", rec.ConversationID, directory, func(r ledger.Record) string { return recordMachineKey(o.store, r) }); err != nil {
 		slog.Warn("session history: old record not removed after resume", "session", id, "error", err)
 	}
 	ev.Set("new_session_id", result.SessionID)
