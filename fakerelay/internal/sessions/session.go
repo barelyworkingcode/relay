@@ -378,7 +378,9 @@ func (s *svc) resumeSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *svc) deleteSession(w http.ResponseWriter, r *http.Request) {
-	s.removeSession(r.Context(), r.PathValue("id"))
+	id := r.PathValue("id")
+	s.removeSession(r.Context(), id)
+	s.World.History().Remove(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
