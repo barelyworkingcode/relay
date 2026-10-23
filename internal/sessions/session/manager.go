@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -360,6 +361,10 @@ type CreateSpec struct {
 	// the codex daemon holds, so the first start attaches to it instead of
 	// running a codex of its own.
 	AttachCodexThread string
+	// AdoptHost makes the start of a detached host claude session the end of
+	// an adopt: the host script checks and stops the outside process, then
+	// starts the agent.
+	AdoptHost *sshhost.AdoptPins
 }
 
 func (m *Manager) providerKindSupported(kind string) bool {
@@ -459,12 +464,21 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 	} else {
 		slot.sess = sess
 		slot.spec = spec
+		// Deliberate: a restart of this session reuses the stored spec, and the
+		// adopt script must never run again for a session it already started.
+		slot.spec.AdoptHost = nil
 	}
 	m.mu.Unlock()
 
 	if err != nil {
 		if sess != nil && !spec.AttachOnly {
 			m.signal(sess, attention.LaunchFailed)
+		}
+		// Deliberate: a host adopt whose result never arrived, or whose start
+		// failed after the outside process ended, keeps its session saved so it
+		// lists as dormant and a resume finds it. A refusal leaves nothing.
+		if sess != nil && spec.AdoptHost != nil && (errors.Is(err, provider.ErrAdoptLinkLost) || errors.Is(err, provider.ErrAdoptLaunchFailed)) {
+			m.persist(sess)
 		}
 		close(slot.done)
 		return nil, err
@@ -517,6 +531,12 @@ func (m *Manager) resolveSessionForCreate(spec CreateSpec, reused *sessionstypes
 	}
 	if spec.Resume {
 		sess, err := m.store.Load(spec.SessionID)
+		if errors.Is(err, fs.ErrNotExist) && spec.AdoptHost != nil {
+			// Deliberate: a host adopt saves its session only after the start
+			// succeeds, so a resume after a dropped link finds none. It builds
+			// the session the adopt would have, seeded with the conversation.
+			return buildNewSession(spec, m.cfg.clockOrDefault().Now()), nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("session: resume %s: not found on disk: %w", spec.SessionID, err)
 		}
@@ -788,9 +808,13 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 		ccfg.PassthroughEnv = spec.ClaudeEnv
 		ccfg.SandboxProfile = spec.SandboxProfile
 		ccfg.Launcher = spec.Launcher
-		ccfg.DefaultModel = spec.Entry != "" && spec.Model == ""
+		// Deliberate: a host session with no entry and no model is an adopt that
+		// found none (a raw host start must carry one), and the binary runs its
+		// own default, on every restart of it as well.
+		ccfg.DefaultModel = spec.Model == "" && (spec.Entry != "" || spec.Host != nil)
 		ccfg.Resume = spec.Resume
 		ccfg.AttachOnly = spec.AttachOnly
+		ccfg.AdoptHost = spec.AdoptHost
 		return provider.NewClaudeProvider(sess, handler, ccfg, m.perms), nil
 	case KindPi:
 		picfg := m.cfg.Pi

@@ -42,6 +42,8 @@ const (
 var adoptJourneys = []journey{
 	{adoptID, []string{"sessions", "audit"}, []string{"project:acme"}, phaseAPI, 240 * time.Second, runAdopt},
 	{adoptUnsID, []string{"sessions", "audit"}, nil, phaseAPI, 300 * time.Second, runAdoptUnsandboxed},
+	{adoptHostID, []string{"sessions", "audit"}, nil, phaseAPI, 600 * time.Second, runAdoptHost},
+	{adoptHostDropID, []string{"sessions", "audit"}, nil, phaseAPI, 600 * time.Second, runAdoptHostDrop},
 }
 
 var adoptTrustPrompt = regexp.MustCompile(`(?i)trust (this|the files in this) folder|Do you trust|Yes, I trust`)

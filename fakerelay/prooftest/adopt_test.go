@@ -210,10 +210,11 @@ func TestAdoptFixtureRefused(t *testing.T) {
 	putRows(t, e.in, valid("adoptable", false, "adopt_reason", "invalid_id"))
 	// A Claude row in no project is adoptable, and its folder may be unusable.
 	putRows(t, e.in, valid("project_id", nil, "adopt", J{"refuse": "directory_unusable"}))
+	// A Claude row on a host is adoptable, and may carry the host link refusal.
+	putRows(t, e.in, valid("host_id", "h_box", "machine", "testbox", "project_id", "p_box", "directory", "/home/acme/app", "adopt", J{"refuse": "host_link_lost"}))
 
 	cases := map[string]J{
 		"adoptable on an ended row":         valid("state", "ended", "ended_at", "2026-01-01T00:00:00Z"),
-		"adoptable on a host row":           valid("host_id", "h_box", "machine", "testbox"),
 		"no_project reason on a Claude row": valid("adoptable", false, "project_id", nil, "adopt_reason", "no_project"),
 		"no_project reason in a project":    valid("adoptable", false, "adopt_reason", "no_project"),
 		"directory_unusable in a project":   valid("adopt", J{"refuse": "directory_unusable"}),
@@ -449,6 +450,51 @@ func oneRow(kv ...any) func(adoptEnv) []J {
 	return func(e adoptEnv) []J { return []J{adoptRow(1, e.dir, kv...)} }
 }
 
+// hostRow is a live, adoptable row on host h_box in its host project.
+func hostRow(n int, kv ...any) J {
+	return adoptRow(n, "/home/acme/app", append([]any{"host_id", "h_box", "machine", "testbox", "project_id", "p_box"}, kv...)...)
+}
+
+// Regression: a host row is refused as before, adopts into a local project or with no host on the
+// session, claims unsandboxed, answers model_unknown, takes the model from the wrong place, or the
+// host_link_lost knob answers another status or message, or consumes the row.
+func TestAdoptHost(t *testing.T) {
+	t.Parallel()
+	e := startAdopt(t)
+	putRows(t, e.in, hostRow(1, "adopt", J{"model_family": "sonnet"}), hostRow(2), hostRow(3, "adopt", J{"model_family": "sonnet"}),
+		hostRow(4, "adopt", J{"refuse": "host_link_lost"}))
+
+	model := func(n int, body J) any {
+		body["outsideId"] = adoptID(n)
+		sid := adoptCall(t, e.in, body, fmt.Sprintf("adopt-host-%04d", n)).is(t, 201).obj(t)["sessionId"].(string)
+		for _, s := range sessionRows(t, e.in) {
+			if s["id"] != sid {
+				continue
+			}
+			if _, has := s["unsandboxed"]; has {
+				t.Errorf("host session %d lists unsandboxed", n)
+			}
+			eq[any](t, [3]any{s["headless"], s["projectId"], s["directory"]}, [3]any{true, "p_box", "/home/acme/app"}, "headless, project and folder")
+			h, _ := s["host"].(map[string]any)
+			eq[any](t, [2]any{h["id"], h["name"]}, [2]any{"h_box", "testbox"}, "host")
+			return s["model"]
+		}
+		t.Fatalf("session %s is not listed", sid)
+		return nil
+	}
+	eq(t, model(1, J{}), any("sonnet"), "model from the family")
+	eq(t, model(2, J{}), any(""), "model with none to take")
+	eq(t, model(3, J{"model": "opus"}), any("opus"), "model from the body")
+
+	lost := adoptCall(t, e.in, J{"outsideId": adoptID(4)}, "adopt-host-lost-0001").is(t, 502).obj(t)
+	eq[any](t, lost["error"], "host_link_lost", "code")
+	eq[any](t, lost["message"], "the connection to testbox dropped during the adopt; the session shows as dormant, and Resume continues it", "message")
+	detail(t, e.in, adoptID(4)).is(t, 200)
+	eq(t, len(sessionRows(t, e.in)), 3, "sessions after the lost link")
+	ev := adoptEvent(t, e.in, "adopt-host-lost-0001")
+	eq[any](t, [2]any{ev["status"], ev["reason"]}, [2]any{"error", "host_link_lost"}, "event")
+}
+
 // Regression: a refusal answers another status or code, judges steps in another order, changes the
 // row, launches a session, or writes an event with other keys.
 func TestAdoptRefusals(t *testing.T) {
@@ -490,7 +536,7 @@ func TestAdoptRefusals(t *testing.T) {
 		{name: "ambiguous", rows: func(e adoptEnv) []J {
 			return []J{adoptRow(1, e.dir), adoptRow(2, e.dir, "claude_session_id", adoptUUID(1))}
 		}, body: func(adoptEnv) any { return J{"claudeSessionId": adoptUUID(1)} }, status: 409, code: "ambiguous", msg: "more than one live process holds this conversation"},
-		{name: "host", rows: oneRow("adoptable", false, "host_id", "h_box", "machine", "testbox"), body: idBody(nil), status: 409, code: "host_unsupported", msg: "sessions on an SSH host cannot be adopted"},
+		{name: "host", rows: oneRow("adoptable", false, "host_id", "h_box", "machine", "testbox"), body: idBody(nil), status: 409, code: "host_unsupported", msg: "the session cannot be adopted: host_unsupported"},
 		{name: "no project row keeps its reason", rows: oneRow("adoptable", false, "project_id", nil, "adopt_reason", "not_interactive"), body: idBody(nil), status: 409, code: "not_interactive", msg: "the session cannot be adopted: not_interactive"},
 		{name: "not registered", rows: oneRow("adoptable", false), body: idBody(nil), status: 409, code: "not_registered", msg: "the session cannot be adopted: not_registered"},
 		{name: "audit off", rows: oneRow("adopt", J{"refuse": "audit_unavailable"}), body: idBody(nil), status: 503, code: "audit_unavailable", msg: "auditing is off; no session can be adopted"},
