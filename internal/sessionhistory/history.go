@@ -151,6 +151,8 @@ type Options struct {
 	Project       func(machineKey, directory string) *string
 	RecordMachine func(r ledger.Record) string
 	View          func() View
+	// Purge removes records whose transcript is gone; the zero value purges nothing.
+	Purge PurgeDeps
 }
 
 // View is what one Rows call or one scan asks of relay's settings and probes.
@@ -334,6 +336,9 @@ func (x *Index) scan(ctx context.Context, key string) {
 		return
 	}
 	superseded, evicted := x.reconcile(ctx, m, listing.Entries, err == nil && listing.Answered)
+	if err == nil && listing.Answered {
+		x.purge(ctx, m, listing)
+	}
 	now := x.o.Clock.Now()
 	x.mu.Lock()
 	// Checked under the lock: forget cancels first, then deletes, so a scan

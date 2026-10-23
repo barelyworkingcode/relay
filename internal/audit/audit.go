@@ -100,6 +100,10 @@ const (
 	AuditEventSessionEnd    = "session_end"
 	AuditEventSessionResume = "session_resume"
 
+	// SessionPurge records the removal of a history record whose transcript is
+	// gone. The row is written before the record is removed.
+	AuditEventSessionPurge = "session_purge"
+
 	// SessionMessage records one message a non-person origin (the Chief of
 	// Staff) sent into a session through relay: an intent row before
 	// delivery and a completion row after, sharing one id.

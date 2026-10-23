@@ -85,6 +85,9 @@ type Record struct {
 	// AdoptPending marks a dormant record whose host adopt has not settled:
 	// the outside process it names may still run. A resume checks it first.
 	AdoptPending *AdoptPending `json:"adopt_pending,omitempty"`
+	// MissingSince is the first answered scan that found no transcript for the
+	// record's conversation; nil while the transcript is present.
+	MissingSince *time.Time `json:"missing_since,omitempty"`
 }
 
 // AdoptPending pins the outside process a host adopt was taking over.
@@ -279,6 +282,57 @@ func (l *Ledger) RemoveDiscovered(ids []string) (int, error) {
 		return 0, err
 	}
 	return len(removed), nil
+}
+
+// SetMissing marks the records named by ids as missing since the given time, or
+// clears the mark when since is nil, in one save, and returns how many changed.
+// A record already marked keeps its first time.
+func (l *Ledger) SetMissing(ids []string, since *time.Time) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	prev := map[string]Record{}
+	for _, id := range ids {
+		r, ok := l.records[id]
+		if !ok || (since == nil && r.MissingSince == nil) || (since != nil && r.MissingSince != nil) {
+			continue
+		}
+		prev[id] = r
+		if since != nil {
+			t := *since
+			r.MissingSince = &t
+		} else {
+			r.MissingSince = nil
+		}
+		l.records[id] = r
+	}
+	if len(prev) == 0 {
+		return 0, nil
+	}
+	if err := l.saveLocked(); err != nil {
+		for id, r := range prev {
+			l.records[id] = r
+		}
+		return 0, err
+	}
+	return len(prev), nil
+}
+
+// RemoveIfPurgeable removes the record only when guard still holds for it under
+// the ledger's lock, so a record that went live or was claimed since the caller
+// looked stays.
+func (l *Ledger) RemoveIfPurgeable(id string, guard func(Record) bool) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.records[id]
+	if !ok || guard == nil || !guard(r) {
+		return false, nil
+	}
+	delete(l.records, id)
+	if err := l.saveLocked(); err != nil {
+		l.records[id] = r
+		return false, err
+	}
+	return true, nil
 }
 
 // LinkConversation sets ConversationID on the live record sessionID and, in the

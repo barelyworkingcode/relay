@@ -39,6 +39,8 @@ type Settings struct {
 	ChiefOfStaff *ChiefOfStaffConfig `json:"chief_of_staff,omitempty"`
 	// OutsideSessions tunes the outside-session list. nil: every default.
 	OutsideSessions *OutsideSessionsConfig `json:"outside_sessions,omitempty"`
+	// SessionHistory tunes the session history. nil: every default.
+	SessionHistory *SessionHistoryConfig `json:"session_history,omitempty"`
 	// AdminSecret is sealed (§4.1): it is a plaintext bearer the bridge
 	// accepts for a handful of admin ops, not a value relay only checks.
 	AdminSecret Secret `json:"admin_secret,omitempty"`
