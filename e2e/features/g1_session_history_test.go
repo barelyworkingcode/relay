@@ -430,23 +430,34 @@ func TestHistoryDiscoveredAfterRestart(t *testing.T) {
 		t.Fatalf("%d rows before the restart, want 2", len(before.Rows))
 	}
 
+	// The transcripts leave the store while relay is down, so the rows after
+	// the first scan can only come from the ledger.
+	root := filepath.Join(h.i.Home, ".claude", "projects")
+	stash := filepath.Join(t.TempDir(), "projects")
+	if err := os.Rename(root, stash); err != nil {
+		t.Fatalf("moving the store aside: %v", err)
+	}
 	since := time.Now()
 	h.i.Restart()
 	h.i.WaitSessionHost(osBound)
-	// The scan may already have ended, so a not-ready body must carry no title.
+	h.i.WaitEvent(harness.EventQuery{Key: "session.history.scan", Since: since, Fields: map[string]any{"machine": "console"}}, osBound)
 	early := h.rows()
-	if len(early.Rows) != 2 {
-		t.Fatalf("%d rows right after the restart, want the same 2 discovered records", len(early.Rows))
+	if !early.Ready || len(early.Rows) != 2 {
+		t.Fatalf("after the first scan ready=%v rows=%+v, want the 2 discovered records", early.Ready, early.Rows)
 	}
-	for k, r := range early.Rows {
-		if r.ID != before.Rows[k].ID || r.State != "discovered" || (!early.Ready && r.Title != nil) {
-			t.Fatalf("row %d after the restart (ready=%v) = %+v, want %s without a title until the scan ends", k, early.Ready, r, before.Rows[k].ID)
+	for _, r := range early.Rows {
+		if b := before.byConv(*r.ConversationID); b == nil || b.ID != r.ID || r.State != "discovered" || r.Transcript != "unknown" || r.Title != nil || r.LastActiveAt != nil {
+			t.Fatalf("row %+v, want the discovered record %v with transcript unknown and no title or time (no answered listing)", r, b)
 		}
 	}
-	h.i.WaitEvent(harness.EventQuery{Key: "session.history.scan", Since: since, Fields: map[string]any{"machine": "console"}}, osBound)
+
+	if err := os.Rename(stash, root); err != nil {
+		t.Fatalf("moving the store back: %v", err)
+	}
+	h.scan(nil)
 	after := h.rows()
-	if !after.Ready || !reflect.DeepEqual(before.Rows, after.Rows) {
-		t.Fatalf("after the first scan ready=%v rows=%+v, want the rows %+v with their titles", after.Ready, after.Rows, before.Rows)
+	if !reflect.DeepEqual(before.Rows, after.Rows) {
+		t.Fatalf("after the store returned rows=%+v, want the rows %+v with their titles", after.Rows, before.Rows)
 	}
 }
 
