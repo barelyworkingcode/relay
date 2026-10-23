@@ -150,8 +150,8 @@ absent from the TCP mux and from the Chief of Staff scope. An unknown
 - `transcript` is `present` when the machine's last answered listing `Has` the
   conversation, `absent` when `Listing.Absent(agent, id, directory)` is true,
   else `unknown`. `Absent` needs an answered, `Complete` listing that lacks the
-  conversation and whose scope covers the directory's folder and which refused no folder named
-like it or starting with it; a listing past the
+  conversation, whose scope covers the directory's folder, and which refused no
+  folder named like it or starting with it; a listing past the
   cap, a host project removed from the scope, a missing `conversationId` or a
   client no reader covers all give `unknown`. A
   `present` row whose file no scan has read yet shows `title` and `lastActiveAt`

@@ -65,8 +65,10 @@ const claudeRootCheck = `[ ! -L "$HOME/.claude" ] && [ ! -L "$root" ] && [ -d "$
 
 // claudeListScript prints the home, then "F folder/stem size mtime" per regular
 // transcript at depth 2, and "OK" once it ran to the end. "X" before "OK" means
-// the cap was reached. A symlink on the file, its folder, the root or ~/.claude
-// is refused, and nothing is written. Every prefix passes a charset check, so
+// the listing is incomplete: the cap was reached, find or stat failed, or the
+// symlink list was cut. "R" lines name the folders refused for a symlink on the
+// folder or a transcript, within the same prefixes. A symlink on the file, its
+// folder, the root or ~/.claude is refused, and nothing is written. Every prefix passes a charset check, so
 // none can carry shell syntax.
 func claudeListScript(prefixes []string) string {
 	filter := ""
@@ -101,9 +103,13 @@ while read -r mt sz f; do
  n=$((n+1))
 done
 [ "$over" = 1 ] && echo X
-find "$root" -mindepth 1 -maxdepth 2 -type l 2>/dev/null | head -n 1024 | while read -r l; do
+k=0
+find "$root" -mindepth 1 -maxdepth 2 -type l 2>/dev/null | while read -r l; do
  rel=${l#"$root"/}
  case "$rel" in */*) case "$rel" in *.jsonl) rel=${rel%%/*};; *) continue;; esac;; esac
+ base=$rel
+` + filter + ` k=$((k+1))
+ [ "$k" -le 1024 ] || { echo X; break; }
  printf 'R\t'; printf '%s' "$rel" | b64; printf '\n'
 done
 echo OK

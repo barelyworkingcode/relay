@@ -54,8 +54,9 @@ type Listing struct {
 }
 
 // Absent reports that a transcript is gone: the listing answered and was
-// complete, its scope covers the conversation's folder, and it does not hold it.
-// Anything else is unknown, never absent.
+// complete, its scope covers the conversation's folder, it refused no folder
+// named like it or starting with it, and it does not hold it. Anything else is
+// unknown, never absent.
 func (l Listing) Absent(agent, conversationID, directory string) bool {
 	folder := outsidesessions.FolderName(directory)
 	for name := range l.Refused {
