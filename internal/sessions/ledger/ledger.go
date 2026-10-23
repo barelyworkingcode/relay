@@ -292,8 +292,6 @@ func (l *Ledger) LinkConversation(sessionID, machineKey, conversationID string, 
 	rec.ConversationID = conversationID
 	l.records[sessionID] = rec
 	for id, r := range l.records {
-		// The spot for relay#589's AdoptPending guard: a record with it set is
-		// never removed here.
 		if id == sessionID || r.ConversationID != conversationID || r.Agent != agent {
 			continue
 		}
