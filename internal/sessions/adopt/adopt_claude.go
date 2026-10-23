@@ -259,6 +259,15 @@ func lastTurnBoundary(data []byte, start time.Time) (since time.Time, sawPrompt 
 	return b.since, b.sawPrompt
 }
 
+// TurnWindow is lastTurnBoundary for a caller outside this package. known is
+// false when tail is not the whole file and holds no prompt: the prompt may lie
+// before it, and the boundary cannot be told from a tail alone. procStart is
+// truncated to the second, as the registry records it.
+func TurnWindow(tail []byte, whole bool, procStart time.Time) (from time.Time, known bool) {
+	since, sawPrompt := lastTurnBoundary(tail, procStart.Truncate(time.Second))
+	return since, whole || sawPrompt
+}
+
 type boundary struct {
 	start     time.Time
 	since     time.Time

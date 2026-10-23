@@ -1297,6 +1297,62 @@ every `relay audit --event session_adopt` row for the conversation carries
   project, which the door refuses as `changed`. Cleanup also removes the scratch
   folder (only a folder whose name starts with `verify-`).
 
+**session-adopt-host** (api, so a `--stack` run drives it). An interactive Claude
+started in a terminal on the loopback SSH host is adopted and driven as a host
+session. The fixture is `session-swap-back`'s: a loopback host with no
+`detach_sessions` key, a project on it allowing `claude-code`, the host's
+`tmux_path` and a seeded `proxy`+`execute` credential. The journey starts `claude
+--model haiku --session-id <uuid>` in a named tmux session
+`verify-<nonce>-ahost` on the default tmux server, in the host project's folder,
+with the stack's local model endpoint (as `session-adopt`), and answers the
+trust prompt. It reads the Chief of Staff outside list for the row with the
+host's `hostId` (never its console twin) and posts `{outsideId, model: "haiku"}`.
+PASS when the door answers 201; `relay session list` shows the session with the
+host, `headless: true` and no `unsandboxed`; the host's tmux holds
+`relay-agent-<id>`; a Chief of Staff send answers 202 and the reply is in the
+same `<uuid>.jsonl`; `POST /api/sessions/{id}/drop-in` opens Claude (`claude
+--resume` in the host's process table) and a send answers 409 `dropped_in`;
+closing the terminal ends in `session.hand_back` ok and the session lists headless
+again; a second send answers 202 and replies; every `session_adopt` row carries
+the host's `host_id`, with the intent and an ok completion. NOTRUN off a stack or
+with no `claude_base_url`.
+- Waits: the outside reply is model output: a bounded read of the transcript, 120
+  s; the registry `idle` re-read, 60 s; the trust prompt, pane capture, 30 s; the
+  outside row, the probe interval, polled 90 s until the host row reads `idle` (the door judges busy from that snapshot state). Everything else waits on HTTP
+  answers, CLI exits and the `session.hand_back` event.
+- Lives in: `cmd/relay/session_adopt_host.go`, `internal/sshhost/adopt.go`.
+- Reached by: `POST /api/sessions/adopt`, `POST /api/sessions/{id}/drop-in` and
+  `DELETE /api/terminals/{id}` (the drop-in `relay drop-in` calls),
+  `POST /api/chief-of-staff/messages`, `relay session list`, `relay audit`.
+- Setup: the fixture host gets a seeded successful `probe` record (`claude_path` = the
+  fixture's launcher, which sets the stack's model env; `tmux_path`; this machine's
+  `os` and `home`), written before the outside row wait: a plain host Claude launch
+  needs a probed `claude_path`.
+- Traps: the adopt sends `haiku`, as `session-adopt` does: on a stack the
+  transcript names the stack's model id, not a Claude family, and the stack maps
+  only the haiku alias. An e2e test covers the no-model rule. Cleanup ends only its own tmux session
+  (`tmux kill-session`), never the server, which also holds the host's
+  `relay-agent-*` sessions.
+
+**session-adopt-host-drop** (api). The same setup; the journey stops the outside
+Claude with SIGSTOP so the script's SIGTERM wait runs its full bound. On the
+`signal TERM` line of the host's `~/.relay/agents/<id>/adopt.state` it kills the
+adopt's `ssh` client (a process named `ssh`, child of relay-sessions, whose
+launcher script, base64-decoded from its arguments, holds `relay-adopt` and the session id; never the `relay-adopt-run` shell). PASS when the
+adopt answers 502 `host_link_lost`; the `adopt.state` terminal line reads `ok
+<generation>`; `relay session resume` exits 0; and a `relay session message`
+reply is in the same transcript. FAIL when the outside process is gone and the
+resume finds no session.
+- Waits: the `adopt.state` lines (polled files, 90 s for `signal TERM`, 180 s for
+  the terminal line), the adopt's HTTP answer and CLI exits. The reply is model
+  output: the answer of `relay session message`, then a transcript check.
+- Lives in: as `session-adopt-host`, plus the dormant record and Resume.
+- Reached by: `POST /api/sessions/adopt`, `relay session resume`,
+  `relay session message`.
+- Traps: no `ssh` client to kill is a FAIL, not a BLOCKED: the adopt command is
+  the one under test. Cleanup continues the outside Claude and kills it if it is
+  still there.
+
 **session-host-restart** (screen). The admin op `service.restart
 {"id":"relaysessions"}` answers without error, and within 15 s
 `relaysessions` is STATE `running` with a `relay-sessions` pid it did not
