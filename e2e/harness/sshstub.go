@@ -190,3 +190,32 @@ func (i *Instance) SSHLieStart(pid int) {
 		t.Fatalf("writing %s: %v", path, err)
 	}
 }
+
+// SSHNoClaude removes from the stub host's PATH every directory that holds an
+// executable named claude, so a probe of the host finds none. The stub reads
+// its config on every call, so the change applies to the next ssh call. Needs
+// Options.SSHStub.
+func (i *Instance) SSHNoClaude() {
+	t := i.t
+	t.Helper()
+	i.requireSSHStub()
+	path := filepath.Join(i.Dir, "sshstub", "fakessh.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	var cfg map[string]string
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("decoding %s: %v", path, err)
+	}
+	var keep []string
+	for _, d := range strings.Split(cfg["path"], string(os.PathListSeparator)) {
+		if fi, err := os.Stat(filepath.Join(d, "claude")); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			continue
+		}
+		keep = append(keep, d)
+	}
+	cfg["path"] = strings.Join(keep, string(os.PathListSeparator))
+	out, _ := json.Marshal(cfg)
+	writeFileAtomic(t, path, out)
+}

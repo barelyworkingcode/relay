@@ -42,6 +42,13 @@ type haRig struct {
 // returns once every machine has completed a probe.
 func haStart(t *testing.T, detach string) *haRig {
 	t.Helper()
+	return haStartWith(t, detach, true)
+}
+
+// haStartWith is haStart; with hostClaude false the host has no claude on its
+// PATH, so its probe finds none.
+func haStartWith(t *testing.T, detach string, hostClaude bool) *haRig {
+	t.Helper()
 	seed := `[{"id":"` + haHostID + `","name":"testbox","target":"` + haTarget + `",` + detach + `"created_at":"2026-01-01T00:00:00Z"}]`
 	i := cosStart(t, func(o *harness.Options) {
 		o.SSHStub = true
@@ -51,11 +58,25 @@ func haStart(t *testing.T, detach string) *haRig {
 
 	// The host's claude-code template exists only when a probe finds claude on
 	// the host, so the host gets the fake as its claude first.
-	claudeDir := filepath.Join(g.remote, "hostclaude")
-	g.mkdir(t, claudeDir)
-	g.write(t, filepath.Join(claudeDir, "claude"), "#!/bin/sh\nexec "+agShQuote(filepath.Join(i.Home, ".local", "bin", "claude"))+" \"$@\"\n", 0o755)
-	g.write(t, filepath.Join(g.remote, ".profile"), "export PATH="+agShQuote(claudeDir)+":\"$PATH\"\n", 0o600)
-	i.MustCLI("host", "probe", "--id", haHostID, "--json")
+	if hostClaude {
+		claudeDir := filepath.Join(g.remote, "hostclaude")
+		g.mkdir(t, claudeDir)
+		g.write(t, filepath.Join(claudeDir, "claude"), "#!/bin/sh\nexec "+agShQuote(filepath.Join(i.Home, ".local", "bin", "claude"))+" \"$@\"\n", 0o755)
+		g.write(t, filepath.Join(g.remote, ".profile"), "export PATH="+agShQuote(claudeDir)+":\"$PATH\"\n", 0o600)
+	} else {
+		// This machine's own claude is on the stub's PATH.
+		i.SSHNoClaude()
+	}
+	var probed struct {
+		Probe struct {
+			OK         bool   `json:"ok"`
+			ClaudePath string `json:"claude_path"`
+		} `json:"probe"`
+	}
+	i.MustCLI("host", "probe", "--id", haHostID, "--json").JSON(t, &probed)
+	if probed.Probe.OK && (probed.Probe.ClaudePath != "") != hostClaude {
+		t.Fatalf("the host probe found claude_path %q, want one only when the rig gives the host a claude", probed.Probe.ClaudePath)
+	}
 
 	// The project's path is the resolved one: the probe reports a process's
 	// resolved folder, and the launch refuses a folder outside the project.
@@ -405,5 +426,24 @@ func TestAdoptHostLinkDrop(t *testing.T) {
 	}
 	if len(gens) != 1 || gens[0] != "g1" {
 		t.Fatalf("generations after the resume are %v, want only g1", gens)
+	}
+}
+
+// AC (amendment): a Claude row on a host whose probe found no claude reads
+// host_unsupported, and the adopt door refuses it as any non-adoptable row.
+func TestAdoptHostNoClaude(t *testing.T) {
+	t.Parallel()
+	h := haStartWith(t, haDetachOn, false)
+	f := h.hostFake("app", "INT", "TERM")
+	f.idle(h.remote, adModelSn)
+	id, row := h.hostRow(f)
+	if row["adoptable"] != false || row["adoptReason"] != "host_unsupported" {
+		t.Fatalf("host row = %v, want adoptable false and adoptReason host_unsupported", row)
+	}
+
+	otRefusal(t, h.adopt(map[string]any{"outsideId": id, "interrupt": true}), http.StatusConflict, "host_unsupported")
+	adNoSignals(t, f)
+	if n := len(haSessions(t, h.i)); n != 0 {
+		t.Fatalf("a refused adopt left %d sessions", n)
 	}
 }
