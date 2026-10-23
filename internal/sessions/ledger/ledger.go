@@ -227,6 +227,31 @@ func (l *Ledger) PutDiscovered(recs []Record) (int, error) {
 	return len(added), nil
 }
 
+// RemoveDiscovered removes, in one save, only the named records that are still
+// discovered, and returns how many it removed. A record that has since become
+// something else stays.
+func (l *Ledger) RemoveDiscovered(ids []string) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	removed := map[string]Record{}
+	for _, id := range ids {
+		if r, ok := l.records[id]; ok && r.State == StateDiscovered {
+			removed[id] = r
+			delete(l.records, id)
+		}
+	}
+	if len(removed) == 0 {
+		return 0, nil
+	}
+	if err := l.saveLocked(); err != nil {
+		for id, r := range removed {
+			l.records[id] = r
+		}
+		return 0, err
+	}
+	return len(removed), nil
+}
+
 // Remove deletes the record named id and saves. A no-op for an id the
 // ledger does not hold.
 func (l *Ledger) Remove(id string) error {

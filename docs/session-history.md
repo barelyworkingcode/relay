@@ -35,7 +35,9 @@ mark records dormant or clean up a project skip it.
 ## Readers
 
 One `Reader` per client. This release has the Claude reader; its `Discover`
-returns a `Listing`: whether the machine answered, `Present` (every transcript the
+returns a `Listing`: whether the machine answered, whether it is `Complete`
+(every transcript printed, under the cap), `Scope` (the folder prefixes used; nil
+is every folder), `Present` (every transcript the
 listing script saw, read or not, interactive or not; ask `Listing.Has(agent, id)`)
 and `Entries` (only the files read and parsed, interactive ones). A reader keeps a cache per machine, in memory only, keyed by path with
 the file's size and modification time. A file absent from a listing leaves the
@@ -48,12 +50,13 @@ Each machine has a worker: one scan at start, then one every
 folder under `~/.claude/projects`. An SSH host reads only the folders of that
 host's registered projects, raw and resolved, as the ended scan does.
 
-- **Listing script.** At most 4096 regular files at depth 2
-  (`~/.claude/projects/<folder>/<uuid>.jsonl`), so subagent folders are skipped.
-  It prints the home and `path size mtime` per file. The listing is not
-  answered when the root is missing or not a folder, when a symbolic link sits on
-  `~/.claude` or the root, or when the cap is reached. A symbolic link on a
-  file or its folder drops that file.
+- **Listing script.** Regular files at depth 2
+  (`~/.claude/projects/<folder>/<uuid>.jsonl`), so subagent folders are skipped,
+  sorted by modification time, newest first, at most 4096 printed. It prints the
+  home and `folder/stem size mtime` per file, and `X` when more files follow. The
+  listing is not answered when the root is missing or not a folder, or when a
+  symbolic link sits on `~/.claude` or the root. Past the cap it still answers
+  but is not `Complete`. A symbolic link on a file or its folder drops that file.
 - **Read script.** Only for files new or changed since the last scan, at most 64
   per scan, newest first; the rest wait for the next scan. Per file it prints
   the last `custom-title` and `ai-title` records of the last 256 KiB (4 KiB
@@ -104,6 +107,11 @@ A scan writes one `session.history.scan` event per machine
 ([events](events.md)). A machine whose scan fails, or whose listing is not
 answered, keeps its last answered listing and reports `unreachable`.
 
+After every scan whose managed read succeeded, relay removes, in one save, the
+machine's discovered records whose conversation relay-sessions now holds (an
+adopted session). Only records still `discovered` go; a failed read removes
+nothing. The event's `superseded` counts them.
+
 ## Wire
 
 `GET /api/session-history[?projectId=<id>]`. Class `execute`: socket only,
@@ -134,8 +142,11 @@ absent from the TCP mux and from the Chief of Staff scope. An unknown
   `prompt` or `null`. `lastActiveAt` is `null` when no scan has read the
   transcript.
 - `transcript` is `present` when the machine's last answered listing `Has` the
-  conversation, `absent` when an answered listing lacks it, `unknown` with no
-  answered listing, no `conversationId`, or a client no reader covers. A
+  conversation, `absent` when `Listing.Absent(agent, id, directory)` is true,
+  else `unknown`. `Absent` needs an answered, `Complete` listing that lacks the
+  conversation and whose scope covers the directory's folder; a listing past the
+  cap, a host project removed from the scope, a missing `conversationId` or a
+  client no reader covers all give `unknown`. A
   `present` row whose file no scan has read yet shows `title` and `lastActiveAt`
   `null`. A launched agent record has no `conversationId`, so its row is `unknown`.
 - Rows run newest first by `lastActiveAt`, else by `createdAt` (the wire value

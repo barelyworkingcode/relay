@@ -37,11 +37,24 @@ type Entry struct {
 // the end, the store root is a real folder and the listing is under its cap.
 type Listing struct {
 	Answered bool
+	// Complete is true when the listing printed every transcript, under the cap.
+	// Answered does not depend on it.
+	Complete bool
+	// Scope is the folder prefixes the listing used; nil means every folder.
+	Scope []string
 	// Present holds every transcript the listing saw, read or not, interactive
 	// or not; Entries only the files read and parsed. Ask Has, not Entries,
 	// whether a conversation exists.
 	Present map[string]bool
 	Entries []Entry
+}
+
+// Absent reports that a transcript is gone: the listing answered and was
+// complete, its scope covers the conversation's folder, and it does not hold it.
+// Anything else is unknown, never absent.
+func (l Listing) Absent(agent, conversationID, directory string) bool {
+	return l.Answered && l.Complete && !l.Has(agent, conversationID) &&
+		hasPrefix(outsidesessions.FolderName(directory), l.Scope)
 }
 
 // PresentKey is the key of Listing.Present.
@@ -272,9 +285,7 @@ func (x *Index) scan(ctx context.Context, key string) {
 	if ctx.Err() != nil {
 		return
 	}
-	if err == nil && listing.Answered {
-		x.addDiscovered(ctx, m, listing.Entries)
-	}
+	superseded := x.reconcile(ctx, m, listing.Entries, err == nil && listing.Answered)
 	now := x.o.Clock.Now()
 	x.mu.Lock()
 	// Checked under the lock: forget cancels first, then deletes, so a scan
@@ -301,7 +312,7 @@ func (x *Index) scan(ctx context.Context, key string) {
 	x.revision++
 	revision := x.revision
 	x.mu.Unlock()
-	ev.Set("answered", answered).Set("count", len(listing.Entries)).Set("revision", int64(revision))
+	ev.Set("answered", answered).Set("complete", answered && listing.Complete).Set("superseded", superseded).Set("count", len(listing.Entries)).Set("revision", int64(revision))
 	if err != nil {
 		ev.End(logging.OutcomeError, "scan_failed", err)
 		return
@@ -310,13 +321,14 @@ func (x *Index) scan(ctx context.Context, key string) {
 }
 
 func (x *Index) discover(ctx context.Context, m Machine) (Listing, error) {
-	out := Listing{Answered: true}
+	out := Listing{Answered: true, Complete: true, Scope: m.Prefixes}
 	for _, r := range x.o.Readers {
 		l, err := r.Discover(ctx, m)
 		if err != nil {
 			return Listing{}, err
 		}
 		out.Answered = out.Answered && l.Answered
+		out.Complete = out.Complete && l.Complete
 		if out.Present == nil {
 			out.Present = map[string]bool{}
 		}
@@ -328,24 +340,51 @@ func (x *Index) discover(ctx context.Context, m Machine) (Listing, error) {
 	return out, nil
 }
 
-// addDiscovered writes one record per entry that no ledger record links and
-// relay-sessions does not manage. A failed managed read adds nothing: without
-// it a managed session could appear as a found one.
-func (x *Index) addDiscovered(ctx context.Context, m Machine, entries []Entry) {
+// reconcile removes the machine's discovered records whose conversation
+// relay-sessions now manages, and returns how many; when add is set it then
+// writes one record per entry that no ledger record links and relay-sessions
+// does not manage. A failed managed read changes nothing: without it a managed
+// session could appear as a found one.
+func (x *Index) reconcile(ctx context.Context, m Machine, entries []Entry, add bool) int {
 	if x.o.Ledger == nil || x.o.Managed == nil {
-		return
+		return 0
 	}
 	managed, err := x.o.Managed(ctx)
 	if err != nil {
-		slog.Warn("session history: managed read failed, no discovered records added", "machine", m.Key, "error", err)
-		return
+		slog.Warn("session history: managed read failed, discovered records unchanged", "machine", m.Key, "error", err)
+		return 0
 	}
+	superseded := 0
+	var gone []string
+	for _, r := range x.o.Ledger.All() {
+		if r.State == ledger.StateDiscovered && r.Agent == "claude" && managed[r.ConversationID] && r.HostID == hostIDOf(m) {
+			gone = append(gone, r.SessionID)
+		}
+	}
+	if len(gone) > 0 {
+		n, err := x.o.Ledger.RemoveDiscovered(gone)
+		if err != nil {
+			slog.Warn("session history: superseded records not removed", "machine", m.Key, "error", err)
+		}
+		superseded = n
+	}
+	if add {
+		x.addDiscovered(ctx, m, entries, managed)
+	}
+	return superseded
+}
+
+func hostIDOf(m Machine) string {
+	if m.HostID == nil {
+		return ""
+	}
+	return *m.HostID
+}
+
+func (x *Index) addDiscovered(ctx context.Context, m Machine, entries []Entry, managed map[string]bool) {
 	linked := map[string]bool{}
 	held := 0
-	hostID := ""
-	if m.HostID != nil {
-		hostID = *m.HostID
-	}
+	hostID := hostIDOf(m)
 	v := x.view()
 	existing := map[string]time.Time{}
 	for _, r := range x.o.Ledger.All() {
@@ -457,7 +496,7 @@ func (x *Index) Listing(machineKey string) (Listing, time.Time, bool) {
 	for k := range st.listing.Present {
 		present[k] = true
 	}
-	return Listing{Answered: true, Present: present, Entries: append([]Entry(nil), st.listing.Entries...)}, st.listingAt, true
+	return Listing{Answered: true, Complete: st.listing.Complete, Scope: append([]string(nil), st.listing.Scope...), Present: present, Entries: append([]Entry(nil), st.listing.Entries...)}, st.listingAt, true
 }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
@@ -590,10 +629,11 @@ func (x *Index) row(v View, r ledger.Record, machineKey, agent string, byConv ma
 	} else {
 		row.ProjectID = strPtr(r.ProjectID)
 	}
-	if r.ConversationID != "" && agent != "" && listing.Answered {
-		row.Transcript = "absent"
+	if r.ConversationID != "" && agent != "" {
 		if listing.Has(agent, r.ConversationID) {
 			row.Transcript = "present"
+		} else if listing.Absent(agent, r.ConversationID, r.Directory) {
+			row.Transcript = "absent"
 		}
 		if e, ok := byConv[convKey(agent, r.ConversationID)]; ok {
 			row.Title, row.TitleSource = strPtr(e.Title), strPtr(e.TitleSource)

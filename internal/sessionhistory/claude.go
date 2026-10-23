@@ -85,9 +85,9 @@ func claudeListScript(prefixes []string) string {
 	}
 	list := `find "$root" -mindepth 2 -maxdepth 2 -type f -name '*.jsonl' -exec stat `
 	return claudeScriptHead + `printf 'H\t'; printf '%s' "$HOME" | b64; printf '\n'
-` + claudeRootCheck + `{ if [ "$(uname)" = Darwin ]; then ` + list + `-f '%z %m %N' {} +; else ` + list + `-c '%s %Y %n' {} +; fi; } 2>/dev/null | {
+` + claudeRootCheck + `{ if [ "$(uname)" = Darwin ]; then ` + list + `-f '%m %z %N' {} +; else ` + list + `-c '%Y %s %n' {} +; fi; } 2>/dev/null | sort -rn | {
 n=0; over=0
-while read -r sz mt f; do
+while read -r mt sz f; do
  case "$sz" in ''|*[!0-9]*) continue;; esac
  case "$mt" in ''|*[!0-9]*) continue;; esac
  d=${f%/*}; base=${d##*/}; file=${f##*/}; stem=${file%.jsonl}
@@ -95,9 +95,9 @@ while read -r sz mt f; do
  case "$stem" in ????????-????-????-????-????????????) ;; *) continue;; esac
  case "$stem" in *[!0-9A-Fa-f-]*) continue;; esac
 ` + filter + ` [ ! -L "$f" ] && [ ! -L "$d" ] || continue
+ [ "$n" -lt ` + strconv.Itoa(claudeListCap) + ` ] || { over=1; break; }
  printf 'F\t%s/%s\t%s\t%s\n' "$base" "$stem" "$sz" "$mt"
  n=$((n+1))
- [ "$n" -lt ` + strconv.Itoa(claudeListCap) + ` ] || { over=1; break; }
 done
 [ "$over" = 1 ] && echo X
 echo OK
@@ -144,7 +144,7 @@ func unb64(s string) string {
 // parseClaudeList returns the home, the files and whether the listing is a
 // complete answer. A path that is not exactly home/.claude/projects/<folder>/<uuid>.jsonl
 // under an allowed prefix is dropped, whatever the script printed.
-func parseClaudeList(data []byte, prefixes []string) (home string, files []claudeFile, answered bool) {
+func parseClaudeList(data []byte, prefixes []string) (home string, files []claudeFile, answered, complete bool) {
 	over, done := false, false
 	for _, line := range strings.Split(string(data), "\n") {
 		f := strings.Split(strings.TrimRight(line, "\r"), "\t")
@@ -165,7 +165,7 @@ func parseClaudeList(data []byte, prefixes []string) (home string, files []claud
 		}
 	}
 	if home == "" || !strings.HasPrefix(home, "/") {
-		return "", nil, false
+		return "", nil, false, false
 	}
 	root := strings.TrimRight(home, "/") + "/.claude/projects/"
 	kept := files[:0]
@@ -177,7 +177,7 @@ func parseClaudeList(data []byte, prefixes []string) (home string, files []claud
 		f.path = root + folder + "/" + stem + ".jsonl"
 		kept = append(kept, f)
 	}
-	return home, kept, done && !over
+	return home, kept, done, !over
 }
 
 func hasPrefix(folder string, prefixes []string) bool {
@@ -200,7 +200,7 @@ func (c *claude) Discover(ctx context.Context, m Machine) (Listing, error) {
 	if err != nil {
 		return Listing{}, err
 	}
-	home, files, answered := parseClaudeList(data, m.Prefixes)
+	home, files, answered, complete := parseClaudeList(data, m.Prefixes)
 	if !answered {
 		return Listing{}, nil
 	}
@@ -246,7 +246,7 @@ func (c *claude) Discover(ctx context.Context, m Machine) (Listing, error) {
 		}
 		c.mu.Unlock()
 	}
-	listing := Listing{Answered: true, Present: make(map[string]bool, len(files))}
+	listing := Listing{Answered: true, Complete: complete, Scope: m.Prefixes, Present: make(map[string]bool, len(files))}
 	c.mu.Lock()
 	for _, f := range files {
 		listing.Present[PresentKey("claude", strings.TrimSuffix(f.path[strings.LastIndex(f.path, "/")+1:], ".jsonl"))] = true
