@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"sort"
 	"strconv"
@@ -426,4 +427,47 @@ func cleanTitle(s string) string {
 		s = strings.TrimSpace(string(r[:titleRunesMax]))
 	}
 	return s
+}
+
+// Verify reads one transcript now, bypassing the cache, and derives its folder
+// by the ended-row rule. It writes nothing; the cache is left as it was.
+func (c *claude) Verify(ctx context.Context, m Machine, conversationID string) (Entry, error) {
+	if !outsidesessions.IsConversationID(conversationID) {
+		return Entry{}, ErrTranscriptAbsent
+	}
+	// The id passed the UUID check, so it carries no shell syntax.
+	find := claudeScriptHead + `printf 'H\t'; printf '%s' "$HOME" | b64; printf '\n'
+` + claudeRootCheck + `for d in "$root"/*; do
+ base=${d##*/}; f="$d/` + conversationID + `.jsonl"
+ case "$base" in ''|*[!A-Za-z0-9-]*) continue;; esac
+ [ -f "$f" ] && [ ! -L "$f" ] && [ ! -L "$d" ] || continue
+ if [ "$(uname)" = Darwin ]; then s=$(stat -f '%z %m' "$f"); else s=$(stat -c '%s %Y' "$f"); fi
+ set -- $s; printf 'F\t%s/` + conversationID + `\t%s\t%s\n' "$base" "$1" "$2"
+done
+echo OK
+`
+	data, err := m.Run(ctx, find)
+	if err != nil {
+		return Entry{}, err
+	}
+	home, files, _, answered, _ := parseClaudeList(data, nil)
+	if !answered {
+		return Entry{}, errors.New("session history: transcript store not readable")
+	}
+	if len(files) == 0 {
+		return Entry{}, ErrTranscriptAbsent
+	}
+	out, err := m.Run(ctx, claudeReadScript([]string{files[0].path}))
+	if err != nil {
+		return Entry{}, err
+	}
+	fields, ok := parseClaudeReads(out)[files[0].path]
+	if !ok {
+		return Entry{}, errors.New("session history: transcript not readable")
+	}
+	e := buildClaudeEntry(home, files[0], fields)
+	if e == nil {
+		return Entry{}, ErrNoFolder
+	}
+	return *e, nil
 }

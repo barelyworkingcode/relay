@@ -167,7 +167,14 @@ outside it is not a relay bug, however real.
    recovery message after an interrupt quotes at most 300 characters of the
    session's own last prompt and 500 of the open tool call's input, under the
    `relay-recovery` origin. The chief-of-staff scope cannot reach the door.
-   The same door adopts an idle console Pi whose verified package bin,
+   A discovered record resumes only through the history door
+   (`POST /api/session-history/{id}/resume`), after relay re-reads the
+   transcript now, derives its folder by the ended-row rule, finds that folder in
+   a registered local project and finds no live process or relay-sessions
+   holding the conversation. A conversation link needs the process's
+   `RELAY_SESSION_ID` marker, its own registry entry, a folder inside the
+   record's and, on the console, descent from the record's bound root.
+   The adopt door also adopts an idle console Pi whose verified package bin,
    kernel lifetime and actual cwd match one default-root transcript header.
    After Pi erases its arguments, recognition requires the exact operator
    Node executable file and kernel argv `pi` followed only by empty arguments.

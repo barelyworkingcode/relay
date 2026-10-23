@@ -2276,6 +2276,25 @@ path. Rows, the title rule and the resume table:
 - **Listeners:** socket. **Credential:** `execute`; the Chief of Staff scope
   answers `403`. **Gate:** none.
 
+### POST /api/session-history/{id}/resume
+
+Opens a `claude-code` terminal in the project and folder of a dormant terminal
+record or a discovered one, with `--resume <conversation id>`. Body
+`{cols,rows}`, each 1 to 1000. Answer 201: the `POST /api/terminals` body plus
+`supersedes`, the old id; the old record is gone. Errors `{error,code}`, the
+first that applies: `400 invalid_body`, `404 history_not_found`,
+`409 use_session_resume` (a launched agent record; use
+`POST /api/sessions/{id}/resume`), `409 live`, `409 resume_in_progress`,
+`409 host_unsupported`, `409 no_conversation`, `502 unavailable` (no fresh
+console probe, or the transcript could not be read), `409 held`,
+`409 transcript_absent`, `409 no_project`, then any launch refusal with its own
+status and code. A discovered record resumes only after relay re-reads its
+transcript now and the folder it derives lies in a registered local project.
+[Details](session-history.md#terminal-records-and-resume).
+
+- **Listeners:** socket. **Credential:** `execute`; the Chief of Staff scope
+  answers `403`. **Gate:** none (the launch writes its `session_launch` row).
+
 ### GET /ws/outside-sessions
 
 A WebSocket that sends a snapshot on connect and on each change, with the same

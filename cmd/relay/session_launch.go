@@ -25,6 +25,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/logging"
+	"github.com/barelyworkingcode/relay/internal/outsidesessions"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
@@ -177,6 +178,10 @@ type LaunchRequest struct {
 	offer func(kind string) ([]string, error)
 
 	ExtraArgs []string
+	// ResumeConversation is the Claude conversation a claude-code terminal
+	// resumes (--resume <id>). Only the history resume door sets it, never a
+	// request decoder; it is valid on a console claude-code launch alone.
+	ResumeConversation string
 
 	// Origin is who asked, when it was not the person at a frontend. Only a
 	// door that knows its caller sets it; no decoder reads it from a body.
@@ -366,7 +371,7 @@ type LaunchResult struct {
 	SessionID string
 	Spec      hostapi.LaunchRequest
 
-	// Ledger is nil for a pty launch — terminals are never persisted (C5).
+	// Ledger is nil for a pty launch other than a console claude-code terminal.
 	// R-S4b Puts it only after relay-sessions actually answers 201; a
 	// record for a launch the host refused would claim a session that
 	// never existed.
@@ -440,6 +445,9 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 
 	if req.Resume {
 		rec, ok := sessions.Get(req.SessionID)
+		if ok && rec.Kind == KindPTY {
+			return nil, forbidden("session_not_resumable", "resume this terminal session from the session history", baseFields)
+		}
 		if !ok || rec.State != ledger.StateDormant || rec.ProjectID != req.ProjectID {
 			return nil, forbidden("session_not_resumable", "session is not a dormant session of this project", baseFields)
 		}
@@ -517,6 +525,10 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 				return nil, refusal
 			}
 		}
+	}
+
+	if req.ResumeConversation != "" && (!outsidesessions.IsConversationID(req.ResumeConversation) || req.Kind != KindPTY || !isClaudeLaunch(req.Kind, tmpl) || (proj != nil && proj.IsHosted())) {
+		return nil, invalidRequest("invalid_request", "a conversation resumes only on a console claude-code terminal", baseFields)
 	}
 
 	if req.PersistSession != "" && (tmpl == nil || !tmpl.Persist || !proj.IsHosted()) {
@@ -666,6 +678,9 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 			// in a caller-supplied arg must not resolve credential
 			// placeholders (same rule as internal/sessions/provider/pi.go).
 			spec.Argv = append(resolveArgv(*tmpl, projectPathOrEmpty(proj), req.ProjectID), req.ExtraArgs...)
+			if req.ResumeConversation != "" {
+				spec.Argv = append(spec.Argv, "--resume", req.ResumeConversation)
+			}
 		}
 		env, err := resolveTemplateEnv(*tmpl)
 		if err != nil {
@@ -757,6 +772,16 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 	}
 
 	var ledgerRecord *ledger.Record
+	if req.Kind == KindPTY && isClaudeLaunch(req.Kind, tmpl) && req.DropInAgent == "" && proj != nil && !proj.IsHosted() {
+		// Deliberate: only a claude-code terminal in a project is kept. A drop-in
+		// terminal is the agent's own session under another id, and every other
+		// template has no conversation to resume.
+		ledgerRecord = &ledger.Record{
+			SessionID: sessionID, Kind: KindPTY, Agent: "claude", TemplateID: tmpl.ID, ProjectID: req.ProjectID,
+			Directory: directory, Created: time.Now().UTC(), Origin: req.Origin, State: ledger.StateLive,
+			ConversationID: req.ResumeConversation,
+		}
+	}
 	if req.Kind != KindPTY {
 		ledgerRecord = &ledger.Record{
 			SessionID:      sessionID,

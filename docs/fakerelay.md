@@ -1975,6 +1975,23 @@ Example:
  "services":[{"id":"eve","name":"Eve","command":"/usr/bin/node","args":["server.js"],"working_dir":"/tmp/fr.Ab12/eve","capabilities":["frontend"],"autostart":true}]}
 ```
 
+### Session history
+
+World `sessionHistory` is a list of rows in relay's `GET /api/session-history`
+shape (`id`, `record`, `kind`, `agent`, `projectId`, `hostId`, `directory`,
+`conversationId`, `title`, `titleSource`, `lastActiveAt`, `createdAt`, `state`,
+`transcript`, `resume`, `resumeReason`). A bad enum fails the load at
+`sessionHistory[i].<key>`. A row may carry `refuse: "<code>"`, which makes its
+resume answer that code. `sessionHistoryUnavailable: true` makes the list and the
+resume answer `503 history_unavailable`.
+
+`GET /api/session-history[?projectId=]` answers `ready: true`, a revision and the
+rows. `POST /api/session-history/{id}/resume` (body `{cols,rows}`, 1 to 1000)
+answers, as relay does, `400 invalid_body`, `404 history_not_found`, then the
+row's `refuse`, else `409 use_session_resume` for a `session` row or the row's
+`resumeReason`. A `history` row answers 201 with a terminal body plus
+`supersedes` and is removed. It opens no terminal.
+
 ## Instance and ready file
 
 - **Serve:** `fakerelay --config-dir DIR serve`, or `RELAY_CONFIG_DIR=DIR`.

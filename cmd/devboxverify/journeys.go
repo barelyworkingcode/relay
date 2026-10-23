@@ -35,6 +35,7 @@ var apiJourneys = []journey{
 	{detachedHostID, []string{"sessions", "hosts"}, nil, phaseAPI, 240 * time.Second, runDetachedHost},
 	{codexHostID, []string{"sessions", "hosts"}, nil, phaseAPI, 240 * time.Second, runCodexHostRunner},
 	{swapBackID, []string{"sessions", "hosts", "audit"}, nil, phaseAPI, 360 * time.Second, runSwapBack},
+	{histTermID, []string{"sessions", "audit"}, nil, phaseAPI, 600 * time.Second, runSessionHistoryTerminal},
 }
 
 var reachNeeds = []string{"project:acme", "project:globex", "file:acme/PROJECT.md", "file:globex/PROJECT.md"}

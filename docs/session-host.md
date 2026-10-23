@@ -2040,6 +2040,12 @@ outright for `reason: "deleted"`), and writes a `session_end` audit event.
 See [`docs/audit-log.md`](audit-log.md#session-host-events) for the exact
 record shape.
 
+A terminal launched from a console project's `claude-code` template (not a
+drop-in, not on a host) is the one terminal that has a ledger record: `kind`
+`pty`, `agent` `claude`, `live` at launch. Its exit, its close and a relay
+restart age it to `dormant` like any record. Every other terminal has none; see
+[session history](session-history.md#terminal-records-and-resume).
+
 ## Resume (user action only) — SH-6
 
 A local Claude session whose runner still lives is attached, never started a second time; after a relay restart its relay tools come back on their own (see [Relay tools after a relay restart](#relay-tools-after-a-relay-restart)); a session started before relay recorded its root keeps them closed until it is stopped and resumed. A session whose agent exited reads dormant and resumes on its conversation.

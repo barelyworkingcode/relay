@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -278,6 +279,78 @@ func (l *Ledger) RemoveDiscovered(ids []string) (int, error) {
 		return 0, err
 	}
 	return len(removed), nil
+}
+
+// LinkConversation sets ConversationID on the live record sessionID and, in the
+// same save, removes every discovered record and every dormant terminal record
+// of the same machine, agent and conversation: they are the same conversation
+// under a name that no longer adds anything. recordMachine names a launched
+// record's machine; a discovered record's is its host id, else "console". It
+// never removes a live record, an agent record or a record with AdoptPending
+// set. It reports whether anything
+// changed. A record is removed only when its Directory equals cwd, the link's
+// working folder, or holds it.
+func (l *Ledger) LinkConversation(sessionID, machineKey, conversationID, cwd string, recordMachine func(Record) string) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	rec, ok := l.records[sessionID]
+	if !ok || rec.State != StateLive || conversationID == "" {
+		return false, nil
+	}
+	agent := rec.Agent
+	if agent == "" {
+		agent = rec.Kind
+	}
+	prev := map[string]Record{sessionID: rec}
+	changed := rec.ConversationID != conversationID
+	rec.ConversationID = conversationID
+	l.records[sessionID] = rec
+	for id, r := range l.records {
+		if id == sessionID || r.ConversationID != conversationID || r.Agent != agent || !dirContains(r.Directory, cwd) || r.AdoptPending != nil {
+			continue
+		}
+		machine := ""
+		switch {
+		case r.State == StateDiscovered:
+			machine = r.HostID
+			if machine == "" {
+				machine = "console"
+			}
+		case r.State == StateDormant && r.Kind == "pty":
+			machine = "console"
+			if recordMachine != nil {
+				machine = recordMachine(r)
+			}
+		default:
+			continue
+		}
+		if machine == machineKey {
+			prev[id] = r
+			delete(l.records, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := l.saveLocked(); err != nil {
+		for id, r := range prev {
+			l.records[id] = r
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// dirContains reports whether dir equals cwd or is a parent of it, by path
+// segments. An empty dir or cwd contains nothing: a record with no folder is
+// never removed on a link's word.
+func dirContains(dir, cwd string) bool {
+	if dir == "" || cwd == "" {
+		return false
+	}
+	dir, cwd = filepath.Clean(dir), filepath.Clean(cwd)
+	return cwd == dir || strings.HasPrefix(cwd, strings.TrimSuffix(dir, string(filepath.Separator))+string(filepath.Separator))
 }
 
 // Remove deletes the record named id and saves. A no-op for an id the
