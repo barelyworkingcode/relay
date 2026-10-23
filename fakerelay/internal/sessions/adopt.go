@@ -83,10 +83,6 @@ func (s *svc) adopt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	outsideID, claudeID = row.ID, row.ClaudeSessionID
-	if row.HostID != nil {
-		late(http.StatusConflict, "host_unsupported", "sessions on an SSH host cannot be adopted")
-		return
-	}
 	if !row.Adoptable {
 		reason := world.OutsideAdoptReason(row)
 		late(http.StatusConflict, reason, "the session cannot be adopted: "+reason)
@@ -103,7 +99,12 @@ func (s *svc) adopt(w http.ResponseWriter, r *http.Request) {
 
 	var project world.Project
 	var projectOK bool
-	noProject := row.ProjectID == nil
+	onHost := row.HostID != nil
+	noProject := row.ProjectID == nil && !onHost
+	if onHost && row.ProjectID == nil {
+		late(http.StatusConflict, "host_unsupported", "sessions on this host cannot be adopted")
+		return
+	}
 	if noProject {
 		// A row in no project is adopted unsandboxed in its own folder.
 		if s.localProjectHolds(row.Directory) {
@@ -116,7 +117,11 @@ func (s *svc) adopt(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		s.State.Read(func(m *state.Model) { project, projectOK = lookupProject(m, *row.ProjectID) })
-		if !projectOK || project.HostID != "" || project.Kind == "remote" {
+		if onHost && (!projectOK || project.HostID != *row.HostID) {
+			late(http.StatusConflict, "host_unsupported", "sessions on this host cannot be adopted")
+			return
+		}
+		if !onHost && (!projectOK || project.HostID != "" || project.Kind == "remote") {
 			late(http.StatusConflict, "no_project", "the session is not in a registered local project")
 			return
 		}
@@ -135,7 +140,7 @@ func (s *svc) adopt(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = adopt.ModelFamily
 	}
-	if model == "" {
+	if model == "" && !onHost {
 		late(http.StatusConflict, "model_unknown", "the model of the session is unknown; send model")
 		return
 	}
@@ -151,6 +156,9 @@ func (s *svc) adopt(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch adopt.Refuse {
+	case "host_link_lost":
+		late(http.StatusBadGateway, "host_link_lost", fmt.Sprintf("the connection to %v dropped during the adopt; the session shows as dormant, and Resume continues it", t.host["name"]))
+		return
 	case "stop_failed":
 		late(http.StatusBadGateway, "stop_failed", "the process did not exit after SIGKILL; nothing was launched")
 		return

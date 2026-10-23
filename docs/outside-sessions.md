@@ -238,7 +238,15 @@ this Mac and resumes the same conversation as an ordinary headless relay
 session, in the same folder, in the registered local project that holds it. A
 Claude in no registered project is adopted too, unsandboxed
 ([A Claude session in no project](session-adoption.md#a-claude-session-in-no-project)).
-Sessions on SSH hosts are not adopted.
+A Claude row on a Unix SSH host is adopted too, in its host project, and keeps
+running on that host ([Sessions on SSH hosts](session-adoption.md#sessions-on-ssh-hosts)).
+Such a row is `adoptable` when the host probe found `claude`, the host's
+`detach_sessions` is absent or `true`, and the host project allows the `claude-code` template; otherwise it reads
+`host_unsupported`, as does every row of a Windows host. An adopt of a host row
+selects it by `outsideId` only, and the idle check, the ladder and the start run
+in one detached script on the host, not in relay. A host adopt never answers
+`model_unknown`: the model is the body's `model`, else the family alias the
+transcript tail names, else none, which starts the host's own default.
 
 - **Eligibility** is static and shown on the row: `adoptable`, else
   `adoptReason`, the first that applies of `ended`, `host_unsupported`,
@@ -246,7 +254,7 @@ Sessions on SSH hosts are not adopted.
   adoptable), `not_registered` (no registry entry), `invalid_id` (the
   `sessionId` is not a UUID), `start_mismatch`, `not_interactive`,
   `not_command_line`, `ambiguous` (two live entries hold one `sessionId`).
-  Relay reads `~/.claude/sessions/<pid>.json` in Go: at most 512 regular files
+  Relay reads `~/.claude/sessions/<pid>.json` in Go (on a host the probe does, and the adopt script reads the entry again): at most 512 regular files
   of at most 64 KiB, no symlink on the file or its two parent folders. A
   candidate needs a live pid whose kernel start time, to the second, equals the
   entry's `procStart` (UTC), `kind` `interactive` and `entrypoint` `cli`. The
