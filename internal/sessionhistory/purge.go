@@ -75,6 +75,11 @@ func (x *Index) purge(ctx context.Context, m Machine, listing Listing) {
 				back = append(back, r.SessionID)
 			}
 		case !listing.Absent("claude", r.ConversationID, r.Directory):
+			// Deliberate: an unknown stretch breaks "stayed absent", so the mark
+			// goes and the grace period starts again.
+			if r.MissingSince != nil {
+				back = append(back, r.SessionID)
+			}
 		case r.MissingSince == nil:
 			gone = append(gone, r.SessionID)
 		case now.Sub(*r.MissingSince) >= grace:

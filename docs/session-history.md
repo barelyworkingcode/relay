@@ -262,7 +262,9 @@ intervals) or unreadable, or an unreadable managed list, stops the pass for
 that machine. So does an answered listing that holds no transcript at all
 while candidates exist: that reads as a store that went away.
 
-1. A candidate the listing holds has its `missing_since` cleared.
+1. A candidate the listing holds, or whose transcript reads unknown (out of
+   scope, refused or in a capped listing), has its `missing_since` cleared: an
+   unknown stretch breaks "stayed absent", so the grace period starts again.
 2. A candidate that is absent and has no `missing_since` gets the scan's time.
    A record with no `conversation_id` counts as absent, under the same rule.
 3. A candidate absent for the grace period gets a `session_purge` audit row,
