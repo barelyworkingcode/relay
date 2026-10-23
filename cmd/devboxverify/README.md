@@ -1297,6 +1297,41 @@ every `relay audit --event session_adopt` row for the conversation carries
   project, which the door refuses as `changed`. Cleanup also removes the scratch
   folder (only a folder whose name starts with `verify-`).
 
+**session-history-terminal** (api, so a `--stack` run drives it). A terminal
+Claude opened from a project stays in the history across a relay restart and
+resumes on its conversation. The journey runs a `relay serve` instance of its
+own on `/tmp/dbv-histterm` (the restart is `serveInstance.Restart`, as in
+`gate-sealed-reset-pos`), seeds into its `settings.json` one local project, a
+sandboxed `claude-code` template that runs a launcher pointing Claude at the
+stack's local model endpoint (`claude_base_url`, `claude_model`,
+`claude_token_file` from `stack.json`, as in `session-adopt`), and a credential
+of classes `read`, `execute` and `proxy`. It then `POST /api/terminals` with
+`claude-code`; waits for a live terminal row and the `session.history.link`
+event; sends one prompt, then `/rename verify-<nonce>-title`, through the
+terminal WebSocket; and waits for the row to carry the title. After the restart
+it checks the row is `dormant` with `resume: "history"`, the same title and
+conversation, then `POST /api/session-history/{id}/resume`. PASS when that
+answers 201 with `supersedes` naming the old row, the new terminal's screen
+shows the earlier prompt, the old row is gone and a live terminal row carries
+the conversation. Off a stack, or on a stack with no `claude_base_url`, the
+journey is NOTRUN: it never runs claude against a hosted model.
+- Waits: the instance's `ready.json` (boot and restart), then the first
+  `session.history.scan` event; the `session.history.link` event for the row's
+  id; HTTP answers. No signal exists for the seeded settings import, the model
+  reply, `/rename` or the resumed redraw (model and TUI output): each is a
+  bounded read of the transcript, the history row or the terminal frames
+  (60 to 120 s).
+- Lives in: `cmd/relay` (`session_launch.go`, `session_history_ops.go`),
+  `internal/outsidesessions`, `internal/sessionhistory`.
+- Reached by: the frontend socket and its `/ws` with the seeded credential.
+- Traps: BLOCKED without `claude` on the login-shell PATH, when the model does
+  not reply, or when the seeded template is not imported in time. Cleanup
+  deletes only the terminals it opened, stops the instance, removes the
+  transcript (only a file named for the conversation id that holds the run's
+  tag) and the scratch folder. It never starts or touches a tmux server. The
+  instance leaves `/tmp/dbv-histterm` and one login-keychain item, as the other
+  instance journeys do.
+
 **session-host-restart** (screen). The admin op `service.restart
 {"id":"relaysessions"}` answers without error, and within 15 s
 `relaysessions` is STATE `running` with a `relay-sessions` pid it did not
