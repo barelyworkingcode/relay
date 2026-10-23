@@ -291,7 +291,9 @@ type appRouter struct {
 	// and one from /ws/files share one watch hub.
 	fileOps            *FileOps
 	persistentSessions *PersistentSessionOps
-	doors              *doorCatalog
+	// history backs the session.history admin op; nil refuses it.
+	history *historyOps
+	doors   *doorCatalog
 }
 
 // identityAllowed returns the launch identity bound to this request's peer

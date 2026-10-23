@@ -25,7 +25,7 @@ func adminSessionHistory(ctx context.Context, r *appRouter, args json.RawMessage
 			return nil, err
 		}
 	}
-	ops := activeHistoryOps.Load()
+	ops := r.history
 	if ops == nil || ops.index == nil {
 		return nil, errors.New("session.history: session history is not available in this relay process")
 	}

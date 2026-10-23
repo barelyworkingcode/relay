@@ -37,7 +37,19 @@ type Entry struct {
 // the end, the store root is a real folder and the listing is under its cap.
 type Listing struct {
 	Answered bool
-	Entries  []Entry
+	// Present holds every transcript the listing saw, read or not, interactive
+	// or not; Entries only the files read and parsed. Ask Has, not Entries,
+	// whether a conversation exists.
+	Present map[string]bool
+	Entries []Entry
+}
+
+// PresentKey is the key of Listing.Present.
+func PresentKey(agent, conversationID string) string { return agent + "\x00" + conversationID }
+
+// Has reports whether the listing saw the conversation's transcript.
+func (l Listing) Has(agent, conversationID string) bool {
+	return l.Present[PresentKey(agent, conversationID)]
 }
 
 // Machine is one place transcripts live.
@@ -147,7 +159,7 @@ type wallClock struct{}
 func (wallClock) Now() time.Time                         { return time.Now() }
 func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
-func convKey(agent, conversationID string) string { return agent + "\x00" + conversationID }
+func convKey(agent, conversationID string) string { return PresentKey(agent, conversationID) }
 
 func (x *Index) machines() []Machine {
 	if x.o.Machines == nil {
@@ -281,6 +293,12 @@ func (x *Index) discover(ctx context.Context, m Machine) (Listing, error) {
 			return Listing{}, err
 		}
 		out.Answered = out.Answered && l.Answered
+		if out.Present == nil {
+			out.Present = map[string]bool{}
+		}
+		for k := range l.Present {
+			out.Present[k] = true
+		}
 		out.Entries = append(out.Entries, l.Entries...)
 	}
 	return out, nil
@@ -379,7 +397,11 @@ func (x *Index) Listing(machineKey string) (Listing, time.Time, bool) {
 	if st == nil || !st.hasListing {
 		return Listing{}, time.Time{}, false
 	}
-	return Listing{Answered: true, Entries: append([]Entry(nil), st.listing.Entries...)}, st.listingAt, true
+	present := make(map[string]bool, len(st.listing.Present))
+	for k := range st.listing.Present {
+		present[k] = true
+	}
+	return Listing{Answered: true, Present: present, Entries: append([]Entry(nil), st.listing.Entries...)}, st.listingAt, true
 }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
@@ -397,8 +419,8 @@ func (x *Index) Rows(projectID string) Response {
 	machines := x.machines()
 	resp := Response{Ready: true, Machines: []MachineStatus{}, Rows: []Row{}}
 	type snap struct {
-		answered bool
-		byConv   map[string]Entry
+		listing Listing
+		byConv  map[string]Entry
 	}
 	snaps := map[string]snap{}
 	x.mu.Lock()
@@ -416,7 +438,7 @@ func (x *Index) Rows(projectID string) Response {
 			resp.Ready = false
 		}
 		if st != nil && st.hasListing {
-			snaps[m.Key] = snap{true, st.byConv}
+			snaps[m.Key] = snap{st.listing, st.byConv}
 		}
 		resp.Machines = append(resp.Machines, status)
 	}
@@ -439,25 +461,30 @@ func (x *Index) Rows(projectID string) Response {
 			linked[x.recordMachine(r)+"\x00"+convKey(recordAgent(r), r.ConversationID)] = true
 		}
 	}
+	sortAt := map[string]time.Time{}
 	for _, r := range records {
 		key := x.recordMachine(r)
 		agent := recordAgent(r)
 		if r.State == ledger.StateDiscovered && linked[key+"\x00"+convKey(agent, r.ConversationID)] {
 			continue
 		}
-		row := x.row(r, key, agent, snaps[key].byConv, snaps[key].answered)
+		row := x.row(r, key, agent, snaps[key].byConv, snaps[key].listing)
 		if projectID != "" && (row.ProjectID == nil || *row.ProjectID != projectID) {
 			continue
 		}
+		// A row with no parsed entry sorts by when it was created, so it stays
+		// inside the cap; its wire lastActiveAt stays null.
+		at := r.Created
+		if row.LastActiveAt != nil {
+			at, _ = time.Parse(time.RFC3339Nano, *row.LastActiveAt)
+		}
+		sortAt[row.ID] = at
 		resp.Rows = append(resp.Rows, row)
 	}
 	sort.SliceStable(resp.Rows, func(a, b int) bool {
 		ra, rb := resp.Rows[a], resp.Rows[b]
-		if (ra.LastActiveAt == nil) != (rb.LastActiveAt == nil) {
-			return ra.LastActiveAt != nil
-		}
-		if ra.LastActiveAt != nil && *ra.LastActiveAt != *rb.LastActiveAt {
-			return *ra.LastActiveAt > *rb.LastActiveAt
+		if !sortAt[ra.ID].Equal(sortAt[rb.ID]) {
+			return sortAt[ra.ID].After(sortAt[rb.ID])
 		}
 		return ra.ID < rb.ID
 	})
@@ -467,7 +494,7 @@ func (x *Index) Rows(projectID string) Response {
 	return resp
 }
 
-func (x *Index) row(r ledger.Record, machineKey, agent string, byConv map[string]Entry, answered bool) Row {
+func (x *Index) row(r ledger.Record, machineKey, agent string, byConv map[string]Entry, listing Listing) Row {
 	discovered := r.State == ledger.StateDiscovered
 	row := Row{
 		ID: r.SessionID, Record: "launched", Kind: r.Kind, Agent: strPtr(agent),
@@ -491,12 +518,15 @@ func (x *Index) row(r ledger.Record, machineKey, agent string, byConv map[string
 	} else {
 		row.ProjectID = strPtr(r.ProjectID)
 	}
-	if e, ok := byConv[convKey(agent, r.ConversationID)]; ok && r.ConversationID != "" {
-		row.Title, row.TitleSource = strPtr(e.Title), strPtr(e.TitleSource)
-		row.LastActiveAt = strPtr(stamp(e.LastActiveAt))
-		row.Transcript = "present"
-	} else if answered && r.ConversationID != "" && agent != "" {
+	if r.ConversationID != "" && agent != "" && listing.Answered {
 		row.Transcript = "absent"
+		if listing.Has(agent, r.ConversationID) {
+			row.Transcript = "present"
+		}
+		if e, ok := byConv[convKey(agent, r.ConversationID)]; ok {
+			row.Title, row.TitleSource = strPtr(e.Title), strPtr(e.TitleSource)
+			row.LastActiveAt = strPtr(stamp(e.LastActiveAt))
+		}
 	}
 	row.Resume, row.ResumeReason = x.resume(r, row, machineKey)
 	return row

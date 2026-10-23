@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
@@ -23,10 +22,6 @@ type historyOps struct {
 	// a row's project match costs no round trip to the host.
 	hostRoots map[string]string
 }
-
-// activeHistoryOps is the instance the server built, for the admin op, which
-// has no handle on the frontend server. A process builds one.
-var activeHistoryOps atomic.Pointer[historyOps]
 
 func (o *historyOps) List(projectID string) sessionhistory.Response {
 	return o.index.Rows(projectID)

@@ -31,8 +31,9 @@ mark records dormant or clean up a project skip it.
 ## Readers
 
 One `Reader` per client. This release has the Claude reader; its `Discover`
-returns every interactive transcript on a machine and whether the machine
-answered. A reader keeps a cache per machine, in memory only, keyed by path with
+returns a `Listing`: whether the machine answered, `Present` (every transcript the
+listing script saw, read or not, interactive or not; ask `Listing.Has(agent, id)`)
+and `Entries` (only the files read and parsed, interactive ones). A reader keeps a cache per machine, in memory only, keyed by path with
 the file's size and modification time. A file absent from a listing leaves the
 cache.
 
@@ -52,8 +53,8 @@ host's registered projects, raw and resolved, as the ended scan does.
 - **Read script.** Only for files new or changed since the last scan, at most 64
   per scan, newest first; the rest wait for the next scan. Per file it prints
   the last `custom-title` and `ai-title` records of the last 256 KiB (4 KiB
-  each), the first user record that is not `isMeta` or `isSidechain` in the first
-  64 KiB (8 KiB), the first record carrying `entrypoint`, the first record, and
+  each), up to the first four user records that are not `isMeta` or `isSidechain` in
+  the first 64 KiB (8 KiB in all), the first record carrying `entrypoint`, the first record, and
   the last 16 KiB.
 - Both scripts write nothing, and the output stays under the 8 MiB bound of
   `outsideRun`. A path the script printed is accepted only when it is exactly
@@ -74,8 +75,8 @@ The first that gives a non-empty title wins:
 
 1. the latest `custom-title` record (`customTitle`), source `client`;
 2. the latest `ai-title` record (`aiTitle`), source `client`;
-3. the first user prompt's first non-empty line that does not start with `/` or
-   `<`, trimmed, source `prompt`;
+3. the first non-empty line, not starting with `/` or `<` and trimmed, of the
+   first of those user records that gives one, source `prompt`;
 4. none: `null`.
 
 Control characters are dropped and the title is cut at 120 runes. Transcript
@@ -127,10 +128,13 @@ absent from the TCP mux and from the Chief of Staff scope. An unknown
 - `title` is at most 120 characters or `null`; `titleSource` is `client`,
   `prompt` or `null`. `lastActiveAt` is `null` when no scan has read the
   transcript.
-- `transcript` is `present` when the machine's last answered listing holds the
+- `transcript` is `present` when the machine's last answered listing `Has` the
   conversation, `absent` when an answered listing lacks it, `unknown` with no
-  answered listing, no `conversationId`, or a client no reader covers.
-- Rows run newest `lastActiveAt` first (`null` last), then by `id`; at most 500.
+  answered listing, no `conversationId`, or a client no reader covers. A
+  `present` row whose file no scan has read yet shows `title` and `lastActiveAt`
+  `null`. A launched agent record has no `conversationId`, so its row is `unknown`.
+- Rows run newest first by `lastActiveAt`, else by `createdAt` (the wire value
+  stays `null`), then by `id`; at most 500.
 
 ### Resume
 

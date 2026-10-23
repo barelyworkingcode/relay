@@ -756,11 +756,13 @@ func startServerCore(opts serverOptions) (*App, error) {
 	}
 	frontend.routeDeps.loginOps = loginOps
 	app.goFunc(func() { frontend.routeDeps.outside.Run(ctx) })
+	app.goFunc(func() { frontend.routeDeps.history.index.Run(ctx) })
 	frontend.FileOps().Hosts = hostPool
 	// The router reaches the instances the frontend server holds, so a CLI
 	// door and an HTTP door share one watch hub and one tmux lister.
 	router.fileOps = frontend.FileOps()
 	router.persistentSessions = frontend.routeDeps.persistentSessionOps
+	router.history = frontend.routeDeps.history
 	app.addrMu.Lock()
 	app.frontendServer = frontend
 	app.addrMu.Unlock()

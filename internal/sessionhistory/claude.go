@@ -106,8 +106,8 @@ echo OK
 }
 
 // claudeReadScript prints, per path, one "F" line of base64 fields: the path,
-// the last custom-title and ai-title record of the last 256 KiB, the first user
-// record that is not meta or sidechain, the first record carrying entrypoint,
+// the last custom-title and ai-title record of the last 256 KiB, the first four
+// user records that are not meta or sidechain, 8 KiB in all, the first record carrying entrypoint,
 // the first record, and the last 16 KiB. It reads and writes nothing else.
 func claudeReadScript(paths []string) string {
 	quoted := make([]string, len(paths))
@@ -124,7 +124,7 @@ func claudeReadScript(paths []string) string {
  printf 'F\t'; printf '%s' "$f" | b64
  printf '\t'; ` + title("custom-title") + `
  printf '\t'; ` + title("ai-title") + `
- printf '\t'; ` + head + ` | grep -a '"type":"user"' | grep -av '"isMeta":true' | grep -av '"isSidechain":true' | head -n 1 | head -c ` + strconv.Itoa(claudePromptLine) + ` | b64
+ printf '\t'; ` + head + ` | grep -a '"type":"user"' | grep -av '"isMeta":true' | grep -av '"isSidechain":true' | head -n 4 | head -c ` + strconv.Itoa(claudePromptLine) + ` | b64
  printf '\t'; ` + head + ` | grep -a -m 1 '"entrypoint"' | head -c ` + strconv.Itoa(claudePromptLine) + ` | b64
  printf '\t'; ` + head + ` | head -n 1 | head -c ` + strconv.Itoa(claudeTitleLine) + ` | b64
  printf '\t'; tail -c ` + strconv.Itoa(claudeTailWindow) + ` "$f" 2>/dev/null | b64
@@ -247,9 +247,10 @@ func (c *claude) Discover(ctx context.Context, m Machine) (Listing, error) {
 		}
 		c.mu.Unlock()
 	}
-	listing := Listing{Answered: true}
+	listing := Listing{Answered: true, Present: make(map[string]bool, len(files))}
 	c.mu.Lock()
 	for _, f := range files {
+		listing.Present[PresentKey("claude", strings.TrimSuffix(f.path[strings.LastIndex(f.path, "/")+1:], ".jsonl"))] = true
 		if got, ok := cache[f.path]; ok && got.entry != nil {
 			listing.Entries = append(listing.Entries, *got.entry)
 		}
@@ -326,8 +327,11 @@ func buildClaudeEntry(home string, f claudeFile, in claudeFields) *Entry {
 	} else if t := cleanTitle(jsonField(in.ai, "aiTitle")); t != "" {
 		e.Title, e.TitleSource = t, "client"
 	}
-	if e.Title == "" {
-		if t := cleanTitle(promptTitle(in.prompt)); t != "" {
+	for _, line := range strings.Split(in.prompt, "\n") {
+		if e.Title != "" {
+			break
+		}
+		if t := cleanTitle(promptTitle(line)); t != "" {
 			e.Title, e.TitleSource = t, "prompt"
 		}
 	}
