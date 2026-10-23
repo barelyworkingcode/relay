@@ -8,6 +8,7 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,12 +35,15 @@ type Entry struct {
 }
 
 // Listing is one machine's answer. Answered is false unless the script ran to
-// the end, the store root is a real folder and the listing is under its cap.
+// the end and the store root is a real folder.
 type Listing struct {
 	Answered bool
 	// Complete is true when the listing printed every transcript, under the cap.
 	// Answered does not depend on it.
 	Complete bool
+	// Refused holds the folder names the listing refused (a symbolic link on the
+	// folder or a transcript); what they hold is unknown.
+	Refused map[string]bool
 	// Scope is the folder prefixes the listing used; nil means every folder.
 	Scope []string
 	// Present holds every transcript the listing saw, read or not, interactive
@@ -53,8 +57,13 @@ type Listing struct {
 // complete, its scope covers the conversation's folder, and it does not hold it.
 // Anything else is unknown, never absent.
 func (l Listing) Absent(agent, conversationID, directory string) bool {
-	return l.Answered && l.Complete && !l.Has(agent, conversationID) &&
-		hasPrefix(outsidesessions.FolderName(directory), l.Scope)
+	folder := outsidesessions.FolderName(directory)
+	for name := range l.Refused {
+		if strings.HasPrefix(name, folder) {
+			return false
+		}
+	}
+	return l.Answered && l.Complete && !l.Has(agent, conversationID) && hasPrefix(folder, l.Scope)
 }
 
 // PresentKey is the key of Listing.Present.
@@ -285,7 +294,7 @@ func (x *Index) scan(ctx context.Context, key string) {
 	if ctx.Err() != nil {
 		return
 	}
-	superseded := x.reconcile(ctx, m, listing.Entries, err == nil && listing.Answered)
+	superseded, evicted := x.reconcile(ctx, m, listing.Entries, err == nil && listing.Answered)
 	now := x.o.Clock.Now()
 	x.mu.Lock()
 	// Checked under the lock: forget cancels first, then deletes, so a scan
@@ -312,7 +321,7 @@ func (x *Index) scan(ctx context.Context, key string) {
 	x.revision++
 	revision := x.revision
 	x.mu.Unlock()
-	ev.Set("answered", answered).Set("complete", answered && listing.Complete).Set("superseded", superseded).Set("count", len(listing.Entries)).Set("revision", int64(revision))
+	ev.Set("answered", answered).Set("complete", answered && listing.Complete).Set("superseded", superseded).Set("evicted", evicted).Set("count", len(listing.Entries)).Set("revision", int64(revision))
 	if err != nil {
 		ev.End(logging.OutcomeError, "scan_failed", err)
 		return
@@ -335,6 +344,12 @@ func (x *Index) discover(ctx context.Context, m Machine) (Listing, error) {
 		for k := range l.Present {
 			out.Present[k] = true
 		}
+		for k := range l.Refused {
+			if out.Refused == nil {
+				out.Refused = map[string]bool{}
+			}
+			out.Refused[k] = true
+		}
 		out.Entries = append(out.Entries, l.Entries...)
 	}
 	return out, nil
@@ -345,16 +360,15 @@ func (x *Index) discover(ctx context.Context, m Machine) (Listing, error) {
 // writes one record per entry that no ledger record links and relay-sessions
 // does not manage. A failed managed read changes nothing: without it a managed
 // session could appear as a found one.
-func (x *Index) reconcile(ctx context.Context, m Machine, entries []Entry, add bool) int {
+func (x *Index) reconcile(ctx context.Context, m Machine, entries []Entry, add bool) (superseded, evicted int) {
 	if x.o.Ledger == nil || x.o.Managed == nil {
-		return 0
+		return 0, 0
 	}
 	managed, err := x.o.Managed(ctx)
 	if err != nil {
 		slog.Warn("session history: managed read failed, discovered records unchanged", "machine", m.Key, "error", err)
-		return 0
+		return 0, 0
 	}
-	superseded := 0
 	var gone []string
 	for _, r := range x.o.Ledger.All() {
 		if r.State == ledger.StateDiscovered && r.Agent == "claude" && managed[r.ConversationID] && r.HostID == hostIDOf(m) {
@@ -369,9 +383,9 @@ func (x *Index) reconcile(ctx context.Context, m Machine, entries []Entry, add b
 		superseded = n
 	}
 	if add {
-		x.addDiscovered(ctx, m, entries, managed)
+		evicted = x.addDiscovered(ctx, m, entries, managed)
 	}
-	return superseded
+	return superseded, evicted
 }
 
 func hostIDOf(m Machine) string {
@@ -381,21 +395,23 @@ func hostIDOf(m Machine) string {
 	return *m.HostID
 }
 
-func (x *Index) addDiscovered(ctx context.Context, m Machine, entries []Entry, managed map[string]bool) {
+func (x *Index) addDiscovered(ctx context.Context, m Machine, entries []Entry, managed map[string]bool) int {
 	linked := map[string]bool{}
-	held := 0
 	hostID := hostIDOf(m)
 	v := x.view()
-	existing := map[string]time.Time{}
+	type heldRec struct {
+		at time.Time
+		id string
+	}
+	existing := map[string]heldRec{}
 	for _, r := range x.o.Ledger.All() {
 		if r.ConversationID == "" {
 			continue
 		}
 		if r.State == ledger.StateDiscovered {
 			if r.HostID == hostID {
-				held++
 				linked[convKey(r.Agent, r.ConversationID)] = true
-				existing[convKey(r.Agent, r.ConversationID)] = r.Created
+				existing[convKey(r.Agent, r.ConversationID)] = heldRec{r.Created, r.SessionID}
 			}
 			continue
 		}
@@ -411,32 +427,43 @@ func (x *Index) addDiscovered(ctx context.Context, m Machine, entries []Entry, m
 		fresh = append(fresh, e)
 	}
 	// The newest DiscoveredPerMachineMax win among the records already held and
-	// the candidates: the oldest by lastActiveAt are the ones not added.
+	// the candidates, ranked by lastActiveAt, else created. The rest of the
+	// held records go in the save that adds the new ones; the candidates that
+	// lose are not added.
 	for _, e := range entries {
-		if _, ok := existing[convKey(e.Agent, e.ConversationID)]; ok {
-			existing[convKey(e.Agent, e.ConversationID)] = e.LastActiveAt
+		if h, ok := existing[convKey(e.Agent, e.ConversationID)]; ok {
+			h.at = e.LastActiveAt
+			existing[convKey(e.Agent, e.ConversationID)] = h
 		}
 	}
-	if held+len(fresh) > DiscoveredPerMachineMax {
-		type ranked struct {
-			at    time.Time
-			fresh int // index into fresh, or -1 for a record already held
-		}
-		all := make([]ranked, 0, held+len(fresh))
-		for _, at := range existing {
-			all = append(all, ranked{at, -1})
-		}
-		for i, e := range fresh {
-			all = append(all, ranked{e.LastActiveAt, i})
-		}
+	type ranked struct {
+		at    time.Time
+		id    string // a held record's id
+		fresh int    // index into fresh, or -1 for a held record
+	}
+	all := make([]ranked, 0, len(existing)+len(fresh))
+	for _, h := range existing {
+		all = append(all, ranked{h.at, h.id, -1})
+	}
+	for i, e := range fresh {
+		all = append(all, ranked{e.LastActiveAt, "", i})
+	}
+	var evict []string
+	if len(all) > DiscoveredPerMachineMax {
 		sort.SliceStable(all, func(a, b int) bool {
 			if !all[a].at.Equal(all[b].at) {
 				return all[a].at.After(all[b].at)
 			}
 			return all[a].fresh < all[b].fresh
 		})
+		for _, r := range all[DiscoveredPerMachineMax:] {
+			if r.fresh < 0 {
+				evict = append(evict, r.id)
+			}
+		}
+		all = all[:DiscoveredPerMachineMax]
 		keep := make([]Entry, 0, len(fresh))
-		for _, r := range all[:DiscoveredPerMachineMax] {
+		for _, r := range all {
 			if r.fresh >= 0 {
 				keep = append(keep, fresh[r.fresh])
 			}
@@ -451,12 +478,11 @@ func (x *Index) addDiscovered(ctx context.Context, m Machine, entries []Entry, m
 			Directory: e.Directory, HostID: hostID, ConversationID: e.ConversationID, Created: e.CreatedAt,
 		})
 	}
-	if len(recs) == 0 {
-		return
-	}
-	if _, err := x.o.Ledger.PutDiscovered(recs); err != nil {
+	_, evicted, err := x.o.Ledger.ReplaceDiscovered(recs, evict)
+	if err != nil {
 		slog.Warn("session history: discovered records not saved", "machine", m.Key, "error", err)
 	}
+	return evicted
 }
 
 func (x *Index) recordMachine(v View, r ledger.Record) string {
@@ -496,7 +522,11 @@ func (x *Index) Listing(machineKey string) (Listing, time.Time, bool) {
 	for k := range st.listing.Present {
 		present[k] = true
 	}
-	return Listing{Answered: true, Complete: st.listing.Complete, Scope: append([]string(nil), st.listing.Scope...), Present: present, Entries: append([]Entry(nil), st.listing.Entries...)}, st.listingAt, true
+	refused := make(map[string]bool, len(st.listing.Refused))
+	for k := range st.listing.Refused {
+		refused[k] = true
+	}
+	return Listing{Answered: true, Refused: refused, Complete: st.listing.Complete, Scope: append([]string(nil), st.listing.Scope...), Present: present, Entries: append([]Entry(nil), st.listing.Entries...)}, st.listingAt, true
 }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }

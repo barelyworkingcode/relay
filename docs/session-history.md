@@ -53,10 +53,13 @@ host's registered projects, raw and resolved, as the ended scan does.
 - **Listing script.** Regular files at depth 2
   (`~/.claude/projects/<folder>/<uuid>.jsonl`), so subagent folders are skipped,
   sorted by modification time, newest first, at most 4096 printed. It prints the
-  home and `folder/stem size mtime` per file, and `X` when more files follow. The
-  listing is not answered when the root is missing or not a folder, or when a
+  home and `folder/stem size mtime` per file, and `X` when more files follow or
+  when `find` or `stat` failed (a missing file is then possibly a listing gap).
+  It prints an `R` line, the base64 folder name, for each symbolic-link folder
+  and for the folder of each symbolic-link transcript; these make
+  `Listing.Refused`. The listing is not answered when the root is missing or not a folder, or when a
   symbolic link sits on `~/.claude` or the root. Past the cap it still answers
-  but is not `Complete`. A symbolic link on a file or its folder drops that file.
+  but is not `Complete`; a `find` or `stat` failure also makes it not `Complete`. A symbolic link on a file or its folder drops that file.
 - **Read script.** Only for files new or changed since the last scan, at most 64
   per scan, newest first; the rest wait for the next scan. Per file it prints
   the last `custom-title` and `ai-title` records of the last 256 KiB (4 KiB
@@ -94,8 +97,11 @@ text is untrusted display data and grants nothing.
 After each scan, every entry that no ledger record links (by machine, agent and
 conversation id) and that relay-sessions does not manage becomes a discovered
 record, written in one save per scan. At most 2000 discovered records per
-machine; past that the oldest by `lastActiveAt`, among the records held and the
-candidates, are the ones not added. When the managed
+machine: relay keeps the 2000 newest, held and new together, ranked by the
+entry's `lastActiveAt`, else the record's `created`, and removes the rest in the
+same save (eviction, not purge: no audit row, and the scan event's `evicted`
+counts them). A removed record is added again only when its transcript becomes
+newer than the 2000th. When the managed
 read fails, a scan adds no records. A launched record that later holds the same
 conversation hides the discovered row.
 
@@ -144,7 +150,8 @@ absent from the TCP mux and from the Chief of Staff scope. An unknown
 - `transcript` is `present` when the machine's last answered listing `Has` the
   conversation, `absent` when `Listing.Absent(agent, id, directory)` is true,
   else `unknown`. `Absent` needs an answered, `Complete` listing that lacks the
-  conversation and whose scope covers the directory's folder; a listing past the
+  conversation and whose scope covers the directory's folder and which refused no folder named
+like it or starting with it; a listing past the
   cap, a host project removed from the scope, a missing `conversationId` or a
   client no reader covers all give `unknown`. A
   `present` row whose file no scan has read yet shows `title` and `lastActiveAt`

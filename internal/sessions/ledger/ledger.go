@@ -205,26 +205,43 @@ func DiscoveredID(machineKey, agent, conversationID string) string {
 // holds, so it never replaces a record, discovered or not, and returns how many
 // it added. It does not save when it added none.
 func (l *Ledger) PutDiscovered(recs []Record) (int, error) {
+	added, _, err := l.ReplaceDiscovered(recs, nil)
+	return added, err
+}
+
+// ReplaceDiscovered adds the records PutDiscovered would and removes the named
+// records that are still discovered, all in one save. It returns both counts.
+func (l *Ledger) ReplaceDiscovered(recs []Record, evict []string) (added, evicted int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	var added []string
+	removed := map[string]Record{}
+	for _, id := range evict {
+		if r, ok := l.records[id]; ok && r.State == StateDiscovered {
+			removed[id] = r
+			delete(l.records, id)
+		}
+	}
+	var addedIDs []string
 	for _, r := range recs {
 		if _, held := l.records[r.SessionID]; held {
 			continue
 		}
 		l.records[r.SessionID] = r
-		added = append(added, r.SessionID)
+		addedIDs = append(addedIDs, r.SessionID)
 	}
-	if len(added) == 0 {
-		return 0, nil
+	if len(addedIDs) == 0 && len(removed) == 0 {
+		return 0, 0, nil
 	}
 	if err := l.saveLocked(); err != nil {
-		for _, id := range added {
+		for _, id := range addedIDs {
 			delete(l.records, id)
 		}
-		return 0, err
+		for id, r := range removed {
+			l.records[id] = r
+		}
+		return 0, 0, err
 	}
-	return len(added), nil
+	return len(addedIDs), len(removed), nil
 }
 
 // RemoveDiscovered removes, in one save, only the named records that are still
