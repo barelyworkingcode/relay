@@ -11,6 +11,8 @@
 package ledger
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +34,10 @@ type State string
 const (
 	StateLive    State = "live"
 	StateDormant State = "dormant"
+	// StateDiscovered marks a record read from a transcript relay did not
+	// launch: display-only, no project, never resumable through the session
+	// resume door.
+	StateDiscovered State = "discovered"
 )
 
 // Record is one session the ledger knows about. Field names match C5's
@@ -69,6 +75,12 @@ type Record struct {
 	// Unsandboxed marks a Claude session relay runs with no project and no
 	// sandbox; its ProjectID is empty. A resume carries the mark back to the host.
 	Unsandboxed bool `json:"unsandboxed,omitempty"`
+	// ConversationID is the client's own conversation id.
+	ConversationID string `json:"conversation_id,omitempty"`
+	// Agent is "claude" on a terminal or discovered record.
+	Agent string `json:"agent,omitempty"`
+	// HostID is a discovered record's SSH host; empty on the console.
+	HostID string `json:"host_id,omitempty"`
 }
 
 // RootRef names a process by its kernel identity. It is not a credential:
@@ -179,6 +191,82 @@ func (l *Ledger) MarkLiveDormant(keep func(Record) bool) (int, error) {
 		return 0, nil
 	}
 	return changed, l.saveLocked()
+}
+
+// DiscoveredID is "d-" plus the first 16 bytes, hex, of
+// sha256(machineKey, NUL, agent, NUL, conversationID): one machine's
+// conversation always maps to one record.
+func DiscoveredID(machineKey, agent, conversationID string) string {
+	h := sha256.Sum256([]byte(machineKey + "\x00" + agent + "\x00" + conversationID))
+	return "d-" + hex.EncodeToString(h[:16])
+}
+
+// PutDiscovered adds the records in one save. It skips an id the ledger already
+// holds, so it never replaces a record, discovered or not, and returns how many
+// it added. It does not save when it added none.
+func (l *Ledger) PutDiscovered(recs []Record) (int, error) {
+	added, _, err := l.ReplaceDiscovered(recs, nil)
+	return added, err
+}
+
+// ReplaceDiscovered adds the records PutDiscovered would and removes the named
+// records that are still discovered, all in one save. It returns both counts.
+func (l *Ledger) ReplaceDiscovered(recs []Record, evict []string) (added, evicted int, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	removed := map[string]Record{}
+	for _, id := range evict {
+		if r, ok := l.records[id]; ok && r.State == StateDiscovered {
+			removed[id] = r
+			delete(l.records, id)
+		}
+	}
+	var addedIDs []string
+	for _, r := range recs {
+		if _, held := l.records[r.SessionID]; held {
+			continue
+		}
+		l.records[r.SessionID] = r
+		addedIDs = append(addedIDs, r.SessionID)
+	}
+	if len(addedIDs) == 0 && len(removed) == 0 {
+		return 0, 0, nil
+	}
+	if err := l.saveLocked(); err != nil {
+		for _, id := range addedIDs {
+			delete(l.records, id)
+		}
+		for id, r := range removed {
+			l.records[id] = r
+		}
+		return 0, 0, err
+	}
+	return len(addedIDs), len(removed), nil
+}
+
+// RemoveDiscovered removes, in one save, only the named records that are still
+// discovered, and returns how many it removed. A record that has since become
+// something else stays.
+func (l *Ledger) RemoveDiscovered(ids []string) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	removed := map[string]Record{}
+	for _, id := range ids {
+		if r, ok := l.records[id]; ok && r.State == StateDiscovered {
+			removed[id] = r
+			delete(l.records, id)
+		}
+	}
+	if len(removed) == 0 {
+		return 0, nil
+	}
+	if err := l.saveLocked(); err != nil {
+		for id, r := range removed {
+			l.records[id] = r
+		}
+		return 0, err
+	}
+	return len(removed), nil
 }
 
 // Remove deletes the record named id and saves. A no-op for an id the

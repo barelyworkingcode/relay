@@ -2259,6 +2259,20 @@ ended); `502` `outside_status_unavailable`. Records and paging rules:
 - **Listeners:** socket. **Credential:** `execute`; the Chief of Staff scope
   answers `403`. **Gate:** none.
 
+### GET /api/session-history
+
+Every ledger record, launched or discovered, as one row with the client's own
+title and last-activity time, read from the transcripts. Optional query
+`projectId` keeps one project's rows; an unknown id answers an empty `rows`.
+Answer 200 `{ready,revision,machines[],rows[]}`, at most 500 rows, newest
+`lastActiveAt` first. A history that is not wired answers `503` with `{error,message}`
+`history_unavailable`. Takes no body and writes nothing; no request field names a
+path. Rows, the title rule and the resume table:
+[session history](session-history.md).
+
+- **Listeners:** socket. **Credential:** `execute`; the Chief of Staff scope
+  answers `403`. **Gate:** none.
+
 ### GET /ws/outside-sessions
 
 A WebSocket that sends a snapshot on connect and on each change, with the same

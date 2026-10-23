@@ -116,6 +116,7 @@ var adminOps = map[string]adminOpEntry{
 
 	"session.start":            {handle: adminSessionStart, caller: adminCallerOperator},
 	"session.list":             {handle: adminSessionList, caller: adminCallerOperator},
+	"session.history":          {handle: adminSessionHistory, caller: adminCallerOperator},
 	"session.message":          {handle: adminSessionMessage, caller: adminCallerOperator},
 	"session.send":             {handle: adminSessionSend, caller: adminCallerOperator},
 	"session.wait":             {handle: adminSessionWait, caller: adminCallerOperator},

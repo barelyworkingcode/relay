@@ -107,6 +107,7 @@ func cliVerbTable() []cliVerb {
 
 		{Name: "session start", Run: sessionStart, Calls: []string{adminDoor("session.start")}},
 		{Name: "session list", Run: sessionList, Calls: []string{adminDoor("session.list")}},
+		{Name: "session history", Run: sessionHistory, Calls: []string{adminDoor("session.history")}},
 		{Name: "session message", Run: sessionMessage, Calls: []string{adminDoor("session.message")}},
 		{Name: "session send", Run: sessionSend, Calls: []string{adminDoor("session.send")}},
 		{Name: "session wait", Run: sessionWait, Calls: []string{adminDoor("session.wait")}},

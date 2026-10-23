@@ -33,6 +33,7 @@ type Inventory struct {
 	failed   map[string]bool
 	machines map[string]MachineStatus
 	spool    map[string]bool
+	held     map[string]map[string]bool
 	revision uint64
 	subs     map[chan Snapshot]bool
 }
@@ -41,7 +42,7 @@ func New(opts Options) *Inventory {
 	if opts.Clock == nil {
 		opts.Clock = realClock{}
 	}
-	return &Inventory{opts: opts, entries: map[string]entry{}, ended: map[string]endedEntry{}, failed: map[string]bool{}, machines: map[string]MachineStatus{}, spool: map[string]bool{}, subs: map[chan Snapshot]bool{}}
+	return &Inventory{opts: opts, entries: map[string]entry{}, ended: map[string]endedEntry{}, failed: map[string]bool{}, machines: map[string]MachineStatus{}, spool: map[string]bool{}, held: map[string]map[string]bool{}, subs: map[chan Snapshot]bool{}}
 }
 func hostIDValue(id *string) string {
 	if id == nil {
@@ -100,6 +101,22 @@ func (i *Inventory) LiveByClaudeID(machineKey, claudeID string) []Observation {
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Session.ID < out[b].Session.ID })
 	return out
+}
+
+// Held returns a copy of the latest successful probe's held set for one
+// machine; false when no probe of that machine has succeeded.
+func (i *Inventory) Held(machineKey string) (map[string]bool, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	held, ok := i.held[machineKey]
+	if !ok {
+		return nil, false
+	}
+	out := make(map[string]bool, len(held))
+	for id, v := range held {
+		out[id] = v
+	}
+	return out, true
 }
 
 func (i *Inventory) clearEndedLocked(machineKey string) {
@@ -195,6 +212,7 @@ func (i *Inventory) Run(ctx context.Context) {
 				i.mu.Lock()
 				delete(i.machines, key)
 				delete(i.spool, key)
+				delete(i.held, key)
 				for id, e := range i.entries {
 					if e.machine.Key == key {
 						delete(i.entries, id)
@@ -274,6 +292,9 @@ func (i *Inventory) probe(ctx context.Context, m Machine, scan bool) bool {
 	defer i.mu.Unlock()
 	status := MachineStatus{HostID: m.HostID, Machine: m.Name, Status: "reachable", LastProbeAt: stamp(now)}
 	i.spool[m.Key] = err == nil && result.SawSpool
+	if err == nil {
+		i.held[m.Key] = result.Held
+	}
 	if errors.Is(err, ErrUnsupported) {
 		// Unsupported is stable, so there is no stale evidence to age out.
 		status.Status = "unsupported"

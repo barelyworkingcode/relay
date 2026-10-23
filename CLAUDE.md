@@ -26,6 +26,7 @@ same change when behaviour moves.
 | Event lines, the event catalogue, `relay logs` | [`docs/events.md`](docs/events.md) |
 | Enhanced services, manifests, restart supervision | [`docs/service-manifest.md`](docs/service-manifest.md) |
 | Sessions (terminal, claude, pi, chat) | [`docs/session-host.md`](docs/session-host.md) |
+| Session history: discovered records, transcript readers, titles, `GET /api/session-history` | [`docs/session-history.md`](docs/session-history.md) |
 | `relay sandbox`, the bridge takeover seam | [`docs/sandbox-command.md`](docs/sandbox-command.md) |
 | SSH host projects | [`docs/ssh-hosts.md`](docs/ssh-hosts.md) |
 | Model endpoint, model keys | [`docs/model-endpoint.md`](docs/model-endpoint.md) |
