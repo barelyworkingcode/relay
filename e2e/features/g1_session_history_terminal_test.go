@@ -907,34 +907,48 @@ func TestHistoryResumeDiscoveredChecks(t *testing.T) {
 
 	t.Run("held by relay-sessions", func(t *testing.T) {
 		t.Parallel()
-		a := adStart(t)
-		h := hxReady(t, a.osRig, false)
-		r := &htRig{hx: h, pid: a.pid, dir: a.root}
-		f := a.fake("app")
-		now := time.Now().UTC()
-		f.transcript(a.i.Home, hxUser(f.sid, f.dir, f.start, adPrompt, nil), hxEnd(f.sid, f.dir, now))
-		f.register(a.i.Home, "idle", now)
+		r := htStart(t, false)
+		// The conversation belongs to a managed Claude session whose agent ended
+		// while relay was down. The outside probe's held set includes every managed
+		// id, so the door refuses through that set: the door's own managed-list
+		// check cannot be isolated, because every probe, and the adopt that starts
+		// a managed session on a chosen conversation, refreshes the held set.
+		resp := r.post("/api/sessions", map[string]any{"projectId": r.pid, "model": "sonnet"})
+		var made struct {
+			SessionID string `json:"sessionId"`
+		}
+		resp.JSON(t, &made)
+		if resp.Status != http.StatusCreated || made.SessionID == "" {
+			t.Fatalf("POST /api/sessions answered %d, want 201 and a session id: %s", resp.Status, resp.Body)
+		}
+		agent := made.SessionID
+		g1sSendText(t, r.i, agent, "hi", "echo: hi")
+		conv := ""
+		for _, c := range r.i.FakeAgentCalls("claude") {
+			if c.Event == "start" && c.Env["RELAY_SESSION_ID"] == agent {
+				conv = g1xArgv(c.Argv, "--session-id")
+			}
+		}
+		if conv == "" {
+			t.Fatalf("the session's start names no --session-id")
+		}
+		g1lEndAgentWhileDown(t, r.i, agent)
 		since := time.Now()
-		s := a.probe() // its clock move starts a scan too
-		a.i.WaitEvent(harness.EventQuery{Key: "session.history.scan", Since: since, Fields: map[string]any{"machine": "console"}}, osBound)
-		id := hxDiscoveredID(f.sid)
-		if row := h.rows().byID(id); row == nil || row.Record != "discovered" {
-			t.Fatalf("row before the adopt = %+v, want a discovered record", row)
-		}
-		live := s.liveAt(f.dir)
-		if live == nil {
-			t.Fatalf("no live row for %s; snapshot %+v", f.dir, s)
-		}
-		adCreated(t, a.adopt(map[string]any{"outsideId": live.ID, "interrupt": false, "model": "sonnet"}))
-		f.signalAt(f.expect("signal TERM"), "TERM")
-		f.gone()
-		// The adopted session runs headless on the conversation. The process and
-		// its registry entry are gone, so relay-sessions holds it. No clock move
-		// follows, so no scan removes the discovered record first.
-		if err := os.Remove(r.registryPath(f.pid)); err != nil {
+		r.i.Restart()
+		r.i.WaitSessionHost(osBound)
+		r.i.WaitEvent(harness.EventQuery{Key: "session.history.scan", Since: since, Fields: map[string]any{"machine": "console"}}, osBound)
+
+		tid := r.start("claude-code")
+		pid := r.agentStart(tid).Pid
+		r.transcript(r.dir, conv, "Acme managed")
+		r.link(tid, pid, conv)
+		r.closeTerm(tid)
+		if err := os.Remove(r.registryPath(pid)); err != nil {
 			t.Fatalf("removing the registry entry: %v", err)
 		}
-		r.refused(id, htSize, http.StatusConflict, "held")
+		r.probe()
+		r.scan(nil)
+		r.refused(tid, htSize, http.StatusConflict, "held")
 	})
 }
 
