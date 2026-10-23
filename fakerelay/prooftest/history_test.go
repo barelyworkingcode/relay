@@ -243,3 +243,22 @@ func TestHistoryUnavailable(t *testing.T) {
 	eq[any](t, in.api(t, "POST", historyList+"/h1/resume", J{"cols": 100, "rows": 30}).is(t, http.StatusServiceUnavailable).obj(t)["code"],
 		"history_unavailable", "resume code")
 }
+
+// Regression: deleting a session leaves its history row listed, or the delete removes another row.
+func TestHistoryRowGoneWithDeletedSession(t *testing.T) {
+	t.Parallel()
+	in := startInstance(t, func(string) any {
+		w := historyWorld(
+			historyRow("s1", J{"kind": "claude", "resume": "session"}),
+			historyRow("h2", nil))("").(J)
+		w["sessions"] = []J{{"id": "s1", "project_id": "p1", "name": "Fix", "model": "sonnet", "state": "idle", "messages": []J{}}}
+		return w
+	})
+	_, before := historyRows(t, in, "")
+	eq(t, historyIDs(before), []string{"s1", "h2"}, "rows before the delete")
+
+	in.api(t, "DELETE", "/api/sessions/s1", nil).is(t, http.StatusNoContent)
+
+	_, rows := historyRows(t, in, "")
+	eq(t, historyIDs(rows), []string{"h2"}, "rows after the delete")
+}
