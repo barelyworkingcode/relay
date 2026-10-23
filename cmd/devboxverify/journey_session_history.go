@@ -100,6 +100,15 @@ func runSessionHistoryTerminal(ctx context.Context, e env) (res result) {
 	if err != nil {
 		return blocked(id, "no claude on this machine's login-shell PATH")
 	}
+	// Deliberate: a login-shell claude may be a wrapper that reads a login token
+	// (and a sandbox denies running it). The launcher execs ~/.local/bin/claude
+	// by its link, as a person's shell does, so the process is named claude for
+	// the outside probe; the sandbox must still read the version folder behind it.
+	claudeRead := claude
+	link := filepath.Join(home, ".local", "bin", "claude")
+	if real, err := filepath.EvalSymlinks(link); err == nil {
+		claude, claudeRead = link, real
+	}
 	dir, err := prepareInstanceDir(ctx, e, histTermInstance)
 	if err != nil {
 		return blocked(id, err.Error())
@@ -116,7 +125,7 @@ func runSessionHistoryTerminal(ctx context.Context, e env) (res result) {
 	if err := writeAdoptSettings(projectDir); err != nil {
 		return blocked(id, "scratch folder: "+err.Error())
 	}
-	if err := os.WriteFile(launcher, []byte(detachedLauncher(claude, baseURL, model, tokenFile)), 0o700); err != nil {
+	if err := os.WriteFile(launcher, []byte(historyLauncher(claude, baseURL, model, tokenFile)), 0o700); err != nil {
 		return blocked(id, "launcher: "+err.Error())
 	}
 
@@ -130,7 +139,7 @@ func runSessionHistoryTerminal(ctx context.Context, e env) (res result) {
 		return fail("after boot: %s", err)
 	}
 	h := &histTerm{e: e, projectID: uuid.NewString(), log: &dropLog{}}
-	if h.token, err = seedHistoryInstance(dir, h.projectID, projectDir, launcher, tokenFile, e.Nonce); err != nil {
+	if h.token, err = seedHistoryInstance(dir, h.projectID, projectDir, launcher, tokenFile, claudeRead, e.Nonce); err != nil {
 		return blocked(id, err.Error())
 	}
 	if h.e.FrontendSocket, err = instanceFrontend(dir); err != nil {
@@ -176,21 +185,24 @@ func runSessionHistoryTerminal(ctx context.Context, e env) (res result) {
 	// 2. The record is live and links to the conversation.
 	// Waits: the HTTP answer for the row, then the session.history.link event for its id.
 	var live histRow
+	var seen []string
 	if !pollUntil(ctx, histTermRowWait, func() bool {
 		rows, _ := h.rows(ctx)
+		seen = seen[:0]
 		for _, r := range rows {
+			seen = append(seen, r.ID+"/"+r.Kind+"/"+r.State)
 			if r.Kind == "terminal" && r.State == "live" {
 				live = r
 			}
 		}
 		return live.ID != ""
 	}) {
-		return fail("no live terminal row in the history within %s of the launch", histTermRowWait)
+		return fail("no live terminal row in the history within %s of the launch (terminal %s; rows %v); terminal output: %s", histTermRowWait, termID, seen, h.tail(termID))
 	}
 	if _, err := waitEvent(ctx, h.e, dir, "session.history.link", launchedAt, histTermLinkWait, func(m map[string]any) bool {
 		return m["session_id"] == live.ID && m["status"] == "ok"
 	}); err != nil {
-		return fail("the terminal's record was never linked: %s", err)
+		return fail("the terminal's record was never linked: %s; terminal output: %s", err, h.tail(termID))
 	}
 	linked, _ := h.rowByID(ctx, live.ID)
 	if convID = linked.conversation(); !validUUID(convID) {
@@ -297,6 +309,18 @@ func waitSessionHost(ctx context.Context, e env, dir string, since time.Time) er
 	return nil
 }
 
+// historyLauncher is detachedLauncher for a sandboxed terminal. Deliberate: a
+// sandboxed launch runs with a minimal environment that has no PATH, so every
+// command is an absolute path; "cat" alone dies with "command not found".
+func historyLauncher(claudePath, baseURL, model, tokenFile string) string {
+	return "#!/bin/sh\n" +
+		"ANTHROPIC_BASE_URL=" + shellQuote(baseURL) + "\n" +
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL=" + shellQuote(model) + "\n" +
+		"ANTHROPIC_AUTH_TOKEN=$(/bin/cat " + shellQuote(tokenFile) + ") || exit 1\n" +
+		"export ANTHROPIC_BASE_URL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_AUTH_TOKEN\n" +
+		"exec " + shellQuote(claudePath) + " \"$@\"\n"
+}
+
 // terminalIDOf reads the terminal id from a launch body, top level or nested.
 func terminalIDOf(body []byte) string {
 	var v struct {
@@ -329,7 +353,7 @@ func instanceFrontend(dir string) (string, error) {
 // through the launcher, sandboxed) and an expiring credential into the
 // instance's settings.json, and returns the credential's token. The token is
 // in no file or detail beyond the hash settings.json keeps.
-func seedHistoryInstance(dir, projectID, projectDir, launcher, tokenFile, nonce string) (string, error) {
+func seedHistoryInstance(dir, projectID, projectDir, launcher, tokenFile, claude, nonce string) (string, error) {
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return "", err
@@ -355,9 +379,9 @@ func seedHistoryInstance(dir, projectID, projectDir, launcher, tokenFile, nonce 
 	template := map[string]any{
 		"id": "claude-code", "name": "Claude Code", "command": launcher, "args": []string{"--model", "haiku", "--permission-mode", "default"},
 		"sandbox":    true,
-		"read_write": []string{"~/.claude", "~/.claude.json", "~/.cache", "~/Library/Caches"},
+		"read_write": []string{"~/.claude", "~/.claude.json", "~/.cache", "~/Library/Caches", fmt.Sprintf("/tmp/claude-%d", os.Getuid())},
 		"read": []string{"~/Library/Keychains", "~/.local/bin", "~/.local/share/claude", "/opt/homebrew",
-			filepath.Dir(launcher), filepath.Dir(tokenFile)},
+			filepath.Dir(launcher), filepath.Dir(tokenFile), filepath.Dir(claude)},
 	}
 	err := editSettings(dir, func(top map[string]json.RawMessage) error {
 		var templates []json.RawMessage
