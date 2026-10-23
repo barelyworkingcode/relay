@@ -262,3 +262,25 @@ func TestHistoryRowGoneWithDeletedSession(t *testing.T) {
 	_, rows := historyRows(t, in, "")
 	eq(t, historyIDs(rows), []string{"h2"}, "rows after the delete")
 }
+
+// Regression: deleting a session through the WebSocket frame leaves its history row listed, or the
+// delete removes another row.
+func TestHistoryRowGoneWithSocketDelete(t *testing.T) {
+	t.Parallel()
+	in := startInstance(t, func(string) any {
+		w := historyWorld(
+			historyRow("s1", J{"kind": "claude", "resume": "session"}),
+			historyRow("h2", nil))("").(J)
+		w["sessions"] = []J{{"id": "s1", "project_id": "p1", "name": "Fix", "model": "sonnet", "state": "idle", "messages": []J{}}}
+		return w
+	})
+	_, before := historyRows(t, in, "")
+	eq(t, historyIDs(before), []string{"s1", "h2"}, "rows before the delete")
+
+	c := in.ws(t, "/ws", opsTok)
+	must(t, c.WriteJSON(J{"type": "delete_session", "sessionId": "s1"}), "send delete_session")
+	until(t, c, isType("session_ended", "sessionId", "s1"))
+
+	_, rows := historyRows(t, in, "")
+	eq(t, historyIDs(rows), []string{"h2"}, "rows after the delete")
+}

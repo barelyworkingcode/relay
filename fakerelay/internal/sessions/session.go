@@ -380,7 +380,6 @@ func (s *svc) resumeSession(w http.ResponseWriter, r *http.Request) {
 func (s *svc) deleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.removeSession(r.Context(), id)
-	s.World.History().Remove(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -400,6 +399,7 @@ func (s *svc) removeSession(ctx context.Context, id string) {
 	s.mu.Unlock()
 	s.resolved(x, ended, "ended")
 	s.Events.Begin(ctx, "session.delete", events.Sessions()).Set("session_id", id).End("ok", "", nil)
+	s.World.History().Remove(id)
 	if x != nil {
 		s.broadcast(map[string]any{"type": "session_ended", "sessionId": id})
 	}
