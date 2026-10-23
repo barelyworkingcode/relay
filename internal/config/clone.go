@@ -22,6 +22,7 @@ func (s *Settings) Clone() *Settings {
 		cp.ChiefOfStaff = &c
 	}
 	cp.OutsideSessions = cloneOutsideSessionsConfig(s.OutsideSessions)
+	cp.SessionHistory = cloneSessionHistoryConfig(s.SessionHistory)
 	cp.Enrolments = cloneEnrolments(s.Enrolments)
 	cp.Audit = cloneAuditConfig(s.Audit)
 	cp.Remote = cloneRemoteConfig(s.Remote)

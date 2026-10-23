@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
@@ -29,6 +31,8 @@ type historyOps struct {
 	// hostRoots holds each host project's resolved folder from the last scan, so
 	// a row's project match costs no round trip to the host.
 	hostRoots map[string]string
+	// purgeIntents holds each session_purge intent row until its completion.
+	purgeIntents map[string]audit.AuditEvent
 }
 
 func (o *historyOps) List(projectID string) sessionhistory.Response {
@@ -36,8 +40,9 @@ func (o *historyOps) List(projectID string) sessionhistory.Response {
 }
 
 func newHistoryOps(store config.SettingsStore, clock serverClock, deps sessionRouteDeps, inv *outsidesessions.Inventory) *historyOps {
-	o := &historyOps{store: store, deps: deps, inv: inv, hostRoots: map[string]string{}}
+	o := &historyOps{store: store, deps: deps, inv: inv, hostRoots: map[string]string{}, purgeIntents: map[string]audit.AuditEvent{}}
 	opts := sessionhistory.Options{
+		Purge:   o.purgeDeps(),
 		Clock:   clock,
 		Ledger:  deps.sessions,
 		Readers: []sessionhistory.Reader{sessionhistory.NewClaude()},
@@ -65,6 +70,82 @@ func newHistoryOps(store config.SettingsStore, clock serverClock, deps sessionRo
 	}
 	o.index = sessionhistory.New(opts)
 	return o
+}
+
+// purgeDeps wires the purge pass: the grace period from fresh settings, the
+// auditing switch, and the durable session_purge row written before a removal.
+// An out-of-range setting turns purge off and warns once per distinct value.
+func (o *historyOps) purgeDeps() sessionhistory.PurgeDeps {
+	rec := o.deps.auditor
+	var warned *int
+	return sessionhistory.PurgeDeps{
+		Grace: func() time.Duration {
+			s := config.FreshSettings(o.store)
+			grace := s.PurgeGrace()
+			var days *int
+			if grace == 0 && s.SessionHistory != nil {
+				days = s.SessionHistory.PurgeAfterDays
+			}
+			o.mu.Lock()
+			defer o.mu.Unlock()
+			if days != nil && (*days < 0 || *days > config.SessionHistoryPurgeMaxDays) && (warned == nil || *warned != *days) {
+				slog.Warn("session history: purge_after_days out of range, purge is off", "value", *days, "max", config.SessionHistoryPurgeMaxDays)
+			}
+			if days != nil {
+				v := *days
+				warned = &v
+			} else {
+				warned = nil
+			}
+			return grace
+		},
+		Auditing: rec.Ready,
+		AuditIntent: func(r ledger.Record, grace time.Duration) (string, error) {
+			args := map[string]any{
+				"session_id": r.SessionID, "record": "launched", "kind": r.Kind, "agent": r.Agent,
+				"conversation_id": r.ConversationID, "grace_days": int(grace / (24 * time.Hour)),
+			}
+			if r.State == ledger.StateDiscovered {
+				args["record"] = "discovered"
+			}
+			if r.HostID != "" {
+				args["host_id"] = r.HostID
+			}
+			if r.MissingSince != nil {
+				args["missing_since"] = r.MissingSince.UTC().Format(time.RFC3339)
+			}
+			raw, err := json.Marshal(args)
+			if err != nil {
+				return "", err
+			}
+			ev := audit.AuditEvent{
+				ID: audit.NewAuditID(), TS: time.Now(), Event: audit.AuditEventSessionPurge,
+				Phase: audit.AuditPhaseIntent, Outcome: audit.AuditOutcomePending,
+				Actor: audit.AuditActor{Kind: audit.AuditActorService, Auth: audit.AuditAuthNone, ServiceID: config.RelaySessionsServiceID},
+				Args:  raw, ArgsBytes: len(raw),
+			}
+			if err := rec.RecordDurable(ev); err != nil {
+				return "", err
+			}
+			o.mu.Lock()
+			o.purgeIntents[ev.ID] = ev
+			o.mu.Unlock()
+			return ev.ID, nil
+		},
+		AuditCompletion: func(id, outcome, code string) {
+			o.mu.Lock()
+			ev, ok := o.purgeIntents[id]
+			delete(o.purgeIntents, id)
+			o.mu.Unlock()
+			if !ok {
+				return
+			}
+			ev.Phase, ev.TS, ev.Outcome, ev.Error = audit.AuditPhaseCompletion, time.Now(), outcome, code
+			if err := rec.RecordDurable(ev); err != nil {
+				slog.Warn("session history: purge completion not written", "id", id, "error", err)
+			}
+		},
+	}
 }
 
 // view takes one settings snapshot, resolves the console's project folders

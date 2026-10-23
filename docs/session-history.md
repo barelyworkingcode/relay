@@ -168,6 +168,7 @@ history door, `POST /api/session-history/{id}/resume`.
 | Row | `resume` | `resumeReason` |
 |---|---|---|
 | `state: "live"` | `none` | `live` |
+| launched, kind `claude`, `pi`, `codex` or `chat`, dormant, `transcript: "absent"` | `none` | `transcript_absent` |
 | launched, kind `claude`, `pi`, `codex` or `chat`, dormant | `session` | none |
 | any other kind that is not a terminal | `none` | `kind` |
 | launched terminal or discovered, on a host | `none` | `host_unsupported` |
@@ -242,3 +243,44 @@ ordinary `session_launch` row and no other audit row is added; the
 outcome. A second resume of one id answers `409 resume_in_progress`.
 `LaunchRequest.ResumeConversation` is internal: only this door sets it, never a
 request body, and it is valid on a console `claude-code` launch alone.
+
+## Purge
+
+Relay removes a history record whose transcript is gone, so the history offers
+only what can still be resumed. The pass runs once after each machine scan that
+answered and reads absence only through `Listing.Absent`: the listing answered
+and was complete, its scope covers the record's folder, it refused no folder
+named like it, and it does not hold the conversation. A capped, stale,
+out-of-scope or refused listing is unknown, never absent, and sets nothing.
+
+Only a launched `claude` terminal record and a discovered record are
+candidates. A launched agent record whose transcript is gone stays and lists
+`resume: "none"`, `resumeReason: "transcript_absent"`. A record is skipped,
+whatever the listing says, when it is `live`, has `adopt_pending` set, or its
+conversation is in the machine's held set or relay-sessions' managed list. A
+held set that is stale (the machine's last probe is older than two probe
+intervals) or unreadable, or an unreadable managed list, stops the pass for
+that machine. So does an answered listing that holds no transcript at all
+while candidates exist: that reads as a store that went away.
+
+1. A candidate the listing holds, or whose transcript reads unknown (out of
+   scope, refused or in a capped listing), has its `missing_since` cleared: an
+   unknown stretch breaks "stayed absent", so the grace period starts again.
+2. A candidate that is absent and has no `missing_since` gets the scan's time.
+   A record with no `conversation_id` counts as absent, under the same rule.
+3. A candidate absent for the grace period gets a `session_purge` intent row,
+   then is removed, only if the guards above still hold under the ledger's lock,
+   then gets a completion row. A failed intent write keeps the record. A failed
+   ledger save is skipped for one more grace period. With auditing off nothing is marked
+   or purged.
+
+Each purge writes one `session.history.purge` event ([events](events.md)). The
+cap on discovered records (2000 per machine) evicts without a purge and writes
+no audit row.
+
+### The setting
+
+`session_history.purge_after_days` in `settings.json` is the grace period in
+whole days, 0 to 90, default 7. A hand edit applies through the settings-file
+watch. 0 turns purge off. Any other value turns it off and logs one Warn when
+the value changes. `relay audit --event session_purge` lists what was purged.

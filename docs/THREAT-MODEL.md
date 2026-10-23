@@ -212,7 +212,9 @@ outside it is not a relay bug, however real.
 
 The audit trail (asset C) is part of every promise above. Examples: #147 (a
 cancelled presence prompt left no audit row), #150 (caller-controlled
-terminal escapes in `relay audit`'s table).
+terminal escapes in `relay audit`'s table). Each history purge is recorded as a
+`session_purge` row before the record goes, and nothing is purged with auditing
+off.
 
 ## The test build
 

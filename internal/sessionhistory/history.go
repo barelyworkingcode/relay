@@ -151,6 +151,8 @@ type Options struct {
 	Project       func(machineKey, directory string) *string
 	RecordMachine func(r ledger.Record) string
 	View          func() View
+	// Purge removes records whose transcript is gone; the zero value purges nothing.
+	Purge PurgeDeps
 }
 
 // View is what one Rows call or one scan asks of relay's settings and probes.
@@ -223,6 +225,10 @@ type Index struct {
 	mu       sync.Mutex
 	revision uint64
 	states   map[string]*machineState
+	// purgeRetry holds, in memory only, the time before which a record whose
+	// purge failed to save is not tried again.
+	purgeMu    sync.Mutex
+	purgeRetry map[string]time.Time
 }
 
 // New returns an Index. Run starts its scans.
@@ -334,6 +340,9 @@ func (x *Index) scan(ctx context.Context, key string) {
 		return
 	}
 	superseded, evicted := x.reconcile(ctx, m, listing.Entries, err == nil && listing.Answered)
+	if err == nil && listing.Answered {
+		x.purge(ctx, m, listing)
+	}
 	now := x.o.Clock.Now()
 	x.mu.Lock()
 	// Checked under the lock: forget cancels first, then deletes, so a scan
@@ -720,6 +729,9 @@ func (x *Index) resume(v View, r ledger.Record, row Row, machineKey string) (str
 	case r.State == ledger.StateLive:
 		return "none", "live"
 	case row.Record == "launched" && r.State == ledger.StateDormant && (r.Kind == "claude" || r.Kind == "pi" || r.Kind == "codex" || r.Kind == "chat"):
+		if row.Transcript == "absent" {
+			return "none", "transcript_absent"
+		}
 		return "session", ""
 	case row.Kind != "terminal":
 		return "none", "kind"
