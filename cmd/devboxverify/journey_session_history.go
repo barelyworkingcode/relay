@@ -33,6 +33,7 @@ const (
 	histTermRowWait  = 60 * time.Second
 	histTermShowWait = 60 * time.Second
 	histTermImport   = 30 * time.Second
+	histTermHostWait = 60 * time.Second
 )
 
 // histRow is the part of a session-history row this journey reads.
@@ -121,8 +122,12 @@ func runSessionHistoryTerminal(ctx context.Context, e env) (res result) {
 
 	var inst *serveInstance
 	defer func() { res = withTeardown(ctx, res, inst) }() // runs after the terminals are closed below
+	bootedAt := time.Now()
 	if inst, err = startServe(ctx, e, dir); err != nil {
 		return fail("%s", err)
+	}
+	if err := waitSessionHost(ctx, e, dir, bootedAt); err != nil {
+		return fail("after boot: %s", err)
 	}
 	h := &histTerm{e: e, projectID: uuid.NewString(), log: &dropLog{}}
 	if h.token, err = seedHistoryInstance(dir, h.projectID, projectDir, launcher, tokenFile, e.Nonce); err != nil {
@@ -223,6 +228,9 @@ func runSessionHistoryTerminal(ctx context.Context, e env) (res result) {
 	if h.e.FrontendSocket, err = instanceFrontend(dir); err != nil {
 		return fail("%s", err)
 	}
+	if err := waitSessionHost(ctx, e, dir, restartedAt); err != nil {
+		return fail("after the restart: %s", err)
+	}
 	if _, err := waitEvent(ctx, h.e, dir, "session.history.scan", restartedAt, histTermScanWait, nil); err != nil {
 		return fail("after the restart: %s", err)
 	}
@@ -273,6 +281,20 @@ func runSessionHistoryTerminal(ctx context.Context, e env) (res result) {
 		return fail("no live terminal row carries conversation %s after the resume", convID)
 	}
 	return result{id, statePass, "claude-code terminal in a project linked to its conversation and titled by /rename; listed dormant with resume history after a relay restart; the history door answered 201 and the new terminal's Claude showed the earlier prompt; the old record is gone"}
+}
+
+// waitSessionHost waits for relay-sessions to register with the instance. The
+// server is ready before the session host is, and a launch or resume in that
+// gap answers "session host unavailable". Waits: the service.manifest.register
+// event for service_id relaysessions.
+func waitSessionHost(ctx context.Context, e env, dir string, since time.Time) error {
+	_, err := waitEvent(ctx, e, dir, "service.manifest.register", since, histTermHostWait, func(m map[string]any) bool {
+		return m["service_id"] == "relaysessions"
+	})
+	if err != nil {
+		return fmt.Errorf("relay-sessions did not register: %w", err)
+	}
+	return nil
 }
 
 // terminalIDOf reads the terminal id from a launch body, top level or nested.
