@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,8 +175,8 @@ func (h *hx) hpGone(id string) {
 	}
 }
 
-// hpAudit is the one session_purge row naming id.
-func hpAudit(t *testing.T, i *harness.Instance, id string) map[string]any {
+// hpAuditRows are the session_purge rows naming id, in file order.
+func hpAuditRows(t *testing.T, i *harness.Instance, id string) []map[string]any {
 	t.Helper()
 	var got []map[string]any
 	for _, r := range i.Audit(harness.AuditQuery{Event: "session_purge", Tail: 5000}) {
@@ -182,10 +184,37 @@ func hpAudit(t *testing.T, i *harness.Instance, id string) map[string]any {
 			got = append(got, r)
 		}
 	}
-	if len(got) != 1 {
-		t.Fatalf("%d session_purge audit rows name %s, want exactly 1: %v", len(got), id, got)
+	return got
+}
+
+// hpPair checks rows[at] and rows[at+1] are an intent (pending) followed by a
+// completion with the same id and the given outcome, and returns both.
+func hpPair(t *testing.T, rows []map[string]any, at int, outcome string) (intent, completion map[string]any) {
+	t.Helper()
+	if len(rows) < at+2 {
+		t.Fatalf("%d session_purge rows, want at least %d: %v", len(rows), at+2, rows)
 	}
-	return got[0]
+	intent, completion = rows[at], rows[at+1]
+	if intent["phase"] != "intent" || intent["outcome"] != "pending" || completion["phase"] != "completion" || completion["outcome"] != outcome {
+		t.Fatalf("session_purge rows = %v then %v, want an intent/pending then a completion/%s", intent, completion, outcome)
+	}
+	if id, _ := intent["id"].(string); id == "" || completion["id"] != id {
+		t.Fatalf("session_purge intent id %v and completion id %v, want one shared id", intent["id"], completion["id"])
+	}
+	if !reflect.DeepEqual(intent["args"], completion["args"]) {
+		t.Fatalf("session_purge intent args %v and completion args %v differ", intent["args"], completion["args"])
+	}
+	return intent, completion
+}
+
+// hpAudit is the one purge of id: exactly an intent row, then an ok completion.
+func hpAudit(t *testing.T, i *harness.Instance, id string) (intent, completion map[string]any) {
+	t.Helper()
+	rows := hpAuditRows(t, i, id)
+	if len(rows) != 2 {
+		t.Fatalf("%d session_purge rows name %s, want exactly 2 (intent, completion): %v", len(rows), id, rows)
+	}
+	return hpPair(t, rows, 0, "ok")
 }
 
 // hpWitness plants a console transcript that stays, so the listing is never empty.
@@ -299,7 +328,7 @@ func TestHistoryPurgeAfterGrace(t *testing.T) {
 	for _, c := range []struct {
 		id, record, kind, conv string
 	}{{linked, "launched", "pty", linkedConv}, {bare, "launched", "pty", ""}, {foundID, "discovered", "claude", found.conv}} {
-		row := hpAudit(t, r.i, c.id)
+		_, row := hpAudit(t, r.i, c.id)
 		args, _ := row["args"].(map[string]any)
 		actor, _ := row["actor"].(map[string]any)
 		if row["outcome"] != "ok" || actor["kind"] != "service" {
@@ -889,17 +918,29 @@ func TestHistoryPurgeSetting(t *testing.T) {
 	t.Run("a hand edit applies and an out-of-range value warns once per change", func(t *testing.T) {
 		t.Parallel()
 		h, id := absentRecord(t, nil)
+		// The Warn is a plain log line with no event key; it is written inside a
+		// scan's purge pass, so the scan event that follows the edit ends it.
 		warns := func() int {
-			return len(h.i.Events(harness.EventQuery{Fields: map[string]any{"level": "warn"}}))
+			n := 0
+			for _, e := range h.i.Events(harness.EventQuery{Fields: map[string]any{"level": "warn"}}) {
+				if b, _ := json.Marshal(e); strings.Contains(string(b), "purge_after_days") {
+					n++
+				}
+			}
+			return n
 		}
-		n0 := warns()
+		if n := warns(); n != 0 {
+			t.Fatalf("%d purge_after_days warn lines before any edit, want none", n)
+		}
 		for k, raw := range []string{"91", "100"} {
 			hpSetDays(t, h.i, raw)
-			// A plain log line has no event key to wait on, so the count is polled to its bound.
-			g11dUntil(t, "the warn line for purge_after_days "+raw, func() bool { return warns() > n0+k })
-			h.hpSettle()
-			if got := warns(); got != n0+k+1 {
-				t.Fatalf("%d warn lines after setting purge_after_days %s, want %d: one per change, not one per scan", got, raw, n0+k+1)
+			h.scan(nil)
+			if got := warns(); got != k+1 {
+				t.Fatalf("%d purge_after_days warn lines after setting %s, want %d: one per change", got, raw, k+1)
+			}
+			h.scan(nil)
+			if got := warns(); got != k+1 {
+				t.Fatalf("%d purge_after_days warn lines after a further scan with %s, want %d: not one per scan", got, raw, k+1)
 			}
 		}
 		// The record was marked under the default; the edit turned purge off.
@@ -907,4 +948,149 @@ func TestHistoryPurgeSetting(t *testing.T) {
 		h.hpSettle()
 		h.hpKept(id)
 	})
+}
+
+// hpTick moves the clock one probe interval and waits for the console's scan
+// event. It makes no request, so it works while relay's writes are blocked.
+func (h *hx) hpTick() {
+	h.t.Helper()
+	since := time.Now()
+	h.i.ClockAdvance(osProbeStep)
+	h.i.WaitEvent(harness.EventQuery{Key: hpScanKey, Since: since, Fields: map[string]any{"machine": "console"}}, osBound)
+}
+
+// hpAwaitEvent ticks until the purge event with these fields exists.
+func (h *hx) hpAwaitEvent(fields map[string]any) {
+	h.t.Helper()
+	q := harness.EventQuery{Key: hpPurgeKey, Fields: fields}
+	for k := 0; len(h.i.Events(q)) == 0; k++ {
+		if k == hpMaxTicks {
+			h.t.Fatalf("no %s event %v after %d scans", hpPurgeKey, fields, hpMaxTicks)
+		}
+		h.hpTick()
+	}
+	h.i.WaitEvent(q, osBound)
+}
+
+// hpDeny removes write permission on path and returns the restore.
+func hpDeny(t *testing.T, path string, mode os.FileMode) func() {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	orig := info.Mode().Perm()
+	restored := false
+	restore := func() {
+		if !restored {
+			restored = true
+			if err := os.Chmod(path, orig); err != nil {
+				t.Errorf("restoring %s: %v", path, err)
+			}
+		}
+	}
+	t.Cleanup(restore)
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod %s: %v", path, err)
+	}
+	return restore
+}
+
+// A failed intent write purges nothing and writes no ok row.
+func TestHistoryPurgeAuditWriteFails(t *testing.T) {
+	t.Parallel()
+	h := hpBoot(t, map[string]string{"audit": `{"enabled":true,"max_file_bytes":1,"generations":5}`})
+	h.hpWitness()
+	d := h.hpConsole(121, "found")
+	h.scan(nil)
+	id := h.hpID(d)
+	d.remove(t)
+	h.hpSettle()
+	if h.hpMissing(id) == "" {
+		t.Fatalf("record %s has no missing_since before the audit log is blocked", id)
+	}
+
+	// The same fault as the Pi interrupt test: the active log is read-only and
+	// its directory is closed, so a rotation can neither reopen nor replace it.
+	dir := filepath.Join(h.i.ConfigDir, "logs", "audit")
+	active := filepath.Join(dir, "toolcalls.jsonl")
+	if info, err := os.Stat(active); err != nil || !info.Mode().IsRegular() || info.Size() <= 1 {
+		t.Fatalf("audit fault needs a regular active log above the rotation cap: %v %v", info, err)
+	}
+	restoreFile := hpDeny(t, active, 0o400)
+	restoreDir := hpDeny(t, dir, 0o500)
+	if f, err := os.OpenFile(active, os.O_APPEND|os.O_WRONLY, 0); err == nil {
+		_ = f.Close()
+		t.Fatalf("the blocked audit log still opens for append")
+	}
+
+	h.i.ClockAdvance(8 * hpDay)
+	h.hpAwaitEvent(map[string]any{"session_id": id, "status": "error", "reason": "audit_failed"})
+	h.hpTick()
+	if h.hpPurged(id) {
+		t.Fatalf("record %s was purged while its audit row could not be written", id)
+	}
+	if h.hpRec(id) == nil {
+		t.Fatalf("the ledger no longer holds record %s after a failed intent write", id)
+	}
+
+	if rows := hpAuditRows(t, h.i, id); len(rows) != 0 {
+		t.Fatalf("%d session_purge rows while the audit log was blocked, want none: %v", len(rows), rows)
+	}
+	if got := h.i.Events(harness.EventQuery{Key: hpPurgeKey, Fields: map[string]any{"session_id": id, "status": "ok"}}); len(got) != 0 {
+		t.Fatalf("a successful session.history.purge event while the audit log was blocked: %v", got)
+	}
+	restoreDir()
+	restoreFile()
+}
+
+// A failed ledger save keeps the record and writes an intent and an error
+// completion; the pass does not retry for one more grace period, then does.
+func TestHistoryPurgeLedgerSaveFails(t *testing.T) {
+	t.Parallel()
+	h := hxStart(t, false)
+	h.hpWitness()
+	d := h.hpConsole(131, "found")
+	h.scan(nil)
+	id := h.hpID(d)
+	d.remove(t)
+	h.hpSettle()
+	marked := h.hpMissing(id)
+	if marked == "" {
+		t.Fatalf("record %s has no missing_since before the ledger is blocked", id)
+	}
+
+	// The ledger is replaced through its directory, so closing the config
+	// directory makes the save fail while the audit log stays writable.
+	restore := hpDeny(t, h.i.ConfigDir, 0o500)
+	h.i.ClockAdvance(8 * hpDay)
+	h.hpAwaitEvent(map[string]any{"session_id": id, "status": "error", "reason": "ledger_save_failed"})
+	h.hpTick()
+	if rec := h.hpRec(id); rec == nil || h.hpMissing(id) != marked {
+		t.Fatalf("ledger record %s = %v after a failed save, want it kept with missing_since %s", id, rec, marked)
+	}
+	_, completion := hpPair(t, hpAuditRows(t, h.i, id), 0, "error")
+	if completion["error"] != "ledger_save_failed" {
+		t.Fatalf("completion row = %v, want error ledger_save_failed", completion)
+	}
+
+	// Writable again, but inside the extra grace period: no second attempt.
+	restore()
+	h.hpSettle()
+	h.hpSettle()
+	if rows := hpAuditRows(t, h.i, id); len(rows) != 2 {
+		t.Fatalf("%d session_purge rows after the ledger was writable, want still 2 (no retry inside the grace period): %v", len(rows), rows)
+	}
+	if h.hpRec(id) == nil {
+		t.Fatalf("record %s was removed inside the extra grace period", id)
+	}
+
+	h.hpPurgeAll(8*hpDay, id)
+	h.hpGone(id)
+	rows := hpAuditRows(t, h.i, id)
+	if len(rows) != 4 {
+		t.Fatalf("%d session_purge rows after the retry, want 4: %v", len(rows), rows)
+	}
+	hpPair(t, rows, 0, "error")
+	hpPair(t, rows, 2, "ok")
 }
