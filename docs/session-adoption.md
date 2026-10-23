@@ -469,10 +469,16 @@ one. Relay sends no signal over SSH itself. The script:
    requires its `sessionId` to be the conversation, else `refused changed`;
 3. tests idleness unless the adopt interrupts: the registry status is not one
    the probe reads as running or asking, the transcript is the size the tail
-   read saw, and the process has no child but the turn helper
-   (`/usr/bin/caffeinate`) that started in the last turn's window. The door
-   sends the window, or tests every child when the tail cannot give a turn
-   boundary. Not idle answers `refused busy`;
+   read saw, and the process has no child but the turn helper that started in
+   the last turn's window. The helper is the child whose executable is
+   `/usr/bin/caffeinate` (`/proc/<pid>/exe`, else `lsof`'s first `txt`
+   entry), never its `ps` name: Claude starts it by name. The door sends the
+   window. When the tail holds no prompt, the door reads the transcript
+   backwards below the tail, 1 MiB per read, until it finds the last prompt
+   or the file's start, at most 8 MiB in all: one turn writes request blobs
+   and attachments of hundreds of KiB, so a first turn's prompt often lies
+   before the tail. Past the bound, or after a failed read, it tests every
+   child. Not idle answers `refused busy`;
 4. sends SIGINT when the adopt interrupts, then SIGTERM and SIGKILL as needed,
    with the local ladder's 5 s waits, re-reading the lifetime before each
    signal. A mismatch or a gone pid after a signal ends the ladder and goes to

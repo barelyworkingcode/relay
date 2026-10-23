@@ -62,6 +62,45 @@ func readHostTail(ctx context.Context, h *config.Host, transcript string) (tail 
 	return tail, start + int64(len(tail)), start == 0, nil
 }
 
+// hostBoundaryBytes bounds how much of a host transcript the door reads to find
+// the last turn's prompt, and hostBoundaryChunk is one read of it. Claude
+// writes request blobs and attachments of hundreds of KiB into a turn, so a
+// first turn's prompt often lies before the 256 KiB tail.
+const (
+	hostBoundaryBytes = 8 << 20
+	hostBoundaryChunk = 1 << 20
+)
+
+// readHostTurn extends the tail backwards, over SSH, until it holds the last
+// turn's prompt or reaches the file's start. It reads only below the tail's
+// start, which the tail read pinned, so it never sees bytes written later.
+// Fail closed: a failed or short read, or the bound, keeps what it has, and
+// hostChildTest then tests every child.
+func readHostTurn(ctx context.Context, h *config.Host, transcript string, tail []byte, size int64, whole bool, since string) ([]byte, bool) {
+	procStart, err := time.Parse(time.RFC3339Nano, since)
+	if err != nil {
+		return tail, whole
+	}
+	data, start := tail, size-int64(len(tail))
+	for start > 0 && int64(len(data)) < hostBoundaryBytes {
+		if _, known := adopt.TurnWindow(data, false, procStart); known {
+			break
+		}
+		n := min(hostBoundaryChunk, hostBoundaryBytes-int64(len(data)))
+		out, err := outsideRun(ctx, h, outsideRangeScript(transcript, start, n))
+		if err != nil {
+			break
+		}
+		chunk, st, err := parseOutsideRange(out, start, n)
+		if err != nil || st+int64(len(chunk)) != start {
+			break
+		}
+		data = append(chunk[:len(chunk):len(chunk)], data...)
+		start = st
+	}
+	return data, start == 0
+}
+
 // hostChildTest chooses how the host script tests the Claude process's
 // children, from what the tail says about the last turn. Fail closed: a
 // boundary the tail cannot give, or a start the row does not state, tests every
@@ -130,6 +169,10 @@ func (a *adoptOps) adoptHost(ctx context.Context, req AdoptRequest, obs outsides
 		return nil, refuse(http.StatusConflict, adoptBusy, fmt.Sprintf("the session is not idle (%s); ask to interrupt to take it over anyway", veto))
 	}
 	interrupt := busy
+	turn, turnWhole := tailBytes, whole
+	if !interrupt {
+		turn, turnWhole = readHostTurn(ctx, h, obs.Transcript, tailBytes, size, whole, row.Since)
+	}
 
 	// Deliberate: a host adopt never answers model_unknown. An empty model
 	// starts the host's own default.
@@ -154,7 +197,7 @@ func (a *adoptOps) adoptHost(ctx context.Context, req AdoptRequest, obs outsides
 		}
 	}()
 
-	childTest, fromMs, toMs := hostChildTest(tailBytes, whole, row.Since, tail.LastRecord)
+	childTest, fromMs, toMs := hostChildTest(turn, turnWhole, row.Since, tail.LastRecord)
 	result.Spec.ResumeConversation = obs.ClaudeID
 	result.Spec.AdoptHost = &hostapi.AdoptHostSpec{
 		PID: obs.PID, Lifetime: obs.Lifetime, Interrupt: interrupt, TranscriptSize: size,

@@ -41,6 +41,11 @@ const adoptSentinel = "@@RELAY_ADOPT@@"
 // Deliberate: adopt_lifetime computes the pid's lifetime exactly as the
 // outside probe does (outsidesessions.UnixProbeScript), because the pin is
 // compared byte for byte. ps is called by name.
+//
+// Deliberate: the turn helper is matched by the executable the kernel mapped
+// (/proc/<pid>/exe, else lsof's first txt entry), never by ps's comm: Claude
+// starts it by name, so comm reads "caffeinate", and a program can call itself
+// anything. A path that cannot be read is no helper, so the child counts.
 const adoptSteps = `
 trap '' HUP
 done_line=
@@ -68,6 +73,13 @@ epoch_of() {
     ls=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' ' ' | sed 's/^ //;s/ $//')
     [ -n "$ls" ] || return 0
     TZ=UTC LC_ALL=C date -j -u -f '%a %b %e %H:%M:%S %Y' "$ls" +%s 2>/dev/null || TZ=UTC date -u -d "$ls" +%s 2>/dev/null
+  fi
+}
+exe_of() {
+  if [ -d "/proc/$1" ]; then
+    readlink "/proc/$1/exe" 2>/dev/null
+  else
+    lsof -a -p "$1" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n1
   fi
 }
 alive() {
@@ -99,9 +111,8 @@ children_idle() {
   all=$(ps -axo pid=,ppid= 2>/dev/null) || return 1
   kids=$(printf '%s\n' "$all" | awk -v p="$a_pid" '$2==p{print $1}')
   for k in $kids; do
-    comm=$(ps -o comm= -p "$k" 2>/dev/null | sed 's/^ *//;s/ *$//')
-    [ -n "$comm" ] || continue
-    [ "$comm" != /usr/bin/caffeinate ] || continue
+    ps -p "$k" >/dev/null 2>&1 || continue
+    [ "$(exe_of "$k")" != /usr/bin/caffeinate ] || continue
     [ "$a_child" != all ] || return 1
     born=$(epoch_of "$k")
     [ -n "$born" ] || return 1
