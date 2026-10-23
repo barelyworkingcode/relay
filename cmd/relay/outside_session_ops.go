@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
 	"github.com/barelyworkingcode/relay/internal/sessions/adopt"
 	"github.com/barelyworkingcode/relay/internal/sessions/codexdaemon"
+	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	"github.com/barelyworkingcode/relay/internal/sshhost"
 	"io"
@@ -176,6 +178,7 @@ func outsideMachine(store config.SettingsStore, deps sessionRouteDeps, h *config
 				}
 			}
 		}
+		deps.linkConversations(ctx, key, native.Links())
 		observed := native.Observations(root, managed)
 		if h == nil && deps.ready() {
 			managedPi, e := deps.host().ManagedPiIdentities(ctx)
@@ -647,4 +650,60 @@ func candidates0(cs []adopt.Candidate) string {
 		return ""
 	}
 	return cs[0].Instance
+}
+
+// linkConversations gives each live terminal or claude record the conversation
+// of the process that carries its marker. A marker is the process's own claim,
+// so a link counts only when the record is live on this machine, the process
+// works inside the record's folder and, on the console, descends from the
+// record's bound root, whose start time must still be the one the kernel
+// attested at Hello. A failed check links nothing.
+func (d sessionRouteDeps) linkConversations(ctx context.Context, machineKey string, links map[string]outsidesessions.Link) {
+	if d.sessions == nil {
+		return
+	}
+	recordMachine := func(r ledger.Record) string { return recordMachineKey(d.store, r) }
+	for marker, link := range links {
+		rec, ok := d.sessions.Get(marker)
+		if !ok || rec.State != ledger.StateLive || (rec.Kind != KindPTY && rec.Kind != KindClaude) || rec.ConversationID == link.ConversationID {
+			continue
+		}
+		if recordMachine(rec) != machineKey || !outsidesessions.Contains(rec.Directory, link.Cwd) {
+			slog.Debug("session history: link refused", "session", marker, "reason", "machine_or_folder")
+			continue
+		}
+		if machineKey == "console" && !descendsFromBoundRoot(link.PID, rec.Root) {
+			slog.Debug("session history: link refused", "session", marker, "reason", "not_under_root")
+			continue
+		}
+		ev := logging.BeginEvent(ctx, "session.history.link").Set("session_id", marker)
+		if _, err := d.sessions.LinkConversation(marker, machineKey, link.ConversationID, recordMachine); err != nil {
+			ev.End(logging.OutcomeError, "ledger_write_failed", err)
+			continue
+		}
+		ev.End(logging.OutcomeOK, "", nil)
+	}
+}
+
+// descendsFromBoundRoot reports whether pid is root's process or one of its
+// descendants, and root is still the process the kernel attested at launch.
+func descendsFromBoundRoot(pid int, root *ledger.RootRef) bool {
+	if root == nil || root.PID <= 0 {
+		return false
+	}
+	source := membership.NewSource()
+	if info, ok := source.Info(int(root.PID)); !ok || info.StartSec != root.StartSec || info.StartUsec != root.StartUsec {
+		return false
+	}
+	for depth := 0; pid > 1 && depth < 64; depth++ {
+		if pid == int(root.PID) {
+			return true
+		}
+		info, ok := source.Info(pid)
+		if !ok {
+			return false
+		}
+		pid = info.PPID
+	}
+	return false
 }

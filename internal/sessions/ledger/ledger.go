@@ -269,6 +269,67 @@ func (l *Ledger) RemoveDiscovered(ids []string) (int, error) {
 	return len(removed), nil
 }
 
+// LinkConversation sets ConversationID on the live record sessionID and, in the
+// same save, removes every discovered record and every dormant terminal record
+// of the same machine, agent and conversation: they are the same conversation
+// under a name that no longer adds anything. recordMachine names a launched
+// record's machine; a discovered record's is its host id, else "console". It
+// never removes a live record or an agent record. It reports whether anything
+// changed.
+func (l *Ledger) LinkConversation(sessionID, machineKey, conversationID string, recordMachine func(Record) string) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	rec, ok := l.records[sessionID]
+	if !ok || rec.State != StateLive || conversationID == "" {
+		return false, nil
+	}
+	agent := rec.Agent
+	if agent == "" {
+		agent = rec.Kind
+	}
+	prev := map[string]Record{sessionID: rec}
+	changed := rec.ConversationID != conversationID
+	rec.ConversationID = conversationID
+	l.records[sessionID] = rec
+	for id, r := range l.records {
+		// The spot for relay#589's AdoptPending guard: a record with it set is
+		// never removed here.
+		if id == sessionID || r.ConversationID != conversationID || r.Agent != agent {
+			continue
+		}
+		machine := ""
+		switch {
+		case r.State == StateDiscovered:
+			machine = r.HostID
+			if machine == "" {
+				machine = "console"
+			}
+		case r.State == StateDormant && r.Kind == "pty":
+			machine = "console"
+			if recordMachine != nil {
+				machine = recordMachine(r)
+			}
+		default:
+			continue
+		}
+		if machine == machineKey {
+			prev[id] = r
+			delete(l.records, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := l.saveLocked(); err != nil {
+		for id, r := range prev {
+			l.records[id] = r
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // Remove deletes the record named id and saves. A no-op for an id the
 // ledger does not hold.
 func (l *Ledger) Remove(id string) error {

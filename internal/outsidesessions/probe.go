@@ -200,6 +200,38 @@ func (p NativeProbe) Observations(managedPID int, managedIDs map[string]bool) []
 	return out
 }
 
+// Link names the Claude conversation of the process that carries a marker.
+type Link struct {
+	ConversationID, Cwd string
+	PID                 int
+	Lifetime            string
+}
+
+// Links maps a RELAY_SESSION_ID marker to the Claude session id of the process
+// carrying it. Only a process with a registry entry for its own pid, whose
+// lifetime matches the entry, whose cwd equals the process's and whose
+// sessionId is a conversation id counts. A marker two such processes carry is
+// dropped: nothing says which one is the record's. The marker is the caller's
+// claim; the caller still checks it against the ledger.
+func (p NativeProbe) Links() map[string]Link {
+	out := map[string]Link{}
+	dropped := map[string]bool{}
+	for _, r := range p.Registries {
+		proc, ok := p.Processes[r.PID]
+		if !ok || proc.Marker == "" || proc.Lifetime == "" || proc.Cwd != r.Cwd || !registryLifetimeMatches(proc.Lifetime, r.StartedAt) || !IsConversationID(r.SessionID) {
+			continue
+		}
+		if _, dup := out[proc.Marker]; dup {
+			dropped[proc.Marker] = true
+		}
+		out[proc.Marker] = Link{ConversationID: r.SessionID, Cwd: proc.Cwd, PID: r.PID, Lifetime: proc.Lifetime}
+	}
+	for marker := range dropped {
+		delete(out, marker)
+	}
+	return out
+}
+
 // markAmbiguous withdraws adoption from every row whose conversation id more
 // than one live process holds: nothing says which of them to end.
 func markAmbiguous(obs []Observation) {

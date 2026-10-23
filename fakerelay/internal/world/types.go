@@ -23,10 +23,14 @@ type World struct {
 	Models          []Model           `json:"models"`
 	Templates       []Template        `json:"terminal_templates"`
 	OutsideSessions []OutsideFixture  `json:"outside_sessions,omitempty"`
-	Sessions        []Session         `json:"sessions"`
-	Eve             Eve               `json:"eve"`
-	Audit           []json.RawMessage `json:"audit"`
-	Services        []Service         `json:"services"`
+	// SessionHistory feeds GET /api/session-history; SessionHistoryUnavailable
+	// makes it answer 503 history_unavailable.
+	SessionHistory            []HistoryRow      `json:"sessionHistory,omitempty"`
+	SessionHistoryUnavailable bool              `json:"sessionHistoryUnavailable,omitempty"`
+	Sessions                  []Session         `json:"sessions"`
+	Eve                       Eve               `json:"eve"`
+	Audit                     []json.RawMessage `json:"audit"`
+	Services                  []Service         `json:"services"`
 	// HostPath is the PATH a host probe looks node, claude and tmux up on.
 	// Empty means fakerelay's own PATH.
 	HostPath string `json:"host_path,omitempty"`

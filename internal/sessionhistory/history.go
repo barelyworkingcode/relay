@@ -6,6 +6,7 @@ package sessionhistory
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"strings"
@@ -93,6 +94,43 @@ type Machine struct {
 type Reader interface {
 	Agent() string
 	Discover(ctx context.Context, m Machine) (Listing, error)
+}
+
+// ErrTranscriptAbsent and ErrNoFolder are Verify's two answers about the
+// transcript itself, as opposed to a failure to read it.
+var (
+	ErrTranscriptAbsent = errors.New("session history: transcript absent")
+	ErrNoFolder         = errors.New("session history: transcript has no folder of its own")
+)
+
+// verifier is a reader that can re-read one transcript now.
+type verifier interface {
+	Verify(ctx context.Context, m Machine, conversationID string) (Entry, error)
+}
+
+// Verify re-reads the transcript of one ledger record now, on its machine,
+// bypassing the scan cache, and returns the entry with the folder derived by
+// the ended-row rule. ErrTranscriptAbsent: no such transcript. ErrNoFolder: the
+// transcript is not an interactive one or no record maps back to its file.
+func (x *Index) Verify(ctx context.Context, recordID string) (Entry, error) {
+	if x.o.Ledger == nil {
+		return Entry{}, errors.New("session history: no ledger")
+	}
+	rec, ok := x.o.Ledger.Get(recordID)
+	if !ok || rec.ConversationID == "" {
+		return Entry{}, errors.New("session history: record has no conversation")
+	}
+	m, ok := x.machine(x.recordMachine(x.view(), rec))
+	if !ok {
+		return Entry{}, errors.New("session history: machine not listed")
+	}
+	agent := recordAgent(rec)
+	for _, r := range x.o.Readers {
+		if v, ok := r.(verifier); ok && r.Agent() == agent {
+			return v.Verify(ctx, m, rec.ConversationID)
+		}
+	}
+	return Entry{}, errors.New("session history: no reader for " + agent)
 }
 
 // Clock is the time the scan loop judges by.

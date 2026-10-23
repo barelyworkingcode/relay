@@ -175,3 +175,64 @@ door that a later release adds; until then it answers `404`.
 | `transcript: "absent"` | `none` | `transcript_absent` |
 | no `projectId` | `none` | `no_project` |
 | otherwise | `history` | none |
+
+## Terminal records and resume
+
+### The record
+
+A terminal launched from a console project's `claude-code` template gets a
+ledger record at launch: `kind` `pty`, `agent` `claude`, `template_id`,
+`project_id`, `directory`, `origin`, state `live`, and the bound `root` like any
+launched record. A drop-in terminal, an outside viewer, a host project's terminal
+and every other template get none. The record is `dormant` after the terminal
+exits, after its tab closes and after a relay restart.
+`POST /api/sessions/{id}/resume` refuses a terminal record
+(`session_not_resumable`, "resume this terminal session from the session
+history"), and refuses a discovered one because it is not dormant.
+
+### The link
+
+Every outside probe calls `NativeProbe.Links()`: a map from a
+`RELAY_SESSION_ID` marker to the Claude session id of the process carrying it.
+A process counts only with a registry entry (`~/.claude/sessions/<pid>.json`)
+for its own pid whose lifetime matches, whose `cwd` equals the process's and
+whose `sessionId` is a conversation id. A marker two such processes carry is
+dropped. No transcript is read.
+
+The marker is the process's own claim, so a link sets the record's
+`conversation_id` only when the record exists, is `live`, is a terminal or
+`claude` record on this machine, the link's folder lies inside the record's
+`directory` and, on the console, the pid descends from the record's bound root
+whose start time still equals the one the kernel attested at launch. A failed
+check links nothing and logs at Debug. Each change writes one
+`session.history.link` event. `LinkConversation` sets the conversation and, in
+the same save, removes every discovered record and every dormant terminal record
+of the same machine, agent and conversation; it never removes a live record or
+an agent record. A terminal that ends before any probe sees it keeps a record
+with no conversation (`no_conversation`); its transcript lists as a discovered
+row.
+
+### The resume door
+
+`POST /api/session-history/{id}/resume`, body `{"cols","rows"}`, class
+`execute` (socket only, absent from the Chief of Staff scope). The checks run in
+this order and the first failure answers (codes in [routes](routes.md)):
+
+1. the body; 2. the record; 3. a terminal or discovered record, else
+`use_session_resume`; 4. not `live`; 5. the console only; 6. a conversation;
+7. a fresh console probe and the managed list; 8. the conversation not held by a
+live process or relay-sessions; 9. `Index.Verify`: a transcript read now,
+bypassing the scan cache, which derives the folder by the ended-row rule
+(`transcript_absent` when none, `no_project` when no folder); 10. the project: a
+discovered record's is the registered local project holding the verified folder,
+a terminal record keeps its own project and folder and the verified folder must
+equal it; 11. `AuthorizeLaunch` with the `claude-code` template and
+`--resume <conversation id>`; 12. the host launch and the ledger commit; 13.
+`LinkConversation`, which removes the old record.
+
+The 201 body is the terminal body plus `supersedes`. The launch writes its
+ordinary `session_launch` row and no other audit row is added; the
+`session.history.resume` event carries `session_id`, `new_session_id` and the
+outcome. A second resume of one id answers `409 resume_in_progress`.
+`LaunchRequest.ResumeConversation` is internal: only this door sets it, never a
+request body, and it is valid on a console `claude-code` launch alone.

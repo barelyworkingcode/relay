@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
 	"sync"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/logging"
 	"github.com/barelyworkingcode/relay/internal/outsidesessions"
 	"github.com/barelyworkingcode/relay/internal/sessionhistory"
 	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
@@ -16,6 +21,9 @@ import (
 type historyOps struct {
 	index *sessionhistory.Index
 	store config.SettingsStore
+	// deps and inv back the resume door; zero values refuse it.
+	deps sessionRouteDeps
+	inv  *outsidesessions.Inventory
 
 	mu sync.Mutex
 	// hostRoots holds each host project's resolved folder from the last scan, so
@@ -28,7 +36,7 @@ func (o *historyOps) List(projectID string) sessionhistory.Response {
 }
 
 func newHistoryOps(store config.SettingsStore, clock serverClock, deps sessionRouteDeps, inv *outsidesessions.Inventory) *historyOps {
-	o := &historyOps{store: store, hostRoots: map[string]string{}}
+	o := &historyOps{store: store, deps: deps, inv: inv, hostRoots: map[string]string{}}
 	opts := sessionhistory.Options{
 		Clock:   clock,
 		Ledger:  deps.sessions,
@@ -168,4 +176,135 @@ func (o *historyOps) resolved(h *config.Host, projects []config.Project) []strin
 		out[j] = o.hostRoots[p.ID]
 	}
 	return out
+}
+
+// recordMachineKey is the machine a launched record lives on: its detached
+// host, else its project's host, else the console.
+func recordMachineKey(store config.SettingsStore, r ledger.Record) string {
+	if r.Detached != nil && r.Detached.HostID != "" {
+		return r.Detached.HostID
+	}
+	if r.ProjectID != "" {
+		if p, _ := config.FindProjectByID(config.FreshSettings(store), r.ProjectID); p != nil && p.HostID != "" {
+			return p.HostID
+		}
+	}
+	return "console"
+}
+
+// historyResumeBody is the resume door's request: the new terminal's size.
+type historyResumeBody struct {
+	Cols int `json:"cols"`
+	Rows int `json:"rows"`
+}
+
+// historyResumeOutcome is a status and a JSON body; Code is the stable refusal
+// code, and the body's "error" is the message.
+type historyResumeOutcome struct {
+	Status int
+	Body   any
+	Code   string
+}
+
+func historyRefusal(status int, code, message string) historyResumeOutcome {
+	return historyResumeOutcome{Status: status, Code: code, Body: map[string]string{"error": message, "code": code}}
+}
+
+// Resume opens a claude-code terminal on the conversation of a dormant terminal
+// record or a discovered one. The checks run in a fixed order and the first
+// failure answers; nothing starts before AuthorizeLaunch passes. A discovered
+// record never carries authority: its folder is derived from a transcript read
+// now and must lie in a registered local project.
+func (o *historyOps) Resume(ctx context.Context, caller LaunchCaller, id string, body historyResumeBody) historyResumeOutcome {
+	ev := logging.BeginEvent(ctx, "session.history.resume").Set("session_id", id)
+	out := o.resume(ctx, ev, caller, id, body)
+	switch {
+	case out.Status < 300:
+		ev.End(logging.OutcomeOK, "", nil)
+	case out.Status >= 500:
+		ev.End(logging.OutcomeError, out.Code, nil)
+	default:
+		ev.End(logging.OutcomeDenied, out.Code, nil)
+	}
+	return out
+}
+
+func (o *historyOps) resume(ctx context.Context, ev *logging.Event, caller LaunchCaller, id string, body historyResumeBody) historyResumeOutcome {
+	d := o.deps
+	if o.index == nil || !d.ready() || d.sessions == nil || o.inv == nil {
+		return historyRefusal(http.StatusServiceUnavailable, "history_unavailable", "session history is not available")
+	}
+	if body.Cols < 1 || body.Cols > 1000 || body.Rows < 1 || body.Rows > 1000 {
+		return historyRefusal(http.StatusBadRequest, "invalid_body", "cols and rows must be 1 to 1000")
+	}
+	rec, ok := d.sessions.Get(id)
+	if !ok {
+		return historyRefusal(http.StatusNotFound, "history_not_found", "history entry not found")
+	}
+	if rec.Kind != KindPTY && rec.State != ledger.StateDiscovered {
+		return historyRefusal(http.StatusConflict, "use_session_resume", "resume this session with the session resume door")
+	}
+	if rec.State == ledger.StateLive {
+		return historyRefusal(http.StatusConflict, "live", "this terminal is still running")
+	}
+	if !d.resumeGuard.tryAcquire(id) {
+		return historyRefusal(http.StatusConflict, "resume_in_progress", "a resume for this entry is already in progress")
+	}
+	defer d.resumeGuard.release(id)
+	if (rec.State == ledger.StateDiscovered && rec.HostID != "") || (rec.State != ledger.StateDiscovered && recordMachineKey(o.store, rec) != "console") {
+		return historyRefusal(http.StatusConflict, "host_unsupported", "resume on an SSH host is not supported")
+	}
+	if rec.ConversationID == "" {
+		return historyRefusal(http.StatusConflict, "no_conversation", "this entry has no conversation to resume")
+	}
+	held, fresh := o.inv.Held("console")
+	managed, err := d.host().ManagedClaudeIdentities(ctx)
+	if !fresh || err != nil {
+		return historyRefusal(http.StatusBadGateway, "unavailable", "relay could not check whether the conversation is running")
+	}
+	if held[rec.ConversationID] || managed[rec.ConversationID] {
+		return historyRefusal(http.StatusConflict, "held", "a running session holds this conversation")
+	}
+	entry, err := o.index.Verify(ctx, id)
+	switch {
+	case errors.Is(err, sessionhistory.ErrTranscriptAbsent):
+		return historyRefusal(http.StatusConflict, "transcript_absent", "the transcript no longer exists")
+	case errors.Is(err, sessionhistory.ErrNoFolder):
+		return historyRefusal(http.StatusConflict, "no_project", "the transcript names no folder of its own")
+	case err != nil:
+		return historyRefusal(http.StatusBadGateway, "unavailable", "relay could not read the transcript")
+	}
+	projectID, directory := rec.ProjectID, rec.Directory
+	if rec.State == ledger.StateDiscovered {
+		settings := config.FreshSettings(o.store)
+		p := matchOutsideProject(settings.Projects, resolveOutsideProjectPaths(ctx, nil, settings.Projects), nil, entry.Directory)
+		if p == nil {
+			return historyRefusal(http.StatusConflict, "no_project", "the conversation's folder is in no registered project")
+		}
+		projectID, directory = p.ID, entry.Directory
+	} else if entry.Directory != rec.Directory {
+		return historyRefusal(http.StatusConflict, "no_project", "the transcript is no longer in this terminal's folder")
+	}
+	result, resp, refusal, err := d.launch(ctx, LaunchRequest{
+		Caller: caller, ProjectID: projectID, Kind: KindPTY, Directory: directory,
+		TemplateID: kindTemplateIDs[KindClaude], Cols: body.Cols, Rows: body.Rows,
+		ResumeConversation: rec.ConversationID,
+	})
+	if refusal != nil {
+		return historyRefusal(refusal.Status, refusal.Code, refusal.Message)
+	}
+	if err != nil {
+		return historyRefusal(http.StatusBadGateway, "unavailable", "launch failed")
+	}
+	// The new record already carries the conversation, so linking removes the old
+	// one in the same save.
+	if _, err := d.sessions.LinkConversation(result.SessionID, "console", rec.ConversationID, func(r ledger.Record) string { return recordMachineKey(o.store, r) }); err != nil {
+		slog.Warn("session history: old record not removed after resume", "session", id, "error", err)
+	}
+	ev.Set("new_session_id", result.SessionID)
+	fields := map[string]json.RawMessage{}
+	_ = json.Unmarshal(createdBody(resp.Body), &fields)
+	superseded, _ := json.Marshal(id)
+	fields["supersedes"] = superseded
+	return historyResumeOutcome{Status: http.StatusCreated, Body: fields}
 }
