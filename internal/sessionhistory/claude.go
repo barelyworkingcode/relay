@@ -63,7 +63,7 @@ root="$HOME/.claude/projects"
 const claudeRootCheck = `[ ! -L "$HOME/.claude" ] && [ ! -L "$root" ] && [ -d "$root" ] || exit 0
 `
 
-// claudeListScript prints the home, then "F path size mtime" per regular
+// claudeListScript prints the home, then "F folder/stem size mtime" per regular
 // transcript at depth 2, and "OK" once it ran to the end. "X" before "OK" means
 // the cap was reached. A symlink on the file, its folder, the root or ~/.claude
 // is refused, and nothing is written. Every prefix passes a charset check, so
@@ -95,7 +95,7 @@ while read -r sz mt f; do
  case "$stem" in ????????-????-????-????-????????????) ;; *) continue;; esac
  case "$stem" in *[!0-9A-Fa-f-]*) continue;; esac
 ` + filter + ` [ ! -L "$f" ] && [ ! -L "$d" ] || continue
- printf 'F\t'; printf '%s' "$f" | b64; printf '\t%s\t%s\n' "$sz" "$mt"
+ printf 'F\t%s/%s\t%s\t%s\n' "$base" "$stem" "$sz" "$mt"
  n=$((n+1))
  [ "$n" -lt ` + strconv.Itoa(claudeListCap) + ` ] || { over=1; break; }
 done
@@ -161,7 +161,7 @@ func parseClaudeList(data []byte, prefixes []string) (home string, files []claud
 			if e1 != nil || e2 != nil || home == "" {
 				continue
 			}
-			files = append(files, claudeFile{unb64(f[1]), size, mtime})
+			files = append(files, claudeFile{f[1], size, mtime})
 		}
 	}
 	if home == "" || !strings.HasPrefix(home, "/") {
@@ -170,12 +170,11 @@ func parseClaudeList(data []byte, prefixes []string) (home string, files []claud
 	root := strings.TrimRight(home, "/") + "/.claude/projects/"
 	kept := files[:0]
 	for _, f := range files {
-		rest, ok := strings.CutPrefix(f.path, root)
-		folder, name, ok2 := strings.Cut(rest, "/")
-		stem, isJSONL := strings.CutSuffix(name, ".jsonl")
-		if !ok || !ok2 || !isJSONL || !folderCharset.MatchString(folder) || !outsidesessions.IsConversationID(stem) || !hasPrefix(folder, prefixes) {
+		folder, stem, ok := strings.Cut(f.path, "/")
+		if !ok || !folderCharset.MatchString(folder) || !outsidesessions.IsConversationID(stem) || !hasPrefix(folder, prefixes) {
 			continue
 		}
+		f.path = root + folder + "/" + stem + ".jsonl"
 		kept = append(kept, f)
 	}
 	return home, kept, done && !over
@@ -396,10 +395,10 @@ func promptTitle(line string) string {
 	return ""
 }
 
-// cleanTitle drops control characters, trims, and caps at 120 runes.
+// cleanTitle drops control and format characters (bidi overrides, zero-width), trims, and caps at 120 runes.
 func cleanTitle(s string) string {
 	s = strings.TrimSpace(strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return -1
 		}
 		return r

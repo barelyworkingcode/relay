@@ -89,6 +89,24 @@ type Options struct {
 	Managed       func(ctx context.Context) (map[string]bool, error)
 	Project       func(machineKey, directory string) *string
 	RecordMachine func(r ledger.Record) string
+	View          func() View
+}
+
+// View is what one Rows call or one scan asks of relay's settings and probes.
+// Options.View, when set, builds it once per call, so a call takes one settings
+// snapshot and copies each held set once; the three Options funcs are the
+// per-question fallback.
+type View struct {
+	Project       func(machineKey, directory string) *string
+	RecordMachine func(r ledger.Record) string
+	Held          func(machineKey string) (map[string]bool, bool)
+}
+
+func (x *Index) view() View {
+	if x.o.View != nil {
+		return x.o.View()
+	}
+	return View{Project: x.o.Project, RecordMachine: x.o.RecordMachine, Held: x.o.Held}
 }
 
 // MachineStatus is one machine in the answer.
@@ -259,6 +277,12 @@ func (x *Index) scan(ctx context.Context, key string) {
 	}
 	now := x.o.Clock.Now()
 	x.mu.Lock()
+	// Checked under the lock: forget cancels first, then deletes, so a scan
+	// that loses the race cannot bring a forgotten machine back.
+	if ctx.Err() != nil {
+		x.mu.Unlock()
+		return
+	}
 	st := x.states[key]
 	if st == nil {
 		st = &machineState{}
@@ -322,6 +346,8 @@ func (x *Index) addDiscovered(ctx context.Context, m Machine, entries []Entry) {
 	if m.HostID != nil {
 		hostID = *m.HostID
 	}
+	v := x.view()
+	existing := map[string]time.Time{}
 	for _, r := range x.o.Ledger.All() {
 		if r.ConversationID == "" {
 			continue
@@ -330,10 +356,11 @@ func (x *Index) addDiscovered(ctx context.Context, m Machine, entries []Entry) {
 			if r.HostID == hostID {
 				held++
 				linked[convKey(r.Agent, r.ConversationID)] = true
+				existing[convKey(r.Agent, r.ConversationID)] = r.Created
 			}
 			continue
 		}
-		if x.recordMachine(r) == m.Key {
+		if x.recordMachine(v, r) == m.Key {
 			linked[convKey(recordAgent(r), r.ConversationID)] = true
 		}
 	}
@@ -344,9 +371,38 @@ func (x *Index) addDiscovered(ctx context.Context, m Machine, entries []Entry) {
 		}
 		fresh = append(fresh, e)
 	}
-	sort.SliceStable(fresh, func(a, b int) bool { return fresh[a].LastActiveAt.After(fresh[b].LastActiveAt) })
-	if room := DiscoveredPerMachineMax - held; len(fresh) > room {
-		fresh = fresh[:max(room, 0)]
+	// The newest DiscoveredPerMachineMax win among the records already held and
+	// the candidates: the oldest by lastActiveAt are the ones not added.
+	for _, e := range entries {
+		if _, ok := existing[convKey(e.Agent, e.ConversationID)]; ok {
+			existing[convKey(e.Agent, e.ConversationID)] = e.LastActiveAt
+		}
+	}
+	if held+len(fresh) > DiscoveredPerMachineMax {
+		type ranked struct {
+			at    time.Time
+			fresh int // index into fresh, or -1 for a record already held
+		}
+		all := make([]ranked, 0, held+len(fresh))
+		for _, at := range existing {
+			all = append(all, ranked{at, -1})
+		}
+		for i, e := range fresh {
+			all = append(all, ranked{e.LastActiveAt, i})
+		}
+		sort.SliceStable(all, func(a, b int) bool {
+			if !all[a].at.Equal(all[b].at) {
+				return all[a].at.After(all[b].at)
+			}
+			return all[a].fresh < all[b].fresh
+		})
+		keep := make([]Entry, 0, len(fresh))
+		for _, r := range all[:DiscoveredPerMachineMax] {
+			if r.fresh >= 0 {
+				keep = append(keep, fresh[r.fresh])
+			}
+		}
+		fresh = keep
 	}
 	recs := make([]ledger.Record, 0, len(fresh))
 	for _, e := range fresh {
@@ -364,17 +420,17 @@ func (x *Index) addDiscovered(ctx context.Context, m Machine, entries []Entry) {
 	}
 }
 
-func (x *Index) recordMachine(r ledger.Record) string {
+func (x *Index) recordMachine(v View, r ledger.Record) string {
 	if r.State == ledger.StateDiscovered {
 		if r.HostID != "" {
 			return r.HostID
 		}
 		return consoleKey
 	}
-	if x.o.RecordMachine == nil {
+	if v.RecordMachine == nil {
 		return consoleKey
 	}
-	return x.o.RecordMachine(r)
+	return v.RecordMachine(r)
 }
 
 // recordAgent is the agent a record's conversation belongs to: "" for a kind
@@ -454,21 +510,37 @@ func (x *Index) Rows(projectID string) Response {
 		return resp
 	}
 	records := x.o.Ledger.All()
+	v := x.view()
+	type heldSet struct {
+		set map[string]bool
+		ok  bool
+	}
+	heldBy := map[string]heldSet{}
+	if held := v.Held; held != nil {
+		v.Held = func(key string) (map[string]bool, bool) {
+			if h, ok := heldBy[key]; ok {
+				return h.set, h.ok
+			}
+			set, ok := held(key)
+			heldBy[key] = heldSet{set, ok}
+			return set, ok
+		}
+	}
 	// A discovered row hides once a launched record holds the same conversation.
 	linked := map[string]bool{}
 	for _, r := range records {
 		if r.State != ledger.StateDiscovered && r.ConversationID != "" {
-			linked[x.recordMachine(r)+"\x00"+convKey(recordAgent(r), r.ConversationID)] = true
+			linked[x.recordMachine(v, r)+"\x00"+convKey(recordAgent(r), r.ConversationID)] = true
 		}
 	}
 	sortAt := map[string]time.Time{}
 	for _, r := range records {
-		key := x.recordMachine(r)
+		key := x.recordMachine(v, r)
 		agent := recordAgent(r)
 		if r.State == ledger.StateDiscovered && linked[key+"\x00"+convKey(agent, r.ConversationID)] {
 			continue
 		}
-		row := x.row(r, key, agent, snaps[key].byConv, snaps[key].listing)
+		row := x.row(v, r, key, agent, snaps[key].byConv, snaps[key].listing)
 		if projectID != "" && (row.ProjectID == nil || *row.ProjectID != projectID) {
 			continue
 		}
@@ -494,7 +566,7 @@ func (x *Index) Rows(projectID string) Response {
 	return resp
 }
 
-func (x *Index) row(r ledger.Record, machineKey, agent string, byConv map[string]Entry, listing Listing) Row {
+func (x *Index) row(v View, r ledger.Record, machineKey, agent string, byConv map[string]Entry, listing Listing) Row {
 	discovered := r.State == ledger.StateDiscovered
 	row := Row{
 		ID: r.SessionID, Record: "launched", Kind: r.Kind, Agent: strPtr(agent),
@@ -512,8 +584,8 @@ func (x *Index) row(r ledger.Record, machineKey, agent string, byConv map[string
 		row.HostID = &host
 	}
 	if discovered {
-		if x.o.Project != nil {
-			row.ProjectID = x.o.Project(machineKey, r.Directory)
+		if v.Project != nil {
+			row.ProjectID = v.Project(machineKey, r.Directory)
 		}
 	} else {
 		row.ProjectID = strPtr(r.ProjectID)
@@ -528,13 +600,13 @@ func (x *Index) row(r ledger.Record, machineKey, agent string, byConv map[string
 			row.LastActiveAt = strPtr(stamp(e.LastActiveAt))
 		}
 	}
-	row.Resume, row.ResumeReason = x.resume(r, row, machineKey)
+	row.Resume, row.ResumeReason = x.resume(v, r, row, machineKey)
 	return row
 }
 
 // resume applies the table in docs/session-history.md: the first rule that
 // applies decides.
-func (x *Index) resume(r ledger.Record, row Row, machineKey string) (string, string) {
+func (x *Index) resume(v View, r ledger.Record, row Row, machineKey string) (string, string) {
 	switch {
 	case r.State == ledger.StateLive:
 		return "none", "live"
@@ -547,8 +619,8 @@ func (x *Index) resume(r ledger.Record, row Row, machineKey string) (string, str
 	case r.ConversationID == "":
 		return "none", "no_conversation"
 	}
-	if x.o.Held != nil {
-		if held, ok := x.o.Held(machineKey); ok && held[r.ConversationID] {
+	if v.Held != nil {
+		if held, ok := v.Held(machineKey); ok && held[r.ConversationID] {
 			return "none", "held"
 		}
 	}

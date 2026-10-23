@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/barelyworkingcode/relay/internal/sessionhistory"
 )
@@ -51,10 +53,21 @@ func sessionHistory(args []string) {
 	tw := newTabWriter()
 	fmt.Fprintln(tw, "TITLE\tLAST ACTIVE\tKIND\tSTATE\tRESUME\tID")
 	for _, row := range resp.Rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(historyTitle(row)), historyTime(row.LastActiveAt),
-			terminalSafe(row.Kind), terminalSafe(row.State), terminalSafe(historyResume(row)), terminalSafe(row.ID))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", historyCell(historyTitle(row)), historyTime(row.LastActiveAt),
+			historyCell(row.Kind), historyCell(row.State), historyCell(historyResume(row)), historyCell(row.ID))
 	}
 	tw.Flush()
+}
+
+// historyCell drops format characters (bidi overrides, zero-width) that
+// terminalSafe lets through, then escapes control characters as the audit table does.
+func historyCell(s string) string {
+	return terminalSafe(strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, s))
 }
 
 // historyTitle is the row's own title, else "Claude — <folder>" as the ended

@@ -21,8 +21,12 @@ A discovered record carries `kind` and `agent` `claude`, `host_id` (empty on the
 console), `conversation_id`, `directory` (the folder the transcript belongs to)
 and `created` (the transcript's first timestamp). It has no `project_id`. Its
 id is `d-` plus the first 16 bytes, in hex, of sha256 over the machine key, the
-agent and the conversation id, each followed by NUL, so one machine's
+agent and the conversation id, joined by NUL, so one machine's
 conversation always maps to one record.
+
+A conversation relay-sessions manages gets no discovered record once the host
+reports it as managed. Before the managed session's first turn no transcript
+exists, so there is nothing to discover.
 
 `AuthorizeLaunch` refuses any record that is not `dormant`, so a discovered
 record never resumes through `POST /api/sessions/{id}/resume`. The sweeps that
@@ -79,7 +83,7 @@ The first that gives a non-empty title wins:
    first of those user records that gives one, source `prompt`;
 4. none: `null`.
 
-Control characters are dropped and the title is cut at 120 runes. Transcript
+Control and format characters (bidi overrides, zero-width) are dropped and the title is cut at 120 runes. Transcript
 text is untrusted display data and grants nothing.
 
 ## The index
@@ -87,7 +91,8 @@ text is untrusted display data and grants nothing.
 After each scan, every entry that no ledger record links (by machine, agent and
 conversation id) and that relay-sessions does not manage becomes a discovered
 record, written in one save per scan. At most 2000 discovered records per
-machine; past that the oldest by `lastActiveAt` are not added. When the managed
+machine; past that the oldest by `lastActiveAt`, among the records held and the
+candidates, are the ones not added. When the managed
 read fails, a scan adds no records. A launched record that later holds the same
 conversation hides the discovered row.
 

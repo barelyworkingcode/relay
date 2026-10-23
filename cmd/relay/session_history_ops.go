@@ -50,13 +50,36 @@ func newHistoryOps(store config.SettingsStore, clock serverClock, deps sessionRo
 			}
 			return machines
 		},
+		View: func() sessionhistory.View { return o.view(inv) },
+	}
+	if deps.ready() {
+		opts.Managed = deps.host().ManagedClaudeIdentities
+	}
+	o.index = sessionhistory.New(opts)
+	return o
+}
+
+// view takes one settings snapshot, resolves the console's project folders
+// once, and answers every question of one Rows call or scan from them.
+func (o *historyOps) view(inv *outsidesessions.Inventory) sessionhistory.View {
+	s := config.FreshSettings(o.store)
+	var consoleRoots []string
+	hostOf := map[string]string{}
+	for _, p := range s.Projects {
+		hostOf[p.ID] = p.HostID
+	}
+	v := sessionhistory.View{
 		Project: func(machineKey, directory string) *string {
-			s := config.FreshSettings(store)
 			var h *config.Host
+			roots := consoleRoots
 			if machineKey != "console" {
 				h = &config.Host{ID: machineKey}
+				roots = o.resolved(h, s.Projects)
+			} else if roots == nil {
+				consoleRoots = o.resolved(nil, s.Projects)
+				roots = consoleRoots
 			}
-			p := matchOutsideProject(s.Projects, o.resolved(h, s.Projects), h, directory)
+			p := matchOutsideProject(s.Projects, roots, h, directory)
 			if p == nil {
 				return nil
 			}
@@ -67,24 +90,16 @@ func newHistoryOps(store config.SettingsStore, clock serverClock, deps sessionRo
 			if r.Detached != nil && r.Detached.HostID != "" {
 				return r.Detached.HostID
 			}
-			if r.ProjectID != "" {
-				for _, p := range config.FreshSettings(store).Projects {
-					if p.ID == r.ProjectID && p.HostID != "" {
-						return p.HostID
-					}
-				}
+			if host := hostOf[r.ProjectID]; r.ProjectID != "" && host != "" {
+				return host
 			}
 			return "console"
 		},
 	}
 	if inv != nil {
-		opts.Held = inv.Held
+		v.Held = inv.Held
 	}
-	if deps.ready() {
-		opts.Managed = deps.host().ManagedClaudeIdentities
-	}
-	o.index = sessionhistory.New(opts)
-	return o
+	return v
 }
 
 // machine builds the console (h nil) or one host. A host reads only the folders
