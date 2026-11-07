@@ -2,7 +2,7 @@
 
 Cross-repo status of bringing each sibling repo up to the bar in
 ADR-001 (the three-tier testing strategy). relay has no unit tests and is
-proven by devbox journeys ([`testing.md`](testing.md)).
+proven by e2e feature tests ([`testing.md`](testing.md)); the retired devbox journeys no longer run.
 
 Headline rule everywhere: **no test may touch the user's real config
 directory** (full rationale in ADR-001). Each repo enforces it differently;
@@ -12,7 +12,7 @@ record the approach here when you add coverage to a new one.
 
 | Repo | Default tier | Live tier | Pre-commit gate | Sandbox guard |
 |---|---|---|---|---|
-| **relay** | none (devbox journeys; see [`testing.md`](testing.md)) | no | build+vet at commit, build+vet at push, build+vet in CI | none |
+| **relay** | none (e2e feature tests; see [`testing.md`](testing.md)) | no | build+vet at commit, build+vet at push, build+vet in CI | none |
 | **relayLLM** | yes | yes (`-tags=live` + `-tags=llm`) | yes (`.githooks/pre-commit`) | partial |
 | **eve** | yes (Jest) + e2e (Playwright) | no | no | no |
 | **relayScheduler** | partial (`client_test.go`) | no | no | no |

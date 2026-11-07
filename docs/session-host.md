@@ -1614,7 +1614,7 @@ in its own block after the unlink-and-clone block and before the unix-socket
 connect rules, one term per dir, spelled from the same walk. Regular files
 in `D` are untouched. Its limit is a socket in a subdirectory of `D`: the
 subdirectory is not pinned, so renaming it carries the socket out. The layouts
-relay denies are flat. Measured on a devbox, relay's dir holds five sockets
+relay denies are flat. Measured on a Mac (the retired devbox), relay's dir holds five sockets
 and relayLLM's two, all directly inside the dir; eve's holds none. So no
 subdirectory needs a deny-dir entry of its own. A service that moves its
 sockets into a subdirectory must add that subdirectory to the deny dirs.

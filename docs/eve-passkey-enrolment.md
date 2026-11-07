@@ -239,7 +239,7 @@ again.
 ## Tests
 
 Relay has no unit tests. Proof for the enrolment window (open, status,
-consume, expiry, single use) is the devbox journeys, and later the e2e
+consume, expiry, single use) was the devbox journeys (retired), and later the e2e
 feature tests.
 
 Eve: `auth.js` multi-credential (append, `excludeCredentials`, stable
@@ -449,7 +449,7 @@ verify as today and mint the session with its `credentialId`.
 ## Tests
 
 Relay has no unit tests. Proof for passkey report, revoke and unrevoke is the
-devbox journeys and the e2e feature tests. The push is proved by
+(retired) devbox journeys and the e2e feature tests. The push is proved by
 `TestEvePasskeyRevocationPushed` (a revoke reaches a reader's `/ws/files`
 within two seconds, and a new connection gets the pending set; reports and
 pushes leave one `control_decision` row per request),

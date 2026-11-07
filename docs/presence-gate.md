@@ -521,7 +521,7 @@ switch.
 
 ## The test build: presence
 
-**Why it exists.** The devbox verify journeys and the e2e tier run with no
+**Why it exists.** The (retired) devbox verify journeys and the e2e tier ran with no
 person at the screen, and a LocalAuthentication dialog cannot be answered from
 a script. The `relaytest` build replaces the dialog with a file.
 

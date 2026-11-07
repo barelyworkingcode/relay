@@ -6,18 +6,18 @@ in the e2e module, and fakerelay's proof tests in its own module.
 
 ## What proves relay
 
-Two things prove relay: the e2e feature tests and the devbox journeys.
+Two things prove relay: the e2e feature tests and, historically, the verify journeys. The devbox that ran the journeys is retired and no test machine runs them now.
 
 - **e2e feature tests** (`e2e/`, its own Go module `relaye2e`) start real relay
   instances and drive them through the CLI and the HTTP API, the way a user or
   a client does. They run in CI on every PR and on `main`. Every feature-map
   row in [`FEATURES.md`](FEATURES.md) names the test that proves it.
-- **Devbox journeys** (`cmd/devboxverify`) drive the running tray, the
-  Settings UI and the services it supervises on the test machine. See
+- **Verify journeys** (`cmd/devboxverify`, retired: they do not run) drove the running tray, the
+  Settings UI and the services it supervises. See
   [`cmd/devboxverify/README.md`](../cmd/devboxverify/README.md).
 
-A bug's failing repro is an e2e feature test where one can reach it, a devbox
-journey otherwise. A behaviour neither reaches is guarded by nothing; the
+A bug's failing repro is an e2e feature test where one can reach it. What only
+the real Mac can show has no automated proof now (the verify harness does not run), so the PR says `needs a lab pass`. A behaviour neither reaches is guarded by nothing; the
 reviewer reads the diff against [`THREAT-MODEL.md`](THREAT-MODEL.md) and the
 security invariants in `CLAUDE.md`.
 
@@ -49,8 +49,7 @@ command line names it and waits up to 5 s for them to go; a survivor fails the
 test. An SSH-host agent runner is started with `setsid`, so it leaves the
 test's process group and its path is the only handle on it.
 
-**The devbox 32 by 3 procedure.** CI runs at the runner's parallelism. On the
-devbox, run the suite three times with 32 instances live at once:
+**The 32 by 3 procedure.** CI runs at the runner's parallelism. On a Mac, run the suite three times with 32 instances live at once:
 
 ```bash
 cd e2e && go test -race -count=1 -timeout 30m -parallel 32 ./features/   # run it three times
@@ -220,7 +219,7 @@ hand-run tool for Settings UI work.
 |---|---|---|
 | commit | `gofmt -l`, `go build ./...`, `go vet ./...` | `.githooks/pre-commit` |
 | push | `go build ./...` and `go vet ./...`, skipped when the pushed commits touch no Go sources or web assets | `.githooks/pre-push` |
-| verification task, before `main` | `(cd e2e && go test -race -timeout 30m ./features/)`, then `devboxverify` on the head | the issue's `Verified:` line |
+| verification task, before `main` | `(cd e2e && go test -race -timeout 30m ./features/)`, on the head; the verify harness does not run | the issue's `Verified:` line |
 | by hand only, `gh workflow run ci --ref <ref>` | `gofmt`, `go build ./...`, `go vet ./...`, `go vet -tags relaytest ./...`, `scripts/check-test-build.sh` (`absent` on an untagged build, `present` on a `relaytest` build), and a step that fails on any `_test.go` outside `e2e/` and `fakerelay/` | `.github/workflows/ci.yml` (`build` job) |
 | by hand only | the `fakerelay` job on Linux: `gofmt -l`, `go vet ./...`, a `CGO_ENABLED=0` build for Linux and macOS, then `go test -race -count=1 -parallel 24 ./...` in `fakerelay/` | `.github/workflows/ci.yml` (`fakerelay` job) |
 | by hand only | the `e2e` job: `gofmt -l` and `go vet ./...` in `e2e/`, then `selecttests`, `go test -race -count=1 ./coverage/...`, and `go test -race -count=1 ./features -run "$SELECT_RUN"` (the selected tests on a PR, the whole package on `main`; see Test selection) | `.github/workflows/ci.yml` (`e2e` job) |
@@ -376,7 +375,7 @@ LC_ALL=C /usr/bin/grep -c -a -e '-tags=relaytest' "$(ps -p <new pid> -o comm=)" 
 
 - Every gated op but `project.grant` is refused, including mint, revoke,
   enrolment and service registration. Do other work after the swap back.
-- Relay's own `devboxverify` preflight refuses a tray that is not running
+- Relay's own (retired) `devboxverify` preflight refused a tray that is not running
   from `RELAY_BIN`; with `RELAY_BIN` pointed at the test bundle, its gate
   journeys fail on the refusals.
 - Project `SKILL.md` files written while the test tray runs may name the test
@@ -415,7 +414,7 @@ fakerelay follows the real relay, not the doc.
 
 ## Not covered
 
-- Anything no devbox journey reaches. No test guards it.
+- Anything no e2e test reaches. No test guards it; the verify journeys no longer run.
 - Cocoa tray UI (menu, dock): exercise it via `scripts/demo.sh`.
 - Real `launchd` integration beyond what the journeys drive.
 - Live OAuth round-trips against a real provider.

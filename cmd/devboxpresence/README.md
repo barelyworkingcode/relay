@@ -1,3 +1,5 @@
+> History: this describes the retired devbox verify setup. The devbox that ran it is retired; no test machine runs it now.
+
 # devboxpresence
 
 Answers or cancels relay's LocalAuthentication presence dialog on the devbox,
