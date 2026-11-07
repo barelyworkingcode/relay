@@ -52,6 +52,21 @@ const (
 	VetoChildProcess = "child_process"
 )
 
+// VetoText is the veto in words, for the refusal a person reads.
+func VetoText(veto string) string {
+	switch veto {
+	case VetoRegistryBusy:
+		return "a turn is running"
+	case VetoStatusStale:
+		return "the session wrote to its transcript after its last status"
+	case VetoOpenToolCall:
+		return "a tool call is still open"
+	case VetoChildProcess:
+		return "a command from the last turn is still running"
+	}
+	return veto
+}
+
 var (
 	ErrChanged    = errors.New("adopt: the process or its registry entry changed")
 	ErrStopFailed = errors.New("adopt: the process outlived SIGKILL's wait")

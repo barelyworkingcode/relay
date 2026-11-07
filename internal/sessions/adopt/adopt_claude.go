@@ -34,6 +34,12 @@ const (
 	statusMargin = 2 * time.Second
 )
 
+// registryShell is the status Claude writes while a background command runs
+// between turns. Deliberate: it reads as idle, as the sidebar row does;
+// adoption stops the process and its shells, and the stale, open-tool and
+// child vetoes still apply.
+const registryShell = "shell"
+
 // ErrSymlink marks a file or folder on the way to a registry entry or a
 // transcript that is a symlink: neither is followed.
 var ErrSymlink = errors.New("adopt: a symlink is on the path")
@@ -168,7 +174,7 @@ func (a *claudeAdopter) Check(ctx context.Context, c Candidate) (Readiness, erro
 
 	veto := ""
 	switch {
-	case reg.Status != "idle":
+	case reg.Status != "idle" && reg.Status != registryShell:
 		veto = VetoRegistryBusy
 	case !tail.LastRecord.IsZero() && tail.LastRecord.After(time.UnixMilli(reg.UpdatedAt).Add(statusMargin)):
 		veto = VetoStatusStale
