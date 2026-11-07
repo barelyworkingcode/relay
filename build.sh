@@ -101,15 +101,19 @@ go run ./web/gen
 # Stop any running Relay before vetting: the build below is about to replace
 # its binary. SIGTERM first, for the normal clean shutdown
 # (app.cleanup() in trayapp.go); SIGKILL only if it hasn't exited within 3s.
+# Match the installed tray by full path, never by name: verification stacks run
+# their own bundle binary also called "relay", and a name match kills them.
+tray_pattern() { printf '^%s/Contents/MacOS/relay( |$)' "$(printf '%s' "$DEST" | sed 's/[.[\*^$+?(){}|]/\\&/g')"; }
 stop_relay() {
-    pgrep -x relay >/dev/null 2>&1 || return 0
-    pkill -TERM -x relay 2>/dev/null || true
+    local pat; pat="$(tray_pattern)"
+    pgrep -f "$pat" >/dev/null 2>&1 || return 0
+    pkill -TERM -f "$pat" 2>/dev/null || true
     for _ in $(seq 1 30); do
-        pgrep -x relay >/dev/null 2>&1 || { echo "Stopped running relay"; return; }
+        pgrep -f "$pat" >/dev/null 2>&1 || { echo "Stopped running relay"; return; }
         sleep 0.1
     done
     echo "relay did not exit after SIGTERM; sending SIGKILL" >&2
-    pkill -KILL -x relay 2>/dev/null || true
+    pkill -KILL -f "$pat" 2>/dev/null || true
 }
 # The test-build install and a bundle build leave the real tray alone.
 if ! $TEST_BUILD && ! $BUNDLE; then
