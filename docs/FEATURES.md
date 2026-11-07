@@ -388,7 +388,7 @@ Areas: remote, presence.
 ### G11 · Work on a remote directory over SSH — later
 Intent: treat a folder on another machine as a project.
 It worked: sessions and tools run on the host through one SSH connection.
-Why later: the devbox world has no hosts; only slow-route-keepalive adds one,
+Why later: the (retired) devbox world had no hosts; only slow-route-keepalive adds one,
 an unreachable host it removes again.
 Areas: hosts.
 
@@ -459,9 +459,9 @@ Areas: instance, sandbox, remote, models, presence.
 
 An owner gate is a step that needs the owner's credential or presence. An
 agent inside the product (a relay session, or eve's chat agent) must never
-complete one. The devbox harness may, with the operator's test credentials:
-`devboxpresence` answers relay's presence prompt with the devbox admin
-password. A release build has no API or flag that skips a gate. The
+complete one. The retired devbox harness could, with the operator's test credentials:
+`devboxpresence` answered relay's presence prompt with the devbox admin
+password. No test machine runs it now. A release build has no API or flag that skips a gate. The
 test build (`./build.sh --test-build`, tag `relaytest`, run in place of the
 release tray) answers each owner gate per op from `X/test-presence.json` on a
 non-default config dir, and on the default config dir approves only
@@ -736,7 +736,7 @@ containing `..` is never test-only. Every other tracked file needs a glob.
 
 ## Notes
 
-- Every journey needs the running app and the devbox world. The api phase
+- Every journey needs the running app and the devbox world. The devbox is retired, so no journey runs now. The api phase
   uses the `execute` credential (P4) and the bridge. The screen phase mints a
   run credential (`read`, `configure`, `grant`, `proxy`, 1 h) through the
   owner gate, holds it in memory only, uses it for everything but launches,

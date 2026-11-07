@@ -178,8 +178,8 @@ it describes anything running on this machine.
   "hosts": [
     {
       "id": "h_8f1c…",             // relay-assigned, stable
-      "name": "devbox",             // display name; unique, non-empty
-      "target": "admin@devbox.local", // user@host, host, or an ssh_config alias
+      "name": "testbox",             // display name; unique, non-empty
+      "target": "admin@testbox.local", // user@host, host, or an ssh_config alias
       "port": 0,                    // 0 = ssh default / ssh_config
       "identity_file": "",          // optional; passed as -i
       "created_at": "2026-09-05T06:00:00Z",
@@ -315,7 +315,7 @@ derived, read-only fields:
 
 ```jsonc
 { …host…, "status": "connected" | "idle" | "unreachable" | "unknown",
-  "ssh_argv": ["ssh", "-o", "BatchMode=yes", …, "admin@devbox.local"] }
+  "ssh_argv": ["ssh", "-o", "BatchMode=yes", …, "admin@testbox.local"] }
 ```
 
 `status`: `connected` when `ssh -O check` succeeds (a master is live); `idle`
@@ -346,8 +346,8 @@ target and the discovered paths) so `relay audit` shows what relay reached.
 ```jsonc
 { "relay_token": "",              // no project token for a host session (decision 6)
   "working_dir": "/home/admin/src/relayfs",
-  "host": { "id": "h_8f1c…", "name": "devbox",
-            "ssh_argv": ["ssh", …, "admin@devbox.local"],
+  "host": { "id": "h_8f1c…", "name": "testbox",
+            "ssh_argv": ["ssh", …, "admin@testbox.local"],
             "node_path": "/opt/homebrew/bin/node",
             "claude_path": "/opt/homebrew/bin/claude",
             "shell": "/bin/zsh", "os": "Darwin" } }
@@ -358,7 +358,7 @@ equal the project path or start with it plus `/`. `ResolveProjectTemplate` is
 unchanged; relayLLM wraps the template for the host.
 
 A host whose probe never succeeded (`claude_path` empty) makes
-`ResolvePtyEnv` fail with `host "devbox" has no claude: run a probe` so the
+`ResolvePtyEnv` fail with `host "testbox" has no claude: run a probe` so the
 session refuses to start with a message that names the fix.
 
 ## Terminals on a host
@@ -495,7 +495,7 @@ symlink under its `Links` directory; the probe resolves it to the real
 `.exe`, so relay execs the binary, not the link. The host record's own `tmux_path`
 overrides the probe (`Host.EffectiveTmuxPath`), for a tmux the probe cannot
 see. A persist launch on a host with neither is refused
-`tmux_not_available`: `host devbox has no tmux: install it or set tmux_path`.
+`tmux_not_available`: `host testbox has no tmux: install it or set tmux_path`.
 
 A plain template whose args are `new-session -A -s <name>` still works; it
 gets none of the naming, enumeration or kill.
@@ -707,12 +707,12 @@ it shows:
   (connecting → pulsing amber, connected → green, unreachable → red). Console
   projects have no chip; the absence is the design.
 - The **Files tab** while the host is connecting shows a skeleton and
-  "Connecting to devbox…"; on failure, an inline notice "devbox is
+  "Connecting to testbox…"; on failure, an inline notice "testbox is
   unreachable" with a Retry that re-requests the listing.
-- **Terminal tabs** on a host are titled `devbox · zsh`.
+- **Terminal tabs** on a host are titled `testbox · zsh`.
 - The **project dialog** gets a "Where" segmented control: `This Mac` |
   `<each host>` | `+ Host…`. Choosing a host relabels the path field
-  ("Path on devbox") and hides the MCP picker (decision 6) with a one-line
+  ("Path on testbox") and hides the MCP picker (decision 6) with a one-line
   reason. `+ Host…` opens an inline form (Name, SSH target, Port, Identity
   file) with **Test connection**, which calls the probe and shows the
   result card (OS, node, claude — each found or missing, with the missing
@@ -1013,7 +1013,7 @@ base64 and no line breaks.
 
 ## Verification
 
-On the devbox (macOS 26, OpenSSH, Claude Code 2.1.258), 2026-09-05:
+On the (retired) devbox (macOS 26, OpenSSH, Claude Code 2.1.258), 2026-09-05:
 
 - `ssh localhost "sh -c 'eval \"\$(printf %s <b64> | base64 -d)\"'"` executed
   the decoded script through zsh as the login shell.
@@ -1024,7 +1024,7 @@ On the devbox (macOS 26, OpenSSH, Claude Code 2.1.258), 2026-09-05:
   stdin let the tool run; the stream then carried the tool result and a
   `result` event as usual.
 
-The end-to-end acceptance for this feature is the devbox registered as a
+The end-to-end acceptance for this feature is a test Mac registered as a
 host *of itself* (`admin@localhost`): a host project on it must show its
 files, open a terminal, run a chat session that edits a file, answer a
 permission prompt, and survive a relayLLM restart with its history intact.

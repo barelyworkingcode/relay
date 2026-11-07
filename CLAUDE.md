@@ -32,20 +32,22 @@ same change when behaviour moves.
 | Model endpoint, model keys | [`docs/model-endpoint.md`](docs/model-endpoint.md) |
 | Fake relay for tests (`fakerelay/`: world spec, wire reference, surface) | [`docs/fakerelay.md`](docs/fakerelay.md) |
 | Tests | [`docs/testing.md`](docs/testing.md), [`docs/testing-roadmap.md`](docs/testing-roadmap.md) |
-| Devbox verify (layer 2, the running app) | [`cmd/devboxverify/README.md`](cmd/devboxverify/README.md) |
+| Verify harness code (layer 2, the running app; retired, history) | [`cmd/devboxverify/README.md`](cmd/devboxverify/README.md) |
 | Judging a security finding: who relay defends against, and what's out of scope | [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) |
 
 Conventions the global rules name: the **threat model** is
 [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md), the **feature map** is
 [`docs/FEATURES.md`](docs/FEATURES.md) (a PR that adds or changes a feature
-updates it), and the **verify harness** is `cmd/devboxverify`. Planners and
-reviewers judge security findings against the threat model: a finding names
-the attacker, the asset and the promise broken, or it is out of scope.
+updates it). Planners and reviewers judge security findings against the
+threat model: a finding names the attacker, the asset and the promise broken,
+or it is out of scope.
 
-The **verify cadence** is `epic`: a PR needs no `devbox/verify` status. No CI
-gates a PR. Proof before `main` is the verification task of each epic or story:
-the e2e suite and `devboxverify` on the head ([README](cmd/devboxverify/README.md)),
-closed with a `Verified:` line.
+No test machine is set up for this repo. The devbox that ran the verify harness
+(`cmd/devboxverify`) is retired, so real-app checks and the verify harness do
+not run. A PR that needs one says `needs a lab pass`. The harness code stays in
+the tree as history ([README](cmd/devboxverify/README.md)). No CI gates a PR.
+Proof before `main` is the verification task of each epic or story: the e2e
+suite on the head, closed with a `Verified:` line.
 
 ADR-NNN citations in code and docs are labels for reasoning recorded in those
 documents; there is no ADR directory to look in.
@@ -56,7 +58,7 @@ documents; there is no ADR directory to look in.
 cmd/relay/           the tray app and CLI: gated cores (*Ops), doors (HTTP routes,
                      ipc_*.go, *_cmd.go), router.go, cgo/Cocoa
 cmd/relaysessions/   the session host (relay-sessions), built into Contents/Helpers/
-cmd/testmcp, cmd/testservice: probe binaries the devbox journeys build
+cmd/testmcp, cmd/testservice: probe binaries the (retired) verify journeys build
 internal/<domain>/   one capability per package: its types AND the operations on them
 web/src/             Settings UI; bundled in-process by web/gen (no Node)
 docs/                design, rationale, operator guides
@@ -85,7 +87,7 @@ What gates what (`.githooks/`, run by the machine's global hooks dispatcher; nev
 |---|---|
 | commit | `gofmt`, `go build`, `go vet` — seconds |
 | push | `go build ./...`, `go vet ./...` |
-| verification task, before `main` | `(cd e2e && go test -race -timeout 30m ./features/)`, then `devboxverify` on the head |
+| verification task, before `main` | `(cd e2e && go test -race -timeout 30m ./features/)`, on the head; the verify harness does not run |
 | by hand only (`gh workflow run ci --ref <ref>`) | `ci.yml`: the `build`, `e2e`, `fakerelay` and `contract` jobs on a clean Linux checkout. No PR or push runs it |
 
 ## House rules
@@ -136,7 +138,7 @@ reasoning is in `docs/architecture.md`; do not relax one without reading it.
 - Relay has no unit tests: no `_test.go` outside `e2e/` and `fakerelay/`. A bug's
   failing repro is an `e2e/` feature test that drives relay through its CLI or
   HTTP; what only the real Mac can show (the screen, Touch ID, the login
-  keychain) is a devbox journey (`cmd/devboxverify`).
+  keychain) has no automated proof now: no test machine runs the verify harness (`cmd/devboxverify`), so the PR says `needs a lab pass`.
 - Time-dependent code takes an injected clock; a test does not sleep to wait
   for one.
 - Report a failure with its output. Do not skip, loosen or delete a test to

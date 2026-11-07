@@ -1,3 +1,5 @@
+> History: this describes the retired devbox verify setup. The devbox that ran it is retired; no test machine runs it now.
+
 # devboxverify
 
 Layer 2 verification: drive the **running** Relay.app, loaded with the

@@ -213,7 +213,7 @@ table above.
 
 7. **Ordering and freshness proof — Complete.** Relay has no unit tests. The
    ordering contract is held by the single command queue and checked by the
-   reviewer, with end-to-end proof from the devbox journeys and later the e2e
+   reviewer, with end-to-end proof from the (retired) devbox journeys and later the e2e
    feature tests.
 
 ### Shipping verification
@@ -636,7 +636,7 @@ should not be a second configuration reader.
 
 ### Phase 7 — lock down and prove the ordering contract
 
-Relay has no unit tests. Proof is the devbox journeys, and later the e2e
+Relay has no unit tests. Proof was the devbox journeys (retired), and later the e2e
 feature tests, covering:
 
 - two concurrent commands: both changes survive and run in admission order;
