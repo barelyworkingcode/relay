@@ -382,7 +382,7 @@ func (a *adoptOps) adoptOutside(ctx context.Context, req AdoptRequest) (res *Ado
 				case "codex":
 					return "the codex thread must finish its turn before it is attached"
 				}
-				return fmt.Sprintf("the session is not idle (%s); ask to interrupt to take it over anyway", ready.Veto)
+				return fmt.Sprintf("the session is not idle: %s (%s); ask to interrupt to take it over anyway", adopt.VetoText(ready.Veto), ready.Veto)
 			}())
 	}
 

@@ -166,7 +166,7 @@ func (a *adoptOps) adoptHost(ctx context.Context, req AdoptRequest, obs outsides
 	}
 	busy := veto != ""
 	if busy && !req.Interrupt {
-		return nil, refuse(http.StatusConflict, adoptBusy, fmt.Sprintf("the session is not idle (%s); ask to interrupt to take it over anyway", veto))
+		return nil, refuse(http.StatusConflict, adoptBusy, fmt.Sprintf("the session is not idle: %s (%s); ask to interrupt to take it over anyway", adopt.VetoText(veto), veto))
 	}
 	interrupt := busy
 	turn, turnWhole := tailBytes, whole
